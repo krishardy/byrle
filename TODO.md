@@ -36,21 +36,35 @@ implementations.
 - [ ] Conditional requests (ETag / If-None-Match) so pass-through stays cheap
 
 ### Spikes and decisions (do these first)
-- [ ] `[!]` **SPIKE: config format.** YAML vs. TOML, and which crate. Write the real
-      §5.5 policy in both — denials, per-ecosystem floor, 3+ package entries with
-      selectors, `set`, `reason`, `expires`. Judge on: nested selector readability,
-      unknown-key rejection working in both, error quality on a malformed file.
-      **Blocks the Stage 2 loader**, but needed in week one just to point the proxy at
-      an upstream. `serde_yml` is disqualified — RUSTSEC-2025-0068, unsound/unmaintained.
+- [x] **SPIKE: config format, done. See plan §5.** Decision: **YAML via `serde-saphyr`**
+      (`default-features = false`, `features = ["deserialize"]`; `include`/`include_fs`
+      stay off). Fallback `serde_norway`. Ran the real §5.5 policy in both formats plus
+      16 malformed variants through one shared `deny_unknown_fields` schema.
+      Key finding: the plan's premise was stale. `serde-saphyr` is 1.2.0, not 0.0.10,
+      dropped `saphyr` for its own `granit-parser`, and has zero `unsafe` in both crates,
+      so pure-Rust no longer implies TOML. YAML then wins on readability and error
+      quality. All four candidates clean under `cargo audit`.
+      Two assumptions falsified: alias bombs are refused by all three YAML crates (not a
+      discriminator), and the Norway problem dissolves under a type-directed parser
+      rather than under `serde_norway`.
+- [ ] **Schema constraint from the spike: never `#[serde(untagged)]`** on polymorphic
+      rule fields. Carried into the Stage 2 loader; not a Stage 1 exit blocker. It silently defeats unknown-key rejection in every loader and both
+      formats. Hand-write `Deserialize` with `deserialize_any` + `visit_str`/`visit_map`.
+      Applies to every polymorphic rule field, not just `install_scripts`.
 - [x] **HTTP stack: axum server-side, reqwest upstream.** Hyper's client is a
       connection, not a client — pooling/redirects/DNS/TLS would all be ours.
 - [ ] `[!]` Narrow upstream-fetch trait we own (~packument-by-name, body-stream-by-URL)
       so the client stays swappable. ⚠ This was recorded from a summary rather than
       explicitly agreed — confirm before building on it.
-- [ ] `[!]` **Name: `waharoa`.** Check `crates.io/crates/waharoa`,
-      `npmjs.com/package/waharoa`, `pypi.org/project/waharoa`, `github.com/waharoa`
-      directly — web search fails on this word. Cultural consultation also outstanding.
-      Ruled out: portcullis, waha, anything with "-gate". See plan header.
+- [~] **Name: `waharoa`.** Registry half **done**: all four exact-name lookups return
+      404 (crates.io, npm, PyPI, the GitHub org), with known-existing controls returning
+      200 in the same run to prove the probe works. The name is free.
+      - [ ] `[!]` **Cultural consultation still outstanding.** This is the remaining gate
+            on the name, and it is a human conversation, not a lookup. See plan header.
+- [ ] Shipped policy template must declare a floor for **every** supported ecosystem, or
+      the default path is a startup failure (§5.5). `examples/policy.yaml` is the spike
+      artifact and is deliberately incomplete: it declares `ecosystems.cargo` with no
+      `floor.cargo`. Complete it when the floor check lands.
 - [ ] Defer: single binary vs. workspace crates. Splitting later is cheap; not enough
       information yet.
 

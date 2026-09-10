@@ -8,6 +8,17 @@ configuration.
 > `waharoa` is a working name: te reo Māori for the carved gateway of a pā, literally
 > the *long entrance*. The gate you pass through before you are inside the walls.
 
+## Stack
+
+Language: Rust
+
+Configuration: YAML, loaded by `serde-saphyr`. Chosen over TOML on readability and error
+message quality, once the assumption that TOML was the only pure-Rust option turned out
+to be stale. The loader hard-errors on unknown keys, because a typo'd rule that silently
+does nothing is worse than no tool at all. Rationale and the evidence behind it are in
+[docs/project_plan.md](docs/project_plan.md); the spike is re-runnable with
+`make spike-config`.
+
 ## Status
 
 **Pre-implementation.** There is no working proxy yet, no binary, and nothing to

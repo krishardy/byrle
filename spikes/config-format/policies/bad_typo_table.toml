@@ -1,0 +1,70 @@
+version = 1
+
+[[denials]]
+purl = "pkg:npm/chalk@5.6.1"
+reason = "compromised release, Sept 2025"
+
+[[denials]]
+purl = "pkg:pypi/ctx@0.1.2"
+reason = "credential exfiltration, confirmed"
+
+[floor.npm]
+known_malware = "block"
+provenance_required = true
+
+[floor.pypi]
+known_malware = "block"
+install_scripts = "quarantine"
+
+[defaults]
+known_malware = "block"
+install_scripts = "warn"
+provenance_required = false
+
+[defaults.cooldown]
+action = "quarantine"
+days = 7
+
+[ecosystems.npm.install_scripts]
+action = "allow"
+loosens_global = true
+reason = "node-gyp builds until we vendor prebuilts"
+expires = "2026-11-30"
+
+[ecosystems.cargo.cooldown]
+action = "block"
+days = 14
+
+[[package]]
+reason = "internal, published by our CI"
+permanent = true
+added_by = "alice"
+[packages.match]
+ecosystem = "npm"
+name = "@mycompany/*"
+[packages.set.cooldown]
+days = 0
+
+[[package]]
+reason = "reviewed by security, fixes GHSA-xxxx"
+expires = "2026-10-15"
+added_by = "alice"
+[packages.match]
+ecosystem = "npm"
+purl = "pkg:npm/chalk@5.6.2"
+[packages.set.cooldown]
+days = 0
+
+[[package]]
+reason = "vendored CUDA build steps, reviewed"
+expires = "2026-11-01"
+added_by = "bob"
+[packages.match]
+ecosystem = "pypi"
+name = "torch"
+has_install_scripts = true
+[packages.set]
+install_scripts = "allow"
+[packages.set.cooldown]
+action = "warn"
+days = 3
