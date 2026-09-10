@@ -575,14 +575,28 @@ touches axum, which does not know what fetches for it. And reqwest's response bo
 converts into a hyper-compatible stream, so the hashing wrapper is the same code either
 way; a swap adds pooling via `hyper-util` plus redirects, contained in one module.
 
-**Put the upstream fetch behind a narrow trait from day one** — roughly *packument by
-name* and *body stream by URL*, two or three methods. Then the client is an
-implementation detail behind a boundary we control.
+**No fetch trait in Stage 1. Call reqwest concretely** and extract the boundary in
+Stage 2 or 3, against real callers, on the same schedule as the adapter trait.
 
-> This deliberately contradicts the Stage 3 reasoning for deferring the *adapter*
-> abstraction, so the distinction matters: there, one implementation existed and the
-> shape of the second was unknown. Here both shapes are known and the surface is three
-> methods, not a whole protocol.
+> **Reversed, Sept 2026.** This section previously argued for a narrow trait
+> (*packument by name*, *body stream by URL*) from day one, on the grounds that both
+> shapes were already known and the surface was three methods rather than a whole
+> protocol, so the Stage 3 reasoning for deferring the *adapter* abstraction did not
+> apply. That argument does not hold, and it is weakest exactly where it matters most.
+> A single body-stream signature has to serve all three branches of the fetch path
+> below: cache-hit streams through, novel-and-cheap buffers, novel-and-expensive defers
+> with a 429. None of those exist yet, so the method would be designed against zero
+> callers. That is the failure the adapter deferral exists to prevent, and Stage 1 is
+> not exempt from its own rule.
+
+The swap cost this was meant to buy stays low regardless, for the reason given above:
+axum does not know what fetches for it, so replacing the upstream client never touches
+the server side, and the hashing wrapper is the same code either way.
+
+**This makes the testing approach load-bearing**, since there is no seam to inject a
+fake through. Stage 1 wants HTTP-level fixtures rather than a stubbed client, which for
+a proxy is the better target anyway: the bytes on the wire are the product, and a fake
+that speaks Rust types would skip the part most likely to be wrong.
 
 Streaming works cleanly in axum — its response body is just an `http-body`
 implementation, so it forwards chunks as they arrive without buffering, and the hashing
@@ -844,6 +858,7 @@ any policy logic:** a wrong PURL surfaces as a wrong PURL, not as a mysterious v
 | 4 | Quarantine | **Filter metadata on resolution, hard fail on pinned fetch** | Substitution breaks lockfile integrity hashes. Filtering lets the resolver pick a clean version naturally. |
 | 4b | Cooldown vs. urgent fixes | **Manually reviewed version waivers only**, no automatic advisory-based bypass | Auto-waiver is attacker-exploitable via fake advisories. Reduces to the §5.5 package tier. One path only — no emergency fast path; deploy latency accepted as the cost of a single auditable route. |
 | 5 | License | **Apache-2.0**, DCO, trademark separate | Ecosystem norm; patent grant; zero friction for adapter contributors. |
+| 12 | HTTP stack | **axum server-side, reqwest upstream. No fetch trait in Stage 1**; the boundary is extracted in Stage 2/3 against real callers | Both sit on hyper and share body types, so a stream from upstream flows into the response without conversion. Hyper's client is a *connection*, not a client: pooling, redirects, DNS and TLS would all be ours. The day-one trait was reversed Sept 2026, having been recorded from a summary rather than agreed; a body-stream signature written now would be designed against zero callers, since none of the three fetch-path branches exist. See §5. |
 | 11 | Config format | **YAML, loaded by `serde-saphyr`** (`deserialize` only; `include` off). Fallback `serde_norway`. Schema forbids `#[serde(untagged)]` | Spike run Sept 2026 against the real §5.5 policy in both formats. The framing premise was stale: `serde-saphyr` is 1.2.0 with zero `unsafe`, so pure-Rust no longer implies TOML. YAML then wins on both format criteria. TOML's `[[packages]]` ordering rule makes the natural writing order a parse error with a misleading message. See §5. |
 | 8 | §5.5 package tier | **All seven issues resolved.** Separate `denials` / `floor` / `packages` blocks; evaluation order denials → floor → packages → ecosystems → defaults; floor operator-extensible, per-ecosystem, mandatory, `known_malware` pinned; `ecosystem` required on selectors; loosening needs `reason` + `expires` (90d max) or `permanent: true`, no warning; most-specific-wins by subset containment with incomparable overlaps a load-time error; ranges resolved in the normalizer | Schema freeze unblocked. See §5.5. |
 | 7 | NVD role | **`enrich`-only for npm/PyPI**, `match` permitted for Maven; generalized to a per-ecosystem stream capability matrix (`match` / `enrich` / `malware`) | CPE-to-PURL is a category mismatch, not a mapping problem. Coverage is uneven per stream *and* ecosystem, so capability must be a matrix. |
@@ -854,7 +869,6 @@ any policy logic:** a wrong PURL surfaces as a wrong PURL, not as a mysterious v
 | # | Decision | Rationale |
 |---|---|---|
 | 13 | Name | **`waharoa`**: ✅ registry checks passed (Sept 2026), ⚠ cultural consultation still outstanding | Free on all four registries: crates.io, npm, PyPI and the GitHub org all return 404 on the exact name, with known-existing controls returning 200 to prove the check meaningful. Clean namespace vs. `waha`/`portcullis`. Consultation is the remaining gate. See header. |
-| 12 | HTTP stack | **axum server-side, reqwest upstream**, behind a narrow fetch trait we own | Both sit on hyper and share body types, so a stream from upstream flows into the response without conversion. Hyper's client is a *connection*, not a client — pooling, redirects, DNS and TLS would all be ours. See §5. |
 | 10 | Fetch path | **Cache hit streams; novel + cheap buffers; novel + expensive defers with 429.** Packument digest decides the branch before fetching | Content-based verdicts are almost never needed at fetch time — policy evaluates on metadata, which is already resolved. See §5. |
 | 9 | Stage structure | **Spike dissolved; split transport from policy.** M1 = pass-through proxy, M2 = decision layer | The reverse proxy is well-understood architecture, not a research risk. Splitting on the transport/policy boundary makes identity bugs falsifiable before evaluation logic exists. |
 
