@@ -4,12 +4,12 @@
 > the *long entrance*. The metaphor is exact: the gate you pass through before you are
 > inside the walls.
 >
-> ⚠ **Registry availability is UNVERIFIED.** Web search failed repeatedly on this word
-> (it latches onto "npm"/"crates.io" in the query and returns noise). Check the four
-> registries directly — an exact-name 404 is definitive in a way search never is:
-> `crates.io/crates/waharoa`, `npmjs.com/package/waharoa`, `pypi.org/project/waharoa`,
-> `github.com/waharoa`. Only known collision is the Waikato town, which will not compete
-> in technical search results.
+> ✅ **Registry availability VERIFIED (Sept 2026).** Checked by direct exact-name lookup,
+> which is definitive in a way search never is. All four return 404: `crates.io`, the npm
+> registry, PyPI, and the `waharoa` GitHub org. Known-existing names were checked in the
+> same run and return 200, so the 404s are real absences rather than a broken probe; the
+> same probe confirms the npm `yett` collision noted below. Only known collision is the
+> Waikato town, which will not compete in technical search results.
 >
 > ⚠ **Cultural check outstanding.** A waharoa is often the most significant carving on a
 > marae, so this is not neutral vocabulary. Worth running past someone with standing to
@@ -597,24 +597,83 @@ wrapper sits in that chain naturally.
 | `serde_yml` | ❌ **RUSTSEC-2025-0068** — unsound and unmaintained, repo archived. Disqualifying on its own; unshippable for a tool that consumes the advisory DB flagging it. |
 | `serde_norway` | Hard fork via `unsafe-libyaml-norway`; named by RustSec as a maintained alternative. Fixes the Norway problem (bare `no` parsing as boolean false — relevant given keys like `provenance_required`). Still C FFI. |
 | `serde-yaml-ng` | Direct continuation of dtolnay's original — battle-tested, familiar API. But uses unmaintained `unsafe-libyaml`: C FFI with an unmaintained upstream, awkward to defend in our own audit output. |
-| `serde-saphyr` | Pure Rust, no C FFI. Security properties read as written for this use case: no unsafe in library code, panic-free on malformed input, no tag-driven object construction (the classic YAML RCE vector), configurable nesting/size budgets, parses straight to Rust types, supports redacting properties from diagnostics. **But version 0.0.10**, and upstream saphyr still calls serde support "soon-to-be". |
-| `toml` | Pure Rust, well maintained, Rust's own format, no Norway problem. Cost is verbosity — §5.5's nesting (denials, per-ecosystem floor, packages with selectors and `set` blocks) becomes array-of-tables syntax. |
+| `serde-saphyr` | ✅ **Chosen.** Pure Rust, no C FFI. Zero `unsafe` in its own code and in its parser, both carrying `forbid(unsafe_code)`. Panic-free on malformed input, no tag-driven object construction (the classic YAML RCE vector), configurable nesting/size budgets, parses straight to Rust types with no intermediate document model. **Corrected Sept 2026: now 1.2.0, not 0.0.10** (1.0.0 released July 2026 after two RCs, steady cadence since). It also no longer depends on `saphyr` at all, having vendored its own `granit-parser`, so the "upstream calls serde support soon-to-be" objection is void. Residual risk: single maintainer, and a 26-crate tree that pulls `encoding_rs` (SIMD, plenty of `unsafe`). |
+| `toml` | Pure Rust, well maintained by the toml-rs team, Rust's own format, no Norway problem, and by far the smallest tree (6 crates). `toml_parser` gates its own `unsafe` behind an opt-in feature, off by default, though `winnow` beneath it carries 44 `unsafe` blocks that are not feature-gated. Rejected on the two format criteria, not on dependencies. See the findings below. |
 
-**The spike:** write the actual §5.5 example policy — not a toy — in both YAML and TOML.
-Denials, per-ecosystem floor, and at least three package entries with selectors, `set`
-blocks, `reason` and `expires`, since that is the shape that hurts if anything does.
+#### Spike result (Sept 2026): **YAML, loaded by `serde-saphyr`**
 
-Judge on three things:
-1. **Readability of nested package selectors** — where array-of-tables gets ugly.
-2. **Unknown-key rejection** — the loader hard-errors on unknown keys; that behaviour
-   must survive in both.
-3. **Error message quality on a deliberately malformed file** — users hit this far more
-   often than they hit exotic syntax.
+The spike was run as specified: the real §5.5 policy (2 denials, per-ecosystem floor,
+3 package entries with selectors, `set` blocks, `reason`, `expires`, `permanent`) written
+in both formats, plus 16 malformed or probing variants, loaded by all four candidates
+through one identical `deny_unknown_fields` schema.
 
-Decide *inside* the spike, not before: if TOML wins on dependencies but loses on
-readability, a middle path is YAML for authoring plus a published schema and a strict
-subset. But if TOML is merely verbose rather than unreadable, a pure-Rust
-well-maintained dependency probably wins for a security tool.
+**The premise that framed this decision was wrong, and that is what changed the answer.**
+The tiebreak assumed TOML was the only pure-Rust option. `serde-saphyr` is now 1.2.0
+rather than 0.0.10, has dropped `saphyr` for its own `granit-parser`, and carries zero
+`unsafe` in both crates. So the "pure Rust versus readable" trade no longer exists, and
+YAML wins on both format criteria without paying a dependency penalty.
+
+**1. Readability.** YAML 50 lines, TOML 70. Verbosity is not the real cost. Inside
+`[[packages]]`, TOML requires the scalar keys (`reason`, `expires`, `permanent`,
+`added_by`) to precede the `[packages.match]` and `[packages.set.*]` sub-tables, so the
+justification must be written before the thing it justifies. Writing an entry in its
+natural reading order is a parse error, and a misleading one: the trailing keys get
+absorbed into the still-open cooldown table, producing ``unknown field `added_by`,
+expected `action` or `days` ``. Every package entry an operator writes is exposed to this.
+
+**2. Unknown-key rejection.** Survives in all four loaders at all four depths tested
+(root, inside a `match` selector, inside a `set` block, inside the polymorphic rule
+struct). A tie, with one important exception recorded as a schema constraint below.
+
+**3. Error quality.** `serde-saphyr` is clearly best: source excerpt, caret, and plain
+language (`tabs disallowed within this context (block indentation)` where libyaml-based
+crates say `found character that cannot start any token`). `toml` has good spans but two
+misleading-error classes, both from table syntax rather than from serde: the ordering
+case above, and a typo'd `[[package]]` for `[[packages]]`, which reports `duplicate key`
+against a correct line six lines further down instead of naming the unknown table.
+`serde_norway` and `serde-yaml-ng` are byte-identical in output, adequate for serde
+errors and poor for syntax errors.
+
+**Dependency and security posture.** All four are clean under `cargo audit` (method
+validated by confirming it still flags RUSTSEC-2025-0068 against the excluded
+`serde_yml`). `serde-saphyr` plus `granit-parser` carry zero `unsafe` and both set
+`forbid(unsafe_code)`; the cost is a 26-crate tree that pulls `encoding_rs`. `toml` is
+6 crates. The libyaml pair carry C FFI.
+
+**Two assumptions the spike falsified, recorded so they are not re-derived:**
+
+- **Alias bombs are not a discriminator.** All three YAML crates refuse a 9^8 expansion.
+  libyaml has its own repetition limit and refuses in ~9ms; `serde-saphyr` refuses via
+  its node budget but takes ~100ms and emits a genuinely bad message (`budget breached:
+  Nodes { nodes: 250001 }` followed by five repeated position clauses). A known wart.
+  Note the first version of this test was invalid: the lazy struct-directed path skipped
+  fields the target type never demanded, so everything appeared to parse. The valid test
+  deserializes into a recursive value type that forces full materialization.
+- **The Norway problem is dissolved by a type-directed parser, not by `serde_norway`.**
+  `serde-saphyr` resolves the bare token `no` against the target type: `false` for a
+  `bool` field, `"no"` for a `String` field. Both are what the author meant.
+  `serde_norway` and `serde-yaml-ng` always yield the string, so the entirely natural
+  `provenance_required: no` is a hard type error.
+
+**Schema constraint, load-bearing: never `#[serde(untagged)]`.** Rule fields are
+polymorphic (`install_scripts: warn` or a table carrying the §5 acknowledgment). Modelled
+with `untagged`, a typo inside the table form degrades to `data did not match any variant
+of untagged enum ScriptRule` in *every* loader, in both formats, silently defeating the
+fail-closed guarantee that unknown keys are a hard error. A hand-written `Deserialize`
+that calls `deserialize_any` and dispatches `visit_str` to the bare form and `visit_map`
+to the table form restores the exact message (``unknown field `expiress`, expected one of
+action, loosens_global, reason, expires``) with correct spans in both YAML and TOML. This
+applies to every polymorphic rule field added later, not just `install_scripts`.
+
+**Feature posture.** `default-features = false`, `features = ["deserialize"]`: we only
+ever read config, never write it. `include` and `include_fs` stay **off** permanently.
+File inclusion in the policy file of a security tool is attack surface, not convenience.
+
+**Residual risk and the exit.** `serde-saphyr` is a single-maintainer crate about six
+weeks past 1.0. That risk is bounded because the schema uses plain `serde` derives with
+zero crate-specific attributes: all four candidates deserialized the identical `Policy`
+type in the spike, so switching loaders is a one-line change. **`serde_norway` is the
+named fallback**, being the alternative RustSec itself points to.
 
 ### Fetch path: streaming, buffering, and deferral
 
@@ -785,6 +844,7 @@ any policy logic:** a wrong PURL surfaces as a wrong PURL, not as a mysterious v
 | 4 | Quarantine | **Filter metadata on resolution, hard fail on pinned fetch** | Substitution breaks lockfile integrity hashes. Filtering lets the resolver pick a clean version naturally. |
 | 4b | Cooldown vs. urgent fixes | **Manually reviewed version waivers only**, no automatic advisory-based bypass | Auto-waiver is attacker-exploitable via fake advisories. Reduces to the §5.5 package tier. One path only — no emergency fast path; deploy latency accepted as the cost of a single auditable route. |
 | 5 | License | **Apache-2.0**, DCO, trademark separate | Ecosystem norm; patent grant; zero friction for adapter contributors. |
+| 11 | Config format | **YAML, loaded by `serde-saphyr`** (`deserialize` only; `include` off). Fallback `serde_norway`. Schema forbids `#[serde(untagged)]` | Spike run Sept 2026 against the real §5.5 policy in both formats. The framing premise was stale: `serde-saphyr` is 1.2.0 with zero `unsafe`, so pure-Rust no longer implies TOML. YAML then wins on both format criteria. TOML's `[[packages]]` ordering rule makes the natural writing order a parse error with a misleading message. See §5. |
 | 8 | §5.5 package tier | **All seven issues resolved.** Separate `denials` / `floor` / `packages` blocks; evaluation order denials → floor → packages → ecosystems → defaults; floor operator-extensible, per-ecosystem, mandatory, `known_malware` pinned; `ecosystem` required on selectors; loosening needs `reason` + `expires` (90d max) or `permanent: true`, no warning; most-specific-wins by subset containment with incomparable overlaps a load-time error; ranges resolved in the normalizer | Schema freeze unblocked. See §5.5. |
 | 7 | NVD role | **`enrich`-only for npm/PyPI**, `match` permitted for Maven; generalized to a per-ecosystem stream capability matrix (`match` / `enrich` / `malware`) | CPE-to-PURL is a category mismatch, not a mapping problem. Coverage is uneven per stream *and* ecosystem, so capability must be a matrix. |
 | 6 | Intel distribution | **None — fetch from origin.** SeaORM over SQLite + Postgres; fail-closed cold start with 503; adopt query-on-clean live fallback | OSV/GHSA/OSSF all self-host their feeds. Postgres for multi-instance. See §3. |
@@ -793,9 +853,8 @@ any policy logic:** a wrong PURL surfaces as a wrong PURL, not as a mysterious v
 
 | # | Decision | Rationale |
 |---|---|---|
-| 13 | Name | **`waharoa`** — registry checks and cultural consultation outstanding | Clean namespace vs. `waha`/`portcullis`; three extra characters bought a field with no incumbent. See header. |
+| 13 | Name | **`waharoa`**: ✅ registry checks passed (Sept 2026), ⚠ cultural consultation still outstanding | Free on all four registries: crates.io, npm, PyPI and the GitHub org all return 404 on the exact name, with known-existing controls returning 200 to prove the check meaningful. Clean namespace vs. `waha`/`portcullis`. Consultation is the remaining gate. See header. |
 | 12 | HTTP stack | **axum server-side, reqwest upstream**, behind a narrow fetch trait we own | Both sit on hyper and share body types, so a stream from upstream flows into the response without conversion. Hyper's client is a *connection*, not a client — pooling, redirects, DNS and TLS would all be ours. See §5. |
-| 11 | Config format | **Open — spike required.** YAML vs. TOML, and which crate | `serde_yaml` is archived; `serde_yml` has RUSTSEC-2025-0068 against it (unsound + unmaintained). Every remaining option has a real defect. See §5. |
 | 10 | Fetch path | **Cache hit streams; novel + cheap buffers; novel + expensive defers with 429.** Packument digest decides the branch before fetching | Content-based verdicts are almost never needed at fetch time — policy evaluates on metadata, which is already resolved. See §5. |
 | 9 | Stage structure | **Spike dissolved; split transport from policy.** M1 = pass-through proxy, M2 = decision layer | The reverse proxy is well-understood architecture, not a research risk. Splitting on the transport/policy boundary makes identity bugs falsifiable before evaluation logic exists. |
 
