@@ -53,9 +53,18 @@ implementations.
       Applies to every polymorphic rule field, not just `install_scripts`.
 - [x] **HTTP stack: axum server-side, reqwest upstream.** Hyper's client is a
       connection, not a client — pooling/redirects/DNS/TLS would all be ours.
-- [ ] `[!]` Narrow upstream-fetch trait we own (~packument-by-name, body-stream-by-URL)
-      so the client stays swappable. ⚠ This was recorded from a summary rather than
-      explicitly agreed — confirm before building on it.
+- [x] **Narrow upstream-fetch trait: DEFERRED, confirmed Sept 2026.** The plan had
+      recorded it as day-one work from a conversation summary nobody had agreed to.
+      Decided against: Stage 1 holds to its own rule and calls reqwest concretely, with
+      the boundary extracted in Stage 2/3 against real callers, exactly as the adapter
+      trait is. The "both shapes are already known" argument did not survive review, and
+      it is weakest for the method that matters most: a single body-stream signature has
+      to serve all three §5 fetch branches (stream, buffer, defer), none of which exist
+      yet, so it would be designed against zero callers.
+- [ ] Testing strategy is unrecorded anywhere, and deferring the trait makes it load
+      bearing: with no seam to inject a fake, Stage 1 needs HTTP-level fixtures. For a
+      proxy that is arguably the better target anyway, since the bytes on the wire are
+      the product. Pick the approach before writing the first transport test.
 - [~] **Name: `waharoa`.** Registry half **done**: all four exact-name lookups return
       404 (crates.io, npm, PyPI, the GitHub org), with known-existing controls returning
       200 in the same run to prove the probe works. The name is free.
