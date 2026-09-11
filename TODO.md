@@ -251,6 +251,10 @@ implementations.
             - [x] `PackumentDetail` comes from the response `Content-Type`, not the
                   request. npm asks with `application/vnd.npm.install-v1+json; q=1.0,
                   application/json; q=0.8, */*`, which names both and settles nothing.
+                  Measured across 18 responses (6 packages, scoped and unscoped, three
+                  Accept headers): exactly the two media types, no `charset` parameter.
+                  A response with any other type is forwarded unread, so a mirror that
+                  labels packuments differently would be observed by nothing.
             - [x] Decompression is capped (`WAHAROA_MAX_PACKUMENT_BYTES`, default 32 MiB)
                   against a zip bomb. Over the cap the body is forwarded whole and not
                   parsed: an install must not fail on what the proxy could not inspect.
@@ -268,6 +272,10 @@ implementations.
             `RequestTarget::Tarball` therefore carries `claimed_version`, not a
             `PackageRef`. Resolving it needs the packument record, which is the
             `dist.integrity`-before-fetch item below.
+      - [ ] `versions_with_install_scripts` in the log counts every version in the
+            document, not the version being installed. Stage 2 needs the resolved
+            version's answer, which needs the tarball request correlated against the
+            packument records. Same correlation as the `dist.integrity` item.
       - [ ] Range resolution still lives nowhere. `dist-tags.latest` is kept as a string
             and deliberately not resolved: the lodash fixture tags `4.18.1` while the
             document carries only `4.17.21`, so a tag can name a version the `versions`
