@@ -173,9 +173,10 @@ implementations.
       worse failure. But it is why `make check-deps` is not clean under
       `CHECK_DEPS_STRICT=1` today. Revisit if it becomes a real advisory; the swap path
       is the same one-line change described under the identity item.
-- [ ] Feed the identity type into the proxy. `src/npm.rs` now derives identity from the
-      packument's own `name`, but `src/main.rs` still does not parse bodies, so nothing
-      on the request path uses it yet.
+- [x] Feed the identity type into the proxy. Every request path is classified by
+      `npm::classify_path` into a `PackageKey`, the throwaway block compares keys rather
+      than strings (so `/@babel%2fcore` and `/@babel/core` are one package), and every
+      log line carries a purl.
 - [x] Common package record schema. `src/record.rs`: `PackageRecord`, carrying identity
       (a `PackageRef`), publish time, maintainers, repository, has-install-scripts and
       the script bodies, provenance, and the artifact with its digests. Types only; the
@@ -234,18 +235,46 @@ implementations.
       - [x] Corpus check in the tests, gated behind `WAHAROA_NPM_CORPUS` /
             `WAHAROA_NPM_CORPUS_FULL`, plus two `#[ignore]`d live tests against
             registry.npmjs.org covering the scoped-name URL round trip and the 404 path.
-      - [ ] Wire it into the proxy. `src/main.rs` still streams every body verbatim and
-            parses nothing, so the Stage 1 exit criterion is not yet falsifiable. This
-            needs the buffering decision: forward the original bytes untouched while
-            decompressing a copy to parse, which pulls in `flate2` and a rule for which
-            responses get buffered. Its own change, alongside the §5 fetch path.
+      - [x] Wired into the proxy. `src/proxy.rs` buffers packument responses, decodes a
+            scratch copy, normalizes it, and forwards the **original encoded bytes**
+            unchanged. Tarballs still stream. Normalizing happens before forwarding, not
+            in a spawned task: Stage 2 has to decide before forwarding anyway, and a
+            background task would make the smoke assertions racy.
+            - [x] The proxy moved out of `main.rs` into the library so it can be tested
+                  against a fake registry. `main.rs` is now 53 lines of startup.
+            - [x] Outbound `Accept-Encoding` is narrowed to gzip-or-identity on packument
+                  requests, whichever the client accepts. **registry.npmjs.org serves
+                  brotli whenever br is offered**, and npm 9.9.4 offers `gzip,deflate`.
+                  Narrowing means one decompressor instead of three, and the client still
+                  gets an encoding it asked for. A client accepting neither keeps its own
+                  header and its body is not read.
+            - [x] `PackumentDetail` comes from the response `Content-Type`, not the
+                  request. npm asks with `application/vnd.npm.install-v1+json; q=1.0,
+                  application/json; q=0.8, */*`, which names both and settles nothing.
+            - [x] Decompression is capped (`WAHAROA_MAX_PACKUMENT_BYTES`, default 32 MiB)
+                  against a zip bomb. Over the cap the body is forwarded whole and not
+                  parsed: an install must not fail on what the proxy could not inspect.
+            - [x] Measured parse cost: 2 ms for lodash (117 versions), 7 ms for
+                  @babel/core (230), 252 ms for the full typescript packument (3,822
+                  versions, 15.7 MB decoded).
+            - [x] `make smoke-npm` gained a third assertion: every installed package, at
+                  the version on disk, appears as a purl in the log, and no packument had
+                  a skipped version. 69 packages, 71 packuments, 0 skipped. Checked that
+                  it bites by crippling the size cap.
+      - [x] **Finding: a tarball path does not always spell the version the packument
+            does.** 38 of 24,852 tarball URLs differ: every `express` prerelease before
+            3.0.0 and every `grunt` prerelease before 0.4.0 drops the hyphen, so
+            `express@3.0.0-rc1` is served at `express-3.0.0rc1.tgz`.
+            `RequestTarget::Tarball` therefore carries `claimed_version`, not a
+            `PackageRef`. Resolving it needs the packument record, which is the
+            `dist.integrity`-before-fetch item below.
       - [ ] Range resolution still lives nowhere. `dist-tags.latest` is kept as a string
             and deliberately not resolved: the lodash fixture tags `4.18.1` while the
             document carries only `4.17.21`, so a tag can name a version the `versions`
             map omits. See the Stage 2 item.
 - [x] Unit test coverage tooling, for the CLAUDE.md 90% floor. `make coverage` runs
       cargo-llvm-cov with `--fail-under-lines/-functions/-regions 90`; `COVERAGE_FLOOR`
-      overrides it. The library is at 98.6% lines, 97.6% regions.
+      overrides it. The crate is at 95.4% lines, 94.6% regions, 93.7% functions.
       - [x] The network and corpus tests are compiled out under `cfg(coverage)`, which
             cargo-llvm-cov sets. They do not run in a coverage build, and counting the
             body of a test that cannot run reports a gap that is not one. `cargo test`
@@ -254,18 +283,24 @@ implementations.
             bare name: the leading empty check and the empty-`rest` check in the scoped
             arm already cover it. Now a `debug_assert!`, because a branch no input can
             reach looks like a hole in the tests forever.
-      - [ ] **`src/main.rs` is at 0%, 128 uncovered lines.** The floor is measured over
-            the library only; the binary is reached by `make smoke-npm` against a real
-            npm client. `make coverage` prints the figure rather than hiding it. Closing
-            it means moving the pure parts out of the binary, starting with
-            `package_name_from_path()` and `is_hop_by_hop()`, which are testable
-            functions sitting where nothing can unit test them. Do this with the proxy
-            wiring above, which touches the same file.
-- [ ] Packument size: no `Accept-Encoding` is sent by the normalizer's client, because
-      reqwest's `gzip` feature is off crate-wide so the proxy can forward bodies byte for
-      byte. Packuments therefore arrive uncompressed, which for typescript is several
-      megabytes. Accepted for now rather than compromising pass-through; revisit with the
-      fetch path.
+      - [x] **`src/main.rs` was at 0% over 128 lines, and the floor excluded it.** The
+            proxy moved into `src/proxy.rs` in the library, leaving 53 lines of startup
+            in the binary, so the floor now covers the whole crate with no carve-out.
+- [ ] `[!]` **A warm npm cache sends `If-None-Match` and the registry answers 304 with
+      no body, so the proxy observes no packument at all.** The resolved graph is fully
+      visible only on a cold cache today. The proxy logs the skip and the ETag rather
+      than treating an empty body as a parse failure, but Stage 2 cannot gate on a record
+      it never saw. The fix is the `npm::Client` already built: on a 304 for a package
+      with no cached record, fetch the packument on the proxy's own behalf. Pairs with
+      the conditional requests item below.
+- [ ] Memory under concurrency. A buffered packument holds the encoded body plus its
+      decoded copy, 2.0 MB + 15.7 MB for typescript, and npm opens many requests at once.
+      Nothing bounds how many are buffered at the same time. Measure it under a real
+      install before picking a bound.
+- [ ] Packument size on the proxy's own fetches: `npm::Client` sends no `Accept-Encoding`
+      because reqwest's `gzip` feature is off crate-wide, so those packuments arrive
+      uncompressed. The request path does not have this problem, since the proxy decodes
+      gzip itself. Revisit with the fetch path.
 - [ ] Conditional requests (ETag / If-None-Match) so pass-through stays cheap
 
 ### Spikes and decisions (do these first)

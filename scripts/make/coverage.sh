@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Unit test coverage, with the floor CLAUDE.md sets.
 #
-# Measured over the library only. `src/main.rs` is the proxy's async wiring, reached by
-# `make smoke-npm` against a real npm client rather than by unit tests, and folding an
-# end-to-end-tested binary into a unit-test number would describe neither honestly. Its
-# figure is printed below so it is visible rather than excluded quietly.
+# Measured over the whole crate, `src/main.rs` included. That file is startup wiring
+# only: the proxy itself lives in `src/proxy.rs` in the library, where it is tested
+# against a fake registry, and `make smoke-npm` runs a real npm client through the
+# binary end to end.
 #
 # cargo-llvm-cov sets `--cfg coverage`, which compiles out the tests that need the
 # network or a packument corpus on disk. They do not run here, and counting the body of
@@ -21,13 +21,9 @@ if ! cargo llvm-cov --version >/dev/null 2>&1; then
     exit 1
 fi
 
-printf '\n\033[1m==> library coverage (floor %s%%)\033[0m\n' "$floor"
-cargo llvm-cov --lib \
+printf '\n\033[1m==> coverage (floor %s%%, lines and functions and regions)\033[0m\n' "$floor"
+exec cargo llvm-cov \
     --fail-under-lines "$floor" \
     --fail-under-functions "$floor" \
     --fail-under-regions "$floor" \
     --summary-only "$@"
-
-printf '\n\033[1m==> src/main.rs, for reference (not part of the floor)\033[0m\n'
-cargo llvm-cov --summary-only 2>/dev/null | awk '/^main\.rs/ || /^Filename/'
-echo "    The proxy binary is covered by 'make smoke-npm', not by unit tests."
