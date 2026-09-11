@@ -47,7 +47,31 @@ Items that I've added that are not stage-bound.
    which is the same standard that ruled out `serde_yml` in plan §5.
    Verified against the real advisory database, and it found something (see below).
    `cargo outdated` is not installed here, so that half is unexercised.
-5. Add trufflehog to make sast.
+5. [x] Add trufflehog to make sast.
+   Done. `make sast` now runs semgrep then trufflehog, aggregating both rather than
+   stopping at the first failure. Two scans: the working tree, and git history, because
+   a credential committed and later deleted is gone from the tree and still in the
+   repository. `--no-update` stops trufflehog's version phone-home, matching the
+   `--metrics=off` choice for semgrep. Credential *verification* is left on and is a
+   different thing from telemetry: it authenticates a candidate against the service that
+   issued it, which is what separates live credentials from noise. `SAST_NO_VERIFY=1`
+   disables it.
+   Three bugs found by running it rather than by reading it:
+   - `p/bash` is a 404; semgrep publishes no bash ruleset. Replaced with
+     `p/security-audit`. Shell is linted by shellcheck in `make lint` instead, so the
+     coverage claim in the earlier note was wrong.
+   - `local rc=$?` captures `local`'s own status, not the command's, so every failure
+     was reported as "exited 0". Fixed in both places.
+   - semgrep flagged `std::env::args()` in `examples/osv_conformance.rs`. False positive:
+     the rule guards against deriving identity from argv. Suppressed at the site with a
+     reason, and the marker has to sit on the line immediately above the finding.
+   Verified: semgrep runs 50 rules over 61 files and the suppression works.
+   NOT verified: trufflehog detection. In this sandbox trufflehog cannot see `/tmp` or
+   any path other than `.`, and a planted test credential did not register, so the clean
+   working-tree result is not evidence. The git-history scan fails here for the same
+   reason, since it clones to a temp directory; `SAST_SKIP_HISTORY=1` is the escape and
+   `make sast` is otherwise green. Both should work on a normal machine, and history
+   scanning belongs in CI regardless.
 
 ## Stage 1 — Pass-through proxy (transport)
 
