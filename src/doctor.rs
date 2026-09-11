@@ -276,6 +276,92 @@ pub fn check_cache(client: &str, entries: Option<u64>) -> Finding {
     }
 }
 
+/// Whether the proxy is there, and whether it is configured the way this check expects.
+///
+/// Everything else here reads what a client is configured to do. This is the one that
+/// asks whether the thing at the other end exists and answers.
+///
+/// `health` is what [`crate::proxy::HEALTH_PATH`] returned, or `None` when nothing
+/// answered there.
+pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Finding> {
+    let title = "proxy".to_owned();
+    let Some(health) = health else {
+        return vec![
+            Finding::new(
+                Severity::Problem,
+                title,
+                format!("nothing answered at {proxy}{}", crate::proxy::HEALTH_PATH),
+            )
+            .with_fix("start the proxy, or point this at the address clients actually use"),
+        ];
+    };
+
+    let mut findings = vec![Finding::new(
+        Severity::Ok,
+        title,
+        format!(
+            "{} {} at {proxy}, forwarding to {}",
+            health.service, health.version, health.upstream
+        ),
+    )];
+
+    // The address the proxy writes into artifact URLs is the one lockfiles record, so a
+    // proxy that does not know its own address writes whatever Host each client used.
+    match health.public_base.as_deref() {
+        Some(base) if same_origin(base, proxy) => {}
+        Some(base) => findings.push(
+            Finding::new(
+                Severity::Warn,
+                "proxy public URL",
+                format!(
+                    "the proxy writes {base} into artifact URLs, but this check reached it at \
+                     {proxy}. Lockfiles will record {base}"
+                ),
+            )
+            .with_fix("check which address clients use, and set WAHAROA_PUBLIC_URL to it"),
+        ),
+        None => findings.push(
+            Finding::new(
+                Severity::Warn,
+                "proxy public URL",
+                "the proxy has no WAHAROA_PUBLIC_URL, so artifact URLs use whatever Host each \
+                 client used, and that is what lockfiles record",
+            )
+            .with_fix("set WAHAROA_PUBLIC_URL on the proxy to a stable name"),
+        ),
+    }
+
+    if !health.rewrite_artifacts {
+        findings.push(
+            Finding::new(
+                Severity::Warn,
+                "proxy artifact rewriting",
+                "off, so pnpm and yarn fetch artifacts without the proxy seeing them",
+            )
+            .with_fix("unset WAHAROA_REWRITE_ARTIFACTS on the proxy"),
+        );
+    }
+    if !health.refuse_unservable {
+        findings.push(Finding::new(
+            Severity::Warn,
+            "proxy refusal",
+            "off, so versions whose artifacts the proxy cannot see are forwarded rather than \
+             removed",
+        ));
+    }
+    if !health.allowed_direct_origins.is_empty() {
+        findings.push(Finding::new(
+            Severity::Warn,
+            "proxy allowed origins",
+            format!(
+                "artifacts on {} are fetched directly and never examined, by configuration",
+                health.allowed_direct_origins.join(", ")
+            ),
+        ));
+    }
+    findings
+}
+
 /// Where the proxy is expected to be reachable.
 ///
 /// `WAHAROA_PUBLIC_URL` is the address written into artifact URLs and therefore into
@@ -547,6 +633,80 @@ mod tests {
                 "{kind:?}"
             );
         }
+    }
+
+    fn health() -> crate::proxy::Health {
+        crate::proxy::Health {
+            service: "waharoa".into(),
+            version: "0.1.0".into(),
+            upstream: "https://registry.npmjs.org".into(),
+            public_base: Some(PROXY.into()),
+            rewrite_artifacts: true,
+            refuse_unservable: true,
+            served_origins: vec!["https://registry.npmjs.org".into()],
+            allowed_direct_origins: vec![],
+            packuments_held: 0,
+            records_held: 0,
+        }
+    }
+
+    /// Every other check reads what a client is configured to do. This one asks whether
+    /// the thing at the other end exists.
+    #[test]
+    fn a_proxy_that_does_not_answer_is_a_problem() {
+        let findings = check_proxy(None, PROXY);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Problem);
+        assert!(findings[0].detail.contains("nothing answered"));
+        assert!(findings[0].fix.is_some());
+    }
+
+    #[test]
+    fn a_healthy_proxy_reports_what_it_forwards_to() {
+        let findings = check_proxy(Some(&health()), PROXY);
+        assert_eq!(worst(&findings), Severity::Ok);
+        assert!(findings[0].detail.contains("waharoa 0.1.0"));
+        assert!(findings[0].detail.contains("registry.npmjs.org"));
+    }
+
+    /// The address the proxy writes into artifact URLs is what lockfiles record, so a
+    /// mismatch with the address clients actually use is worth saying out loud.
+    #[test]
+    fn a_proxy_answering_at_a_different_address_than_it_advertises_warns() {
+        let mut h = health();
+        h.public_base = Some("https://npm.corp.example".into());
+        let findings = check_proxy(Some(&h), PROXY);
+        assert_eq!(worst(&findings), Severity::Warn);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.detail.contains("npm.corp.example")),
+            "{findings:?}"
+        );
+
+        h.public_base = None;
+        assert!(
+            check_proxy(Some(&h), PROXY)
+                .iter()
+                .any(|f| f.detail.contains("whatever Host")),
+        );
+    }
+
+    /// Settings that decide what gets examined are reported, because a proxy that is
+    /// running and not looking is the failure this whole command exists to surface.
+    #[test]
+    fn settings_that_reduce_what_is_examined_are_reported() {
+        let mut h = health();
+        h.rewrite_artifacts = false;
+        h.refuse_unservable = false;
+        h.allowed_direct_origins = vec!["https://cdn.example".into()];
+
+        let findings = check_proxy(Some(&h), PROXY);
+        assert_eq!(worst(&findings), Severity::Warn);
+        let text: String = findings.iter().map(|f| f.detail.clone()).collect();
+        assert!(text.contains("pnpm and yarn"), "{text}");
+        assert!(text.contains("rather than removed"), "{text}");
+        assert!(text.contains("cdn.example"), "{text}");
     }
 
     #[test]

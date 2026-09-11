@@ -780,8 +780,25 @@ implementations.
             registry at all (§7).
       - [x] An unknown subcommand exits 2 rather than falling through to the proxy, and
             `waharoa help` lists every environment variable.
-      - [ ] Not checked yet: whether the proxy is reachable and answering. Doctor is
-            client-side only, so it reports what is configured rather than what works.
+      - [x] Whether the proxy is reachable and answering. `GET /-/waharoa/health` is
+            answered by the proxy itself rather than forwarded, so a client can tell a
+            waharoa from any other registry.
+            - [x] Under `/-/`, the registry's own namespace, where a package name can
+                  never live. Everything else under it still goes upstream.
+            - [x] It reports the settings that decide what gets examined: the public
+                  base, artifact rewriting, the refusal, the served and allowed-direct
+                  origins, and what the store holds. Doctor warns on each one that
+                  reduces coverage, so a proxy that is running and not looking is
+                  reported rather than passing.
+            - [x] A mismatch between the address the proxy writes into artifact URLs and
+                  the address doctor reached it on is a warning, because the first is
+                  what lockfiles record.
+            - [x] No secrets: the CA bundle, any upstream credentials and the throwaway
+                  block are all absent.
+            - [x] **`reqwest::blocking` cannot be used here.** It builds a second tokio
+                  runtime, and dropping one inside an async context panics. Doctor runs
+                  in the same runtime as everything else, so the fetch is async and the
+                  `blocking` feature is not enabled.
 - [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
 
 **Exit:** a real `npm install` completes through the proxy with the full transitive

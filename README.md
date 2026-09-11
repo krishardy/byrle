@@ -161,9 +161,14 @@ whether the proxy is running but whether anything is using it.
 waharoa doctor
 ```
 
-reports what each installed package manager is configured to talk to, what the lockfiles
+reports whether the proxy is there and answering, what each installed package manager is
+configured to talk to, what the lockfiles
 in the current directory record about where their artifacts came from, and what would
 silently skip the proxy. It exits non-zero when installs are not going through it.
+
+The proxy answers `GET /-/waharoa/health` for itself, which reports what it forwards to
+and which settings are reducing what it examines. That is what `doctor` reads, and it is
+worth curling directly when a client says something unexpected.
 
 To see what the proxy does to a request rather than whether it is being used:
 

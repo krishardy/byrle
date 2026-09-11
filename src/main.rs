@@ -106,7 +106,28 @@ fn cache_entries(client: &str) -> Option<u64> {
     Some(doctor::count_files(&index))
 }
 
-fn run_doctor() -> std::process::ExitCode {
+/// Ask the proxy what it is. `None` when nothing answers, which is itself the finding.
+///
+/// Async, not `reqwest::blocking`: doctor runs inside the same tokio runtime as
+/// everything else, and a blocking client builds a second runtime, which panics when it
+/// is dropped in an async context.
+///
+/// The timeout is short because doctor is a command someone is waiting on, and a proxy
+/// that takes seconds to say hello is not one that is working.
+async fn fetch_health(proxy: &str) -> Option<waharoa::proxy::Health> {
+    let url = format!("{proxy}{}", waharoa::proxy::HEALTH_PATH);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?;
+    let response = client.get(url).send().await.ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    serde_json::from_str(&response.text().await.ok()?).ok()
+}
+
+async fn run_doctor() -> std::process::ExitCode {
     let listen = env_or("WAHAROA_LISTEN", "127.0.0.1:8080");
     let public = std::env::var("WAHAROA_PUBLIC_URL")
         .ok()
@@ -122,6 +143,15 @@ fn run_doctor() -> std::process::ExitCode {
     println!();
 
     let mut findings = Vec::new();
+
+    // Whether the thing at the other end is there at all, and what it says it does.
+    // Everything after this reads client configuration, which can be perfect while
+    // nothing is listening.
+    findings.extend(doctor::check_proxy(
+        fetch_health(&proxy).await.as_ref(),
+        &proxy,
+    ));
+
     for client in ["npm", "pnpm", "yarn"] {
         findings.push(doctor::check_registry(
             client,
@@ -175,7 +205,7 @@ async fn main() -> std::process::ExitCode {
     // nosemgrep: rust.lang.security.args.args
     match std::env::args().nth(1).as_deref() {
         None => {}
-        Some("doctor") => return run_doctor(),
+        Some("doctor") => return run_doctor().await,
         Some("help" | "-h" | "--help") => {
             print!("{USAGE}");
             return std::process::ExitCode::SUCCESS;

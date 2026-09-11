@@ -66,6 +66,7 @@ use axum::{
 };
 use bytes::{Bytes, BytesMut};
 use futures_util::{StreamExt, stream};
+use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -86,6 +87,45 @@ use tracing::{debug, error, info, warn};
 /// npm's own request parallelism held a six-package install with 165 packuments to a
 /// 141 MB peak.
 pub const DEFAULT_MAX_CONCURRENT_PACKUMENTS: usize = 8;
+
+/// The path the proxy answers for itself rather than forwarding.
+///
+/// Under `/-/`, which is the registry's own namespace and where a package name can never
+/// live, so it cannot collide with anything a client asks for.
+pub const HEALTH_PATH: &str = "/-/waharoa/health";
+
+/// What the proxy is, and what it is configured to do.
+///
+/// Served at [`HEALTH_PATH`] so a client can tell a waharoa from any other registry, and
+/// so the settings that decide what gets examined are visible without reading the
+/// environment of a running process. `waharoa doctor` reads it.
+///
+/// Deliberately no secrets: the CA bundle's contents, the upstream's credentials if it
+/// ever has any, and the throwaway block are all absent. What is here is what an operator
+/// needs to answer "is this thing doing what I think".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Health {
+    /// Always "waharoa", so a response from something else is recognisable as such.
+    pub service: String,
+    pub version: String,
+    /// The registry this forwards to.
+    pub upstream: String,
+    /// The address written into artifact URLs, when one is configured. `None` means each
+    /// request's own `Host` is used, and that address is what lockfiles record.
+    pub public_base: Option<String>,
+    /// Whether artifact URLs are pointed at this proxy. With this off, pnpm and yarn
+    /// fetch artifacts without the proxy seeing them.
+    pub rewrite_artifacts: bool,
+    /// Whether versions whose artifacts this proxy cannot serve are removed.
+    pub refuse_unservable: bool,
+    /// Origins whose artifacts this proxy serves.
+    pub served_origins: Vec<String>,
+    /// Origins it does not serve and permits a client to fetch directly.
+    pub allowed_direct_origins: Vec<String>,
+    /// Packuments currently held, and the records in them.
+    pub packuments_held: usize,
+    pub records_held: usize,
+}
 
 /// What reading a packument body produced.
 #[derive(Debug)]
@@ -212,6 +252,26 @@ impl Proxy {
 
     pub fn origin_policy(&self) -> &OriginPolicy {
         &self.origins
+    }
+
+    /// What this proxy is and how it is configured. Served at [`HEALTH_PATH`].
+    pub fn health(&self) -> Health {
+        let (packuments_held, records_held) = {
+            let store = self.store.lock().expect("record store lock");
+            (store.len(), store.records())
+        };
+        Health {
+            service: "waharoa".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            upstream: self.upstream.clone(),
+            public_base: self.public_base.clone(),
+            rewrite_artifacts: self.rewrite_artifacts,
+            refuse_unservable: self.refuse_unservable,
+            served_origins: self.origins.reachable().as_slice().to_vec(),
+            allowed_direct_origins: self.origins.allowed_direct().to_vec(),
+            packuments_held,
+            records_held,
+        }
     }
 
     pub fn with_artifact_rewriting(mut self, rewrite: bool) -> Self {
@@ -529,6 +589,17 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-")
         .to_string();
+
+    // Answered here rather than forwarded. `/-/` is the registry's own namespace and a
+    // package name can never live there, so this collides with nothing a client asks for.
+    if path_and_query.split('?').next() == Some(HEALTH_PATH) {
+        return (
+            StatusCode::OK,
+            [(header::CACHE_CONTROL, "no-store")],
+            axum::Json(proxy.health()),
+        )
+            .into_response();
+    }
 
     let target = npm::classify_path(&path_and_query);
 
@@ -2472,6 +2543,64 @@ mod tests {
                 .unwrap()
                 .contains("/lodash/-/lodash-4.17.21.tgz")
         );
+    }
+
+    /// The proxy answers for itself at one path, so a client can tell a waharoa from any
+    /// other registry, and the settings that decide what gets examined are visible
+    /// without reading a running process's environment.
+    #[tokio::test]
+    async fn the_health_path_is_answered_by_the_proxy_itself() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            b"{}".to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_public_base(Some("https://npm.corp.example".into()))
+                .with_origin_policy([], ["https://cdn.example"])
+                .unwrap()
+                .router(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}{HEALTH_PATH}")).await.unwrap();
+        assert_eq!(response.status(), 200);
+        let health: Health = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+
+        assert_eq!(health.service, "waharoa");
+        assert_eq!(
+            health.public_base.as_deref(),
+            Some("https://npm.corp.example")
+        );
+        assert!(health.rewrite_artifacts);
+        assert!(health.refuse_unservable);
+        assert_eq!(health.allowed_direct_origins, ["https://cdn.example"]);
+        assert!(
+            seen.lock().unwrap().paths.is_empty(),
+            "the health path must not be forwarded upstream"
+        );
+    }
+
+    /// `/-/` is the registry's own namespace, and everything else under it still goes
+    /// upstream. Only the one exact path is claimed.
+    #[tokio::test]
+    async fn other_registry_endpoints_are_still_forwarded() {
+        let (base, seen) = proxy_serving(
+            StatusCode::OK,
+            "application/json",
+            None,
+            b"{\"objects\":[]}".to_vec(),
+        )
+        .await;
+
+        for path in ["/-/v1/search?text=lodash", "/-/whoami", "/-/waharoa/other"] {
+            let response = reqwest::get(format!("{base}{path}")).await.unwrap();
+            assert_eq!(response.status(), 200, "{path}");
+        }
+        assert_eq!(seen.lock().unwrap().paths.len(), 3);
     }
 
     #[test]
