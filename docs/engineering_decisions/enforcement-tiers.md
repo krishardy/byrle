@@ -62,11 +62,10 @@ document would break an install that filtering leaves working.
 
 What it needs that does not exist yet:
 
-- **An operator-configured list of origins the proxy fronts.** Today the allowed set is
-  the configured upstream plus the default registry, hardcoded. A registry serving
-  artifacts from a CDN on a different host is plausible, so the set has to be
-  configuration. Zero of 24,852 artifact URLs measured on registry.npmjs.org were
-  off-origin, so this is about private and mirrored registries, not npmjs.org.
+- ~~An operator-configured list of origins the proxy fronts.~~ Done:
+  `WAHAROA_ARTIFACT_ORIGINS`. The upstream and the default registry are always included,
+  and only origins the operator adds are fetched from directly, so a private mirror
+  publishing registry.npmjs.org URLs still routes to the mirror.
 - **A decision on the default.** Stage 1 warns. Refusing is a policy action, so it belongs
   with the engine, and the §5 status-code rule applies: a refusal is 403 because policy
   denied it, never a 5xx.

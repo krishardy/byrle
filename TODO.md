@@ -596,11 +596,28 @@ implementations.
             we can, and hard-fail a pinned fetch of a filtered version. A package can have
             one old version on another origin and every current version on the registry;
             refusing the document would break an install that filtering leaves working.
-      - [ ] Needs an operator-configured list of origins the proxy fronts. Today the
-            allowed set is the configured upstream plus the default registry, hardcoded.
-            A registry serving artifacts from a CDN on another host is plausible. Zero of
-            24,852 artifact URLs measured on registry.npmjs.org were off-origin, so this
-            is about private and mirrored registries.
+      - [x] Operator-configured origins. `WAHAROA_ARTIFACT_ORIGINS` is a comma-separated
+            list of additional origins the proxy fronts, for a registry that publishes
+            artifacts somewhere else, a CDN in front of a private registry being the case
+            to expect. The upstream and the default registry are always included. Zero of
+            24,852 artifact URLs measured on registry.npmjs.org needed one.
+            - [x] `ReachableOrigins` is now one source of truth for two questions that
+                  must never disagree: which artifact URLs get rewritten, and which are
+                  reported as fetched directly. They were separate before, one taking a
+                  slice and the other hardcoding the default registry.
+            - [x] An origin that is not an http or https URL with a host is an error at
+                  startup rather than being dropped. An operator who names an origin and
+                  has it silently ignored would believe those artifacts are covered.
+            - [x] **The record now decides where an artifact is fetched from.** Rewriting
+                  points the client at the proxy, so the proxy has to know where that
+                  stood for. Only origins the operator added are fetched from directly:
+                  a packument naming the default registry still routes to the upstream,
+                  because a private mirror publishes registry.npmjs.org URLs and is the
+                  reason the proxy was pointed at it. Fetching from npmjs.org would go
+                  around the mirror.
+            - [x] The record lookup moved to before the request is sent, which is what
+                  plan §5 asks for anyway: the digest is known before the artifact is
+                  fetched, not after its headers arrive.
       - [ ] The refusal is 403, because policy denied it. Never a 5xx (§5).
       - [ ] The information already exists: `npm::bypassing_origin` computes it on every
             packument and logs `UNINSPECTED`. This is that warning turned into an action.

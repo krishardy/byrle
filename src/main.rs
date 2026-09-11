@@ -128,7 +128,20 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_CONCURRENT_PACKUMENTS);
 
+    // Additional origins whose artifacts this proxy serves, for a registry that publishes
+    // them somewhere else. The upstream and the default registry are always included.
+    let additional_origins: Vec<String> = std::env::var("WAHAROA_ARTIFACT_ORIGINS")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     let proxy = Proxy::new(client, upstream)
+        .with_additional_origins(additional_origins.iter().map(String::as_str))
+        // Refusing to start is right: an origin the operator named and that was quietly
+        // dropped would leave them believing those artifacts are covered.
+        .unwrap_or_else(|e| panic!("WAHAROA_ARTIFACT_ORIGINS: {e}"))
         .with_max_concurrent_packuments(max_concurrent)
         .with_blocked(blocked)
         .with_max_packument_bytes(max_packument_bytes)
@@ -140,7 +153,12 @@ async fn main() {
         .await
         .unwrap_or_else(|e| panic!("cannot bind {listen}: {e}"));
 
-    info!(listen = %listen, upstream = %proxy.upstream(), "waharoa listening");
+    info!(
+        listen = %listen,
+        upstream = %proxy.upstream(),
+        artifact_origins = ?proxy.reachable_origins().as_slice(),
+        "waharoa listening"
+    );
     info!("point npm at it with:  npm config set registry http://{listen}/");
 
     axum::serve(listener, proxy.router())
