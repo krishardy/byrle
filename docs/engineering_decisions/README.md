@@ -26,6 +26,7 @@ code, and the file names where.
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |
 | [Enforcement tiers](enforcement-tiers.md) | Open question |
+| [Terminating TLS: pre-issued certificates](terminating-tls-certificates.md) | Decided, not implemented |
 | [Stage structure](stage-structure.md) | Staging |
 | [Fetch path branching](fetch-path-branching.md) | Staging |
 | [Project name: waharoa](project-name-waharoa.md) | Staging, cultural consultation |

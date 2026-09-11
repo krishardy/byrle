@@ -29,6 +29,9 @@ an enterprise anti-bypass feature rather than a starting point.
 
 ## See also
 
+- [terminating-tls-certificates](terminating-tls-certificates.md) for how the terminating
+  mode holds certificates: pre-issued leaves for the known registry domains, no CA key on
+  the proxy.
 - [enforcement-tiers](enforcement-tiers.md) for what terminating mode buys over the
   tiers that need no CA, and for what to build before it. A hosts-file or DNS override
   needs TLS termination for the same reason a forward proxy does, so it is the same

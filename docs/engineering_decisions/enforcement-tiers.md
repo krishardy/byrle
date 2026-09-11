@@ -31,7 +31,7 @@ right on every machine.
 | 1 | Registry config | none | pnpm and yarn artifacts |
 | 2 | Artifact URL rewriting | none | `dist.tarball` on an origin the proxy does not front |
 | 3 | Refuse artifacts on unconfigured origins (**done**) | none | clients that ignore the registry config |
-| 4 | hosts / DNS override plus a CA | root, trust-store changes | hosts not listed |
+| 4 | hosts / DNS override plus trusted certificates | root, trust-store changes | hosts not listed |
 | 5 | Egress control, no direct outbound | network control | nothing |
 
 Tier 1 alone was measured as insufficient: installing `express`, pnpm sent 66 packuments
@@ -105,11 +105,13 @@ hold.
 
 ## Open questions
 
-**A name-constrained CA.** An X.509 CA constrained to the registry hostnames can only
-impersonate the registry, not the whole internet, which bounds what a compromise of the
-proxy's key is worth. OpenSSL and NSS honour name constraints; macOS and Windows have
-historically been inconsistent. Node uses its own OpenSSL, so it is probably fine, and
-that needs verifying rather than assuming before any CA is shipped.
+~~A name-constrained CA.~~ Settled, and better than the question assumed: the registry
+domains are known in advance, so the proxy holds **pre-issued leaf certificates** for them
+and no CA key at all. A leaf key signs nothing, and ordinary chain validation needs no
+name-constraint support from the verifier, so the assumption that needed testing leaves
+the recommended path. Name constraints still apply to the on-the-fly minting onramp, which
+is where an untested assumption belongs. See
+[terminating-tls-certificates](terminating-tls-certificates.md).
 
 **Whether `HTTPS_PROXY` without termination is worth anything.** With CONNECT and no TLS
 termination the proxy sees a hostname and nothing else: no package, no version. Useless

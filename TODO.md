@@ -652,11 +652,37 @@ implementations.
       - [ ] A hosts-file or DNS override needs TLS termination, so it is decision #3
             wearing different clothes rather than a separate option. `dist.tarball` is
             always https, so anything intercepting the URL as written needs a CA.
-      - [ ] `[!]` **Verify name-constrained CA support before shipping any CA.** A CA
-            constrained to the registry hostnames can only impersonate the registry, which
-            bounds what a compromise of the proxy's key is worth. OpenSSL and NSS honour
-            name constraints; macOS and Windows have historically been inconsistent. Node
-            uses its own OpenSSL. Needs testing, not assuming.
+      - [x] **Settled: pre-issued leaf certificates, no CA key on the proxy.** The
+            registry domains are known in advance, so certificates for them are issued out
+            of band by whatever CA the organisation already has trusted, and only the
+            leaves and their keys go on the proxy. Better than a name-constrained CA on
+            two counts: a leaf key signs nothing, and ordinary chain validation needs no
+            name-constraint support from the verifier, so the assumption that needed
+            testing leaves the recommended path.
+            See `docs/engineering_decisions/terminating-tls-certificates.md`.
+      - [ ] Implement it. Per-ecosystem configuration naming the certificate and key
+            files, with the domains read from each certificate's SANs rather than
+            configured separately, so the two cannot disagree and startup can report
+            exactly which names the proxy answers for. rustls resolves by SNI.
+      - [ ] **Report incomplete coverage at startup.** The domains are sets, not one per
+            ecosystem: PyPI serves metadata on `pypi.org` and artifacts on
+            `files.pythonhosted.org` (verified Sept 2026), and crates.io uses `crates.io`,
+            `index.crates.io` and `static.crates.io`. A certificate for the metadata host
+            and not the artifact host reproduces the pnpm failure already measured, seeing
+            the package and never the bytes.
+      - [ ] In this mode artifact URL rewriting is unnecessary and
+            `WAHAROA_REWRITE_ARTIFACTS=0` is correct: `dist.tarball` already names a host
+            the proxy answers for, so lockfiles keep the origin registry's URLs and the
+            `npm ci` failure measured earlier does not arise.
+      - [ ] `[!]` Onramp: mint certificates on the fly from a CA key held by the proxy.
+            Less secure, and the only place name constraints matter, which is where an
+            assumption that has to be tested belongs. **Verify name-constraint support
+            before shipping this**: OpenSSL and NSS honour them, macOS and Windows have
+            historically been inconsistent.
+      - [ ] Leaf keys on the proxy are worth what a compromise of them buys: impersonating
+            those domains to anything on a machine trusting the CA, browsers included.
+            Check file permissions at startup, never log them, and make loading from a
+            secrets manager possible rather than requiring files on disk.
       - [ ] Node has three trust stores to satisfy: the OS store, `NODE_EXTRA_CA_CERTS`,
             and npm's `cafile` and `strict-ssl`.
       - [ ] `HTTPS_PROXY` without termination shows a hostname and nothing else: no
