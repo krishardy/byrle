@@ -7,7 +7,11 @@
 //!
 //! Tarballs stream straight through, hashed on the way past. Packuments are buffered,
 //! decoded, normalised, and then **rewritten**: every artifact URL the proxy can serve is
-//! pointed at the proxy itself, and the document is re-serialised and re-compressed.
+//! pointed at the proxy itself, and the document is re-compressed.
+//!
+//! The rewrite replaces URLs in the text rather than rebuilding the document, so what the
+//! client receives is byte-identical to the upstream's apart from those URLs. See
+//! [`crate::npm::rewrite_artifact_origins`] for why, and what it costs.
 //!
 //! The rewrite exists because clients disagree about `dist.tarball`. npm rewrites it to
 //! the configured registry; pnpm 10 and yarn 1 use it verbatim and fetch from whatever
@@ -28,8 +32,7 @@
 //! has to decide before forwarding, so the shape does not change, and a background task
 //! would make the smoke assertions racy. Measured cost, logged as `parse_ms`: 2 ms for
 //! lodash (117 versions), 7 ms for @babel/core (230), 252 ms for the full typescript
-//! packument (3,822 versions, 15.7 MB decoded). The rewrite adds roughly 64 ms on that
-//! same document in a release build: 36 ms to parse, 10 ms to serialise, 18 ms to gzip.
+//! packument (3,822 versions, 15.7 MB decoded).
 //!
 //! # When a packument is forwarded unrewritten
 //!
@@ -773,6 +776,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     };
 
     // Nothing to normalise when decoding failed; it was logged above.
+    let mut normalized: Option<Box<NormalizedPackument>> = None;
     match decoded.as_deref().map(|d| inspect_decoded(d, detail)) {
         None => {}
         Some(PackumentOutcome::Normalized(p)) => {
@@ -815,6 +819,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             held_records,
             "packument normalized"
             );
+            normalized = Some(p);
         }
         Some(PackumentOutcome::Unreadable(e)) => {
             warn!(path = %path_and_query, error = %e, "UNINSPECTED: packument did not normalize")
@@ -826,12 +831,16 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
     // configured registry, pnpm 10 and yarn 1 use it verbatim. Pointing it here makes
     // them behave alike.
-    let forwarded = match decoded.as_deref().filter(|_| rewriting) {
-        Some(decoded) => {
+    //
+    // It needs the records, so a document that did not normalise is not rewritten either.
+    // That is the honest outcome: without records there is nothing to gate on anyway, and
+    // it is already logged as UNINSPECTED above.
+    let forwarded = match (decoded.as_deref(), normalized.as_deref()) {
+        (Some(decoded), Some(packument)) if rewriting => {
             let base = rewrite_base.as_deref().expect("rewriting implies a base");
-            rewrite_packument(decoded, base, &proxy.upstream, &path_and_query)
+            rewrite_packument(decoded, packument, base, &proxy.upstream, &path_and_query)
         }
-        None => None,
+        _ => None,
     };
 
     let body = match forwarded {
@@ -879,9 +888,19 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 ///
 /// Returns `None` when the document is forwarded as it came, which always means some
 /// artifacts for this package will be fetched without the proxy seeing them.
-fn rewrite_packument(decoded: &[u8], base: &str, upstream: &str, path: &str) -> Option<Vec<u8>> {
+fn rewrite_packument(
+    decoded: &[u8],
+    packument: &NormalizedPackument,
+    base: &str,
+    upstream: &str,
+    path: &str,
+) -> Option<Vec<u8>> {
     let reachable = [upstream, npm::DEFAULT_REGISTRY];
-    match npm::rewrite_artifact_origins(decoded, &reachable, base) {
+    let artifacts = packument
+        .records
+        .iter()
+        .map(|record| record.artifact.url.as_str());
+    match npm::rewrite_artifact_origins(decoded, artifacts, &reachable, base) {
         Ok(rewritten) => {
             if rewritten.left_alone > 0 {
                 // Every artifact being off-origin is not the same exposure as some of
