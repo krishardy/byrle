@@ -96,16 +96,13 @@ pub fn inspect_packument(
     limit: usize,
 ) -> PackumentOutcome {
     match decode_for_parsing(body, content_encoding, limit) {
-        Ok(decoded) => inspect_decoded(Some(&decoded), detail),
+        Ok(decoded) => inspect_decoded(&decoded, detail),
         Err(e) => PackumentOutcome::Undecodable(e),
     }
 }
 
-/// Normalise an already decoded body. `None` means decoding failed earlier.
-fn inspect_decoded(decoded: Option<&[u8]>, detail: PackumentDetail) -> PackumentOutcome {
-    let Some(decoded) = decoded else {
-        return PackumentOutcome::Undecodable(DecodeError::TooLarge(0));
-    };
+/// Normalise an already decoded body.
+fn inspect_decoded(decoded: &[u8], detail: PackumentDetail) -> PackumentOutcome {
     match npm::normalize_packument(decoded, detail) {
         Ok(p) => PackumentOutcome::Normalized(Box::new(p)),
         Err(e) => PackumentOutcome::Unreadable(e),
@@ -722,8 +719,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         }
     };
 
-    match inspect_decoded(decoded.as_deref(), detail) {
-        PackumentOutcome::Normalized(p) => {
+    // Nothing to normalise when decoding failed; it was logged above.
+    match decoded.as_deref().map(|d| inspect_decoded(d, detail)) {
+        None => {}
+        Some(PackumentOutcome::Normalized(p)) => {
             // Artifacts on an origin the proxy does not front are fetched directly by
             // the client, so nothing about them is observed: not the digest check below,
             // not the policy engine later. The packument is the only place this is
@@ -764,10 +763,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             "packument normalized"
             );
         }
-        PackumentOutcome::Unreadable(e) => {
+        Some(PackumentOutcome::Unreadable(e)) => {
             warn!(path = %path_and_query, error = %e, "UNINSPECTED: packument did not normalize")
         }
-        PackumentOutcome::Undecodable(_) => {}
+        Some(PackumentOutcome::Undecodable(_)) => {}
     }
 
     // The rewrite. Every client in the npm ecosystem has to fetch artifacts through the
@@ -832,11 +831,23 @@ fn rewrite_packument(decoded: &[u8], base: &str, upstream: &str, path: &str) -> 
     match npm::rewrite_artifact_origins(decoded, &reachable, base) {
         Ok(rewritten) => {
             if rewritten.left_alone > 0 {
-                warn!(
-                    path = %path,
-                    versions = rewritten.left_alone,
-                    "UNINSPECTED: artifacts left on an origin the proxy does not front"
-                );
+                // Every artifact being off-origin is not the same exposure as some of
+                // them being off-origin, and it is the shape someone would construct.
+                if rewritten.rewritten == 0 {
+                    warn!(
+                        path = %path,
+                        versions = rewritten.left_alone,
+                        "UNINSPECTED: every artifact in this packument is on an origin the \
+                         proxy does not front"
+                    );
+                } else {
+                    warn!(
+                        path = %path,
+                        versions = rewritten.left_alone,
+                        rewritten = rewritten.rewritten,
+                        "UNINSPECTED: some artifacts left on an origin the proxy does not front"
+                    );
+                }
             }
             if rewritten.rewritten == 0 {
                 return None;

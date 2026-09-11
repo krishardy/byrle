@@ -78,10 +78,16 @@ before, not less.
 
 For npm and yarn the address is recorded, so it has to be a stable name that everyone
 consuming the lockfile can reach. `WAHAROA_PUBLIC_URL` pins it; otherwise the request's
-own `Host` is used. Two consequences, and they are the same fact seen from two sides: a
-lockfile committed from behind the proxy cannot be installed without the proxy, which
-means CI cannot silently skip enforcement, and the proxy becomes something CI depends on
-being reachable.
+own `Host` is used, which on a developer machine is whatever they typed.
+
+That address becomes load-bearing. Measured: a lockfile written through a proxy on one
+port, then `npm ci` against a proxy on another, fails outright. npm goes to the address in
+`resolved` and does not fall back to the registry given on the command line. So the proxy
+warns at startup when `WAHAROA_PUBLIC_URL` is unset.
+
+Two consequences, the same fact seen from two sides: a lockfile committed from behind the
+proxy cannot be installed without the proxy, which means CI cannot silently skip
+enforcement, and the proxy becomes something CI depends on being reachable.
 
 ## Why not rewrite artifacts on other origins
 

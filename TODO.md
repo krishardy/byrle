@@ -503,6 +503,14 @@ implementations.
             - [x] Lockfiles, measured: npm and yarn record the proxy address; pnpm omits
                   the URL and derives it from the configured registry, so its lockfiles
                   become registry-independent. `WAHAROA_PUBLIC_URL` pins the address.
+            - [x] **The recorded address is load-bearing.** A lockfile written through a
+                  proxy on one port, then `npm ci` against a proxy on another, fails
+                  outright: npm goes to the address in `resolved` and does not fall back
+                  to the registry given on the command line. The proxy warns at startup
+                  when `WAHAROA_PUBLIC_URL` is unset, and the README says so.
+            - [ ] `waharoa doctor` should check that the configured public URL resolves
+                  and matches what lockfiles in the project record. This is the failure
+                  an operator will actually hit.
             - [x] `make smoke-clients` asserts every client fetches and verifies
                   artifacts. Checked that it bites with `WAHAROA_REWRITE_ARTIFACTS=0`.
       - [ ] Forwarding a packument unrewritten now means every artifact for that package
