@@ -286,11 +286,26 @@ lookups stay uniform across ecosystems at no cost.
 
 | Ecosystem | Mechanism | Notes |
 |---|---|---|
-| npm | registry URL | Simple. Per-package metadata, resolve-as-you-go. |
+| npm | registry URL | Simple. Per-package metadata, resolve-as-you-go. ✅ Verified Stage 1: pass-through only, no packument rewriting needed. See below. |
 | PyPI | `--index-url`, PEP 503 | Backtracking resolver fetches metadata for versions it will never install. Different traffic shape. |
 | cargo | source replacement, sparse index | Simplest protocol of the three. |
 | Go | `GOPROXY` | Immutable modules + checksum DB already solve tamper-evidence. Low marginal value. |
 | Maven | mirror in `settings.xml` | Largely client-side resolution. Slower publish cadence. |
+
+**npm needs no packument rewriting (measured Stage 1, Sept 2026, npm 9.9.4).** This was
+the open question that decided whether we are a pass-through or a rewriting proxy, and it
+is not obvious from the data: `dist.tarball` in a packument is an absolute
+`https://registry.npmjs.org/...` URL, so the naive reading is that npm would fetch
+tarballs direct from upstream and we would never see them. It does not. npm resolves
+tarballs against the *configured* registry and ignores the host in `dist.tarball`, so
+every tarball request arrives at the proxy unmodified.
+
+Measured on `npm install express`: 66 packages installed, and every one of them was
+fetched through the proxy at both the metadata and the tarball leg, with nothing going
+direct. This is worth more than convenience. Rewriting bodies would mean buffering and
+re-serializing every packument, which collides with the streaming fetch path below, and
+it would make lockfiles environment-specific. Verify this per client rather than assuming
+it: it is npm's behavior, not registry protocol, and yarn and pnpm are still untested.
 
 ### Rollout order and rationale
 
@@ -803,8 +818,18 @@ single point of failure.
 **Known bypass vectors — must be stated honestly in the README:**
 
 - **Reverse proxy mode is advisory, not mandatory.** A developer who resets their
-  registry URL defeats it entirely. Mitigations are `waharoa doctor` (verifies effective
-  client config) and CI lockfile verification that all resolved URLs point at the proxy.
+  registry URL defeats it entirely. The mitigation is `waharoa doctor`, which verifies
+  effective client config.
+  - ⚠ **The lockfile-verification mitigation does not work for npm. Measured Stage 1,
+    Sept 2026, npm 9.9.4.** This previously read "CI lockfile verification that all
+    resolved URLs point at the proxy." npm normalizes `resolved` in `package-lock.json`
+    back to the canonical `https://registry.npmjs.org/...` regardless of the configured
+    registry, confirmed both with `--registry` and with a project `.npmrc`. So a lockfile
+    produced through the proxy is byte-identical to one produced without it, and cannot
+    evidence that the proxy was used. The upside is that lockfiles stay portable and we
+    never have to rewrite URLs; the cost is that this anti-bypass control has to come
+    from somewhere else. Re-check on npm 12, and per-client when yarn and pnpm are
+    tested: this is client behavior, not protocol.
 - **Non-terminal install paths.** IDE extensions, browser extensions, and MCP servers
   install packages without going through a configured package manager. Aikido raises
   this specifically in the context of AI agents. A registry proxy cannot see any of it.
