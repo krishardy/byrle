@@ -12,3 +12,4 @@ pub mod npm;
 pub mod proxy;
 pub mod record;
 pub mod store;
+pub mod tls;

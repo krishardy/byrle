@@ -19,9 +19,13 @@ an enterprise anti-bypass feature rather than a starting point.
   `rustls-platform-verifier`, which reqwest 0.13 pulls in by default.
 - Reverse proxy mode is advisory: a developer who resets their registry URL defeats it.
   Plan §7 records this as a known bypass vector.
-- Custom CA bundle support for the upstream connection is not implemented as of
-  Sept 2026. Private registries and TLS-inspecting corporate middleboxes need it.
-  Tracked in TODO.md.
+- Custom CA bundle support for the upstream connection is implemented (`src/tls.rs`).
+  `WAHAROA_CA_BUNDLE` merges a PEM bundle with the platform roots, for a private registry
+  with an internal CA or a TLS-inspecting corporate middlebox.
+  `WAHAROA_CA_BUNDLE_EXCLUSIVE=1` trusts only the bundle and drops every public root,
+  which pins the upstream so a compromise of any public CA cannot impersonate the
+  registry. Verified against registry.npmjs.org with a self-signed CA: merged it connects,
+  exclusive it fails at the handshake.
 
 ## See also
 

@@ -128,13 +128,33 @@ implementations.
       reqwest upstream, bodies streamed through verbatim with `Content-Encoding` intact
       (reqwest's `gzip` feature is deliberately off, so nothing is decompressed behind our
       back). Upstream failure maps to 502, per §5. Run it with `make run`.
-- [~] rustls + platform verifier for the **upstream** connection. Verifier half **done**:
+- [x] rustls + platform verifier for the **upstream** connection, with a custom CA bundle.
       reqwest 0.13's default `rustls` feature pulls `rustls-platform-verifier` 0.7, so the
       upstream leg validates against the OS trust store. Inbound stays plain HTTP on
       loopback, per decision #3.
-      - [ ] **Custom CA bundle is NOT implemented.** Needed for private registries and for
-            corporate TLS-inspecting middleboxes, which would otherwise fail to verify.
-            `Client::add_root_certificate`, plus config to point at a bundle.
+      - [x] `WAHAROA_CA_BUNDLE` points at a PEM bundle, for a private registry with an
+            internal CA or a corporate TLS-inspecting middlebox. `src/tls.rs`.
+            `add_root_certificate` is deprecated in reqwest 0.13.5; the replacements are
+            `tls_certs_merge` and `tls_certs_only`.
+      - [x] `WAHAROA_CA_BUNDLE_EXCLUSIVE=1` trusts **only** the bundle, dropping every
+            public root. Worth having on its own terms: it pins the upstream, so a
+            compromise of any of the hundreds of public CAs cannot be used to impersonate
+            the registry. Verified with a self-signed CA against registry.npmjs.org:
+            merged the request succeeds, exclusive it fails at the handshake and the proxy
+            answers 502, which is the right code since the upstream is unreachable.
+      - [x] Every misconfiguration refuses to start rather than falling back to the
+            platform roots without saying so: a missing file, a file with no certificates,
+            and a bundle the TLS backend rejects. All three name the file.
+      - [x] **Finding: a `CERTIFICATE` block whose base64 decodes to something that is not
+            a certificate parses cleanly.** `from_pem_bundle` reports one certificate and
+            the failure only appears when the client is built, where it would otherwise
+            read as "failed to build HTTP client" with no mention of the file.
+            `tls::build` maps it to an error naming the bundle.
+      - [x] **Finding: an empty bundle parses as zero certificates rather than failing.**
+            So does a file containing only a private key, which is the likely mistake.
+            Both would fail quietly: merging nothing changes nothing, and trusting nothing
+            exclusively rejects every connection at the handshake, which reads as a
+            network fault. `TrustError::Empty` refuses both.
 - [x] Serve `npm install lodash` successfully through the proxy. Covered by `make smoke-npm`.
 - [x] Block one hardcoded package name with HTTP 403, proving interception. Throwaway, and
       kept deliberately awkward: it is env-only (`WAHAROA_BLOCK`), with no config file
