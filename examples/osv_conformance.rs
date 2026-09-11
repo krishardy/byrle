@@ -15,7 +15,9 @@ fn main() {
     // deriving identity from argv[0]. This is a developer tool reading an input file
     // path the developer just typed, and nothing downstream is a trust decision.
     // nosemgrep: rust.lang.security.args.args
-    let path = std::env::args().nth(1).expect("usage: osv_conformance <pairs.tsv>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: osv_conformance <pairs.tsv>");
     let data = std::fs::read_to_string(&path).expect("cannot read pairs file");
 
     let (mut checked, mut mismatched, mut unparseable) = (0u64, 0u64, 0u64);

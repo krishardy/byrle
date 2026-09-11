@@ -24,6 +24,16 @@ else
     cargo install cargo-outdated --locked
 fi
 
+echo "==> cargo-llvm-cov (unit test coverage, used by 'make coverage')"
+if cargo llvm-cov --version >/dev/null 2>&1; then
+    echo "    already installed"
+else
+    # It reads the instrumentation rustc emits, so the matching llvm-tools component
+    # has to be there as well.
+    rustup component add llvm-tools-preview 2>&1 | sed 's/^/    /'
+    cargo install cargo-llvm-cov --locked
+fi
+
 echo "==> trufflehog (credential scanning, used by 'make sast')"
 if need trufflehog; then
     echo "    found $(trufflehog --version 2>&1 | head -1)"

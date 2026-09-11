@@ -13,6 +13,14 @@ bytes = "1.12.1"
 jiff = "0.2.35"
 purl = "0.1.6"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[lints.rust]
+# `coverage` is set by cargo-llvm-cov, which `make coverage` runs. Declared so the
+# network- and corpus-dependent tests can be compiled out of a coverage build without
+# tripping the unexpected-cfg lint.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

@@ -107,6 +107,7 @@ Items that I've added that are not stage-bound.
    than a script.
    Verified: each target alone, `make sast` running both, fail-fast skipping trufflehog
    when semgrep fails, and `make -k sast` running both anyway.
+7. In the policy file sample, npm install_scripts setting would be set per package, not set for the entire ecosystem.
 
 ## Stage 1 — Pass-through proxy (transport)
 
@@ -172,8 +173,9 @@ implementations.
       worse failure. But it is why `make check-deps` is not clean under
       `CHECK_DEPS_STRICT=1` today. Revisit if it becomes a real advisory; the swap path
       is the same one-line change described under the identity item.
-- [ ] Feed the identity type into the proxy. It is built and validated but nothing calls
-      it yet; the normalizer below is what wires it in.
+- [ ] Feed the identity type into the proxy. `src/npm.rs` now derives identity from the
+      packument's own `name`, but `src/main.rs` still does not parse bodies, so nothing
+      on the request path uses it yet.
 - [x] Common package record schema. `src/record.rs`: `PackageRecord`, carrying identity
       (a `PackageRef`), publish time, maintainers, repository, has-install-scripts and
       the script bodies, provenance, and the artifact with its digests. Types only; the
@@ -193,16 +195,77 @@ implementations.
       - [x] `has_install_scripts` is a plain `bool`, not an `Option`. Abbreviated sets
             `hasInstallScript: true` and omits the key otherwise; the full packument
             never carries that key and needs `scripts` read for preinstall/install/
-            postinstall. Verified equivalent across 860 version pairs, no disagreement.
+            postinstall. Verified equivalent across 24,852 version pairs from 47
+            packages, no disagreement.
       - [x] `dist.shasum` (SHA-1) is a separate field from `dist.integrity` (SRI
             sha512), not an entry in a shared digest list. SHA-1 is collision-broken and
             should not be reachable by code that thinks it is handling the strong one.
-      - [ ] `repository` is polymorphic in npm, an object or a shorthand string. The
-            normalizer must hand-write that `Deserialize`; `#[serde(untagged)]` silently
-            defeats unknown-field rejection (plan §5).
-- [ ] `[!]` npm transport + normalizer, written **concretely** — no adapter abstraction
-      yet. Extraction deferred to Stage 3, where PyPI gives a second shape to design
-      against. An interface designed against one caller gets it wrong.
+      - [x] `repository` is polymorphic in npm, an object or a shorthand string. The
+            normalizer hand-writes that `Deserialize` (`deserialize_any` +
+            `visit_str`/`visit_map`); `#[serde(untagged)]` silently defeats
+            unknown-field rejection (plan §5). The string form is rare and real: 5 of
+            24,852 versions, `bower@1.8.11` through `1.8.14` and `rimraf@1.0.0`.
+            `Repository` also gained a `directory` field, which monorepo packages set
+            (`@babel/traverse` reports `packages/babel-traverse`) and source diffing
+            needs to compare the right tree.
+- [x] npm transport + normalizer, written concretely. `src/npm.rs`: private wire types
+      mirroring npm's JSON, `normalize_packument()` into `Vec<PackageRecord>`, and a
+      `Client` that fetches either document from a registry. No adapter abstraction, per
+      the note below.
+      - [x] Unknown fields are **ignored** here and rejected in the policy loader. A
+            registry adding a field must never break an install; a typo in an operator's
+            policy must never disable a rule. Both are deliberate and stated in the
+            module docs so neither gets "fixed" into the other.
+      - [x] Versions that cannot be normalized land in `NormalizedPackument::skipped`
+            with a reason rather than being dropped. A version that disappears between
+            the registry and the policy engine is a version nothing gates.
+      - [x] Three error kinds kept separate: `FetchError::Transport`,
+            `FetchError::Status` and `NormalizeError`. A document shape we failed to
+            model is our gap, not an upstream outage, so it must not become a 502.
+      - [x] **Finding: `dist.integrity` is not universal.** Two of 24,852 versions lack
+            it, both published in 2012 (`event-stream@0.9.1`, `vue@0.8.6`), leaving
+            collision-broken SHA-1 as the only digest npm offers. `Artifact::integrity`
+            stays `Option` and the fetch path has to handle a version with no strong
+            digest. Every version did carry `dist.tarball` and `dist.shasum`.
+      - [x] **Finding: `hasInstallScript` is never present and `false`.** 901 of 24,852
+            versions carry it, all `true`; absence means no install script. The
+            abbreviated and full documents agreed on `has_install_scripts` across all
+            24,852 pairs, which raises the earlier 860-pair check by 29x.
+      - [x] Corpus check in the tests, gated behind `WAHAROA_NPM_CORPUS` /
+            `WAHAROA_NPM_CORPUS_FULL`, plus two `#[ignore]`d live tests against
+            registry.npmjs.org covering the scoped-name URL round trip and the 404 path.
+      - [ ] Wire it into the proxy. `src/main.rs` still streams every body verbatim and
+            parses nothing, so the Stage 1 exit criterion is not yet falsifiable. This
+            needs the buffering decision: forward the original bytes untouched while
+            decompressing a copy to parse, which pulls in `flate2` and a rule for which
+            responses get buffered. Its own change, alongside the §5 fetch path.
+      - [ ] Range resolution still lives nowhere. `dist-tags.latest` is kept as a string
+            and deliberately not resolved: the lodash fixture tags `4.18.1` while the
+            document carries only `4.17.21`, so a tag can name a version the `versions`
+            map omits. See the Stage 2 item.
+- [x] Unit test coverage tooling, for the CLAUDE.md 90% floor. `make coverage` runs
+      cargo-llvm-cov with `--fail-under-lines/-functions/-regions 90`; `COVERAGE_FLOOR`
+      overrides it. The library is at 98.6% lines, 97.6% regions.
+      - [x] The network and corpus tests are compiled out under `cfg(coverage)`, which
+            cargo-llvm-cov sets. They do not run in a coverage build, and counting the
+            body of a test that cannot run reports a gap that is not one. `cargo test`
+            still lists them as ignored, so gating them changed nothing about the suite.
+      - [x] `PackageKey::from_registry_name` had an unreachable error arm for an empty
+            bare name: the leading empty check and the empty-`rest` check in the scoped
+            arm already cover it. Now a `debug_assert!`, because a branch no input can
+            reach looks like a hole in the tests forever.
+      - [ ] **`src/main.rs` is at 0%, 128 uncovered lines.** The floor is measured over
+            the library only; the binary is reached by `make smoke-npm` against a real
+            npm client. `make coverage` prints the figure rather than hiding it. Closing
+            it means moving the pure parts out of the binary, starting with
+            `package_name_from_path()` and `is_hop_by_hop()`, which are testable
+            functions sitting where nothing can unit test them. Do this with the proxy
+            wiring above, which touches the same file.
+- [ ] Packument size: no `Accept-Encoding` is sent by the normalizer's client, because
+      reqwest's `gzip` feature is off crate-wide so the proxy can forward bodies byte for
+      byte. Packuments therefore arrive uncompressed, which for typescript is several
+      megabytes. Accepted for now rather than compromising pass-through; revisit with the
+      fetch path.
 - [ ] Conditional requests (ETag / If-None-Match) so pass-through stays cheap
 
 ### Spikes and decisions (do these first)

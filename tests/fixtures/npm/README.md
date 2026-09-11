@@ -9,10 +9,12 @@ ways that matter (see `src/record.rs`):
 
 | Fixture | Property under test |
 |---|---|
-| `lodash-4.17.21` | unscoped name, no install script, no attestations |
+| `lodash-4.17.21` | unscoped name, no install script, no attestations, and a `dist-tags.latest` naming a version the trimmed document does not carry |
 | `@babel_traverse-8.0.5` | scoped name, which becomes a percent-encoded purl namespace |
 | `esbuild-0.28.2` | `hasInstallScript: true` in abbreviated, `postinstall` in full |
 | `sigstore-5.0.0` | `dist.attestations` and an OIDC `trustedPublisher` |
+| `event-stream-0.9.1` | published 2012, so `dist.shasum` with no `dist.integrity` |
+| `rimraf-1.0.0` | `repository` as a bare string on the version, an object on the package |
 
 `.abbrev.json` is `Accept: application/vnd.npm.install-v1+json`, which is what npm
 requests during an install and therefore what the proxy normally sees. `.full.json` is
