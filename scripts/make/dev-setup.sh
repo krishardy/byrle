@@ -24,6 +24,21 @@ else
     cargo install cargo-outdated --locked
 fi
 
+echo "==> trufflehog (credential scanning, used by 'make sast')"
+if need trufflehog; then
+    echo "    found $(trufflehog --version 2>&1 | head -1)"
+elif need brew; then
+    brew install trufflehog
+elif need go; then
+    go install github.com/trufflesecurity/trufflehog/v3@latest
+else
+    # Upstream offers `curl ... install.sh | sh`. Not run automatically here: piping a
+    # remote script into a shell is the pattern this project exists to distrust, and it
+    # wants /usr/local/bin, so it is the operator's call rather than ours.
+    echo "    NOT INSTALLED. Install with brew or go, or review and run:"
+    echo "    https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh"
+fi
+
 echo "==> shellcheck (shell linting, used by 'make lint')"
 if need shellcheck; then
     echo "    found $(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}')"
