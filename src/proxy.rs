@@ -52,6 +52,7 @@ use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
 use crate::npm::{self, NormalizeError, NormalizedPackument, ReachableOrigins, RequestTarget};
 use crate::record::PackumentDetail;
+use crate::refusal::RefusalStatus;
 use crate::store::{DEFAULT_MAX_RECORDS, Lookup, RecordStore};
 use axum::{
     Router,
@@ -141,6 +142,10 @@ pub struct Proxy {
     /// The origins whose artifacts this proxy serves. One source of truth for rewriting
     /// and for the offsite report, which must never disagree.
     reachable: Arc<ReachableOrigins>,
+    /// What a policy refusal answers with, per ecosystem and client.
+    refusal: Arc<RefusalStatus>,
+    /// Whether to drop versions whose artifacts this proxy cannot serve.
+    refuse_unservable: bool,
     /// Upstream registry base, no trailing slash.
     upstream: String,
     /// THROWAWAY. One hardcoded package, to prove interception happens before anything
@@ -175,7 +180,21 @@ impl Proxy {
             rewrite_artifacts: true,
             public_base: None,
             packument_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_PACKUMENTS)),
+            refusal: Arc::new(RefusalStatus::default()),
+            refuse_unservable: true,
         }
+    }
+
+    pub fn with_refusal_status(mut self, refusal: RefusalStatus) -> Self {
+        self.refusal = Arc::new(refusal);
+        self
+    }
+
+    /// Whether versions whose artifacts this proxy cannot serve are removed from the
+    /// packument. On by default; see [`crate::npm::filter_unservable_versions`].
+    pub fn with_refuse_unservable(mut self, refuse: bool) -> Self {
+        self.refuse_unservable = refuse;
+        self
     }
 
     pub fn with_max_concurrent_packuments(mut self, limit: usize) -> Self {
@@ -391,6 +410,14 @@ async fn buffer_to_limit(mut stream: ByteStream, limit: usize) -> Buffered {
     Buffered::Complete(buf.freeze())
 }
 
+/// The status a refusal answers with for this client.
+fn refusal_status(proxy: &Proxy, user_agent: Option<&str>) -> StatusCode {
+    let code = proxy
+        .refusal
+        .for_client(crate::identity::Ecosystem::Npm, user_agent);
+    StatusCode::from_u16(code).unwrap_or(StatusCode::FORBIDDEN)
+}
+
 /// The address to write into artifact URLs.
 ///
 /// The request's `Host` is the address the client actually reached the proxy on, which is
@@ -506,19 +533,16 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     if let (Some(blocked), Some(key)) = (&proxy.blocked, requested_key)
         && blocked == key
     {
+        let status = refusal_status(&proxy, Some(&client_ua));
         info!(
             %method,
             path = %path_and_query,
-            status = 403u16,
+            status = status.as_u16(),
             purl = %key,
             client = %client_ua,
             "blocked"
         );
-        return (
-            StatusCode::FORBIDDEN,
-            format!("waharoa: {key} is blocked by policy\n"),
-        )
-            .into_response();
+        return (status, format!("waharoa: {key} is blocked by policy\n")).into_response();
     }
 
     let client_accept_encoding = req
@@ -562,6 +586,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let mut expected_digest: Option<Sri> = None;
     let mut artifact_purl = String::new();
     let mut artifact_origin: Option<String> = None;
+    let mut unservable_origin: Option<String> = None;
     if let RequestTarget::Tarball {
         key,
         claimed_version,
@@ -590,6 +615,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 // pointed at it.
                 artifact_origin = npm::origin_of_url(&record.artifact.url)
                     .filter(|origin| proxy.reachable.routes_directly(origin));
+                unservable_origin = npm::bypassing_origin(&record.artifact.url, &proxy.reachable);
                 match record.artifact.integrity.as_deref().map(Sri::parse) {
                     Some(Ok(sri)) => expected_digest = Some(sri),
                     Some(Err(e)) => warn!(
@@ -622,6 +648,32 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 claimed_purl = %purl,
                 "artifact requested, no packument seen for it"
             ),
+        }
+
+        // A pinned fetch of a version the packument filter removes. Decision #4: filter
+        // on resolution, hard fail on a pinned fetch, because there is no resolution step
+        // left to influence.
+        if let Some(origin) = &unservable_origin
+            && proxy.refuse_unservable
+        {
+            let status = refusal_status(&proxy, Some(&client_ua));
+            info!(
+                %method,
+                path = %path_and_query,
+                status = status.as_u16(),
+                claimed_purl = %purl,
+                origin = %origin,
+                client = %client_ua,
+                "refused: this artifact is published on an origin the proxy does not serve"
+            );
+            return (
+                status,
+                format!(
+                    "waharoa: {purl} is published at {origin}, which this proxy does not \
+                     serve, so it cannot be examined\n"
+                ),
+            )
+                .into_response();
         }
     }
 
@@ -811,22 +863,8 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     match decoded.as_deref().map(|d| inspect_decoded(d, detail)) {
         None => {}
         Some(PackumentOutcome::Normalized(p)) => {
-            // Artifacts on an origin the proxy does not front are fetched directly by
-            // the client, so nothing about them is observed: not the digest check below,
-            // not the policy engine later. The packument is the only place this is
-            // visible, because by the time the artifact is fetched the request has
-            // already gone elsewhere.
+            // Reported by `rewrite_packument` below, which is where it is acted on.
             let bypassing = p.bypassing_origins(&proxy.reachable);
-            if !bypassing.is_empty() {
-                let versions: usize = bypassing.values().sum();
-                warn!(
-                    path = %path_and_query,
-                    purl = %p.key,
-                    versions,
-                    origins = ?bypassing.keys().collect::<Vec<_>>(),
-                    "ARTIFACTS PUBLISHED OFF THIS REGISTRY, which the client fetches directly"
-                );
-            }
             let (held_packages, held_records) = {
                 let mut store = proxy.store.lock().expect("record store lock");
                 store.insert((*p).clone());
@@ -869,7 +907,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let forwarded = match (decoded.as_deref(), normalized.as_deref()) {
         (Some(decoded), Some(packument)) if rewriting => {
             let base = rewrite_base.as_deref().expect("rewriting implies a base");
-            rewrite_packument(decoded, packument, base, &proxy.reachable, &path_and_query)
+            rewrite_packument(
+                decoded,
+                packument,
+                base,
+                &proxy.reachable,
+                proxy.refuse_unservable,
+                &path_and_query,
+            )
         }
         _ => None,
     };
@@ -924,38 +969,71 @@ fn rewrite_packument(
     packument: &NormalizedPackument,
     base: &str,
     reachable: &ReachableOrigins,
+    refuse_unservable: bool,
     path: &str,
 ) -> Option<Vec<u8>> {
+    let unservable = packument.bypassing_origins(reachable);
+    if !unservable.is_empty() {
+        let versions: usize = unservable.values().sum();
+        let origins: Vec<&String> = unservable.keys().collect();
+
+        // The only control that works on these. The client fetches `dist.tarball` from
+        // whatever host it names, so refusing the artifact request never happens: the
+        // request goes somewhere else. Decision #4 settles the shape, filter on
+        // resolution and hard fail on a pinned fetch.
+        if refuse_unservable {
+            let artifacts = packument
+                .records
+                .iter()
+                .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()));
+            return match npm::filter_unservable_versions(decoded, artifacts, reachable, base) {
+                Ok(filtered) => {
+                    warn!(
+                        path = %path,
+                        removed = filtered.removed.len(),
+                        kept = filtered.rewritten,
+                        origins = ?origins,
+                        "REFUSED versions whose artifacts are published where this proxy \
+                         cannot see them"
+                    );
+                    // Always the filtered body, even when nothing survived. Returning
+                    // None here forwards the original, which would put every refused
+                    // version straight back into the document.
+                    Some(filtered.body)
+                }
+                Err(e) => {
+                    warn!(path = %path, error = %e, "UNINSPECTED: packument could not be filtered");
+                    None
+                }
+            };
+        }
+
+        // Every artifact being off-origin is not the same exposure as some of them being
+        // off-origin, and it is the shape someone would construct.
+        if versions == packument.records.len() {
+            warn!(
+                path = %path,
+                versions,
+                origins = ?origins,
+                "UNINSPECTED: every artifact in this packument is on an origin the proxy \
+                 does not front"
+            );
+        } else {
+            warn!(
+                path = %path,
+                versions,
+                origins = ?origins,
+                "UNINSPECTED: some artifacts left on an origin the proxy does not front"
+            );
+        }
+    }
+
     let artifacts = packument
         .records
         .iter()
         .map(|record| record.artifact.url.as_str());
     match npm::rewrite_artifact_origins(decoded, artifacts, reachable, base) {
-        Ok(rewritten) => {
-            if rewritten.left_alone > 0 {
-                // Every artifact being off-origin is not the same exposure as some of
-                // them being off-origin, and it is the shape someone would construct.
-                if rewritten.rewritten == 0 {
-                    warn!(
-                        path = %path,
-                        versions = rewritten.left_alone,
-                        "UNINSPECTED: every artifact in this packument is on an origin the \
-                         proxy does not front"
-                    );
-                } else {
-                    warn!(
-                        path = %path,
-                        versions = rewritten.left_alone,
-                        rewritten = rewritten.rewritten,
-                        "UNINSPECTED: some artifacts left on an origin the proxy does not front"
-                    );
-                }
-            }
-            if rewritten.rewritten == 0 {
-                return None;
-            }
-            Some(rewritten.body)
-        }
+        Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
         Err(e) => {
             warn!(path = %path, error = %e, "UNINSPECTED: packument could not be rewritten");
             None
@@ -1208,17 +1286,56 @@ mod tests {
         assert_eq!(body.as_ref(), original.as_slice());
     }
 
-    /// An artifact on an origin the proxy does not front is left alone. Rewriting it
-    /// would mean the proxy fetching from an arbitrary host for a client.
-    #[tokio::test]
-    async fn artifacts_on_other_origins_are_not_rewritten() {
-        let packument = r#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0","dist":{
+    const OFFSITE_PACKUMENT: &str = r#"{"name":"widget","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{
+            "version":"1.0.0","dist":{
             "tarball":"https://elsewhere.example/widget-1.0.0.tgz","integrity":"sha512-AAAA"}}}}"#;
+
+    /// An artifact the proxy cannot serve is removed from the packument, so a resolver
+    /// picks a version that can be examined. It is the only control that works: the
+    /// client would fetch that URL from `elsewhere.example` and never ask the proxy.
+    #[tokio::test]
+    async fn versions_the_proxy_cannot_serve_are_removed_from_the_packument() {
         let (base, _) = proxy_serving(
             StatusCode::OK,
             "application/vnd.npm.install-v1+json",
             None,
-            packument.as_bytes().to_vec(),
+            OFFSITE_PACKUMENT.as_bytes().to_vec(),
+        )
+        .await;
+
+        let body = reqwest::get(format!("{base}/widget"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            !body.contains("elsewhere.example"),
+            "the version should be gone, not forwarded: {body}"
+        );
+        let served: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(served["versions"].as_object().unwrap().is_empty());
+        assert!(
+            served["dist-tags"].as_object().unwrap().is_empty(),
+            "a tag naming a removed version resolves to nothing"
+        );
+    }
+
+    /// Turning the refusal off forwards them instead, and the artifact URL stays as it
+    /// was: rewriting it would mean the proxy fetching from an arbitrary host.
+    #[tokio::test]
+    async fn refusal_can_be_turned_off_and_then_they_are_forwarded() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            OFFSITE_PACKUMENT.as_bytes().to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_refuse_unservable(false)
+                .router(),
         )
         .await;
 
@@ -1232,6 +1349,72 @@ mod tests {
             body.contains("https://elsewhere.example/widget-1.0.0.tgz"),
             "an unreachable origin stays as it is: {body}"
         );
+    }
+
+    /// A pinned fetch of a version the filter removes. Decision #4: filter on
+    /// resolution, hard fail on a pinned fetch, because there is no resolution left to
+    /// influence. The status is the configured one.
+    #[tokio::test]
+    async fn a_pinned_fetch_of_an_unservable_artifact_is_refused() {
+        let (base, seen) = proxy_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            OFFSITE_PACKUMENT.as_bytes().to_vec(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("elsewhere.example"), "got: {body}");
+        assert!(
+            !seen
+                .lock()
+                .unwrap()
+                .paths
+                .iter()
+                .any(|p| p.ends_with(".tgz")),
+            "a refused artifact must not be fetched"
+        );
+    }
+
+    /// Clients bucket status codes differently, so the refusal is configurable by
+    /// (ecosystem, client). pnpm and yarn both carry `npm/` in their user-agent, so this
+    /// also checks the client is read from the first token.
+    #[tokio::test]
+    async fn the_refusal_status_is_configurable_per_client() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            OFFSITE_PACKUMENT.as_bytes().to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_refusal_status(
+                    crate::refusal::RefusalStatus::parse("default=403,npm/pnpm=451").unwrap(),
+                )
+                .router(),
+        )
+        .await;
+
+        for (agent, expected) in [
+            ("pnpm/10.33.0 npm/? node/v20.11.1 linux x64", 451),
+            ("npm/9.9.4 node/v16.20.1 linux x64", 403),
+            ("yarn/1.22.22 npm/? node/v16.20.1 linux x64", 403),
+        ] {
+            let response = reqwest::Client::new()
+                .get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+                .header(header::USER_AGENT, agent)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status().as_u16(), expected, "{agent}");
+        }
     }
 
     /// npm 9 offers `gzip,deflate` and registry.npmjs.org answers brotli whenever br is
@@ -1914,32 +2097,28 @@ mod tests {
         }
     }
 
-    /// A packument whose artifacts live somewhere the proxy does not front. The client
-    /// fetches those directly, so the packument is the only place it is visible.
-    ///
-    /// The artifact request never arrives, which is the whole point: this asserts the
-    /// proxy sees the packument and is left holding no tarball request for it.
+    /// With the refusal off, the packument is forwarded byte for byte, and no artifact
+    /// request follows because the client goes straight to the other host. That is the
+    /// exposure the refusal exists to close.
     #[tokio::test]
-    async fn artifacts_published_off_the_registry_are_visible_in_the_packument() {
-        let packument = r#"{"name":"widget","dist-tags":{"latest":"1.0.0"},"versions":{
-            "1.0.0":{"version":"1.0.0","dist":{
-                "tarball":"https://elsewhere.example/widget-1.0.0.tgz",
-                "integrity":"sha512-AAAA"}}}}"#;
-        let (base, seen) = proxy_serving(
+    async fn without_the_refusal_an_offsite_packument_is_forwarded_unchanged() {
+        let (upstream, seen) = upstream_serving(
             StatusCode::OK,
             "application/vnd.npm.install-v1+json",
             None,
-            packument.as_bytes().to_vec(),
+            OFFSITE_PACKUMENT.as_bytes().to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_refuse_unservable(false)
+                .router(),
         )
         .await;
 
         let response = reqwest::get(format!("{base}/widget")).await.unwrap();
         assert_eq!(response.status(), 200);
-        assert_eq!(
-            response.text().await.unwrap(),
-            packument,
-            "the packument is still forwarded unchanged; Stage 1 observes, it does not refuse"
-        );
+        assert_eq!(response.text().await.unwrap(), OFFSITE_PACKUMENT);
         assert_eq!(
             seen.lock().unwrap().paths,
             vec!["/widget"],

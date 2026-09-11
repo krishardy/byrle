@@ -14,6 +14,7 @@ use waharoa::doctor;
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, Proxy};
+use waharoa::refusal::RefusalStatus;
 use waharoa::store::DEFAULT_MAX_RECORDS;
 use waharoa::tls::{self, TrustMode};
 
@@ -40,6 +41,10 @@ Proxy configuration, all through the environment:
   WAHAROA_MAX_PACKUMENT_BYTES       ceiling on a packument body (32 MiB)
   WAHAROA_MAX_RECORDS               packument records held in memory (50,000)
   WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (8)
+  WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
+                                    \"default=403,npm/pnpm=451\" (default 403)
+  WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot
+                                    see, instead of removing them from the packument
   WAHAROA_BLOCK                     THROWAWAY: refuse one package by name
 ";
 
@@ -284,7 +289,35 @@ async fn main() -> std::process::ExitCode {
         .filter(|s| !s.is_empty())
         .collect();
 
+    // What a policy refusal answers with. 403 unless an operator finds a client that
+    // mishandles it: `WAHAROA_REFUSAL_STATUS=default=403,npm/pnpm=451`.
+    let refusal =
+        RefusalStatus::parse(&std::env::var("WAHAROA_REFUSAL_STATUS").unwrap_or_default())
+            .unwrap_or_else(|e| panic!("WAHAROA_REFUSAL_STATUS: {e}"));
+    for status in refusal.misleading() {
+        warn!(
+            status,
+            "a refusal configured to answer {status} will read as the proxy being broken \
+             rather than as policy denying the request (plan §5 reserves 5xx for not-ready)"
+        );
+    }
+
+    // Versions whose artifacts are published where this proxy cannot see them are removed
+    // from the packument, so a resolver picks one that can be examined. Setting this to 0
+    // forwards them instead, and the client then fetches those artifacts directly.
+    let refuse_unservable = std::env::var("WAHAROA_REFUSE_UNSERVABLE")
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    if !refuse_unservable {
+        warn!(
+            "WAHAROA_REFUSE_UNSERVABLE=0: artifacts published off this registry are \
+             forwarded, and the client fetches them without the proxy seeing them"
+        );
+    }
+
     let proxy = Proxy::new(client, upstream)
+        .with_refusal_status(refusal)
+        .with_refuse_unservable(refuse_unservable)
         .with_additional_origins(additional_origins.iter().map(String::as_str))
         // Refusing to start is right: an origin the operator named and that was quietly
         // dropped would leave them believing those artifacts are covered.

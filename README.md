@@ -141,11 +141,10 @@ has honest limits:
   does, the proxy fetches the packument itself. What it cannot see is an install served
   entirely from cache, where no request reaches it at all.
 * **A registry can publish artifacts on a host the proxy does not sit in front of.**
-  The proxy rewrites artifact URLs to point at itself, which is what makes pnpm and yarn
-  fetch through it at all, but it will not rewrite a URL to an origin it does not already
-  front: doing so would mean fetching from an arbitrary host on a client's behalf. Those
-  artifacts are fetched directly and the proxy only warns. Run `make smoke-clients` to
-  see where each client fetches from.
+  Those versions are removed from the packument, so a resolver picks one that can be
+  examined, and a pinned fetch of one is refused. Removal is the only control that works:
+  the client fetches that URL from whatever host it names, so the proxy never sees the
+  request. Name the host in `WAHAROA_ARTIFACT_ORIGINS` to have the proxy serve it instead.
 
 We do not stop an attacker who already controls the developer's machine, and we do not
 claim to detect novel malware ahead of the research community.

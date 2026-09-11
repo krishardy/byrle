@@ -586,16 +586,28 @@ implementations.
             unserializable, and per-version artifacts on another origin. Stage 1 forwards
             in all of them. **Stage 2 has to decide whether that stays acceptable**, since
             the fail-open default is now weaker than it was.
-- [ ] `[!]` **Refuse artifacts whose origin is not in the proxy configuration.** Tier 3 in
-      `docs/engineering_decisions/enforcement-tiers.md`, and **the thing to build before
-      any network-level interception**: it closes the gap those tiers are wanted for and
-      needs no CA, no root, no trust-store changes and nothing per machine.
-      - [ ] Filter, do not block the document. Decision #4
-            (`quarantine-filter-metadata.md`) already settles the mechanism: drop the
-            versions whose artifacts we cannot see so the client's own resolver picks one
-            we can, and hard-fail a pinned fetch of a filtered version. A package can have
-            one old version on another origin and every current version on the registry;
-            refusing the document would break an install that filtering leaves working.
+- [x] **Refuse artifacts whose origin is not in the proxy configuration.** Tier 3 in
+      `docs/engineering_decisions/enforcement-tiers.md`, built before any network-level
+      interception: it closes the gap those tiers are wanted for and needs no CA, no root,
+      no trust-store changes and nothing per machine. On by default;
+      `WAHAROA_REFUSE_UNSERVABLE=0` forwards them instead.
+      - [x] Filter, do not block the document, per decision #4
+            (`quarantine-filter-metadata.md`). A package can have one old version on
+            another origin and every current version on the registry; refusing the
+            document would break an install that filtering leaves working.
+      - [x] **Filtering is the only control that works here.** The client fetches
+            `dist.tarball` from whatever host it names, so refusing the artifact request
+            never happens: the request goes somewhere else. The packument is the last
+            point the version is visible.
+      - [x] A `dist-tags` entry naming a removed version is dropped too, or it resolves to
+            nothing and the resolver cannot fall back.
+      - [x] Structural, so unlike the URL rewrite it parses the document. That cost is
+            paid only when there is something to remove, which no real npmjs.org packument
+            has been: 0 of 24,852 artifact URLs measured were off-origin.
+      - [x] **Bug found by running it: when nothing survives, the filtered body still has
+            to win.** Returning "nothing to rewrite" forwarded the original, putting every
+            refused version straight back into the document. An empty `versions` map is
+            the right answer.
       - [x] Operator-configured origins. `WAHAROA_ARTIFACT_ORIGINS` is a comma-separated
             list of additional origins the proxy fronts, for a registry that publishes
             artifacts somewhere else, a CDN in front of a private registry being the case
@@ -618,9 +630,23 @@ implementations.
             - [x] The record lookup moved to before the request is sent, which is what
                   plan §5 asks for anyway: the digest is known before the artifact is
                   fetched, not after its headers arrive.
-      - [ ] The refusal is 403, because policy denied it. Never a 5xx (§5).
-      - [ ] The information already exists: `npm::bypassing_origin` computes it on every
-            packument and logs `UNINSPECTED`. This is that warning turned into an action.
+      - [x] The refusal status is configurable by (ecosystem, client), defaulting to 403.
+            `WAHAROA_REFUSAL_STATUS="default=403,npm/pnpm=451"`. Clients bucket status
+            codes rather than reading them, so an operator who finds one mishandling 403
+            can say so without waiting for a release.
+            - [x] The client is the **first token** of the user-agent, never a substring.
+                  Measured: `pnpm/10.33.0 npm/? ...` and `yarn/1.22.22 npm/? ...` both
+                  contain `npm/`, so searching for "npm" matches all three.
+            - [x] An unrecognised or absent user-agent gets the default. That differs from
+                  the not-ready codes in §5, where an unknown client falls back to the more
+                  widely retried option: a denial is meant to be terminal, so there is
+                  nothing to retry toward.
+            - [x] Anything outside 400..=599 is refused: a denial answering 2xx is not a
+                  denial and a 3xx would send the client somewhere. 5xx is accepted because
+                  an operator may need it, and warned about at startup because §5 reserves
+                  5xx for the proxy not being ready.
+            - [x] One mechanism for every denial, so the throwaway block uses it too and
+                  Stage 2's engine has somewhere to plug in.
 - [ ] Enforcement tiers 4 and 5, recorded in
       `docs/engineering_decisions/enforcement-tiers.md`. Both are later than tier 3.
       - [ ] A hosts-file or DNS override needs TLS termination, so it is decision #3
