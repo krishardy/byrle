@@ -9,6 +9,7 @@ exclude = ["spikes/config-format"]
 
 [dependencies]
 axum = "0.8.9"
+base64 = "0.23.1"
 bytes = "1.12.1"
 flate2 = "1.1.10"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
@@ -17,6 +18,7 @@ purl = "0.1.6"
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+sha2 = "0.11.0"
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }

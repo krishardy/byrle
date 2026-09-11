@@ -282,7 +282,7 @@ implementations.
             map omits. See the Stage 2 item.
 - [x] Unit test coverage tooling, for the CLAUDE.md 90% floor. `make coverage` runs
       cargo-llvm-cov with `--fail-under-lines/-functions/-regions 90`; `COVERAGE_FLOOR`
-      overrides it. The crate is at 95.4% lines, 94.6% regions, 93.7% functions.
+      overrides it. The crate is at 95.5% lines, 94.7% regions, 94.2% functions.
       - [x] The network and corpus tests are compiled out under `cfg(coverage)`, which
             cargo-llvm-cov sets. They do not run in a coverage build, and counting the
             body of a test that cannot run reports a gap that is not one. `cargo test`
@@ -301,6 +301,13 @@ implementations.
       it never saw. The fix is the `npm::Client` already built: on a 304 for a package
       with no cached record, fetch the packument on the proxy's own behalf. Pairs with
       the conditional requests item below.
+      - [x] Confirmed both halves against real software: registry.npmjs.org answers 304
+            to a matching `If-None-Match`, and npm 9.9.4 sends one once its cached entry
+            passes `max-age` (300 s for a packument). Inside that window npm does not ask
+            at all, which is the separate cache-bypass item.
+      - [x] The record store closes part of this: a second install in the same proxy
+            lifetime still has the record. It does not close the case where the proxy
+            restarts or the entry was evicted.
 - [ ] Memory under concurrency. A buffered packument holds the encoded body plus its
       decoded copy, 2.0 MB + 15.7 MB for typescript, and npm opens many requests at once.
       Nothing bounds how many are buffered at the same time. Measure it under a real
@@ -357,17 +364,61 @@ implementations.
       information yet.
 
 ### Fetch path and status codes
-- [ ] `[!]` Read `dist.integrity` from the packument — artifact digest known **before**
-      the tarball is fetched, so cache-hit vs. cache-miss is decided up front
-- [ ] `[!]` Cache hit → stream through. Flat memory, no added latency.
-- [ ] `[!]` Stream the body through a hashing wrapper (`http-body` frame poll — feed
-      each chunk to the hasher before forwarding). Verify at the end; abort the response
-      cleanly on mismatch. Note there is **no mid-stream branch into buffering** — the
-      packument digest decides stream-vs-buffer *before* the fetch, so buffering is its
-      own path chosen up front.
-- [ ] `[!]` Verify the digest of what actually arrives against the packument's claim;
-      a mismatch is a finding, not a cache error. The registry hash is a **key**, not a
-      trust anchor.
+- [x] Read `dist.integrity` from the packument, artifact digest known **before** the
+      tarball is fetched. `src/store.rs` holds records from packuments already seen and
+      the tarball request looks its own up. Measured on `express + @babel/code-frame`:
+      73 of 73 tarballs had a digest from a packument seen earlier in the same run.
+      - [x] Three lookup outcomes, not two: `Found`, `NoSuchVersion` (the packument was
+            read and does not name this version), `Unknown` (no packument observed).
+            `NoSuchVersion` is reachable from a real `npm install express@3.0.0-rc1`,
+            whose tarball is served at `express-3.0.0rc1.tgz`.
+      - [x] Bounded by total record count (`WAHAROA_MAX_RECORDS`, default 50,000),
+            evicting least recently used. A four-package install touches 167 packuments
+            and 9,690 records; the largest single packument is typescript at 3,822. A
+            packument bigger than the whole budget is still kept, because the tarball
+            request that follows it is the reason to store anything.
+      - [ ] The store is per-process and dies with the proxy. It also holds the whole
+            `NormalizedPackument`, not just what the fetch path needs, which makes the
+            concurrency-memory item worse rather than better. Measured RSS after an
+            `express + @babel/code-frame` install holding 70 packuments and 2,576
+            records: 25 MB.
+- [ ] `[!]` Cache hit, stream through. Nothing is analysed yet, so there is no cache to
+      hit; the digest that would key it is now known before the fetch.
+- [x] Stream the body through a hashing wrapper, and verify what arrives against the
+      packument's claim. `src/integrity.rs` parses SRI and hashes incrementally;
+      `proxy::VerifyingStream` forwards chunks while hashing them. No mid-stream branch
+      into buffering: the digest is known before the fetch.
+      - [x] **The last chunk is held back until the digest matches.** Two problems, one
+            fix. Forwarding every chunk as it arrives means the client already holds a
+            complete, correct-length body when the check fails; and hyper stops polling a
+            body once `Content-Length` is satisfied, so the end of the stream is never
+            reached and the check never runs at all. Measured on a real tarball fetch:
+            all 318,961 bytes forwarded, zero verifications. Holding one chunk keeps
+            hyper polling and keeps the artifact incomplete until it passes.
+      - [x] **reqwest ends a body with an empty chunk.** It displaced the held chunk and
+            released the whole artifact before the comparison. An empty chunk no longer
+            counts as "the next chunk arrived". This defeated the hold-back silently, and
+            only a byte-level trace found it.
+      - [x] **npm's reaction to a mismatch, measured.** Served a tampered tarball through
+            the proxy to a real `npm install`: ECONNRESET / "socket hang up", two retries
+            with roughly 10 s then 60 s backoff, then the install failed. Nothing was
+            written to `node_modules`. So it fails closed, and costs the client about 70
+            seconds to do it. Relevant to the `Retry-After` work below.
+      - [x] SHA-1 is not verifiable through `integrity`. Two versions in 24,852 publish
+            only `dist.shasum`; those artifacts are forwarded unverified and logged,
+            rather than checked with a collision-broken hash.
+      - [x] SRI multiple-hash and `?options` forms are handled although npm emits
+            neither, and the strongest algorithm wins. Zero of 24,852 versions use them,
+            so no fixture would ever cover it.
+- [ ] `[!]` **A registry can point `dist.tarball` at a host the proxy does not front, and
+      the artifact is then fetched directly.** npm rewrites that URL to the configured
+      registry only when it names the default registry host. Tested with a controlled
+      registry serving the same package both ways: `https://registry.npmjs.org/...` came
+      through the proxy, another origin did not, and the proxy saw no tarball request at
+      all. This corrects an earlier finding in plan §4 that said npm ignores the host
+      outright. The packument is visible to the proxy, so the check is: refuse or flag a
+      `dist.tarball` whose origin is neither the configured upstream nor the default
+      registry. Not implemented.
 - [ ] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
       not ready (mirror warming, all requests) · **429** we are ready but this one
       artifact is under analysis

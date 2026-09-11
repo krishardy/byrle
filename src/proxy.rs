@@ -25,8 +25,10 @@ use crate::http::{
     DecodeError, RequestedEncoding, decode_for_parsing, encoding_to_request, is_hop_by_hop,
 };
 use crate::identity::PackageKey;
+use crate::integrity::{Sri, Verifier};
 use crate::npm::{self, NormalizeError, NormalizedPackument, RequestTarget};
 use crate::record::PackumentDetail;
+use crate::store::{DEFAULT_MAX_RECORDS, Lookup, RecordStore};
 use axum::{
     Router,
     body::Body,
@@ -37,6 +39,8 @@ use axum::{
 use bytes::{Bytes, BytesMut};
 use futures_util::{StreamExt, stream};
 use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 use std::time::Instant;
 use tracing::{error, info, warn};
 
@@ -83,6 +87,9 @@ pub fn inspect_packument(
 #[derive(Clone)]
 pub struct Proxy {
     client: reqwest::Client,
+    /// Records from packuments already seen, so a tarball request can find the digest
+    /// its packument published. Bounded; see [`crate::store`].
+    store: Arc<Mutex<RecordStore>>,
     /// Upstream registry base, no trailing slash.
     upstream: String,
     /// THROWAWAY. One hardcoded package, to prove interception happens before anything
@@ -96,9 +103,17 @@ impl Proxy {
     pub fn new(client: reqwest::Client, upstream: impl Into<String>) -> Self {
         Self {
             client,
+            store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             upstream: upstream.into().trim_end_matches('/').to_owned(),
             blocked: None,
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
+        }
+    }
+
+    pub fn with_max_records(self, max_records: usize) -> Self {
+        Self {
+            store: Arc::new(Mutex::new(RecordStore::new(max_records))),
+            ..self
         }
     }
 
@@ -135,6 +150,127 @@ enum Buffered {
     Oversized { prefix: Bytes, rest: ByteStream },
     /// The body could not be read to completion.
     Failed(reqwest::Error),
+}
+
+/// Any error a forwarded body can end with.
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+/// A body being forwarded while its digest is checked, with the last chunk held back.
+///
+/// The digest cannot be compared until the final byte has gone past, and the status and
+/// headers left long before that. Forwarding every chunk as it arrives would mean the
+/// client already holds a complete, correct-length body by the time the check fails.
+/// Worse, it would not fail: hyper stops polling a body once `Content-Length` is
+/// satisfied, so the end of the stream is never reached and the comparison never runs.
+/// Measured on a real tarball fetch, which forwarded all 318,961 bytes and verified
+/// nothing.
+///
+/// So one chunk is always held back. Each chunk is hashed on arrival and released only
+/// when the next one arrives; the last is released only after the digest matches. On a
+/// mismatch the body ends in an error instead, the response is short of its declared
+/// `Content-Length`, and the client sees a failed download. Holding one chunk also keeps
+/// hyper polling, because the declared length is not yet satisfied.
+///
+/// Extra memory is one chunk, not the artifact. Plan §5: there is no mid-stream branch
+/// into buffering, because the digest is known before the fetch.
+struct VerifyingStream {
+    inner: ByteStream,
+    /// Taken when the stream ends, which is the only place it can be used.
+    verifier: Option<Verifier>,
+    /// The most recent chunk, released when the next one arrives or the digest matches.
+    held: Option<Bytes>,
+    finished: bool,
+    bytes: u64,
+    path: String,
+    purl: String,
+}
+
+impl VerifyingStream {
+    fn new(inner: ByteStream, sri: &Sri, path: String, purl: String) -> Self {
+        Self {
+            inner,
+            verifier: Some(sri.verifier()),
+            held: None,
+            finished: false,
+            bytes: 0,
+            path,
+            purl,
+        }
+    }
+
+    /// Compare, and decide what the body ends with.
+    fn finish(&mut self) -> Poll<Option<Result<Bytes, BoxError>>> {
+        self.finished = true;
+        let Some(verifier) = self.verifier.take() else {
+            return Poll::Ready(None);
+        };
+        match verifier.finish(self.bytes) {
+            Ok(()) => {
+                info!(
+                    path = %self.path,
+                    purl = %self.purl,
+                    bytes = self.bytes,
+                    "artifact digest verified"
+                );
+                Poll::Ready(self.held.take().map(Ok))
+            }
+            // A mismatch is a finding, not a cache error: the registry served bytes its
+            // own packument does not describe. The held chunk is dropped, so the client
+            // never receives a complete body that failed the check.
+            Err(mismatch) => {
+                error!(
+                    path = %self.path,
+                    purl = %self.purl,
+                    expected = %mismatch.expected,
+                    actual = %mismatch.actual,
+                    bytes = mismatch.bytes,
+                    "ARTIFACT DIGEST MISMATCH"
+                );
+                self.held = None;
+                Poll::Ready(Some(Err(Box::new(mismatch) as BoxError)))
+            }
+        }
+    }
+}
+
+impl futures_util::Stream for VerifyingStream {
+    type Item = Result<Bytes, BoxError>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        loop {
+            if this.finished {
+                return Poll::Ready(None);
+            }
+            match this.inner.as_mut().poll_next(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Some(Ok(chunk))) => {
+                    if let Some(verifier) = this.verifier.as_mut() {
+                        verifier.update(&chunk);
+                    }
+                    this.bytes += chunk.len() as u64;
+                    // An empty chunk carries nothing and must not count as "the next
+                    // chunk arrived": reqwest ends a tarball stream with one, and letting
+                    // it displace the held chunk releases the whole body before the
+                    // digest is compared. Measured on a real fetch, where the final
+                    // chunk was 0 bytes and all 318,961 bytes reached the client
+                    // unverified.
+                    if chunk.is_empty() {
+                        continue;
+                    }
+                    // Release the previous chunk, keep this one.
+                    if let Some(previous) = this.held.replace(chunk) {
+                        return Poll::Ready(Some(Ok(previous)));
+                    }
+                }
+                Poll::Ready(Some(Err(e))) => {
+                    this.finished = true;
+                    return Poll::Ready(Some(Err(Box::new(e) as BoxError)));
+                }
+                Poll::Ready(None) => return this.finish(),
+            }
+        }
+    }
 }
 
 async fn buffer_to_limit(mut stream: ByteStream, limit: usize) -> Buffered {
@@ -293,22 +429,68 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     };
 
     // Tarball requests are where the resolved graph becomes visible: the packument lists
-    // every version ever published, and this names the one being installed.
+    // every version ever published, and this names the one being installed. It is also
+    // where the digest has to already be known, because it decides whether this artifact
+    // has been analysed before anything is fetched (plan §5).
+    let mut expected_digest: Option<Sri> = None;
+    let mut artifact_purl = String::new();
     if let RequestTarget::Tarball {
         key,
         claimed_version,
     } = &target
         && status.is_success()
     {
-        match key.at_version(claimed_version) {
-            Ok(reference) => info!(
-                path = %path_and_query,
-                claimed_purl = %reference,
-                "artifact requested"
-            ),
-            Err(e) => {
-                warn!(path = %path_and_query, error = %e, "tarball path has no usable version")
+        let purl = key
+            .at_version(claimed_version)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|_| format!("{key}@{claimed_version}"));
+        artifact_purl = purl.clone();
+        let lookup = proxy
+            .store
+            .lock()
+            .expect("record store lock")
+            .lookup(key, claimed_version);
+        match lookup {
+            Lookup::Found(record) => {
+                info!(
+                    path = %path_and_query,
+                    claimed_purl = %purl,
+                    integrity = record.artifact.integrity.as_deref().unwrap_or("-"),
+                    has_install_scripts = record.has_install_scripts,
+                    "artifact requested, digest known"
+                );
+                match record.artifact.integrity.as_deref().map(Sri::parse) {
+                    Some(Ok(sri)) => expected_digest = Some(sri),
+                    Some(Err(e)) => warn!(
+                        path = %path_and_query,
+                        claimed_purl = %purl,
+                        error = %e,
+                        "packument integrity string is unusable; not verifying"
+                    ),
+                    // Two versions in 24,852 offer only SHA-1, which is
+                    // collision-broken and not verified here.
+                    None => warn!(
+                        path = %path_and_query,
+                        claimed_purl = %purl,
+                        "packument publishes no strong digest; not verifying"
+                    ),
+                }
             }
+            // The packument was read and does not name this version. A tarball filename
+            // that spells the version differently lands here: `express@3.0.0-rc1` is
+            // served at `express-3.0.0rc1.tgz`.
+            Lookup::NoSuchVersion => warn!(
+                path = %path_and_query,
+                claimed_purl = %purl,
+                "artifact requested, but its packument does not name this version"
+            ),
+            // Nothing was observed for this package. A warm npm cache produces this: the
+            // client's conditional request is answered 304 with no body.
+            Lookup::Unknown => warn!(
+                path = %path_and_query,
+                claimed_purl = %purl,
+                "artifact requested, no packument seen for it"
+            ),
         }
     }
 
@@ -316,7 +498,12 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     let Some(detail) = detail.filter(|_| read_packument && status.is_success()) else {
         log_proxied(upstream_len.unwrap_or(0));
-        return (forward_status, headers, Body::from_stream(body_stream)).into_response();
+        let Some(sri) = expected_digest else {
+            return (forward_status, headers, Body::from_stream(body_stream)).into_response();
+        };
+        let verified =
+            VerifyingStream::new(body_stream, &sri, path_and_query.clone(), artifact_purl);
+        return (forward_status, headers, Body::from_stream(verified)).into_response();
     };
 
     let body = match buffer_to_limit(body_stream, proxy.max_packument_bytes).await {
@@ -348,7 +535,13 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         detail,
         proxy.max_packument_bytes,
     ) {
-        PackumentOutcome::Normalized(p) => info!(
+        PackumentOutcome::Normalized(p) => {
+            let (held_packages, held_records) = {
+                let mut store = proxy.store.lock().expect("record store lock");
+                store.insert((*p).clone());
+                (store.len(), store.records())
+            };
+            info!(
             path = %path_and_query,
             purl = %p.key,
             detail = ?detail,
@@ -361,8 +554,11 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             latest = %p.latest.as_deref().unwrap_or("-"),
             encoded_bytes = body.len(),
             parse_ms = parse_started.elapsed().as_millis() as u64,
+            held_packages,
+            held_records,
             "packument normalized"
-        ),
+            );
+        }
         PackumentOutcome::Unreadable(e) => {
             warn!(path = %path_and_query, error = %e, "packument did not normalize")
         }
@@ -951,6 +1147,169 @@ mod tests {
         let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
         assert_eq!(response.status(), 200);
         assert_eq!(response.bytes().await.unwrap().as_ref(), body.as_slice());
+    }
+
+    // -----------------------------------------------------------------------
+    // Digest verification
+    // -----------------------------------------------------------------------
+
+    /// Serve a packument and a tarball, so a test can walk the real sequence: the
+    /// packument publishes the digest, the tarball request finds it, the body is checked
+    /// on the way past.
+    async fn registry_with(integrity: &str, tarball: Vec<u8>) -> String {
+        let packument = format!(
+            r#"{{"name":"widget","dist-tags":{{"latest":"1.0.0"}},"versions":{{
+                "1.0.0":{{"version":"1.0.0","dist":{{
+                    "tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz",
+                    "integrity":"{integrity}"}}}}}}}}"#
+        );
+        let router = Router::new()
+            .route(
+                "/widget",
+                get(move || {
+                    let packument = packument.clone();
+                    async move {
+                        (
+                            [(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")],
+                            packument,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/widget/-/widget-1.0.0.tgz",
+                get(move || {
+                    let tarball = tarball.clone();
+                    async move {
+                        (
+                            [(header::CONTENT_TYPE, "application/octet-stream")],
+                            tarball,
+                        )
+                    }
+                }),
+            );
+        serve(Proxy::new(reqwest::Client::new(), serve(router).await).router()).await
+    }
+
+    fn sri_of(data: &[u8]) -> String {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha512};
+        format!(
+            "sha512-{}",
+            base64::engine::general_purpose::STANDARD.encode(Sha512::digest(data))
+        )
+    }
+
+    /// The whole point: the digest comes from a packument seen earlier, and the tarball
+    /// is checked against it without being buffered.
+    #[tokio::test]
+    async fn a_tarball_matching_its_packument_digest_is_forwarded_whole() {
+        let tarball: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
+
+        // The packument has to go past first, or there is no digest to check against.
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+
+        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.bytes().await.unwrap().as_ref(),
+            tarball.as_slice(),
+            "a verified body must arrive complete and unchanged"
+        );
+    }
+
+    /// A registry serving bytes its own packument does not describe. The client must not
+    /// end up with a complete body: the response ends in an error instead.
+    ///
+    /// Checked against a real `npm install`, which reported ECONNRESET, retried twice
+    /// with backoff, and failed the install. Nothing was written to `node_modules`.
+    #[tokio::test]
+    async fn a_tampered_tarball_never_arrives_complete() {
+        let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let mut tampered = honest.clone();
+        tampered[25_000] ^= 0xFF;
+
+        let base = registry_with(&sri_of(&honest), tampered.clone()).await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+
+        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "the status left before a byte was hashed; only the body can carry the failure"
+        );
+        match response.bytes().await {
+            Err(_) => {}
+            Ok(body) => panic!(
+                "the body completed with {} of {} bytes; a failed digest must not deliver \
+                 a whole artifact",
+                body.len(),
+                tampered.len()
+            ),
+        }
+    }
+
+    /// Without a packument there is no digest, so nothing is verified and the body still
+    /// has to reach the client. This is what a warm npm cache produces.
+    #[tokio::test]
+    async fn a_tarball_with_no_packument_seen_is_forwarded_unverified() {
+        let tarball: Vec<u8> = vec![9u8; 1_000];
+        let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
+
+        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), tarball.as_slice());
+    }
+
+    /// An empty body still has to terminate and still has to be checked. reqwest ends a
+    /// stream with an empty chunk, and an artifact of zero bytes has a digest like any
+    /// other.
+    #[tokio::test]
+    async fn an_empty_tarball_is_verified_rather_than_hanging() {
+        let base = registry_with(&sri_of(b""), Vec::new()).await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+
+        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(response.bytes().await.unwrap().is_empty());
+    }
+
+    /// Two versions in 24,852 publish only SHA-1, which is collision-broken. Those
+    /// artifacts are forwarded without a digest check rather than being checked weakly.
+    #[tokio::test]
+    async fn a_version_with_no_strong_digest_is_forwarded_unverified() {
+        let tarball = vec![3u8; 500];
+        let base = registry_with("sha1-2KoFEwbCVDvbCxC5dXgvFkSlpwc=", tarball.clone()).await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+
+        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(response.bytes().await.unwrap().as_ref(), tarball.as_slice());
+    }
+
+    /// A packument stored on one request answers the tarball request that follows it.
+    #[tokio::test]
+    async fn the_store_carries_the_digest_from_packument_to_tarball() {
+        let tarball = vec![1u8; 100];
+        let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
+
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        for _ in 0..3 {
+            let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+                .await
+                .unwrap();
+            assert_eq!(response.bytes().await.unwrap().len(), 100);
+        }
     }
 
     #[test]

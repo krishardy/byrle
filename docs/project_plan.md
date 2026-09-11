@@ -302,9 +302,9 @@ See
 the open question that decided whether we are a pass-through or a rewriting proxy, and it
 is not obvious from the data: `dist.tarball` in a packument is an absolute
 `https://registry.npmjs.org/...` URL, so the naive reading is that npm would fetch
-tarballs direct from upstream and we would never see them. It does not. npm resolves
-tarballs against the *configured* registry and ignores the host in `dist.tarball`, so
-every tarball request arrives at the proxy unmodified.
+tarballs direct from upstream and we would never see them. It does not, for tarball URLs
+on the default registry host: npm rewrites those to the *configured* registry, so every
+tarball request arrives at the proxy unmodified.
 
 Measured on `npm install express`: 66 packages installed, and every one of them was
 fetched through the proxy at both the metadata and the tarball leg, with nothing going
@@ -312,6 +312,18 @@ direct. Rewriting bodies would mean buffering and re-serializing every packument
 collides with the streaming fetch path below, and would make lockfiles
 environment-specific. This is npm's behavior, not registry protocol; yarn and pnpm are
 untested.
+
+**The rewrite is conditional on the host, and that is a bypass vector (corrected Sept
+2026).** An earlier version of this finding said npm ignores the host in `dist.tarball`
+outright. It does not. Tested with a controlled registry serving the same package two
+ways: with `dist.tarball` on `https://registry.npmjs.org`, npm fetched it from the
+configured proxy; with `dist.tarball` on another origin, npm fetched it from that origin
+and the proxy saw no tarball request at all.
+
+So a compromised or hostile registry can serve a packument whose artifact lives on a host
+the proxy does not sit in front of, and the install proceeds unexamined. The proxy does
+see the packument, so this is detectable: refuse, or flag, a `dist.tarball` whose origin
+is neither the configured upstream nor the default registry. Not implemented; see TODO.
 
 ### Rollout order and rationale
 

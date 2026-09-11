@@ -137,6 +137,12 @@ has honest limits:
   A registry proxy cannot see any of it.
 * **npm serves from its local cache without consulting the registry**, so a pre-existing
   cache silently skips enforcement.
+* **A registry can point `dist.tarball` at a host the proxy does not sit in front of.**
+  npm rewrites that URL to the configured registry only when it names the default
+  registry host; any other host is fetched directly. Tested against npm 9.9.4: a
+  packument advertising a tarball on another origin was fetched from that origin, and
+  the proxy never saw the request. Detecting it needs the packument, which the proxy does
+  see, so this is a check we can add rather than a limit we have to accept.
 
 We do not stop an attacker who already controls the developer's machine, and we do not
 claim to detect novel malware ahead of the research community.

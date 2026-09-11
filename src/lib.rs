@@ -7,6 +7,8 @@
 
 pub mod http;
 pub mod identity;
+pub mod integrity;
 pub mod npm;
 pub mod proxy;
 pub mod record;
+pub mod store;
