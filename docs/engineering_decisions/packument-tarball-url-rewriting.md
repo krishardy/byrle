@@ -28,6 +28,11 @@ one that uses it verbatim gets a 404.
 | npm 9.9.4 | installed | rewrites to the configured registry |
 | pnpm 10.33.0 | `ERR_PNPM_FETCH_404` | uses the URL verbatim |
 | yarn 1.22.22 | `404 Not Found` | uses the URL verbatim |
+| yarn 4.9.1 | `YN0035: Package not found` | uses the URL verbatim, and records it in the lockfile as `__archiveUrl` |
+| bun 1.3.14 | `error: GET ... 404` | uses the URL verbatim |
+
+npm is the only one of the five that rewrites, which is the argument for doing it for all
+of them rather than per client.
 
 Against the real registry this showed up as silence. Installing `express` through the
 proxy, npm sent 67 packuments and 69 tarballs; pnpm sent 66 packuments and **zero**
@@ -76,18 +81,21 @@ a sixth of the CPU.
 Clients record the resolved artifact URL, so rewriting puts the proxy's address in
 lockfiles. Measured, and it is not uniform:
 
-| Client | Before rewriting | After rewriting |
-|---|---|---|
-| npm | `resolved: https://registry.npmjs.org/...` | `resolved: <proxy>/...` |
-| yarn 1 | `resolved "https://registry.npmjs.org/..."` | `resolved "<proxy>/..."` |
-| pnpm | `resolution: {integrity, tarball: https://registry.npmjs.org/...}` | `resolution: {integrity}` |
+| Client | After rewriting, what the lockfile records |
+|---|---|
+| npm | `resolved: <proxy>/...` |
+| yarn 1 | `resolved "<proxy>/..."` |
+| bun | the proxy URL in `bun.lock` |
+| pnpm | nothing: `resolution: {integrity}` alone |
+| yarn 4 | nothing: `resolution: "lodash@npm:4.18.1"` alone |
 
-pnpm omits the tarball URL when it matches the configured registry and derives it at
-install time, so for pnpm the lockfile becomes registry-independent: more portable than
-before, not less.
+pnpm and yarn 4 omit the tarball URL when it matches the configured registry and derive
+it at install time, so for those two the lockfile becomes registry-independent: more
+portable than before, not less. They record the URL only when it is off-registry, which
+is the case the refusal removes anyway.
 
-For npm and yarn the address is recorded, so it has to be a stable name that everyone
-consuming the lockfile can reach. `WAHAROA_PUBLIC_URL` pins it; otherwise the request's
+For npm, yarn 1 and bun the address is recorded, so it has to be a stable name that
+everyone consuming the lockfile can reach. `WAHAROA_PUBLIC_URL` pins it; otherwise the request's
 own `Host` is used, which on a developer machine is whatever they typed.
 
 That address becomes load-bearing. Measured: a lockfile written through a proxy on one
