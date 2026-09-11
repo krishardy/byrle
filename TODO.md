@@ -7,6 +7,12 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocks stage exit
 
 ---
 
+## Ad-hoc
+
+Items that I've added that are not stage-bound.
+
+1. Look at the witchcraft binary collection (from edrazine) and look into integrating wsolver into a fuzzing and formal analysis process of the compiled binary.
+
 ## Stage 1 — Pass-through proxy (transport)
 
 **Goal:** installs work through us, and every package is correctly identified. **No
@@ -22,11 +28,34 @@ implementations.
 - [x] Review Datadog supply-chain-firewall — **done, see plan §2.** CLI wrapper, not a
       proxy; different architecture, not a positioning threat. GuardDog integration is
       the reusable idea (Stage 4 detector interface).
-- [ ] `[!]` Reverse-proxy registry endpoint between npm and registry.npmjs.org
-- [ ] `[!]` rustls + platform verifier; custom CA bundle for the **upstream** connection
-- [ ] `[!]` Serve `npm install lodash` successfully through the proxy
-- [ ] `[!]` Block one hardcoded package name with HTTP 403 — proves interception, throwaway
-- [ ] `[!]` Confirm transitive deps are also intercepted, not just top-level
+- [x] Reverse-proxy registry endpoint between npm and registry.npmjs.org. axum catch-all,
+      reqwest upstream, bodies streamed through verbatim with `Content-Encoding` intact
+      (reqwest's `gzip` feature is deliberately off, so nothing is decompressed behind our
+      back). Upstream failure maps to 502, per §5. Run it with `make run`.
+- [~] rustls + platform verifier for the **upstream** connection. Verifier half **done**:
+      reqwest 0.13's default `rustls` feature pulls `rustls-platform-verifier` 0.7, so the
+      upstream leg validates against the OS trust store. Inbound stays plain HTTP on
+      loopback, per decision #3.
+      - [ ] **Custom CA bundle is NOT implemented.** Needed for private registries and for
+            corporate TLS-inspecting middleboxes, which would otherwise fail to verify.
+            `Client::add_root_certificate`, plus config to point at a bundle.
+- [x] Serve `npm install lodash` successfully through the proxy. Covered by `make smoke-npm`.
+- [x] Block one hardcoded package name with HTTP 403, proving interception. Throwaway, and
+      kept deliberately awkward: it is env-only (`WAHAROA_BLOCK`), with no config file
+      behind it, so it cannot quietly become a feature. Stage 2 replaces it.
+- [x] Confirm transitive deps are also intercepted, not just top-level. `npm install
+      express` pulls 66 packages and every one was fetched through the proxy at both the
+      metadata and tarball leg. The block test goes further: `ms` is blocked while
+      installing `debug`, so it fires on a package the user never named, on the packument
+      request, with no tarball fetched.
+- [x] **Finding: npm needs no packument rewriting.** The open question behind this stage.
+      `dist.tarball` is an absolute `registry.npmjs.org` URL, but npm resolves tarballs
+      against the *configured* registry and ignores it, so we are a pass-through. Recorded
+      in plan §4. Re-check per client; yarn and pnpm are untested.
+- [x] **Finding: the lockfile-verification mitigation in §7 does not work for npm.**
+      npm normalizes `resolved` back to the canonical registry URL with both `--registry`
+      and `.npmrc`, so a lockfile cannot evidence that the proxy was used. Plan §7
+      corrected. The anti-bypass control has to come from somewhere else.
 - [ ] `[!]` PURL as internal identity type
 - [ ] `[!]` Common package record schema (name, version, ecosystem, publish time,
       maintainers, repo URL, has-install-scripts, provenance, hashes)
