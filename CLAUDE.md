@@ -14,7 +14,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * docs/project_plan.md - Deeper project plan
 * Where there is duplication between the project_plan.md and architecture.md, put the content in architecture.md and remove it from project_plan.md.
 * Engineering decisions should be documented in docs/engineering_decisions/<decision_name>.md
-* Write plainly and concretely. Things like "Lowercasing therefore silently misses the one rule nobody is allowed to override" is unacceptable because it is a non-specific summary statement of previous sentences. Let the data and information speak for themselves.
+* Write plainly and concretely. Things like "Lowercasing therefore silently misses the one rule nobody is allowed to override" is unacceptable because it is a non-specific interprative statement of previous sentences. Let the data and information speak for themselves.
 
 ### Finalization
 

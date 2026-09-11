@@ -24,6 +24,25 @@ else
     cargo install cargo-outdated --locked
 fi
 
+echo "==> shellcheck (shell linting, used by 'make lint')"
+if need shellcheck; then
+    echo "    found $(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}')"
+elif need pipx; then
+    # shellcheck-py ships the real shellcheck binary in a platform wheel, so this
+    # needs no root and works the same on Linux and macOS.
+    pipx install shellcheck-py
+elif need pip3; then
+    pip3 install --user shellcheck-py
+elif need pacman; then
+    echo "    install with: sudo pacman -S shellcheck"
+elif need apt-get; then
+    echo "    install with: sudo apt-get install shellcheck"
+elif need brew; then
+    brew install shellcheck
+else
+    echo "    NOT INSTALLED and no installer found. 'make lint' cannot check shell."
+fi
+
 echo "==> semgrep (static analysis, used by 'make sast')"
 if need semgrep; then
     echo "    found $(semgrep --version 2>/dev/null)"

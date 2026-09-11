@@ -10,31 +10,32 @@
 //! * [`PackageRef`] is a key plus a concrete version, `pkg:npm/lodash@4.17.21`. This
 //!   is what a verdict is about, and what §5.5 `denials` match on.
 //!
-//! # Casing: we deliberately do not normalize, and this is load-bearing
+//! # Casing: npm names are not lowercased
 //!
 //! The purl specification says npm names MUST be lowercased. **We do not**, because
 //! the advisory corpus we have to match does not.
 //!
 //! Measured against OSV's full npm bundle (Sept 2026, 228,941 advisories): 112 npm
 //! package names contain uppercase, and all 112 are case-preserved in OSV's own purl.
-//! Nearly all of them are `MAL-` records, which are malicious-package advisories, and
-//! §5.5 pins `known_malware: block` to the non-overridable floor. Lowercasing
-//! therefore silently misses the one rule nobody is allowed to override. Confirmed
-//! live against the OSV API:
+//! Nearly all are `MAL-` records, which are malicious-package advisories. §5.5 pins
+//! `known_malware: block` to the non-overridable floor. Confirmed live against the
+//! OSV API:
 //!
 //! ```text
 //! pkg:npm/AdultJS  -> MAL-2025-14119
 //! pkg:npm/adultjs  -> no match
 //! ```
 //!
-//! Case also genuinely distinguishes packages rather than being cosmetic. OSV holds
-//! four npm names that differ only by case, one of them three ways: `OpenClaw`,
-//! `Openclaw` and `openclaw`. Case-insensitive keying would merge their advisories.
+//! OSV also holds four npm names that differ only by case, one of them three ways:
+//! `OpenClaw`, `Openclaw` and `openclaw`. Case-insensitive keying merges their
+//! advisories.
 //!
-//! So: **if you are about to "fix" this to comply with the spec, do not.** A
-//! spec-compliant purl that misses malware is worthless. Read identity from the
-//! packument's own `name` field rather than the request path, which is the canonical
-//! spelling the registry itself reports.
+//! Do not change this to comply with the spec without re-running
+//! `cargo run --example osv_conformance`.
+//!
+//! Identity comes from the packument's own `name` field, not the request path. The
+//! registry reports the canonical spelling there; the path also carries
+//! percent-encoding and query strings.
 
 use purl::GenericPurl;
 use std::fmt;
@@ -201,7 +202,7 @@ impl fmt::Display for PackageKey {
 /// Measured across OSV's npm bundle: 16,904 scoped entries use the first form and
 /// 855 use the second. OSV's own API normalizes them, but a local mirror holds the
 /// raw strings, so without this those 855 records are unreachable by a key built from
-/// a registry name. They are disproportionately `MAL-` malware records.
+/// a registry name. `MAL-` malware records are over-represented among them.
 fn split_encoded_scope(namespace: Option<&str>, name: &str) -> (Option<String>, String) {
     if namespace.is_none()
         && let Some(rest) = name.strip_prefix('@')
@@ -326,9 +327,9 @@ mod tests {
 
     /// The regression this module exists to prevent.
     ///
-    /// purl-spec says npm names must be lowercased. Doing so silently misses
-    /// malicious-package advisories, which §5.5 pins to the non-overridable floor.
-    /// `pkg:npm/AdultJS` matches MAL-2025-14119; `pkg:npm/adultjs` matches nothing.
+    /// purl-spec says npm names must be lowercased. `pkg:npm/AdultJS` matches
+    /// MAL-2025-14119; `pkg:npm/adultjs` matches nothing. MAL- records are
+    /// malicious-package advisories.
     #[test]
     fn uppercase_names_are_preserved_not_lowercased() {
         assert_eq!(key("AdultJS").to_string(), "pkg:npm/AdultJS");
