@@ -150,6 +150,19 @@ has honest limits:
 We do not stop an attacker who already controls the developer's machine, and we do not
 claim to detect novel malware ahead of the research community.
 
+## Checking it is actually being used
+
+Every mode below a controlled network is advisory, so the question worth asking is not
+whether the proxy is running but whether anything is using it.
+
+```
+waharoa doctor
+```
+
+reports what each installed package manager is configured to talk to, what the lockfiles
+in the current directory record about where their artifacts came from, and what would
+silently skip the proxy. It exits non-zero when installs are not going through it.
+
 ## Deployment note
 
 Artifact URLs are rewritten to point at the proxy, so package managers record the proxy's

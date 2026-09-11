@@ -644,10 +644,30 @@ implementations.
       does not install, so a heuristic rather than a check.
       - [ ] yarn 2+ (berry) and bun are untested. yarn 1.22.22 is what is installed here.
 - [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
-- [ ] `waharoa doctor`: verify effective client config, detect npm cache bypass, and
-      check lockfile evidence. The last one is newly possible: npm and yarn now record the
-      proxy address in `resolved`, so CI can verify a lockfile was produced through the
-      proxy. pnpm omits the URL, so it has nothing to check. See plan §7.
+- [x] `waharoa doctor`. `src/doctor.rs` holds the checks as pure functions; the binary
+      reads the files and asks each package manager for its own resolved configuration,
+      since the effective registry comes from a project `.npmrc`, then the user's, then
+      the global one, and only the client knows which won.
+      - [x] Effective client registry for npm, pnpm and yarn.
+      - [x] Lockfile evidence, newly possible because artifact URLs are rewritten: npm and
+            yarn record the proxy address in `resolved`, so a lockfile shows whether the
+            proxy produced it. pnpm omits the URL when it matches the configured registry,
+            which is reported as "not evidence either way" rather than as a fault.
+      - [x] A lockfile naming **both** the proxy and somewhere else is a `PROBLEM` rather
+            than a warning: part of that install does not go through the proxy, and only
+            the other part is examined.
+      - [x] The public URL check catches the failure measured earlier: `npm ci` fetches
+            the address in the lockfile and does not fall back, so a lockfile pinned to a
+            proxy address that is no longer served fails the build. `registry.npmjs.org`
+            in a lockfile is reported by the client-config check instead, not as a stale
+            proxy address.
+      - [x] npm cache entry count, since a warm cache is served without consulting the
+            registry at all (§7).
+      - [x] An unknown subcommand exits 2 rather than falling through to the proxy, and
+            `waharoa help` lists every environment variable.
+      - [ ] Not checked yet: whether the proxy is reachable and answering. Doctor is
+            client-side only, so it reports what is configured rather than what works.
+- [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
 
 **Exit:** a real `npm install` completes through the proxy with the full transitive
 graph correctly normalized to PURLs, and the hardcoded block fires before the tarball

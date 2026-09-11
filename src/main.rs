@@ -10,18 +10,165 @@
 //! is load-bearing rather than decoration.
 
 use tracing::{info, warn};
+use waharoa::doctor;
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, Proxy};
 use waharoa::store::DEFAULT_MAX_RECORDS;
 use waharoa::tls::{self, TrustMode};
 
+const USAGE: &str = "\
+usage: waharoa [command]
+
+  (no command)  run the proxy
+  doctor        check whether this machine installs through the proxy
+  help          show this
+
+Proxy configuration, all through the environment:
+
+  WAHAROA_LISTEN                    address to listen on (127.0.0.1:8080)
+  WAHAROA_UPSTREAM                  registry to forward to (https://registry.npmjs.org)
+  WAHAROA_PUBLIC_URL                address written into artifact URLs, and therefore
+                                    into lockfiles. Defaults to each request's own Host,
+                                    which is rarely what you want.
+  WAHAROA_ARTIFACT_ORIGINS          comma-separated origins this proxy also fronts
+  WAHAROA_REWRITE_ARTIFACTS=0       do not point artifact URLs at the proxy. pnpm and
+                                    yarn then fetch artifacts without the proxy seeing
+                                    them.
+  WAHAROA_CA_BUNDLE                 PEM bundle for the upstream connection
+  WAHAROA_CA_BUNDLE_EXCLUSIVE=1     trust only that bundle, not the public roots
+  WAHAROA_MAX_PACKUMENT_BYTES       ceiling on a packument body (32 MiB)
+  WAHAROA_MAX_RECORDS               packument records held in memory (50,000)
+  WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (8)
+  WAHAROA_BLOCK                     THROWAWAY: refuse one package by name
+";
+
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Ask a package manager what registry it is actually configured to use.
+///
+/// Its own resolved configuration, not a file this could read: the effective value comes
+/// from a project `.npmrc`, then the user's, then the global one, and only the client
+/// knows which won.
+fn configured_registry(client: &str) -> Option<String> {
+    let args: &[&str] = match client {
+        "yarn" => &["config", "get", "registry"],
+        _ => &["config", "get", "registry"],
+    };
+    let output = std::process::Command::new(client)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    (!value.is_empty() && value != "undefined").then_some(value)
+}
+
+/// How many entries a client cache holds. `None` when there is no cache to look at.
+fn cache_entries(client: &str) -> Option<u64> {
+    let dir = match client {
+        "npm" => {
+            let output = std::process::Command::new("npm")
+                .args(["config", "get", "cache"])
+                .output()
+                .ok()?;
+            std::path::PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()).join("_cacache")
+        }
+        _ => return None,
+    };
+    let index = dir.join("index-v5");
+    if !index.is_dir() {
+        return Some(0);
+    }
+    // Every cached response is one file under index-v5, nested two levels deep.
+    Some(doctor::count_files(&index))
+}
+
+fn run_doctor() -> std::process::ExitCode {
+    let listen = env_or("WAHAROA_LISTEN", "127.0.0.1:8080");
+    let public = std::env::var("WAHAROA_PUBLIC_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let proxy = doctor::expected_proxy_url(public.as_deref(), &listen);
+
+    println!("waharoa doctor");
+    println!("  proxy expected at {proxy}");
+    println!(
+        "  checking from {}",
+        std::env::current_dir().unwrap_or_default().display()
+    );
+    println!();
+
+    let mut findings = Vec::new();
+    for client in ["npm", "pnpm", "yarn"] {
+        findings.push(doctor::check_registry(
+            client,
+            configured_registry(client).as_deref(),
+            &proxy,
+        ));
+    }
+
+    // Lockfiles in this directory are the record of what actually happened, as opposed to
+    // what is configured now.
+    let mut recorded = std::collections::BTreeSet::new();
+    for kind in doctor::Lockfile::ALL {
+        let Ok(contents) = std::fs::read_to_string(kind.filename()) else {
+            continue;
+        };
+        recorded.extend(doctor::recorded_origins(kind, &contents));
+        findings.push(doctor::check_lockfile(kind, &contents, &proxy));
+    }
+    findings.push(doctor::check_public_url(public.as_deref(), &recorded));
+    findings.push(doctor::check_cache("npm", cache_entries("npm")));
+
+    for finding in &findings {
+        println!("{finding}");
+    }
+    println!();
+
+    match doctor::worst(&findings) {
+        doctor::Severity::Ok => {
+            println!("Everything checked is pointing at the proxy.");
+            std::process::ExitCode::SUCCESS
+        }
+        doctor::Severity::Warn => {
+            println!("Installs reach the proxy, with the caveats above.");
+            std::process::ExitCode::SUCCESS
+        }
+        doctor::Severity::Problem => {
+            println!("Some installs are not going through the proxy. See above.");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
 #[tokio::main]
-async fn main() {
+async fn main() -> std::process::ExitCode {
+    // Anything other than `doctor` is refused rather than falling through to the proxy:
+    // `waharoa doctr` silently serving traffic is the wrong thing to do with a typo.
+    //
+    // The rule below guards against trusting argv for security decisions, argv[0] in
+    // particular. This reads argv[1] to pick a subcommand, and every trust decision the
+    // proxy makes comes from the environment and the packuments it reads.
+    // nosemgrep: rust.lang.security.args.args
+    match std::env::args().nth(1).as_deref() {
+        None => {}
+        Some("doctor") => return run_doctor(),
+        Some("help" | "-h" | "--help") => {
+            print!("{USAGE}");
+            return std::process::ExitCode::SUCCESS;
+        }
+        Some(other) => {
+            eprintln!("waharoa: unknown command `{other}`\n");
+            eprint!("{USAGE}");
+            return std::process::ExitCode::from(2);
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -164,4 +311,5 @@ async fn main() {
     axum::serve(listener, proxy.router())
         .await
         .expect("server failed");
+    std::process::ExitCode::SUCCESS
 }
