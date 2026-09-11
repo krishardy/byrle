@@ -67,6 +67,98 @@ pub const FULL_ACCEPT: &str = "application/json";
 pub const DEFAULT_REGISTRY: &str = "https://registry.npmjs.org";
 
 // ---------------------------------------------------------------------------
+// Request paths
+// ---------------------------------------------------------------------------
+
+/// What a request path on an npm registry refers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestTarget {
+    /// A packument: `/lodash`, `/@babel%2fcore`, `/@babel/core`.
+    Packument(PackageKey),
+    /// A tarball: `/lodash/-/lodash-4.17.21.tgz`.
+    Tarball {
+        key: PackageKey,
+        /// The version as the **filename** spells it, which is not always the version
+        /// the packument uses. Of 24,852 tarball URLs measured, 38 differ: every
+        /// prerelease of `express` before 3.0.0 and of `grunt` before 0.4.0 drops the
+        /// hyphen, so `express@3.0.0-rc1` is served at `express-3.0.0rc1.tgz`.
+        ///
+        /// Nothing may treat this as an identity. Resolving it means matching the
+        /// artifact against a record from the packument, which is the fetch-path work
+        /// in plan §5.
+        claimed_version: String,
+    },
+    /// Anything else the registry serves: `/-/v1/search`, `/-/whoami`, `/`.
+    Other,
+}
+
+/// Classify a request path.
+///
+/// Paths that do not resolve to a package, including names this crate cannot turn into
+/// an identity, come back as [`RequestTarget::Other`]. A path the proxy cannot classify
+/// is still forwarded; it is not an error.
+pub fn classify_path(path: &str) -> RequestTarget {
+    let path = path.split('?').next().unwrap_or(path);
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
+        return RequestTarget::Other;
+    }
+
+    // Registry endpoints live under `/-/`. A package name cannot start with `-`, so a
+    // leading segment of `-` is never a package.
+    if path == "-" || path.starts_with("-/") {
+        return RequestTarget::Other;
+    }
+
+    let (name, artifact) = match path.split_once("/-/") {
+        Some((name, artifact)) => (name, Some(artifact)),
+        None => (path, None),
+    };
+
+    // npm percent-encodes the scope separator on packument requests and leaves it bare
+    // on tarball paths. Both spell the same package.
+    let name = name.replace("%2f", "/").replace("%2F", "/");
+    let Ok(key) = PackageKey::from_registry_name(Ecosystem::Npm, &name) else {
+        return RequestTarget::Other;
+    };
+
+    let Some(artifact) = artifact else {
+        return RequestTarget::Packument(key);
+    };
+
+    // `<unscoped name>-<version>.tgz`, with the scope absent from the filename.
+    let Some(stem) = artifact.strip_suffix(".tgz") else {
+        return RequestTarget::Other;
+    };
+    let Some(version) = stem
+        .strip_prefix(key.name())
+        .and_then(|rest| rest.strip_prefix('-'))
+        .filter(|v| !v.is_empty())
+    else {
+        return RequestTarget::Other;
+    };
+
+    RequestTarget::Tarball {
+        key,
+        claimed_version: version.to_owned(),
+    }
+}
+
+/// Which document a response body is, read from its `Content-Type`.
+///
+/// The response is authoritative and the request is not: npm asks with
+/// `application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*`, which
+/// names both documents and settles nothing.
+pub fn detail_from_content_type(content_type: Option<&str>) -> Option<PackumentDetail> {
+    let media_type = content_type?.split(';').next()?.trim().to_ascii_lowercase();
+    match media_type.as_str() {
+        ABBREVIATED_ACCEPT => Some(PackumentDetail::Abbreviated),
+        FULL_ACCEPT => Some(PackumentDetail::Full),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Errors
 // ---------------------------------------------------------------------------
 
@@ -1106,6 +1198,24 @@ mod tests {
                             "{}: version key drifted from the document name",
                             path.display()
                         );
+
+                        // Every real tarball URL has to classify, and has to classify
+                        // to the same package the document names.
+                        let url_path = record
+                            .artifact
+                            .url
+                            .split_once("://")
+                            .and_then(|(_, rest)| rest.split_once('/'))
+                            .map(|(_, p)| format!("/{p}"))
+                            .unwrap_or_default();
+                        match classify_path(&url_path) {
+                            RequestTarget::Tarball { key, .. } => assert_eq!(
+                                key, p.key,
+                                "{url_path}: classified as a different package"
+                            ),
+                            other => failures
+                                .push(format!("{url_path}: expected a tarball, got {other:?}")),
+                        }
                     }
                 }
                 Err(e) => failures.push(format!("{}: {e}", path.display())),
@@ -1401,6 +1511,144 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("repository URL string"), "got: {message}");
         assert!(message.contains("object"), "got: {message}");
+    }
+
+    mod paths {
+        use super::*;
+
+        fn key(name: &str) -> PackageKey {
+            PackageKey::from_registry_name(Ecosystem::Npm, name).unwrap()
+        }
+
+        #[test]
+        fn packument_paths_resolve_to_a_key() {
+            assert_eq!(
+                classify_path("/lodash"),
+                RequestTarget::Packument(key("lodash"))
+            );
+            assert_eq!(
+                classify_path("/@babel%2fcore"),
+                RequestTarget::Packument(key("@babel/core")),
+                "npm percent-encodes the scope separator"
+            );
+            assert_eq!(
+                classify_path("/@babel%2Fcore"),
+                RequestTarget::Packument(key("@babel/core"))
+            );
+            assert_eq!(
+                classify_path("/@babel/core"),
+                RequestTarget::Packument(key("@babel/core")),
+                "the bare form resolves too"
+            );
+            assert_eq!(
+                classify_path("/lodash?write=true"),
+                RequestTarget::Packument(key("lodash")),
+                "a query string is not part of the name"
+            );
+        }
+
+        #[test]
+        fn tarball_paths_carry_the_filename_version() {
+            assert_eq!(
+                classify_path("/lodash/-/lodash-4.17.21.tgz"),
+                RequestTarget::Tarball {
+                    key: key("lodash"),
+                    claimed_version: "4.17.21".into()
+                }
+            );
+            assert_eq!(
+                classify_path("/@babel/core/-/core-7.0.0.tgz"),
+                RequestTarget::Tarball {
+                    key: key("@babel/core"),
+                    claimed_version: "7.0.0".into()
+                },
+                "the scope is absent from the filename"
+            );
+        }
+
+        /// A prerelease version contains hyphens, and the filename is split on the last
+        /// hyphen of the package name, not the first hyphen in the string.
+        #[test]
+        fn prerelease_versions_survive_the_filename_split() {
+            assert_eq!(
+                classify_path("/react/-/react-18.3.0-canary-a1b2c3.tgz"),
+                RequestTarget::Tarball {
+                    key: key("react"),
+                    claimed_version: "18.3.0-canary-a1b2c3".into()
+                }
+            );
+            assert_eq!(
+                classify_path("/is-odd/-/is-odd-3.0.1.tgz"),
+                RequestTarget::Tarball {
+                    key: key("is-odd"),
+                    claimed_version: "3.0.1".into()
+                },
+                "hyphens in the package name are not version separators"
+            );
+        }
+
+        /// 38 of 24,852 tarball URLs spell the version differently from the packument:
+        /// every `express` prerelease before 3.0.0 and every `grunt` prerelease before
+        /// 0.4.0 drops the hyphen. The path says `3.0.0rc1`, the packument says
+        /// `3.0.0-rc1`.
+        #[test]
+        fn the_filename_version_is_what_the_filename_says() {
+            let RequestTarget::Tarball {
+                claimed_version, ..
+            } = classify_path("/express/-/express-3.0.0rc1.tgz")
+            else {
+                panic!("should classify as a tarball");
+            };
+            assert_eq!(claimed_version, "3.0.0rc1");
+            assert_ne!(
+                claimed_version, "3.0.0-rc1",
+                "the packument spells this version with a hyphen; the path does not"
+            );
+        }
+
+        #[test]
+        fn registry_endpoints_and_junk_are_not_packages() {
+            for path in [
+                "/",
+                "",
+                "/-/v1/search?text=lodash",
+                "/-/whoami",
+                "/-/npm/v1/attestations/sigstore@5.0.0",
+                "/-",
+                "/lodash/-/lodash-4.17.21.tar.gz",
+                "/lodash/-/something-else.tgz",
+                "/lodash/-/lodash-.tgz",
+                "/@scope/",
+            ] {
+                assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+            }
+        }
+
+        /// npm asks for both documents in one Accept header, so the response is the only
+        /// thing that says which arrived.
+        #[test]
+        fn detail_comes_from_the_response_content_type() {
+            assert_eq!(
+                detail_from_content_type(Some(
+                    "application/vnd.npm.install-v1+json; charset=utf-8"
+                )),
+                Some(PackumentDetail::Abbreviated)
+            );
+            assert_eq!(
+                detail_from_content_type(Some("application/json")),
+                Some(PackumentDetail::Full)
+            );
+            assert_eq!(
+                detail_from_content_type(Some("Application/JSON; charset=UTF-8")),
+                Some(PackumentDetail::Full)
+            );
+            assert_eq!(
+                detail_from_content_type(Some("application/octet-stream")),
+                None
+            );
+            assert_eq!(detail_from_content_type(Some("text/html")), None);
+            assert_eq!(detail_from_content_type(None), None);
+        }
     }
 
     /// Casing is preserved end to end. `pkg:npm/AdultJS` is a malicious-package advisory

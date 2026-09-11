@@ -4,8 +4,9 @@ One file per decision. Each records what was decided, why, what was rejected, an
 it costs. The index in [../project_plan.md](../project_plan.md) §10 links here; the
 reasoning lives here rather than in the plan.
 
-Status is either **Decided** or **Staging**. Staging means the decision is made but a
-gate remains, and the file names the gate.
+Status is **Decided**, **Staging**, or **Implemented**. Staging means the decision is
+made but a gate remains, and the file names the gate. Implemented means it is in the
+code, and the file names where.
 
 | Decision | Status |
 |---|---|
@@ -21,6 +22,7 @@ gate remains, and the file names the gate.
 | [Config format: YAML via serde-saphyr](config-format-yaml-serde-saphyr.md) | Decided |
 | [HTTP stack: axum and reqwest](http-stack-axum-reqwest.md) | Decided |
 | [PURL identity rules for npm](purl-identity-rules.md) | Decided |
+| [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Stage structure](stage-structure.md) | Staging |
 | [Fetch path branching](fetch-path-branching.md) | Staging |
 | [Project name: waharoa](project-name-waharoa.md) | Staging, cultural consultation |

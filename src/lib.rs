@@ -5,6 +5,8 @@
 //! identity. Splitting into separate *crates* remains deliberately deferred (TODO.md);
 //! a lib plus a bin in one crate is not that split.
 
+pub mod http;
 pub mod identity;
 pub mod npm;
+pub mod proxy;
 pub mod record;
