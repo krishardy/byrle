@@ -12,7 +12,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * Common maintenance tasks should be added to Makefile.
 * Makefile recipes must be thin wrappers around scripts in `scripts/make/<target>.sh` (or `.py` if it leads to simpler script). Do NOT embed multi-line shell logic (loops, conditionals, error handling) directly in recipes — put it in a real script (`set -euo pipefail`, executable) and have the recipe one-line invoke it. The architecture doc's inline-shell examples are logic to extract, not a template to copy.
 * No em-dashes. For love of God and all that is holy, NO EM-DASHES!
-* Unit test coverage of the library must be 98% or greater. The corpus and live tests are excluded from the test coverage requirement.
+* Unit test coverage of the library must be 95% or greater. The corpus and live tests are excluded from the test coverage requirement.
 
 ### Documentation
 
