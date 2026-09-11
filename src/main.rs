@@ -11,9 +11,10 @@
 
 use tracing::{info, warn};
 use waharoa::doctor;
+use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
-use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, Proxy};
+use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
 use waharoa::refusal::RefusalStatus;
 use waharoa::store::DEFAULT_MAX_RECORDS;
 use waharoa::tls::{self, TrustMode};

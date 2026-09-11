@@ -389,10 +389,18 @@ implementations.
             URLs come from the records. Without records there is nothing to gate on
             anyway, and it is logged `UNINSPECTED`, but it does mean an unmodellable
             document loses artifact visibility as well as metadata.
-- [ ] Packument size on the proxy's own fetches: `npm::Client` sends no `Accept-Encoding`
-      because reqwest's `gzip` feature is off crate-wide, so those packuments arrive
-      uncompressed. The request path does not have this problem, since the proxy decodes
-      gzip itself. Revisit with the fetch path.
+- [x] Packument size on the proxy's own fetches. `npm::Client` now asks for gzip and
+      decodes it with the same decoder the request path uses, under the same ceiling.
+      reqwest's `gzip` feature stays off crate-wide so bodies can be forwarded byte for
+      byte, which is why this has to be explicit.
+      - [x] Measured over the 69 packages of an `express` tree: 1.59 MB uncompressed
+            against 0.52 MB gzipped, a 67% saving. `npm ci` makes this request once per
+            package because it asks for no packuments of its own, so this is the primary
+            CI path.
+      - [x] A body past the ceiling is a `FetchError::Undecodable`, not a normalisation
+            failure: the bytes never became a document to model.
+      - [x] `DEFAULT_MAX_PACKUMENT_BYTES` moved to `http`, where the decoder is, so the
+            proxy's own fetches and the bodies it forwards read one value.
 - [ ] Conditional requests (ETag / If-None-Match) so pass-through stays cheap
 
 ### Spikes and decisions (do these first)
