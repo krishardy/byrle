@@ -140,6 +140,12 @@ has honest limits:
   client asks for a tarball without having requested its packument, as `npm ci` always
   does, the proxy fetches the packument itself. What it cannot see is an install served
   entirely from cache, where no request reaches it at all.
+* **pnpm and yarn fetch artifacts directly, not through the proxy.** Both use the
+  absolute `dist.tarball` URL from the packument; npm rewrites it to the configured
+  registry. So for pnpm and yarn the proxy sees package metadata and never the bytes:
+  digest verification and artifact analysis do not apply, while metadata policy still
+  does. Measured with npm 9.9.4, pnpm 10.33.0 and yarn 1.22.22; run `make smoke-clients`
+  to reproduce.
 * **A registry can point `dist.tarball` at a host the proxy does not sit in front of.**
   npm rewrites that URL to the configured registry only when it names the default
   registry host; any other host is fetched directly. Tested against npm 9.9.4: a
