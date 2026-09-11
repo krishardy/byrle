@@ -1,0 +1,10 @@
+# Paths trufflehog should not scan, as regexes matched against the file path.
+# Passed with -x. This file lives in the repository because the usual trufflehog
+# install is a container that can only see the mounted working directory.
+#
+# Build output only. Rust .rmeta/.rlib artifacts embed upstream crates' doc examples,
+# which contain credential-shaped URLs, so scanning them produces a flood of findings
+# about other people's documentation. Do not quote such a URL here: this file is
+# scanned too.
+/target/
+/spikes/config-format/vendor/

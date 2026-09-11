@@ -74,14 +74,21 @@ Items that I've added that are not stage-bound.
      the rule guards against deriving identity from argv. Suppressed at the site with a
      reason, and the marker has to sit on the line immediately above the finding.
    Verified: semgrep runs its rules over the tracked files and the suppression works.
-   STILL NOT verified, and `make dev-setup` did not fix it because nothing is missing:
-   trufflehog detection. In this sandbox the binary cannot see `/tmp`, resolves no path
-   except `.`, and does not see files written by the shell at all: planting a well-formed
-   GitHub PAT and Slack webhook left the chunk count identical at 3383 and produced no
-   finding. So the clean working-tree result here is not evidence about the working tree.
-   The history pass fails for the same reason, since it clones to a temp directory.
-   `TRUFFLEHOG_SKIP_HISTORY=1` is the escape. Someone should run `make trufflehog` on a
-   normal shell once to confirm both passes work; history scanning belongs in CI anyway.
+   trufflehog now verified too, after the cause of the earlier failures turned out to be
+   the install rather than the sandbox. `trufflehog` here is a wrapper around
+   `docker run -v "$PWD:/pwd"`, so the container sees the repository at `/pwd` and
+   nothing else on the machine.
+   That made the working-tree pass worthless without anyone noticing: the image's
+   working directory is `/usr/bin`, so `trufflehog filesystem .` was scanning the
+   scanner's own binaries, a constant 3383 chunks, and reporting the repository clean
+   without ever opening it. Both passes now use `$repo_uri`, supplied by the Makefile as
+   `TRUFFLEHOG_REPO_ROOT`, defaulting to `/pwd`.
+   Scanning the real repository then required excluding build output: `/target/` holds
+   2GB of `.rmeta`/`.rlib` artifacts with upstream crates' doc examples baked in, which
+   produced hundreds of findings about other people's documentation. Exclusions live in
+   `.trufflehog-exclude` in the repository, since the container cannot see a temp file.
+   Confirmed with a planted GitHub PAT: `make trufflehog` fails with it and passes
+   without it, and the history pass scans 166 chunks.
 6. [x] Split make sast into make trufflehog and make semgrep, and change the sast
    target to use semgrep and trufflehog as prerequisites.
    Done. `scripts/make/sast.sh` is gone, replaced by `semgrep.sh` and `trufflehog.sh`;
