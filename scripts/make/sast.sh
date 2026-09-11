@@ -3,8 +3,14 @@
 #
 # Complements `make lint`. clippy knows Rust semantics and catches misuse; semgrep
 # matches taint and pattern rules across languages; trufflehog looks for committed
-# credentials, which neither of the others detect. Shell is linted by shellcheck in
-# `make lint`: semgrep publishes no bash ruleset.
+# credentials, which neither of the others detect.
+#
+# Shell rules come from `r/bash`, the registry namespace, because semgrep publishes no
+# `p/` pack for shell: p/sh, p/bash and p/shell are all 404. It is seven rules, and the
+# two that earn their place here are curl-pipe-bash and ifs-tampering; the unquoted
+# expansion rules overlap with shellcheck, which `make lint` already runs. Verified
+# against planted patterns rather than assumed: the three packs above match nothing at
+# all in a shell file.
 #
 # Outbound calls are controlled deliberately in both tools:
 #
@@ -52,6 +58,7 @@ else
         --config p/rust            # Rust-specific patterns
         --config p/secrets         # credentials committed by accident
         --config p/security-audit  # cross-language audit rules
+        --config r/bash            # shell: see the note above on why r/ not p/
     )
 fi
 run_scanner semgrep semgrep "${rules[@]}" --metrics=off --error \

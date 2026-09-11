@@ -57,9 +57,11 @@ Items that I've added that are not stage-bound.
    issued it, which is what separates live credentials from noise. `SAST_NO_VERIFY=1`
    disables it.
    Three bugs found by running it rather than by reading it:
-   - `p/bash` is a 404; semgrep publishes no bash ruleset. Replaced with
-     `p/security-audit`. Shell is linted by shellcheck in `make lint` instead, so the
-     coverage claim in the earlier note was wrong.
+   - `p/bash` is a 404, as are `p/sh` and `p/shell`. Shell rules live at `r/bash`, the
+     registry namespace, which is now in the config: 7 rules, of which curl-pipe-bash
+     and ifs-tampering are the ones shellcheck does not already cover. Confirmed by
+     planting the patterns; without it the other three packs match nothing whatsoever
+     in a shell file, so the earlier coverage claim was wrong.
    - `local rc=$?` captures `local`'s own status, not the command's, so every failure
      was reported as "exited 0". Fixed in both places.
    - semgrep flagged `std::env::args()` in `examples/osv_conformance.rs`. False positive:
