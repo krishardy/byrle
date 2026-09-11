@@ -45,8 +45,8 @@
 //! stays acceptable, because for pnpm and yarn it means the bytes are never seen.
 
 use crate::http::{
-    DecodeError, RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_hop_by_hop,
-    mark_etag, unmark_if_none_match,
+    DEFAULT_MAX_PACKUMENT_BYTES, DecodeError, RequestedEncoding, decode_for_parsing,
+    encoding_to_request, gzip, is_hop_by_hop, mark_etag, unmark_if_none_match,
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
@@ -86,15 +86,6 @@ use tracing::{debug, error, info, warn};
 /// npm's own request parallelism held a six-package install with 165 packuments to a
 /// 141 MB peak.
 pub const DEFAULT_MAX_CONCURRENT_PACKUMENTS: usize = 8;
-
-/// Default ceiling on a packument body, applied both to the bytes buffered and to the
-/// bytes decompression is allowed to produce.
-///
-/// The largest packument measured is typescript: 8.7 MB as the abbreviated document,
-/// 15.7 MB as the full one, 2.0 MB gzipped. This is roughly 2x headroom on that. Over
-/// the limit the response is forwarded without being normalised, because an install must
-/// not fail on account of what the proxy could not inspect.
-pub const DEFAULT_MAX_PACKUMENT_BYTES: usize = 32 * 1024 * 1024;
 
 /// What reading a packument body produced.
 #[derive(Debug)]
@@ -249,6 +240,10 @@ impl Proxy {
 
     pub fn with_max_packument_bytes(mut self, limit: usize) -> Self {
         self.max_packument_bytes = limit;
+        // The proxy's own fetches decode under the same ceiling as the bodies it
+        // forwards, so one setting means one limit.
+        self.registry =
+            npm::Client::new(self.client.clone(), self.upstream.clone()).with_max_bytes(limit);
         self
     }
 
