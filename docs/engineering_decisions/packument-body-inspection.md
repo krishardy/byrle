@@ -5,9 +5,13 @@
 
 ## Decision
 
-A packument response is buffered, decoded into a scratch copy, and normalised. The
-**original encoded bytes** are then forwarded to the client unchanged. Tarball responses
-stream through untouched.
+A packument response is buffered, decoded, and normalised from the decoded original.
+Tarball responses stream through.
+
+The forwarded document is then rewritten so artifact URLs point at the proxy, and
+re-serialised. That decision, and why it reversed an earlier one, is in
+[packument-tarball-url-rewriting.md](packument-tarball-url-rewriting.md); this file covers
+reading the document, which is unchanged by it.
 
 On a packument request the proxy replaces the client's `Accept-Encoding` with `gzip`,
 or `identity` when the client does not accept gzip. A client that accepts neither keeps
@@ -33,11 +37,12 @@ npm 9.9.4 sends `gzip,deflate`, so npm alone would never produce a brotli body. 
 clients may offer br. Narrowing the request to gzip means one decompressor instead of
 three, and the client still receives an encoding it listed.
 
-**Why forward the encoded bytes rather than the decoded ones.** reqwest's `gzip` feature
-is off crate-wide, so nothing is decompressed behind the proxy's back. Forwarding a
-decompressed body under an unchanged `Content-Encoding: gzip` gives the client a parse
-error that looks like the proxy's bug. Re-encoding instead would mean the bytes the
-client hashes are not the bytes the registry sent.
+**Why decode explicitly rather than letting reqwest do it.** reqwest's `gzip` feature is
+off crate-wide, so nothing is decompressed behind the proxy's back and the proxy always
+knows which bytes it holds. Forwarding a decompressed body under an unchanged
+`Content-Encoding: gzip` would give the client a parse error that looks like the proxy's
+bug, so whenever the body is re-serialised its `Content-Encoding` and `Content-Length` are
+set to describe what is actually sent.
 
 **Why the response decides which document it is.** npm asks with
 `application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*`, which names

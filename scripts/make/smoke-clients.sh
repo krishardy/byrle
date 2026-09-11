@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Where npm, pnpm and yarn diverge when installing through the proxy.
 #
-# The proxy only sees what a client chooses to send it, and the clients do not agree.
-# This measures, per client: how many packuments arrived, how many artifacts arrived, and
-# how many artifacts were digest-verified.
+# The proxy only sees what a client chooses to send it, and the clients do not agree about
+# `dist.tarball`: npm rewrites it to the configured registry, pnpm 10 and yarn 1 use it
+# verbatim. The proxy therefore rewrites artifact URLs to point at itself, so that every
+# client in the ecosystem behaves the same way.
 #
-# The number that matters is artifacts. A client that fetches `dist.tarball` at the
-# absolute URL the packument gives goes straight to the origin registry, so the proxy
-# never sees the bytes and verifies nothing.
+# This asserts that. Per client: packuments seen, artifacts seen, artifacts verified. An
+# artifact count of zero means that client is fetching bytes the proxy never sees, which
+# is the condition this whole mechanism exists to prevent.
 #
 # Clients that are not installed are reported and skipped rather than failing the run.
 set -euo pipefail
@@ -74,15 +75,33 @@ measure() {
     artifacts="$(grep -coE 'proxied .*path=/[^ ]+\.tgz' "$log" 2>/dev/null || true)"
     verified="$(count 'artifact digest verified' "$log")"
 
-    local verdict="artifacts reach the proxy"
-    if [[ "$artifacts" -eq 0 && "$packuments" -gt 0 ]]; then
-        verdict="ARTIFACTS BYPASS THE PROXY"
-    elif [[ "$packuments" -eq 0 ]]; then
-        verdict="nothing reached the proxy"
+    printf '  %-6s exit=%-2s packuments=%-4s artifacts=%-4s verified=%-4s\n' \
+        "$client" "$rc" "$packuments" "$artifacts" "$verified"
+
+    if [[ "$rc" -ne 0 ]]; then
+        echo "FAIL: $client could not install through the proxy"
+        sed -n '1,20p' "$dir/out"
+        failed=1
+        return 0
     fi
-    printf '  %-6s exit=%-2s packuments=%-4s artifacts=%-4s verified=%-4s %s\n' \
-        "$client" "$rc" "$packuments" "$artifacts" "$verified" "$verdict"
+    if [[ "$artifacts" -eq 0 ]]; then
+        echo "FAIL: $client fetched no artifacts through the proxy, so it is fetching them"
+        echo "      somewhere the proxy cannot see. Check dist.tarball rewriting."
+        failed=1
+        return 0
+    fi
+    if [[ "$verified" -ne "$artifacts" ]]; then
+        echo "FAIL: $client fetched $artifacts artifacts but only $verified were verified"
+        failed=1
+    fi
+    if grep -q 'UNINSPECTED' "$log"; then
+        echo "FAIL: something went unexamined for $client:"
+        grep 'UNINSPECTED' "$log" | head -3
+        failed=1
+    fi
 }
+
+failed=0
 
 echo "==> installing '$package' through the proxy with each client"
 measure npm npm install "$package" --registry "$registry" \
@@ -92,18 +111,19 @@ measure pnpm pnpm add "$package" --registry "$registry" \
 measure yarn yarn add "$package" --registry "$registry" \
     --cache-folder "$workdir/yarn/cache" --no-lockfile --silent
 
+if [[ "$failed" -ne 0 ]]; then
+    echo
+    echo "FAIL: see above."
+    exit 1
+fi
+
 cat <<'NOTE'
 
-Measured Sept 2026 with npm 9.9.4, pnpm 10.33.0, yarn 1.22.22:
+All clients fetch artifacts through the proxy, because artifact URLs are rewritten to
+point at it. Without that, measured Sept 2026 with npm 9.9.4, pnpm 10.33.0 and
+yarn 1.22.22: npm rewrote dist.tarball to the configured registry and its artifacts
+arrived; pnpm and yarn used the URL verbatim and fetched every artifact from the origin
+registry, so the proxy saw none of them.
 
-  npm   rewrites dist.tarball to the configured registry, so artifacts arrive.
-  pnpm  fetches dist.tarball at its absolute URL. Artifacts bypass the proxy.
-  yarn  fetches dist.tarball at its absolute URL. Artifacts bypass the proxy.
-
-For pnpm and yarn the proxy sees metadata and never the bytes, so nothing is
-digest-verified and artifact analysis has nothing to analyse. Metadata policy still
-applies, because both fetch packuments through the proxy.
-
-Closing it means rewriting dist.tarball in the packument to point at the proxy, which
-plan section 4 decided against. See docs/engineering_decisions/ for the open question.
+See docs/engineering_decisions/packument-tarball-url-rewriting.md.
 NOTE

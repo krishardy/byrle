@@ -5,9 +5,18 @@
 //!
 //! # Bodies
 //!
-//! Tarballs stream straight through. Packuments are buffered, decoded into a scratch
-//! copy and normalised, and then the **original encoded bytes** are forwarded unchanged.
-//! Nothing the client receives is re-encoded.
+//! Tarballs stream straight through, hashed on the way past. Packuments are buffered,
+//! decoded, normalised, and then **rewritten**: every artifact URL the proxy can serve is
+//! pointed at the proxy itself, and the document is re-serialised and re-compressed.
+//!
+//! The rewrite exists because clients disagree about `dist.tarball`. npm rewrites it to
+//! the configured registry; pnpm 10 and yarn 1 use it verbatim and fetch from whatever
+//! host it names, so without this their artifacts never reach the proxy at all. See
+//! `docs/engineering_decisions/packument-tarball-url-rewriting.md`.
+//!
+//! Normalising reads the decoded original, never the rewritten copy. Records built from
+//! the rewritten document would carry the proxy's own origin as the registry's claim, and
+//! would make [`crate::npm::bypassing_origin`] report every package.
 //!
 //! For a packument request the proxy replaces the client's `Accept-Encoding` with gzip
 //! or identity, whichever the client accepts ([`crate::http::encoding_to_request`]).
@@ -19,10 +28,22 @@
 //! has to decide before forwarding, so the shape does not change, and a background task
 //! would make the smoke assertions racy. Measured cost, logged as `parse_ms`: 2 ms for
 //! lodash (117 versions), 7 ms for @babel/core (230), 252 ms for the full typescript
-//! packument (3,822 versions, 15.7 MB decoded).
+//! packument (3,822 versions, 15.7 MB decoded). The rewrite adds roughly 64 ms on that
+//! same document in a release build: 36 ms to parse, 10 ms to serialise, 18 ms to gzip.
+//!
+//! # When a packument is forwarded unrewritten
+//!
+//! Every such path logs `UNINSPECTED`, because each one leaves that package's artifacts
+//! to be fetched wherever the document says. They are: the client accepts no encoding
+//! this can decode; there is no `Host` and no configured public base; the body passes the
+//! size cap; it cannot be decoded; it cannot be normalised; it cannot be re-serialised;
+//! and, per version, an artifact on an origin the proxy does not front. Stage 1 forwards
+//! in all of them rather than failing an install. Stage 2 has to decide whether that
+//! stays acceptable, because for pnpm and yarn it means the bytes are never seen.
 
 use crate::http::{
-    DecodeError, RequestedEncoding, decode_for_parsing, encoding_to_request, is_hop_by_hop,
+    DecodeError, RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_hop_by_hop,
+    mark_etag, unmark_if_none_match,
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
@@ -33,7 +54,7 @@ use axum::{
     Router,
     body::Body,
     extract::{Request, State},
-    http::{HeaderMap, Method, StatusCode, header},
+    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use bytes::{Bytes, BytesMut};
@@ -74,11 +95,18 @@ pub fn inspect_packument(
     detail: PackumentDetail,
     limit: usize,
 ) -> PackumentOutcome {
-    let decoded = match decode_for_parsing(body, content_encoding, limit) {
-        Ok(d) => d,
-        Err(e) => return PackumentOutcome::Undecodable(e),
+    match decode_for_parsing(body, content_encoding, limit) {
+        Ok(decoded) => inspect_decoded(Some(&decoded), detail),
+        Err(e) => PackumentOutcome::Undecodable(e),
+    }
+}
+
+/// Normalise an already decoded body. `None` means decoding failed earlier.
+fn inspect_decoded(decoded: Option<&[u8]>, detail: PackumentDetail) -> PackumentOutcome {
+    let Some(decoded) = decoded else {
+        return PackumentOutcome::Undecodable(DecodeError::TooLarge(0));
     };
-    match npm::normalize_packument(&decoded, detail) {
+    match npm::normalize_packument(decoded, detail) {
         Ok(p) => PackumentOutcome::Normalized(Box::new(p)),
         Err(e) => PackumentOutcome::Unreadable(e),
     }
@@ -99,6 +127,13 @@ pub struct Proxy {
     /// no config file behind it, so it cannot quietly become a feature.
     blocked: Option<PackageKey>,
     max_packument_bytes: usize,
+    /// Point artifact URLs at the proxy so every client fetches through it. See
+    /// [`rewrite_packument`].
+    rewrite_artifacts: bool,
+    /// The address to write into artifact URLs, when it must not be taken from the
+    /// request's `Host`. Needed behind a load balancer, and for a stable name in
+    /// lockfiles.
+    public_base: Option<String>,
 }
 
 impl Proxy {
@@ -111,7 +146,21 @@ impl Proxy {
             upstream,
             blocked: None,
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
+            rewrite_artifacts: true,
+            public_base: None,
         }
+    }
+
+    pub fn with_artifact_rewriting(mut self, rewrite: bool) -> Self {
+        self.rewrite_artifacts = rewrite;
+        self
+    }
+
+    /// Override the address written into artifact URLs. Without it the request's `Host`
+    /// is used, which is what the client already reached the proxy on.
+    pub fn with_public_base(mut self, base: Option<String>) -> Self {
+        self.public_base = base.map(|b| b.trim_end_matches('/').to_owned());
+        self
     }
 
     pub fn with_max_records(self, max_records: usize) -> Self {
@@ -296,6 +345,32 @@ async fn buffer_to_limit(mut stream: ByteStream, limit: usize) -> Buffered {
     Buffered::Complete(buf.freeze())
 }
 
+/// The address to write into artifact URLs.
+///
+/// The request's `Host` is the address the client actually reached the proxy on, which is
+/// what its next request has to go to. `X-Forwarded-Proto` covers TLS terminated in front
+/// of us. An explicit override wins over both, for a load balancer whose `Host` is not
+/// what clients use, and for pinning a stable name into lockfiles.
+///
+/// `None` when there is nothing usable, which means the packument is forwarded as it
+/// came.
+fn public_base(headers: &HeaderMap, configured: Option<&str>) -> Option<String> {
+    if let Some(base) = configured {
+        return Some(base.trim_end_matches('/').to_owned());
+    }
+    let host = headers.get(header::HOST)?.to_str().ok()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .map(|v| v.split(',').next().unwrap_or(v).trim())
+        .filter(|v| !v.is_empty())
+        .unwrap_or("http");
+    Some(format!("{scheme}://{host}"))
+}
+
 /// Find the record for an artifact, fetching its packument if the client never asked for
 /// one.
 ///
@@ -412,6 +487,27 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let read_packument = method == Method::GET
         && matches!(target, RequestTarget::Packument(_))
         && chosen_encoding != RequestedEncoding::Unreadable;
+    let rewrite_base = public_base(req.headers(), proxy.public_base.as_deref());
+    let rewriting = read_packument && proxy.rewrite_artifacts && rewrite_base.is_some();
+
+    // Every path that forwards a packument without rewriting it leaves this package's
+    // artifacts to be fetched wherever the document says, which for pnpm and yarn means
+    // not through the proxy. They all carry the same marker so one grep finds them.
+    if matches!(target, RequestTarget::Packument(_)) && method == Method::GET && !rewriting {
+        if chosen_encoding == RequestedEncoding::Unreadable {
+            warn!(
+                path = %path_and_query,
+                accept_encoding = client_accept_encoding.as_deref().unwrap_or("-"),
+                "UNINSPECTED: client accepts no encoding this can read"
+            );
+        } else if rewrite_base.is_none() {
+            warn!(
+                path = %path_and_query,
+                "UNINSPECTED: no Host header and no configured public base, so artifact \
+                 URLs cannot be pointed at the proxy"
+            );
+        }
+    }
 
     let url = format!("{}{}", proxy.upstream, path_and_query);
     let mut outbound = proxy.client.request(method.clone(), &url);
@@ -422,10 +518,33 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         if read_packument && name == header::ACCEPT_ENCODING {
             continue;
         }
+        if rewriting && name == header::IF_NONE_MATCH {
+            continue;
+        }
         outbound = outbound.header(name, value);
     }
     if read_packument && let Some(value) = chosen_encoding.header_value() {
         outbound = outbound.header(header::ACCEPT_ENCODING, value);
+    }
+    // An `If-None-Match` the client got from us names our rewritten body, not the
+    // upstream's. Turn it back, or drop it when it came from a proxy at another address.
+    if rewriting
+        && let Some(inm) = req
+            .headers()
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+        && let Some(base) = rewrite_base.as_deref()
+    {
+        outbound = match unmark_if_none_match(inm, base) {
+            Some(value) => outbound.header(header::IF_NONE_MATCH, value),
+            None => {
+                info!(
+                    path = %path_and_query,
+                    "dropping a conditional request tagged for another proxy address"
+                );
+                outbound
+            }
+        };
     }
 
     let upstream_response = match outbound.send().await {
@@ -570,7 +689,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             warn!(
                 path = %path_and_query,
                 limit = proxy.max_packument_bytes,
-                "packument exceeds the size limit; forwarding without normalizing"
+                "UNINSPECTED: packument exceeds the size limit, forwarded without rewriting"
             );
             log_proxied(upstream_len.unwrap_or(0));
             let spliced = stream::iter(std::iter::once(Ok(prefix))).chain(rest);
@@ -586,13 +705,24 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         }
     };
 
+    // Decoded once. Normalising and the store read these bytes; the rewrite below works
+    // on a copy. Building records from the rewritten document instead would set every
+    // artifact URL to the proxy's own origin, which is both the wrong thing to store as
+    // the upstream's claim and enough to make the offsite check report every package.
     let parse_started = Instant::now();
-    match inspect_packument(
+    let decoded = match decode_for_parsing(
         &body,
         content_encoding.as_deref(),
-        detail,
         proxy.max_packument_bytes,
     ) {
+        Ok(decoded) => Some(decoded),
+        Err(e) => {
+            warn!(path = %path_and_query, error = %e, "UNINSPECTED: packument body could not be decoded");
+            None
+        }
+    };
+
+    match inspect_decoded(decoded.as_deref(), detail) {
         PackumentOutcome::Normalized(p) => {
             // Artifacts on an origin the proxy does not front are fetched directly by
             // the client, so nothing about them is observed: not the digest check below,
@@ -635,15 +765,89 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             );
         }
         PackumentOutcome::Unreadable(e) => {
-            warn!(path = %path_and_query, error = %e, "packument did not normalize")
+            warn!(path = %path_and_query, error = %e, "UNINSPECTED: packument did not normalize")
         }
-        PackumentOutcome::Undecodable(e) => {
-            warn!(path = %path_and_query, error = %e, "packument body could not be decoded")
-        }
+        PackumentOutcome::Undecodable(_) => {}
     }
+
+    // The rewrite. Every client in the npm ecosystem has to fetch artifacts through the
+    // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
+    // configured registry, pnpm 10 and yarn 1 use it verbatim. Pointing it here makes
+    // them behave alike.
+    let forwarded = match decoded.as_deref().filter(|_| rewriting) {
+        Some(decoded) => {
+            let base = rewrite_base.as_deref().expect("rewriting implies a base");
+            rewrite_packument(decoded, base, &proxy.upstream, &path_and_query)
+        }
+        None => None,
+    };
+
+    let body = match forwarded {
+        Some(rewritten) => {
+            // The body is ours now, so its length, its encoding and its entity tag all
+            // have to describe it rather than the upstream's.
+            let encoded = match chosen_encoding {
+                RequestedEncoding::Gzip => match gzip(&rewritten) {
+                    Ok(encoded) => {
+                        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+                        encoded
+                    }
+                    Err(e) => {
+                        warn!(path = %path_and_query, error = %e, "could not re-compress; sending identity");
+                        headers.remove(header::CONTENT_ENCODING);
+                        rewritten
+                    }
+                },
+                _ => {
+                    headers.remove(header::CONTENT_ENCODING);
+                    rewritten
+                }
+            };
+            if let Ok(value) = HeaderValue::from_str(&encoded.len().to_string()) {
+                headers.insert(header::CONTENT_LENGTH, value);
+            }
+            if let Some(etag) = headers
+                .get(header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(|etag| mark_etag(etag, rewrite_base.as_deref().unwrap_or_default()))
+                && let Ok(value) = HeaderValue::from_str(&etag)
+            {
+                headers.insert(header::ETAG, value);
+            }
+            Bytes::from(encoded)
+        }
+        None => body,
+    };
 
     log_proxied(body.len() as u64);
     (forward_status, headers, Body::from(body)).into_response()
+}
+
+/// Point a packument's artifacts at the proxy, or explain why it was left alone.
+///
+/// Returns `None` when the document is forwarded as it came, which always means some
+/// artifacts for this package will be fetched without the proxy seeing them.
+fn rewrite_packument(decoded: &[u8], base: &str, upstream: &str, path: &str) -> Option<Vec<u8>> {
+    let reachable = [upstream, npm::DEFAULT_REGISTRY];
+    match npm::rewrite_artifact_origins(decoded, &reachable, base) {
+        Ok(rewritten) => {
+            if rewritten.left_alone > 0 {
+                warn!(
+                    path = %path,
+                    versions = rewritten.left_alone,
+                    "UNINSPECTED: artifacts left on an origin the proxy does not front"
+                );
+            }
+            if rewritten.rewritten == 0 {
+                return None;
+            }
+            Some(rewritten.body)
+        }
+        Err(e) => {
+            warn!(path = %path, error = %e, "UNINSPECTED: packument could not be rewritten");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -783,26 +987,23 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Forwarding
-    // -----------------------------------------------------------------------
-
-    /// The client gets the upstream bytes unchanged. A packument is buffered and read on
-    /// the way past, and reading it must not alter it.
+    /// A packument is rewritten, and everything except the artifact URLs has to survive
+    /// it intact. `dist.integrity` above all: npm checks the bytes it downloads against
+    /// it, and the registry signature covers `<name>@<version>:<integrity>`.
     #[tokio::test]
-    async fn a_packument_body_is_forwarded_byte_for_byte() {
-        let body = fixture("lodash-4.17.21.abbrev.json");
-        let encoded = gzip(&body);
+    async fn a_rewritten_packument_changes_only_the_artifact_urls() {
+        let original = fixture("lodash-4.17.21.abbrev.json");
         let (base, _) = proxy_serving(
             StatusCode::OK,
             "application/vnd.npm.install-v1+json",
             Some("gzip"),
-            encoded.clone(),
+            gzip(&original),
         )
         .await;
 
         let response = reqwest::Client::new()
             .get(format!("{base}/lodash"))
-            .header(header::ACCEPT_ENCODING, "gzip,deflate")
+            .header(header::ACCEPT_ENCODING, "gzip")
             .send()
             .await
             .unwrap();
@@ -810,12 +1011,113 @@ mod tests {
         assert_eq!(
             response.headers().get(header::CONTENT_ENCODING).unwrap(),
             "gzip",
-            "the body is still gzipped, so Content-Encoding must still say so"
+            "the body is re-compressed, so Content-Encoding still applies"
         );
+        let body = response.bytes().await.unwrap();
+        let served: serde_json::Value =
+            serde_json::from_slice(&decode_for_parsing(&body, Some("gzip"), 1 << 20).unwrap())
+                .unwrap();
+        let mut expected: serde_json::Value = serde_json::from_slice(&original).unwrap();
+
+        let host = base.trim_start_matches("http://");
         assert_eq!(
-            response.bytes().await.unwrap().as_ref(),
-            encoded.as_slice(),
-            "forwarded bytes differ from what upstream sent"
+            served["versions"]["4.17.21"]["dist"]["tarball"],
+            serde_json::json!(format!("http://{host}/lodash/-/lodash-4.17.21.tgz")),
+            "the artifact has to point at the proxy"
+        );
+
+        // Put the original URL back, and nothing else may differ.
+        expected["versions"]["4.17.21"]["dist"]["tarball"] =
+            served["versions"]["4.17.21"]["dist"]["tarball"].clone();
+        assert_eq!(served, expected, "something other than the URL changed");
+    }
+
+    /// The length has to describe the body actually sent, or the client reads the wrong
+    /// number of bytes.
+    #[tokio::test]
+    async fn a_rewritten_body_carries_its_own_length() {
+        let original = fixture("lodash-4.17.21.abbrev.json");
+        let (base, _) = proxy_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            original.clone(),
+        )
+        .await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::ACCEPT_ENCODING, "identity")
+            .send()
+            .await
+            .unwrap();
+        let declared: usize = response
+            .headers()
+            .get(header::CONTENT_LENGTH)
+            .expect("a length is declared")
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let body = response.bytes().await.unwrap();
+        assert_eq!(declared, body.len());
+        assert_ne!(
+            body.len(),
+            original.len(),
+            "this fixture does change length, so the test would pass vacuously otherwise"
+        );
+    }
+
+    /// Turning rewriting off restores byte-for-byte forwarding.
+    #[tokio::test]
+    async fn rewriting_can_be_turned_off() {
+        let original = fixture("lodash-4.17.21.abbrev.json");
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            original.clone(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_artifact_rewriting(false)
+                .router(),
+        )
+        .await;
+
+        let body = reqwest::get(format!("{base}/lodash"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(body.as_ref(), original.as_slice());
+    }
+
+    /// An artifact on an origin the proxy does not front is left alone. Rewriting it
+    /// would mean the proxy fetching from an arbitrary host for a client.
+    #[tokio::test]
+    async fn artifacts_on_other_origins_are_not_rewritten() {
+        let packument = r#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0","dist":{
+            "tarball":"https://elsewhere.example/widget-1.0.0.tgz","integrity":"sha512-AAAA"}}}}"#;
+        let (base, _) = proxy_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            packument.as_bytes().to_vec(),
+        )
+        .await;
+
+        let body = reqwest::get(format!("{base}/widget"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            body.contains("https://elsewhere.example/widget-1.0.0.tgz"),
+            "an unreachable origin stays as it is: {body}"
         );
     }
 
@@ -1454,6 +1756,176 @@ mod tests {
             seen.lock().unwrap().paths,
             vec!["/widget"],
             "no artifact request follows, because the client goes straight to the other host"
+        );
+    }
+
+    /// A client that caches a rewritten packument revalidates against a tag we issued,
+    /// not the upstream's. The proxy has to translate it back, or the registry never
+    /// answers 304 and the conditional request buys nothing.
+    #[tokio::test]
+    async fn a_conditional_request_round_trips_through_the_rewrite() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let seen: Recorder = Arc::default();
+        let recorder = seen.clone();
+        let router = Router::new().route(
+            "/lodash",
+            get(move |req: Request| {
+                let seen = recorder.clone();
+                let body = body.clone();
+                async move {
+                    let inm = req
+                        .headers()
+                        .get(header::IF_NONE_MATCH)
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_owned);
+                    seen.lock().unwrap().headers.push(req.headers().clone());
+                    if inm.as_deref() == Some("\"upstream-tag\"") {
+                        return Response::builder()
+                            .status(StatusCode::NOT_MODIFIED)
+                            .header(header::ETAG, "\"upstream-tag\"")
+                            .body(Body::empty())
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
+                        .header(header::ETAG, "\"upstream-tag\"")
+                        .body(Body::from(body))
+                        .unwrap()
+                }
+            }),
+        );
+        let base = serve(Proxy::new(reqwest::Client::new(), serve(router).await).router()).await;
+
+        let first = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let tag = first
+            .headers()
+            .get(header::ETAG)
+            .expect("a rewritten body needs a tag")
+            .to_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(
+            tag, "\"upstream-tag\"",
+            "the tag has to name our body, not the upstream's"
+        );
+        first.bytes().await.unwrap();
+
+        let second = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::IF_NONE_MATCH, &tag)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            second.status(),
+            304,
+            "the registry should have answered 304"
+        );
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .headers
+                .last()
+                .unwrap()
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok()),
+            Some("\"upstream-tag\""),
+            "the upstream has to receive its own tag back, not ours"
+        );
+    }
+
+    /// A tag issued when the proxy answered on another address must not revalidate: a 304
+    /// would leave the client serving artifact URLs pointing at an address nobody
+    /// listens on. Dropping the header makes the registry send a body to rewrite afresh.
+    #[tokio::test]
+    async fn a_tag_from_another_proxy_address_does_not_revalidate() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let (base, seen) = proxy_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            body,
+        )
+        .await;
+
+        let stale = crate::http::mark_etag("\"upstream-tag\"", "http://some-old-address:9999");
+        let response = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::IF_NONE_MATCH, stale)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            seen.lock()
+                .unwrap()
+                .headers
+                .last()
+                .unwrap()
+                .get(header::IF_NONE_MATCH),
+            None,
+            "the stale conditional header must not reach the registry"
+        );
+    }
+
+    /// The address written into artifact URLs comes from the `Host` the client used, so
+    /// a proxy reachable by several names points each client back at its own.
+    #[tokio::test]
+    async fn artifact_urls_use_the_host_the_client_reached_us_on() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let (base, _) = proxy_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            body,
+        )
+        .await;
+
+        let text = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::HOST, "npm.corp.example")
+            .header("x-forwarded-proto", "https")
+            .send()
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            text.contains("https://npm.corp.example/lodash/-/lodash-4.17.21.tgz"),
+            "artifact URL did not follow Host and X-Forwarded-Proto: {text}"
+        );
+    }
+
+    /// An explicit public base wins over `Host`, which is what a deployment behind a load
+    /// balancer needs, and what pins a stable name into lockfiles.
+    #[tokio::test]
+    async fn a_configured_public_base_overrides_the_host_header() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            body,
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_public_base(Some("https://npm.corp.example/".into()))
+                .router(),
+        )
+        .await;
+
+        let text = reqwest::get(format!("{base}/lodash"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(
+            text.contains("https://npm.corp.example/lodash/-/lodash-4.17.21.tgz"),
+            "the configured base was not used: {text}"
         );
     }
 

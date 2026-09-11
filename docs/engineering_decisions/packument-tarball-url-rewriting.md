@@ -1,70 +1,109 @@
-# Rewriting `dist.tarball`: reopened
+# Rewriting `dist.tarball` to point at the proxy
 
-- **Status:** Open question, reopened Sept 2026 by measurement
-- **Plan reference:** §4, "npm needs no packument rewriting"
+- **Status:** Decided Sept 2026, implemented Stage 1
+- **Supersedes:** plan §4, "npm needs no packument rewriting"
+- **Code:** `npm::rewrite_artifact_origins`, `proxy::rewrite_packument`
 - **Reproduce:** `make smoke-clients`
 
-## The decision as it stands
+## Decision
 
-The proxy forwards packuments byte for byte and does not rewrite `dist.tarball`. Plan §4
-recorded this as settled, on the grounds that npm resolves tarballs against the
-configured registry regardless of what the packument says, so rewriting would buy
-nothing and cost a great deal.
+The proxy rewrites every artifact URL in a packument to point at itself, for every
+client. Only the origin changes; the path is kept.
 
-## What the measurement showed
+An artifact whose origin is not one the proxy already fronts, meaning neither the
+configured upstream nor the default registry, is left alone.
 
-That is true of npm and false of pnpm and yarn.
+## Why it was reopened
+
+Plan §4 recorded that npm resolves tarballs against the configured registry regardless of
+what `dist.tarball` says, so rewriting would buy nothing. That was measured on npm alone,
+and it is not true of the other clients.
 
 Each client was pointed at a controlled registry serving one package whose `dist.tarball`
-named `https://registry.npmjs.org`, a host where that package does not exist. A client
-that rewrites the URL to the configured registry installs successfully; one that uses the
-URL verbatim gets a 404.
+named a host where that package does not exist. A client that rewrites the URL installs;
+one that uses it verbatim gets a 404.
 
-| Client | Result | What it proves |
+| Client | Result | Behaviour |
 |---|---|---|
 | npm 9.9.4 | installed | rewrites to the configured registry |
-| pnpm 10.33.0 | `ERR_PNPM_FETCH_404 GET https://registry.npmjs.org/...` | uses the URL verbatim |
-| yarn 1.22.22 | `404 Not Found` on the same URL | uses the URL verbatim |
+| pnpm 10.33.0 | `ERR_PNPM_FETCH_404` | uses the URL verbatim |
+| yarn 1.22.22 | `404 Not Found` | uses the URL verbatim |
 
-Against the real registry the same divergence shows up as silence. Installing `express`
-through the proxy: npm sent 67 packuments and 69 tarballs; pnpm sent 66 packuments and
-**zero** tarballs, and installed successfully. Every artifact went straight to
-registry.npmjs.org.
+Against the real registry this showed up as silence. Installing `express` through the
+proxy, npm sent 67 packuments and 69 tarballs; pnpm sent 66 packuments and **zero**
+tarballs, and installed successfully. Every artifact went straight to registry.npmjs.org,
+so digest verification never ran and Stage 3 would have had nothing to analyse.
 
-## What it costs today
+## Why rewrite for npm too
 
-For pnpm and yarn the proxy sees metadata and never the bytes:
+npm does not need it. Rewriting for it anyway means one behaviour for the whole
+ecosystem instead of a per-client table keyed on user-agent, which would make the response
+vary by client and would need maintaining as clients change.
 
-- No digest verification. The check exists and never runs.
-- Nothing for artifact analysis to analyse, which is all of Stage 3.
-- Metadata policy still applies, because both clients do fetch packuments through the
-  proxy. A metadata-only verdict is most of Stage 2's detection surface, so these clients
-  are degraded rather than unprotected.
+## Why it is now affordable
 
-## What closing it would cost
+The plan's objection was that rewriting means buffering and re-serialising every
+packument. Buffering is no longer a new cost: packuments are already buffered and parsed
+to be normalised. Only re-serialisation is new.
 
-Rewriting `dist.tarball` to point at the proxy makes lockfiles environment-specific.
-Measured on lockfiles written through the proxy today, both record the origin registry
-and are portable:
+Measured in a release build on the largest packument seen, typescript at 8.7 MB
+abbreviated:
 
-- `package-lock.json`: every `resolved` is `https://registry.npmjs.org/...`
-- `pnpm-lock.yaml`: every `resolution.tarball` is `https://registry.npmjs.org/...`
+| Step | Cost |
+|---|---|
+| parse to a JSON value | 36 ms |
+| rewrite URLs | 1.6 ms |
+| serialise | 10 ms |
+| gzip, `Compression::fast()` | 18 ms |
 
-After rewriting, both would record the proxy's own address. A lockfile committed from a
-machine behind the proxy would name a host nobody else can reach.
+`fast` rather than `default`: 18 ms against 117 ms, for 2.06 MB against 1.69 MB. A 22%
+larger body on a hop that is usually loopback or a LAN, for a sixth of the CPU.
+`serde_json`'s `preserve_order` feature is on, so key order survives and the forwarded
+document differs from the original only in the URLs.
 
-The plan's other objection, that rewriting means buffering and re-serialising every
-packument, no longer holds: packuments are already buffered and parsed to be normalised
-(see [packument-body-inspection.md](packument-body-inspection.md)). Re-serialising is the
-remaining new cost, along with the risk of a rewritten document differing from the
-original in some way a client notices.
+## Lockfiles, which was the real objection
 
-## Open
+Clients record the resolved artifact URL, so rewriting puts the proxy's address in
+lockfiles. Measured, and it is not uniform:
 
-Whether to rewrite, and if so whether to do it only for clients that need it. The
-user-agent is already parsed, so serving a rewritten packument to pnpm and yarn and the
-original to npm is possible. That makes the response vary by client, which is a property
-worth being deliberate about rather than arriving at.
+| Client | Before rewriting | After rewriting |
+|---|---|---|
+| npm | `resolved: https://registry.npmjs.org/...` | `resolved: <proxy>/...` |
+| yarn 1 | `resolved "https://registry.npmjs.org/..."` | `resolved "<proxy>/..."` |
+| pnpm | `resolution: {integrity, tarball: https://registry.npmjs.org/...}` | `resolution: {integrity}` |
 
-Not decided here. What is settled is that the §4 finding is npm-specific, and the plan has
-been corrected to say so.
+pnpm omits the tarball URL when it matches the configured registry and derives it at
+install time, so for pnpm the lockfile becomes registry-independent: more portable than
+before, not less.
+
+For npm and yarn the address is recorded, so it has to be a stable name that everyone
+consuming the lockfile can reach. `WAHAROA_PUBLIC_URL` pins it; otherwise the request's
+own `Host` is used. Two consequences, and they are the same fact seen from two sides: a
+lockfile committed from behind the proxy cannot be installed without the proxy, which
+means CI cannot silently skip enforcement, and the proxy becomes something CI depends on
+being reachable.
+
+## Why not rewrite artifacts on other origins
+
+Rewriting those would mean the proxy fetching from an arbitrary host on a client's behalf,
+which is a capability worth not having. They stay as they are, and
+`npm::bypassing_origin` reports them so they are visible rather than silent.
+
+## Consequences
+
+- Registry signatures are unaffected. pacote signs `${mani._id}:${mani._integrity}`
+  (`lib/registry.js`), which is name, version and integrity. The URL is not covered.
+  `dist.integrity` is never touched.
+- The forwarded body is no longer the upstream's bytes, so `Content-Length`,
+  `Content-Encoding` and `ETag` are all set to describe what the proxy sends. The `ETag`
+  is marked with a tag derived from the proxy's own address, and an `If-None-Match` from
+  a proxy at a different address is dropped rather than revalidated, which would otherwise
+  let a 304 leave a client serving artifact URLs pointing at an address nobody listens on.
+- **Forwarding a packument unrewritten now means more than it used to.** It used to mean
+  the metadata went unobserved; it now means every artifact for that package is fetched
+  wherever the document says, which for pnpm and yarn is not through the proxy. Every such
+  path logs `UNINSPECTED` so one grep finds all of them. Stage 1 forwards in all of them
+  rather than failing an install, and Stage 2 has to decide whether that stays acceptable.
+- A registry serving artifacts at non-canonical paths still routes correctly, because the
+  path is preserved, but `classify_path` returns `Other` for those requests, so they lose
+  digest verification.

@@ -64,10 +64,28 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_RECORDS);
 
+    // Artifact URLs are pointed at the proxy so every client in the ecosystem fetches
+    // through it. Setting WAHAROA_PUBLIC_URL pins the address written into them, which
+    // is what lockfiles record; without it the request's own Host is used.
+    let public_base = std::env::var("WAHAROA_PUBLIC_URL")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let rewrite_artifacts = std::env::var("WAHAROA_REWRITE_ARTIFACTS")
+        .map(|v| v != "0")
+        .unwrap_or(true);
+    if !rewrite_artifacts {
+        info!(
+            "artifact URL rewriting is OFF; pnpm and yarn will fetch artifacts directly \
+             and nothing about them is observed"
+        );
+    }
+
     let proxy = Proxy::new(client, upstream)
         .with_blocked(blocked)
         .with_max_packument_bytes(max_packument_bytes)
-        .with_max_records(max_records);
+        .with_max_records(max_records)
+        .with_artifact_rewriting(rewrite_artifacts)
+        .with_public_base(public_base);
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
