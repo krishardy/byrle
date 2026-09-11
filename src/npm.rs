@@ -260,6 +260,109 @@ fn normalise_origin(base: &str) -> Result<String, OriginError> {
     Ok(origin_of(&url))
 }
 
+/// What happens to an artifact, decided by the origin it is published on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Disposition {
+    /// The proxy fetches it, so it can be examined.
+    Served,
+    /// The client fetches it directly and nothing about it is observed. The operator has
+    /// said that is acceptable for this origin.
+    AllowedDirect(String),
+    /// The proxy neither serves it nor permits it.
+    Refused(String),
+}
+
+/// Which origins the proxy serves, and which it permits a client to fetch directly.
+///
+/// Three states, not two. Before the allow list the only escape from a refusal was to
+/// turn refusing off everywhere, which trades one origin's exemption for every origin's.
+///
+/// What counts as served depends on how the proxy is deployed. In reverse-proxy mode it
+/// is the upstream, the default registry and anything configured, because artifact URLs
+/// are rewritten to point here. In the terminating mode described in
+/// `docs/engineering_decisions/terminating-tls-certificates.md` it is the domains the
+/// proxy holds certificates for, because those are the connections it actually sees. The
+/// policy below does not change between them; only the set does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OriginPolicy {
+    reachable: ReachableOrigins,
+    /// Normalised origins the operator has exempted.
+    allowed_direct: Vec<String>,
+}
+
+impl OriginPolicy {
+    pub fn new<'a>(
+        reachable: ReachableOrigins,
+        allowed_direct: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, OriginError> {
+        let mut allowed = Vec::new();
+        for base in allowed_direct {
+            let base = base.trim();
+            if base.is_empty() {
+                continue;
+            }
+            let origin = normalise_origin(base)?;
+            if !allowed.contains(&origin) {
+                allowed.push(origin);
+            }
+        }
+        Ok(Self {
+            reachable,
+            allowed_direct: allowed,
+        })
+    }
+
+    pub fn reachable(&self) -> &ReachableOrigins {
+        &self.reachable
+    }
+
+    pub fn allowed_direct(&self) -> &[String] {
+        &self.allowed_direct
+    }
+
+    /// What happens to an artifact published at this URL.
+    ///
+    /// A URL that does not parse is refused under its own text: it names no origin that
+    /// could be served or allowed, and an artifact that cannot be located cannot be
+    /// examined either.
+    pub fn disposition(&self, artifact_url: &str) -> Disposition {
+        let Some(origin) = origin_of_url(artifact_url) else {
+            return Disposition::Refused(artifact_url.to_owned());
+        };
+        if self.reachable.contains(&origin) {
+            return Disposition::Served;
+        }
+        if self.allowed_direct.contains(&origin) {
+            return Disposition::AllowedDirect(origin);
+        }
+        Disposition::Refused(origin)
+    }
+}
+
+impl NormalizedPackument {
+    /// Artifact origins this document publishes that the proxy does not serve, split by
+    /// whether the operator has allowed them.
+    ///
+    /// Both maps count versions. The allowed one has to stay visible: it is an accepted
+    /// gap, and an accepted gap that stops being reported outlives the reason it was
+    /// added.
+    pub fn unserved_origins(
+        &self,
+        policy: &OriginPolicy,
+    ) -> (BTreeMap<String, usize>, BTreeMap<String, usize>) {
+        let mut allowed = BTreeMap::new();
+        let mut refused = BTreeMap::new();
+        for record in &self.records {
+            match policy.disposition(&record.artifact.url) {
+                Disposition::Served => {}
+                Disposition::AllowedDirect(origin) => *allowed.entry(origin).or_insert(0) += 1,
+                Disposition::Refused(origin) => *refused.entry(origin).or_insert(0) += 1,
+            }
+        }
+        (allowed, refused)
+    }
+}
+
 /// Where a client will actually fetch an artifact from, when that is not the proxy.
 ///
 /// Returns the origin it will go to directly, or `None` when the request will arrive at
@@ -482,7 +585,7 @@ pub fn rewrite_artifact_origins<'a>(
 pub fn filter_unservable_versions(
     json: &[u8],
     artifacts: impl IntoIterator<Item = (String, String)>,
-    reachable: &ReachableOrigins,
+    policy: &OriginPolicy,
     public_base: &str,
 ) -> Result<Filtered, RewriteError> {
     let mut document: serde_json::Value =
@@ -491,13 +594,17 @@ pub fn filter_unservable_versions(
 
     let mut removed = Vec::new();
     let mut rewritten = 0;
+    let mut allowed = 0;
     if let Some(versions) = document
         .get_mut("versions")
         .and_then(serde_json::Value::as_object_mut)
     {
         for (version, url) in artifacts {
-            match reachable_path(&url, reachable) {
-                Some(path) => {
+            match policy.disposition(&url) {
+                Disposition::Served => {
+                    let Some(path) = reachable_path(&url, policy.reachable()) else {
+                        continue;
+                    };
                     if let Some(tarball) = versions
                         .get_mut(&version)
                         .and_then(|entry| entry.get_mut("dist"))
@@ -507,7 +614,10 @@ pub fn filter_unservable_versions(
                         rewritten += 1;
                     }
                 }
-                None => {
+                // Left exactly as published, so the client fetches it where the registry
+                // said. That is the point of allowing it.
+                Disposition::AllowedDirect(_) => allowed += 1,
+                Disposition::Refused(_) => {
                     versions.remove(&version);
                     removed.push(version);
                 }
@@ -530,6 +640,7 @@ pub fn filter_unservable_versions(
         body: serde_json::to_vec(&document).map_err(RewriteError::NotJson)?,
         removed,
         rewritten,
+        allowed,
     })
 }
 
@@ -541,6 +652,9 @@ pub struct Filtered {
     pub removed: Vec<String>,
     /// Versions kept, with their artifact pointed at the proxy.
     pub rewritten: usize,
+    /// Versions kept with their artifact left as published, because the operator allows
+    /// that origin to be fetched directly.
+    pub allowed: usize,
 }
 
 /// The earliest position at or after `from` where any prefix occurs.
@@ -2358,7 +2472,11 @@ mod tests {
             }
         }
 
-        fn filter(json: &str, reachable: &ReachableOrigins) -> Filtered {
+        fn policy(served: &[&str], allowed: &[&str]) -> OriginPolicy {
+            OriginPolicy::new(origins(served), allowed.iter().copied()).expect("valid policy")
+        }
+
+        fn filter(json: &str, policy: &OriginPolicy) -> Filtered {
             let p = normalize_packument(json.as_bytes(), PackumentDetail::Abbreviated)
                 .expect("should normalise");
             let artifacts: Vec<(String, String)> = p
@@ -2366,7 +2484,7 @@ mod tests {
                 .iter()
                 .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()))
                 .collect();
-            filter_unservable_versions(json.as_bytes(), artifacts, reachable, PROXY)
+            filter_unservable_versions(json.as_bytes(), artifacts, policy, PROXY)
                 .expect("should filter")
         }
 
@@ -2381,7 +2499,7 @@ mod tests {
         /// happens. Dropping the version is what decision #4 settles for quarantine.
         #[test]
         fn versions_the_proxy_cannot_serve_are_removed() {
-            let out = filter(MIXED, &origins(&[]));
+            let out = filter(MIXED, &policy(&[], &[]));
             assert_eq!(out.removed, ["1.0.1", "1.0.2"]);
             assert_eq!(out.rewritten, 1);
 
@@ -2395,6 +2513,92 @@ mod tests {
             );
         }
 
+        /// Three states, not two. Before the allow list the only escape from a refusal
+        /// was turning refusing off everywhere, which trades one origin's exemption for
+        /// every origin's.
+        #[test]
+        fn an_allowed_origin_is_kept_exactly_as_published() {
+            let out = filter(MIXED, &policy(&[], &["https://elsewhere.example"]));
+            assert!(out.removed.is_empty(), "allowed, so nothing is removed");
+            assert_eq!(out.allowed, 2);
+            assert_eq!(
+                out.rewritten, 1,
+                "the servable one still points at the proxy"
+            );
+
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(
+                v["versions"]["1.0.1"]["dist"]["tarball"],
+                serde_json::json!("https://elsewhere.example/w-1.0.1.tgz"),
+                "left where the registry published it, which is the point of allowing it"
+            );
+            assert_eq!(v["dist-tags"]["latest"], serde_json::json!("1.0.2"));
+        }
+
+        /// Served, allowed and refused are distinguished, and an unparseable URL is
+        /// refused under its own text: it names no origin that could be served or
+        /// allowed, and an artifact that cannot be located cannot be examined.
+        #[test]
+        fn the_policy_distinguishes_all_three_states() {
+            let p = policy(&["https://cdn.example"], &["https://allowed.example"]);
+            assert_eq!(
+                p.disposition("https://registry.npmjs.org/a/-/a-1.0.0.tgz"),
+                Disposition::Served
+            );
+            assert_eq!(
+                p.disposition("https://cdn.example/a-1.0.0.tgz"),
+                Disposition::Served
+            );
+            assert_eq!(
+                p.disposition("https://allowed.example/a-1.0.0.tgz"),
+                Disposition::AllowedDirect("https://allowed.example".into())
+            );
+            assert_eq!(
+                p.disposition("https://elsewhere.example/a-1.0.0.tgz"),
+                Disposition::Refused("https://elsewhere.example".into())
+            );
+            assert_eq!(
+                p.disposition("not a url"),
+                Disposition::Refused("not a url".into())
+            );
+        }
+
+        /// An accepted gap has to stay countable, or it stops being reported and outlives
+        /// the reason it was added.
+        #[test]
+        fn allowed_and_refused_origins_are_counted_separately() {
+            let doc = normalize_packument(MIXED.as_bytes(), PackumentDetail::Abbreviated).unwrap();
+
+            let (allowed, refused) = doc.unserved_origins(&policy(&[], &[]));
+            assert!(allowed.is_empty());
+            assert_eq!(refused.get("https://elsewhere.example"), Some(&2));
+
+            let (allowed, refused) =
+                doc.unserved_origins(&policy(&[], &["https://elsewhere.example"]));
+            assert_eq!(allowed.get("https://elsewhere.example"), Some(&2));
+            assert!(refused.is_empty());
+        }
+
+        /// An origin the proxy serves is not "allowed direct" as well: serving it means
+        /// the proxy sees it, which is the opposite of the exemption.
+        #[test]
+        fn serving_an_origin_wins_over_allowing_it() {
+            let p = policy(&["https://both.example"], &["https://both.example"]);
+            assert_eq!(
+                p.disposition("https://both.example/a-1.0.0.tgz"),
+                Disposition::Served
+            );
+        }
+
+        #[test]
+        fn an_unusable_allowed_origin_is_an_error() {
+            let result = OriginPolicy::new(origins(&[]), ["ftp://nope.example"]);
+            let Err(e) = result else {
+                panic!("ftp is not an origin this can serve or reason about");
+            };
+            assert_eq!(e.reason, "scheme is not http or https");
+        }
+
         /// When nothing survives, the document still has to be the filtered one. An
         /// empty `versions` map says there is no installable version; forwarding the
         /// original would put every refused version straight back.
@@ -2402,7 +2606,7 @@ mod tests {
         fn a_document_where_nothing_survives_is_still_filtered() {
             let json = r#"{"name":"w","dist-tags":{"latest":"1.0.0"},"versions":{
                 "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://elsewhere.example/w-1.0.0.tgz"}}}}"#;
-            let out = filter(json, &origins(&[]));
+            let out = filter(json, &policy(&[], &[]));
             assert_eq!(out.removed, ["1.0.0"]);
             assert_eq!(out.rewritten, 0);
 
@@ -2415,7 +2619,7 @@ mod tests {
         /// the resolver fall back to one that is still there.
         #[test]
         fn tags_pointing_at_removed_versions_are_dropped() {
-            let out = filter(MIXED, &origins(&[]));
+            let out = filter(MIXED, &policy(&[], &[]));
             let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
             let tags = v["dist-tags"].as_object().unwrap();
             assert!(
@@ -2432,7 +2636,7 @@ mod tests {
         /// Configuring the origin makes the same document install in full.
         #[test]
         fn configuring_the_origin_keeps_every_version() {
-            let out = filter(MIXED, &origins(&["https://elsewhere.example"]));
+            let out = filter(MIXED, &policy(&["https://elsewhere.example"], &[]));
             assert!(out.removed.is_empty());
             assert_eq!(out.rewritten, 3);
 
@@ -2448,7 +2652,7 @@ mod tests {
             let json = r#"{"name":"w","versions":{
                 "1.0.0":{"version":"1.0.0"},
                 "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.1.tgz"}}}}"#;
-            let out = filter(json, &origins(&[]));
+            let out = filter(json, &policy(&[], &[]));
             assert!(out.removed.is_empty());
 
             let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
@@ -2458,7 +2662,7 @@ mod tests {
         #[test]
         fn filtering_a_body_that_is_not_json_is_an_error() {
             let result =
-                filter_unservable_versions(b"<html>", std::iter::empty(), &origins(&[]), PROXY);
+                filter_unservable_versions(b"<html>", std::iter::empty(), &policy(&[], &[]), PROXY);
             assert!(matches!(result, Err(RewriteError::NotJson(_))));
         }
 

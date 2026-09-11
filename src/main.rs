@@ -32,7 +32,9 @@ Proxy configuration, all through the environment:
   WAHAROA_PUBLIC_URL                address written into artifact URLs, and therefore
                                     into lockfiles. Defaults to each request's own Host,
                                     which is rarely what you want.
-  WAHAROA_ARTIFACT_ORIGINS          comma-separated origins this proxy also fronts
+  WAHAROA_ARTIFACT_ORIGINS          comma-separated origins this proxy also serves
+  WAHAROA_ALLOW_DIRECT_ORIGINS      comma-separated origins the proxy does not serve and
+                                    permits anyway, fetched directly and unexamined
   WAHAROA_REWRITE_ARTIFACTS=0       do not point artifact URLs at the proxy. pnpm and
                                     yarn then fetch artifacts without the proxy seeing
                                     them.
@@ -47,6 +49,16 @@ Proxy configuration, all through the environment:
                                     see, instead of removing them from the packument
   WAHAROA_BLOCK                     THROWAWAY: refuse one package by name
 ";
+
+/// A comma-separated environment variable, blanks dropped.
+fn comma_separated(key: &str) -> Vec<String> {
+    std::env::var(key)
+        .unwrap_or_default()
+        .split(',')
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .collect()
+}
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -282,12 +294,13 @@ async fn main() -> std::process::ExitCode {
 
     // Additional origins whose artifacts this proxy serves, for a registry that publishes
     // them somewhere else. The upstream and the default registry are always included.
-    let additional_origins: Vec<String> = std::env::var("WAHAROA_ARTIFACT_ORIGINS")
-        .unwrap_or_default()
-        .split(',')
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let served_origins = comma_separated("WAHAROA_ARTIFACT_ORIGINS");
+
+    // Origins the proxy does not serve and permits anyway, so the client fetches those
+    // artifacts directly and unexamined. Without this the only escape from a refusal is
+    // WAHAROA_REFUSE_UNSERVABLE=0, which trades one origin's exemption for every
+    // origin's.
+    let allowed_direct = comma_separated("WAHAROA_ALLOW_DIRECT_ORIGINS");
 
     // What a policy refusal answers with. 403 unless an operator finds a client that
     // mishandles it: `WAHAROA_REFUSAL_STATUS=default=403,npm/pnpm=451`.
@@ -318,10 +331,13 @@ async fn main() -> std::process::ExitCode {
     let proxy = Proxy::new(client, upstream)
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
-        .with_additional_origins(additional_origins.iter().map(String::as_str))
+        .with_origin_policy(
+            served_origins.iter().map(String::as_str),
+            allowed_direct.iter().map(String::as_str),
+        )
         // Refusing to start is right: an origin the operator named and that was quietly
         // dropped would leave them believing those artifacts are covered.
-        .unwrap_or_else(|e| panic!("WAHAROA_ARTIFACT_ORIGINS: {e}"))
+        .unwrap_or_else(|e| panic!("origin configuration: {e}"))
         .with_max_concurrent_packuments(max_concurrent)
         .with_blocked(blocked)
         .with_max_packument_bytes(max_packument_bytes)
@@ -336,7 +352,8 @@ async fn main() -> std::process::ExitCode {
     info!(
         listen = %listen,
         upstream = %proxy.upstream(),
-        artifact_origins = ?proxy.reachable_origins().as_slice(),
+        artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
+        allowed_direct = ?proxy.origin_policy().allowed_direct(),
         "waharoa listening"
     );
     info!("point npm at it with:  npm config set registry http://{listen}/");

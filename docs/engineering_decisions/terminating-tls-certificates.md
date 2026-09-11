@@ -101,6 +101,30 @@ store, by Node through `NODE_EXTRA_CA_CERTS`, and by npm through `cafile` and
 are. File permissions should be checked at startup, keys never logged, and loading from a
 secrets manager should be possible rather than requiring files on disk.
 
+## The refusal policy carries over unchanged
+
+Tier 3 already removes versions whose artifacts the proxy cannot see. What changes between
+modes is not the policy but the set it reads: in reverse-proxy mode the served origins are
+the upstream, the default registry and anything configured, because artifact URLs are
+rewritten to point here; in terminating mode they are the domains the proxy holds
+certificates for, because those are the connections it actually sees.
+
+So a terminating deployment gets the same three states, decided from the certificate SANs:
+
+- **Served**, the proxy sees the connection and examines the artifact.
+- **Allowed direct**, the proxy does not see it and the operator has said that is
+  acceptable (`WAHAROA_ALLOW_DIRECT_ORIGINS`).
+- **Refused**, neither, so the version is removed from the packument.
+
+**Only `dist.tarball` needs this, for npm.** pacote resolves `dist.attestations.url`
+against the configured registry rather than using it as written: `lib/registry.js` takes
+`new URL(dist.attestations.url).pathname` and joins it to `this.registry`, with the
+comment "Always fetch attestations from the current registry host". The host in that URI
+is discarded unconditionally, so it cannot route a client anywhere. The other URIs a
+packument carries, `homepage`, `repository.url` and `bugs.url`, are not fetched during an
+install. Worth rechecking per client and per ecosystem rather than assuming it holds for
+pnpm, yarn or PyPI.
+
 ## Not implemented
 
 Decision #3 stands: reverse proxy first. This records the shape so the terminating mode is

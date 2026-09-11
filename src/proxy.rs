@@ -50,7 +50,10 @@ use crate::http::{
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
-use crate::npm::{self, NormalizeError, NormalizedPackument, ReachableOrigins, RequestTarget};
+use crate::npm::{
+    self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
+    RequestTarget,
+};
 use crate::record::PackumentDetail;
 use crate::refusal::RefusalStatus;
 use crate::store::{DEFAULT_MAX_RECORDS, Lookup, RecordStore};
@@ -139,9 +142,9 @@ pub struct Proxy {
     /// Bounds how many packuments are decoded and rewritten at once. See
     /// [`DEFAULT_MAX_CONCURRENT_PACKUMENTS`].
     packument_slots: Arc<Semaphore>,
-    /// The origins whose artifacts this proxy serves. One source of truth for rewriting
-    /// and for the offsite report, which must never disagree.
-    reachable: Arc<ReachableOrigins>,
+    /// Which origins this proxy serves, and which it permits a client to fetch directly.
+    /// One source of truth for rewriting, for the report, and for the refusal.
+    origins: Arc<OriginPolicy>,
     /// What a policy refusal answers with, per ecosystem and client.
     refusal: Arc<RefusalStatus>,
     /// Whether to drop versions whose artifacts this proxy cannot serve.
@@ -169,8 +172,10 @@ impl Proxy {
         // is unusable, in which case nothing else would work either.
         let reachable = ReachableOrigins::new(&upstream, std::iter::empty())
             .unwrap_or_else(|e| panic!("upstream is not a usable origin: {e}"));
+        let origins = OriginPolicy::new(reachable, std::iter::empty())
+            .expect("an empty allow list is always valid");
         Self {
-            reachable: Arc::new(reachable),
+            origins: Arc::new(origins),
             registry: npm::Client::new(client.clone(), upstream.clone()),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
@@ -203,17 +208,19 @@ impl Proxy {
     }
 
     /// Additional origins whose artifacts this proxy serves, beyond the upstream and the
-    /// default registry.
-    pub fn with_additional_origins<'a>(
+    /// default registry, and origins it permits a client to fetch directly.
+    pub fn with_origin_policy<'a>(
         mut self,
-        origins: impl IntoIterator<Item = &'a str>,
+        served: impl IntoIterator<Item = &'a str>,
+        allowed_direct: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, npm::OriginError> {
-        self.reachable = Arc::new(ReachableOrigins::new(&self.upstream, origins)?);
+        let reachable = ReachableOrigins::new(&self.upstream, served)?;
+        self.origins = Arc::new(OriginPolicy::new(reachable, allowed_direct)?);
         Ok(self)
     }
 
-    pub fn reachable_origins(&self) -> &ReachableOrigins {
-        &self.reachable
+    pub fn origin_policy(&self) -> &OriginPolicy {
+        &self.origins
     }
 
     pub fn with_artifact_rewriting(mut self, rewrite: bool) -> Self {
@@ -614,8 +621,11 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 // private mirror publishes those URLs and is the reason the proxy was
                 // pointed at it.
                 artifact_origin = npm::origin_of_url(&record.artifact.url)
-                    .filter(|origin| proxy.reachable.routes_directly(origin));
-                unservable_origin = npm::bypassing_origin(&record.artifact.url, &proxy.reachable);
+                    .filter(|origin| proxy.origins.reachable().routes_directly(origin));
+                unservable_origin = match proxy.origins.disposition(&record.artifact.url) {
+                    Disposition::Refused(origin) => Some(origin),
+                    _ => None,
+                };
                 match record.artifact.integrity.as_deref().map(Sri::parse) {
                     Some(Ok(sri)) => expected_digest = Some(sri),
                     Some(Err(e)) => warn!(
@@ -864,7 +874,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         None => {}
         Some(PackumentOutcome::Normalized(p)) => {
             // Reported by `rewrite_packument` below, which is where it is acted on.
-            let bypassing = p.bypassing_origins(&proxy.reachable);
+            let (allowed_direct, refused) = p.unserved_origins(&proxy.origins);
             let (held_packages, held_records) = {
                 let mut store = proxy.store.lock().expect("record store lock");
                 store.insert((*p).clone());
@@ -883,7 +893,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             latest = %p.latest.as_deref().unwrap_or("-"),
             encoded_bytes = body.len(),
             parse_ms = parse_started.elapsed().as_millis() as u64,
-            offsite_versions = bypassing.values().sum::<usize>(),
+            offsite_versions = refused.values().sum::<usize>() + allowed_direct.values().sum::<usize>(),
             held_packages,
             held_records,
             "packument normalized"
@@ -911,7 +921,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 decoded,
                 packument,
                 base,
-                &proxy.reachable,
+                &proxy.origins,
                 proxy.refuse_unservable,
                 &path_and_query,
             )
@@ -968,14 +978,26 @@ fn rewrite_packument(
     decoded: &[u8],
     packument: &NormalizedPackument,
     base: &str,
-    reachable: &ReachableOrigins,
+    policy: &OriginPolicy,
     refuse_unservable: bool,
     path: &str,
 ) -> Option<Vec<u8>> {
-    let unservable = packument.bypassing_origins(reachable);
-    if !unservable.is_empty() {
-        let versions: usize = unservable.values().sum();
-        let origins: Vec<&String> = unservable.keys().collect();
+    let (allowed_direct, refused) = packument.unserved_origins(policy);
+
+    // An accepted gap has to stay visible. One that stops being reported outlives the
+    // reason it was added.
+    if !allowed_direct.is_empty() {
+        warn!(
+            path = %path,
+            versions = allowed_direct.values().sum::<usize>(),
+            origins = ?allowed_direct.keys().collect::<Vec<_>>(),
+            "UNINSPECTED: artifacts fetched directly by the client, allowed by configuration"
+        );
+    }
+
+    if !refused.is_empty() {
+        let versions: usize = refused.values().sum();
+        let origins: Vec<&String> = refused.keys().collect();
 
         // The only control that works on these. The client fetches `dist.tarball` from
         // whatever host it names, so refusing the artifact request never happens: the
@@ -986,12 +1008,13 @@ fn rewrite_packument(
                 .records
                 .iter()
                 .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()));
-            return match npm::filter_unservable_versions(decoded, artifacts, reachable, base) {
+            return match npm::filter_unservable_versions(decoded, artifacts, policy, base) {
                 Ok(filtered) => {
                     warn!(
                         path = %path,
                         removed = filtered.removed.len(),
                         kept = filtered.rewritten,
+                        allowed = filtered.allowed,
                         origins = ?origins,
                         "REFUSED versions whose artifacts are published where this proxy \
                          cannot see them"
@@ -1032,7 +1055,7 @@ fn rewrite_packument(
         .records
         .iter()
         .map(|record| record.artifact.url.as_str());
-    match npm::rewrite_artifact_origins(decoded, artifacts, reachable, base) {
+    match npm::rewrite_artifact_origins(decoded, artifacts, policy.reachable(), base) {
         Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
         Err(e) => {
             warn!(path = %path, error = %e, "UNINSPECTED: packument could not be rewritten");
