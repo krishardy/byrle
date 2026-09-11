@@ -1,0 +1,29 @@
+{
+  "dist-tags": {
+    "v5-legacy": "5.0.10",
+    "latest": "6.1.3"
+  },
+  "modified": "2026-04-03T13:52:28.331Z",
+  "name": "rimraf",
+  "versions": {
+    "1.0.0": {
+      "name": "rimraf",
+      "version": "1.0.0",
+      "dist": {
+        "shasum": "5797e55b587c77fc3e5b61051e429d1b00310840",
+        "tarball": "https://registry.npmjs.org/rimraf/-/rimraf-1.0.0.tgz",
+        "integrity": "sha512-s4qolHU38K7qfbmw1yYBUudi9iuUvpvDMf1EZeibz3dnnK1+32VfUBEJGacPyno1HHJBoA+UcpHjfmIum4NWhQ==",
+        "signatures": [
+          {
+            "sig": "MEUCIQDo1CL5PxfIjiDZJaYrP+jLzK3rzwB31naEpKGvsAo8aAIgTpSc0uG6AMMKolXEo+QvWKRC/xv+r1X4eQepUvww9gw=",
+            "keyid": "SHA256:jl3bwswu80PjjokCgh0o2w5c2U4LhQAE57gj9cz1kzA"
+          }
+        ]
+      },
+      "engines": {
+        "node": "*"
+      },
+      "deprecated": "Rimraf versions prior to v4 are no longer supported"
+    }
+  }
+}

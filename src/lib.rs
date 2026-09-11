@@ -6,4 +6,5 @@
 //! a lib plus a bin in one crate is not that split.
 
 pub mod identity;
+pub mod npm;
 pub mod record;

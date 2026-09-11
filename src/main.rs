@@ -85,7 +85,9 @@ async fn main() {
         .build()
         .expect("failed to build upstream HTTP client");
 
-    let blocked = std::env::var("WAHAROA_BLOCK").ok().filter(|s| !s.is_empty());
+    let blocked = std::env::var("WAHAROA_BLOCK")
+        .ok()
+        .filter(|s| !s.is_empty());
     if let Some(name) = &blocked {
         info!(package = %name, "THROWAWAY hardcoded block active (Stage 1 interception proof)");
     }
@@ -212,5 +214,7 @@ async fn proxy(State(proxy): State<Proxy>, req: Request) -> Response {
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
-    HOP_BY_HOP.iter().any(|h| name.as_str().eq_ignore_ascii_case(h))
+    HOP_BY_HOP
+        .iter()
+        .any(|h| name.as_str().eq_ignore_ascii_case(h))
 }

@@ -72,8 +72,8 @@ pub struct PackageRecord {
     /// Not optional, because both documents can answer it, by different routes.
     /// Abbreviated sets `hasInstallScript: true` and omits the key otherwise; the full
     /// packument never carries that key and requires reading `scripts` for
-    /// `preinstall`, `install` or `postinstall`. Verified equivalent across 860
-    /// version pairs from four packages, with no disagreement.
+    /// `preinstall`, `install` or `postinstall`. Verified equivalent across 24,852
+    /// version pairs from 47 packages, with no disagreement.
     pub has_install_scripts: bool,
 
     /// The lifecycle script bodies, when we have them. Full packument only, so
@@ -96,9 +96,9 @@ pub struct Maintainer {
 /// A source repository, stored as the registry reported it.
 ///
 /// npm accepts two shapes, an object with `url` and `type`, and the shorthand string
-/// form such as `github:user/repo`. Both normalise to this. Note for whoever writes
-/// that parsing: the polymorphism must not use `#[serde(untagged)]`, which silently
-/// defeats unknown-field rejection (plan §5).
+/// form such as `github:user/repo`. Both normalise to this. The `Deserialize` that does
+/// it lives in `npm` and is hand-written rather than `#[serde(untagged)]`, which
+/// silently defeats unknown-field rejection (plan §5).
 ///
 /// The URL is kept verbatim, including any `git+https://` prefix. Canonicalising it
 /// into something comparable against a git remote is source-diffing work (Stage 4),
@@ -108,6 +108,11 @@ pub struct Repository {
     pub url: String,
     /// `git`, `svn`, and so on. Absent in the shorthand form.
     pub kind: Option<String>,
+    /// Subdirectory within the repository holding this package, as npm's `directory`
+    /// field. Set for monorepo packages: `@babel/traverse` reports
+    /// `packages/babel-traverse`. Source diffing that ignores it compares the package
+    /// against the whole repository tree.
+    pub directory: Option<String>,
 }
 
 /// Evidence about who produced this artifact.
@@ -151,6 +156,10 @@ pub struct Artifact {
     pub url: String,
 
     /// `dist.integrity`, a Subresource Integrity string, in practice `sha512-<base64>`.
+    ///
+    /// Optional because npm predates it: of 24,852 versions measured, two published in
+    /// 2012 carry only `shasum`. For those, SHA-1 is the strongest digest the registry
+    /// offers.
     ///
     /// Plan §5: this is a **cache key, not a trust anchor**. It is what the registry
     /// claims, so it decides whether this artifact has been analysed before; it does
@@ -264,7 +273,10 @@ mod tests {
     #[test]
     fn record_identity_round_trips_through_purl() {
         let record = abbreviated("@babel/traverse", "7.23.1", false);
-        assert_eq!(record.package.to_string(), "pkg:npm/%40babel/traverse@7.23.1");
+        assert_eq!(
+            record.package.to_string(),
+            "pkg:npm/%40babel/traverse@7.23.1"
+        );
         assert_eq!(record.package.key().registry_name(), "@babel/traverse");
     }
 }

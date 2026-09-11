@@ -128,11 +128,11 @@ impl PackageKey {
             }
             None => (None, name.to_string()),
         };
-        if bare.is_empty() {
-            return Err(IdentityError::Malformed(format!(
-                "`{name}` has an empty package name"
-            )));
-        }
+        // Not a `return Err`: with the empty check above and the empty-`rest` check in
+        // the scoped arm, there is no input that reaches here with an empty `bare`. An
+        // unreachable error arm is a branch no test can ever cover, which makes it look
+        // like a gap in the test suite instead of what it is.
+        debug_assert!(!bare.is_empty(), "`{name}` produced an empty package name");
         Ok(PackageKey {
             ecosystem,
             namespace,
@@ -298,6 +298,55 @@ impl FromStr for PackageRef {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The ecosystem's own name is the purl type, and it appears in log lines and
+    /// operator-facing messages.
+    #[test]
+    fn ecosystem_displays_as_its_purl_type() {
+        assert_eq!(Ecosystem::Npm.to_string(), "npm");
+        assert_eq!(Ecosystem::Npm.as_str(), "npm");
+    }
+
+    /// Both error variants are read by operators, so both have to say which is which.
+    #[test]
+    fn identity_errors_describe_themselves() {
+        let unsupported = IdentityError::UnsupportedEcosystem("cargo".into());
+        assert_eq!(unsupported.to_string(), "unsupported ecosystem `cargo`");
+
+        let Err(malformed) = PackageKey::from_registry_name(Ecosystem::Npm, "  ") else {
+            panic!("whitespace is not a package name");
+        };
+        assert_eq!(
+            malformed.to_string(),
+            "malformed package identity: empty package name"
+        );
+
+        let Err(nested) = PackageKey::from_registry_name(Ecosystem::Npm, "@a/b/c") else {
+            panic!("a second slash is not a scope");
+        };
+        assert!(nested.to_string().contains("not a valid npm package name"));
+
+        let Err(empty_scope) = PackageKey::from_registry_name(Ecosystem::Npm, "@scope/") else {
+            panic!("an empty name after the scope is not a package");
+        };
+        assert!(
+            empty_scope
+                .to_string()
+                .contains("not a valid npm package name")
+        );
+    }
+
+    /// A reference carries its key's ecosystem, so callers holding either can dispatch
+    /// without unwrapping first.
+    #[test]
+    fn ecosystem_is_reachable_from_both_key_and_reference() {
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
+        assert_eq!(key.ecosystem(), Ecosystem::Npm);
+        assert_eq!(
+            key.at_version("4.17.21").unwrap().ecosystem(),
+            Ecosystem::Npm
+        );
+    }
 
     fn key(name: &str) -> PackageKey {
         PackageKey::from_registry_name(Ecosystem::Npm, name).expect("valid name")

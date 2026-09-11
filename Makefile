@@ -1,4 +1,4 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test verify check-deps run smoke-npm spike-config
+.PHONY: help dev-setup lint semgrep trufflehog sast test coverage verify check-deps run smoke-npm spike-config
 
 help:
 	@echo "waharoa targets:"
@@ -8,6 +8,7 @@ help:
 	@echo "  trufflehog     credential scanning (working tree and git history)"
 	@echo "  sast           semgrep + trufflehog"
 	@echo "  test           unit tests"
+	@echo "  coverage       unit test coverage, failing under the CLAUDE.md floor"
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  run            run the proxy in the foreground"
@@ -39,6 +40,9 @@ sast: semgrep trufflehog
 
 test:
 	@cargo test
+
+coverage:
+	@scripts/make/coverage.sh
 
 verify:
 	@scripts/make/verify.sh

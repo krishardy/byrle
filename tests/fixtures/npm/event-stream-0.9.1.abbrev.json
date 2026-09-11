@@ -1,0 +1,28 @@
+{
+  "dist-tags": {
+    "latest": "4.0.1"
+  },
+  "modified": "2022-11-08T10:38:35.230Z",
+  "name": "event-stream",
+  "versions": {
+    "0.9.1": {
+      "name": "event-stream",
+      "version": "0.9.1",
+      "dependencies": {
+        "optimist": "0.2"
+      },
+      "devDependencies": {
+        "asynct": "*",
+        "it-is": "1",
+        "ubelt": "~2.9"
+      },
+      "dist": {
+        "shasum": "d13bd543138154f503146878ba500c005eb9d5cb",
+        "tarball": "https://registry.npmjs.org/event-stream/-/event-stream-0.9.1.tgz"
+      },
+      "engines": {
+        "node": "*"
+      }
+    }
+  }
+}
