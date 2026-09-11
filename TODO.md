@@ -74,6 +74,21 @@ Items that I've added that are not stage-bound.
    reason, since it clones to a temp directory; `SAST_SKIP_HISTORY=1` is the escape and
    `make sast` is otherwise green. Both should work on a normal machine, and history
    scanning belongs in CI regardless.
+6. [x] Split make sast into make trufflehog and make semgrep, and change the sast
+   target to use semgrep and trufflehog as prerequisites.
+   Done. `scripts/make/sast.sh` is gone, replaced by `semgrep.sh` and `trufflehog.sh`;
+   `sast` is now `sast: semgrep trufflehog` with no recipe of its own. Each scanner is
+   runnable alone, and each still passes through extra arguments.
+   Behaviour change worth knowing: make stops at the first failing prerequisite, so a
+   semgrep failure now means trufflehog does not run, where the single script used to
+   run both and report once. `make -k sast` restores the old behaviour. trufflehog's
+   own two passes still both run and report together, since that aggregation is inside
+   its script.
+   Env vars keep the `SAST_` prefix (`SAST_NO_VERIFY`, `SAST_SKIP_HISTORY`) rather than
+   being renamed to match the new target names, so the documented interface does not
+   move underneath anyone.
+   Verified: each target alone, `make sast` running both, fail-fast skipping trufflehog
+   when semgrep fails, and `make -k sast` running both anyway.
 
 ## Stage 1 — Pass-through proxy (transport)
 
