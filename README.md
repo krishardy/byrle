@@ -136,7 +136,10 @@ has honest limits:
   MCP servers install packages without going through a configured package manager.
   A registry proxy cannot see any of it.
 * **npm serves from its local cache without consulting the registry**, so a pre-existing
-  cache silently skips enforcement.
+  cache silently skips enforcement. Artifacts that do arrive are still checked: when a
+  client asks for a tarball without having requested its packument, as `npm ci` always
+  does, the proxy fetches the packument itself. What it cannot see is an install served
+  entirely from cache, where no request reaches it at all.
 * **A registry can point `dist.tarball` at a host the proxy does not sit in front of.**
   npm rewrites that URL to the configured registry only when it names the default
   registry host; any other host is fetched directly. Tested against npm 9.9.4: a

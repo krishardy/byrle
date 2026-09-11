@@ -294,6 +294,21 @@ implementations.
       - [x] **`src/main.rs` was at 0% over 128 lines, and the floor excluded it.** The
             proxy moved into `src/proxy.rs` in the library, leaving 53 lines of startup
             in the binary, so the floor now covers the whole crate with no carve-out.
+- [x] **`npm ci` requests no packuments at all**, so every artifact was unverified on the
+      standard CI path. Measured through the proxy: 69 tarballs, zero packument requests,
+      zero digests known. `npm ci` reads `resolved` and `integrity` from
+      `package-lock.json` and goes straight to the tarball.
+      - [x] Fixed by `proxy::lookup_or_fetch`: on a tarball whose package has no record,
+            the proxy fetches the packument itself before forwarding. One mechanism
+            closes four gaps: `npm ci`, the 304 case below, a restarted proxy, and an
+            evicted entry.
+      - [x] Cost measured on the same install: 66 packuments fetched on the proxy's own
+            behalf, mean 56 ms and max 236 ms each, 3.7 s of fetch time in total across
+            concurrent requests. Wall clock for the install was unchanged at about 1 s.
+            Afterwards 69 of 69 tarballs had a known digest and all 69 verified.
+      - [x] `make smoke-npm` gained a fifth step covering it, with a fresh proxy and a
+            fresh npm cache so the only way a digest can be known is the proxy fetching
+            the packument itself.
 - [ ] `[!]` **A warm npm cache sends `If-None-Match` and the registry answers 304 with
       no body, so the proxy observes no packument at all.** The resolved graph is fully
       visible only on a cold cache today. The proxy logs the skip and the ETag rather
@@ -305,9 +320,11 @@ implementations.
             to a matching `If-None-Match`, and npm 9.9.4 sends one once its cached entry
             passes `max-age` (300 s for a packument). Inside that window npm does not ask
             at all, which is the separate cache-bypass item.
-      - [x] The record store closes part of this: a second install in the same proxy
-            lifetime still has the record. It does not close the case where the proxy
-            restarts or the entry was evicted.
+      - [x] Closed for the tarball path by `proxy::lookup_or_fetch`, which fetches the
+            packument when there is no record. What remains is the packument request
+            itself: a 304 means the proxy does not observe the document the client is
+            about to resolve against, so Stage 2 metadata rules still have nothing to
+            read at that moment.
 - [ ] Memory under concurrency. A buffered packument holds the encoded body plus its
       decoded copy, 2.0 MB + 15.7 MB for typescript, and npm opens many requests at once.
       Nothing bounds how many are buffered at the same time. Measure it under a real

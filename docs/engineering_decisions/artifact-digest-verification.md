@@ -54,8 +54,16 @@ records, largest 3,822 (typescript). Counting entries would treat those as equal
   [fetch-path-branching.md](fetch-path-branching.md)). A match proves the bytes are the
   ones the packument described. A mismatch is a finding: the registry served bytes its
   own metadata does not describe.
-- Verification depends on having seen the packument. A warm npm cache, a restarted proxy,
-  or an evicted entry leaves the artifact unverified, and it is logged as such.
+- A tarball whose package has no record makes the proxy fetch the packument itself,
+  before forwarding. `npm ci` is why: it reads `resolved` and `integrity` from
+  `package-lock.json` and requests no packuments at all, so on the standard CI path every
+  artifact was unverified. Measured: 69 tarballs, zero packument requests, zero digests
+  known. With the fetch, 69 of 69 verify, at a mean 56 ms per package and no change to
+  the install's wall-clock time. The same mechanism covers a 304, a restarted proxy, and
+  an evicted entry.
+- If that fetch also fails, the artifact is forwarded and logged as unverified. Stage 1
+  does not fail an install over what it could not inspect; Stage 2 has to decide whether
+  that stays true.
 - A tarball filename that spells the version differently from the packument misses the
   lookup: 38 of 24,852 URLs, all pre-2013 prereleases. Reachable from a real
   `npm install express@3.0.0-rc1`.
