@@ -354,7 +354,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             detail = ?detail,
             versions = p.records.len(),
             skipped = p.skipped.len(),
-            with_install_scripts = p.records.iter().filter(|r| r.has_install_scripts).count(),
+            // Every version in the document, not the one being installed. Stage 2
+            // needs the resolved version's answer, which needs the tarball request
+            // correlated against these records.
+            versions_with_install_scripts = p.records.iter().filter(|r| r.has_install_scripts).count(),
             latest = %p.latest.as_deref().unwrap_or("-"),
             encoded_bytes = body.len(),
             parse_ms = parse_started.elapsed().as_millis() as u64,
