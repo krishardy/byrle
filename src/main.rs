@@ -12,7 +12,7 @@
 use tracing::{info, warn};
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
-use waharoa::proxy::{DEFAULT_MAX_PACKUMENT_BYTES, Proxy};
+use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, Proxy};
 use waharoa::store::DEFAULT_MAX_RECORDS;
 use waharoa::tls::{self, TrustMode};
 
@@ -123,7 +123,13 @@ async fn main() {
         );
     }
 
+    let max_concurrent = std::env::var("WAHAROA_MAX_CONCURRENT_PACKUMENTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_PACKUMENTS);
+
     let proxy = Proxy::new(client, upstream)
+        .with_max_concurrent_packuments(max_concurrent)
         .with_blocked(blocked)
         .with_max_packument_bytes(max_packument_bytes)
         .with_max_records(max_records)

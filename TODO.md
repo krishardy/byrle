@@ -346,10 +346,45 @@ implementations.
             itself: a 304 means the proxy does not observe the document the client is
             about to resolve against, so Stage 2 metadata rules still have nothing to
             read at that moment.
-- [ ] Memory under concurrency. A buffered packument holds the encoded body plus its
-      decoded copy, 2.0 MB + 15.7 MB for typescript, and npm opens many requests at once.
-      Nothing bounds how many are buffered at the same time. Measure it under a real
-      install before picking a bound.
+- [x] Memory under concurrency, measured. `WAHAROA_MAX_CONCURRENT_PACKUMENTS` (default 8)
+      bounds how many packuments are decoded and rewritten at once.
+      - [x] Realistic load is fine. A six-package install pulling typescript, eslint,
+            webpack, react, @angular/core and @types/node: 165 packuments, peak 127 MB,
+            and the limit never engaged. Install time unchanged at 15 s.
+      - [x] Adversarial load was not. 24 simultaneous requests for the largest full
+            packuments peaked at **1,348 MB** while the encoded bodies totalled 27.6 MB,
+            roughly 56 MB per request in flight, with nothing bounding how many there
+            were. The cost is the decoded copy plus the JSON value tree the rewrite walks.
+      - [x] **The slot is taken after the body is buffered, not before it is read.** With
+            the acquire before the read, waiting held the upstream response open until it
+            timed out: 18 of 24 concurrent requests failed with "error decoding response
+            body". Regression test at a limit of one.
+      - [ ] **The bound caps live memory, and RSS barely moves: 1,501 MB unbounded against
+            1,436 MB at 8, and still 882 MB at 1.** Peak RSS is dominated by glibc holding
+            freed allocations rather than by what is live. `MALLOC_ARENA_MAX=1` cuts the
+            peak to 919 MB and raises the median from 223 MB to 703 MB, so it trades one
+            for the other rather than fixing it. The real lever is allocating less per
+            packument, below.
+- [ ] `[!]` Rewrite artifact URLs by targeted byte replacement instead of building a
+      `serde_json::Value`. The value tree is the dominant allocation, so this roughly
+      halves peak memory per packument and removes the parse and serialise cost (36 ms
+      and 10 ms on typescript).
+      - [x] Feasibility checked against the corpus, both document kinds: of 49,704
+            artifact URLs, **49,702 appear exactly once** in the raw bytes as a complete
+            quoted JSON string. Escaped forward slashes occur in 2 of 94 files and only
+            inside README prose, never in a URL.
+      - [x] The two exceptions are `react` versions whose URL also appears as `_resolved`,
+            an npm internal field holding the same artifact. Rewriting that too is more
+            correct than what the current implementation does, which leaves `_resolved`
+            pointing at the origin registry while `dist.tarball` points at the proxy.
+            `_resolved` appears only in full packuments, and installs request abbreviated
+            ones, so the impact today is small.
+      - [ ] Safety net: the replacement count has to equal the number of reachable
+            artifacts found during normalization. A mismatch means the document is shaped
+            in a way this does not understand, and the fall-back is to forward unrewritten
+            and log `UNINSPECTED`.
+      - [ ] The output would then be byte-identical to the upstream's apart from the URLs,
+            which is a stronger property than `preserve_order` gives.
 - [ ] Packument size on the proxy's own fetches: `npm::Client` sends no `Accept-Encoding`
       because reqwest's `gzip` feature is off crate-wide, so those packuments arrive
       uncompressed. The request path does not have this problem, since the proxy decodes

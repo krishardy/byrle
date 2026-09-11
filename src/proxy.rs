@@ -63,7 +63,22 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Instant;
-use tracing::{error, info, warn};
+use tokio::sync::Semaphore;
+use tracing::{debug, error, info, warn};
+
+/// Default ceiling on how many packuments are decoded and rewritten at once.
+///
+/// Reading a packument costs far more than the bytes on the wire: the decoded copy, the
+/// JSON value tree the rewrite walks, the re-serialised output, and the gzip buffer are
+/// all live together. Measured with 24 simultaneous requests for the largest full
+/// packuments (typescript, @types/node, react, next, @angular/core, eslint, webpack,
+/// aws-sdk), the proxy peaked at 1,348 MB while the encoded bodies totalled 27.6 MB.
+/// That is roughly 56 MB per request in flight, and nothing bounded how many there were.
+///
+/// Eight keeps the worst case near half a gigabyte. A normal install does not reach it:
+/// npm's own request parallelism held a six-package install with 165 packuments to a
+/// 141 MB peak.
+pub const DEFAULT_MAX_CONCURRENT_PACKUMENTS: usize = 8;
 
 /// Default ceiling on a packument body, applied both to the bytes buffered and to the
 /// bytes decompression is allowed to produce.
@@ -115,8 +130,11 @@ pub struct Proxy {
     /// Records from packuments already seen, so a tarball request can find the digest
     /// its packument published. Bounded; see [`crate::store`].
     store: Arc<Mutex<RecordStore>>,
-    /// Used to fetch a packument the client never asked for. See [`fill_store`].
+    /// Used to fetch a packument the client never asked for. See [`lookup_or_fetch`].
     registry: npm::Client,
+    /// Bounds how many packuments are decoded and rewritten at once. See
+    /// [`DEFAULT_MAX_CONCURRENT_PACKUMENTS`].
+    packument_slots: Arc<Semaphore>,
     /// Upstream registry base, no trailing slash.
     upstream: String,
     /// THROWAWAY. One hardcoded package, to prove interception happens before anything
@@ -145,7 +163,13 @@ impl Proxy {
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
             rewrite_artifacts: true,
             public_base: None,
+            packument_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_PACKUMENTS)),
         }
+    }
+
+    pub fn with_max_concurrent_packuments(mut self, limit: usize) -> Self {
+        self.packument_slots = Arc::new(Semaphore::new(limit.max(1)));
+        self
     }
 
     pub fn with_artifact_rewriting(mut self, rewrite: bool) -> Self {
@@ -704,6 +728,32 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 .into_response();
         }
     };
+
+    // Queue here, not before the body is read. The encoded body is already in hand and
+    // the upstream connection is finished, so waiting costs only time. Waiting with the
+    // response still streaming stalls it until it times out: measured with the acquire
+    // placed before the read, 18 of 24 concurrent requests failed with "error decoding
+    // response body".
+    //
+    // What this bounds is the expensive part. The decoded copy, the value tree the
+    // rewrite walks, the re-serialised output and the gzip buffer are live together, and
+    // 24 simultaneous large packuments reached 1,348 MB while the encoded bodies totalled
+    // 27.6 MB.
+    let queued = Instant::now();
+    let _slot = proxy
+        .packument_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("the semaphore is never closed");
+    let waited = queued.elapsed();
+    if waited.as_millis() > 0 {
+        debug!(
+            path = %path_and_query,
+            waited_ms = waited.as_millis() as u64,
+            "waited for a packument slot"
+        );
+    }
 
     // Decoded once. Normalising and the store read these bytes; the rewrite below works
     // on a copy. Building records from the rewritten document instead would set every
@@ -2015,6 +2065,78 @@ mod tests {
         assert!(
             text.contains("https://npm.corp.example/lodash/-/lodash-4.17.21.tgz"),
             "the configured base was not used: {text}"
+        );
+    }
+
+    /// Concurrent packument requests all have to be served, however tight the limit.
+    ///
+    /// The slot is taken after the body is buffered, not before it is read. With the
+    /// acquire placed before the read, waiting held the upstream response open until it
+    /// timed out: 18 of 24 concurrent requests failed with "error decoding response
+    /// body". At a limit of one, every request here queues behind another, which is the
+    /// condition that exposed it.
+    #[tokio::test]
+    async fn a_tight_concurrency_limit_still_serves_every_request() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            body,
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_max_concurrent_packuments(1)
+                .router(),
+        )
+        .await;
+
+        let mut requests = Vec::new();
+        for _ in 0..8 {
+            let url = format!("{base}/lodash");
+            requests.push(tokio::spawn(async move {
+                let response = reqwest::get(url).await.expect("request should complete");
+                assert_eq!(response.status(), 200);
+                response.text().await.expect("body should arrive")
+            }));
+        }
+
+        for request in requests {
+            let body = request.await.expect("task should not panic");
+            assert!(
+                body.contains("/lodash/-/lodash-4.17.21.tgz"),
+                "every queued request still gets a rewritten body"
+            );
+        }
+    }
+
+    /// A limit of zero would deadlock every packument request, so it is raised to one.
+    #[tokio::test]
+    async fn a_limit_of_zero_is_treated_as_one() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            body,
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_max_concurrent_packuments(0)
+                .router(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("/lodash/-/lodash-4.17.21.tgz")
         );
     }
 
