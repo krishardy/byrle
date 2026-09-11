@@ -74,21 +74,23 @@ Items that I've added that are not stage-bound.
      the rule guards against deriving identity from argv. Suppressed at the site with a
      reason, and the marker has to sit on the line immediately above the finding.
    Verified: semgrep runs its rules over the tracked files and the suppression works.
-   trufflehog now verified too, after the cause of the earlier failures turned out to be
-   the install rather than the sandbox. `trufflehog` here is a wrapper around
-   `docker run -v "$PWD:/pwd"`, so the container sees the repository at `/pwd` and
-   nothing else on the machine.
-   That made the working-tree pass worthless without anyone noticing: the image's
-   working directory is `/usr/bin`, so `trufflehog filesystem .` was scanning the
-   scanner's own binaries, a constant 3383 chunks, and reporting the repository clean
-   without ever opening it. Both passes now use `$repo_uri`, supplied by the Makefile as
-   `TRUFFLEHOG_REPO_ROOT`, defaulting to `/pwd`.
-   Scanning the real repository then required excluding build output: `/target/` holds
-   2GB of `.rmeta`/`.rlib` artifacts with upstream crates' doc examples baked in, which
-   produced hundreds of findings about other people's documentation. Exclusions live in
-   `.trufflehog-exclude` in the repository, since the container cannot see a temp file.
-   Confirmed with a planted GitHub PAT: `make trufflehog` fails with it and passes
-   without it, and the history pass scans 166 chunks.
+   trufflehog verified too, now running as a native binary on the PATH.
+   It previously ran as a wrapper around `docker run -v "$PWD:/pwd"`, and that made the
+   working-tree pass worthless without anyone noticing: the image's working directory is
+   `/usr/bin`, so `trufflehog filesystem .` scanned the scanner's own binaries, a
+   constant 3383 chunks, and reported clean on a repository it never opened. Both passes
+   now name the path explicitly, from `TRUFFLEHOG_REPO_ROOT`, which the Makefile sets to
+   `$(CURDIR)` and which can be pointed at a mount point for a containerised install.
+   `--fail-on-scan-errors` is set so an unreadable path fails instead of passing with
+   zero findings. It does not catch a readable path that is the wrong directory, which
+   is the case that bit us; naming the path rather than using `.` is what covers that.
+   Scanning the real repository required excluding build output: `/target/` holds 2GB of
+   `.rmeta`/`.rlib` artifacts with upstream crates' doc examples compiled in, producing
+   hundreds of findings about other people's documentation. Patterns are in
+   `.trufflehog-exclude`, kept in the repository so a containerised run can see them.
+   Three controls, all passing: a planted GitHub PAT fails the target, a bogus
+   `TRUFFLEHOG_REPO_ROOT` fails it, and a clean tree passes. Working tree 352 chunks,
+   history 174.
 6. [x] Split make sast into make trufflehog and make semgrep, and change the sast
    target to use semgrep and trufflehog as prerequisites.
    Done. `scripts/make/sast.sh` is gone, replaced by `semgrep.sh` and `trufflehog.sh`;

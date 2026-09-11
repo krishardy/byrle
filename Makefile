@@ -14,11 +14,11 @@ help:
 	@echo "  smoke-npm      end-to-end check of the proxy against a real npm client"
 	@echo "  spike-config   re-run the config-format spike (plan §5, decision #11)"
 
-# The repository path as trufflehog sees it. The usual install is a wrapper around
-# `docker run -v "$$PWD:/pwd"` (check with `type trufflehog`), and inside that container
-# the repository is at /pwd. For a native trufflehog binary, override it:
-#   make trufflehog TRUFFLEHOG_REPO_ROOT=$$(pwd)
-TRUFFLEHOG_REPO_ROOT ?= /pwd
+# The repository path as trufflehog sees it, which is the real path for a native
+# binary. Override it if trufflehog runs in a container, where the repository is
+# visible at the mount point rather than at its host path:
+#   make trufflehog TRUFFLEHOG_REPO_ROOT=/pwd
+TRUFFLEHOG_REPO_ROOT ?= $(CURDIR)
 
 # Recipes stay one-line wrappers; the logic lives in scripts/make/<target>.sh
 dev-setup:
