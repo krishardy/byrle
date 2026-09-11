@@ -68,3 +68,7 @@ records, largest 3,822 (typescript). Counting entries would treat those as equal
   lookup: 38 of 24,852 URLs, all pre-2013 prereleases. Reachable from a real
   `npm install express@3.0.0-rc1`.
 - Extra memory while streaming is one chunk, not the artifact.
+- Verification has a precondition: the artifact has to be fetched through the proxy at
+  all. `npm::bypassing_origin` checks that at packument time, because by the time the
+  artifact is requested the request has already gone elsewhere. Stage 1 warns and
+  forwards; refusing is a policy decision.

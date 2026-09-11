@@ -427,15 +427,29 @@ implementations.
       - [x] SRI multiple-hash and `?options` forms are handled although npm emits
             neither, and the strongest algorithm wins. Zero of 24,852 versions use them,
             so no fixture would ever cover it.
-- [ ] `[!]` **A registry can point `dist.tarball` at a host the proxy does not front, and
-      the artifact is then fetched directly.** npm rewrites that URL to the configured
+- [x] **A registry can point `dist.tarball` at a host the proxy does not front, and the
+      artifact is then fetched directly.** npm rewrites that URL to the configured
       registry only when it names the default registry host. Tested with a controlled
       registry serving the same package both ways: `https://registry.npmjs.org/...` came
       through the proxy, another origin did not, and the proxy saw no tarball request at
       all. This corrects an earlier finding in plan §4 that said npm ignores the host
-      outright. The packument is visible to the proxy, so the check is: refuse or flag a
-      `dist.tarball` whose origin is neither the configured upstream nor the default
-      registry. Not implemented.
+      outright.
+      - [x] `npm::bypassing_origin` reports the origin a client will go to directly, or
+            `None` when the request will reach the proxy. The configured upstream and the
+            default registry both count as reachable, so a private registry serving its
+            own artifacts is not flagged. Scheme and port are part of the origin, so an
+            http downgrade and a different port are both reported.
+      - [x] Checked at packument time, which is the only moment it is visible: by the
+            time the artifact is fetched the request has already gone elsewhere. Logged
+            as a warning with the origins and a version count, plus `offsite_versions` on
+            the normalize line.
+      - [x] No false positives: silent across 67 packuments in a real install and all
+            24,852 artifact URLs in the corpus test, and it fires on a controlled
+            registry publishing to another origin.
+      - [ ] Stage 1 observes and still forwards. Refusing is a policy decision, so it
+            belongs with the engine in Stage 2. Note the asymmetry: this is not a
+            fetch the proxy failed to inspect, it is a registry routing around the
+            proxy, so the fail-open default is weaker here than elsewhere.
 - [ ] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
       not ready (mirror warming, all requests) · **429** we are ready but this one
       artifact is under analysis
