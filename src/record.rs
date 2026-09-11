@@ -1,0 +1,270 @@
+//! The common package record: registry metadata normalised into one shape.
+//!
+//! This is the contract between the per-ecosystem normalisers and everything above
+//! them (plan §4). The policy engine operates only on this type and never sees a
+//! packument, a PEP 503 index, or a sparse index entry.
+//!
+//! # What the proxy can actually see, and why so much is `Option`
+//!
+//! npm asks for the *abbreviated* packument
+//! (`Accept: application/vnd.npm.install-v1+json`), and a pass-through proxy sees only
+//! what the client asked for. Measured against real packuments (Sept 2026):
+//!
+//! | Field | Abbreviated | Full |
+//! |---|---|---|
+//! | name, version, `dist.*` | yes | yes |
+//! | `hasInstallScript` | yes | **no**, use `scripts` |
+//! | `dist.attestations`, `dist.signatures` | yes | yes |
+//! | publish time (`time`) | **no** | yes |
+//! | `maintainers` | **no** | yes |
+//! | `repository` | **no** | yes |
+//! | `scripts` bodies | **no** | yes |
+//!
+//! So cooldown, maintainer heuristics and source diffing all need a document npm never
+//! requests. At Stage 1 those fields are `None` for every record, which is correct
+//! rather than a gap: fetching the full document is fetch-path work that has not
+//! started.
+//!
+//! [`PackumentDetail`] is what makes `None` readable. `published_at == None` with
+//! [`PackumentDetail::Abbreviated`] means "not fetched"; with
+//! [`PackumentDetail::Full`] it means "the registry does not publish it". A policy
+//! engine has to tell those apart, or a missing timestamp silently reads as "not in
+//! cooldown" and fails open. Deriving that distinction belongs with the rule that
+//! consumes it, in Stage 2.
+
+use crate::identity::PackageRef;
+use std::collections::BTreeMap;
+
+/// Which document a record was built from. See the module docs: this is what
+/// distinguishes "we did not fetch it" from "the registry does not have it".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackumentDetail {
+    /// npm's `application/vnd.npm.install-v1+json`, which is what installs request.
+    Abbreviated,
+    /// The complete document, which carries publish times, maintainers and repository.
+    Full,
+}
+
+/// One version of one package, as the policy engine sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageRecord {
+    /// Ecosystem, name and version. Casing is preserved exactly; see `identity`.
+    pub package: PackageRef,
+    /// Which document this came from, which qualifies every `None` below.
+    pub source: PackumentDetail,
+
+    /// When this version was published. Drives cooldown (plan §3, Tier 1).
+    ///
+    /// Comes from the packument-level `time` map keyed by version string, not from the
+    /// version object. Full packument only.
+    pub published_at: Option<jiff::Timestamp>,
+
+    /// Full packument only. Feeds the maintainer-age and sudden-maintainer-change
+    /// heuristics.
+    pub maintainers: Option<Vec<Maintainer>>,
+
+    /// Full packument only. Needed for registry-versus-source diffing, and its absence
+    /// is itself a metadata heuristic.
+    pub repository: Option<Repository>,
+
+    /// Whether installing this version runs a lifecycle script.
+    ///
+    /// Not optional, because both documents can answer it, by different routes.
+    /// Abbreviated sets `hasInstallScript: true` and omits the key otherwise; the full
+    /// packument never carries that key and requires reading `scripts` for
+    /// `preinstall`, `install` or `postinstall`. Verified equivalent across 860
+    /// version pairs from four packages, with no disagreement.
+    pub has_install_scripts: bool,
+
+    /// The lifecycle script bodies, when we have them. Full packument only, so
+    /// `has_install_scripts` can be true while this is `None`.
+    pub install_scripts: Option<BTreeMap<String, String>>,
+
+    /// Attestations and signatures. Present in both documents.
+    pub provenance: Provenance,
+
+    /// The artifact this version resolves to.
+    pub artifact: Artifact,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Maintainer {
+    pub name: String,
+    pub email: Option<String>,
+}
+
+/// A source repository, stored as the registry reported it.
+///
+/// npm accepts two shapes, an object with `url` and `type`, and the shorthand string
+/// form such as `github:user/repo`. Both normalise to this. Note for whoever writes
+/// that parsing: the polymorphism must not use `#[serde(untagged)]`, which silently
+/// defeats unknown-field rejection (plan §5).
+///
+/// The URL is kept verbatim, including any `git+https://` prefix. Canonicalising it
+/// into something comparable against a git remote is source-diffing work (Stage 4),
+/// and doing it here would lose what the registry actually said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repository {
+    pub url: String,
+    /// `git`, `svn`, and so on. Absent in the shorthand form.
+    pub kind: Option<String>,
+}
+
+/// Evidence about who produced this artifact.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Provenance {
+    /// `dist.attestations.url`, where the attestation bundle can be fetched.
+    ///
+    /// Presence means the package *claims* provenance. Plan §3 requires attestations
+    /// "where the package claims to publish them", so nothing here is verified yet:
+    /// fetching and checking the bundle is Stage 4.
+    pub attestation_url: Option<String>,
+    /// `dist.attestations.provenance.predicateType`, e.g. the SLSA provenance URI.
+    pub predicate_type: Option<String>,
+    /// `dist.signatures`: the registry's own signature over the artifact. This attests
+    /// that the registry served it, not that the named maintainer built it.
+    pub registry_signatures: Vec<RegistrySignature>,
+    /// `_npmUser.trustedPublisher`, present when the version was published by a
+    /// trusted OIDC publisher such as GitHub Actions rather than a user token. Full
+    /// packument only.
+    pub trusted_publisher: Option<TrustedPublisher>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegistrySignature {
+    pub key_id: String,
+    pub signature: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrustedPublisher {
+    /// The publisher identity, e.g. `github`.
+    pub id: String,
+}
+
+/// The artifact a version resolves to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    /// Absolute URL as the registry gave it. npm resolves tarballs against the
+    /// configured registry and ignores this host, so the proxy sees the request
+    /// regardless (plan §4).
+    pub url: String,
+
+    /// `dist.integrity`, a Subresource Integrity string, in practice `sha512-<base64>`.
+    ///
+    /// Plan §5: this is a **cache key, not a trust anchor**. It is what the registry
+    /// claims, so it decides whether this artifact has been analysed before; it does
+    /// not establish that the bytes are honest. We verify what actually arrives
+    /// against it, and a mismatch is a finding.
+    pub integrity: Option<String>,
+
+    /// `dist.shasum`, a legacy SHA-1 digest.
+    ///
+    /// Deliberately its own field rather than sitting in a list beside `integrity`:
+    /// SHA-1 is collision-broken, and a weak digest indistinguishable from a strong
+    /// one invites code that treats them alike.
+    pub legacy_sha1: Option<String>,
+
+    pub file_count: Option<u64>,
+    pub unpacked_size: Option<u64>,
+}
+
+impl PackageRecord {
+    /// Whether a field being `None` could be explained by not having fetched enough.
+    ///
+    /// Callers deciding a verdict must not read `None` as a negative when this is
+    /// true: an unknown publish time is not the same as a package being old enough.
+    pub fn may_be_incomplete(&self) -> bool {
+        self.source == PackumentDetail::Abbreviated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::{Ecosystem, PackageKey};
+
+    fn reference(name: &str, version: &str) -> PackageRef {
+        PackageKey::from_registry_name(Ecosystem::Npm, name)
+            .unwrap()
+            .at_version(version)
+            .unwrap()
+    }
+
+    fn abbreviated(name: &str, version: &str, has_scripts: bool) -> PackageRecord {
+        PackageRecord {
+            package: reference(name, version),
+            source: PackumentDetail::Abbreviated,
+            published_at: None,
+            maintainers: None,
+            repository: None,
+            has_install_scripts: has_scripts,
+            install_scripts: None,
+            provenance: Provenance::default(),
+            artifact: Artifact {
+                url: format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"),
+                integrity: Some("sha512-AAAA".into()),
+                legacy_sha1: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".into()),
+                file_count: Some(9),
+                unpacked_size: Some(37893),
+            },
+        }
+    }
+
+    /// The distinction the whole `source` field exists for.
+    #[test]
+    fn missing_fields_are_qualified_by_the_document_they_came_from() {
+        let abbrev = abbreviated("lodash", "4.17.21", false);
+        assert!(abbrev.published_at.is_none());
+        assert!(
+            abbrev.may_be_incomplete(),
+            "an abbreviated record cannot carry a publish time, so None means unfetched"
+        );
+
+        let full = PackageRecord {
+            source: PackumentDetail::Full,
+            ..abbreviated("lodash", "4.17.21", false)
+        };
+        assert!(
+            !full.may_be_incomplete(),
+            "in a full record None means the registry does not publish it"
+        );
+    }
+
+    /// `has_install_scripts` is answerable from either document, so it is not optional.
+    /// The script bodies are a separate question and often unavailable.
+    #[test]
+    fn install_scripts_flag_is_definite_even_when_bodies_are_not() {
+        let record = abbreviated("esbuild", "0.28.2", true);
+        assert!(record.has_install_scripts);
+        assert!(
+            record.install_scripts.is_none(),
+            "abbreviated packuments carry the flag but never the bodies"
+        );
+    }
+
+    /// The two digests must stay distinguishable. SHA-1 is collision-broken and must
+    /// never be reachable through the same accessor as the SRI digest.
+    #[test]
+    fn weak_and_strong_digests_are_separate_fields() {
+        let record = abbreviated("lodash", "4.17.21", false);
+        assert!(record.artifact.integrity.unwrap().starts_with("sha512-"));
+        assert_eq!(record.artifact.legacy_sha1.unwrap().len(), 40);
+    }
+
+    #[test]
+    fn provenance_defaults_to_claiming_nothing() {
+        let p = Provenance::default();
+        assert!(p.attestation_url.is_none());
+        assert!(p.predicate_type.is_none());
+        assert!(p.trusted_publisher.is_none());
+        assert!(p.registry_signatures.is_empty());
+    }
+
+    #[test]
+    fn record_identity_round_trips_through_purl() {
+        let record = abbreviated("@babel/traverse", "7.23.1", false);
+        assert_eq!(record.package.to_string(), "pkg:npm/%40babel/traverse@7.23.1");
+        assert_eq!(record.package.key().registry_name(), "@babel/traverse");
+    }
+}

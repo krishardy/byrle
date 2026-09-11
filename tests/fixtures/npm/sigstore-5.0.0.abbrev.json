@@ -1,0 +1,50 @@
+{
+  "dist-tags": {
+    "latest": "5.0.0"
+  },
+  "modified": "2026-06-01T21:02:52.569Z",
+  "name": "sigstore",
+  "versions": {
+    "5.0.0": {
+      "dependencies": {
+        "@sigstore/bundle": "^5.0.0",
+        "@sigstore/core": "^4.0.0",
+        "@sigstore/protobuf-specs": "^0.5.0",
+        "@sigstore/sign": "^5.0.0",
+        "@sigstore/tuf": "^5.0.0",
+        "@sigstore/verify": "^4.0.0"
+      },
+      "devDependencies": {
+        "@sigstore/jest": "^0.0.0",
+        "@sigstore/mock": "^0.13.0",
+        "@sigstore/rekor-types": "^5.0.0",
+        "@tufjs/repo-mock": "^5.0.0",
+        "@types/make-fetch-happen": "^10.0.4"
+      },
+      "dist": {
+        "attestations": {
+          "provenance": {
+            "predicateType": "https://slsa.dev/provenance/v1"
+          },
+          "url": "https://registry.npmjs.org/-/npm/v1/attestations/sigstore@5.0.0"
+        },
+        "fileCount": 9,
+        "integrity": "sha512-hJqJfoG/e4qFQaauQL00c6J6FrHLBGKtkFvW3JbTSIEFOhLrSjdSM/gWd/yUOfYo/gsERehTXGC1VZWX+9X4Dg==",
+        "shasum": "c2ed2b740b45b8bf533cfdc4a64dc6aa91f0956c",
+        "signatures": [
+          {
+            "keyid": "SHA256:DhQ8wR5APBvFHLF/+Tc+AYvPOdTpcIDqOhxsBHRwC7U",
+            "sig": "MEUCIGIJh+4RKmp1wBB1Oh2HPPl+OFV2V3T/51C2IV3Wuaa4AiEA+vjXhMpx2l/O73LLM4XpGwvCgNiBTlNAHzry/lPSAhU="
+          }
+        ],
+        "tarball": "https://registry.npmjs.org/sigstore/-/sigstore-5.0.0.tgz",
+        "unpackedSize": 37893
+      },
+      "engines": {
+        "node": "^22.22.2 || ^24.15.0 || >=26.0.0"
+      },
+      "name": "sigstore",
+      "version": "5.0.0"
+    }
+  }
+}

@@ -6,3 +6,4 @@
 //! a lib plus a bin in one crate is not that split.
 
 pub mod identity;
+pub mod record;
