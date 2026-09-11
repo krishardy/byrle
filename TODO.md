@@ -496,10 +496,17 @@ implementations.
                   (`lib/registry.js`), which does not cover the URL. `dist.integrity` is
                   never touched.
             - [x] `Content-Length`, `Content-Encoding` and `ETag` are set to describe the
-                  body the proxy sends. The `ETag` carries a tag derived from the proxy's
-                  address, and an `If-None-Match` from another address is dropped rather
-                  than revalidated, which would otherwise let a 304 leave a client
-                  serving artifact URLs pointing at an address nobody listens on.
+                  body the proxy sends, and the `ETag` carries a tag derived from the
+                  proxy's address.
+            - [x] **Only a tag this proxy issued at this address may revalidate.** A 304
+                  authorises the client to serve what it cached, which is safe only for a
+                  body the proxy produced here. Found by testing the upgrade path:
+                  enabling rewriting at an address that previously ran without it, npm
+                  sent the upstream's own tag, the registry answered 304, and the client
+                  kept its unrewritten copy. Harmless for npm, which re-derives artifact
+                  URLs from the configured registry, and a silent bypass for pnpm and
+                  yarn, which use the URL as written. Costs one packument re-fetch when a
+                  client with a warm cache first meets a rewriting proxy.
             - [x] Lockfiles, measured: npm and yarn record the proxy address; pnpm omits
                   the URL and derives it from the configured registry, so its lockfiles
                   become registry-independent. `WAHAROA_PUBLIC_URL` pins the address.
