@@ -165,6 +165,18 @@ reports what each installed package manager is configured to talk to, what the l
 in the current directory record about where their artifacts came from, and what would
 silently skip the proxy. It exits non-zero when installs are not going through it.
 
+To see what the proxy does to a request rather than whether it is being used:
+
+```
+make inspect                      # lodash
+make inspect PACKAGE=@babel/core
+```
+
+sends one packument request and one artifact request as each of npm, pnpm and yarn, with
+the headers those clients actually send, and prints the responses beside what the registry
+served directly. It verifies the artifact digest itself rather than trusting the proxy's
+report. `make smoke-clients` is the one that asserts; this one is for looking.
+
 ## Deployment note
 
 Artifact URLs are rewritten to point at the proxy, so package managers record the proxy's
