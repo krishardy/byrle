@@ -164,20 +164,11 @@ pub fn classify_path(path: &str) -> RequestTarget {
 /// artifacts is not flagged.
 pub fn bypassing_origin(artifact_url: &str, upstream: &str) -> Option<String> {
     let artifact = reqwest::Url::parse(artifact_url).ok()?;
-    let origin = |url: &reqwest::Url| {
-        format!(
-            "{}://{}{}",
-            url.scheme(),
-            url.host_str().unwrap_or(""),
-            url.port().map(|p| format!(":{p}")).unwrap_or_default()
-        )
-    };
-
-    let found = origin(&artifact);
+    let found = origin_of(&artifact);
     let allowed = [upstream, DEFAULT_REGISTRY]
         .iter()
         .filter_map(|base| reqwest::Url::parse(base).ok())
-        .map(|url| origin(&url))
+        .map(|url| origin_of(&url))
         .collect::<Vec<_>>();
 
     if allowed.contains(&found) {
@@ -202,6 +193,102 @@ impl NormalizedPackument {
         }
         origins
     }
+}
+
+/// The result of pointing a packument's artifacts at the proxy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rewritten {
+    /// The document to forward.
+    pub body: Vec<u8>,
+    /// Artifacts now pointing at the proxy.
+    pub rewritten: usize,
+    /// Artifacts left as they were, because their origin is not one the proxy fronts.
+    /// These are still fetched directly; see [`bypassing_origin`].
+    pub left_alone: usize,
+}
+
+/// Point every artifact URL the proxy can serve at the proxy itself.
+///
+/// Necessary because clients disagree about `dist.tarball`. npm rewrites it to the
+/// configured registry; pnpm 10 and yarn 1 use it verbatim and fetch from whatever host
+/// it names, so against a real registry their artifacts never reach the proxy at all.
+/// Rewriting here makes every client in the ecosystem behave the same way.
+///
+/// Only the **origin** changes. The path is kept, so the request that comes back is the
+/// one [`classify_path`] already understands and the proxy forwards it upstream unchanged.
+///
+/// An artifact whose origin is not in `reachable` is left alone. Rewriting those would
+/// mean the proxy fetching from an arbitrary host on a client's behalf, which is a
+/// capability worth not having; they stay visible through [`bypassing_origin`] instead.
+///
+/// `dist.integrity` is untouched, and the registry signature covers
+/// `<name>@<version>:<integrity>` rather than the URL (pacote `lib/registry.js`), so a
+/// rewritten document still verifies.
+pub fn rewrite_artifact_origins(
+    json: &[u8],
+    reachable: &[&str],
+    public_base: &str,
+) -> Result<Rewritten, serde_json::Error> {
+    let mut document: serde_json::Value = serde_json::from_slice(json)?;
+    let base = public_base.trim_end_matches('/');
+    let mut rewritten = 0;
+    let mut left_alone = 0;
+
+    if let Some(versions) = document
+        .get_mut("versions")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (_, entry) in versions.iter_mut() {
+            let Some(tarball) = entry
+                .get_mut("dist")
+                .and_then(|dist| dist.get_mut("tarball"))
+            else {
+                continue;
+            };
+            let Some(url) = tarball.as_str() else {
+                continue;
+            };
+            match reachable_path(url, reachable) {
+                Some(path) => {
+                    *tarball = serde_json::Value::String(format!("{base}{path}"));
+                    rewritten += 1;
+                }
+                None => left_alone += 1,
+            }
+        }
+    }
+
+    Ok(Rewritten {
+        body: serde_json::to_vec(&document)?,
+        rewritten,
+        left_alone,
+    })
+}
+
+/// The path to keep, when this URL names an origin the proxy fronts.
+fn reachable_path(url: &str, reachable: &[&str]) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let origin = origin_of(&parsed);
+    if !reachable
+        .iter()
+        .filter_map(|base| reqwest::Url::parse(base).ok())
+        .any(|base| origin_of(&base) == origin)
+    {
+        return None;
+    }
+    Some(match parsed.query() {
+        Some(query) => format!("{}?{query}", parsed.path()),
+        None => parsed.path().to_owned(),
+    })
+}
+
+fn origin_of(url: &reqwest::Url) -> String {
+    format!(
+        "{}://{}{}",
+        url.scheme(),
+        url.host_str().unwrap_or(""),
+        url.port().map(|p| format!(":{p}")).unwrap_or_default()
+    )
 }
 
 /// Which document a response body is, read from its `Content-Type`.
@@ -1681,6 +1768,158 @@ mod tests {
         fn an_ordinary_packument_reports_nothing() {
             let p = normalize("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
             assert!(p.bypassing_origins(UPSTREAM).is_empty());
+        }
+    }
+
+    mod rewriting {
+        use super::*;
+
+        const UPSTREAM: &str = "https://registry.npmjs.org";
+        const PROXY: &str = "http://127.0.0.1:8080";
+
+        fn rewrite(json: &str) -> Rewritten {
+            rewrite_artifact_origins(json.as_bytes(), &[UPSTREAM], PROXY).expect("valid json")
+        }
+
+        /// Only the origin moves. The path is kept so the request that comes back is one
+        /// `classify_path` understands and the proxy forwards upstream unchanged.
+        #[test]
+        fn the_origin_changes_and_the_path_does_not() {
+            let out = rewrite(
+                r#"{"name":"lodash","versions":{"4.17.21":{"version":"4.17.21","dist":{
+                    "tarball":"https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"}}}}"#,
+            );
+            assert_eq!(out.rewritten, 1);
+            assert_eq!(out.left_alone, 0);
+
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(
+                v["versions"]["4.17.21"]["dist"]["tarball"],
+                serde_json::json!("http://127.0.0.1:8080/lodash/-/lodash-4.17.21.tgz")
+            );
+        }
+
+        /// `dist.integrity` is what npm checks the downloaded bytes against, and what the
+        /// registry signature covers. Touching it would break both.
+        #[test]
+        fn integrity_and_every_other_field_survive() {
+            let original = fixture("sigstore-5.0.0.abbrev.json");
+            let out = rewrite_artifact_origins(&original, &[UPSTREAM], PROXY).unwrap();
+            assert_eq!(out.rewritten, 1);
+
+            let served: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            let mut expected: serde_json::Value = serde_json::from_slice(&original).unwrap();
+            expected["versions"]["5.0.0"]["dist"]["tarball"] =
+                served["versions"]["5.0.0"]["dist"]["tarball"].clone();
+            assert_eq!(served, expected);
+            assert!(
+                served["versions"]["5.0.0"]["dist"]["signatures"][0]["sig"].is_string(),
+                "signatures have to come through untouched"
+            );
+        }
+
+        /// An origin the proxy does not front is left alone. Rewriting it would mean the
+        /// proxy fetching from an arbitrary host on a client's behalf.
+        #[test]
+        fn unreachable_origins_are_left_alone_and_counted() {
+            let out = rewrite(
+                r#"{"name":"widget","versions":{
+                    "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}},
+                    "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://elsewhere.example/widget-1.0.1.tgz"}}}}"#,
+            );
+            assert_eq!(out.rewritten, 1);
+            assert_eq!(out.left_alone, 1);
+
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(
+                v["versions"]["1.0.1"]["dist"]["tarball"],
+                serde_json::json!("https://elsewhere.example/widget-1.0.1.tgz")
+            );
+        }
+
+        /// A private registry's own artifacts are reachable, so they are rewritten too.
+        #[test]
+        fn a_private_registrys_own_artifacts_are_rewritten() {
+            let out = rewrite_artifact_origins(
+                br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
+                    "tarball":"https://npm.corp.example/w/-/w-1.0.0.tgz"}}}}"#,
+                &["https://npm.corp.example", DEFAULT_REGISTRY],
+                PROXY,
+            )
+            .unwrap();
+            assert_eq!(out.rewritten, 1);
+        }
+
+        /// A query string is part of how the artifact is addressed, so it is kept.
+        #[test]
+        fn a_query_string_is_preserved() {
+            let out = rewrite(
+                r#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
+                    "tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz?token=abc"}}}}"#,
+            );
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(
+                v["versions"]["1.0.0"]["dist"]["tarball"],
+                serde_json::json!("http://127.0.0.1:8080/w/-/w-1.0.0.tgz?token=abc")
+            );
+        }
+
+        /// Documents with nothing to rewrite come back intact and say so.
+        #[test]
+        fn documents_with_no_artifacts_are_unchanged() {
+            for json in [
+                r#"{"name":"w","versions":{}}"#,
+                r#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0"}}}"#,
+                r#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{}}}}"#,
+                r#"{"name":"w"}"#,
+            ] {
+                let out = rewrite(json);
+                assert_eq!(out.rewritten, 0, "{json}");
+                assert_eq!(out.left_alone, 0, "{json}");
+            }
+        }
+
+        #[test]
+        fn a_body_that_is_not_json_is_an_error() {
+            assert!(rewrite_artifact_origins(b"<html>", &[UPSTREAM], PROXY).is_err());
+        }
+
+        /// A trailing slash on the base must not produce a doubled one in the URL.
+        #[test]
+        fn a_trailing_slash_on_the_base_does_not_double_up() {
+            let out = rewrite_artifact_origins(
+                br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
+                    "tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}}}}"#,
+                &[UPSTREAM],
+                "http://127.0.0.1:8080/",
+            )
+            .unwrap();
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(
+                v["versions"]["1.0.0"]["dist"]["tarball"],
+                serde_json::json!("http://127.0.0.1:8080/w/-/w-1.0.0.tgz")
+            );
+        }
+
+        /// A rewritten URL has to classify back to the package it came from, or the
+        /// artifact request arrives as something the proxy does not recognise.
+        #[test]
+        fn a_rewritten_url_still_classifies_as_its_own_artifact() {
+            let out = rewrite(
+                r#"{"name":"@babel/core","versions":{"7.0.0":{"version":"7.0.0","dist":{
+                    "tarball":"https://registry.npmjs.org/@babel/core/-/core-7.0.0.tgz"}}}}"#,
+            );
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            let url = v["versions"]["7.0.0"]["dist"]["tarball"].as_str().unwrap();
+            let path = url.strip_prefix(PROXY).unwrap();
+
+            assert_eq!(
+                classify_path(path),
+                RequestTarget::Tarball {
+                    key: PackageKey::from_registry_name(Ecosystem::Npm, "@babel/core").unwrap(),
+                    claimed_version: "7.0.0".into()
+                }
+            );
         }
     }
 

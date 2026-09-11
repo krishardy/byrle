@@ -24,7 +24,7 @@ code, and the file names where.
 | [PURL identity rules for npm](purl-identity-rules.md) | Decided |
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
-| [Rewriting `dist.tarball`: reopened](packument-tarball-url-rewriting.md) | Open question |
+| [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |
 | [Stage structure](stage-structure.md) | Staging |
 | [Fetch path branching](fetch-path-branching.md) | Staging |
 | [Project name: waharoa](project-name-waharoa.md) | Staging, cultural consultation |

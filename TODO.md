@@ -272,6 +272,7 @@ implementations.
             `RequestTarget::Tarball` therefore carries `claimed_version`, not a
             `PackageRef`. Resolving it needs the packument record, which is the
             `dist.integrity`-before-fetch item below.
+      - [ ] Make the npm/yarn/pnpm packument tarbar url rewrite behaviour a feature flag.
       - [ ] `versions_with_install_scripts` in the log counts every version in the
             document, not the version being installed. Stage 2 needs the resolved
             version's answer, which needs the tarball request correlated against the
@@ -479,14 +480,38 @@ implementations.
       - [x] So digest verification and all of Stage 3 do not apply to pnpm or yarn.
             Metadata policy still does, since both fetch packuments through the proxy.
             Recorded in README as an honest limit.
-      - [ ] `[!]` **This reopens the plan §4 decision not to rewrite `dist.tarball`.**
-            That finding was npm-specific and the plan now says so. The buffering
-            objection is gone, because packuments are already buffered and parsed. The
-            lockfile objection stands: measured, `package-lock.json` `resolved` and
-            `pnpm-lock.yaml` `resolution.tarball` both record registry.npmjs.org today
-            and would record the proxy's own address after rewriting. See
-            `docs/engineering_decisions/packument-tarball-url-rewriting.md`. Needs a
-            decision, not more measurement.
+      - [x] **Decided: rewrite `dist.tarball` for every client**, reversing plan §4.
+            Uniform rather than per-client, so there is one behaviour for the ecosystem
+            instead of a user-agent table that would have to be maintained. All three
+            clients now fetch artifacts through the proxy and all are digest-verified.
+            - [x] Only the origin changes, and only to one the proxy already fronts. An
+                  artifact elsewhere is left alone: rewriting it would mean the proxy
+                  fetching from an arbitrary host for a client.
+            - [x] Release-build cost on the largest packument (typescript, 8.7 MB): 36 ms
+                  parse, 1.6 ms rewrite, 10 ms serialise, 18 ms gzip. `Compression::fast`
+                  rather than `default` is 18 ms against 117 ms for 2.06 MB against
+                  1.69 MB. `serde_json` `preserve_order` keeps key order, so the document
+                  differs only in the URLs.
+            - [x] Signatures unaffected: pacote signs `${mani._id}:${mani._integrity}`
+                  (`lib/registry.js`), which does not cover the URL. `dist.integrity` is
+                  never touched.
+            - [x] `Content-Length`, `Content-Encoding` and `ETag` are set to describe the
+                  body the proxy sends. The `ETag` carries a tag derived from the proxy's
+                  address, and an `If-None-Match` from another address is dropped rather
+                  than revalidated, which would otherwise let a 304 leave a client
+                  serving artifact URLs pointing at an address nobody listens on.
+            - [x] Lockfiles, measured: npm and yarn record the proxy address; pnpm omits
+                  the URL and derives it from the configured registry, so its lockfiles
+                  become registry-independent. `WAHAROA_PUBLIC_URL` pins the address.
+            - [x] `make smoke-clients` asserts every client fetches and verifies
+                  artifacts. Checked that it bites with `WAHAROA_REWRITE_ARTIFACTS=0`.
+      - [ ] Forwarding a packument unrewritten now means every artifact for that package
+            is fetched wherever the document says, which for pnpm and yarn is not through
+            the proxy. Every such path logs `UNINSPECTED`: unreadable client encodings, no
+            `Host` and no configured base, over the size cap, undecodable, unnormalizable,
+            unserializable, and per-version artifacts on another origin. Stage 1 forwards
+            in all of them. **Stage 2 has to decide whether that stays acceptable**, since
+            the fail-open default is now weaker than it was.
       - [ ] yarn 2+ (berry) and bun are untested. yarn 1.22.22 is what is installed here.
 - [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
 - [ ] `waharoa doctor` — verify effective client config, detect npm cache bypass
