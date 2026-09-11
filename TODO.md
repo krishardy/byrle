@@ -741,6 +741,18 @@ implementations.
             something is talking to a registry we do not front.
       - [ ] Only tier 5, no direct egress, covers the non-terminal install paths in §7
             (IDE extensions, MCP servers). Tiers 1 to 3 are not in their path at all.
+- [x] `make inspect`: one packument request and one artifact request as each of npm, pnpm
+      and yarn, with the headers those clients actually send, printed beside what the
+      registry served directly. For looking, where `make smoke-clients` asserts. It hashes
+      the artifact itself rather than trusting the proxy's report, so the check is
+      independent of the thing being checked.
+      - [x] Client request headers captured from npm 9.9.4, pnpm 10.33.0 and yarn 1.22.22
+            against a recording server rather than guessed. **pnpm offers `br`**, which is
+            what the outbound encoding narrowing exists for: the registry would serve
+            brotli and the proxy could not decode it.
+      - [x] **yarn 1 asks for `application/json` and gets the full packument**, where npm
+            and pnpm ask for the abbreviated one. Which document arrived is what qualifies
+            every absent field on a record, so the script names it.
 - [ ] Self-detection of bypass: a packument served with no artifact request following it
       is the signature of the pnpm behaviour, and would have caught it without anyone
       looking. Noisy, since a client may already hold the artifact or resolve a version it
