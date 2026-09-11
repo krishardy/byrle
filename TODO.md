@@ -108,6 +108,29 @@ Items that I've added that are not stage-bound.
    Verified: each target alone, `make sast` running both, fail-fast skipping trufflehog
    when semgrep fails, and `make -k sast` running both anyway.
 7. In the policy file sample, npm install_scripts setting would be set per package, not set for the entire ecosystem.
+8. [x] Make sure that semgrep is logged in during the `make semgrep` run.
+   `make semgrep` now refuses to run without a token, the way `make lint` refuses to run
+   without shellcheck, and for the same reason: **measured on this repository, same 79
+   files and same pinned packs, 57 rules anonymous against 103 logged in.** An anonymous
+   scan covers roughly half as much, passes, and says nothing in its output about which of
+   the two you got.
+   The token is found the way semgrep finds it (`semgrep/app/auth.py`): `SEMGREP_APP_TOKEN`
+   first, then the settings file at `SEMGREP_SETTINGS_FILE`, else
+   `$XDG_CONFIG_HOME/.semgrep/settings.yml` when that directory exists, else
+   `~/.semgrep/settings.yml`. The leading dot under XDG_CONFIG_HOME is semgrep's own doing
+   (`semgrep/env.py`), and looking in `~/.semgrep` alone misses a real login, which is what
+   happened on the first attempt here.
+   A logged-out settings file still carries `api_token`, written as `null`, so the value is
+   checked rather than the key.
+   `semgrep login` is never invoked by the script: with no token and a TTY it prompts and
+   waits, which would hang a build.
+   Logging in sends no findings anywhere. Only `semgrep ci` uploads results
+   (`semgrep/commands/ci.py`); this runs `semgrep scan`, which has no upload path. What the
+   token changes is which rules the registry serves, and rule fetching already contacts
+   semgrep.dev either way.
+   `SEMGREP_ALLOW_ANONYMOUS=1` runs without one and says what it costs. `make dev-setup`
+   reports login state, so it is part of setting a machine up rather than a surprise on the
+   first scan.
 
 ## Stage 1 — Pass-through proxy (transport)
 
