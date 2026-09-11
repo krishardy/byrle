@@ -11,10 +11,27 @@
 # TRUFFLEHOG_NO_VERIFY=1 to turn it off.
 #
 # Both passes run even if the first fails, so one report covers everything.
+#
+# TRUFFLEHOG_REPO_ROOT is the repository path *as trufflehog sees it*, which is not
+# always the path we see. The usual install here is a wrapper around
+# `docker run -v "$PWD:/pwd"`, so inside the container the repository is at /pwd and
+# nothing else on this machine is visible: an absolute host path fails to resolve and
+# the clone for the history pass fails with it. The Makefile supplies the value;
+# running this script directly falls back to the real path, which is what a native
+# trufflehog wants.
+#
+# Never pass `.` instead. That container's working directory is /usr/bin, so `.` scans
+# the scanner's own binaries: 45MB of them, a constant 3383 chunks, and a clean bill of
+# health for a repository it never opened.
+#
+# Exclusions come from .trufflehog-exclude in the repository, not a temp file, for the
+# same reason: the container cannot see anything outside the mount.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
+
+repo_uri="${TRUFFLEHOG_REPO_ROOT:-$repo_root}"
 
 if ! command -v trufflehog >/dev/null 2>&1; then
     echo "trufflehog is not installed. Run 'make dev-setup'."
@@ -29,10 +46,11 @@ th=(trufflehog --no-update --no-color --fail "$@")
 [[ "${TRUFFLEHOG_NO_VERIFY:-0}" == "1" ]] && th+=(--no-verification)
 
 echo "--- working tree"
-# Scanned as `.` from the repo root rather than by absolute path: trufflehog skips
-# binaries itself, so the ignored build output costs almost nothing to walk.
+# Both passes use $repo_uri, never `.`. Under the container wrapper the working
+# directory is the image's own /usr/bin, so `trufflehog filesystem .` silently scans
+# the scanner's binaries and reports the repository clean no matter what is in it.
 rc=0
-"${th[@]}" filesystem . || rc=$?
+"${th[@]}" filesystem "$repo_uri" -x "$repo_uri/.trufflehog-exclude" || rc=$?
 if [[ "$rc" -ne 0 ]]; then
     echo "    working-tree scan exited $rc"
     failed=1
@@ -43,12 +61,13 @@ if [[ "${TRUFFLEHOG_SKIP_HISTORY:-0}" == "1" ]]; then
 else
     echo "--- git history"
     rc=0
-    "${th[@]}" git "file://$repo_root" || rc=$?
+    "${th[@]}" git "file://$repo_uri" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
         if [[ "$rc" != "183" ]]; then
-            echo "    trufflehog could not scan history (exit $rc)."
-            echo "    It clones to a temp directory; if this environment blocks that,"
-            echo "    set TRUFFLEHOG_SKIP_HISTORY=1 and scan history in CI instead."
+            echo "    trufflehog could not scan history (exit $rc) at file://$repo_uri"
+            echo "    If it cannot find the repository there, set TRUFFLEHOG_REPO_ROOT"
+            echo "    to the path trufflehog itself sees. TRUFFLEHOG_SKIP_HISTORY=1"
+            echo "    skips this pass."
         fi
         failed=1
     fi

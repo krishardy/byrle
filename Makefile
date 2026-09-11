@@ -14,6 +14,12 @@ help:
 	@echo "  smoke-npm      end-to-end check of the proxy against a real npm client"
 	@echo "  spike-config   re-run the config-format spike (plan §5, decision #11)"
 
+# The repository path as trufflehog sees it. The usual install is a wrapper around
+# `docker run -v "$$PWD:/pwd"` (check with `type trufflehog`), and inside that container
+# the repository is at /pwd. For a native trufflehog binary, override it:
+#   make trufflehog TRUFFLEHOG_REPO_ROOT=$$(pwd)
+TRUFFLEHOG_REPO_ROOT ?= /pwd
+
 # Recipes stay one-line wrappers; the logic lives in scripts/make/<target>.sh
 dev-setup:
 	@scripts/make/dev-setup.sh
@@ -25,7 +31,7 @@ semgrep:
 	@scripts/make/semgrep.sh
 
 trufflehog:
-	@scripts/make/trufflehog.sh
+	@TRUFFLEHOG_REPO_ROOT='$(TRUFFLEHOG_REPO_ROOT)' scripts/make/trufflehog.sh
 
 # Prerequisites, so each scanner is runnable on its own. Make stops at the first
 # failing prerequisite; use `make -k sast` to run both regardless.
