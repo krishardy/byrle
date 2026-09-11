@@ -757,7 +757,33 @@ implementations.
       is the signature of the pnpm behaviour, and would have caught it without anyone
       looking. Noisy, since a client may already hold the artifact or resolve a version it
       does not install, so a heuristic rather than a check.
-      - [ ] yarn 2+ (berry) and bun are untested. yarn 1.22.22 is what is installed here.
+      - [x] yarn 2+ and bun tested. Both added to `make dev-setup` as optional, and to
+            `make smoke-clients`, which now covers five clients.
+            - [x] **Both use `dist.tarball` as written**, like pnpm and yarn 1. npm is the
+                  only one of the five that rewrites, which is the argument for the proxy
+                  doing it for all of them rather than per client. yarn 4.9.1 goes
+                  further and records the off-registry URL in its lockfile as
+                  `__archiveUrl`.
+            - [x] **Lockfiles: bun records the proxy address, yarn 4 does not.** yarn 4
+                  writes `resolution: "lodash@npm:4.18.1"` with no URL when it matches
+                  the configured registry, the way pnpm does, so its lockfiles stay
+                  portable. bun writes the full URL into `bun.lock`.
+            - [x] **yarn 2+ does not identify itself.** Its user-agent is
+                  `got (https://github.com/sindresorhus/got)`, the HTTP library's default.
+                  A refusal rule written `npm/yarn` does not match it; its client name is
+                  `got`.
+            - [x] **Every client has a cache that skips the proxy.** Measured: bun and
+                  yarn 4 both installed successfully having asked the proxy for nothing.
+                  bun needs `--cache-dir`; yarn 4 needs `globalFolder` and
+                  `enableMirror: false`, not just `enableGlobalCache: false`, because it
+                  copies out of its global mirror otherwise.
+            - [x] yarn 2+ is selected by a project rather than installed, so
+                  `make smoke-clients` sets up corepack shims in its own directory and a
+                  `packageManager` field, leaving the yarn on PATH alone. It needs node 18
+                  or later, since corepack calls `URL.canParse`, and is skipped with that
+                  reason on anything older.
+            - [ ] yarn 2+ is skipped on this machine, where the default node is 16. It
+                  passes under node 24.
 - [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
 - [x] `waharoa doctor`. `src/doctor.rs` holds the checks as pure functions; the binary
       reads the files and asks each package manager for its own resolved configuration,

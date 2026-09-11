@@ -122,5 +122,51 @@ else
     echo "    NOT FOUND. Install Node.js; 'make smoke-npm' cannot run without it."
 fi
 
+# The other package managers, all optional. `make smoke-clients` and `make inspect` cover
+# whichever are present and skip the rest. They are worth having: every one of them
+# except npm fetches dist.tarball from the host the packument names, which is the whole
+# reason the proxy rewrites artifact URLs.
+echo "==> pnpm (optional, used by 'make smoke-clients')"
+if need pnpm; then echo "    found $(pnpm --version)"; else echo "    not installed"; fi
+
+echo "==> yarn 1 (optional, used by 'make smoke-clients')"
+if need yarn; then echo "    found $(yarn --version)"; else echo "    not installed"; fi
+
+echo "==> yarn 2+ (optional, used by 'make smoke-clients')"
+if ! need corepack; then
+    echo "    corepack not found. It ships with Node 16.9 and later, and is how a"
+    echo "    project selects yarn 2+ without replacing the yarn on PATH."
+elif ! need node; then
+    echo "    node not found, so corepack cannot run."
+else
+    node_major="$(node --version | sed -E 's/^v([0-9]+).*/\1/')"
+    if [[ "$node_major" -lt 18 ]]; then
+        echo "    corepack found, but node is v$node_major. yarn 2+ needs 18 or later,"
+        echo "    and corepack itself calls URL.canParse, which 16 does not have."
+        echo "    'make smoke-clients' skips yarn 2+ on this node."
+    else
+        echo "    corepack $(corepack --version), node v$node_major: available."
+        echo "    Nothing to install: a project selects it with a packageManager field,"
+        echo "    and 'make smoke-clients' sets that up in a temporary project."
+    fi
+fi
+
+echo "==> bun (optional, used by 'make smoke-clients')"
+if need bun; then
+    echo "    found $(bun --version)"
+elif need pacman; then
+    echo "    install with: sudo pacman -S bun"
+elif need brew; then
+    brew install oven-sh/bun/bun
+elif need npm; then
+    npm install -g bun
+else
+    # Upstream offers `curl ... | bash`. Not run automatically, for the same reason the
+    # trufflehog entry above gives: piping a remote script into a shell is the pattern
+    # this project exists to distrust.
+    echo "    NOT INSTALLED and no package manager found. Install from your distribution,"
+    echo "    or review https://bun.sh/install before running it."
+fi
+
 echo
 echo "dev setup complete."
