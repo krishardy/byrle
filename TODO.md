@@ -54,7 +54,7 @@ Items that I've added that are not stage-bound.
    repository. `--no-update` stops trufflehog's version phone-home, matching the
    `--metrics=off` choice for semgrep. Credential *verification* is left on and is a
    different thing from telemetry: it authenticates a candidate against the service that
-   issued it, which is what separates live credentials from noise. `SAST_NO_VERIFY=1`
+   issued it, which is what separates live credentials from noise. `TRUFFLEHOG_NO_VERIFY=1`
    disables it.
    Three bugs found by running it rather than by reading it:
    - `p/bash` is a 404, as are `p/sh` and `p/shell`. Shell rules live at `r/bash`, the
@@ -71,7 +71,7 @@ Items that I've added that are not stage-bound.
    NOT verified: trufflehog detection. In this sandbox trufflehog cannot see `/tmp` or
    any path other than `.`, and a planted test credential did not register, so the clean
    working-tree result is not evidence. The git-history scan fails here for the same
-   reason, since it clones to a temp directory; `SAST_SKIP_HISTORY=1` is the escape and
+   reason, since it clones to a temp directory; `TRUFFLEHOG_SKIP_HISTORY=1` is the escape and
    `make sast` is otherwise green. Both should work on a normal machine, and history
    scanning belongs in CI regardless.
 6. [x] Split make sast into make trufflehog and make semgrep, and change the sast
@@ -84,9 +84,10 @@ Items that I've added that are not stage-bound.
    run both and report once. `make -k sast` restores the old behaviour. trufflehog's
    own two passes still both run and report together, since that aggregation is inside
    its script.
-   Env vars keep the `SAST_` prefix (`SAST_NO_VERIFY`, `SAST_SKIP_HISTORY`) rather than
-   being renamed to match the new target names, so the documented interface does not
-   move underneath anyone.
+   Env vars are named after the target that owns them: `TRUFFLEHOG_NO_VERIFY` and
+   `TRUFFLEHOG_SKIP_HISTORY`, alongside the existing `SEMGREP_RULES`. They were briefly
+   `SAST_*`, which stopped naming anything once `sast` became a prerequisite list rather
+   than a script.
    Verified: each target alone, `make sast` running both, fail-fast skipping trufflehog
    when semgrep fails, and `make -k sast` running both anyway.
 

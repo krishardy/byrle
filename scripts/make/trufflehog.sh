@@ -8,7 +8,7 @@
 # `--no-update` stops the version phone-home. Credential *verification* is left on and
 # is a different thing from telemetry: it authenticates a candidate secret against the
 # service that issued it, which is what separates live credentials from noise. Set
-# SAST_NO_VERIFY=1 to turn it off.
+# TRUFFLEHOG_NO_VERIFY=1 to turn it off.
 #
 # Both passes run even if the first fails, so one report covers everything.
 set -euo pipefail
@@ -26,7 +26,7 @@ failed=0
 # trufflehog --fail exits 183 when it finds something. Capture it rather than letting
 # `set -e` end the run before the second pass gets to report.
 th=(trufflehog --no-update --no-color --fail "$@")
-[[ "${SAST_NO_VERIFY:-0}" == "1" ]] && th+=(--no-verification)
+[[ "${TRUFFLEHOG_NO_VERIFY:-0}" == "1" ]] && th+=(--no-verification)
 
 echo "--- working tree"
 # Scanned as `.` from the repo root rather than by absolute path: trufflehog skips
@@ -38,8 +38,8 @@ if [[ "$rc" -ne 0 ]]; then
     failed=1
 fi
 
-if [[ "${SAST_SKIP_HISTORY:-0}" == "1" ]]; then
-    echo "--- git history: SKIPPED (SAST_SKIP_HISTORY=1)"
+if [[ "${TRUFFLEHOG_SKIP_HISTORY:-0}" == "1" ]]; then
+    echo "--- git history: SKIPPED (TRUFFLEHOG_SKIP_HISTORY=1)"
 else
     echo "--- git history"
     rc=0
@@ -48,7 +48,7 @@ else
         if [[ "$rc" != "183" ]]; then
             echo "    trufflehog could not scan history (exit $rc)."
             echo "    It clones to a temp directory; if this environment blocks that,"
-            echo "    set SAST_SKIP_HISTORY=1 and scan history in CI instead."
+            echo "    set TRUFFLEHOG_SKIP_HISTORY=1 and scan history in CI instead."
         fi
         failed=1
     fi
