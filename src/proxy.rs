@@ -594,6 +594,22 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         proxy.max_packument_bytes,
     ) {
         PackumentOutcome::Normalized(p) => {
+            // Artifacts on an origin the proxy does not front are fetched directly by
+            // the client, so nothing about them is observed: not the digest check below,
+            // not the policy engine later. The packument is the only place this is
+            // visible, because by the time the artifact is fetched the request has
+            // already gone elsewhere.
+            let bypassing = p.bypassing_origins(&proxy.upstream);
+            if !bypassing.is_empty() {
+                let versions: usize = bypassing.values().sum();
+                warn!(
+                    path = %path_and_query,
+                    purl = %p.key,
+                    versions,
+                    origins = ?bypassing.keys().collect::<Vec<_>>(),
+                    "ARTIFACTS PUBLISHED OFF THIS REGISTRY, which the client fetches directly"
+                );
+            }
             let (held_packages, held_records) = {
                 let mut store = proxy.store.lock().expect("record store lock");
                 store.insert((*p).clone());
@@ -612,6 +628,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             latest = %p.latest.as_deref().unwrap_or("-"),
             encoded_bytes = body.len(),
             parse_ms = parse_started.elapsed().as_millis() as u64,
+            offsite_versions = bypassing.values().sum::<usize>(),
             held_packages,
             held_records,
             "packument normalized"
@@ -1405,6 +1422,39 @@ mod tests {
                 .unwrap();
             assert_eq!(response.bytes().await.unwrap().len(), 100);
         }
+    }
+
+    /// A packument whose artifacts live somewhere the proxy does not front. The client
+    /// fetches those directly, so the packument is the only place it is visible.
+    ///
+    /// The artifact request never arrives, which is the whole point: this asserts the
+    /// proxy sees the packument and is left holding no tarball request for it.
+    #[tokio::test]
+    async fn artifacts_published_off_the_registry_are_visible_in_the_packument() {
+        let packument = r#"{"name":"widget","dist-tags":{"latest":"1.0.0"},"versions":{
+            "1.0.0":{"version":"1.0.0","dist":{
+                "tarball":"https://elsewhere.example/widget-1.0.0.tgz",
+                "integrity":"sha512-AAAA"}}}}"#;
+        let (base, seen) = proxy_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            packument.as_bytes().to_vec(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}/widget")).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.text().await.unwrap(),
+            packument,
+            "the packument is still forwarded unchanged; Stage 1 observes, it does not refuse"
+        );
+        assert_eq!(
+            seen.lock().unwrap().paths,
+            vec!["/widget"],
+            "no artifact request follows, because the client goes straight to the other host"
+        );
     }
 
     #[test]

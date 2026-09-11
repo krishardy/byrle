@@ -144,6 +144,66 @@ pub fn classify_path(path: &str) -> RequestTarget {
     }
 }
 
+/// Where a client will actually fetch an artifact from, when that is not the proxy.
+///
+/// Returns the origin it will go to directly, or `None` when the request will arrive at
+/// the proxy.
+///
+/// npm rewrites `dist.tarball` to the configured registry **only when it names the
+/// default registry host**. Tested against npm 9.9.4 with a controlled registry serving
+/// the same package two ways: `https://registry.npmjs.org/...` was fetched through the
+/// configured proxy, and another origin was fetched from that origin, with no tarball
+/// request reaching the proxy at all.
+///
+/// So a registry that publishes artifacts on a host the proxy does not front has its
+/// artifacts fetched unexamined. The packument is visible, which makes this detectable
+/// at the moment the metadata goes past. All 24,852 artifact URLs measured are on
+/// `registry.npmjs.org`.
+///
+/// `upstream` is the proxy's own upstream base, so a private registry serving its own
+/// artifacts is not flagged.
+pub fn bypassing_origin(artifact_url: &str, upstream: &str) -> Option<String> {
+    let artifact = reqwest::Url::parse(artifact_url).ok()?;
+    let origin = |url: &reqwest::Url| {
+        format!(
+            "{}://{}{}",
+            url.scheme(),
+            url.host_str().unwrap_or(""),
+            url.port().map(|p| format!(":{p}")).unwrap_or_default()
+        )
+    };
+
+    let found = origin(&artifact);
+    let allowed = [upstream, DEFAULT_REGISTRY]
+        .iter()
+        .filter_map(|base| reqwest::Url::parse(base).ok())
+        .map(|url| origin(&url))
+        .collect::<Vec<_>>();
+
+    if allowed.contains(&found) {
+        None
+    } else {
+        Some(found)
+    }
+}
+
+impl NormalizedPackument {
+    /// Artifact origins in this document that the proxy does not front, with how many
+    /// versions each accounts for. Empty in the normal case.
+    ///
+    /// A non-empty result means the client will fetch those artifacts directly, so
+    /// nothing about them is observed: not the digest check, not the policy engine.
+    pub fn bypassing_origins(&self, upstream: &str) -> BTreeMap<String, usize> {
+        let mut origins = BTreeMap::new();
+        for record in &self.records {
+            if let Some(origin) = bypassing_origin(&record.artifact.url, upstream) {
+                *origins.entry(origin).or_insert(0) += 1;
+            }
+        }
+        origins
+    }
+}
+
 /// Which document a response body is, read from its `Content-Type`.
 ///
 /// The response is authoritative and the request is not: npm asks with
@@ -1214,6 +1274,14 @@ mod tests {
                             .and_then(|(_, rest)| rest.split_once('/'))
                             .map(|(_, p)| format!("/{p}"))
                             .unwrap_or_default();
+                        // Every artifact a real registry publishes has to be one the
+                        // proxy will see, or verification never gets a chance.
+                        assert_eq!(
+                            bypassing_origin(&record.artifact.url, DEFAULT_REGISTRY),
+                            None,
+                            "{}: artifact published off the registry",
+                            record.artifact.url
+                        );
                         match classify_path(&url_path) {
                             RequestTarget::Tarball { key, .. } => assert_eq!(
                                 key, p.key,
@@ -1517,6 +1585,103 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("repository URL string"), "got: {message}");
         assert!(message.contains("object"), "got: {message}");
+    }
+
+    mod origins {
+        use super::*;
+
+        const UPSTREAM: &str = "https://registry.npmjs.org";
+
+        /// The normal case: npm rewrites a default-registry tarball URL to whatever
+        /// registry is configured, so the request arrives at the proxy.
+        #[test]
+        fn artifacts_on_the_default_registry_come_through_the_proxy() {
+            assert_eq!(
+                bypassing_origin(
+                    "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+                    UPSTREAM
+                ),
+                None
+            );
+        }
+
+        /// A private registry serving its own artifacts is not a bypass.
+        #[test]
+        fn artifacts_on_the_configured_upstream_come_through_the_proxy() {
+            assert_eq!(
+                bypassing_origin(
+                    "https://npm.corp.example/lodash/-/lodash-4.17.21.tgz",
+                    "https://npm.corp.example"
+                ),
+                None,
+                "this is the registry the operator pointed us at"
+            );
+            assert_eq!(
+                bypassing_origin(
+                    "http://127.0.0.1:8080/x/-/x-1.0.0.tgz",
+                    "http://127.0.0.1:8080"
+                ),
+                None,
+                "port and scheme are part of the origin, and these match"
+            );
+        }
+
+        /// Any other origin is fetched directly, and the proxy sees nothing.
+        #[test]
+        fn any_other_origin_is_reported() {
+            assert_eq!(
+                bypassing_origin("https://evil.example/lodash-4.17.21.tgz", UPSTREAM),
+                Some("https://evil.example".to_owned())
+            );
+            assert_eq!(
+                bypassing_origin("https://registry.npmjs.org.evil.example/x.tgz", UPSTREAM),
+                Some("https://registry.npmjs.org.evil.example".to_owned()),
+                "a suffix of the real host is a different host"
+            );
+            assert_eq!(
+                bypassing_origin(
+                    "http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+                    UPSTREAM
+                ),
+                Some("http://registry.npmjs.org".to_owned()),
+                "a downgrade to http is a different origin"
+            );
+            assert_eq!(
+                bypassing_origin("https://registry.npmjs.org:8443/x.tgz", UPSTREAM),
+                Some("https://registry.npmjs.org:8443".to_owned()),
+                "a different port is a different origin"
+            );
+        }
+
+        /// A URL that does not parse names no origin to compare, so there is nothing to
+        /// report. The version carrying it has no usable artifact either way.
+        #[test]
+        fn an_unparseable_url_reports_nothing() {
+            assert_eq!(bypassing_origin("not a url", UPSTREAM), None);
+            assert_eq!(bypassing_origin("/relative/path.tgz", UPSTREAM), None);
+        }
+
+        /// The per-document view, which is what the proxy logs.
+        #[test]
+        fn a_packument_reports_its_offsite_origins_with_counts() {
+            let body = br#"{"name":"widget","versions":{
+                "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}},
+                "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://evil.example/widget-1.0.1.tgz"}},
+                "1.0.2":{"version":"1.0.2","dist":{"tarball":"https://evil.example/widget-1.0.2.tgz"}},
+                "1.0.3":{"version":"1.0.3","dist":{"tarball":"https://other.example/widget-1.0.3.tgz"}}}}"#;
+            let p = normalize_packument(body, PackumentDetail::Abbreviated).unwrap();
+
+            let origins = p.bypassing_origins(UPSTREAM);
+            assert_eq!(origins.len(), 2);
+            assert_eq!(origins.get("https://evil.example"), Some(&2));
+            assert_eq!(origins.get("https://other.example"), Some(&1));
+        }
+
+        #[test]
+        fn an_ordinary_packument_reports_nothing() {
+            let p = normalize("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
+            assert!(p.bypassing_origins(UPSTREAM).is_empty());
+        }
     }
 
     mod paths {

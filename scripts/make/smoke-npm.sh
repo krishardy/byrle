@@ -133,7 +133,15 @@ $(grep 'MISMATCH' "$clean_log")"
 fi
 grep -q 'no packument seen' "$clean_log" \
     && fail "a tarball was fetched with no packument observed for its package"
-echo "    ok ($tarballs tarballs, all with a known digest, all verified)"
+
+# No false positives on the real registry: every artifact it publishes has to look like
+# one the proxy will see. A warning here against registry.npmjs.org is a bug in the
+# check, not a finding.
+if grep -q 'PUBLISHED OFF' "$clean_log"; then
+    fail "the offsite-artifact check fired against the real registry:
+$(grep 'PUBLISHED OFF' "$clean_log")"
+fi
+echo "    ok ($tarballs tarballs, all with a known digest, all verified, none offsite)"
 stop_proxy
 
 echo "==> 5/6  npm ci verifies every artifact although it requests no packuments"

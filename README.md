@@ -144,8 +144,8 @@ has honest limits:
   npm rewrites that URL to the configured registry only when it names the default
   registry host; any other host is fetched directly. Tested against npm 9.9.4: a
   packument advertising a tarball on another origin was fetched from that origin, and
-  the proxy never saw the request. Detecting it needs the packument, which the proxy does
-  see, so this is a check we can add rather than a limit we have to accept.
+  the proxy never saw the request. The proxy detects this in the packument and warns;
+  refusing the install is a policy decision and is not implemented yet.
 
 We do not stop an attacker who already controls the developer's machine, and we do not
 claim to detect novel malware ahead of the research community.
