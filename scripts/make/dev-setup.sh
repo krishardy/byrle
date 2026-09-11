@@ -43,7 +43,7 @@ echo "==> shellcheck (shell linting, used by 'make lint')"
 if need shellcheck; then
     echo "    found $(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}')"
 elif need pipx; then
-    # shellcheck-py ships the real shellcheck binary in a platform wheel, so this
+    # The shellcheck-py package ships the real binary in a platform wheel, so this
     # needs no root and works the same on Linux and macOS.
     pipx install shellcheck-py
 elif need pip3; then

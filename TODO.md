@@ -26,8 +26,10 @@ Items that I've added that are not stage-bound.
    skipping when absent: per CLAUDE.md every recipe is a thin wrapper around a script,
    so real logic lives in shell, and a lint run that quietly covers half the codebase
    while reporting success is the failure worth avoiding.
-   NOT verified: shellcheck is not installed here, so whether the eight existing scripts
-   are actually clean is unknown. Run `make dev-setup` then `make lint`.
+   Verified after `make dev-setup` installed it: `make lint` is green over 9 scripts.
+   It found three real parse errors first, all self-inflicted and worth knowing about: a
+   comment whose first word is `shellcheck` is read as a directive and fails SC1073, so
+   prose about the tool has to start with another word.
    Note: this widens `make lint` beyond the "(runs clippy)" description in CLAUDE.md.
 3. [x] Add make sast, which runs semgrep on the project.
    Done: `scripts/make/sast.sh`. Rulesets are pinned (`p/rust`, `p/secrets`, `p/bash`)
@@ -45,8 +47,12 @@ Items that I've added that are not stage-bound.
    target that is red every week stops being read. `CHECK_DEPS_STRICT=1` fails on
    outdated too and adds `--deny warnings`, making unmaintained crates disqualifying,
    which is the same standard that ruled out `serde_yml` in plan §5.
-   Verified against the real advisory database, and it found something (see below).
-   `cargo outdated` is not installed here, so that half is unexercised.
+   Verified end to end after `make dev-setup`: both halves run. cargo-audit flags
+   RUSTSEC-2026-0249 (see below) and cargo-outdated reports `toml 1.1.5 -> 1.1.6` in the
+   spike crate, reported without failing, as designed.
+   Open question: the spike's `Cargo.lock` is frozen evidence of what the config-format
+   spike actually tested, so updating it to silence that report would damage the record.
+   Decide whether the spike should be exempt from the freshness half.
 5. [x] Add trufflehog to make sast.
    Done. `make sast` now runs semgrep then trufflehog, aggregating both rather than
    stopping at the first failure. Two scans: the working tree, and git history, because
@@ -67,13 +73,15 @@ Items that I've added that are not stage-bound.
    - semgrep flagged `std::env::args()` in `examples/osv_conformance.rs`. False positive:
      the rule guards against deriving identity from argv. Suppressed at the site with a
      reason, and the marker has to sit on the line immediately above the finding.
-   Verified: semgrep runs 50 rules over 61 files and the suppression works.
-   NOT verified: trufflehog detection. In this sandbox trufflehog cannot see `/tmp` or
-   any path other than `.`, and a planted test credential did not register, so the clean
-   working-tree result is not evidence. The git-history scan fails here for the same
-   reason, since it clones to a temp directory; `TRUFFLEHOG_SKIP_HISTORY=1` is the escape and
-   `make sast` is otherwise green. Both should work on a normal machine, and history
-   scanning belongs in CI regardless.
+   Verified: semgrep runs its rules over the tracked files and the suppression works.
+   STILL NOT verified, and `make dev-setup` did not fix it because nothing is missing:
+   trufflehog detection. In this sandbox the binary cannot see `/tmp`, resolves no path
+   except `.`, and does not see files written by the shell at all: planting a well-formed
+   GitHub PAT and Slack webhook left the chunk count identical at 3383 and produced no
+   finding. So the clean working-tree result here is not evidence about the working tree.
+   The history pass fails for the same reason, since it clones to a temp directory.
+   `TRUFFLEHOG_SKIP_HISTORY=1` is the escape. Someone should run `make trufflehog` on a
+   normal shell once to confirm both passes work; history scanning belongs in CI anyway.
 6. [x] Split make sast into make trufflehog and make semgrep, and change the sast
    target to use semgrep and trufflehog as prerequisites.
    Done. `scripts/make/sast.sh` is gone, replaced by `semgrep.sh` and `trufflehog.sh`;
