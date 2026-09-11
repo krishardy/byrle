@@ -12,20 +12,19 @@
 #
 # Both passes run even if the first fails, so one report covers everything.
 #
-# TRUFFLEHOG_REPO_ROOT is the repository path *as trufflehog sees it*, which is not
-# always the path we see. The usual install here is a wrapper around
-# `docker run -v "$PWD:/pwd"`, so inside the container the repository is at /pwd and
-# nothing else on this machine is visible: an absolute host path fails to resolve and
-# the clone for the history pass fails with it. The Makefile supplies the value;
-# running this script directly falls back to the real path, which is what a native
-# trufflehog wants.
+# TRUFFLEHOG_REPO_ROOT is the repository path as trufflehog sees it. For a native
+# binary that is the real path, which the Makefile supplies and this script falls back
+# to. It exists because a containerised trufflehog sees the repository at its mount
+# point instead, and passing a host path to one of those fails.
 #
-# Never pass `.` instead. That container's working directory is /usr/bin, so `.` scans
-# the scanner's own binaries: 45MB of them, a constant 3383 chunks, and a clean bill of
-# health for a repository it never opened.
+# Both passes name that path explicitly and never use `.`. Under the container wrapper
+# this project used previously, the image's working directory was /usr/bin, so
+# `trufflehog filesystem .` scanned the scanner's own binaries and reported a clean
+# repository it had never opened. `--fail-on-scan-errors` now turns an unreadable path
+# into a failure, though it cannot catch a readable path that is the wrong directory.
 #
-# Exclusions come from .trufflehog-exclude in the repository, not a temp file, for the
-# same reason: the container cannot see anything outside the mount.
+# Exclusions live in .trufflehog-exclude in the repository rather than a temp file, so
+# a containerised run can still see them.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -42,7 +41,7 @@ failed=0
 
 # trufflehog --fail exits 183 when it finds something. Capture it rather than letting
 # `set -e` end the run before the second pass gets to report.
-th=(trufflehog --no-update --no-color --fail "$@")
+th=(trufflehog --no-update --no-color --fail --fail-on-scan-errors "$@")
 [[ "${TRUFFLEHOG_NO_VERIFY:-0}" == "1" ]] && th+=(--no-verification)
 
 echo "--- working tree"
