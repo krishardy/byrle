@@ -71,6 +71,31 @@ fi
 echo "==> semgrep (static analysis, used by 'make sast')"
 if need semgrep; then
     echo "    found $(semgrep --version 2>/dev/null)"
+    # `make semgrep` requires a login, because the registry serves fewer rules to an
+    # anonymous client: 57 against 103 measured on this repository. Reported here so it
+    # is part of setting a machine up rather than a surprise on the first scan.
+    settings="${SEMGREP_SETTINGS_FILE:-}"
+    if [[ -z "$settings" ]]; then
+        if [[ -n "${XDG_CONFIG_HOME:-}" && -d "${XDG_CONFIG_HOME}" ]]; then
+            settings="$XDG_CONFIG_HOME/.semgrep/settings.yml"
+        else
+            settings="$HOME/.semgrep/settings.yml"
+        fi
+    fi
+    token=""
+    if [[ -n "${SEMGREP_APP_TOKEN:-}" ]]; then
+        token="env"
+    elif [[ -f "$settings" ]]; then
+        value="$(sed -nE 's/^[[:space:]]*api_token:[[:space:]]*//p' "$settings" | head -1 \
+            | tr -d '"'"'"'[:space:]')"
+        [[ -n "$value" && "$value" != "null" && "$value" != "~" ]] && token="$settings"
+    fi
+    if [[ -n "$token" ]]; then
+        echo "    logged in ($token)"
+    else
+        echo "    NOT LOGGED IN. Run 'semgrep login': the registry serves roughly half"
+        echo "    the rules to an anonymous client, and 'make semgrep' requires it."
+    fi
 elif need pipx; then
     pipx install semgrep
 elif need pip3; then
