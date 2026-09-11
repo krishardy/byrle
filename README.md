@@ -157,11 +157,15 @@ address in lockfiles. npm's `resolved` and yarn's `resolved` both do; pnpm inste
 the URL and derives it from the configured registry, which makes its lockfiles more
 portable than before, not less.
 
-Set `WAHAROA_PUBLIC_URL` to a stable name everyone who consumes the lockfile can reach,
-rather than letting it default to whatever `Host` a client happened to use. The
-consequence cuts both ways: a lockfile committed from behind the proxy cannot be installed
-without it, so CI cannot silently skip enforcement, and the proxy becomes something CI
-depends on being reachable.
+**Set `WAHAROA_PUBLIC_URL` to a stable name** everyone who consumes the lockfile can
+reach, rather than letting it default to whatever `Host` a client happened to use. This is
+close to mandatory: measured, `npm ci` against a lockfile whose recorded address is no
+longer reachable fails outright, and does not fall back to the registry it was given on
+the command line. The proxy warns at startup when it is unset.
+
+The consequence cuts both ways: a lockfile committed from behind the proxy cannot be
+installed without it, so CI cannot silently skip enforcement, and the proxy becomes
+something CI depends on being reachable.
 
 ## License
 

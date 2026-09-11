@@ -9,7 +9,7 @@
 //! that every package in the resolved graph is observed and normalised, so the logging
 //! is load-bearing rather than decoration.
 
-use tracing::info;
+use tracing::{info, warn};
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
 use waharoa::proxy::{DEFAULT_MAX_PACKUMENT_BYTES, Proxy};
@@ -74,9 +74,18 @@ async fn main() {
         .map(|v| v != "0")
         .unwrap_or(true);
     if !rewrite_artifacts {
-        info!(
+        warn!(
             "artifact URL rewriting is OFF; pnpm and yarn will fetch artifacts directly \
              and nothing about them is observed"
+        );
+    } else if public_base.is_none() {
+        // Measured: with a lockfile whose `resolved` names a proxy address that is no
+        // longer reachable, `npm ci` fails outright. It does not fall back to the
+        // registry it was given on the command line.
+        warn!(
+            "WAHAROA_PUBLIC_URL is not set, so artifact URLs use whatever Host each \
+             client used. That address is written into lockfiles, and `npm ci` fails if \
+             it later becomes unreachable. Set it to a stable name."
         );
     }
 

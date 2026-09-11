@@ -209,7 +209,10 @@ pub fn mark_etag(etag: &str, base: &str) -> String {
 /// longer resolve. Upstream then answers 200 and the body is rewritten afresh.
 ///
 /// Entries that are not ours pass through untouched, so a client that also talks to the
-/// registry directly is unaffected.
+/// registry directly is unaffected. One stale entry discards the whole list rather than
+/// just itself: revalidating on the remainder could still produce a 304, which is the
+/// outcome being avoided. Clients send a single tag, so this is a statement of intent
+/// more than a case that arises.
 pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
     let ours = format!("{ETAG_PREFIX}{}.", base_tag(base));
     let mut out = Vec::new();
