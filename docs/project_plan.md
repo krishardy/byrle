@@ -720,21 +720,32 @@ single point of failure.
   we ship
 - Fail-closed default on proxy unavailability, with a documented break-glass path
 
-**Known bypass vectors — must be stated honestly in the README:**
+**How requests are made to reach the proxy at all** is a stack of mechanisms, not one
+choice. The tiers, what each costs, and what each fails to cover are in
+[docs/engineering_decisions/enforcement-tiers.md](engineering_decisions/enforcement-tiers.md).
+The short version: refusing artifacts whose origin is not in the proxy configuration needs
+no CA, no root and no network changes, and should be built before any network-level
+interception.
+
+**Known bypass vectors, stated honestly in the README:**
 
 - **Reverse proxy mode is advisory, not mandatory.** A developer who resets their
   registry URL defeats it entirely. The mitigation is `waharoa doctor`, which verifies
   effective client config.
-  - ⚠ **The lockfile-verification mitigation does not work for npm. Measured Stage 1,
-    Sept 2026, npm 9.9.4.** This previously read "CI lockfile verification that all
-    resolved URLs point at the proxy." npm normalizes `resolved` in `package-lock.json`
-    back to the canonical `https://registry.npmjs.org/...` regardless of the configured
-    registry, confirmed both with `--registry` and with a project `.npmrc`. So a lockfile
-    produced through the proxy is byte-identical to one produced without it, and cannot
-    evidence that the proxy was used. The upside is that lockfiles stay portable and we
-    never have to rewrite URLs; the cost is that this anti-bypass control has to come
-    from somewhere else. Re-check on npm 12, and per-client when yarn and pnpm are
-    tested: this is client behavior, not protocol.
+  - ⚠ **Lockfile verification now works for npm and yarn, and does not for pnpm.
+    Corrected Sept 2026.** This previously read that npm normalizes `resolved` back to
+    `https://registry.npmjs.org/...` regardless of the configured registry, so a lockfile
+    could not evidence that the proxy was used. That was measured before the proxy
+    rewrote artifact URLs, and rewriting changed it. Measured after:
+    | Client | Lockfile field | Records |
+    |---|---|---|
+    | npm 9.9.4 | `resolved` | the proxy address |
+    | yarn 1.22.22 | `resolved` | the proxy address |
+    | pnpm 10.33.0 | `resolution.tarball` | omitted entirely |
+    So for npm and yarn a lockfile does evidence proxy use, and CI can check it. pnpm
+    omits the URL when it matches the configured registry and derives it at install time,
+    which makes its lockfiles portable and leaves them with nothing to check. Re-check per
+    client on upgrade: this is client behavior, not protocol.
 - **Non-terminal install paths.** IDE extensions, browser extensions, and MCP servers
   install packages without going through a configured package manager. Aikido raises
   this specifically in the context of AI agents. A registry proxy cannot see any of it.

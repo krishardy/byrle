@@ -520,9 +520,51 @@ implementations.
             unserializable, and per-version artifacts on another origin. Stage 1 forwards
             in all of them. **Stage 2 has to decide whether that stays acceptable**, since
             the fail-open default is now weaker than it was.
+- [ ] `[!]` **Refuse artifacts whose origin is not in the proxy configuration.** Tier 3 in
+      `docs/engineering_decisions/enforcement-tiers.md`, and **the thing to build before
+      any network-level interception**: it closes the gap those tiers are wanted for and
+      needs no CA, no root, no trust-store changes and nothing per machine.
+      - [ ] Filter, do not block the document. Decision #4
+            (`quarantine-filter-metadata.md`) already settles the mechanism: drop the
+            versions whose artifacts we cannot see so the client's own resolver picks one
+            we can, and hard-fail a pinned fetch of a filtered version. A package can have
+            one old version on another origin and every current version on the registry;
+            refusing the document would break an install that filtering leaves working.
+      - [ ] Needs an operator-configured list of origins the proxy fronts. Today the
+            allowed set is the configured upstream plus the default registry, hardcoded.
+            A registry serving artifacts from a CDN on another host is plausible. Zero of
+            24,852 artifact URLs measured on registry.npmjs.org were off-origin, so this
+            is about private and mirrored registries.
+      - [ ] The refusal is 403, because policy denied it. Never a 5xx (§5).
+      - [ ] The information already exists: `npm::bypassing_origin` computes it on every
+            packument and logs `UNINSPECTED`. This is that warning turned into an action.
+- [ ] Enforcement tiers 4 and 5, recorded in
+      `docs/engineering_decisions/enforcement-tiers.md`. Both are later than tier 3.
+      - [ ] A hosts-file or DNS override needs TLS termination, so it is decision #3
+            wearing different clothes rather than a separate option. `dist.tarball` is
+            always https, so anything intercepting the URL as written needs a CA.
+      - [ ] `[!]` **Verify name-constrained CA support before shipping any CA.** A CA
+            constrained to the registry hostnames can only impersonate the registry, which
+            bounds what a compromise of the proxy's key is worth. OpenSSL and NSS honour
+            name constraints; macOS and Windows have historically been inconsistent. Node
+            uses its own OpenSSL. Needs testing, not assuming.
+      - [ ] Node has three trust stores to satisfy: the OS store, `NODE_EXTRA_CA_CERTS`,
+            and npm's `cafile` and `strict-ssl`.
+      - [ ] `HTTPS_PROXY` without termination shows a hostname and nothing else: no
+            package, no version. Useless for policy, worth having as a signal that
+            something is talking to a registry we do not front.
+      - [ ] Only tier 5, no direct egress, covers the non-terminal install paths in §7
+            (IDE extensions, MCP servers). Tiers 1 to 3 are not in their path at all.
+- [ ] Self-detection of bypass: a packument served with no artifact request following it
+      is the signature of the pnpm behaviour, and would have caught it without anyone
+      looking. Noisy, since a client may already hold the artifact or resolve a version it
+      does not install, so a heuristic rather than a check.
       - [ ] yarn 2+ (berry) and bun are untested. yarn 1.22.22 is what is installed here.
 - [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
-- [ ] `waharoa doctor` — verify effective client config, detect npm cache bypass
+- [ ] `waharoa doctor`: verify effective client config, detect npm cache bypass, and
+      check lockfile evidence. The last one is newly possible: npm and yarn now record the
+      proxy address in `resolved`, so CI can verify a lockfile was produced through the
+      proxy. pnpm omits the URL, so it has nothing to check. See plan §7.
 
 **Exit:** a real `npm install` completes through the proxy with the full transitive
 graph correctly normalized to PURLs, and the hardcoded block fires before the tarball
