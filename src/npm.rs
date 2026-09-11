@@ -54,7 +54,7 @@ use crate::record::{
 };
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 
 /// npm's abbreviated packument media type, which is what `npm install` asks for.
@@ -200,12 +200,41 @@ impl NormalizedPackument {
 pub struct Rewritten {
     /// The document to forward.
     pub body: Vec<u8>,
-    /// Artifacts now pointing at the proxy.
+    /// Distinct artifact URLs now pointing at the proxy.
     pub rewritten: usize,
+    /// How many places in the document were changed. Higher than `rewritten` when a URL
+    /// appears more than once: npm's `_resolved` repeats `dist.tarball` verbatim.
+    pub occurrences: usize,
     /// Artifacts left as they were, because their origin is not one the proxy fronts.
     /// These are still fetched directly; see [`bypassing_origin`].
     pub left_alone: usize,
 }
+
+#[derive(Debug)]
+pub enum RewriteError {
+    /// The body is not UTF-8, so it is not JSON either.
+    NotUtf8(std::str::Utf8Error),
+    /// An artifact URL from the records was not found in the document as a complete
+    /// quoted string. The document is shaped in a way this does not understand, and a
+    /// partial rewrite would send some artifacts to the proxy and leave others pointing
+    /// at the registry.
+    Incomplete { expected: usize, found: usize },
+}
+
+impl fmt::Display for RewriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotUtf8(e) => write!(f, "packument is not UTF-8: {e}"),
+            Self::Incomplete { expected, found } => write!(
+                f,
+                "found {found} of {expected} artifact URLs to rewrite; \
+                 the rest are not complete quoted strings"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RewriteError {}
 
 /// Point every artifact URL the proxy can serve at the proxy itself.
 ///
@@ -224,45 +253,114 @@ pub struct Rewritten {
 /// `dist.integrity` is untouched, and the registry signature covers
 /// `<name>@<version>:<integrity>` rather than the URL (pacote `lib/registry.js`), so a
 /// rewritten document still verifies.
-pub fn rewrite_artifact_origins(
+///
+/// # How, and why not a JSON value tree
+///
+/// `artifacts` are the URLs already found during normalisation, so the document is not
+/// parsed again. Each is replaced wherever it appears as a **complete quoted string**,
+/// leaving every other byte alone.
+///
+/// Parsing into a `serde_json::Value` and re-serialising was the obvious approach and
+/// costs far more: the value tree dominated memory, with 24 simultaneous large packuments
+/// reaching 1,348 MB against 27.6 MB of encoded bodies, plus 36 ms to parse and 10 ms to
+/// serialise typescript. This walks the text once and allocates one output buffer.
+///
+/// It also produces a byte-identical document apart from the URLs, which re-serialising
+/// cannot promise, and it catches `_resolved`, an npm internal field repeating
+/// `dist.tarball` that a `dist.tarball`-only rewrite leaves pointing at the registry.
+///
+/// Measured against the corpus, both document kinds: of 49,704 artifact URLs, 49,702
+/// appear exactly once as a complete quoted string and 2 appear twice, both as
+/// `_resolved`. Escaped forward slashes occur in 2 of 94 documents and only inside README
+/// prose, never in a URL.
+///
+/// If any URL is not found, the whole rewrite fails rather than half of it landing.
+pub fn rewrite_artifact_origins<'a>(
     json: &[u8],
+    artifacts: impl IntoIterator<Item = &'a str>,
     reachable: &[&str],
     public_base: &str,
-) -> Result<Rewritten, serde_json::Error> {
-    let mut document: serde_json::Value = serde_json::from_slice(json)?;
+) -> Result<Rewritten, RewriteError> {
+    let text = std::str::from_utf8(json).map_err(RewriteError::NotUtf8)?;
     let base = public_base.trim_end_matches('/');
-    let mut rewritten = 0;
-    let mut left_alone = 0;
 
-    if let Some(versions) = document
-        .get_mut("versions")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        for (_, entry) in versions.iter_mut() {
-            let Some(tarball) = entry
-                .get_mut("dist")
-                .and_then(|dist| dist.get_mut("tarball"))
-            else {
-                continue;
-            };
-            let Some(url) = tarball.as_str() else {
-                continue;
-            };
-            match reachable_path(url, reachable) {
-                Some(path) => {
-                    *tarball = serde_json::Value::String(format!("{base}{path}"));
-                    rewritten += 1;
-                }
-                None => left_alone += 1,
+    let mut replacements: HashMap<&str, String> = HashMap::new();
+    let mut left_alone = 0;
+    for url in artifacts {
+        match reachable_path(url, reachable) {
+            Some(path) => {
+                replacements.insert(url, format!("{base}{path}"));
             }
+            None => left_alone += 1,
         }
+    }
+    if replacements.is_empty() {
+        return Ok(Rewritten {
+            body: json.to_vec(),
+            rewritten: 0,
+            occurrences: 0,
+            left_alone,
+        });
+    }
+
+    // Every replaceable URL begins with one of these, so a scan per origin finds every
+    // candidate. Searching for each URL separately would be thousands of passes over
+    // megabytes.
+    let prefixes: Vec<String> = reachable
+        .iter()
+        .filter_map(|base| reqwest::Url::parse(base).ok())
+        .map(|url| format!("\"{}", origin_of(&url)))
+        .collect();
+
+    let mut out = String::with_capacity(text.len() + replacements.len() * 8);
+    let mut found: HashSet<&str> = HashSet::new();
+    let mut occurrences = 0;
+    let mut cursor = 0;
+
+    while let Some(open) = next_candidate(text, cursor, &prefixes) {
+        // A URL contains no escaped quote, so the next quote ends the string.
+        let Some(offset) = text[open + 1..].find('"') else {
+            break;
+        };
+        let close = open + 1 + offset;
+        let candidate = &text[open + 1..close];
+
+        out.push_str(&text[cursor..=open]);
+        match replacements.get(candidate) {
+            Some(replacement) => {
+                out.push_str(replacement);
+                found.insert(candidate);
+                occurrences += 1;
+            }
+            // Some other string on the same origin: a repository URL, a homepage.
+            None => out.push_str(candidate),
+        }
+        out.push('"');
+        cursor = close + 1;
+    }
+    out.push_str(&text[cursor..]);
+
+    if found.len() != replacements.len() {
+        return Err(RewriteError::Incomplete {
+            expected: replacements.len(),
+            found: found.len(),
+        });
     }
 
     Ok(Rewritten {
-        body: serde_json::to_vec(&document)?,
-        rewritten,
+        body: out.into_bytes(),
+        rewritten: found.len(),
+        occurrences,
         left_alone,
     })
+}
+
+/// The earliest position at or after `from` where any prefix occurs.
+fn next_candidate(text: &str, from: usize, prefixes: &[String]) -> Option<usize> {
+    prefixes
+        .iter()
+        .filter_map(|prefix| text[from..].find(prefix.as_str()).map(|at| from + at))
+        .min()
 }
 
 /// The path to keep, when this URL names an origin the proxy fronts.
@@ -1324,6 +1422,7 @@ mod tests {
     fn check_corpus(dir: &str, detail: PackumentDetail) {
         let mut packages = 0usize;
         let mut versions = 0usize;
+        let mut rewrote = 0usize;
         let mut failures = Vec::new();
 
         for entry in std::fs::read_dir(dir).expect("corpus directory should be readable") {
@@ -1381,9 +1480,44 @@ mod tests {
                 }
                 Err(e) => failures.push(format!("{}: {e}", path.display())),
             }
+
+            // Every real document has to survive the rewrite, and putting the URLs back
+            // has to give the original bytes. That is the property re-serialising into a
+            // JSON value could not offer.
+            if let Ok(p) = normalize_packument(&body, detail) {
+                let artifacts: Vec<String> =
+                    p.records.iter().map(|r| r.artifact.url.clone()).collect();
+                // Rewriting to the origin the URLs already name: every artifact is
+                // found and replaced, and the result has to be the original bytes. That
+                // exercises the whole copy path and checks that nothing but a URL moves.
+                match rewrite_artifact_origins(
+                    &body,
+                    artifacts.iter().map(String::as_str),
+                    &[DEFAULT_REGISTRY],
+                    DEFAULT_REGISTRY,
+                ) {
+                    Ok(out) => {
+                        rewrote += 1;
+                        assert_eq!(
+                            out.rewritten,
+                            artifacts.len(),
+                            "{}: not every artifact URL was found",
+                            path.display()
+                        );
+                        assert_eq!(
+                            out.body,
+                            body,
+                            "{}: the rewrite changed something other than a URL",
+                            path.display()
+                        );
+                    }
+                    Err(e) => failures.push(format!("{}: rewrite failed: {e}", path.display())),
+                }
+            }
         }
 
         println!("{dir}: normalised {versions} versions across {packages} packages ({detail:?})");
+        println!("{dir}: rewrote and restored {rewrote} documents byte for byte");
         assert!(packages > 0, "corpus at {dir} held no .json files");
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
@@ -1777,8 +1911,18 @@ mod tests {
         const UPSTREAM: &str = "https://registry.npmjs.org";
         const PROXY: &str = "http://127.0.0.1:8080";
 
+        /// Normalise, then rewrite with the artifact URLs that came out of it. This is
+        /// the real sequence: the rewrite never parses the document itself.
+        fn rewrite_with(json: &[u8], reachable: &[&str], base: &str) -> Rewritten {
+            let p = normalize_packument(json, PackumentDetail::Abbreviated)
+                .expect("fixture should normalise");
+            let artifacts: Vec<String> = p.records.iter().map(|r| r.artifact.url.clone()).collect();
+            rewrite_artifact_origins(json, artifacts.iter().map(String::as_str), reachable, base)
+                .expect("should rewrite")
+        }
+
         fn rewrite(json: &str) -> Rewritten {
-            rewrite_artifact_origins(json.as_bytes(), &[UPSTREAM], PROXY).expect("valid json")
+            rewrite_with(json.as_bytes(), &[UPSTREAM], PROXY)
         }
 
         /// Only the origin moves. The path is kept so the request that comes back is one
@@ -1804,7 +1948,7 @@ mod tests {
         #[test]
         fn integrity_and_every_other_field_survive() {
             let original = fixture("sigstore-5.0.0.abbrev.json");
-            let out = rewrite_artifact_origins(&original, &[UPSTREAM], PROXY).unwrap();
+            let out = rewrite_with(&original, &[UPSTREAM], PROXY);
             assert_eq!(out.rewritten, 1);
 
             let served: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
@@ -1840,13 +1984,12 @@ mod tests {
         /// A private registry's own artifacts are reachable, so they are rewritten too.
         #[test]
         fn a_private_registrys_own_artifacts_are_rewritten() {
-            let out = rewrite_artifact_origins(
+            let out = rewrite_with(
                 br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
                     "tarball":"https://npm.corp.example/w/-/w-1.0.0.tgz"}}}}"#,
                 &["https://npm.corp.example", DEFAULT_REGISTRY],
                 PROXY,
-            )
-            .unwrap();
+            );
             assert_eq!(out.rewritten, 1);
         }
 
@@ -1879,21 +2022,128 @@ mod tests {
             }
         }
 
+        /// npm's `_resolved` repeats `dist.tarball` verbatim. A rewrite that only touched
+        /// `dist.tarball` would leave it pointing at the registry. Measured in the corpus:
+        /// 2 of 49,704 URLs appear twice, both this way.
         #[test]
-        fn a_body_that_is_not_json_is_an_error() {
-            assert!(rewrite_artifact_origins(b"<html>", &[UPSTREAM], PROXY).is_err());
+        fn a_url_repeated_elsewhere_is_rewritten_everywhere() {
+            let out = rewrite(
+                r#"{"name":"react","versions":{"1.0.0":{"version":"1.0.0",
+                    "_resolved":"https://registry.npmjs.org/react/-/react-1.0.0.tgz",
+                    "dist":{"tarball":"https://registry.npmjs.org/react/-/react-1.0.0.tgz"}}}}"#,
+            );
+            assert_eq!(out.rewritten, 1, "one distinct URL");
+            assert_eq!(out.occurrences, 2, "changed in both places");
+
+            let text = String::from_utf8(out.body).unwrap();
+            assert!(!text.contains("registry.npmjs.org/react"), "got: {text}");
+            assert_eq!(
+                text.matches("http://127.0.0.1:8080/react/-/react-1.0.0.tgz")
+                    .count(),
+                2
+            );
+        }
+
+        /// Other strings on the same origin are not artifacts and must survive. Only the
+        /// URLs the records named are replaced.
+        #[test]
+        fn other_urls_on_the_same_origin_are_untouched() {
+            let out = rewrite(
+                r#"{"name":"w","homepage":"https://registry.npmjs.org/w",
+                    "bugs":{"url":"https://registry.npmjs.org/-/issues"},
+                    "versions":{"1.0.0":{"version":"1.0.0","dist":{
+                        "tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}}}}"#,
+            );
+            assert_eq!(out.occurrences, 1);
+            let text = String::from_utf8(out.body).unwrap();
+            assert!(
+                text.contains(r#""homepage":"https://registry.npmjs.org/w""#),
+                "got: {text}"
+            );
+            assert!(
+                text.contains(r#""url":"https://registry.npmjs.org/-/issues""#),
+                "got: {text}"
+            );
+        }
+
+        /// A URL that only appears as part of a longer string is not a whole JSON string,
+        /// so it is not an artifact reference and is left alone.
+        #[test]
+        fn a_url_embedded_in_prose_is_not_rewritten() {
+            let out = rewrite(
+                r#"{"name":"w",
+                    "description":"download it from https://registry.npmjs.org/w/-/w-1.0.0.tgz today",
+                    "versions":{"1.0.0":{"version":"1.0.0","dist":{
+                        "tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}}}}"#,
+            );
+            assert_eq!(out.occurrences, 1, "only the artifact reference");
+            let text = String::from_utf8(out.body).unwrap();
+            assert!(
+                text.contains("download it from https://registry.npmjs.org/w/-/w-1.0.0.tgz today"),
+                "prose was rewritten: {text}"
+            );
+        }
+
+        /// Everything the rewrite does not change has to come through byte for byte. This
+        /// is what re-serialising could not promise.
+        #[test]
+        fn the_document_is_unchanged_apart_from_the_urls() {
+            let original = fixture("@babel_traverse-8.0.5.full.json");
+            let out = rewrite_with(&original, &[UPSTREAM], PROXY);
+            assert_eq!(out.rewritten, 1);
+
+            let restored = String::from_utf8(out.body).unwrap().replace(
+                "http://127.0.0.1:8080/@babel/traverse/-/traverse-8.0.5.tgz",
+                "https://registry.npmjs.org/@babel/traverse/-/traverse-8.0.5.tgz",
+            );
+            assert_eq!(
+                restored.as_bytes(),
+                original.as_slice(),
+                "putting the URL back should give the original bytes"
+            );
+        }
+
+        /// A document whose artifact URLs are not there to be found is refused outright.
+        /// Half a rewrite would send some artifacts to the proxy and leave the rest
+        /// pointing at the registry.
+        #[test]
+        fn a_url_that_cannot_be_found_fails_the_whole_rewrite() {
+            let absent = ["https://registry.npmjs.org/ghost/-/ghost-1.0.0.tgz"];
+            let result = rewrite_artifact_origins(
+                br#"{"name":"w","versions":{}}"#,
+                absent,
+                &[UPSTREAM],
+                PROXY,
+            );
+            let Err(e) = result else {
+                panic!("a URL that is not in the document cannot be rewritten");
+            };
+            assert!(matches!(
+                e,
+                RewriteError::Incomplete {
+                    expected: 1,
+                    found: 0
+                }
+            ));
+            assert!(e.to_string().contains("found 0 of 1"), "got: {e}");
+        }
+
+        #[test]
+        fn a_body_that_is_not_utf8_is_an_error() {
+            let result =
+                rewrite_artifact_origins(&[0xff, 0xfe], std::iter::empty(), &[UPSTREAM], PROXY);
+            assert!(matches!(result, Err(RewriteError::NotUtf8(_))));
         }
 
         /// A trailing slash on the base must not produce a doubled one in the URL.
         #[test]
         fn a_trailing_slash_on_the_base_does_not_double_up() {
-            let out = rewrite_artifact_origins(
+            let out = rewrite_with(
                 br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
                     "tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}}}}"#,
                 &[UPSTREAM],
                 "http://127.0.0.1:8080/",
-            )
-            .unwrap();
+            );
             let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
             assert_eq!(
                 v["versions"]["1.0.0"]["dist"]["tarball"],

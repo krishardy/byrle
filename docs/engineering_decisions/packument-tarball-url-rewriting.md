@@ -46,20 +46,30 @@ The plan's objection was that rewriting means buffering and re-serialising every
 packument. Buffering is no longer a new cost: packuments are already buffered and parsed
 to be normalised. Only re-serialisation is new.
 
-Measured in a release build on the largest packument seen, typescript at 8.7 MB
-abbreviated:
+**How it is done matters more than it looks.** The obvious approach, parsing into a
+`serde_json::Value` and re-serialising, cost 36 ms to parse and 10 ms to serialise
+typescript, and the value tree dominated memory: 24 simultaneous large packuments peaked
+at 1,436 MB while the encoded bodies totalled 27.6 MB.
 
-| Step | Cost |
-|---|---|
-| parse to a JSON value | 36 ms |
-| rewrite URLs | 1.6 ms |
-| serialise | 10 ms |
-| gzip, `Compression::fast()` | 18 ms |
+Instead the rewrite takes the artifact URLs already found during normalisation and
+replaces each wherever it appears as a complete quoted string, walking the text once. Peak
+RSS on the same load fell to 472 MB and the median from 223 MB to 97 MB.
 
-`fast` rather than `default`: 18 ms against 117 ms, for 2.06 MB against 1.69 MB. A 22%
-larger body on a hop that is usually loopback or a LAN, for a sixth of the CPU.
-`serde_json`'s `preserve_order` feature is on, so key order survives and the forwarded
-document differs from the original only in the URLs.
+That is only safe because of what the documents actually look like. Measured across the
+corpus, both kinds: of 49,704 artifact URLs, 49,702 appear exactly once as a complete
+quoted string and 2 appear twice, both as `_resolved`. Escaped forward slashes occur in 2
+of 94 documents and only inside README prose, never in a URL. If any URL is not found the
+whole rewrite fails, rather than half of it landing and sending some artifacts to the
+proxy while others still point at the registry.
+
+Two things fall out of it. The forwarded document is byte-identical to the upstream's
+apart from the URLs, which re-serialising cannot promise. And `_resolved`, an npm internal
+field repeating `dist.tarball`, is rewritten too; a `dist.tarball`-only rewrite left it
+pointing at the origin registry.
+
+Re-compression uses `Compression::fast()` rather than `default`: 18 ms against 117 ms, for
+2.06 MB against 1.69 MB. A 22% larger body on a hop that is usually loopback or a LAN, for
+a sixth of the CPU.
 
 ## Lockfiles, which was the real objection
 

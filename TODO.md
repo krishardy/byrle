@@ -365,26 +365,30 @@ implementations.
             peak to 919 MB and raises the median from 223 MB to 703 MB, so it trades one
             for the other rather than fixing it. The real lever is allocating less per
             packument, below.
-- [ ] `[!]` Rewrite artifact URLs by targeted byte replacement instead of building a
-      `serde_json::Value`. The value tree is the dominant allocation, so this roughly
-      halves peak memory per packument and removes the parse and serialise cost (36 ms
-      and 10 ms on typescript).
-      - [x] Feasibility checked against the corpus, both document kinds: of 49,704
-            artifact URLs, **49,702 appear exactly once** in the raw bytes as a complete
-            quoted JSON string. Escaped forward slashes occur in 2 of 94 files and only
-            inside README prose, never in a URL.
-      - [x] The two exceptions are `react` versions whose URL also appears as `_resolved`,
-            an npm internal field holding the same artifact. Rewriting that too is more
-            correct than what the current implementation does, which leaves `_resolved`
-            pointing at the origin registry while `dist.tarball` points at the proxy.
-            `_resolved` appears only in full packuments, and installs request abbreviated
-            ones, so the impact today is small.
-      - [ ] Safety net: the replacement count has to equal the number of reachable
-            artifacts found during normalization. A mismatch means the document is shaped
-            in a way this does not understand, and the fall-back is to forward unrewritten
-            and log `UNINSPECTED`.
-      - [ ] The output would then be byte-identical to the upstream's apart from the URLs,
-            which is a stronger property than `preserve_order` gives.
+- [x] Rewrite artifact URLs by targeted byte replacement instead of building a
+      `serde_json::Value`. The value tree was the dominant allocation.
+      - [x] **Peak RSS on 24 simultaneous large packuments: 1,436 MB to 472 MB**, median
+            223 MB to 97 MB. The concurrency limit now barely matters (472 MB at 8 against
+            456 MB unbounded), because the per-request allocation is small enough that
+            allocator retention is small too. The limit stays: it bounds live memory,
+            which is the invariant, and it costs nothing when it never engages.
+      - [x] The rewrite takes the artifact URLs found during normalisation, so the
+            document is not parsed a second time. Each is replaced wherever it appears as
+            a complete quoted string. `serde_json`'s `preserve_order` feature is no longer
+            needed and has been dropped.
+      - [x] **It catches `_resolved`**, an npm internal field repeating `dist.tarball`
+            verbatim, which the `dist.tarball`-only rewrite left pointing at the origin
+            registry.
+      - [x] The output is byte-identical to the upstream apart from the URLs. Checked
+            across the corpus: all 94 documents, both kinds, rewrite to the origin they
+            already name and come back byte for byte, with every artifact URL found.
+      - [x] A URL that cannot be found fails the whole rewrite rather than half of it
+            landing, which would send some artifacts to the proxy and leave others
+            pointing at the registry.
+      - [ ] A document that does not normalise is no longer rewritten either, since the
+            URLs come from the records. Without records there is nothing to gate on
+            anyway, and it is logged `UNINSPECTED`, but it does mean an unmodellable
+            document loses artifact visibility as well as metadata.
 - [ ] Packument size on the proxy's own fetches: `npm::Client` sends no `Accept-Encoding`
       because reqwest's `gzip` feature is off crate-wide, so those packuments arrive
       uncompressed. The request path does not have this problem, since the proxy decodes
