@@ -144,7 +144,10 @@ has honest limits:
   Those versions are removed from the packument, so a resolver picks one that can be
   examined, and a pinned fetch of one is refused. Removal is the only control that works:
   the client fetches that URL from whatever host it names, so the proxy never sees the
-  request. Name the host in `WAHAROA_ARTIFACT_ORIGINS` to have the proxy serve it instead.
+  request. Name the host in `WAHAROA_ARTIFACT_ORIGINS` to have the proxy serve it, or in
+  `WAHAROA_ALLOW_DIRECT_ORIGINS` to accept that it is fetched unexamined. The second is
+  reported on every packument that uses it, because an accepted gap that stops being
+  reported outlives the reason it was added.
 
 We do not stop an attacker who already controls the developer's machine, and we do not
 claim to detect novel malware ahead of the research community.

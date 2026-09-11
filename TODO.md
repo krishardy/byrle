@@ -506,10 +506,21 @@ implementations.
       - [x] No false positives: silent across 67 packuments in a real install and all
             24,852 artifact URLs in the corpus test, and it fires on a controlled
             registry publishing to another origin.
-      - [ ] Stage 1 observes and still forwards. Refusing is a policy decision, so it
-            belongs with the engine in Stage 2. Note the asymmetry: this is not a
-            fetch the proxy failed to inspect, it is a registry routing around the
-            proxy, so the fail-open default is weaker here than elsewhere.
+      - [x] Three states, not two. `WAHAROA_ALLOW_DIRECT_ORIGINS` names origins the
+            proxy does not serve and permits anyway, so the client fetches those
+            artifacts directly. Before it, the only escape from a refusal was
+            `WAHAROA_REFUSE_UNSERVABLE=0`, which trades one origin's exemption for every
+            origin's. An allowed origin is reported on every packument that uses it: an
+            accepted gap that stops being reported outlives the reason it was added.
+      - [x] **Only `dist.tarball` needs the policy, for npm.** pacote resolves
+            `dist.attestations.url` against the configured registry rather than using it
+            as written (`lib/registry.js`: `new URL(...).pathname` joined to
+            `this.registry`, commented "Always fetch attestations from the current
+            registry host"), so that host is discarded unconditionally and cannot route a
+            client anywhere. `homepage`, `repository.url` and `bugs.url` are not fetched
+            during an install.
+      - [ ] Recheck that per client and per ecosystem. It is pacote's behaviour, not
+            protocol, and pnpm, yarn and PyPI are untested.
 - [ ] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
       not ready (mirror warming, all requests) · **429** we are ready but this one
       artifact is under analysis
