@@ -14,6 +14,7 @@ use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
 use waharoa::proxy::{DEFAULT_MAX_PACKUMENT_BYTES, Proxy};
 use waharoa::store::DEFAULT_MAX_RECORDS;
+use waharoa::tls::{self, TrustMode};
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -38,10 +39,43 @@ async fn main() {
     //
     // The `gzip` feature is off, so reqwest never decompresses behind our back and
     // bodies can be forwarded with their `Content-Encoding` intact.
-    let client = reqwest::Client::builder()
-        .user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .expect("failed to build upstream HTTP client");
+    let mut builder =
+        reqwest::Client::builder().user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")));
+    let mut bundle_path: Option<std::path::PathBuf> = None;
+
+    // A private registry with an internal CA, or a corporate TLS-inspecting middlebox,
+    // needs roots the OS store may not carry. WAHAROA_CA_BUNDLE_EXCLUSIVE=1 drops the
+    // public roots entirely, which pins the upstream to whoever issued the bundle.
+    if let Some(path) = std::env::var("WAHAROA_CA_BUNDLE")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let path = std::path::PathBuf::from(path);
+        let exclusive = std::env::var("WAHAROA_CA_BUNDLE_EXCLUSIVE")
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        let mode = if exclusive {
+            TrustMode::Exclusive
+        } else {
+            TrustMode::Merge
+        };
+        // Refusing to start is right: the operator asked for a trust anchor and it is not
+        // there, and continuing would fall back to the platform roots without saying so.
+        let certificates = tls::load_bundle(&path).unwrap_or_else(|e| panic!("{e}"));
+        info!(
+            bundle = %path.display(),
+            certificates = certificates.len(),
+            mode = ?mode,
+            "upstream CA bundle loaded"
+        );
+        if exclusive {
+            info!("public roots are NOT trusted for the upstream connection");
+        }
+        builder = tls::apply(builder, certificates, mode);
+        bundle_path = Some(path);
+    }
+
+    let client = tls::build(builder, bundle_path.as_deref()).unwrap_or_else(|e| panic!("{e}"));
 
     let blocked = std::env::var("WAHAROA_BLOCK")
         .ok()
