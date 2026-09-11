@@ -5,9 +5,12 @@
 # thin wrapper around a script in this directory, so real logic lives in shell and
 # clippy cannot see any of it.
 #
-# shellcheck is required rather than skipped when absent. A lint run that silently
-# covers half the codebase and still reports success is the failure mode worth
+# Note that shellcheck is required rather than skipped when absent. A lint run that
+# silently covers half the codebase and still reports success is the failure mode worth
 # avoiding; an incomplete environment should say so.
+#
+# Careful: a comment whose first word is the tool's own name is parsed as a directive
+# and fails with SC1073. Start such lines with anything else.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
