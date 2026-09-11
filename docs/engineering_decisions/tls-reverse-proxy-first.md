@@ -22,3 +22,10 @@ an enterprise anti-bypass feature rather than a starting point.
 - Custom CA bundle support for the upstream connection is not implemented as of
   Sept 2026. Private registries and TLS-inspecting corporate middleboxes need it.
   Tracked in TODO.md.
+
+## See also
+
+- [enforcement-tiers](enforcement-tiers.md) for what terminating mode buys over the
+  tiers that need no CA, and for what to build before it. A hosts-file or DNS override
+  needs TLS termination for the same reason a forward proxy does, so it is the same
+  decision wearing different clothes.
