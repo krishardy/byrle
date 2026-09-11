@@ -12,6 +12,13 @@ Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocks stage exit
 Items that I've added that are not stage-bound.
 
 1. Look at the witchcraft binary collection (from edrazine) and look into integrating wsolver into a fuzzing and formal analysis process of the compiled binary.
+2. [x] Add make dev-setup, which will install dev dependencies for this project.
+   Done: `scripts/make/dev-setup.sh` installs clippy, rustfmt, cargo-audit and kani,
+   and reports whether npm is present. Re-runnable; skips what is already installed.
+   `make lint` and `make verify` added at the same time, per CLAUDE.md Finalization.
+   `make verify` exits nonzero while no `#[kani::proof]` harnesses exist, so a green
+   verify never means "nothing is proved".
+3. Add make sast, which runs semgrep on the project.
 
 ## Stage 1 — Pass-through proxy (transport)
 
@@ -56,7 +63,23 @@ implementations.
       npm normalizes `resolved` back to the canonical registry URL with both `--registry`
       and `.npmrc`, so a lockfile cannot evidence that the proxy was used. Plan §7
       corrected. The anti-bypass control has to come from somewhere else.
-- [ ] `[!]` PURL as internal identity type
+- [x] PURL as internal identity type. `src/identity.rs`: `PackageKey` (versionless, the
+      advisory lookup key) and `PackageRef` (key + concrete version, what a verdict is
+      about). Built on the `purl` crate from phylum-dev, chosen over `packageurl` because
+      `packageurl` lowercases npm names per spec, which loses malware matches. Validated
+      against OSV's whole npm corpus, not just unit tests: `cargo run --example
+      osv_conformance`. Four findings recorded in plan §4.
+      - [x] **Do not lowercase npm names**, despite purl-spec requiring it. 112 uppercase
+            names in OSV, all case-preserved, mostly `MAL-` malware records. Also four
+            names that differ only by case (`OpenClaw`/`Openclaw`/`openclaw`), so
+            case-insensitive keying merges distinct packages.
+      - [x] **Key on parsed components, never the purl string.** OSV writes scoped
+            packages both as `%40antv/algorithm` (16,904) and `%40antv%2Falgorithm` (855)
+            and they parse differently. Caught by the corpus check, invisible to the
+            handwritten tests.
+      - [x] **Identity comes from the packument `name`**, not the request path.
+- [ ] Feed the identity type into the proxy. It is built and validated but nothing calls
+      it yet; the normalizer below is what wires it in.
 - [ ] `[!]` Common package record schema (name, version, ecosystem, publish time,
       maintainers, repo URL, has-install-scripts, provenance, hashes)
 - [ ] `[!]` npm transport + normalizer, written **concretely** — no adapter abstraction
