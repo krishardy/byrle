@@ -100,6 +100,14 @@ impl RecordStore {
         self.evict_to_budget();
     }
 
+    /// Whether any record is held for this package.
+    ///
+    /// Does not count as a use: this answers "is there anything to read", and a package
+    /// that is only ever asked about should not outlive one that is installed.
+    pub fn holds(&self, key: &PackageKey) -> bool {
+        self.entries.contains_key(key)
+    }
+
     /// Find the record for one version, marking its package as recently used.
     pub fn lookup(&mut self, key: &PackageKey, version: &str) -> Lookup {
         self.clock += 1;
@@ -229,6 +237,21 @@ mod tests {
 
     /// A lookup is a use. Without that, a package read on every install would be evicted
     /// in favour of one stored once and never touched again.
+    /// Asking whether anything is held must not keep it alive, or a package that is only
+    /// ever asked about outlives one that is installed.
+    #[test]
+    fn holds_reports_presence_without_counting_as_use() {
+        let mut store = RecordStore::new(4);
+        store.insert(packument("a", &["1.0.0", "1.0.1"]));
+        store.insert(packument("b", &["1.0.0", "1.0.1"]));
+
+        assert!(store.holds(&key("a")));
+        assert!(!store.holds(&key("c")));
+
+        store.insert(packument("c", &["1.0.0", "1.0.1"]));
+        assert!(!store.holds(&key("a")), "asking about `a` did not keep it");
+    }
+
     #[test]
     fn a_lookup_counts_as_use() {
         let mut store = RecordStore::new(4);
