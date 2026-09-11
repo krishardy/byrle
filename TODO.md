@@ -174,8 +174,32 @@ implementations.
       is the same one-line change described under the identity item.
 - [ ] Feed the identity type into the proxy. It is built and validated but nothing calls
       it yet; the normalizer below is what wires it in.
-- [ ] `[!]` Common package record schema (name, version, ecosystem, publish time,
-      maintainers, repo URL, has-install-scripts, provenance, hashes)
+- [x] Common package record schema. `src/record.rs`: `PackageRecord`, carrying identity
+      (a `PackageRef`), publish time, maintainers, repository, has-install-scripts and
+      the script bodies, provenance, and the artifact with its digests. Types only; the
+      packument-to-record mapping belongs to the normalizer item below.
+      - [x] **Finding: the abbreviated packument is missing most of what Tier 1 needs.**
+            npm installs request `application/vnd.npm.install-v1+json`, and a
+            pass-through proxy sees only what the client asked for. Publish time,
+            maintainers, repository and the `scripts` bodies are all full-packument only,
+            so **cooldown cannot be enforced from what npm requests**. At Stage 1 those
+            fields are `None` on every record. Closing that is fetch-path work, not a
+            schema gap.
+      - [x] Every such field is `Option`, qualified by a `source: PackumentDetail` on the
+            record. `None` + `Abbreviated` means not fetched; `None` + `Full` means the
+            registry does not publish it. A cooldown rule that cannot tell those apart
+            reads a missing timestamp as "old enough" and fails open. Deriving that
+            distinction is Stage 2 work, against the rule that consumes it.
+      - [x] `has_install_scripts` is a plain `bool`, not an `Option`. Abbreviated sets
+            `hasInstallScript: true` and omits the key otherwise; the full packument
+            never carries that key and needs `scripts` read for preinstall/install/
+            postinstall. Verified equivalent across 860 version pairs, no disagreement.
+      - [x] `dist.shasum` (SHA-1) is a separate field from `dist.integrity` (SRI
+            sha512), not an entry in a shared digest list. SHA-1 is collision-broken and
+            should not be reachable by code that thinks it is handling the strong one.
+      - [ ] `repository` is polymorphic in npm, an object or a shorthand string. The
+            normalizer must hand-write that `Deserialize`; `#[serde(untagged)]` silently
+            defeats unknown-field rejection (plan §5).
 - [ ] `[!]` npm transport + normalizer, written **concretely** — no adapter abstraction
       yet. Extraction deferred to Stage 3, where PyPI gives a second shape to design
       against. An interface designed against one caller gets it wrong.
@@ -207,10 +231,13 @@ implementations.
       it is weakest for the method that matters most: a single body-stream signature has
       to serve all three §5 fetch branches (stream, buffer, defer), none of which exist
       yet, so it would be designed against zero callers.
-- [ ] Testing strategy is unrecorded anywhere, and deferring the trait makes it load
-      bearing: with no seam to inject a fake, Stage 1 needs HTTP-level fixtures. For a
-      proxy that is arguably the better target anyway, since the bytes on the wire are
-      the product. Pick the approach before writing the first transport test.
+- [x] **Testing strategy: HTTP-level fixtures.** Decided by doing. Real registry
+      responses, trimmed to one version, live in `tests/fixtures/npm/` with a README
+      explaining what property each one covers and how to refresh them. Both the
+      abbreviated and full document are kept per package, because the difference between
+      them is exactly what the record schema had to model. This pairs with the two
+      corpus-scale checks already in place, `make smoke-npm` against a real npm client
+      and `cargo run --example osv_conformance` against OSV's full npm bundle.
 - [~] **Name: `waharoa`.** Registry half **done**: all four exact-name lookups return
       404 (crates.io, npm, PyPI, the GitHub org), with known-existing controls returning
       200 in the same run to prove the probe works. The name is free.
