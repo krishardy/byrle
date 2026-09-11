@@ -18,7 +18,24 @@ Items that I've added that are not stage-bound.
    `make lint` and `make verify` added at the same time, per CLAUDE.md Finalization.
    `make verify` exits nonzero while no `#[kani::proof]` harnesses exist, so a green
    verify never means "nothing is proved".
-3. Add make sast, which runs semgrep on the project.
+3. [x] Add make sast, which runs semgrep on the project.
+   Done: `scripts/make/sast.sh`. Rulesets are pinned (`p/rust`, `p/secrets`, `p/bash`)
+   rather than using `--config=auto`, which resolves rules by uploading a project
+   fingerprint to semgrep.dev, and `--metrics=off`: a tool selling "no mandatory
+   outbound calls to us" should not quietly make its own. `p/bash` is included because
+   `scripts/make/*.sh` is real code that clippy cannot see. `SEMGREP_RULES` points at
+   local rules for an offline run.
+   NOT verified end to end: semgrep is not installed here, so only the missing-tool
+   path was exercised. Run `make dev-setup` then `make sast` to confirm.
+4. [x] Add make check-deps, which checks for out of date or vulnerable dependencies.
+   Done: `scripts/make/check-deps.sh`, covering both the main crate and the committed
+   config-format spike, which sits outside the workspace and pulls four YAML parsers.
+   Vulnerable fails the check; merely-outdated reports without failing, because a
+   target that is red every week stops being read. `CHECK_DEPS_STRICT=1` fails on
+   outdated too and adds `--deny warnings`, making unmaintained crates disqualifying,
+   which is the same standard that ruled out `serde_yml` in plan §5.
+   Verified against the real advisory database, and it found something (see below).
+   `cargo outdated` is not installed here, so that half is unexercised.
 
 ## Stage 1 — Pass-through proxy (transport)
 
@@ -78,6 +95,12 @@ implementations.
             and they parse differently. Caught by the corpus check, invisible to the
             handwritten tests.
       - [x] **Identity comes from the packument `name`**, not the request path.
+- [ ] **Watch: `purl` 0.1.6 pulls `smartstring` 1.0.1, flagged RUSTSEC-2026-0249 as
+      unmaintained.** Found by `make check-deps`. Not a vulnerability, and it does not
+      reverse the crate choice: `packageurl` is disqualified on correctness, which is the
+      worse failure. But it is why `make check-deps` is not clean under
+      `CHECK_DEPS_STRICT=1` today. Revisit if it becomes a real advisory; the swap path
+      is the same one-line change described under the identity item.
 - [ ] Feed the identity type into the proxy. It is built and validated but nothing calls
       it yet; the normalizer below is what wires it in.
 - [ ] `[!]` Common package record schema (name, version, ecosystem, publish time,
