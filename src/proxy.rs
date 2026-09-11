@@ -90,6 +90,8 @@ pub struct Proxy {
     /// Records from packuments already seen, so a tarball request can find the digest
     /// its packument published. Bounded; see [`crate::store`].
     store: Arc<Mutex<RecordStore>>,
+    /// Used to fetch a packument the client never asked for. See [`fill_store`].
+    registry: npm::Client,
     /// Upstream registry base, no trailing slash.
     upstream: String,
     /// THROWAWAY. One hardcoded package, to prove interception happens before anything
@@ -101,10 +103,12 @@ pub struct Proxy {
 
 impl Proxy {
     pub fn new(client: reqwest::Client, upstream: impl Into<String>) -> Self {
+        let upstream = upstream.into().trim_end_matches('/').to_owned();
         Self {
+            registry: npm::Client::new(client.clone(), upstream.clone()),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
-            upstream: upstream.into().trim_end_matches('/').to_owned(),
+            upstream,
             blocked: None,
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
         }
@@ -292,6 +296,64 @@ async fn buffer_to_limit(mut stream: ByteStream, limit: usize) -> Buffered {
     Buffered::Complete(buf.freeze())
 }
 
+/// Find the record for an artifact, fetching its packument if the client never asked for
+/// one.
+///
+/// `npm ci` is the reason this exists. It reads `resolved` and `integrity` out of
+/// `package-lock.json` and requests **no packuments at all**: measured through the proxy,
+/// 69 tarballs and zero packument requests, so every digest was unknown and nothing was
+/// verified. A warm npm cache, a restarted proxy, and an evicted entry all produce the
+/// same gap. Fetching the packument here closes all four.
+///
+/// It happens once per package per proxy lifetime, on the request path rather than in the
+/// background, because the digest has to be in hand before the artifact is forwarded.
+async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &str) -> Lookup {
+    // The guard is dropped before the await: nothing holds the lock across a fetch.
+    let first = proxy
+        .store
+        .lock()
+        .expect("record store lock")
+        .lookup(key, version);
+    if first != Lookup::Unknown {
+        return first;
+    }
+
+    let started = Instant::now();
+    match proxy
+        .registry
+        .packument(key, PackumentDetail::Abbreviated)
+        .await
+    {
+        Ok(Ok(packument)) => {
+            let versions = packument.records.len();
+            proxy
+                .store
+                .lock()
+                .expect("record store lock")
+                .insert(packument);
+            info!(
+                path = %path,
+                purl = %key,
+                versions,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "fetched packument on our own behalf, which the client never requested"
+            );
+        }
+        // Not fatal. The artifact is forwarded unverified and said to be unverified,
+        // which is Stage 1 behaviour; Stage 2 has to decide whether that is allowed.
+        Ok(Err(e)) => {
+            warn!(path = %path, purl = %key, error = %e, "packument fetched but did not normalize")
+        }
+        Err(e) => warn!(path = %path, purl = %key, error = %e, "could not fetch packument"),
+    }
+
+    proxy
+        .store
+        .lock()
+        .expect("record store lock")
+        .lookup(key, version)
+}
+
 async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let started = Instant::now();
     let method = req.method().clone();
@@ -445,11 +507,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             .map(|r| r.to_string())
             .unwrap_or_else(|_| format!("{key}@{claimed_version}"));
         artifact_purl = purl.clone();
-        let lookup = proxy
-            .store
-            .lock()
-            .expect("record store lock")
-            .lookup(key, claimed_version);
+        let lookup = lookup_or_fetch(&proxy, key, claimed_version, &path_and_query).await;
         match lookup {
             Lookup::Found(record) => {
                 info!(
@@ -824,6 +882,9 @@ mod tests {
     }
 
     /// Tarballs are not packuments: no rewriting, no buffering.
+    ///
+    /// The assertion picks the tarball request out of what the upstream saw rather than
+    /// taking the last one, because the proxy also fetches a packument of its own here.
     #[tokio::test]
     async fn tarball_requests_keep_the_clients_encoding() {
         let (base, seen) = proxy_serving(
@@ -841,13 +902,15 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.bytes().await.unwrap().as_ref(), b"tarball bytes");
+
+        let seen = seen.lock().unwrap();
+        let tarball = seen
+            .paths
+            .iter()
+            .position(|p| p.ends_with(".tgz"))
+            .expect("the upstream saw the tarball request");
         assert_eq!(
-            seen.lock()
-                .unwrap()
-                .accept_encoding
-                .last()
-                .unwrap()
-                .as_deref(),
+            seen.accept_encoding[tarball].as_deref(),
             Some("gzip, deflate, br")
         );
     }
@@ -1232,34 +1295,66 @@ mod tests {
         let mut tampered = honest.clone();
         tampered[25_000] ^= 0xFF;
 
-        let base = registry_with(&sri_of(&honest), tampered.clone()).await;
+        let base = registry_with(&sri_of(&honest), tampered).await;
         reqwest::get(format!("{base}/widget")).await.unwrap();
 
-        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
-            .await
-            .unwrap();
+        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+    }
+
+    /// A tarball request with no packument behind it still gets verified, because the
+    /// proxy fetches the packument itself.
+    ///
+    /// This is the `npm ci` case. Measured through the proxy before this existed: 69
+    /// tarballs, zero packument requests, nothing verified. A warm npm cache, a restarted
+    /// proxy and an evicted entry produce the same gap.
+    #[tokio::test]
+    async fn a_tarball_with_no_packument_seen_is_verified_anyway() {
+        let honest: Vec<u8> = vec![9u8; 1_000];
+        let mut tampered = honest.clone();
+        tampered[500] ^= 0xFF;
+        let base = registry_with(&sri_of(&honest), tampered).await;
+
+        // No packument request first: straight to the artifact, as `npm ci` does.
+        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+    }
+
+    /// A failed digest must not deliver a whole artifact. Where the failure surfaces
+    /// depends on chunking: a body that arrives in several chunks fails while being read,
+    /// and one that fits in a single chunk fails before the client sees a response at
+    /// all, because the proxy is still holding the only chunk there was.
+    async fn assert_no_complete_body(url: &str) {
+        let Ok(response) = reqwest::get(url).await else {
+            return;
+        };
         assert_eq!(
             response.status(),
             200,
             "the status left before a byte was hashed; only the body can carry the failure"
         );
-        match response.bytes().await {
-            Err(_) => {}
-            Ok(body) => panic!(
-                "the body completed with {} of {} bytes; a failed digest must not deliver \
-                 a whole artifact",
-                body.len(),
-                tampered.len()
-            ),
+        if let Ok(body) = response.bytes().await {
+            panic!(
+                "the body completed with {} bytes; a failed digest must not deliver a \
+                 whole artifact",
+                body.len()
+            );
         }
     }
 
-    /// Without a packument there is no digest, so nothing is verified and the body still
-    /// has to reach the client. This is what a warm npm cache produces.
+    /// When the packument cannot be fetched either, the artifact is forwarded and said to
+    /// be unverified. Stage 1 does not fail an install over what it could not inspect.
     #[tokio::test]
-    async fn a_tarball_with_no_packument_seen_is_forwarded_unverified() {
-        let tarball: Vec<u8> = vec![9u8; 1_000];
-        let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
+    async fn an_artifact_whose_packument_cannot_be_fetched_is_forwarded() {
+        let tarball = vec![4u8; 300];
+        let body = tarball.clone();
+        let router = Router::new().route(
+            "/widget/-/widget-1.0.0.tgz",
+            get(move || {
+                let body = body.clone();
+                async move { ([(header::CONTENT_TYPE, "application/octet-stream")], body) }
+            }),
+        );
+        // Every other path, the packument included, 404s.
+        let base = serve(Proxy::new(reqwest::Client::new(), serve(router).await).router()).await;
 
         let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
             .await

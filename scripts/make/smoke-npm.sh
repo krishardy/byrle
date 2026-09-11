@@ -10,7 +10,8 @@
 #   2. every installed package, transitive ones included, was fetched through us
 #   3. every one of them was normalized to a PURL, at the version on disk
 #   4. every tarball's digest was known before the fetch and verified on the way past
-#   5. a hardcoded block returns 403 and fires before any tarball is fetched
+#   5. `npm ci`, which requests no packuments at all, still verifies every artifact
+#   6. a hardcoded block returns 403 and fires before any tarball is fetched
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -64,13 +65,13 @@ npm_install() {
         --no-audit --no-fund --loglevel=error)
 }
 
-echo "==> 1/5  install completes through the proxy"
+echo "==> 1/6  install completes through the proxy"
 start_proxy ""
 npm_install "$workdir/basic" lodash >/dev/null 2>&1 || fail "npm install lodash failed"
 [[ -d "$workdir/basic/node_modules/lodash" ]] || fail "lodash was not installed"
 echo "    ok"
 
-echo "==> 2/5  every package, transitive included, came through the proxy"
+echo "==> 2/6  every package, transitive included, came through the proxy"
 # @babel/code-frame is here for its scope: a scoped name becomes a percent-encoded purl
 # namespace, and that is the part of the identity type most likely to regress.
 npm_install "$workdir/deps" express @babel/code-frame >/dev/null 2>&1 \
@@ -85,7 +86,7 @@ missed="$(comm -23 <(echo "$on_disk") <(echo "$fetched") || true)"
 [[ -z "$missed" ]] || fail "these packages never came through the proxy: $(echo "$missed" | tr '\n' ' ')"
 echo "    ok ($(echo "$on_disk" | wc -l) packages, all intercepted)"
 
-echo "==> 3/5  every installed package was normalized to a PURL at the version on disk"
+echo "==> 3/6  every installed package was normalized to a PURL at the version on disk"
 clean_log="$workdir/clean.log"
 sed -E 's/\x1b\[[0-9;]*m//g' "$log" >"$clean_log"
 
@@ -115,7 +116,7 @@ fi
 normalized_count="$(grep -c 'packument normalized' "$clean_log")"
 echo "    ok ($(echo "$expected_purls" | wc -l) purls, $normalized_count packuments, 0 versions skipped)"
 
-echo "==> 4/5  every tarball digest was known before the fetch and verified"
+echo "==> 4/6  every tarball digest was known before the fetch and verified"
 # The digest comes from a packument seen earlier in the same run, which is what makes
 # cache-hit-versus-miss decidable before a byte is fetched (plan section 5).
 known="$(grep -c 'digest known' "$clean_log" || true)"
@@ -135,7 +136,30 @@ grep -q 'no packument seen' "$clean_log" \
 echo "    ok ($tarballs tarballs, all with a known digest, all verified)"
 stop_proxy
 
-echo "==> 5/5  hardcoded block returns 403 before any tarball is fetched"
+echo "==> 5/6  npm ci verifies every artifact although it requests no packuments"
+# npm ci reads `resolved` and `integrity` from package-lock.json and asks for no
+# packuments at all. Measured before the proxy fetched them itself: 69 tarballs, zero
+# packument requests, nothing verified. A fresh proxy and a fresh npm cache here, so the
+# only way a digest can be known is the proxy fetching the packument on its own behalf.
+[[ -f "$workdir/deps/package-lock.json" ]] || fail "step 2 produced no lockfile"
+rm -rf "$workdir/deps/node_modules" "$workdir/deps/cache"
+mkdir -p "$workdir/deps/cache"
+start_proxy ""
+(cd "$workdir/deps" && npm ci \
+    --registry "$registry" --cache "$workdir/deps/cache" \
+    --no-audit --no-fund --loglevel=error) >/dev/null 2>&1 || fail "npm ci failed"
+
+sed -E 's/\x1b\[[0-9;]*m//g' "$log" >"$clean_log"
+ci_tarballs="$(grep -coE 'proxied .*path=/[^ ]+\.tgz' "$clean_log" || true)"
+ci_verified="$(grep -c 'artifact digest verified' "$clean_log" || true)"
+ci_fetched="$(grep -c 'on our own behalf' "$clean_log" || true)"
+[[ "$ci_tarballs" -gt 0 ]] || fail "npm ci fetched no tarballs through the proxy"
+[[ "$ci_verified" -eq "$ci_tarballs" ]] \
+    || fail "npm ci fetched $ci_tarballs tarballs but only $ci_verified were verified"
+echo "    ok ($ci_tarballs tarballs, $ci_fetched packuments fetched by the proxy, all verified)"
+stop_proxy
+
+echo "==> 6/6  hardcoded block returns 403 before any tarball is fetched"
 # `ms` is a transitive dependency of `debug`, never a direct install target, so this
 # also proves the block reaches packages the user never named.
 start_proxy "ms"
