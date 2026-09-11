@@ -18,6 +18,17 @@ Items that I've added that are not stage-bound.
    `make lint` and `make verify` added at the same time, per CLAUDE.md Finalization.
    `make verify` exits nonzero while no `#[kani::proof]` harnesses exist, so a green
    verify never means "nothing is proved".
+3a. [x] Add shellcheck to dev-setup, and wire it into `make lint`.
+   Installed via pipx using `shellcheck-py`, which ships the real binary in a platform
+   wheel, so it needs no root and behaves the same on Linux and macOS; falls back to
+   pip3, then to distro instructions. `make lint` now lints Rust *and* shell, over every
+   tracked `*.sh` rather than a hardcoded list. It **requires** shellcheck rather than
+   skipping when absent: per CLAUDE.md every recipe is a thin wrapper around a script,
+   so real logic lives in shell, and a lint run that quietly covers half the codebase
+   while reporting success is the failure worth avoiding.
+   NOT verified: shellcheck is not installed here, so whether the eight existing scripts
+   are actually clean is unknown. Run `make dev-setup` then `make lint`.
+   Note: this widens `make lint` beyond the "(runs clippy)" description in CLAUDE.md.
 3. [x] Add make sast, which runs semgrep on the project.
    Done: `scripts/make/sast.sh`. Rulesets are pinned (`p/rust`, `p/secrets`, `p/bash`)
    rather than using `--config=auto`, which resolves rules by uploading a project
@@ -36,6 +47,7 @@ Items that I've added that are not stage-bound.
    which is the same standard that ruled out `serde_yml` in plan §5.
    Verified against the real advisory database, and it found something (see below).
    `cargo outdated` is not installed here, so that half is unexercised.
+5. Add trufflehog to make sast.
 
 ## Stage 1 — Pass-through proxy (transport)
 

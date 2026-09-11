@@ -298,19 +298,17 @@ Conflating them means the lookup path cannot express a key.
 **2. Do not lowercase npm names, despite the spec.** purl-spec says npm names MUST be
 lowercased. OSV does not, and OSV is what we have to match. 112 npm names in the corpus
 contain uppercase and all 112 are case-preserved in OSV's own purl. The great majority
-are `MAL-` records, which are malicious-package advisories, so lowercasing silently
-misses exactly the category §5.5 pins to the non-overridable floor:
+are `MAL-` records, which are malicious-package advisories. §5.5 pins
+`known_malware: block` to the non-overridable floor:
 
 ```text
 pkg:npm/AdultJS  ->  MAL-2025-14119
 pkg:npm/adultjs  ->  no match
 ```
 
-Case is also load-bearing rather than cosmetic: OSV holds four npm names that differ
-only by case, one of them three ways (`OpenClaw`, `Openclaw`, `openclaw`), so
-case-insensitive keying would merge distinct packages' advisories. This deviation is
-deliberate and must not be "fixed"; it is documented at the top of `src/identity.rs`
-where someone about to change it will see it.
+OSV also holds four npm names that differ only by case, one of them three ways
+(`OpenClaw`, `Openclaw`, `openclaw`). Case-insensitive keying merges their advisories.
+The deviation from purl-spec is documented at the top of `src/identity.rs`.
 
 **3. OSV writes scoped packages two ways, and they do not parse alike.** 16,904 scoped
 entries use `pkg:npm/%40antv/algorithm` and 855 use `pkg:npm/%40antv%2Falgorithm`.
@@ -349,10 +347,10 @@ every tarball request arrives at the proxy unmodified.
 
 Measured on `npm install express`: 66 packages installed, and every one of them was
 fetched through the proxy at both the metadata and the tarball leg, with nothing going
-direct. This is worth more than convenience. Rewriting bodies would mean buffering and
-re-serializing every packument, which collides with the streaming fetch path below, and
-it would make lockfiles environment-specific. Verify this per client rather than assuming
-it: it is npm's behavior, not registry protocol, and yarn and pnpm are still untested.
+direct. Rewriting bodies would mean buffering and re-serializing every packument, which
+collides with the streaming fetch path below, and would make lockfiles
+environment-specific. This is npm's behavior, not registry protocol; yarn and pnpm are
+untested.
 
 ### Rollout order and rationale
 
