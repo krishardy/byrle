@@ -313,6 +313,15 @@ collides with the streaming fetch path below, and would make lockfiles
 environment-specific. This is npm's behavior, not registry protocol; yarn and pnpm are
 untested.
 
+⚠ **This finding is npm-specific, and pnpm and yarn do not share it (measured Sept
+2026).** Both use the `dist.tarball` URL verbatim, so against the real registry every
+artifact goes straight to registry.npmjs.org and the proxy sees only metadata. Installing
+`express`: npm sent 67 packuments and 69 tarballs, pnpm sent 66 packuments and zero
+tarballs and installed successfully. Digest verification and all of Stage 3 therefore do
+not apply to those clients; metadata policy still does. Reproduce with
+`make smoke-clients`. Whether to rewrite `dist.tarball` after all is reopened in
+[docs/engineering_decisions/packument-tarball-url-rewriting.md](engineering_decisions/packument-tarball-url-rewriting.md).
+
 **The rewrite is conditional on the host, and that is a bypass vector (corrected Sept
 2026).** An earlier version of this finding said npm ignores the host in `dist.tarball`
 outright. It does not. Tested with a controlled registry serving the same package two

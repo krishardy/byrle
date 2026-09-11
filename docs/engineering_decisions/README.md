@@ -4,7 +4,7 @@ One file per decision. Each records what was decided, why, what was rejected, an
 it costs. The index in [../project_plan.md](../project_plan.md) §10 links here; the
 reasoning lives here rather than in the plan.
 
-Status is **Decided**, **Staging**, or **Implemented**. Staging means the decision is
+Status is **Decided**, **Staging**, **Implemented**, or **Open question**. Staging means the decision is
 made but a gate remains, and the file names the gate. Implemented means it is in the
 code, and the file names where.
 
@@ -24,6 +24,7 @@ code, and the file names where.
 | [PURL identity rules for npm](purl-identity-rules.md) | Decided |
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
+| [Rewriting `dist.tarball`: reopened](packument-tarball-url-rewriting.md) | Open question |
 | [Stage structure](stage-structure.md) | Staging |
 | [Fetch path branching](fetch-path-branching.md) | Staging |
 | [Project name: waharoa](project-name-waharoa.md) | Staging, cultural consultation |

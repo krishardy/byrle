@@ -1,4 +1,4 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test coverage verify check-deps run smoke-npm spike-config
+.PHONY: help dev-setup lint semgrep trufflehog sast test coverage verify check-deps run smoke-npm smoke-clients spike-config
 
 help:
 	@echo "waharoa targets:"
@@ -13,6 +13,7 @@ help:
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  run            run the proxy in the foreground"
 	@echo "  smoke-npm      end-to-end check of the proxy against a real npm client"
+	@echo "  smoke-clients  where npm, pnpm and yarn diverge through the proxy"
 	@echo "  spike-config   re-run the config-format spike (plan §5, decision #11)"
 
 # The repository path as trufflehog sees it, which is the real path for a native
@@ -55,6 +56,9 @@ run:
 
 smoke-npm:
 	@scripts/make/smoke-npm.sh
+
+smoke-clients:
+	@scripts/make/smoke-clients.sh
 
 spike-config:
 	@scripts/make/spike-config.sh

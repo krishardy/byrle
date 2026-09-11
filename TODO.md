@@ -467,7 +467,27 @@ implementations.
 - [ ] File upstream issues asking npm / pip / uv / cargo to honor `429` + `Retry-After`.
       Argues on its own merits (a proxy legitimately rate-limiting is a real scenario),
       so it is a small uncontroversial patch. Long lead time — file early.
-- [ ] Test with npm, yarn, and pnpm — note where behavior diverges
+- [x] Test with npm, yarn, and pnpm, noting where behaviour diverges. `make
+      smoke-clients` measures packuments, artifacts and verifications per client.
+      - [x] **Finding: pnpm and yarn fetch artifacts directly, bypassing the proxy.**
+            Both use the absolute `dist.tarball` URL; npm rewrites it to the configured
+            registry. Proven with a controlled registry naming a host where the package
+            does not exist: npm installed, pnpm gave `ERR_PNPM_FETCH_404` and yarn a 404,
+            both on `https://registry.npmjs.org/...`. Against the real registry the same
+            thing shows up as silence: installing `express`, npm sent 67 packuments and
+            69 tarballs, pnpm sent 66 packuments and zero tarballs and still installed.
+      - [x] So digest verification and all of Stage 3 do not apply to pnpm or yarn.
+            Metadata policy still does, since both fetch packuments through the proxy.
+            Recorded in README as an honest limit.
+      - [ ] `[!]` **This reopens the plan §4 decision not to rewrite `dist.tarball`.**
+            That finding was npm-specific and the plan now says so. The buffering
+            objection is gone, because packuments are already buffered and parsed. The
+            lockfile objection stands: measured, `package-lock.json` `resolved` and
+            `pnpm-lock.yaml` `resolution.tarball` both record registry.npmjs.org today
+            and would record the proxy's own address after rewriting. See
+            `docs/engineering_decisions/packument-tarball-url-rewriting.md`. Needs a
+            decision, not more measurement.
+      - [ ] yarn 2+ (berry) and bun are untested. yarn 1.22.22 is what is installed here.
 - [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
 - [ ] `waharoa doctor` — verify effective client config, detect npm cache bypass
 
