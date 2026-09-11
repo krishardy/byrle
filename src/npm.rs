@@ -144,6 +144,122 @@ pub fn classify_path(path: &str) -> RequestTarget {
     }
 }
 
+/// The origins whose artifacts the proxy serves.
+///
+/// One source of truth for two questions that must never disagree: which artifact URLs
+/// get pointed at the proxy ([`rewrite_artifact_origins`]), and which are reported as
+/// fetched directly ([`NormalizedPackument::bypassing_origins`]). If those sets differed,
+/// an artifact could be rewritten and reported as bypassing, or left alone and reported
+/// as fine.
+///
+/// Always holds the configured upstream and [`DEFAULT_REGISTRY`], because npm rewrites
+/// `dist.tarball` to the configured registry when it names the default host. Additional
+/// origins are for a registry that serves artifacts from somewhere else, a CDN in front
+/// of a private registry being the case to expect. Zero of the 24,852 artifact URLs
+/// measured on registry.npmjs.org needed one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReachableOrigins {
+    /// Every reachable origin, normalised to scheme, host and port. No path, no trailing
+    /// slash.
+    origins: Vec<String>,
+    /// The subset the operator added because the upstream does not serve them. Only these
+    /// are fetched from directly; see [`ReachableOrigins::routes_directly`].
+    additional: Vec<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct OriginError {
+    pub value: String,
+    pub reason: &'static str,
+}
+
+impl fmt::Display for OriginError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "`{}` is not a usable origin: {}",
+            self.value, self.reason
+        )
+    }
+}
+
+impl std::error::Error for OriginError {}
+
+impl ReachableOrigins {
+    /// Build from the configured upstream plus any additional origins.
+    ///
+    /// [`DEFAULT_REGISTRY`] is always included. Anything that is not a URL with a host is
+    /// an error rather than being dropped: an operator who names an origin and has it
+    /// silently ignored would believe those artifacts are covered.
+    pub fn new<'a>(
+        upstream: &str,
+        additional: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, OriginError> {
+        let mut origins = vec![normalise_origin(upstream)?];
+        let registry = normalise_origin(DEFAULT_REGISTRY)?;
+        if !origins.contains(&registry) {
+            origins.push(registry);
+        }
+
+        let mut extra = Vec::new();
+        for base in additional {
+            let base = base.trim();
+            if base.is_empty() {
+                continue;
+            }
+            let origin = normalise_origin(base)?;
+            if !origins.contains(&origin) {
+                origins.push(origin.clone());
+                extra.push(origin);
+            }
+        }
+        Ok(Self {
+            origins,
+            additional: extra,
+        })
+    }
+
+    /// Every reachable origin, in the order they were configured.
+    pub fn as_slice(&self) -> &[String] {
+        &self.origins
+    }
+
+    /// Whether an artifact on this origin should be fetched from it rather than from the
+    /// upstream.
+    ///
+    /// Only origins the operator added qualify. A packument that names the default
+    /// registry still routes to the configured upstream, because a private mirror
+    /// publishes artifact URLs on registry.npmjs.org while being the whole reason the
+    /// proxy was pointed somewhere else: fetching from npmjs.org would go around it.
+    pub fn routes_directly(&self, origin: &str) -> bool {
+        self.additional.iter().any(|o| o == origin)
+    }
+
+    fn contains(&self, origin: &str) -> bool {
+        self.origins.iter().any(|o| o == origin)
+    }
+}
+
+fn normalise_origin(base: &str) -> Result<String, OriginError> {
+    let url = reqwest::Url::parse(base).map_err(|_| OriginError {
+        value: base.to_owned(),
+        reason: "not a URL",
+    })?;
+    if url.host_str().is_none_or(str::is_empty) {
+        return Err(OriginError {
+            value: base.to_owned(),
+            reason: "no host",
+        });
+    }
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(OriginError {
+            value: base.to_owned(),
+            reason: "scheme is not http or https",
+        });
+    }
+    Ok(origin_of(&url))
+}
+
 /// Where a client will actually fetch an artifact from, when that is not the proxy.
 ///
 /// Returns the origin it will go to directly, or `None` when the request will arrive at
@@ -157,21 +273,11 @@ pub fn classify_path(path: &str) -> RequestTarget {
 ///
 /// So a registry that publishes artifacts on a host the proxy does not front has its
 /// artifacts fetched unexamined. The packument is visible, which makes this detectable
-/// at the moment the metadata goes past. All 24,852 artifact URLs measured are on
-/// `registry.npmjs.org`.
-///
-/// `upstream` is the proxy's own upstream base, so a private registry serving its own
-/// artifacts is not flagged.
-pub fn bypassing_origin(artifact_url: &str, upstream: &str) -> Option<String> {
+/// at the moment the metadata goes past.
+pub fn bypassing_origin(artifact_url: &str, reachable: &ReachableOrigins) -> Option<String> {
     let artifact = reqwest::Url::parse(artifact_url).ok()?;
     let found = origin_of(&artifact);
-    let allowed = [upstream, DEFAULT_REGISTRY]
-        .iter()
-        .filter_map(|base| reqwest::Url::parse(base).ok())
-        .map(|url| origin_of(&url))
-        .collect::<Vec<_>>();
-
-    if allowed.contains(&found) {
+    if reachable.contains(&found) {
         None
     } else {
         Some(found)
@@ -184,10 +290,10 @@ impl NormalizedPackument {
     ///
     /// A non-empty result means the client will fetch those artifacts directly, so
     /// nothing about them is observed: not the digest check, not the policy engine.
-    pub fn bypassing_origins(&self, upstream: &str) -> BTreeMap<String, usize> {
+    pub fn bypassing_origins(&self, reachable: &ReachableOrigins) -> BTreeMap<String, usize> {
         let mut origins = BTreeMap::new();
         for record in &self.records {
-            if let Some(origin) = bypassing_origin(&record.artifact.url, upstream) {
+            if let Some(origin) = bypassing_origin(&record.artifact.url, reachable) {
                 *origins.entry(origin).or_insert(0) += 1;
             }
         }
@@ -278,7 +384,7 @@ impl std::error::Error for RewriteError {}
 pub fn rewrite_artifact_origins<'a>(
     json: &[u8],
     artifacts: impl IntoIterator<Item = &'a str>,
-    reachable: &[&str],
+    reachable: &ReachableOrigins,
     public_base: &str,
 ) -> Result<Rewritten, RewriteError> {
     let text = std::str::from_utf8(json).map_err(RewriteError::NotUtf8)?;
@@ -307,9 +413,9 @@ pub fn rewrite_artifact_origins<'a>(
     // candidate. Searching for each URL separately would be thousands of passes over
     // megabytes.
     let prefixes: Vec<String> = reachable
+        .as_slice()
         .iter()
-        .filter_map(|base| reqwest::Url::parse(base).ok())
-        .map(|url| format!("\"{}", origin_of(&url)))
+        .map(|origin| format!("\"{origin}"))
         .collect();
 
     let mut out = String::with_capacity(text.len() + replacements.len() * 8);
@@ -364,20 +470,22 @@ fn next_candidate(text: &str, from: usize, prefixes: &[String]) -> Option<usize>
 }
 
 /// The path to keep, when this URL names an origin the proxy fronts.
-fn reachable_path(url: &str, reachable: &[&str]) -> Option<String> {
+fn reachable_path(url: &str, reachable: &ReachableOrigins) -> Option<String> {
     let parsed = reqwest::Url::parse(url).ok()?;
-    let origin = origin_of(&parsed);
-    if !reachable
-        .iter()
-        .filter_map(|base| reqwest::Url::parse(base).ok())
-        .any(|base| origin_of(&base) == origin)
-    {
+    if !reachable.contains(&origin_of(&parsed)) {
         return None;
     }
     Some(match parsed.query() {
         Some(query) => format!("{}?{query}", parsed.path()),
         None => parsed.path().to_owned(),
     })
+}
+
+/// The scheme, host and port of a URL, or `None` when it is not a usable URL.
+pub fn origin_of_url(url: &str) -> Option<String> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    parsed.host_str()?;
+    Some(origin_of(&parsed))
 }
 
 fn origin_of(url: &reqwest::Url) -> String {
@@ -1463,7 +1571,7 @@ mod tests {
                         // Every artifact a real registry publishes has to be one the
                         // proxy will see, or verification never gets a chance.
                         assert_eq!(
-                            bypassing_origin(&record.artifact.url, DEFAULT_REGISTRY),
+                            bypassing_origin(&record.artifact.url, &default_origins()),
                             None,
                             "{}: artifact published off the registry",
                             record.artifact.url
@@ -1493,7 +1601,7 @@ mod tests {
                 match rewrite_artifact_origins(
                     &body,
                     artifacts.iter().map(String::as_str),
-                    &[DEFAULT_REGISTRY],
+                    &default_origins(),
                     DEFAULT_REGISTRY,
                 ) {
                     Ok(out) => {
@@ -1808,10 +1916,146 @@ mod tests {
         assert!(message.contains("object"), "got: {message}");
     }
 
+    /// The origins a default deployment fronts.
+    fn default_origins() -> ReachableOrigins {
+        ReachableOrigins::new(DEFAULT_REGISTRY, std::iter::empty()).expect("valid origins")
+    }
+
     mod origins {
         use super::*;
 
         const UPSTREAM: &str = "https://registry.npmjs.org";
+
+        fn reachable(additional: &[&str]) -> ReachableOrigins {
+            ReachableOrigins::new(UPSTREAM, additional.iter().copied()).expect("valid origins")
+        }
+
+        /// The upstream and the default registry are always fronted, whatever else is
+        /// configured. npm rewrites `dist.tarball` to the configured registry when it
+        /// names the default host, so both are reachable by construction.
+        #[test]
+        fn the_upstream_and_the_default_registry_are_always_included() {
+            let r = ReachableOrigins::new("https://npm.corp.example", std::iter::empty()).unwrap();
+            assert!(
+                r.as_slice()
+                    .contains(&"https://npm.corp.example".to_owned())
+            );
+            assert!(
+                r.as_slice()
+                    .contains(&"https://registry.npmjs.org".to_owned())
+            );
+            assert_eq!(r.as_slice().len(), 2);
+        }
+
+        /// An upstream that is already the default registry is not listed twice.
+        #[test]
+        fn origins_are_not_duplicated() {
+            let r = ReachableOrigins::new(
+                "https://registry.npmjs.org/",
+                [
+                    "https://registry.npmjs.org",
+                    "https://registry.npmjs.org/some/path",
+                ],
+            )
+            .unwrap();
+            assert_eq!(r.as_slice(), ["https://registry.npmjs.org"]);
+        }
+
+        /// A packument naming the default registry still routes to the upstream. A
+        /// private mirror publishes registry.npmjs.org URLs and is the whole reason the
+        /// proxy was pointed somewhere else; fetching from npmjs.org would go around it.
+        #[test]
+        fn only_origins_the_operator_added_are_fetched_from_directly() {
+            let r = ReachableOrigins::new("https://npm.corp.example", ["https://cdn.corp.example"])
+                .unwrap();
+
+            assert!(r.routes_directly("https://cdn.corp.example"));
+            assert!(
+                !r.routes_directly("https://registry.npmjs.org"),
+                "the mirror serves these, not npmjs.org"
+            );
+            assert!(
+                !r.routes_directly("https://npm.corp.example"),
+                "the upstream is where a request goes by default"
+            );
+            assert!(!r.routes_directly("https://elsewhere.example"));
+        }
+
+        /// An origin that is already the upstream adds nothing to route to.
+        #[test]
+        fn re_listing_the_upstream_does_not_make_it_a_direct_route() {
+            let r = ReachableOrigins::new("https://npm.corp.example", ["https://npm.corp.example"])
+                .unwrap();
+            assert!(!r.routes_directly("https://npm.corp.example"));
+            assert_eq!(r.as_slice().len(), 2, "upstream and the default registry");
+        }
+
+        /// A CDN in front of a private registry is the case this exists for.
+        #[test]
+        fn an_additional_origin_makes_its_artifacts_reachable() {
+            let url = "https://cdn.corp.example/w/-/w-1.0.0.tgz";
+            assert_eq!(
+                bypassing_origin(url, &reachable(&[])),
+                Some("https://cdn.corp.example".to_owned()),
+                "not configured, so the client fetches it directly"
+            );
+            assert_eq!(
+                bypassing_origin(url, &reachable(&["https://cdn.corp.example"])),
+                None,
+                "configured, so the proxy serves it"
+            );
+        }
+
+        /// Rewriting and the offsite report read the same set, so an origin cannot be
+        /// rewritten and reported as bypassing at the same time.
+        #[test]
+        fn rewriting_and_the_offsite_report_agree() {
+            let body = br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
+                "tarball":"https://cdn.corp.example/w/-/w-1.0.0.tgz"}}}}"#;
+            let p = normalize_packument(body, PackumentDetail::Abbreviated).unwrap();
+
+            for (set, expect_rewritten, expect_offsite) in [
+                (reachable(&[]), 0, 1),
+                (reachable(&["https://cdn.corp.example"]), 1, 0),
+            ] {
+                let artifacts: Vec<&str> =
+                    p.records.iter().map(|r| r.artifact.url.as_str()).collect();
+                let out = rewrite_artifact_origins(body, artifacts, &set, "http://127.0.0.1:8080")
+                    .expect("should rewrite");
+                assert_eq!(out.rewritten, expect_rewritten);
+                assert_eq!(out.left_alone, expect_offsite);
+                assert_eq!(p.bypassing_origins(&set).len(), expect_offsite);
+            }
+        }
+
+        /// An origin the operator names and that is silently dropped would leave them
+        /// believing those artifacts are covered.
+        #[test]
+        fn an_unusable_origin_is_an_error_rather_than_ignored() {
+            for (bad, reason) in [
+                ("not a url", "not a URL"),
+                ("ftp://registry.example", "scheme is not http or https"),
+                ("file:///tmp", "no host"),
+            ] {
+                let result = ReachableOrigins::new(UPSTREAM, [bad]);
+                let Err(e) = result else {
+                    panic!("{bad} should not be accepted");
+                };
+                assert_eq!(e.reason, reason, "{bad}");
+                assert!(e.to_string().contains(bad), "got: {e}");
+            }
+        }
+
+        /// Blank entries come from a trailing comma in the configured list.
+        #[test]
+        fn blank_entries_are_skipped() {
+            let r = ReachableOrigins::new(UPSTREAM, ["", "  ", "https://cdn.example"]).unwrap();
+            // UPSTREAM is the default registry here, so the two collapse into one.
+            assert_eq!(
+                r.as_slice(),
+                ["https://registry.npmjs.org", "https://cdn.example"]
+            );
+        }
 
         /// The normal case: npm rewrites a default-registry tarball URL to whatever
         /// registry is configured, so the request arrives at the proxy.
@@ -1820,7 +2064,7 @@ mod tests {
             assert_eq!(
                 bypassing_origin(
                     "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
-                    UPSTREAM
+                    &reachable(&[])
                 ),
                 None
             );
@@ -1832,7 +2076,7 @@ mod tests {
             assert_eq!(
                 bypassing_origin(
                     "https://npm.corp.example/lodash/-/lodash-4.17.21.tgz",
-                    "https://npm.corp.example"
+                    &ReachableOrigins::new("https://npm.corp.example", std::iter::empty()).unwrap()
                 ),
                 None,
                 "this is the registry the operator pointed us at"
@@ -1840,7 +2084,7 @@ mod tests {
             assert_eq!(
                 bypassing_origin(
                     "http://127.0.0.1:8080/x/-/x-1.0.0.tgz",
-                    "http://127.0.0.1:8080"
+                    &ReachableOrigins::new("http://127.0.0.1:8080", std::iter::empty()).unwrap()
                 ),
                 None,
                 "port and scheme are part of the origin, and these match"
@@ -1851,24 +2095,27 @@ mod tests {
         #[test]
         fn any_other_origin_is_reported() {
             assert_eq!(
-                bypassing_origin("https://evil.example/lodash-4.17.21.tgz", UPSTREAM),
+                bypassing_origin("https://evil.example/lodash-4.17.21.tgz", &reachable(&[])),
                 Some("https://evil.example".to_owned())
             );
             assert_eq!(
-                bypassing_origin("https://registry.npmjs.org.evil.example/x.tgz", UPSTREAM),
+                bypassing_origin(
+                    "https://registry.npmjs.org.evil.example/x.tgz",
+                    &reachable(&[])
+                ),
                 Some("https://registry.npmjs.org.evil.example".to_owned()),
                 "a suffix of the real host is a different host"
             );
             assert_eq!(
                 bypassing_origin(
                     "http://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
-                    UPSTREAM
+                    &reachable(&[])
                 ),
                 Some("http://registry.npmjs.org".to_owned()),
                 "a downgrade to http is a different origin"
             );
             assert_eq!(
-                bypassing_origin("https://registry.npmjs.org:8443/x.tgz", UPSTREAM),
+                bypassing_origin("https://registry.npmjs.org:8443/x.tgz", &reachable(&[])),
                 Some("https://registry.npmjs.org:8443".to_owned()),
                 "a different port is a different origin"
             );
@@ -1878,8 +2125,11 @@ mod tests {
         /// report. The version carrying it has no usable artifact either way.
         #[test]
         fn an_unparseable_url_reports_nothing() {
-            assert_eq!(bypassing_origin("not a url", UPSTREAM), None);
-            assert_eq!(bypassing_origin("/relative/path.tgz", UPSTREAM), None);
+            assert_eq!(bypassing_origin("not a url", &reachable(&[])), None);
+            assert_eq!(
+                bypassing_origin("/relative/path.tgz", &reachable(&[])),
+                None
+            );
         }
 
         /// The per-document view, which is what the proxy logs.
@@ -1892,7 +2142,7 @@ mod tests {
                 "1.0.3":{"version":"1.0.3","dist":{"tarball":"https://other.example/widget-1.0.3.tgz"}}}}"#;
             let p = normalize_packument(body, PackumentDetail::Abbreviated).unwrap();
 
-            let origins = p.bypassing_origins(UPSTREAM);
+            let origins = p.bypassing_origins(&reachable(&[]));
             assert_eq!(origins.len(), 2);
             assert_eq!(origins.get("https://evil.example"), Some(&2));
             assert_eq!(origins.get("https://other.example"), Some(&1));
@@ -1901,7 +2151,7 @@ mod tests {
         #[test]
         fn an_ordinary_packument_reports_nothing() {
             let p = normalize("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
-            assert!(p.bypassing_origins(UPSTREAM).is_empty());
+            assert!(p.bypassing_origins(&reachable(&[])).is_empty());
         }
     }
 
@@ -1911,9 +2161,13 @@ mod tests {
         const UPSTREAM: &str = "https://registry.npmjs.org";
         const PROXY: &str = "http://127.0.0.1:8080";
 
+        fn origins(additional: &[&str]) -> ReachableOrigins {
+            ReachableOrigins::new(UPSTREAM, additional.iter().copied()).expect("valid origins")
+        }
+
         /// Normalise, then rewrite with the artifact URLs that came out of it. This is
         /// the real sequence: the rewrite never parses the document itself.
-        fn rewrite_with(json: &[u8], reachable: &[&str], base: &str) -> Rewritten {
+        fn rewrite_with(json: &[u8], reachable: &ReachableOrigins, base: &str) -> Rewritten {
             let p = normalize_packument(json, PackumentDetail::Abbreviated)
                 .expect("fixture should normalise");
             let artifacts: Vec<String> = p.records.iter().map(|r| r.artifact.url.clone()).collect();
@@ -1922,7 +2176,7 @@ mod tests {
         }
 
         fn rewrite(json: &str) -> Rewritten {
-            rewrite_with(json.as_bytes(), &[UPSTREAM], PROXY)
+            rewrite_with(json.as_bytes(), &origins(&[]), PROXY)
         }
 
         /// Only the origin moves. The path is kept so the request that comes back is one
@@ -1948,7 +2202,7 @@ mod tests {
         #[test]
         fn integrity_and_every_other_field_survive() {
             let original = fixture("sigstore-5.0.0.abbrev.json");
-            let out = rewrite_with(&original, &[UPSTREAM], PROXY);
+            let out = rewrite_with(&original, &origins(&[]), PROXY);
             assert_eq!(out.rewritten, 1);
 
             let served: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
@@ -1987,7 +2241,7 @@ mod tests {
             let out = rewrite_with(
                 br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
                     "tarball":"https://npm.corp.example/w/-/w-1.0.0.tgz"}}}}"#,
-                &["https://npm.corp.example", DEFAULT_REGISTRY],
+                &origins(&["https://npm.corp.example"]),
                 PROXY,
             );
             assert_eq!(out.rewritten, 1);
@@ -2089,7 +2343,7 @@ mod tests {
         #[test]
         fn the_document_is_unchanged_apart_from_the_urls() {
             let original = fixture("@babel_traverse-8.0.5.full.json");
-            let out = rewrite_with(&original, &[UPSTREAM], PROXY);
+            let out = rewrite_with(&original, &origins(&[]), PROXY);
             assert_eq!(out.rewritten, 1);
 
             let restored = String::from_utf8(out.body).unwrap().replace(
@@ -2112,7 +2366,7 @@ mod tests {
             let result = rewrite_artifact_origins(
                 br#"{"name":"w","versions":{}}"#,
                 absent,
-                &[UPSTREAM],
+                &origins(&[]),
                 PROXY,
             );
             let Err(e) = result else {
@@ -2131,7 +2385,7 @@ mod tests {
         #[test]
         fn a_body_that_is_not_utf8_is_an_error() {
             let result =
-                rewrite_artifact_origins(&[0xff, 0xfe], std::iter::empty(), &[UPSTREAM], PROXY);
+                rewrite_artifact_origins(&[0xff, 0xfe], std::iter::empty(), &origins(&[]), PROXY);
             assert!(matches!(result, Err(RewriteError::NotUtf8(_))));
         }
 
@@ -2141,7 +2395,7 @@ mod tests {
             let out = rewrite_with(
                 br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
                     "tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}}}}"#,
-                &[UPSTREAM],
+                &origins(&[]),
                 "http://127.0.0.1:8080/",
             );
             let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();

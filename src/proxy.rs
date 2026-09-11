@@ -50,7 +50,7 @@ use crate::http::{
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
-use crate::npm::{self, NormalizeError, NormalizedPackument, RequestTarget};
+use crate::npm::{self, NormalizeError, NormalizedPackument, ReachableOrigins, RequestTarget};
 use crate::record::PackumentDetail;
 use crate::store::{DEFAULT_MAX_RECORDS, Lookup, RecordStore};
 use axum::{
@@ -138,6 +138,9 @@ pub struct Proxy {
     /// Bounds how many packuments are decoded and rewritten at once. See
     /// [`DEFAULT_MAX_CONCURRENT_PACKUMENTS`].
     packument_slots: Arc<Semaphore>,
+    /// The origins whose artifacts this proxy serves. One source of truth for rewriting
+    /// and for the offsite report, which must never disagree.
+    reachable: Arc<ReachableOrigins>,
     /// Upstream registry base, no trailing slash.
     upstream: String,
     /// THROWAWAY. One hardcoded package, to prove interception happens before anything
@@ -157,7 +160,12 @@ pub struct Proxy {
 impl Proxy {
     pub fn new(client: reqwest::Client, upstream: impl Into<String>) -> Self {
         let upstream = upstream.into().trim_end_matches('/').to_owned();
+        // The upstream is a URL the operator already gave us, so this only fails if that
+        // is unusable, in which case nothing else would work either.
+        let reachable = ReachableOrigins::new(&upstream, std::iter::empty())
+            .unwrap_or_else(|e| panic!("upstream is not a usable origin: {e}"));
         Self {
+            reachable: Arc::new(reachable),
             registry: npm::Client::new(client.clone(), upstream.clone()),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
@@ -173,6 +181,20 @@ impl Proxy {
     pub fn with_max_concurrent_packuments(mut self, limit: usize) -> Self {
         self.packument_slots = Arc::new(Semaphore::new(limit.max(1)));
         self
+    }
+
+    /// Additional origins whose artifacts this proxy serves, beyond the upstream and the
+    /// default registry.
+    pub fn with_additional_origins<'a>(
+        mut self,
+        origins: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, npm::OriginError> {
+        self.reachable = Arc::new(ReachableOrigins::new(&self.upstream, origins)?);
+        Ok(self)
+    }
+
+    pub fn reachable_origins(&self) -> &ReachableOrigins {
+        &self.reachable
     }
 
     pub fn with_artifact_rewriting(mut self, rewrite: bool) -> Self {
@@ -533,7 +555,78 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         }
     }
 
-    let url = format!("{}{}", proxy.upstream, path_and_query);
+    // The digest has to be known before the artifact is fetched, not after: that is what
+    // decides whether this exact artifact has been analysed (plan §5). Looking it up here
+    // also says which origin the packument published it on, so the request goes there
+    // rather than assuming the upstream serves it.
+    let mut expected_digest: Option<Sri> = None;
+    let mut artifact_purl = String::new();
+    let mut artifact_origin: Option<String> = None;
+    if let RequestTarget::Tarball {
+        key,
+        claimed_version,
+    } = &target
+        && method == Method::GET
+    {
+        let purl = key
+            .at_version(claimed_version)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|_| format!("{key}@{claimed_version}"));
+        artifact_purl = purl.clone();
+        match lookup_or_fetch(&proxy, key, claimed_version, &path_and_query).await {
+            Lookup::Found(record) => {
+                info!(
+                    path = %path_and_query,
+                    claimed_purl = %purl,
+                    integrity = record.artifact.integrity.as_deref().unwrap_or("-"),
+                    has_install_scripts = record.has_install_scripts,
+                    "artifact requested, digest known"
+                );
+                // Where the packument said the artifact lives, when that is an origin
+                // the operator added. Rewriting pointed the client at the proxy, so the
+                // proxy has to know where "here" stood for. Everything else goes to the
+                // upstream, including artifacts advertised on the default registry: a
+                // private mirror publishes those URLs and is the reason the proxy was
+                // pointed at it.
+                artifact_origin = npm::origin_of_url(&record.artifact.url)
+                    .filter(|origin| proxy.reachable.routes_directly(origin));
+                match record.artifact.integrity.as_deref().map(Sri::parse) {
+                    Some(Ok(sri)) => expected_digest = Some(sri),
+                    Some(Err(e)) => warn!(
+                        path = %path_and_query,
+                        claimed_purl = %purl,
+                        error = %e,
+                        "packument integrity string is unusable; not verifying"
+                    ),
+                    // Two versions in 24,852 offer only SHA-1, which is
+                    // collision-broken and not verified here.
+                    None => warn!(
+                        path = %path_and_query,
+                        claimed_purl = %purl,
+                        "packument publishes no strong digest; not verifying"
+                    ),
+                }
+            }
+            // The packument was read and does not name this version. A tarball filename
+            // that spells the version differently lands here: `express@3.0.0-rc1` is
+            // served at `express-3.0.0rc1.tgz`.
+            Lookup::NoSuchVersion => warn!(
+                path = %path_and_query,
+                claimed_purl = %purl,
+                "artifact requested, but its packument does not name this version"
+            ),
+            // Nothing was observed for this package, and fetching its packument did not
+            // help either.
+            Lookup::Unknown => warn!(
+                path = %path_and_query,
+                claimed_purl = %purl,
+                "artifact requested, no packument seen for it"
+            ),
+        }
+    }
+
+    let origin = artifact_origin.as_deref().unwrap_or(&proxy.upstream);
+    let url = format!("{origin}{path_and_query}");
     let mut outbound = proxy.client.request(method.clone(), &url);
     for (name, value) in req.headers() {
         if is_hop_by_hop(name.as_str()) || name == header::HOST {
@@ -636,68 +729,6 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         );
     };
 
-    // Tarball requests are where the resolved graph becomes visible: the packument lists
-    // every version ever published, and this names the one being installed. It is also
-    // where the digest has to already be known, because it decides whether this artifact
-    // has been analysed before anything is fetched (plan §5).
-    let mut expected_digest: Option<Sri> = None;
-    let mut artifact_purl = String::new();
-    if let RequestTarget::Tarball {
-        key,
-        claimed_version,
-    } = &target
-        && status.is_success()
-    {
-        let purl = key
-            .at_version(claimed_version)
-            .map(|r| r.to_string())
-            .unwrap_or_else(|_| format!("{key}@{claimed_version}"));
-        artifact_purl = purl.clone();
-        let lookup = lookup_or_fetch(&proxy, key, claimed_version, &path_and_query).await;
-        match lookup {
-            Lookup::Found(record) => {
-                info!(
-                    path = %path_and_query,
-                    claimed_purl = %purl,
-                    integrity = record.artifact.integrity.as_deref().unwrap_or("-"),
-                    has_install_scripts = record.has_install_scripts,
-                    "artifact requested, digest known"
-                );
-                match record.artifact.integrity.as_deref().map(Sri::parse) {
-                    Some(Ok(sri)) => expected_digest = Some(sri),
-                    Some(Err(e)) => warn!(
-                        path = %path_and_query,
-                        claimed_purl = %purl,
-                        error = %e,
-                        "packument integrity string is unusable; not verifying"
-                    ),
-                    // Two versions in 24,852 offer only SHA-1, which is
-                    // collision-broken and not verified here.
-                    None => warn!(
-                        path = %path_and_query,
-                        claimed_purl = %purl,
-                        "packument publishes no strong digest; not verifying"
-                    ),
-                }
-            }
-            // The packument was read and does not name this version. A tarball filename
-            // that spells the version differently lands here: `express@3.0.0-rc1` is
-            // served at `express-3.0.0rc1.tgz`.
-            Lookup::NoSuchVersion => warn!(
-                path = %path_and_query,
-                claimed_purl = %purl,
-                "artifact requested, but its packument does not name this version"
-            ),
-            // Nothing was observed for this package. A warm npm cache produces this: the
-            // client's conditional request is answered 304 with no body.
-            Lookup::Unknown => warn!(
-                path = %path_and_query,
-                claimed_purl = %purl,
-                "artifact requested, no packument seen for it"
-            ),
-        }
-    }
-
     let body_stream: ByteStream = Box::pin(upstream_response.bytes_stream());
 
     let Some(detail) = detail.filter(|_| read_packument && status.is_success()) else {
@@ -785,7 +816,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             // not the policy engine later. The packument is the only place this is
             // visible, because by the time the artifact is fetched the request has
             // already gone elsewhere.
-            let bypassing = p.bypassing_origins(&proxy.upstream);
+            let bypassing = p.bypassing_origins(&proxy.reachable);
             if !bypassing.is_empty() {
                 let versions: usize = bypassing.values().sum();
                 warn!(
@@ -838,7 +869,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let forwarded = match (decoded.as_deref(), normalized.as_deref()) {
         (Some(decoded), Some(packument)) if rewriting => {
             let base = rewrite_base.as_deref().expect("rewriting implies a base");
-            rewrite_packument(decoded, packument, base, &proxy.upstream, &path_and_query)
+            rewrite_packument(decoded, packument, base, &proxy.reachable, &path_and_query)
         }
         _ => None,
     };
@@ -892,15 +923,14 @@ fn rewrite_packument(
     decoded: &[u8],
     packument: &NormalizedPackument,
     base: &str,
-    upstream: &str,
+    reachable: &ReachableOrigins,
     path: &str,
 ) -> Option<Vec<u8>> {
-    let reachable = [upstream, npm::DEFAULT_REGISTRY];
     let artifacts = packument
         .records
         .iter()
         .map(|record| record.artifact.url.as_str());
-    match npm::rewrite_artifact_origins(decoded, artifacts, &reachable, base) {
+    match npm::rewrite_artifact_origins(decoded, artifacts, reachable, base) {
         Ok(rewritten) => {
             if rewritten.left_alone > 0 {
                 // Every artifact being off-origin is not the same exposure as some of
