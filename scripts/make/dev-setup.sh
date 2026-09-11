@@ -17,6 +17,26 @@ else
     cargo install cargo-audit --locked
 fi
 
+echo "==> cargo-outdated (dependency freshness, used by 'make check-deps')"
+if cargo outdated --version >/dev/null 2>&1; then
+    echo "    already installed"
+else
+    cargo install cargo-outdated --locked
+fi
+
+echo "==> semgrep (static analysis, used by 'make sast')"
+if need semgrep; then
+    echo "    found $(semgrep --version 2>/dev/null)"
+elif need pipx; then
+    pipx install semgrep
+elif need pip3; then
+    # --user keeps it out of the system site-packages; pipx is still preferable.
+    pip3 install --user semgrep
+else
+    echo "    NOT INSTALLED and no pipx or pip3 found. 'make sast' cannot run."
+    echo "    See https://semgrep.dev/docs/getting-started/"
+fi
+
 echo "==> kani (formal verification, used by 'make verify')"
 if cargo kani --version >/dev/null 2>&1; then
     echo "    already installed"
