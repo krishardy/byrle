@@ -320,6 +320,8 @@ pub struct Rewritten {
 pub enum RewriteError {
     /// The body is not UTF-8, so it is not JSON either.
     NotUtf8(std::str::Utf8Error),
+    /// The body did not parse as JSON. Only the filtering path parses.
+    NotJson(serde_json::Error),
     /// An artifact URL from the records was not found in the document as a complete
     /// quoted string. The document is shaped in a way this does not understand, and a
     /// partial rewrite would send some artifacts to the proxy and leave others pointing
@@ -331,6 +333,7 @@ impl fmt::Display for RewriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotUtf8(e) => write!(f, "packument is not UTF-8: {e}"),
+            Self::NotJson(e) => write!(f, "packument is not valid JSON: {e}"),
             Self::Incomplete { expected, found } => write!(
                 f,
                 "found {found} of {expected} artifact URLs to rewrite; \
@@ -459,6 +462,85 @@ pub fn rewrite_artifact_origins<'a>(
         occurrences,
         left_alone,
     })
+}
+
+/// Remove versions whose artifacts the proxy cannot serve, then rewrite the rest.
+///
+/// This is the only control that works on an off-origin artifact. The client fetches
+/// `dist.tarball` from whatever host it names, so a refusal at the artifact request never
+/// happens: the request goes somewhere else. The packument is the last point at which the
+/// version is visible, and dropping it there is what decision #4 already settles for
+/// quarantine, letting the client's own resolver pick a version the proxy can see.
+///
+/// Structural, so unlike [`rewrite_artifact_origins`] it parses the document. That cost
+/// is paid only when there is something to remove: zero of the 24,852 artifact URLs
+/// measured on registry.npmjs.org were off-origin, so this path is not the normal one.
+///
+/// Versions with no `dist.tarball` at all are left alone. They produce no record, so
+/// nothing can install them anyway, and removing them would be a second behaviour hiding
+/// behind this one.
+pub fn filter_unservable_versions(
+    json: &[u8],
+    artifacts: impl IntoIterator<Item = (String, String)>,
+    reachable: &ReachableOrigins,
+    public_base: &str,
+) -> Result<Filtered, RewriteError> {
+    let mut document: serde_json::Value =
+        serde_json::from_slice(json).map_err(RewriteError::NotJson)?;
+    let base = public_base.trim_end_matches('/');
+
+    let mut removed = Vec::new();
+    let mut rewritten = 0;
+    if let Some(versions) = document
+        .get_mut("versions")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for (version, url) in artifacts {
+            match reachable_path(&url, reachable) {
+                Some(path) => {
+                    if let Some(tarball) = versions
+                        .get_mut(&version)
+                        .and_then(|entry| entry.get_mut("dist"))
+                        .and_then(|dist| dist.get_mut("tarball"))
+                    {
+                        *tarball = serde_json::Value::String(format!("{base}{path}"));
+                        rewritten += 1;
+                    }
+                }
+                None => {
+                    versions.remove(&version);
+                    removed.push(version);
+                }
+            }
+        }
+    }
+
+    // A tag pointing at a version that is gone would resolve to nothing. Dropping the tag
+    // lets the resolver fall back to a version that is still there.
+    let removed_set: HashSet<&str> = removed.iter().map(String::as_str).collect();
+    if let Some(tags) = document
+        .get_mut("dist-tags")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        tags.retain(|_, value| value.as_str().is_none_or(|v| !removed_set.contains(v)));
+    }
+
+    removed.sort();
+    Ok(Filtered {
+        body: serde_json::to_vec(&document).map_err(RewriteError::NotJson)?,
+        removed,
+        rewritten,
+    })
+}
+
+/// The result of removing versions the proxy cannot serve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Filtered {
+    pub body: Vec<u8>,
+    /// Versions no longer in the document, sorted.
+    pub removed: Vec<String>,
+    /// Versions kept, with their artifact pointed at the proxy.
+    pub rewritten: usize,
 }
 
 /// The earliest position at or after `from` where any prefix occurs.
@@ -2274,6 +2356,110 @@ mod tests {
                 assert_eq!(out.rewritten, 0, "{json}");
                 assert_eq!(out.left_alone, 0, "{json}");
             }
+        }
+
+        fn filter(json: &str, reachable: &ReachableOrigins) -> Filtered {
+            let p = normalize_packument(json.as_bytes(), PackumentDetail::Abbreviated)
+                .expect("should normalise");
+            let artifacts: Vec<(String, String)> = p
+                .records
+                .iter()
+                .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()))
+                .collect();
+            filter_unservable_versions(json.as_bytes(), artifacts, reachable, PROXY)
+                .expect("should filter")
+        }
+
+        const MIXED: &str = r#"{"name":"w","dist-tags":{"latest":"1.0.2","old":"1.0.0"},
+            "versions":{
+                "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}},
+                "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://elsewhere.example/w-1.0.1.tgz"}},
+                "1.0.2":{"version":"1.0.2","dist":{"tarball":"https://elsewhere.example/w-1.0.2.tgz"}}}}"#;
+
+        /// The only control that works on an off-origin artifact: the client fetches it
+        /// from whatever host the packument names, so refusing the artifact request never
+        /// happens. Dropping the version is what decision #4 settles for quarantine.
+        #[test]
+        fn versions_the_proxy_cannot_serve_are_removed() {
+            let out = filter(MIXED, &origins(&[]));
+            assert_eq!(out.removed, ["1.0.1", "1.0.2"]);
+            assert_eq!(out.rewritten, 1);
+
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            let versions = v["versions"].as_object().unwrap();
+            assert_eq!(versions.len(), 1);
+            assert_eq!(
+                versions["1.0.0"]["dist"]["tarball"],
+                serde_json::json!("http://127.0.0.1:8080/w/-/w-1.0.0.tgz"),
+                "what is left still points at the proxy"
+            );
+        }
+
+        /// When nothing survives, the document still has to be the filtered one. An
+        /// empty `versions` map says there is no installable version; forwarding the
+        /// original would put every refused version straight back.
+        #[test]
+        fn a_document_where_nothing_survives_is_still_filtered() {
+            let json = r#"{"name":"w","dist-tags":{"latest":"1.0.0"},"versions":{
+                "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://elsewhere.example/w-1.0.0.tgz"}}}}"#;
+            let out = filter(json, &origins(&[]));
+            assert_eq!(out.removed, ["1.0.0"]);
+            assert_eq!(out.rewritten, 0);
+
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert!(v["versions"].as_object().unwrap().is_empty());
+            assert!(v["dist-tags"].as_object().unwrap().is_empty());
+        }
+
+        /// A tag naming a version that is gone resolves to nothing. Dropping the tag lets
+        /// the resolver fall back to one that is still there.
+        #[test]
+        fn tags_pointing_at_removed_versions_are_dropped() {
+            let out = filter(MIXED, &origins(&[]));
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            let tags = v["dist-tags"].as_object().unwrap();
+            assert!(
+                !tags.contains_key("latest"),
+                "latest named a removed version"
+            );
+            assert_eq!(
+                tags["old"],
+                serde_json::json!("1.0.0"),
+                "this one still resolves"
+            );
+        }
+
+        /// Configuring the origin makes the same document install in full.
+        #[test]
+        fn configuring_the_origin_keeps_every_version() {
+            let out = filter(MIXED, &origins(&["https://elsewhere.example"]));
+            assert!(out.removed.is_empty());
+            assert_eq!(out.rewritten, 3);
+
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(v["versions"].as_object().unwrap().len(), 3);
+            assert_eq!(v["dist-tags"]["latest"], serde_json::json!("1.0.2"));
+        }
+
+        /// A version with no artifact produces no record, so nothing can install it. It is
+        /// left alone rather than removed, so this does not become two behaviours.
+        #[test]
+        fn versions_without_an_artifact_are_left_alone() {
+            let json = r#"{"name":"w","versions":{
+                "1.0.0":{"version":"1.0.0"},
+                "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.1.tgz"}}}}"#;
+            let out = filter(json, &origins(&[]));
+            assert!(out.removed.is_empty());
+
+            let v: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert_eq!(v["versions"].as_object().unwrap().len(), 2);
+        }
+
+        #[test]
+        fn filtering_a_body_that_is_not_json_is_an_error() {
+            let result =
+                filter_unservable_versions(b"<html>", std::iter::empty(), &origins(&[]), PROXY);
+            assert!(matches!(result, Err(RewriteError::NotJson(_))));
         }
 
         /// npm's `_resolved` repeats `dist.tarball` verbatim. A rewrite that only touched

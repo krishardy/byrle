@@ -12,5 +12,6 @@ pub mod integrity;
 pub mod npm;
 pub mod proxy;
 pub mod record;
+pub mod refusal;
 pub mod store;
 pub mod tls;
