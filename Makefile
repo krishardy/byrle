@@ -1,10 +1,12 @@
-.PHONY: help dev-setup lint sast test verify check-deps run smoke-npm spike-config
+.PHONY: help dev-setup lint semgrep trufflehog sast test verify check-deps run smoke-npm spike-config
 
 help:
 	@echo "waharoa targets:"
 	@echo "  dev-setup      install development dependencies"
-	@echo "  lint           clippy across all targets, warnings as errors"
-	@echo "  sast           static analysis (semgrep)"
+	@echo "  lint           clippy and shellcheck, warnings as errors"
+	@echo "  semgrep        pattern-based static analysis"
+	@echo "  trufflehog     credential scanning (working tree and git history)"
+	@echo "  sast           semgrep + trufflehog"
 	@echo "  test           unit tests"
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
@@ -19,8 +21,15 @@ dev-setup:
 lint:
 	@scripts/make/lint.sh
 
-sast:
-	@scripts/make/sast.sh
+semgrep:
+	@scripts/make/semgrep.sh
+
+trufflehog:
+	@scripts/make/trufflehog.sh
+
+# Prerequisites, so each scanner is runnable on its own. Make stops at the first
+# failing prerequisite; use `make -k sast` to run both regardless.
+sast: semgrep trufflehog
 
 test:
 	@cargo test
