@@ -282,51 +282,12 @@ upstream registry (allow) | HTTP 403 + audit log (block)
 **Package identity is PURL** throughout the core. OSV already keys on PURL, so Tier 2
 lookups stay uniform across ecosystems at no cost.
 
-#### PURL rules, measured against OSV's npm corpus (Stage 1, Sept 2026)
+#### PURL rules
 
-"Keys on PURL" hides four decisions that each cost advisory matches if taken the
-obvious way. All four were measured against OSV's full npm bundle: 228,941 advisories,
-224,743 distinct package names, and a live OSV API for confirmation.
-
-**1. Two types, because OSV has two shapes.** Every one of the 231,533 npm entries
-carries a *versionless* purl (`pkg:npm/lodash`), with version ranges in a separate
-field. Zero carry a version. So the lookup key is versionless, and version matching is
-a second step. `PackageKey` is the versionless lookup key; `PackageRef` is a key plus a
-concrete version, which is what a verdict is about and what §5.5 `denials` match on.
-Conflating them means the lookup path cannot express a key.
-
-**2. Do not lowercase npm names, despite the spec.** purl-spec says npm names MUST be
-lowercased. OSV does not, and OSV is what we have to match. 112 npm names in the corpus
-contain uppercase and all 112 are case-preserved in OSV's own purl. The great majority
-are `MAL-` records, which are malicious-package advisories. §5.5 pins
-`known_malware: block` to the non-overridable floor:
-
-```text
-pkg:npm/AdultJS  ->  MAL-2025-14119
-pkg:npm/adultjs  ->  no match
-```
-
-OSV also holds four npm names that differ only by case, one of them three ways
-(`OpenClaw`, `Openclaw`, `openclaw`). Case-insensitive keying merges their advisories.
-The deviation from purl-spec is documented at the top of `src/identity.rs`.
-
-**3. OSV writes scoped packages two ways, and they do not parse alike.** 16,904 scoped
-entries use `pkg:npm/%40antv/algorithm` and 855 use `pkg:npm/%40antv%2Falgorithm`.
-Under strict purl parsing the first is namespace `@antv` + name `algorithm` and the
-second is no namespace + name `@antv/algorithm`. OSV's API normalizes them; a local
-mirror holds the raw strings and does not. **So the mirror keys on parsed components,
-never on the purl string**, and the parser rejoins an encoded scope. Missing this
-silently orphans those 855 records, which are disproportionately malware.
-
-**4. Identity comes from the packument's `name`, not the request path.** The registry
-is case-sensitive (`/adultjs` 404s where `/AdultJS` returns 200), so for npm the two
-agree, but the body is the canonical spelling and the path also carries percent-encoding
-and query strings. Read identity from the body.
-
-Guard: `cargo run --example osv_conformance` checks that a key built from the registry
-name and a key parsed from OSV's purl are the same key, for all 224,743 packages. The
-invariant is deliberately not "we emit OSV's bytes", since OSV is not self-consistent.
-
+Four npm identity rules, measured against OSV's full npm corpus: two types rather than
+one, no lowercasing, keying on parsed components, and identity read from the packument.
+See
+[docs/engineering_decisions/purl-identity-rules.md](engineering_decisions/purl-identity-rules.md).
 ### Interception points per ecosystem
 
 | Ecosystem | Mechanism | Notes |
@@ -619,136 +580,13 @@ waharoa policy diff --from policy.yaml --to policy-new.yaml \
 
 ### HTTP stack
 
-**axum server-side, reqwest upstream.** Both are hyper underneath with the missing
-pieces filled in, and since a proxy runs both halves in the same process, sharing a
-hyper version and body types means an upstream stream flows into the response without
-conversion.
+axum server-side, reqwest upstream, with no fetch trait in Stage 1. See
+[docs/engineering_decisions/http-stack-axum-reqwest.md](engineering_decisions/http-stack-axum-reqwest.md).
+### Configuration format
 
-The asymmetry that decides it: hyper's server side is reasonably complete (framing,
-keep-alive, HTTP/2 — you supply routing and middleware, which is what axum adds), but
-hyper's client side hands you a *connection*, not a client. DNS, TLS setup, connection
-pooling and redirect handling would all be ours to own. That is not work a security
-tool wants to take on to gain control it may not need.
-
-**Not a lock-in.** The two sides are independent — replacing the upstream client never
-touches axum, which does not know what fetches for it. And reqwest's response body
-converts into a hyper-compatible stream, so the hashing wrapper is the same code either
-way; a swap adds pooling via `hyper-util` plus redirects, contained in one module.
-
-**No fetch trait in Stage 1. Call reqwest concretely** and extract the boundary in
-Stage 2 or 3, against real callers, on the same schedule as the adapter trait.
-
-> **Reversed, Sept 2026.** This section previously argued for a narrow trait
-> (*packument by name*, *body stream by URL*) from day one, on the grounds that both
-> shapes were already known and the surface was three methods rather than a whole
-> protocol, so the Stage 3 reasoning for deferring the *adapter* abstraction did not
-> apply. That argument does not hold, and it is weakest exactly where it matters most.
-> A single body-stream signature has to serve all three branches of the fetch path
-> below: cache-hit streams through, novel-and-cheap buffers, novel-and-expensive defers
-> with a 429. None of those exist yet, so the method would be designed against zero
-> callers. That is the failure the adapter deferral exists to prevent, and Stage 1 is
-> not exempt from its own rule.
-
-The swap cost this was meant to buy stays low regardless, for the reason given above:
-axum does not know what fetches for it, so replacing the upstream client never touches
-the server side, and the hashing wrapper is the same code either way.
-
-**This makes the testing approach load-bearing**, since there is no seam to inject a
-fake through. Stage 1 wants HTTP-level fixtures rather than a stubbed client, which for
-a proxy is the better target anyway: the bytes on the wire are the product, and a fake
-that speaks Rust types would skip the part most likely to be wrong.
-
-Streaming works cleanly in axum — its response body is just an `http-body`
-implementation, so it forwards chunks as they arrive without buffering, and the hashing
-wrapper sits in that chain naturally.
-
-### Configuration format — OPEN, spike required
-
-`serde_yaml` is archived, and every successor has a real defect:
-
-| Option | Status |
-|---|---|
-| `serde_yml` | ❌ **RUSTSEC-2025-0068** — unsound and unmaintained, repo archived. Disqualifying on its own; unshippable for a tool that consumes the advisory DB flagging it. |
-| `serde_norway` | Hard fork via `unsafe-libyaml-norway`; named by RustSec as a maintained alternative. Fixes the Norway problem (bare `no` parsing as boolean false — relevant given keys like `provenance_required`). Still C FFI. |
-| `serde-yaml-ng` | Direct continuation of dtolnay's original — battle-tested, familiar API. But uses unmaintained `unsafe-libyaml`: C FFI with an unmaintained upstream, awkward to defend in our own audit output. |
-| `serde-saphyr` | ✅ **Chosen.** Pure Rust, no C FFI. Zero `unsafe` in its own code and in its parser, both carrying `forbid(unsafe_code)`. Panic-free on malformed input, no tag-driven object construction (the classic YAML RCE vector), configurable nesting/size budgets, parses straight to Rust types with no intermediate document model. **Corrected Sept 2026: now 1.2.0, not 0.0.10** (1.0.0 released July 2026 after two RCs, steady cadence since). It also no longer depends on `saphyr` at all, having vendored its own `granit-parser`, so the "upstream calls serde support soon-to-be" objection is void. Residual risk: single maintainer, and a 26-crate tree that pulls `encoding_rs` (SIMD, plenty of `unsafe`). |
-| `toml` | Pure Rust, well maintained by the toml-rs team, Rust's own format, no Norway problem, and by far the smallest tree (6 crates). `toml_parser` gates its own `unsafe` behind an opt-in feature, off by default, though `winnow` beneath it carries 44 `unsafe` blocks that are not feature-gated. Rejected on the two format criteria, not on dependencies. See the findings below. |
-
-#### Spike result (Sept 2026): **YAML, loaded by `serde-saphyr`**
-
-The spike was run as specified: the real §5.5 policy (2 denials, per-ecosystem floor,
-3 package entries with selectors, `set` blocks, `reason`, `expires`, `permanent`) written
-in both formats, plus 16 malformed or probing variants, loaded by all four candidates
-through one identical `deny_unknown_fields` schema.
-
-**The premise that framed this decision was wrong, and that is what changed the answer.**
-The tiebreak assumed TOML was the only pure-Rust option. `serde-saphyr` is now 1.2.0
-rather than 0.0.10, has dropped `saphyr` for its own `granit-parser`, and carries zero
-`unsafe` in both crates. So the "pure Rust versus readable" trade no longer exists, and
-YAML wins on both format criteria without paying a dependency penalty.
-
-**1. Readability.** YAML 50 lines, TOML 70. Verbosity is not the real cost. Inside
-`[[packages]]`, TOML requires the scalar keys (`reason`, `expires`, `permanent`,
-`added_by`) to precede the `[packages.match]` and `[packages.set.*]` sub-tables, so the
-justification must be written before the thing it justifies. Writing an entry in its
-natural reading order is a parse error, and a misleading one: the trailing keys get
-absorbed into the still-open cooldown table, producing ``unknown field `added_by`,
-expected `action` or `days` ``. Every package entry an operator writes is exposed to this.
-
-**2. Unknown-key rejection.** Survives in all four loaders at all four depths tested
-(root, inside a `match` selector, inside a `set` block, inside the polymorphic rule
-struct). A tie, with one important exception recorded as a schema constraint below.
-
-**3. Error quality.** `serde-saphyr` is clearly best: source excerpt, caret, and plain
-language (`tabs disallowed within this context (block indentation)` where libyaml-based
-crates say `found character that cannot start any token`). `toml` has good spans but two
-misleading-error classes, both from table syntax rather than from serde: the ordering
-case above, and a typo'd `[[package]]` for `[[packages]]`, which reports `duplicate key`
-against a correct line six lines further down instead of naming the unknown table.
-`serde_norway` and `serde-yaml-ng` are byte-identical in output, adequate for serde
-errors and poor for syntax errors.
-
-**Dependency and security posture.** All four are clean under `cargo audit` (method
-validated by confirming it still flags RUSTSEC-2025-0068 against the excluded
-`serde_yml`). `serde-saphyr` plus `granit-parser` carry zero `unsafe` and both set
-`forbid(unsafe_code)`; the cost is a 26-crate tree that pulls `encoding_rs`. `toml` is
-6 crates. The libyaml pair carry C FFI.
-
-**Two assumptions the spike falsified, recorded so they are not re-derived:**
-
-- **Alias bombs are not a discriminator.** All three YAML crates refuse a 9^8 expansion.
-  libyaml has its own repetition limit and refuses in ~9ms; `serde-saphyr` refuses via
-  its node budget but takes ~100ms and emits a genuinely bad message (`budget breached:
-  Nodes { nodes: 250001 }` followed by five repeated position clauses). A known wart.
-  Note the first version of this test was invalid: the lazy struct-directed path skipped
-  fields the target type never demanded, so everything appeared to parse. The valid test
-  deserializes into a recursive value type that forces full materialization.
-- **The Norway problem is dissolved by a type-directed parser, not by `serde_norway`.**
-  `serde-saphyr` resolves the bare token `no` against the target type: `false` for a
-  `bool` field, `"no"` for a `String` field. Both are what the author meant.
-  `serde_norway` and `serde-yaml-ng` always yield the string, so the entirely natural
-  `provenance_required: no` is a hard type error.
-
-**Schema constraint, load-bearing: never `#[serde(untagged)]`.** Rule fields are
-polymorphic (`install_scripts: warn` or a table carrying the §5 acknowledgment). Modelled
-with `untagged`, a typo inside the table form degrades to `data did not match any variant
-of untagged enum ScriptRule` in *every* loader, in both formats, silently defeating the
-fail-closed guarantee that unknown keys are a hard error. A hand-written `Deserialize`
-that calls `deserialize_any` and dispatches `visit_str` to the bare form and `visit_map`
-to the table form restores the exact message (``unknown field `expiress`, expected one of
-action, loosens_global, reason, expires``) with correct spans in both YAML and TOML. This
-applies to every polymorphic rule field added later, not just `install_scripts`.
-
-**Feature posture.** `default-features = false`, `features = ["deserialize"]`: we only
-ever read config, never write it. `include` and `include_fs` stay **off** permanently.
-File inclusion in the policy file of a security tool is attack surface, not convenience.
-
-**Residual risk and the exit.** `serde-saphyr` is a single-maintainer crate about six
-weeks past 1.0. That risk is bounded because the schema uses plain `serde` derives with
-zero crate-specific attributes: all four candidates deserialized the identical `Policy`
-type in the spike, so switching loaders is a one-line change. **`serde_norway` is the
-named fallback**, being the alternative RustSec itself points to.
-
+YAML, loaded by `serde-saphyr`. Decided by spike against the real §5.5 policy; see
+[docs/engineering_decisions/config-format-yaml-serde-saphyr.md](engineering_decisions/config-format-yaml-serde-saphyr.md).
+The spike harness is kept runnable as `make spike-config`.
 ### Fetch path: streaming, buffering, and deferral
 
 Not a global stream-vs-buffer mode. The packument publishes an artifact digest
@@ -918,29 +756,34 @@ any policy logic:** a wrong PURL surfaces as a wrong PURL, not as a mysterious v
 
 ## 10. Decisions and open questions
 
+Each decision has its own file under
+[docs/engineering_decisions/](engineering_decisions/). This table is the index; the
+reasoning, alternatives and consequences live in the files, not here.
+
 ### Decided
 
-| # | Question | Decision | Rationale |
-|---|---|---|---|
-| 1 | Language | **Rust** | Maintainer fluency; type system encodes the §5 lattice, monotonicity, and non-overridable floor. Costs: immature `sigstore-rs`, no OSV client, `serde_yaml` archived, rustls strictness. |
-| 2 | Policy engine | **Hand-rolled**, Rego as later optional escape hatch | Rule set is small and closed; Rego cannot express loosening detection or the floor natively; `explain` is far harder over Rego. |
-| 3 | TLS | **Reverse proxy first**, CA-terminating forward proxy later | All target package managers support alternate registries. No CA distribution, no trust-store surgery. Terminating mode is an enterprise anti-bypass feature. |
-| 4 | Quarantine | **Filter metadata on resolution, hard fail on pinned fetch** | Substitution breaks lockfile integrity hashes. Filtering lets the resolver pick a clean version naturally. |
-| 4b | Cooldown vs. urgent fixes | **Manually reviewed version waivers only**, no automatic advisory-based bypass | Auto-waiver is attacker-exploitable via fake advisories. Reduces to the §5.5 package tier. One path only — no emergency fast path; deploy latency accepted as the cost of a single auditable route. |
-| 5 | License | **Apache-2.0**, DCO, trademark separate | Ecosystem norm; patent grant; zero friction for adapter contributors. |
-| 12 | HTTP stack | **axum server-side, reqwest upstream. No fetch trait in Stage 1**; the boundary is extracted in Stage 2/3 against real callers | Both sit on hyper and share body types, so a stream from upstream flows into the response without conversion. Hyper's client is a *connection*, not a client: pooling, redirects, DNS and TLS would all be ours. The day-one trait was reversed Sept 2026, having been recorded from a summary rather than agreed; a body-stream signature written now would be designed against zero callers, since none of the three fetch-path branches exist. See §5. |
-| 11 | Config format | **YAML, loaded by `serde-saphyr`** (`deserialize` only; `include` off). Fallback `serde_norway`. Schema forbids `#[serde(untagged)]` | Spike run Sept 2026 against the real §5.5 policy in both formats. The framing premise was stale: `serde-saphyr` is 1.2.0 with zero `unsafe`, so pure-Rust no longer implies TOML. YAML then wins on both format criteria. TOML's `[[packages]]` ordering rule makes the natural writing order a parse error with a misleading message. See §5. |
-| 8 | §5.5 package tier | **All seven issues resolved.** Separate `denials` / `floor` / `packages` blocks; evaluation order denials → floor → packages → ecosystems → defaults; floor operator-extensible, per-ecosystem, mandatory, `known_malware` pinned; `ecosystem` required on selectors; loosening needs `reason` + `expires` (90d max) or `permanent: true`, no warning; most-specific-wins by subset containment with incomparable overlaps a load-time error; ranges resolved in the normalizer | Schema freeze unblocked. See §5.5. |
-| 7 | NVD role | **`enrich`-only for npm/PyPI**, `match` permitted for Maven; generalized to a per-ecosystem stream capability matrix (`match` / `enrich` / `malware`) | CPE-to-PURL is a category mismatch, not a mapping problem. Coverage is uneven per stream *and* ecosystem, so capability must be a matrix. |
-| 6 | Intel distribution | **None — fetch from origin.** SeaORM over SQLite + Postgres; fail-closed cold start with 503; adopt query-on-clean live fallback | OSV/GHSA/OSSF all self-host their feeds. Postgres for multi-instance. See §3. |
+| # | Decision | Summary |
+|---|---|---|
+| 1 | [Language](engineering_decisions/language-rust.md) | Rust |
+| 2 | [Policy engine](engineering_decisions/policy-engine-hand-rolled.md) | Hand-rolled, Rego as a later optional escape hatch |
+| 3 | [TLS](engineering_decisions/tls-reverse-proxy-first.md) | Reverse proxy first, CA-terminating forward proxy later |
+| 4 | [Quarantine](engineering_decisions/quarantine-filter-metadata.md) | Filter metadata on resolution, hard fail on pinned fetch |
+| 4b | [Cooldown vs. urgent fixes](engineering_decisions/cooldown-waivers-manual-only.md) | Manually reviewed version waivers only |
+| 5 | [License](engineering_decisions/license-apache-2.md) | Apache-2.0, DCO, trademark separate |
+| 6 | [Intel distribution](engineering_decisions/intel-distribution-fetch-from-origin.md) | None; fetch from origin. SeaORM over SQLite and Postgres |
+| 7 | [NVD role](engineering_decisions/nvd-role-and-stream-capabilities.md) | `enrich`-only for npm/PyPI; per-ecosystem capability matrix |
+| 8 | [Package override tier](engineering_decisions/package-override-tier.md) | Separate `denials` / `floor` / `packages`; see §5.5 for the schema |
+| 11 | [Config format](engineering_decisions/config-format-yaml-serde-saphyr.md) | YAML via `serde-saphyr`; schema forbids `#[serde(untagged)]` |
+| 12 | [HTTP stack](engineering_decisions/http-stack-axum-reqwest.md) | axum + reqwest; no fetch trait in Stage 1 |
+| n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 
 ### Staging
 
-| # | Decision | Rationale |
+| # | Decision | Remaining gate |
 |---|---|---|
-| 13 | Name | **`waharoa`**: ✅ registry checks passed (Sept 2026), ⚠ cultural consultation still outstanding | Free on all four registries: crates.io, npm, PyPI and the GitHub org all return 404 on the exact name, with known-existing controls returning 200 to prove the check meaningful. Clean namespace vs. `waha`/`portcullis`. Consultation is the remaining gate. See header. |
-| 10 | Fetch path | **Cache hit streams; novel + cheap buffers; novel + expensive defers with 429.** Packument digest decides the branch before fetching | Content-based verdicts are almost never needed at fetch time — policy evaluates on metadata, which is already resolved. See §5. |
-| 9 | Stage structure | **Spike dissolved; split transport from policy.** M1 = pass-through proxy, M2 = decision layer | The reverse proxy is well-understood architecture, not a research risk. Splitting on the transport/policy boundary makes identity bugs falsifiable before evaluation logic exists. |
+| 9 | [Stage structure](engineering_decisions/stage-structure.md) | M1 transport, M2 policy. Spike dissolved |
+| 10 | [Fetch path](engineering_decisions/fetch-path-branching.md) | Branch decided before fetching; npm retry behaviour untested |
+| 13 | [Name](engineering_decisions/project-name-waharoa.md) | Registry checks passed; cultural consultation outstanding |
 
 ### Open questions
 
