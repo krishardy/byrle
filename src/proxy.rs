@@ -534,10 +534,13 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     {
         outbound = match unmark_if_none_match(inm, base) {
             Some(value) => outbound.header(header::IF_NONE_MATCH, value),
+            // A 304 would let the client serve a body this proxy did not produce here,
+            // whose artifact URLs were never pointed at it. Dropping the header makes
+            // the registry send a body to rewrite afresh.
             None => {
                 info!(
                     path = %path_and_query,
-                    "dropping a conditional request tagged for another proxy address"
+                    "dropped a conditional request for a body this proxy did not rewrite"
                 );
                 outbound
             }
@@ -1404,24 +1407,41 @@ mod tests {
         }
     }
 
-    /// A warm npm cache sends If-None-Match and gets 304 with no body. There is nothing
-    /// to normalise, and the response still has to reach the client.
+    /// A conditional request for a body this proxy did not rewrite is not forwarded. A
+    /// 304 authorises the client to serve what it cached, and that copy has artifact URLs
+    /// that were never pointed here.
+    ///
+    /// Measured: after enabling rewriting at an address that previously ran without it,
+    /// npm sent the upstream's own tag, the registry answered 304, and the client stayed
+    /// on its unrewritten copy.
     #[tokio::test]
-    async fn a_304_passes_through_with_no_body_to_read() {
+    async fn a_conditional_request_for_a_body_we_did_not_rewrite_is_dropped() {
         let seen: Recorder = Arc::default();
         let recorder = seen.clone();
-        let router = Router::new().fallback(get(move |req: Request| {
-            let seen = recorder.clone();
-            async move {
-                seen.lock().unwrap().headers.push(req.headers().clone());
-                Response::builder()
-                    .status(StatusCode::NOT_MODIFIED)
-                    .header(header::ETAG, "W/\"abc123\"")
-                    .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
-                    .body(Body::empty())
-                    .unwrap()
-            }
-        }));
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let router = Router::new().route(
+            "/lodash",
+            get(move |req: Request| {
+                let seen = recorder.clone();
+                let body = body.clone();
+                async move {
+                    seen.lock().unwrap().headers.push(req.headers().clone());
+                    if req.headers().contains_key(header::IF_NONE_MATCH) {
+                        return Response::builder()
+                            .status(StatusCode::NOT_MODIFIED)
+                            .header(header::ETAG, "W/\"abc123\"")
+                            .body(Body::empty())
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
+                        .header(header::ETAG, "W/\"abc123\"")
+                        .body(Body::from(body))
+                        .unwrap()
+                }
+            }),
+        );
         let upstream = serve(router).await;
         let base = serve(Proxy::new(reqwest::Client::new(), upstream).router()).await;
 
@@ -1431,18 +1451,76 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(response.status(), 304);
         assert_eq!(
-            seen.lock()
+            response.status(),
+            200,
+            "the registry has to send a body, so it can be rewritten"
+        );
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("/lodash/-/lodash-4.17.21.tgz"),
+            "and the body that arrives has to be the rewritten one"
+        );
+        assert!(
+            !seen
+                .lock()
                 .unwrap()
                 .headers
                 .last()
                 .unwrap()
-                .get(header::IF_NONE_MATCH)
-                .map(|v| v.to_str().unwrap()),
-            Some("W/\"abc123\""),
-            "the conditional request has to reach the registry, or it can never 304"
+                .contains_key(header::IF_NONE_MATCH),
+            "the foreign tag must not reach the registry"
         );
+    }
+
+    /// A 304 the proxy does allow, on a tag it issued, carries no body to read.
+    #[tokio::test]
+    async fn a_304_on_our_own_tag_passes_through() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let router = Router::new().route(
+            "/lodash",
+            get(move |req: Request| {
+                let body = body.clone();
+                async move {
+                    if req.headers().get(header::IF_NONE_MATCH).is_some() {
+                        return Response::builder()
+                            .status(StatusCode::NOT_MODIFIED)
+                            .header(header::ETAG, "W/\"abc123\"")
+                            .body(Body::empty())
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
+                        .header(header::ETAG, "W/\"abc123\"")
+                        .body(Body::from(body))
+                        .unwrap()
+                }
+            }),
+        );
+        let base = serve(Proxy::new(reqwest::Client::new(), serve(router).await).router()).await;
+
+        let first = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let ours = first
+            .headers()
+            .get(header::ETAG)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_owned();
+        first.bytes().await.unwrap();
+
+        let second = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::IF_NONE_MATCH, ours)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(second.status(), 304);
+        assert!(second.bytes().await.unwrap().is_empty());
     }
 
     /// A registry endpoint is not a package document and is forwarded without being

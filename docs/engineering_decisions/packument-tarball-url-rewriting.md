@@ -102,9 +102,21 @@ which is a capability worth not having. They stay as they are, and
   `dist.integrity` is never touched.
 - The forwarded body is no longer the upstream's bytes, so `Content-Length`,
   `Content-Encoding` and `ETag` are all set to describe what the proxy sends. The `ETag`
-  is marked with a tag derived from the proxy's own address, and an `If-None-Match` from
-  a proxy at a different address is dropped rather than revalidated, which would otherwise
-  let a 304 leave a client serving artifact URLs pointing at an address nobody listens on.
+  is marked with a tag derived from the proxy's own address.
+- **Only a tag this proxy issued at this address may revalidate.** A 304 authorises the
+  client to serve what it cached, which is safe only for a body the proxy produced here.
+  Two cases are dropped so upstream sends a body to rewrite afresh:
+  - A tag from this proxy at another address. A 304 would leave the client serving
+    artifact URLs pointing at an address nobody listens on.
+  - A tag the proxy never issued. Measured: with rewriting enabled at an address that
+    previously ran without it, npm sent the upstream's own tag, the registry answered 304,
+    and the client kept its unrewritten copy. npm re-derives artifact URLs from the
+    configured registry so it still came through the proxy, but pnpm and yarn use the URL
+    as written, so for them that cached copy sends every artifact to the origin registry.
+
+  This costs a packument re-fetch the first time a client with a warm cache meets a
+  rewriting proxy. Tarball requests are unaffected, since tarballs are not rewritten and a
+  304 on one is harmless.
 - **Forwarding a packument unrewritten now means more than it used to.** It used to mean
   the metadata went unobserved; it now means every artifact for that package is fetched
   wherever the document says, which for pnpm and yarn is not through the proxy. Every such

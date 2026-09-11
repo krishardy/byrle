@@ -202,17 +202,26 @@ pub fn mark_etag(etag: &str, base: &str) -> String {
     format!("{weak}\"{ETAG_PREFIX}{}.{inner}\"", base_tag(base))
 }
 
-/// Turn an `If-None-Match` the client got from us back into what upstream issued.
+/// Turn an `If-None-Match` the client got from us back into what upstream issued, keeping
+/// **only** the tags this proxy issued at this address.
 ///
-/// Returns `None` when the header must not be forwarded: it names a body this proxy
-/// rewrote for a different address, so a 304 would leave the client serving URLs that no
-/// longer resolve. Upstream then answers 200 and the body is rewritten afresh.
+/// A 304 authorises the client to serve the body it has cached. When the proxy rewrites
+/// bodies, that is only safe for a body the proxy itself produced here. Every other tag
+/// is dropped, so upstream answers 200 and the body is rewritten afresh. Returns `None`
+/// when nothing is left to send.
 ///
-/// Entries that are not ours pass through untouched, so a client that also talks to the
-/// registry directly is unaffected. One stale entry discards the whole list rather than
-/// just itself: revalidating on the remainder could still produce a 304, which is the
-/// outcome being avoided. Clients send a single tag, so this is a statement of intent
-/// more than a case that arises.
+/// Dropped, and why each one matters:
+///
+/// - **A tag from this proxy at another address.** A 304 would leave the client serving
+///   artifact URLs pointing at an address nobody listens on.
+/// - **A tag the proxy never issued.** The client holds a body from somewhere else, with
+///   artifact URLs that were never pointed here. Measured: after enabling rewriting at an
+///   address that previously ran without it, npm sent the upstream's own tag, the registry
+///   answered 304, and the client kept its unrewritten copy. npm re-derives artifact URLs
+///   from the configured registry so it still came through the proxy, but pnpm and yarn
+///   use the URL as written, so for them that cached copy sends every artifact to the
+///   origin registry.
+/// - **`*`**, which asks upstream to 304 if any representation exists at all.
 pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
     let ours = format!("{ETAG_PREFIX}{}.", base_tag(base));
     let mut out = Vec::new();
@@ -222,16 +231,15 @@ pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
             Some(rest) => ("W/", rest),
             None => ("", entry),
         };
-        let inner = tag.strip_prefix('"').and_then(|t| t.strip_suffix('"'));
-        match inner {
-            Some(inner) if inner.starts_with(ETAG_PREFIX) => {
-                // Ours, but a missing prefix means another address. Revalidating against
-                // it would return a body built for somewhere else.
-                let original = inner.strip_prefix(&ours)?;
-                out.push(format!("{weak}\"{original}\""));
-            }
-            _ => out.push(entry.to_owned()),
+        let Some(inner) = tag.strip_prefix('"').and_then(|t| t.strip_suffix('"')) else {
+            continue;
+        };
+        if let Some(original) = inner.strip_prefix(&ours) {
+            out.push(format!("{weak}\"{original}\""));
         }
+    }
+    if out.is_empty() {
+        return None;
     }
     Some(out.join(", "))
 }
@@ -296,31 +304,35 @@ mod tests {
         );
     }
 
-    /// A client that also talks to the registry directly sends tags we never issued.
+    /// A 304 lets the client serve what it has cached, which is only safe for a body this
+    /// proxy produced. A tag we never issued means the client holds a body whose artifact
+    /// URLs were never pointed here.
+    ///
+    /// Measured: after enabling rewriting at an address that previously ran without it,
+    /// npm sent the upstream's own tag and the registry answered 304, leaving the client
+    /// on its unrewritten copy.
     #[test]
-    fn tags_we_did_not_issue_pass_through_untouched() {
+    fn tags_we_did_not_issue_are_dropped() {
         let base = "http://127.0.0.1:8080";
+        assert_eq!(unmark_if_none_match("\"upstream-tag\"", base), None);
         assert_eq!(
-            unmark_if_none_match("\"upstream-tag\"", base).as_deref(),
-            Some("\"upstream-tag\"")
+            unmark_if_none_match("*", base),
+            None,
+            "`*` asks upstream to 304 if any representation exists"
         );
-        assert_eq!(unmark_if_none_match("*", base).as_deref(), Some("*"));
-        assert_eq!(
-            unmark_if_none_match("\"a\", W/\"b\"", base).as_deref(),
-            Some("\"a\", W/\"b\""),
-            "a list is preserved entry by entry"
-        );
+        assert_eq!(unmark_if_none_match("\"a\", W/\"b\"", base), None);
+        assert_eq!(unmark_if_none_match("not-a-tag", base), None);
     }
 
-    /// Mixed lists keep the entries that are not ours.
+    /// A mixed list keeps only what we issued.
     #[test]
-    fn a_mixed_list_keeps_what_it_should() {
+    fn a_mixed_list_keeps_only_our_own_tags() {
         let base = "http://127.0.0.1:8080";
         let marked = mark_etag("\"ours\"", base);
-        let header = format!("\"theirs\", {marked}");
+        let header = format!("\"theirs\", {marked}, \"another\"");
         assert_eq!(
             unmark_if_none_match(&header, base).as_deref(),
-            Some("\"theirs\", \"ours\"")
+            Some("\"ours\"")
         );
     }
 
