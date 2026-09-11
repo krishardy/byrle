@@ -150,9 +150,14 @@ pub struct TrustedPublisher {
 /// The artifact a version resolves to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
-    /// Absolute URL as the registry gave it. npm resolves tarballs against the
-    /// configured registry and ignores this host, so the proxy sees the request
-    /// regardless (plan §4).
+    /// Absolute URL as the registry gave it.
+    ///
+    /// npm rewrites this to the configured registry **only when it names the default
+    /// registry host**. Tested against npm 9.9.4: a packument advertising
+    /// `https://registry.npmjs.org/...` was fetched through the configured proxy, and
+    /// one advertising another origin was fetched from that origin directly, which the
+    /// proxy never saw. An earlier note here said npm ignores this host outright; that
+    /// is wrong, and the difference is a bypass vector (README, plan §7).
     pub url: String,
 
     /// `dist.integrity`, a Subresource Integrity string, in practice `sha512-<base64>`.

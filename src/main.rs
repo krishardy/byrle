@@ -13,6 +13,7 @@ use tracing::info;
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
 use waharoa::proxy::{DEFAULT_MAX_PACKUMENT_BYTES, Proxy};
+use waharoa::store::DEFAULT_MAX_RECORDS;
 
 fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
@@ -58,9 +59,15 @@ async fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_PACKUMENT_BYTES);
 
+    let max_records = std::env::var("WAHAROA_MAX_RECORDS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_RECORDS);
+
     let proxy = Proxy::new(client, upstream)
         .with_blocked(blocked)
-        .with_max_packument_bytes(max_packument_bytes);
+        .with_max_packument_bytes(max_packument_bytes)
+        .with_max_records(max_records);
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
