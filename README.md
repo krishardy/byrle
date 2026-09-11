@@ -149,5 +149,7 @@ tooling, and adapter contributions are the scarce resource.
 ## Documentation
 
 * [docs/project_plan.md](docs/project_plan.md) covers detection strategy, policy
-  semantics, the threat model, milestones, and the decision record.
+  semantics, the threat model, and milestones.
+* [docs/engineering_decisions/](docs/engineering_decisions/) holds one file per
+  decision: what was chosen, what was rejected, and what it costs.
 * [TODO.md](TODO.md) is the staged, sequential task list with exit criteria.
