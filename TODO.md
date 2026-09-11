@@ -353,7 +353,7 @@ implementations.
       - [x] `make smoke-npm` gained a fifth step covering it, with a fresh proxy and a
             fresh npm cache so the only way a digest can be known is the proxy fetching
             the packument itself.
-- [ ] `[!]` **A warm npm cache sends `If-None-Match` and the registry answers 304 with
+- [x] **A warm npm cache sends `If-None-Match` and the registry answers 304 with
       no body, so the proxy observes no packument at all.** The resolved graph is fully
       visible only on a cold cache today. The proxy logs the skip and the ETag rather
       than treating an empty body as a parse failure, but Stage 2 cannot gate on a record
@@ -365,10 +365,19 @@ implementations.
             passes `max-age` (300 s for a packument). Inside that window npm does not ask
             at all, which is the separate cache-bypass item.
       - [x] Closed for the tarball path by `proxy::lookup_or_fetch`, which fetches the
-            packument when there is no record. What remains is the packument request
-            itself: a 304 means the proxy does not observe the document the client is
-            about to resolve against, so Stage 2 metadata rules still have nothing to
-            read at that moment.
+            packument when there is no record.
+      - [x] Closed for the packument request too. A 304 carries no body, so when the
+            proxy holds no records for that package it fetches the packument itself
+            before the artifact requests arrive, rather than one lazy fetch at a time.
+            The `held` field on the "not modified" log line says which happened.
+      - [x] It only fetches when nothing is held. A 304 revalidates a body **this** proxy
+            produced, since only tags it issued are forwarded, so when the records are
+            still there they were taken when that body was first served. The case that
+            needed closing is a restarted proxy or an evicted entry.
+      - [x] Verified against real npm: warm client cache, proxy restarted at the same
+            address, `--prefer-online`. The registry answered 304, the proxy logged
+            `held=false` and fetched the document itself in 21 ms, 117 versions, and the
+            install completed.
 - [x] Memory under concurrency, measured. `WAHAROA_MAX_CONCURRENT_PACKUMENTS` (default 8)
       bounds how many packuments are decoded and rewritten at once.
       - [x] Realistic load is fine. A six-package install pulling typescript, eslint,

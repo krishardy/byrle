@@ -468,6 +468,21 @@ async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &
         return first;
     }
 
+    fetch_and_store(proxy, key, path).await;
+
+    proxy
+        .store
+        .lock()
+        .expect("record store lock")
+        .lookup(key, version)
+}
+
+/// Fetch a packument the client did not ask for, and keep its records.
+///
+/// Failure is not fatal and is not propagated. The artifact is forwarded unverified and
+/// said to be unverified, which is Stage 1 behaviour; Stage 2 has to decide whether that
+/// stays allowed.
+async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     let started = Instant::now();
     match proxy
         .registry
@@ -489,19 +504,11 @@ async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &
                 "fetched packument on our own behalf, which the client never requested"
             );
         }
-        // Not fatal. The artifact is forwarded unverified and said to be unverified,
-        // which is Stage 1 behaviour; Stage 2 has to decide whether that is allowed.
         Ok(Err(e)) => {
             warn!(path = %path, purl = %key, error = %e, "packument fetched but did not normalize")
         }
         Err(e) => warn!(path = %path, purl = %key, error = %e, "could not fetch packument"),
     }
-
-    proxy
-        .store
-        .lock()
-        .expect("record store lock")
-        .lookup(key, version)
 }
 
 async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
@@ -758,18 +765,29 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             .and_then(|v| v.to_str().ok()),
     );
 
-    // A warm npm cache sends If-None-Match, and 304 carries no body. Saying so is the
-    // difference between "this package was not seen" and "this package was served from
-    // the client's own cache".
+    // A warm client cache sends If-None-Match, and 304 carries no body, so there is
+    // nothing to normalise from this response. The client is about to resolve against a
+    // document the proxy cannot see.
+    //
+    // When the records are still held that does not matter: the 304 only revalidates a
+    // body this proxy produced, so it was normalised when it was first served. When they
+    // are not, because the proxy restarted or the entry was evicted, the packument is
+    // fetched here so the metadata is in hand before the artifact requests arrive rather
+    // than one lazy fetch at a time.
     if status == reqwest::StatusCode::NOT_MODIFIED
         && let RequestTarget::Packument(key) = &target
     {
+        let held = proxy.store.lock().expect("record store lock").holds(key);
         info!(
             path = %path_and_query,
             purl = %key,
             etag = headers.get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("-"),
+            held,
             "packument not modified, nothing to normalize"
         );
+        if !held {
+            fetch_and_store(&proxy, key, &path_and_query).await;
+        }
     }
 
     let forward_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -1773,6 +1791,76 @@ mod tests {
                 .unwrap()
                 .contains_key(header::IF_NONE_MATCH),
             "the foreign tag must not reach the registry"
+        );
+    }
+
+    /// A 304 leaves the proxy nothing to normalise, so when it holds no records for that
+    /// package it fetches the packument itself. Without this a restarted proxy meets a
+    /// warm client cache and observes nothing at all.
+    #[tokio::test]
+    async fn a_304_with_no_records_makes_the_proxy_fetch_the_packument() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let seen: Recorder = Arc::default();
+        let recorder = seen.clone();
+        let router = Router::new().route(
+            "/lodash",
+            get(move |req: Request| {
+                let seen = recorder.clone();
+                let body = body.clone();
+                async move {
+                    seen.lock().unwrap().headers.push(req.headers().clone());
+                    // Anything with a conditional header gets a 304, so the only 200 is
+                    // the proxy's own unconditional fetch.
+                    if req.headers().contains_key(header::IF_NONE_MATCH) {
+                        return Response::builder()
+                            .status(StatusCode::NOT_MODIFIED)
+                            .header(header::ETAG, "W/\"abc123\"")
+                            .body(Body::empty())
+                            .unwrap();
+                    }
+                    Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
+                        .header(header::ETAG, "W/\"abc123\"")
+                        .body(Body::from(body))
+                        .unwrap()
+                }
+            }),
+        );
+        let base = serve(Proxy::new(reqwest::Client::new(), serve(router).await).router()).await;
+
+        // A tag this proxy issued, so the conditional is forwarded rather than dropped.
+        let ours = crate::http::mark_etag("W/\"abc123\"", &base);
+        let response = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::IF_NONE_MATCH, ours)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 304);
+
+        // Having fetched it, the proxy can answer for the artifact without another fetch.
+        let response = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            404,
+            "the fake registry serves no tarball"
+        );
+
+        let conditional = seen
+            .lock()
+            .unwrap()
+            .headers
+            .iter()
+            .filter(|h| h.contains_key(header::IF_NONE_MATCH))
+            .count();
+        let unconditional = seen.lock().unwrap().headers.len() - conditional;
+        assert_eq!(conditional, 1, "the client's revalidation");
+        assert_eq!(
+            unconditional, 1,
+            "one unconditional fetch by the proxy, and not a second one for the artifact"
         );
     }
 
