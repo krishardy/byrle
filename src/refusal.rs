@@ -170,6 +170,64 @@ impl RefusalStatus {
     }
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// The delimiters, a letter that is not one, and an uppercase letter so the
+    /// lowercasing is exercised.
+    const ALPHABET: [u8; 5] = [b'/', b' ', b'\t', b'n', b'N'];
+
+    /// The rule the per-client table rests on: the client is the **first token**, never a
+    /// substring. `pnpm/10.33.0 npm/? ...` and `yarn/1.22.22 npm/? ...` both contain
+    /// `npm/`, so a name that kept a delimiter, or anything after one, would let one
+    /// client's rule fire for another's request.
+    ///
+    /// Stated as a property of the output rather than a restatement of the split: the
+    /// name contains no delimiter, and it is lowercase.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn a_client_name_is_one_lowercase_token() {
+        let bytes: [u8; 5] = kani::any();
+        for byte in bytes {
+            kani::assume(ALPHABET.contains(&byte));
+        }
+        let len: usize = kani::any();
+        kani::assume(len <= bytes.len());
+
+        // Every byte is ASCII, so this cannot fail.
+        let ua = core::str::from_utf8(&bytes[..len]).unwrap();
+
+        let Some(name) = client_name(Some(ua)) else {
+            return;
+        };
+        assert!(
+            !name.is_empty(),
+            "an empty name would match nothing, so it is None"
+        );
+        for b in name.bytes() {
+            assert!(b != b'/' && b != b' ' && b != b'\t', "a delimiter survived");
+            assert!(!b.is_ascii_uppercase(), "the table is written in lowercase");
+        }
+    }
+
+    /// A user-agent with no name at all is `None` rather than an empty string, so it
+    /// takes the default instead of matching a table entry keyed on "".
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn a_user_agent_of_only_delimiters_has_no_client() {
+        let bytes: [u8; 4] = kani::any();
+        for byte in bytes {
+            kani::assume(byte == b'/' || byte == b' ' || byte == b'\t');
+        }
+        let len: usize = kani::any();
+        kani::assume(len <= bytes.len());
+        let ua = core::str::from_utf8(&bytes[..len]).unwrap();
+
+        assert!(client_name(Some(ua)).is_none());
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
