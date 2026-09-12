@@ -1152,10 +1152,21 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
       own, and is a **packument filter** rather than an artifact refusal: Stage 1's
       `npm::filter_unservable_versions` is the mechanism.
-- [ ] `[!]` `kev`. `block` or `allow`. Absent from the plan before this design. The
-      source is CISA's catalogue, which is ecosystem-agnostic because it has no package
-      identifier at all: the check is a set lookup over CVE ids the `max_cvss` step
-      already produced, and reaches 13 npm CVEs today. Build it last.
+- [~] `[!]` `kev`. `block` or `allow`. Logic done in `decide.rs`; the source is not.
+      CISA's catalogue is ecosystem-agnostic because it has no package identifier at all,
+      so `kev` is a property of an **advisory**, not of a package, and the engine reads it
+      off `Advisory`.
+      - [x] A `cve_ids` exception does not reach the KEV answer. The engine reads the
+            advisories as they came, never the filtered list, so a KEV'd advisory needs
+            both exceptions to pass: the id for its score, `kev: allow` for its
+            exploitation. Excepting by id says an advisory is not reachable from this
+            code; it says nothing about whether it is being exploited.
+      - [x] An exploited advisory still contributes its score, so excusing one does not
+            excuse the other. Both are separate results in the vector.
+      - [x] "None at all" and "all of them excused" stay distinct, so an exception that
+            never had an exploited advisory to excuse is not recorded as having worked.
+      - [ ] The source itself: a set lookup over CVE ids the advisory stream produced,
+            reaching 13 npm CVEs today. Build it last.
 - [ ] `[!]` `max_cvss`. A number, not a severity band: bands are not stable across CVSS
       versions, where the same score falls in different ones under v2 and v3. Exceptions
       are per CVE id (`cve_ids`), not per package, which is the only exception keyed by
