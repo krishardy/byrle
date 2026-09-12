@@ -14,26 +14,63 @@ stream actually contributes, which does not match the order the plan lists them 
 
 | stream | tooling | data | attribution |
 |---|---|---|---|
-| OSV.dev | Apache-2.0 | **not stated; inherited per source** | depends on the source |
+| OSV.dev | Apache-2.0 | **per source, all permissive** | depends on the source |
 | GitHub Advisory (GHSA) | n/a | **CC-BY-4.0** | **required** |
 | OSSF Malicious Packages | Apache-2.0 | **Apache-2.0** | notice retention |
 | CISA KEV | n/a | **CC0 1.0** | none |
 | NVD | n/a | **not verified** | not verified |
 | Aikido Intel | n/a | **not verified** | not verified |
 
+### OSV's sources, and which two reach npm
+
+OSV publishes the per-source licences at <https://google.github.io/osv.dev/data/>. Read
+2026-09-13; every one is permissive.
+
+| source | licence | attribution |
+|---|---|---|
+| GitHub Advisory Database | CC-BY-4.0 | yes |
+| PyPI Advisory Database | CC-BY-4.0 | yes |
+| Go Vulnerability Database | CC-BY-4.0 | yes |
+| Python Software Foundation Database | CC-BY-4.0 | yes |
+| Erlang Ecosystem Foundation CNA | CC-BY-4.0 | yes |
+| OSS-Fuzz | CC-BY-4.0 | yes |
+| Ubuntu | CC-BY-SA-4.0 | yes |
+| OpenSSF Malicious Packages | Apache-2.0 | no |
+| RConsortium Advisory Database | Apache-2.0 | no |
+| Bitnami Vulnerability Database | Apache-2.0 | no |
+| Rust Advisory Database | CC0-1.0 | no |
+| Global Security Database | CC0-1.0 | no |
+| Haskell Security Advisories | CC0-1.0 | no |
+| opam | CC0-1.0 | no |
+| Drupal Advisory Database | MIT | no |
+| AlmaLinux | MIT | no |
+| Rocky Linux | BSD | no |
+
+Converted sources (Debian Security Advisories, Alpine SecDB, NVD CVEs) do not state
+licences on that page. None is an npm source.
+
+**Only two of these reach npm**, which narrows the obligation sharply. The 228,951 npm
+advisories measured below are 221,548 `MAL-` (OpenSSF Malicious Packages, Apache-2.0) and
+7,401 `GHSA-` (GitHub Advisory Database, CC-BY-4.0). Those two account for 228,949 of the
+228,951; the remaining 2 have not been identified.
+
+So for npm: **attribution is owed on GHSA text and nothing else.** Ubuntu's CC-BY-SA-4.0
+is the only share-alike term in the list and it is an operating-system source, so it
+cannot reach an npm verdict. If a Linux-distribution ecosystem is ever added, share-alike
+has to be looked at again before any OSV text is displayed.
+
 ### OSV carries no licence metadata
 
 An OSV record has `id`, `summary`, `details`, `affected`, `references`, `severity`,
 `database_specific` and `aliases`. There is no licence field, checked against a live
 record. OSV aggregates, so the terms on any given record are the terms of whichever
-source produced it, and the **id prefix is the only hint**: a `GHSA-` record is
-CC-BY-4.0 and needs attribution, a `MAL-` record is Apache-2.0 where OSSF Malicious
-Packages produced it.
+source produced it, and the **id prefix is the only hint**: a `GHSA-` record is CC-BY-4.0
+and needs attribution, a `MAL-` record is Apache-2.0 and does not.
 
-Whether every `MAL-` record in the OSV npm bundle originates from OSSF is a separate
-question and has not been measured. OSV's per-record `database_specific` is the place to
-check, and the answer decides whether the 221,548 npm malware records carry one set of
-terms or several.
+That mapping is sound for npm because only two sources feed it, and the prefixes are
+disjoint. It does not generalise: a `CVE-` record could come from several of the sources
+above under different terms. Any code that decides an obligation from a prefix has to be
+scoped to npm, or read `database_specific` instead.
 
 That is a real consequence for any tool that repeats what a record says. Ours is
 bounded by [intel-distribution-fetch-from-origin](intel-distribution-fetch-from-origin.md):
