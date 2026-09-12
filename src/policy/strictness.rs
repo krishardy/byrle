@@ -36,6 +36,13 @@ pub enum Strictness {
     /// The rule has no meaning for this ecosystem. Reported in `explain`, never warned
     /// about, and it does not make a comparison incomparable.
     NotApplicable,
+    /// Nothing above this rule set a value, so there was nothing to loosen.
+    ///
+    /// Distinct from `Same`, which means a value was compared and did not move, and from
+    /// `NotApplicable`, which means the rule has no meaning here at all. This is the
+    /// common shape in a real config, where `defaults` is sparse and ecosystems fill it
+    /// in, and calling it `Same` would claim a comparison that never happened.
+    Unset,
 }
 
 impl Strictness {
@@ -45,6 +52,15 @@ impl Strictness {
     /// applicable does not: it is reported, never warned.
     pub fn warns(self) -> bool {
         matches!(self, Self::Looser | Self::Incomparable)
+    }
+
+    /// Whether this carries a comparison at all.
+    ///
+    /// `NotApplicable` and `Unset` do not: one has no meaning here, the other had
+    /// nothing above it. Both are identities when dimensions are combined, and both are
+    /// reported rather than warned about.
+    pub fn compared(self) -> bool {
+        !matches!(self, Self::NotApplicable | Self::Unset)
     }
 
     /// Combine two independent dimensions of the same rule.
@@ -59,11 +75,14 @@ impl Strictness {
         use Strictness::*;
         match (self, other) {
             (Incomparable, _) | (_, Incomparable) => Incomparable,
-            // Both identities, so two of them stay one. `NotApplicable` only survives
-            // when it is all there is: a rule with one applicable dimension is judged on
-            // that dimension.
-            (NotApplicable, NotApplicable) => NotApplicable,
-            (NotApplicable, x) | (x, NotApplicable) | (Same, x) | (x, Same) => x,
+            // Neither of these carries a comparison, so between them the one that says
+            // more survives: "this rule has no meaning here" outranks "nothing above set
+            // it". In practice they never meet, because applicability is decided for the
+            // whole rule before its dimensions are compared.
+            (NotApplicable, NotApplicable | Unset) | (Unset, NotApplicable) => NotApplicable,
+            (Unset, Unset) => Unset,
+            // A dimension that carried no comparison cannot decide the rule on its own.
+            (NotApplicable | Unset, x) | (x, NotApplicable | Unset) | (Same, x) | (x, Same) => x,
             (Stricter, Stricter) => Stricter,
             (Looser, Looser) => Looser,
             (Stricter, Looser) | (Looser, Stricter) => Incomparable,
@@ -160,12 +179,13 @@ mod proofs {
         Action::Block,
     ];
 
-    const STRICTNESSES: [Strictness; 5] = [
+    const STRICTNESSES: [Strictness; 6] = [
         Strictness::Stricter,
         Strictness::Same,
         Strictness::Looser,
         Strictness::Incomparable,
         Strictness::NotApplicable,
+        Strictness::Unset,
     ];
 
     fn any_action() -> Action {
@@ -246,31 +266,42 @@ mod proofs {
         assert!(a.and(b).and(c) == a.and(b.and(c)));
     }
 
-    /// A dimension with no meaning for this ecosystem never changes the answer. That is
-    /// the plan's "not applicable is not loosening", and it is stronger than the plan
-    /// states it: not applicable is not anything.
+    /// A dimension that carries no comparison never changes the answer. That is the
+    /// plan's "not applicable is not loosening", and it is stronger than the plan states
+    /// it: a dimension with nothing to compare is not anything.
     #[kani::proof]
-    fn a_dimension_that_does_not_apply_changes_nothing() {
+    fn a_dimension_with_nothing_to_compare_changes_nothing() {
         let a = any_strictness();
+        kani::assume(a.compared());
         assert!(Strictness::NotApplicable.and(a) == a);
+        assert!(Strictness::Unset.and(a) == a);
     }
 
-    /// A dimension that did not move is an identity over every dimension that applies.
+    /// A dimension that did not move is an identity over every dimension that was
+    /// compared.
     ///
-    /// Not over `NotApplicable`, and the difference is the point: a rule with one
-    /// unchanged dimension and one that does not apply here is `Same`, not
-    /// `NotApplicable`. It was compared, and it did not move. `NotApplicable` survives
-    /// only when there was nothing to compare at all.
+    /// Not over the two that were not, and the difference is the point: a rule with one
+    /// unchanged dimension and one that has no meaning here was compared and did not
+    /// move, so it is `Same`. The non-comparisons survive only when that is all there is.
     #[kani::proof]
-    fn an_unchanged_dimension_decides_nothing_that_applies() {
+    fn an_unchanged_dimension_decides_nothing_that_was_compared() {
         let a = any_strictness();
-        kani::assume(a != Strictness::NotApplicable);
+        kani::assume(a.compared());
         assert!(Strictness::Same.and(a) == a);
 
         assert!(Strictness::Same.and(Strictness::NotApplicable) == Strictness::Same);
-        assert!(
-            Strictness::NotApplicable.and(Strictness::NotApplicable) == Strictness::NotApplicable
-        );
+        assert!(Strictness::Same.and(Strictness::Unset) == Strictness::Same);
+    }
+
+    /// Nothing that carries no comparison ever warns, and combining two of them leaves
+    /// the answer where it was. This is what keeps the channel readable when `defaults`
+    /// is sparse, which is the ordinary shape of a real config.
+    #[kani::proof]
+    fn a_dimension_with_nothing_to_compare_never_warns() {
+        let a = any_strictness();
+        kani::assume(!a.compared());
+        assert!(!a.warns());
+        assert!(a.and(a) == a);
     }
 
     /// Combining can only ever move toward undecided, never away from it. A rule that
@@ -467,6 +498,27 @@ mod tests {
         assert_eq!(
             Strictness::NotApplicable.inverse(),
             Strictness::NotApplicable
+        );
+        assert_eq!(Strictness::Unset.inverse(), Strictness::Unset);
+    }
+
+    /// `Unset` is the common shape in a real config, where `defaults` is sparse and
+    /// ecosystems fill it in. Calling it `Same` would claim a comparison that never
+    /// happened, and calling it `NotApplicable` would claim the rule has no meaning here.
+    #[test]
+    fn nothing_above_to_compare_against_is_neither_unchanged_nor_inapplicable() {
+        assert!(!Strictness::Unset.compared());
+        assert!(!Strictness::Unset.warns());
+        assert_ne!(Strictness::Unset, Strictness::Same);
+        assert_ne!(Strictness::Unset, Strictness::NotApplicable);
+        assert_eq!(
+            Strictness::Unset.and(Strictness::Looser),
+            Strictness::Looser
+        );
+        assert_eq!(
+            Strictness::NotApplicable.and(Strictness::Unset),
+            Strictness::NotApplicable,
+            "the one that says more survives"
         );
     }
 }
