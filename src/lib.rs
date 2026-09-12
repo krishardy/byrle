@@ -11,6 +11,7 @@ pub mod defer;
 pub mod doctor;
 pub mod http;
 pub mod identity;
+pub mod intel;
 pub mod integrity;
 pub mod npm;
 pub mod policy;

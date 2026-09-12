@@ -1253,14 +1253,31 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] **13 npm CVE ids appear in KEV**, out of 6,032. The check is still worth
             having, because it is a set lookup over ids the CVE step already produced, but
             it goes last.
-- [ ] `[!]` Advisory stream interface (fetch / mirror / refresh / normalize)
-- [ ] `[!]` Per-ecosystem capability matrix: `match` / `enrich` / `malware`
-- [ ] `[!]` Type-enforce that `enrich` records cannot originate a finding
-- [ ] `[!]` `malware` capability gated separately — it can trigger the non-overridable floor
-- [ ] Plugin-declared capabilities, operator-overridable; promotion harder than demotion
-- [ ] Startup warning + `doctor` check: ecosystem enabled with no `match`-capable stream
+- [ ] `[!]` Advisory stream interface (fetch / mirror / refresh / normalize). What a
+      stream may *say* is built (`MatchStream`, `EnrichStream`, `MalwareStream` in
+      `src/intel.rs`). Fetch, mirror and refresh need the storage decision (SeaORM over
+      SQLite and Postgres, raw sqlx for bulk refresh) and its dependency review.
+- [x] `[!]` Per-ecosystem capability matrix: `match` / `enrich` / `malware` (`src/intel.rs`,
+      `Capabilities::grant` / `has` / `providers`). A grant is per stream per ecosystem, so
+      NVD can hold `match` for Maven and only `enrich` for npm.
+- [x] `[!]` Type-enforce that `enrich` records cannot originate a finding. `Finding` and
+      `Enrichment` are separate types with no conversion between them, and `EnrichStream`
+      returns the second. A `compile_fail` doctest holds the property; adding
+      `From<Enrichment> for Finding` makes it fail.
+- [x] `[!]` `malware` capability gated separately. `Capability::Malware` is not implied by
+      `Match`, and `MalwareStream` is its own trait returning `bool` rather than a finding.
+- [ ] Plugin-declared capabilities, operator-overridable; promotion harder than demotion.
+      Needs a config surface; deferred until one exists.
+- [ ] Startup warning + `doctor` check: ecosystem enabled with no `match`-capable stream.
+      `Capabilities::gaps` computes it and `Gap` renders the message; nothing calls it yet
+      because no stream is registered.
 - [ ] `waharoa status` shows adapter maturity and intel coverage as separate axes
-- [ ] Explicit severity precedence config (enrich may escalate `max_cvss`, never originate)
+- [x] Explicit severity precedence config (enrich may escalate `max_cvss`, never originate).
+      Settled as a rule rather than config: an enrichment may raise a score and may set
+      `exploited`, never the reverse, so the result does not depend on the order streams
+      are read in. `Score` records which stream supplied it, for `explain` only.
+- [ ] Bridge `intel::Finding` to `policy::decide::Advisory`. `Advisory.kev` is a bare bool
+      today; `Finding` carries `exploited` plus the score's source.
 - [ ] `[!]` Common advisory record schema with alias set (CVE, GHSA, OSV, MAL IDs)
 - [ ] `[!]` OSV.dev stream, lookup by PURL
 - [ ] `[!]` Deduplication across streams via alias reconciliation — before the policy
