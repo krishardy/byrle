@@ -1022,9 +1022,27 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `[!]` `denials`, explicitly forbidden packages. Exact version, no exception.
 - [ ] `[!]` Known malware. Not configurable and not exceptable: behaviour, not policy.
       Needs a `malware`-capable stream, which is gated separately below.
-- [ ] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
+- [~] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
       own, and is a **packument filter** rather than an artifact refusal: Stage 1's
       `npm::filter_unservable_versions` is the mechanism.
+      The check is done and tested in `decide.rs`. **What is missing is the fact**, and
+      that is the whole of the remaining work here.
+      - [x] **The publish time is not in the document the proxy fetches.** npm sends
+            `time` only in the full packument. `npm install` asks for the abbreviated one
+            and so does `fetch_and_store`, so `published` is `None` for every record this
+            build holds. `decide` treats an unknown publish date as not old enough, which
+            is the right direction and makes `cooldown_days` fail every package rather
+            than pass it. Held by
+            `asking_for_cooldown_on_an_abbreviated_record_fails_every_package`: lodash
+            4.17.21, published 2021 and years past any cooldown, quarantines on the
+            abbreviated record and passes on the full one.
+      - [ ] `[!]` Fetch the full packument on the proxy's own behalf, per package.
+            `FULL_ACCEPT` exists for exactly this. It is a second request per package on
+            the `npm install` path, not a flag on the existing one: the client asked for
+            abbreviated and must still get abbreviated back.
+      - [ ] The store that would hold it is per-process and dies with the proxy, so
+            without persistence every restart re-fetches every full document. See the
+            Stage 5 item.
 - [~] `[!]` `kev`. `block` or `allow`. Logic done in `decide.rs`; the source is not.
       CISA's catalogue is ecosystem-agnostic because it has no package identifier at all,
       so `kev` is a property of an **advisory**, not of a package, and the engine reads it
