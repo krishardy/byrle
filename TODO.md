@@ -506,11 +506,14 @@ implementations.
       them is exactly what the record schema had to model. This pairs with the two
       corpus-scale checks already in place, `make smoke-npm` against a real npm client
       and `cargo run --example osv_conformance` against OSV's full npm bundle.
-- [~] **Name: `waharoa`.** Registry half **done**: all four exact-name lookups return
-      404 (crates.io, npm, PyPI, the GitHub org), with known-existing controls returning
-      200 in the same run to prove the probe works. The name is free.
-      - [ ] `[!]` **Cultural consultation still outstanding.** This is the remaining gate
-            on the name, and it is a human conversation, not a lookup. See plan header.
+- [x] **Name: `waharoa`.** Registry half done: all four exact-name lookups return 404
+      (crates.io, npm, PyPI, the GitHub org), with known-existing controls returning 200
+      in the same run to prove the probe works. The name is free.
+      Cultural consultation is a **pre-release** gate rather than a Stage 1 one, and has
+      moved to Stage 7. Nothing in Stage 1 depends on the answer: the name appears in a
+      binary nobody outside this repository runs, and renaming before release costs a
+      find-and-replace. Blocking transport work on a human conversation would have stalled
+      the stage for a cost that does not arrive until launch.
 - [ ] Shipped policy template must declare a floor for **every** supported ecosystem, or
       the default path is a startup failure (§5.5). `examples/policy.yaml` is the spike
       artifact and is deliberately incomplete: it declares `ecosystems.cargo` with no
@@ -537,8 +540,26 @@ implementations.
             concurrency-memory item worse rather than better. Measured RSS after an
             `express + @babel/code-frame` install holding 70 packuments and 2,576
             records: 25 MB.
-- [ ] `[!]` Cache hit, stream through. Nothing is analysed yet, so there is no cache to
-      hit; the digest that would key it is now known before the fetch.
+- [x] `[!]` Cache hit, stream through. `src/verified.rs`, keyed by artifact content
+      digest, consulted before the fetch and recorded when the bytes match. Moved forward
+      from Stage 5, which keeps the analysis the cache will eventually hold.
+      - [x] **A hit does not skip verification.** A hit says these bytes were verified on
+            an *earlier* request; the bytes arriving now come from upstream on this one
+            and could differ. Skipping the hash would mean a registry that served correct
+            bytes once could serve anything afterwards and have it forwarded unchecked,
+            which is what `VerifyingStream` exists to catch. §5's table says a hit streams
+            through, and streaming through is what verification already does.
+      - [x] So in Stage 1 both arms behave identically, because nothing analyses and
+            nothing defers. What exists is the branch, the key, the counts and the log
+            line. Stage 5 fills in what a hit means.
+      - [x] A digest is recorded only when bytes have been hashed against it. A mismatch
+            records nothing: that would be recording the attack, and the next request for
+            the same digest would read as already seen.
+      - [x] Bounded by count, least recently used first, `WAHAROA_MAX_VERIFIED`, default
+            50,000. An entry is an algorithm and a digest, so the budget is a few MB.
+      - [x] `artifacts_verified` is reported at `/-/waharoa/health`. Verified against the
+            real registry: two requests for lodash 4.17.21, `cache="miss"` then
+            `cache="hit"` on the same sha512, one entry held.
 - [x] Stream the body through a hashing wrapper, and verify what arrives against the
       packument's claim. `src/integrity.rs` parses SRI and hashes incrementally;
       `proxy::VerifyingStream` forwards chunks while hashing them. No mid-stream branch
@@ -801,11 +822,22 @@ implementations.
             `WAHAROA_REWRITE_ARTIFACTS=0` is correct: `dist.tarball` already names a host
             the proxy answers for, so lockfiles keep the origin registry's URLs and the
             `npm ci` failure measured earlier does not arise.
-      - [ ] `[!]` Onramp: mint certificates on the fly from a CA key held by the proxy.
-            Less secure, and the only place name constraints matter, which is where an
-            assumption that has to be tested belongs. **Verify name-constraint support
-            before shipping this**: OpenSSL and NSS honour them, macOS and Windows have
-            historically been inconsistent.
+      - [~] Onramp: mint certificates on the fly from a CA key held by the proxy. Less
+            secure, and the only place name constraints matter, which is where an
+            assumption that has to be tested belongs. Split: the assumption is tested in
+            Stage 1 by a spike, and the feature is built in Stage 2. Shipping it before
+            the spike answers would mean recommending a path whose central premise is
+            untested.
+            - [ ] `[!]` **SPIKE (Stage 1): does a name-constrained CA actually constrain?**
+                  Mint a CA with a `nameConstraints` extension permitting only the registry
+                  domains, mint a leaf for a domain outside the permitted set, and see
+                  which trust stores reject it. OpenSSL and NSS honour name constraints;
+                  macOS and Windows have historically been inconsistent. Node is the
+                  case that decides this, across all three of its trust stores (the OS
+                  store, `NODE_EXTRA_CA_CERTS`, and npm's `cafile`). A "no" does not sink
+                  the onramp, it makes the CA unconstrained and changes what the docs have
+                  to say about what an operator is trusting it with.
+            - [ ] Build it (Stage 2), against whatever the spike found.
       - [ ] Leaf keys on the proxy are worth what a compromise of them buys: impersonating
             those domains to anything on a machine trusting the CA, browsers included.
             Check file permissions at startup, never log them, and make loading from a
@@ -1145,6 +1177,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 - [ ] `[!]` Analysis cache keyed by **tarball content digest** (install-script presence,
       source diff, capability analysis — permanently valid). Metadata always passes
       through to upstream; no binary caching.
+      The key and the hit/miss branch landed in Stage 1 (`src/verified.rs`), which records
+      which digests have been fetched and verified. What is left here is the analysis the
+      entry carries, and persistence: the Stage 1 cache is per-process and holds a digest
+      and nothing else.
 - [ ] `[!]` Reproducible verdicts: same policy + same intel snapshot = same result
 - [ ] `[!]` Offline / air-gapped mode with pinnable intel snapshots
 - [ ] `[!]` `waharoa policy check --strict` — nonzero exit on unacknowledged loosening
@@ -1180,7 +1216,16 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 - [x] License: **Apache-2.0** (decided)
 - [ ] `[!]` Add LICENSE, DCO sign-off in CONTRIBUTING, trademark note
 - [ ] `[!]` README: document known bypass vectors honestly (plan §7)
-- [ ] `[!]` Name availability check across npm, PyPI, crates.io, GitHub
+- [x] Name availability check across npm, PyPI, crates.io, GitHub. Done in Stage 1: all
+      four exact-name lookups return 404, with known-existing controls returning 200 in
+      the same run.
+- [ ] `[!]` **Cultural consultation on the name `waharoa`.** A human conversation, not a
+      lookup, and the remaining gate on the name. Moved here from Stage 1 because it
+      blocks release rather than development: until then the name appears only in a binary
+      nobody outside this repository runs. If the answer is no, the rename is a
+      find-and-replace plus the registry check above run again on the new name, so do this
+      early enough in the stage that a rename is not competing with the announcement.
+      See the plan header.
 - [ ] Migration guide from Socket Firewall Free / pkggate
 - [ ] CONTRIBUTING.md, adapter authoring guide, detector authoring guide
 - [ ] OSV mirror distribution plan (plan §10.6)

@@ -61,6 +61,7 @@ use crate::npm::{
 use crate::record::PackumentDetail;
 use crate::refusal::RefusalStatus;
 use crate::store::{DEFAULT_MAX_RECORDS, Lookup, RecordStore};
+use crate::verified::{DEFAULT_MAX_VERIFIED, VerifiedArtifacts};
 use axum::{
     Router,
     body::Body,
@@ -129,6 +130,8 @@ pub struct Health {
     /// Packuments currently held, and the records in them.
     pub packuments_held: usize,
     pub records_held: usize,
+    /// Artifacts fetched and verified since the proxy started. See [`crate::verified`].
+    pub artifacts_verified: usize,
 }
 
 /// What reading a packument body produced.
@@ -174,6 +177,9 @@ pub struct Proxy {
     store: Arc<Mutex<RecordStore>>,
     /// Used to fetch a packument the client never asked for. See [`lookup_or_fetch`].
     registry: npm::Client,
+    /// Artifacts already fetched and verified, keyed by content digest. The fetch path
+    /// branches on this (plan §5). See [`crate::verified`].
+    verified: Arc<Mutex<VerifiedArtifacts>>,
     /// Bounds how many packuments are decoded and rewritten at once. See
     /// [`DEFAULT_MAX_CONCURRENT_PACKUMENTS`].
     packument_slots: Arc<Semaphore>,
@@ -219,6 +225,7 @@ impl Proxy {
             registry: npm::Client::new(client.clone(), upstream.clone()),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
+            verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             upstream,
             blocked: None,
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
@@ -291,6 +298,7 @@ impl Proxy {
             allowed_direct_origins: self.origins.allowed_direct().to_vec(),
             packuments_held,
             records_held,
+            artifacts_verified: self.verified.lock().expect("verified artifacts lock").len(),
         }
     }
 
@@ -303,6 +311,12 @@ impl Proxy {
     /// is used, which is what the client already reached the proxy on.
     pub fn with_public_base(mut self, base: Option<String>) -> Self {
         self.public_base = base.map(|b| b.trim_end_matches('/').to_owned());
+        self
+    }
+
+    /// How many verified artifact digests are remembered. See [`crate::verified`].
+    pub fn with_max_verified(mut self, max_verified: usize) -> Self {
+        self.verified = Arc::new(Mutex::new(VerifiedArtifacts::new(max_verified)));
         self
     }
 
@@ -383,10 +397,19 @@ struct VerifyingStream {
     bytes: u64,
     path: String,
     purl: String,
+    /// The claim being proved, recorded as verified once the bytes match.
+    sri: Sri,
+    verified: Arc<Mutex<VerifiedArtifacts>>,
 }
 
 impl VerifyingStream {
-    fn new(inner: ByteStream, sri: &Sri, path: String, purl: String) -> Self {
+    fn new(
+        inner: ByteStream,
+        sri: &Sri,
+        path: String,
+        purl: String,
+        verified: Arc<Mutex<VerifiedArtifacts>>,
+    ) -> Self {
         Self {
             inner,
             verifier: Some(sri.verifier()),
@@ -395,6 +418,8 @@ impl VerifyingStream {
             bytes: 0,
             path,
             purl,
+            sri: sri.clone(),
+            verified,
         }
     }
 
@@ -406,6 +431,12 @@ impl VerifyingStream {
         };
         match verifier.finish(self.bytes) {
             Ok(()) => {
+                // Recorded here and nowhere else: the digest is a claim until bytes have
+                // been hashed against it.
+                self.verified
+                    .lock()
+                    .expect("verified artifacts lock")
+                    .record(self.sri.clone());
                 info!(
                     path = %self.path,
                     purl = %self.purl,
@@ -738,7 +769,26 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                     _ => None,
                 };
                 match record.artifact.integrity.as_deref().map(Sri::parse) {
-                    Some(Ok(sri)) => expected_digest = Some(sri),
+                    Some(Ok(sri)) => {
+                        // Plan §5's branch, decided before a byte is fetched. In Stage 1
+                        // both arms do the same thing, because nothing analyses and
+                        // nothing defers; a hit is where Stage 5 skips the analysis it
+                        // already ran, and a miss is where the novel-artifact branches
+                        // go. The hit arm still hashes: see `crate::verified`.
+                        let seen = proxy
+                            .verified
+                            .lock()
+                            .expect("verified artifacts lock")
+                            .lookup(&sri);
+                        info!(
+                            path = %path_and_query,
+                            claimed_purl = %purl,
+                            digest = %sri,
+                            cache = seen.as_str(),
+                            "artifact cache consulted"
+                        );
+                        expected_digest = Some(sri);
+                    }
                     Some(Err(e)) => warn!(
                         path = %path_and_query,
                         claimed_purl = %purl,
@@ -940,8 +990,13 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         let Some(sri) = expected_digest else {
             return (forward_status, headers, Body::from_stream(body_stream)).into_response();
         };
-        let verified =
-            VerifyingStream::new(body_stream, &sri, path_and_query.clone(), artifact_purl);
+        let verified = VerifyingStream::new(
+            body_stream,
+            &sri,
+            path_and_query.clone(),
+            artifact_purl,
+            proxy.verified.clone(),
+        );
         return (forward_status, headers, Body::from_stream(verified)).into_response();
     };
 
@@ -2469,6 +2524,65 @@ mod tests {
             tarball.as_slice(),
             "a verified body must arrive complete and unchanged"
         );
+    }
+
+    async fn artifacts_verified(base: &str) -> usize {
+        let body = reqwest::get(format!("{base}{HEALTH_PATH}"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        serde_json::from_str::<Health>(&body)
+            .unwrap()
+            .artifacts_verified
+    }
+
+    /// Plan §5 branches the fetch path on whether this artifact has been past before.
+    /// The digest is the key, and it is known before the fetch.
+    #[tokio::test]
+    async fn a_verified_artifact_is_remembered_by_its_digest() {
+        let tarball: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
+        assert_eq!(artifacts_verified(&base).await, 0);
+
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(artifacts_verified(&base).await, 1);
+
+        // A hit still hashes. Skipping it would mean a registry that served correct bytes
+        // once could serve anything afterwards, which is what the verification exists to
+        // catch. The body arriving whole is what proves the check ran.
+        let again = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(again.bytes().await.unwrap().as_ref(), tarball.as_slice());
+        assert_eq!(
+            artifacts_verified(&base).await,
+            1,
+            "the same artifact is one entry, not two"
+        );
+    }
+
+    /// A mismatch is the registry serving bytes its own packument does not describe.
+    /// Recording that would be recording the attack, and a later request for the same
+    /// digest would read as already seen.
+    #[tokio::test]
+    async fn a_tarball_that_fails_its_digest_is_not_remembered() {
+        let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let mut tampered = honest.clone();
+        tampered[25_000] ^= 0xFF;
+
+        let base = registry_with(&sri_of(&honest), tampered).await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+
+        assert_eq!(artifacts_verified(&base).await, 0);
     }
 
     /// A registry serving bytes its own packument does not describe. The client must not

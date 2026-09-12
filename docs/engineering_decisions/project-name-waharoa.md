@@ -1,6 +1,7 @@
 # Project name: waharoa
 
-- **Status:** Staging. Registry checks passed; cultural consultation outstanding.
+- **Status:** Staging. Registry checks passed; cultural consultation outstanding, and
+  scheduled for Stage 7 as a pre-release gate.
 - **Plan reference:** decision #13, and the plan header.
 
 ## Decision
@@ -21,6 +22,12 @@ than a broken probe.
 **Cultural consultation.** A waharoa is often the most significant carving on a marae,
 so this is not neutral vocabulary. This needs someone with standing to advise. It is a
 human conversation, not a lookup, and it is the remaining gate on the name.
+
+It gates **release**, not development. Until then the name appears only in a binary
+nobody outside this repository runs, so nothing built before launch depends on the
+answer, and a "no" costs a find-and-replace plus rerunning the registry checks on the
+replacement. It is scheduled in Stage 7, early enough that a rename is not competing with
+the announcement.
 
 ## Alternatives rejected
 

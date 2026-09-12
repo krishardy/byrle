@@ -753,6 +753,7 @@ mod tests {
             allowed_direct_origins: vec![],
             packuments_held: 0,
             records_held: 0,
+            artifacts_verified: 0,
         }
     }
 
