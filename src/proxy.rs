@@ -48,7 +48,7 @@
 
 use crate::http::{
     DEFAULT_MAX_PACKUMENT_BYTES, DecodeError, RequestedEncoding, decode_for_parsing,
-    encoding_to_request, gzip, is_hop_by_hop, mark_etag, unmark_if_none_match,
+    encoding_to_request, gzip, is_conditional, is_hop_by_hop, mark_etag, unmark_if_none_match,
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
@@ -772,7 +772,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         if read_packument && name == header::ACCEPT_ENCODING {
             continue;
         }
-        if rewriting && name == header::IF_NONE_MATCH {
+        if rewriting && is_conditional(name.as_str()) {
             continue;
         }
         outbound = outbound.header(name, value);
@@ -861,6 +861,26 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         if !held {
             fetch_and_store(&proxy, key, &path_and_query).await;
         }
+    }
+
+    // A 304 carries the upstream's own `ETag`, and the client stores whatever comes back.
+    // Left alone it replaces the marked tag with the upstream's, `unmark_if_none_match`
+    // drops that tag on the next revalidation, and the client gets a full body. Measured
+    // over four requests for lodash before this: 200 (68,970 bytes), 304, 200, 304. After:
+    // 200, then 304 every time.
+    //
+    // The body the client is being told to keep is one this proxy rewrote at this base,
+    // because that is the only tag the request could have carried to get a 304 here.
+    if status == reqwest::StatusCode::NOT_MODIFIED
+        && rewriting
+        && let Some(base) = rewrite_base.as_deref()
+        && let Some(marked) = headers
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(|etag| mark_etag(etag, base))
+        && let Ok(value) = HeaderValue::from_str(&marked)
+    {
+        headers.insert(header::ETAG, value);
     }
 
     let forward_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -1366,6 +1386,105 @@ mod tests {
             original.len(),
             "this fixture does change length, so the test would pass vacuously otherwise"
         );
+    }
+
+    /// An upstream that answers 304 to the tag it issued, and 200 to anything else.
+    async fn upstream_revalidating(tag: &'static str, body: Vec<u8>) -> (String, Recorder) {
+        let seen: Recorder = Arc::default();
+        let recorder = seen.clone();
+        let router = Router::new().fallback(any(move |req: Request| {
+            let seen = recorder.clone();
+            let body = body.clone();
+            async move {
+                let matched = req
+                    .headers()
+                    .get(header::IF_NONE_MATCH)
+                    .and_then(|v| v.to_str().ok())
+                    .is_some_and(|v| v == tag);
+                {
+                    let mut s = seen.lock().unwrap();
+                    s.paths.push(req.uri().to_string());
+                    s.accept_encoding.push(None);
+                    s.headers.push(req.headers().clone());
+                }
+                let response = Response::builder()
+                    .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
+                    .header(header::ETAG, tag);
+                if matched {
+                    response
+                        .status(StatusCode::NOT_MODIFIED)
+                        .body(Body::empty())
+                        .unwrap()
+                } else {
+                    response
+                        .status(StatusCode::OK)
+                        .body(Body::from(body))
+                        .unwrap()
+                }
+            }
+        }));
+        (serve(router).await, seen)
+    }
+
+    /// A 304 carries the upstream's tag, and the client stores what comes back. Unless it
+    /// is marked here, the next revalidation sends a tag this proxy will drop and the
+    /// client gets a full body, alternating 200 and 304 forever.
+    #[tokio::test]
+    async fn a_revalidated_packument_keeps_the_tag_this_proxy_issued() {
+        let (upstream, seen) =
+            upstream_revalidating("\"abc\"", fixture("lodash-4.17.21.abbrev.json")).await;
+        let base = serve(Proxy::new(reqwest::Client::new(), upstream).router()).await;
+        let client = reqwest::Client::new();
+
+        let first = client.get(format!("{base}/lodash")).send().await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let issued = first.headers()[header::ETAG].to_str().unwrap().to_owned();
+        assert!(issued.contains("waharoa."), "not marked: {issued}");
+
+        let second = client
+            .get(format!("{base}/lodash"))
+            .header(header::IF_NONE_MATCH, &issued)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert_eq!(
+            second.headers()[header::ETAG].to_str().unwrap(),
+            issued,
+            "a different tag makes the client treat this as a new representation"
+        );
+        assert_eq!(
+            seen.lock().unwrap().headers[1][header::IF_NONE_MATCH],
+            "\"abc\"",
+            "upstream is asked with its own tag, not ours"
+        );
+    }
+
+    /// Only `If-None-Match` carries the identity that says a cached body was rewritten
+    /// here. A date-based 304 would authorise the client to serve one that was not.
+    #[tokio::test]
+    async fn date_conditionals_do_not_reach_upstream_while_rewriting() {
+        let (base, seen) = proxy_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::IF_MODIFIED_SINCE, "Wed, 21 Oct 2015 07:28:00 GMT")
+            .header(header::IF_RANGE, "\"abc\"")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let seen = seen.lock().unwrap();
+        let sent = &seen.headers[0];
+        assert!(!sent.contains_key(header::IF_MODIFIED_SINCE));
+        assert!(!sent.contains_key(header::IF_RANGE));
     }
 
     /// Turning rewriting off restores byte-for-byte forwarding.
