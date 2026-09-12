@@ -107,7 +107,7 @@ Items that I've added that are not stage-bound.
    than a script.
    Verified: each target alone, `make sast` running both, fail-fast skipping trufflehog
    when semgrep fails, and `make -k sast` running both anyway.
-7. In the policy file sample, npm install_scripts setting would be set per package, not set for the entire ecosystem.
+7. [x] In the policy file sample, npm install_scripts setting would be set per package, not set for the entire ecosystem.
 8. [x] Make sure that semgrep is logged in during the `make semgrep` run.
    `make semgrep` now refuses to run without a token, the way `make lint` refuses to run
    without shellcheck, and for the same reason: **measured on this repository, same 79
