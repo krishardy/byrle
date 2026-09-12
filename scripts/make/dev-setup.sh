@@ -7,6 +7,11 @@ set -euo pipefail
 
 need() { command -v "$1" >/dev/null 2>&1; }
 
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/node.sh
+. "$repo_root/scripts/make/lib/node.sh"
+waharoa_use_latest_node
+
 echo "==> rustup components"
 rustup component add clippy rustfmt 2>&1 | sed 's/^/    /'
 
@@ -115,6 +120,17 @@ else
     cargo kani setup
 fi
 
+echo "==> node"
+if [[ -n "${WAHAROA_NODE:-}" ]]; then
+    echo "    $WAHAROA_NODE"
+    echo "    Every target that runs a package manager uses it, so they all test against"
+    echo "    the same one."
+elif need node; then
+    echo "    found $(node --version), and no nvm, so that is what the targets use"
+else
+    echo "    NOT FOUND. 'make smoke-npm' cannot run without it."
+fi
+
 echo "==> npm (required by 'make smoke-npm')"
 if need npm; then
     echo "    found $(npm --version)"
@@ -134,8 +150,12 @@ if need yarn; then echo "    found $(yarn --version)"; else echo "    not instal
 
 echo "==> yarn 2+ (optional, used by 'make smoke-clients')"
 if ! need corepack; then
-    echo "    corepack not found. It ships with Node 16.9 and later, and is how a"
-    echo "    project selects yarn 2+ without replacing the yarn on PATH."
+    # Node shipped corepack from 16.9 until it was unbundled in 25, so on a current node
+    # it has to be installed. It is how a project selects yarn 2+ without replacing the
+    # yarn on PATH.
+    echo "    NOT INSTALLED. Node shipped it from 16.9 until it was unbundled in 25,"
+    echo "    so a current node needs it installed: npm install -g corepack"
+    echo "    'make smoke-clients' skips yarn 2+ without it."
 elif ! need node; then
     echo "    node not found, so corepack cannot run."
 else

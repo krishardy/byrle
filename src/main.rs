@@ -270,7 +270,12 @@ async fn main() -> std::process::ExitCode {
         bundle_path = Some(path);
     }
 
-    let client = tls::build(builder, bundle_path.as_deref()).unwrap_or_else(|e| panic!("{e}"));
+    let client = match bundle_path.as_deref() {
+        Some(path) => tls::build(builder, path).unwrap_or_else(|e| panic!("{e}")),
+        None => builder
+            .build()
+            .expect("failed to build upstream HTTP client"),
+    };
 
     let blocked = std::env::var("WAHAROA_BLOCK")
         .ok()
