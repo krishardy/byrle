@@ -63,6 +63,8 @@ pub enum PolicyError {
     UnsupportedVersion { found: String, supported: u32 },
     /// The document is not valid YAML, or does not match the schema.
     Invalid(String),
+    /// A `loosens_global` acknowledgment is missing what §5.5 requires of one.
+    IncompleteAcknowledgment { at: String, missing: &'static str },
 }
 
 impl fmt::Display for PolicyError {
@@ -77,6 +79,11 @@ impl fmt::Display for PolicyError {
                  version {supported}"
             ),
             Self::Invalid(e) => write!(f, "policy is not valid: {e}"),
+            Self::IncompleteAcknowledgment { at, missing } => write!(
+                f,
+                "`loosens_global: true` at {at} has no {missing}. An acknowledgment \
+                 without one is a loosening nobody has to answer for"
+            ),
         }
     }
 }
@@ -181,7 +188,60 @@ impl Policy {
             }
         }
 
-        serde_saphyr::from_str(source).map_err(|e| PolicyError::Invalid(e.to_string()))
+        let policy: Self =
+            serde_saphyr::from_str(source).map_err(|e| PolicyError::Invalid(e.to_string()))?;
+        policy.check_acknowledgments()?;
+        Ok(policy)
+    }
+
+    /// §5.5: an acknowledgment is `loosens_global: true` **plus** a reason and an expiry.
+    ///
+    /// Refused at load rather than warned about, because the point of the acknowledgment
+    /// is that someone answered for the loosening and said when it stops. A flag on its
+    /// own silences the warning and records neither, which is worse than not having the
+    /// mechanism: the loosening is still there and nothing now reports it.
+    fn check_acknowledgments(&self) -> Result<(), PolicyError> {
+        let carriers = self
+            .ecosystems
+            .iter()
+            .map(|(name, rules)| (format!("ecosystems.{name}"), rules.install_scripts.as_ref()))
+            .chain(std::iter::once((
+                "defaults".to_owned(),
+                self.defaults.install_scripts.as_ref(),
+            )))
+            .chain(
+                self.floor
+                    .iter()
+                    .map(|(name, rules)| (format!("floor.{name}"), rules.install_scripts.as_ref())),
+            )
+            .chain(self.packages.iter().enumerate().map(|(i, rule)| {
+                (
+                    format!("packages[{i}].set"),
+                    rule.set.install_scripts.as_ref(),
+                )
+            }));
+
+        for (at, rule) in carriers {
+            let Some(ScriptRule::Detailed(detail)) = rule else {
+                continue;
+            };
+            if !detail.loosens_global {
+                continue;
+            }
+            if detail.reason.as_deref().is_none_or(str::is_empty) {
+                return Err(PolicyError::IncompleteAcknowledgment {
+                    at,
+                    missing: "reason",
+                });
+            }
+            if detail.expires.is_none() {
+                return Err(PolicyError::IncompleteAcknowledgment {
+                    at,
+                    missing: "expires",
+                });
+            }
+        }
+        Ok(())
     }
 
     /// Read and parse a policy file.
@@ -200,6 +260,56 @@ fn describe_version(found: Option<VersionValue>) -> String {
         None => "absent".to_owned(),
         Some(VersionValue::Number(v)) => v.to_string(),
         Some(VersionValue::Other(s)) => s,
+    }
+}
+
+/// A calendar date an acknowledgment or an override runs out on.
+///
+/// Parsed at load, so a policy that carries an unreadable date is refused rather than
+/// loaded with a rule whose expiry silently never arrives. Hand-written rather than
+/// relying on a date crate's serde support, so the error names the value and the format
+/// an operator has to write.
+///
+/// A plain calendar date, not an instant: `expires: "2026-11-30"` is a day, and which
+/// second of it the rule lapses on is not a question a policy file should have to answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ExpiryDate(pub jiff::civil::Date);
+
+impl fmt::Display for ExpiryDate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl ExpiryDate {
+    /// Whether this has run out by `as_of`.
+    ///
+    /// The date itself is the last day it is in force, so a rule expiring on the 30th is
+    /// still in force on the 30th. An operator writing a date means "until then".
+    pub fn has_passed(self, as_of: jiff::civil::Date) -> bool {
+        self.0 < as_of
+    }
+}
+
+impl<'de> Deserialize<'de> for ExpiryDate {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct V;
+
+        impl Visitor<'_> for V {
+            type Value = ExpiryDate;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a calendar date written as YYYY-MM-DD")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ExpiryDate, E> {
+                v.parse::<jiff::civil::Date>().map(ExpiryDate).map_err(|e| {
+                    E::custom(format!("`{v}` is not a date written as YYYY-MM-DD: {e}"))
+                })
+            }
+        }
+
+        deserializer.deserialize_str(V)
     }
 }
 
@@ -302,7 +412,7 @@ pub struct ScriptDetail {
     #[serde(default)]
     pub reason: Option<String>,
     #[serde(default)]
-    pub expires: Option<String>,
+    pub expires: Option<ExpiryDate>,
 }
 
 #[derive(Debug, Deserialize, PartialEq, Clone)]
@@ -322,7 +432,7 @@ pub struct PackageRule {
     pub set: SetBlock,
     pub reason: String,
     #[serde(default)]
-    pub expires: Option<String>,
+    pub expires: Option<ExpiryDate>,
     #[serde(default)]
     pub permanent: bool,
     #[serde(default)]
@@ -460,16 +570,18 @@ mod tests {
             Some(ScriptRule::Bare(Action::Warn))
         );
 
+        // A complete acknowledgment, because an incomplete one no longer loads: see
+        // `an_acknowledgment_without_a_reason_or_an_expiry_is_refused`.
         let table = "version: 1\nfloor:\n  npm:\n    known_malware: block\ndefaults:\n  \
                      install_scripts:\n    action: allow\n    loosens_global: true\n    \
-                     reason: reviewed\n";
+                     reason: reviewed\n    expires: \"2026-11-30\"\n";
         assert_eq!(
             Policy::parse(table).unwrap().defaults.install_scripts,
             Some(ScriptRule::Detailed(ScriptDetail {
                 action: Action::Allow,
                 loosens_global: true,
                 reason: Some("reviewed".to_owned()),
-                expires: None,
+                expires: Some(ExpiryDate(jiff::civil::date(2026, 11, 30))),
             }))
         );
     }
@@ -601,6 +713,117 @@ mod tests {
             text.contains("action") && text.contains("rule table"),
             "both shapes the field takes have to be named: {text}"
         );
+    }
+
+    /// §5.5's acknowledgment is the flag **plus** a reason and an expiry. A flag on its
+    /// own silences the warning and records neither, which is worse than not having the
+    /// mechanism: the loosening is still there and nothing now reports it.
+    #[test]
+    fn an_acknowledgment_without_a_reason_or_an_expiry_is_refused() {
+        let cases = [
+            ("neither", "      loosens_global: true\n"),
+            (
+                "no expiry",
+                "      loosens_global: true\n      reason: reviewed\n",
+            ),
+            (
+                "an empty reason",
+                "      loosens_global: true\n      reason: \"\"\n      \
+                 expires: \"2026-11-30\"\n",
+            ),
+        ];
+        for (missing, tail) in cases {
+            let source = format!(
+                "version: 1\nfloor:\n  npm:\n    known_malware: block\necosystems:\n  \
+                 npm:\n    install_scripts:\n      action: allow\n{tail}"
+            );
+            let error = Policy::parse(&source).unwrap_err();
+            assert!(
+                matches!(error, PolicyError::IncompleteAcknowledgment { .. }),
+                "{missing}: got {error}"
+            );
+            assert!(
+                error.to_string().contains("ecosystems.npm"),
+                "the refusal has to say where: {error}"
+            );
+        }
+    }
+
+    /// Every place the schema lets an acknowledgment be written is checked, not just the
+    /// ecosystem block. A flag that is only enforced in one of four places is a flag an
+    /// operator will find the gap in.
+    #[test]
+    fn an_incomplete_acknowledgment_is_refused_wherever_it_is_written() {
+        let places = [
+            ("defaults", "defaults:\n  install_scripts:\n"),
+            (
+                "floor.npm",
+                "floor:\n  npm:\n    known_malware: block\n    install_scripts:\n",
+            ),
+            (
+                "packages[0].set",
+                "packages:\n  - match: { ecosystem: npm, name: x }\n    reason: r\n    \
+                 set:\n      install_scripts:\n",
+            ),
+        ];
+        for (at, block) in places {
+            // The floor case writes its own floor; the others need one adding.
+            let floor = if at == "floor.npm" {
+                String::new()
+            } else {
+                "floor:\n  npm:\n    known_malware: block\n".to_owned()
+            };
+            let source = format!(
+                "version: 1\n{floor}{block}        action: allow\n        \
+                 loosens_global: true\n"
+            );
+            let error = Policy::parse(&source).unwrap_err();
+            assert!(
+                matches!(error, PolicyError::IncompleteAcknowledgment { .. })
+                    && error.to_string().contains(at),
+                "{at}: got {error}"
+            );
+        }
+    }
+
+    /// A complete one loads.
+    #[test]
+    fn a_complete_acknowledgment_is_accepted() {
+        let source = "version: 1\nfloor:\n  npm:\n    known_malware: block\necosystems:\n  \
+                      npm:\n    install_scripts:\n      action: allow\n      \
+                      loosens_global: true\n      reason: reviewed\n      \
+                      expires: \"2026-11-30\"\n";
+        assert!(Policy::parse(source).is_ok());
+    }
+
+    /// A date that cannot be read is refused at load, not carried as a rule whose expiry
+    /// silently never arrives.
+    #[test]
+    fn an_expiry_that_is_not_a_date_is_refused() {
+        for bad in ["soon", "30-11-2026", "2026-13-01", "2026-11-31"] {
+            let source = format!(
+                "version: 1\nfloor:\n  npm:\n    known_malware: block\npackages:\n  \
+                 - match: {{ ecosystem: npm, name: x }}\n    set: {{}}\n    reason: r\n    \
+                 expires: \"{bad}\"\n"
+            );
+            let error = Policy::parse(&source).unwrap_err();
+            assert!(
+                matches!(error, PolicyError::Invalid(_)) && error.to_string().contains(bad),
+                "`{bad}` should be refused by name: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_readable_expiry_is_kept_as_a_date() {
+        let source = "version: 1\nfloor:\n  npm:\n    known_malware: block\npackages:\n  \
+                      - match: { ecosystem: npm, name: x }\n    set: {}\n    reason: r\n    \
+                      expires: \"2026-11-30\"\n";
+        let policy = Policy::parse(source).unwrap();
+        let expires = policy.packages[0].expires.unwrap();
+        assert_eq!(expires.to_string(), "2026-11-30");
+        assert!(!expires.has_passed(jiff::civil::date(2026, 11, 30)));
+        assert!(expires.has_passed(jiff::civil::date(2026, 12, 1)));
     }
 
     #[test]

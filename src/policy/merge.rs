@@ -18,7 +18,8 @@
 //! [`crate::policy::strictness`] keeps them apart so `explain` can say which.
 
 use super::strictness::{Direction, Strictness};
-use super::{Action, CooldownRule, Defaults, EcosystemRules, Policy, ScriptRule};
+use super::{Action, CooldownRule, Defaults, EcosystemRules, ExpiryDate, Policy, ScriptRule};
+use jiff::civil::Date;
 
 /// A rule an ecosystem can override, for reporting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,23 +65,52 @@ pub fn applies(ecosystem: &str, rule: Rule) -> bool {
     }
 }
 
+/// Someone answered for a loosening, and said when the answer runs out.
+///
+/// The reason and the expiry are required by the schema, so an acknowledgment that
+/// records neither cannot be loaded: see `Policy::check_acknowledgments`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Acknowledgment {
+    pub reason: String,
+    pub expires: ExpiryDate,
+    /// Whether it has run out by the date the policy was read against.
+    ///
+    /// An expired acknowledgment warns again. §5.5 gives it an expiry precisely so that
+    /// the exemption has to be looked at again rather than becoming permanent by being
+    /// forgotten.
+    pub expired: bool,
+}
+
 /// What one ecosystem's override of one rule did to the policy above it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
     pub ecosystem: String,
     pub rule: Rule,
     pub outcome: Strictness,
-    /// Whether the override carries §5.5's `loosens_global` acknowledgment.
-    ///
-    /// Read and reported, not yet acted on: what the acknowledgment requires of a rule,
-    /// and when it expires, is its own item.
-    pub acknowledged: bool,
+    /// §5.5's `loosens_global` acknowledgment, when the override carries one.
+    pub acknowledgment: Option<Acknowledgment>,
 }
 
 impl Finding {
     /// Whether §5.5 warns about this at config load.
+    ///
+    /// A loosening someone has answered for and not yet let lapse does not warn; it goes
+    /// to the audit trail and passes `--strict`. Everything else that loosened, or whose
+    /// direction could not be proven, warns.
     pub fn warns(&self) -> bool {
-        self.outcome.warns()
+        if !self.outcome.warns() {
+            return false;
+        }
+        match &self.acknowledgment {
+            Some(ack) => ack.expired,
+            None => true,
+        }
+    }
+
+    /// Whether this belongs in the audit trail: a loosening that was acknowledged rather
+    /// than warned about is exactly what there has to be a record of.
+    pub fn audited(&self) -> bool {
+        self.outcome.warns() && self.acknowledgment.is_some()
     }
 }
 
@@ -99,7 +129,10 @@ pub struct Effective {
 ///
 /// The ecosystem wins wherever it sets a value. A rule it does not set keeps the default,
 /// which is why a sparse ecosystem block is the normal case rather than a suspicious one.
-pub fn merge(policy: &Policy, ecosystem: &str) -> (Effective, Vec<Finding>) {
+/// `as_of` is the date acknowledgments are judged against, taken as an argument rather
+/// than read from the clock. `policy diff --as-of` needs to ask what a policy says on
+/// another day, and a function that called `now()` could not answer.
+pub fn merge(policy: &Policy, ecosystem: &str, as_of: Date) -> (Effective, Vec<Finding>) {
     let defaults = &policy.defaults;
     let overrides = policy.ecosystems.get(ecosystem);
 
@@ -126,7 +159,7 @@ pub fn merge(policy: &Policy, ecosystem: &str) -> (Effective, Vec<Finding>) {
                 ecosystem: ecosystem.to_owned(),
                 rule,
                 outcome: compare(ecosystem, rule, overrides, defaults),
-                acknowledged: acknowledges(rule, overrides),
+                acknowledgment: acknowledgment(rule, overrides, as_of),
             })
             .collect(),
     };
@@ -196,19 +229,42 @@ fn script_action(rule: &ScriptRule) -> Action {
     }
 }
 
-/// Whether an override carries §5.5's acknowledgment. Only `install_scripts` has a shape
-/// that can.
-fn acknowledges(rule: Rule, overrides: &EcosystemRules) -> bool {
-    match (rule, &overrides.install_scripts) {
-        (Rule::InstallScripts, Some(ScriptRule::Detailed(detail))) => detail.loosens_global,
-        _ => false,
+/// §5.5's acknowledgment, when an override carries one. Only `install_scripts` has a
+/// shape that can.
+///
+/// The reason and expiry are unwrapped rather than matched: a `loosens_global` without
+/// both is refused at load, so an acknowledgment that reached here has them.
+fn acknowledgment(rule: Rule, overrides: &EcosystemRules, as_of: Date) -> Option<Acknowledgment> {
+    let (Rule::InstallScripts, Some(ScriptRule::Detailed(detail))) =
+        (rule, &overrides.install_scripts)
+    else {
+        return None;
+    };
+    if !detail.loosens_global {
+        return None;
     }
+    let reason = detail
+        .reason
+        .clone()
+        .expect("an acknowledgment without a reason is refused at load");
+    let expires = detail
+        .expires
+        .expect("an acknowledgment without an expiry is refused at load");
+    Some(Acknowledgment {
+        reason,
+        expires,
+        expired: expires.has_passed(as_of),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::policy::ScriptDetail;
+    use jiff::civil::date;
+
+    /// A fixed day, so nothing here depends on when it is run.
+    const TODAY: Date = date(2026, 9, 12);
 
     fn from_body(body: &str) -> Policy {
         Policy::parse(&format!(
@@ -231,7 +287,7 @@ mod tests {
              provenance_required: true\necosystems:\n  npm:\n    \
              cooldown: { action: block, days: 14 }\n",
         );
-        let (effective, _) = merge(&policy, "npm");
+        let (effective, _) = merge(&policy, "npm", TODAY);
 
         assert_eq!(effective.cooldown.as_ref().unwrap().days, Some(14));
         assert_eq!(
@@ -253,7 +309,7 @@ mod tests {
             "defaults:\n  known_malware: block\necosystems:\n  npm:\n    \
              install_scripts: allow\n",
         );
-        let (effective, _) = merge(&policy, "npm");
+        let (effective, _) = merge(&policy, "npm", TODAY);
         assert_eq!(effective.known_malware, Some(Action::Block));
     }
 
@@ -262,7 +318,7 @@ mod tests {
     #[test]
     fn an_ecosystem_that_overrides_nothing_reports_nothing() {
         let policy = from_body("defaults:\n  install_scripts: warn\n");
-        let (effective, findings) = merge(&policy, "npm");
+        let (effective, findings) = merge(&policy, "npm", TODAY);
         assert!(findings.is_empty());
         assert_eq!(
             effective.install_scripts,
@@ -276,11 +332,11 @@ mod tests {
             "defaults:\n  install_scripts: block\necosystems:\n  npm:\n    \
              install_scripts: warn\n",
         );
-        let (_, findings) = merge(&policy, "npm");
+        let (_, findings) = merge(&policy, "npm", TODAY);
         let f = finding(&findings, Rule::InstallScripts);
         assert_eq!(f.outcome, Strictness::Looser);
         assert!(f.warns());
-        assert!(!f.acknowledged);
+        assert!(f.acknowledgment.is_none());
     }
 
     #[test]
@@ -289,7 +345,7 @@ mod tests {
             "defaults:\n  install_scripts: warn\necosystems:\n  npm:\n    \
              install_scripts: block\n",
         );
-        let (_, findings) = merge(&policy, "npm");
+        let (_, findings) = merge(&policy, "npm", TODAY);
         let f = finding(&findings, Rule::InstallScripts);
         assert_eq!(f.outcome, Strictness::Stricter);
         assert!(!f.warns());
@@ -302,7 +358,7 @@ mod tests {
             "defaults:\n  cooldown: { action: block, days: 3 }\necosystems:\n  npm:\n    \
              cooldown: { action: warn, days: 30 }\n",
         );
-        let (_, findings) = merge(&policy, "npm");
+        let (_, findings) = merge(&policy, "npm", TODAY);
         let f = finding(&findings, Rule::Cooldown);
         assert_eq!(f.outcome, Strictness::Incomparable);
         assert!(
@@ -318,7 +374,7 @@ mod tests {
             "defaults:\n  cooldown: { action: warn, days: 3 }\necosystems:\n  npm:\n    \
              cooldown: { action: block, days: 30 }\n",
         );
-        let (_, findings) = merge(&policy, "npm");
+        let (_, findings) = merge(&policy, "npm", TODAY);
         assert_eq!(
             finding(&findings, Rule::Cooldown).outcome,
             Strictness::Stricter
@@ -330,7 +386,7 @@ mod tests {
     #[test]
     fn setting_a_rule_nothing_above_had_set_is_not_loosening() {
         let policy = from_body("ecosystems:\n  npm:\n    install_scripts: allow\n");
-        let (effective, findings) = merge(&policy, "npm");
+        let (effective, findings) = merge(&policy, "npm", TODAY);
         let f = finding(&findings, Rule::InstallScripts);
         assert_eq!(f.outcome, Strictness::Unset);
         assert!(!f.warns());
@@ -350,7 +406,7 @@ mod tests {
             "defaults:\n  install_scripts: block\necosystems:\n  golang:\n    \
              install_scripts: allow\n",
         );
-        let (_, findings) = merge(&policy, "golang");
+        let (_, findings) = merge(&policy, "golang", TODAY);
         let f = finding(&findings, Rule::InstallScripts);
         assert_eq!(f.outcome, Strictness::NotApplicable);
         assert!(
@@ -363,7 +419,7 @@ mod tests {
             "defaults:\n  install_scripts: block\necosystems:\n  npm:\n    \
              install_scripts: allow\n",
         );
-        let (_, findings) = merge(&policy, "npm");
+        let (_, findings) = merge(&policy, "npm", TODAY);
         assert!(finding(&findings, Rule::InstallScripts).warns());
     }
 
@@ -380,28 +436,105 @@ mod tests {
         );
     }
 
-    /// Read and reported, not acted on: what the acknowledgment requires, and when it
-    /// expires, is its own item.
+    /// §5.5: an acknowledged loosening logs to the audit trail and passes `--strict`.
+    /// Someone answered for it and said when the answer runs out.
     #[test]
-    fn the_acknowledgment_is_reported_alongside_the_loosening_it_acknowledges() {
+    fn a_loosening_someone_answered_for_does_not_warn() {
         let policy = from_body(
             "defaults:\n  install_scripts: block\necosystems:\n  npm:\n    \
              install_scripts:\n      action: allow\n      loosens_global: true\n      \
              reason: reviewed\n      expires: \"2026-11-30\"\n",
         );
-        let (effective, findings) = merge(&policy, "npm");
+        let (effective, findings) = merge(&policy, "npm", TODAY);
         let f = finding(&findings, Rule::InstallScripts);
-        assert_eq!(f.outcome, Strictness::Looser);
-        assert!(f.acknowledged);
+
+        assert_eq!(f.outcome, Strictness::Looser, "it is still a loosening");
+        assert!(!f.warns(), "answered for, so it does not warn");
         assert!(
-            f.warns(),
-            "still reported as loosening; whether the acknowledgment silences it is the \
-             next item"
+            f.audited(),
+            "and that is exactly what there has to be a record of"
         );
+
+        let ack = f.acknowledgment.as_ref().unwrap();
+        assert_eq!(ack.reason, "reviewed");
+        assert!(!ack.expired);
         assert!(matches!(
             effective.install_scripts,
             Some(ScriptRule::Detailed(ScriptDetail { .. }))
         ));
+    }
+
+    /// §5.5 gives an acknowledgment an expiry precisely so the exemption has to be looked
+    /// at again rather than becoming permanent by being forgotten.
+    #[test]
+    fn an_acknowledgment_that_has_run_out_warns_again() {
+        let policy = from_body(
+            "defaults:\n  install_scripts: block\necosystems:\n  npm:\n    \
+             install_scripts:\n      action: allow\n      loosens_global: true\n      \
+             reason: reviewed\n      expires: \"2026-08-01\"\n",
+        );
+        let (_, findings) = merge(&policy, "npm", TODAY);
+        let f = finding(&findings, Rule::InstallScripts);
+
+        assert!(f.acknowledgment.as_ref().unwrap().expired);
+        assert!(f.warns());
+        assert!(f.audited(), "an expired exemption is still worth a record");
+    }
+
+    /// The expiry date is the last day it is in force, so a policy does not lapse on the
+    /// morning of the day an operator wrote down.
+    #[test]
+    fn an_acknowledgment_is_in_force_on_the_day_it_names() {
+        let policy = from_body(
+            "defaults:\n  install_scripts: block\necosystems:\n  npm:\n    \
+             install_scripts:\n      action: allow\n      loosens_global: true\n      \
+             reason: reviewed\n      expires: \"2026-09-12\"\n",
+        );
+        let (_, today) = merge(&policy, "npm", TODAY);
+        assert!(!finding(&today, Rule::InstallScripts).warns());
+
+        let (_, tomorrow) = merge(&policy, "npm", date(2026, 9, 13));
+        assert!(finding(&tomorrow, Rule::InstallScripts).warns());
+    }
+
+    /// The date is an argument, not the clock, because `policy diff --as-of` has to be
+    /// able to ask what a policy says on another day.
+    #[test]
+    fn the_same_policy_reads_differently_on_different_days() {
+        let policy = from_body(
+            "defaults:\n  install_scripts: block\necosystems:\n  npm:\n    \
+             install_scripts:\n      action: allow\n      loosens_global: true\n      \
+             reason: reviewed\n      expires: \"2026-10-15\"\n",
+        );
+        for (day, expected) in [
+            (date(2026, 1, 1), false),
+            (date(2026, 10, 15), false),
+            (date(2026, 10, 16), true),
+            (date(2030, 1, 1), true),
+        ] {
+            let (_, findings) = merge(&policy, "npm", day);
+            assert_eq!(
+                finding(&findings, Rule::InstallScripts).warns(),
+                expected,
+                "on {day}"
+            );
+        }
+    }
+
+    /// An acknowledgment on something that did not loosen anything is not a warning
+    /// waiting to happen, so it is not audited either.
+    #[test]
+    fn an_acknowledgment_on_a_tightening_has_nothing_to_record() {
+        let policy = from_body(
+            "defaults:\n  install_scripts: warn\necosystems:\n  npm:\n    \
+             install_scripts:\n      action: block\n      loosens_global: true\n      \
+             reason: belt and braces\n      expires: \"2026-11-30\"\n",
+        );
+        let (_, findings) = merge(&policy, "npm", TODAY);
+        let f = finding(&findings, Rule::InstallScripts);
+        assert_eq!(f.outcome, Strictness::Stricter);
+        assert!(!f.warns());
+        assert!(!f.audited());
     }
 
     #[test]
@@ -410,8 +543,12 @@ mod tests {
             "defaults:\n  install_scripts: block\necosystems:\n  npm:\n    \
              install_scripts:\n      action: allow\n      reason: reviewed\n",
         );
-        let (_, findings) = merge(&policy, "npm");
-        assert!(!finding(&findings, Rule::InstallScripts).acknowledged);
+        let (_, findings) = merge(&policy, "npm", TODAY);
+        assert!(
+            finding(&findings, Rule::InstallScripts)
+                .acknowledgment
+                .is_none()
+        );
     }
 
     #[test]
@@ -420,7 +557,7 @@ mod tests {
             "defaults:\n  provenance_required: true\necosystems:\n  npm:\n    \
              provenance_required: false\n",
         );
-        let (_, findings) = merge(&looser, "npm");
+        let (_, findings) = merge(&looser, "npm", TODAY);
         assert_eq!(
             finding(&findings, Rule::ProvenanceRequired).outcome,
             Strictness::Looser
@@ -430,7 +567,7 @@ mod tests {
             "defaults:\n  provenance_required: false\necosystems:\n  npm:\n    \
              provenance_required: true\n",
         );
-        let (_, findings) = merge(&stricter, "npm");
+        let (_, findings) = merge(&stricter, "npm", TODAY);
         assert_eq!(
             finding(&findings, Rule::ProvenanceRequired).outcome,
             Strictness::Stricter
@@ -445,7 +582,7 @@ mod tests {
             "defaults:\n  cooldown: { days: 7 }\necosystems:\n  npm:\n    \
              cooldown: { action: block, days: 14 }\n",
         );
-        let (_, findings) = merge(&policy, "npm");
+        let (_, findings) = merge(&policy, "npm", TODAY);
         assert_eq!(
             finding(&findings, Rule::Cooldown).outcome,
             Strictness::Stricter,
@@ -456,7 +593,7 @@ mod tests {
     #[test]
     fn every_rule_an_ecosystem_can_set_is_reported() {
         let policy = from_body("ecosystems:\n  npm:\n    install_scripts: warn\n");
-        let (_, findings) = merge(&policy, "npm");
+        let (_, findings) = merge(&policy, "npm", TODAY);
         assert_eq!(findings.len(), Rule::ALL.len());
         for rule in Rule::ALL {
             assert_eq!(finding(&findings, rule).rule, rule);
@@ -472,7 +609,7 @@ mod tests {
         let source = std::fs::read_to_string("examples/policy.yaml").unwrap();
         let policy = Policy::parse(&source).unwrap();
         for ecosystem in policy.ecosystems.keys() {
-            let (_, findings) = merge(&policy, ecosystem);
+            let (_, findings) = merge(&policy, ecosystem, TODAY);
             assert_eq!(findings.len(), Rule::ALL.len());
         }
     }

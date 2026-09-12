@@ -1108,8 +1108,25 @@ The spec gets frozen here.
 - [x] `[!]` Loosening warnings emit at config load only, never per-request. `merge`
       returns findings and logs nothing; the caller decides. Per-package warnings become
       wallpaper within a day.
-- [ ] `[!]` `loosens_global` acknowledgment with required `reason` + `expires`
-- [ ] Expired acknowledgment re-warns
+- [x] `[!]` `loosens_global` acknowledgment with required `reason` + `expires`. Refused
+      at load, not warned about: a flag on its own silences the warning and records
+      neither, which is worse than not having the mechanism, because the loosening is
+      still there and nothing now reports it. Checked in all four places the schema lets
+      one be written (`defaults`, `ecosystems.*`, `floor.*`, `packages[].set`); a flag
+      enforced in one of four is a gap an operator will find.
+      - [x] An acknowledged, unexpired loosening does not warn. It is still reported as
+            loosening and is marked for the audit trail, which is §5.5's "logs to audit
+            trail, passes `--strict`".
+      - [x] `expires` is parsed at load into `ExpiryDate`, so a policy carrying an
+            unreadable date is refused rather than loaded with a rule whose expiry
+            silently never arrives. A plain calendar date: which second of the day a rule
+            lapses on is not a question a policy file should answer.
+      - [x] Found by the new check: an existing test fixture carried `loosens_global`
+            with a reason and no expiry, and had been loading cleanly.
+- [x] Expired acknowledgment re-warns. The date it is judged against is an argument to
+      `merge`, never the clock, because `policy diff --as-of` has to be able to ask what a
+      policy says on another day. The named date is the last day in force, so a policy
+      does not lapse on the morning of the day an operator wrote down.
 - [ ] List-valued rules replace rather than union
 - [ ] Golden-file tests for every merge case in the plan's tables
 
