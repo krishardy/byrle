@@ -344,14 +344,6 @@ implementations.
             maintain. The proxy warns at startup when it is off, because pnpm, yarn and
             bun then fetch artifacts without it seeing them, and `make smoke-clients`
             fails in that state, which is how the flag is tested.
-      - [ ] `versions_with_install_scripts` in the log counts every version in the
-            document, not the version being installed. Stage 2 needs the resolved
-            version's answer, which needs the tarball request correlated against the
-            packument records. Same correlation as the `dist.integrity` item.
-      - [ ] Range resolution still lives nowhere. `dist-tags.latest` is kept as a string
-            and deliberately not resolved: the lodash fixture tags `4.18.1` while the
-            document carries only `4.17.21`, so a tag can name a version the `versions`
-            map omits. See the Stage 2 item.
 - [x] Unit test coverage tooling, for the CLAUDE.md floor. `make coverage` runs
       cargo-llvm-cov over the **library** with
       `--fail-under-lines/-functions/-regions 95`; `COVERAGE_FLOOR` overrides it. The
@@ -421,12 +413,6 @@ implementations.
             the acquire before the read, waiting held the upstream response open until it
             timed out: 18 of 24 concurrent requests failed with "error decoding response
             body". Regression test at a limit of one.
-      - [ ] **The bound caps live memory, and RSS barely moves: 1,501 MB unbounded against
-            1,436 MB at 8, and still 882 MB at 1.** Peak RSS is dominated by glibc holding
-            freed allocations rather than by what is live. `MALLOC_ARENA_MAX=1` cuts the
-            peak to 919 MB and raises the median from 223 MB to 703 MB, so it trades one
-            for the other rather than fixing it. The real lever is allocating less per
-            packument, below.
 - [x] Rewrite artifact URLs by targeted byte replacement instead of building a
       `serde_json::Value`. The value tree was the dominant allocation.
       - [x] **Peak RSS on 24 simultaneous large packuments: 1,436 MB to 472 MB**, median
@@ -447,10 +433,6 @@ implementations.
       - [x] A URL that cannot be found fails the whole rewrite rather than half of it
             landing, which would send some artifacts to the proxy and leave others
             pointing at the registry.
-      - [ ] A document that does not normalise is no longer rewritten either, since the
-            URLs come from the records. Without records there is nothing to gate on
-            anyway, and it is logged `UNINSPECTED`, but it does mean an unmodellable
-            document loses artifact visibility as well as metadata.
 - [x] Packument size on the proxy's own fetches. `npm::Client` now asks for gzip and
       decodes it with the same decoder the request path uses, under the same ceiling.
       reqwest's `gzip` feature stays off crate-wide so bodies can be forwarded byte for
@@ -552,11 +534,6 @@ implementations.
             and 9,690 records; the largest single packument is typescript at 3,822. A
             packument bigger than the whole budget is still kept, because the tarball
             request that follows it is the reason to store anything.
-      - [ ] The store is per-process and dies with the proxy. It also holds the whole
-            `NormalizedPackument`, not just what the fetch path needs, which makes the
-            concurrency-memory item worse rather than better. Measured RSS after an
-            `express + @babel/code-frame` install holding 70 packuments and 2,576
-            records: 25 MB.
 - [x] `[!]` Cache hit, stream through. `src/verified.rs`, keyed by artifact content
       digest, consulted before the fetch and recorded when the bytes match. Moved forward
       from Stage 5, which keeps the analysis the cache will eventually hold.
@@ -652,17 +629,12 @@ implementations.
                   the fixture has no real signing key, so this narrows where npm looks
                   without settling what it does with a valid one. Source is still the
                   basis for that half.
-            - [ ] PyPI is Stage 3, with its own metadata shape.
 - [~] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
       not ready (mirror warming, all requests) · **429** we are ready but this one
       artifact is under analysis.
       - [x] 502 is implemented and tested, for every request kind. The
             `WAHAROA_CA_BUNDLE_EXCLUSIVE` handshake failure exercises it against a real
             registry as well.
-      - [ ] 503 and 429 have no cause in Stage 1: there is no mirror to warm and nothing
-            analyses, so implementing either means inventing the trigger. Stage 2, with
-            the mirror and the analysis queue. What the codes have to be when they exist
-            is measured in `docs/engineering_decisions/deferral-status-codes.md`.
 - [x] `[!]` Never 4xx-that-reads-as-a-block for a not-ready state (same rule as cold
       start). Held by a test that enumerates the statuses the proxy produces of its own
       accord: 502 for an unreachable upstream on every request kind, 200 for health, and
@@ -691,10 +663,6 @@ implementations.
             yarn 4 and bun.
       - [x] yarn 1 is the only client that varies by request kind: it retries a 503
             packument five times and gives up on a 503 tarball after one.
-      - [ ] Per-client code table, Stage 2. Keyed on the user-agent the proxy sees, which
-            for yarn 4 is `got (https://github.com/sindresorhus/got)`.
-      - [ ] A bounded internal wait is not a fallback but the main mechanism for bun,
-            which no code and no `Retry-After` buys any time from. Stage 2.
 - [x] Test with npm, yarn, and pnpm, noting where behaviour diverges. `make
       smoke-clients` measures packuments, artifacts and verifications per client.
       - [x] **Finding: pnpm and yarn fetch artifacts directly, bypassing the proxy.**
@@ -742,18 +710,8 @@ implementations.
                   outright: npm goes to the address in `resolved` and does not fall back
                   to the registry given on the command line. The proxy warns at startup
                   when `WAHAROA_PUBLIC_URL` is unset, and the README says so.
-            - [ ] `waharoa doctor` should check that the configured public URL resolves
-                  and matches what lockfiles in the project record. This is the failure
-                  an operator will actually hit.
             - [x] `make smoke-clients` asserts every client fetches and verifies
                   artifacts. Checked that it bites with `WAHAROA_REWRITE_ARTIFACTS=0`.
-      - [ ] Forwarding a packument unrewritten now means every artifact for that package
-            is fetched wherever the document says, which for pnpm and yarn is not through
-            the proxy. Every such path logs `UNINSPECTED`: unreadable client encodings, no
-            `Host` and no configured base, over the size cap, undecodable, unnormalizable,
-            unserializable, and per-version artifacts on another origin. Stage 1 forwards
-            in all of them. **Stage 2 has to decide whether that stays acceptable**, since
-            the fail-open default is now weaker than it was.
 - [x] **Refuse artifacts whose origin is not in the proxy configuration.** Tier 3 in
       `docs/engineering_decisions/enforcement-tiers.md`, built before any network-level
       interception: it closes the gap those tiers are wanted for and needs no CA, no root,
@@ -1278,6 +1236,33 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %
 - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, privacy tradeoff documented
 
+### Carried from Stage 1
+
+Findings Stage 1 recorded as notes on completed work, which name the decision layer as
+where they get resolved.
+
+- [ ] `versions_with_install_scripts` in the log counts every version in the
+      document, not the version being installed. Stage 2 needs the resolved
+      version's answer, which needs the tarball request correlated against the
+      packument records. The same correlation `dist.integrity` already does in Stage 1
+      (`src/store.rs`), applied to a second field.
+- [ ] Range resolution still lives nowhere. `dist-tags.latest` is kept as a string
+      and deliberately not resolved: the lodash fixture tags `4.18.1` while the
+      document carries only `4.17.21`, so a tag can name a version the `versions`
+      map omits. Needed by the `versions_with_install_scripts` item above, which cannot
+      answer for the installed version until a range resolves to one.
+- [ ] A document that does not normalise is no longer rewritten either, since the
+      URLs come from the records. Without records there is nothing to gate on
+      anyway, and it is logged `UNINSPECTED`, but it does mean an unmodellable
+      document loses artifact visibility as well as metadata.
+- [ ] Forwarding a packument unrewritten now means every artifact for that package
+      is fetched wherever the document says, which for pnpm and yarn is not through
+      the proxy. Every such path logs `UNINSPECTED`: unreadable client encodings, no
+      `Host` and no configured base, over the size cap, undecodable, unnormalizable,
+      unserializable, and per-version artifacts on another origin. Stage 1 forwards
+      in all of them. **Stage 2 has to decide whether that stays acceptable**, since
+      the fail-open default is now weaker than it was.
+
 ### Deferral status codes
 
 Moved from Stage 1, where the client behaviour was measured but nothing could produce
@@ -1285,7 +1270,16 @@ a deferral: there was no mirror to warm and nothing analysing. See
 `docs/engineering_decisions/deferral-status-codes.md`.
 
 - [ ] Per-client code selection inferred from user-agent (already parsed for dialect);
-      shipped table of known clients, operator-forceable global override
+      shipped table of known clients, operator-forceable global override. Keyed on the
+      user-agent the proxy sees, which for yarn 4 is
+      `got (https://github.com/sindresorhus/got)` and not yarn at all.
+- [ ] `[!]` Implement 503 and 429. Carried from Stage 1, where the split was decided
+      (**502** upstream unreachable or malformed, **503** we are not ready, **429** this
+      one artifact is under analysis) and only 502 could be built: there was no mirror to
+      warm and nothing analysing, so implementing either of the others meant inventing
+      the trigger. The mirror and the analysis queue are what give them a cause.
+- [ ] A bounded internal wait is not a fallback but the main mechanism for bun,
+      which no code and no `Retry-After` buys any time from. Stage 2.
 - [ ] Unknown user-agent falls back to **503** — fail toward the more widely retried code
 - [ ] Machine-readable reason + artifact digest in response header and body (neither
       code distinguishes cold-start from per-artifact analysis on its own)
@@ -1314,6 +1308,9 @@ changes to the core, that is the finding — make it now, not after five adapter
       information yet.
       Moved from Stage 1: this stage extracts the adapter interface, which is when there
       is enough information to judge.
+- [ ] Provenance and attestation fetching for PyPI, which has its own metadata shape.
+      Carried from Stage 1, which measured the npm side only: npm asks its own registry
+      for `/-/npm/v1/keys` and never contacts the host the packument named.
 - [ ] `[!]` PEP 503 simple-index transport, written concretely first
 - [ ] `[!]` Extract the adapter interface (transport + normalizer) from the two working
       implementations — refactor, not upfront design
@@ -1453,6 +1450,25 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
                   reason on anything older.
             - [ ] yarn 2+ is skipped on this machine, where the default node is 16. It
                   passes under node 24.
+- [ ] **The bound caps live memory, and RSS barely moves: 1,501 MB unbounded against
+      1,436 MB at 8, and still 882 MB at 1.** Peak RSS is dominated by glibc holding
+      freed allocations rather than by what is live. `MALLOC_ARENA_MAX=1` cuts the
+      peak to 919 MB and raises the median from 223 MB to 703 MB, so it trades one
+      for the other rather than fixing it. The real lever is allocating less per
+      packument.
+      Superseded in part: that lever was pulled in Stage 1 (artifact URLs
+      rewritten by targeted byte replacement rather than a `serde_json::Value` tree),
+      which took peak RSS on 24 simultaneous large packuments from 1,436 MB to 472 MB.
+      What is left here is whether the remaining retention is worth chasing.
+- [ ] The store is per-process and dies with the proxy. It also holds the whole
+      `NormalizedPackument`, not just what the fetch path needs, which makes the
+      concurrency-memory item worse rather than better. Measured RSS after an
+      `express + @babel/code-frame` install holding 70 packuments and 2,576
+      records: 25 MB.
+- [ ] `waharoa doctor` should check that the configured public URL resolves
+      and matches what lockfiles in the project record. This is the failure
+      an operator will actually hit.
+
 - [ ] `[!]` Analysis cache keyed by **tarball content digest** (install-script presence,
       source diff, capability analysis — permanently valid). Metadata always passes
       through to upstream; no binary caching.
