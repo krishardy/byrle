@@ -13,6 +13,7 @@ pub mod http;
 pub mod identity;
 pub mod integrity;
 pub mod npm;
+pub mod policy;
 pub mod proxy;
 pub mod record;
 pub mod refusal;
