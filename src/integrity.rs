@@ -461,3 +461,48 @@ mod live_tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    const ALL: [Algorithm; 3] = [Algorithm::Sha256, Algorithm::Sha384, Algorithm::Sha512];
+
+    fn any_algorithm() -> Algorithm {
+        let i: usize = kani::any();
+        kani::assume(i < ALL.len());
+        ALL[i]
+    }
+
+    /// `Ord` on `Algorithm` is how `Sri::parse` picks the strongest when an integrity
+    /// string names several, and the enum's ordering is the only thing that makes that
+    /// correct. Reordering the variants would silently make the parser prefer the weakest
+    /// hash on offer, which every test using a single-algorithm fixture would still pass.
+    ///
+    /// Digest length is the independent statement of strength: 32, 48, 64 bytes.
+    #[kani::proof]
+    fn ordering_is_by_strength() {
+        let a = any_algorithm();
+        let b = any_algorithm();
+        assert_eq!(a < b, a.digest_len() < b.digest_len());
+        assert_eq!(a == b, a.digest_len() == b.digest_len());
+    }
+
+    /// The two directions of the name mapping agree, so an algorithm this can parse is one
+    /// it can also print. `Display` is used in the mismatch message a digest failure
+    /// reports, which is the one place an operator reads it.
+    #[kani::proof]
+    fn parsing_a_name_this_prints_gives_it_back() {
+        let a = any_algorithm();
+        assert!(Algorithm::parse(a.as_str()) == Some(a));
+    }
+
+    /// Every algorithm names a length, and it is one SRI actually uses. A zero here would
+    /// make `decode_digest` accept an empty digest.
+    #[kani::proof]
+    fn every_algorithm_has_a_real_digest_length() {
+        let a = any_algorithm();
+        let len = a.digest_len();
+        assert!(len == 32 || len == 48 || len == 64);
+    }
+}

@@ -169,6 +169,83 @@ impl std::fmt::Display for DeferTest {
     }
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+    use crate::identity::PackageKey;
+
+    const SCOPES: [Scope; 3] = [Scope::Packument, Scope::Tarball, Scope::All];
+
+    /// A target in scope for something, so the time comparison is what decides rather
+    /// than `Scope::covers` short-circuiting every case to `None`.
+    fn covered_target() -> RequestTarget {
+        RequestTarget::Packument(
+            PackageKey::from_registry_name(crate::identity::Ecosystem::Npm, "w").unwrap(),
+        )
+    }
+
+    fn any_deferral() -> DeferTest {
+        let i: usize = kani::any();
+        kani::assume(i < SCOPES.len());
+        let bounded: bool = kani::any();
+        let seconds: u64 = kani::any();
+        DeferTest {
+            status: 503,
+            retry_after: None,
+            scope: SCOPES[i],
+            duration: bounded.then(|| Duration::from_secs(seconds)),
+        }
+    }
+
+    /// A bounded deferral models a proxy warming up, so once it has lifted it must stay
+    /// lifted. A deferral that came back would be a client that had already retried
+    /// successfully being turned away again, which is a failed install rather than a
+    /// slow one.
+    ///
+    /// Over every scope, both bounded and unbounded, and every pair of times in order.
+    #[kani::proof]
+    fn a_deferral_that_has_lifted_never_comes_back() {
+        let deferral = any_deferral();
+        let target = covered_target();
+
+        let earlier: u64 = kani::any();
+        let later: u64 = kani::any();
+        kani::assume(later >= earlier);
+
+        if deferral
+            .applies_to(&target, Duration::from_secs(earlier))
+            .is_none()
+        {
+            assert!(
+                deferral
+                    .applies_to(&target, Duration::from_secs(later))
+                    .is_none()
+            );
+        }
+    }
+
+    /// An unbounded deferral is the one that measures a retry budget, so it must never
+    /// lift however long the proxy has been running.
+    #[kani::proof]
+    fn an_unbounded_deferral_never_lifts() {
+        let i: usize = kani::any();
+        kani::assume(i < SCOPES.len());
+        let deferral = DeferTest {
+            status: 429,
+            retry_after: Some(1),
+            scope: SCOPES[i],
+            duration: None,
+        };
+        let target = covered_target();
+
+        let at: u64 = kani::any();
+        assert!(
+            deferral.applies_to(&target, Duration::from_secs(at))
+                == deferral.applies_to(&target, Duration::ZERO)
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

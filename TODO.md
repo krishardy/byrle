@@ -901,6 +901,28 @@ implementations.
             better on its own terms: the input is attacker-controlled, comparing against
             zero is the only question asked, and float parsing brings rounding and NaN to
             a decision that has neither.
+      - [x] Nine harnesses, `make verify`, 2m01s. Each was checked against a mutation of
+            the thing it claims, because a proof that passes vacuously reads as coverage:
+            - `http`: `is_zero_qvalue` matches RFC 9110 §12.4.2 exactly, over five bytes
+              of `{0 . 1 a}`; an absent `Accept-Encoding` means identity.
+            - `integrity`: `Ord` on `Algorithm` is ordering by digest length, which is
+              what makes `Sri::parse` pick the strongest hash on offer. Reordering the
+              variants would silently prefer the weakest, and every single-algorithm
+              fixture would still pass. Also that the name mapping round-trips and every
+              algorithm names one of the three real digest lengths.
+            - `refusal`: a client name is one lowercase token, carrying no delimiter and
+              nothing after one, and a user-agent of only delimiters has no client at all.
+              This is the rule the per-client table rests on: `pnpm/10.33.0 npm/? ...`
+              and `yarn/1.22.22 npm/? ...` both contain `npm/`. The two cost 53s and 34s
+              of the run because `client_name` allocates; the rest are milliseconds.
+            - `defer`: a bounded deferral that has lifted never comes back, over every
+              scope and every pair of times in order, and an unbounded one never lifts.
+              A deferral that came back would turn away a client that had already
+              retried successfully.
+      - [x] Out of reach, recorded so it is not attempted again: the `ETag` round-trip,
+            because `base_tag` hashes with SHA-256, and `encoding_to_request`, which
+            lowercases each token and did not complete on three arbitrary bytes in two
+            minutes.
       - [ ] Still owed, both Stage 2: the §5.5 action lattice and per-parameter
             monotonicity.
 - [ ] Self-detection of bypass: a packument served with no artifact request following it
