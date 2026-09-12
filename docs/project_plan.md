@@ -187,10 +187,10 @@ streams:
       maven: [match, enrich]
 ```
 
-**`malware` is deliberately separate from `match`.** The §5.5 non-overridable floor is
-scoped to `known_malware: block`, so any stream holding `malware` for an ecosystem can
-trigger the one rule nobody can override. That is a far higher trust bar than reporting
-a CVE, and granting it must be explicit.
+**`malware` is deliberately separate from `match`.** Known malware always blocks and has
+no exception (§5), so any stream holding `malware` for an ecosystem can trigger the one
+check an operator cannot write their way past. That is a far higher trust bar than
+reporting a CVE, and granting it must be explicit.
 
 **Declared by the plugin, overridable by the operator.** The plugin ships an honest
 self-assessment; operators can demote a stream they distrust for a given ecosystem.
@@ -349,161 +349,174 @@ in blocking mode. Every ecosystem carries a published maturity tier
 
 ## 5. Policy configuration
 
-Single YAML file. Global defaults, per-ecosystem overrides, a cross-cutting exception
-list.
+Single YAML file. Global settings, and per-package exceptions to them. The decision flow
+chart, the reasoning and the measurements behind it are in
+[engineering_decisions/policy-tier-resolution.md](engineering_decisions/policy-tier-resolution.md).
 
 ```yaml
 version: 1
 
-defaults:
-  known_malware: block
-  cooldown:
-    action: quarantine
-    days: 7
-  install_scripts: warn
-  provenance_required: false
+# Thresholds. One value each for the deployment.
+cooldown_days: 7
+max_cvss: 6.9
 
-ecosystems:
-  npm:
-    provenance_required: true
-    install_scripts:
-      action: allow
-      loosens_global: true
-      reason: "node-gyp builds until we vendor prebuilts"
-      expires: 2026-11-30
-  cargo:
-    cooldown: { action: block, days: 14 }
+# Whether these checks run. `block` or `allow`.
+install_scripts: block
+kev: block
 
-exceptions:                 # ⚠ SUPERSEDED PENDING REVIEW — see §5.5
+# Explicitly forbidden. Exact versions, permanent, absolute.
+denials:
+  - purl: "pkg:npm/chalk@5.6.1"
+    reason: "compromised release, Sept 2025"
+
+# Exceptions. Per package. May only loosen.
+packages:
   - match: { ecosystem: npm, name: "@mycompany/*" }
-    set: { cooldown: allow, provenance_required: false }
+    set: { cooldown_days: 0 }
     reason: "internal, published by our CI"
-    expires: 2026-12-31
+    permanent: true
     added_by: alice
+
+  - match: { ecosystem: npm, purl: "pkg:npm/legacy-thing@2.1.0" }
+    set: { kev: allow, cve_ids: ["CVE-2024-1234"] }
+    reason: "mitigated by network policy"
+    expires: "2026-11-30"
+    added_by: bob
 ```
 
-### Merge semantics
+**Every setting is global. Every exception is per package. Nothing is per ecosystem.**
 
-- Ecosystem rules **override** global rules.
-- Overrides that **loosen** the effective policy emit a warning.
-- List-valued rules **replace** rather than union (predictable, safer).
-- Exceptions are a separate selector list, not nested in `ecosystems`, because
-  internal-scope packages cut across ecosystems and every adopter needs them on day one.
+### The checks
 
-### Defining "looser"
+| check | scope | may be excepted |
+|---|---|---|
+| explicitly forbidden (`denials`) | per package | no |
+| known malware | not configurable | no |
+| `cooldown_days`, the age threshold | global | yes |
+| `kev` | global | yes |
+| `max_cvss` | global | yes, per CVE id |
+| `install_scripts` | global | yes |
 
-Action values form a lattice: `allow < warn < quarantine < block`. Any move down the
-order is loosening.
+Three things are not configurable at all:
 
-Parameterized rules need a **declared monotonicity direction per parameter** — it
-cannot be inferred:
+- **Known malware always blocks.** No setting and no exception. It is behaviour rather
+  than policy.
+- **Which ecosystems run which check.** `install_scripts` is asked of every ecosystem, and
+  Go has no install step to ask about. That is a property of Go, not something an operator
+  sets. Such a check reports **not-applicable**, never a violation.
+- **Whether a check may be excepted.** An organisation that does not want KEV exceptions
+  writes none.
 
-| Parameter | Stricter direction |
-|---|---|
-| `cooldown.days` | higher |
-| `min_package_age` | higher |
-| `max_cvss` | lower |
+### Evaluation
 
-Getting one backwards fires warnings in exactly the wrong direction, which is worse
-than having none. Where an override is **incomparable** (e.g. `block/3d` -> `warn/30d`),
-warn: fail loud when tightening cannot be proven.
-
-**Not-applicable is not loosening.** `install_scripts` has no meaning for Go modules.
-Report N/A in `explain`; do not warn, or the channel becomes noise.
-
-### Acknowledgment
-
-Warnings emit **at config load and in `explain`**, never per-request — per-package
-warnings become wallpaper within a day.
-
-If loosening warnings cannot be acknowledged, users silence them by deleting the
-global rule, which removes the baseline for every other ecosystem. So:
-
-- Unacknowledged loosening -> warns
-- `loosens_global: true` + `reason` + `expires` -> logs to audit trail, passes `--strict`
-- Expired acknowledgment -> warns again
-
-Same discipline as the exception list, so there is one mental model for both.
-
-### 5.5 Package-level overrides and denials — RESOLVED
-
-Evaluation order, most authoritative first. First match short-circuits.
+Every check runs. Each appends one result to a decision vector, and the disposition is
+taken from the whole vector rather than at the first failure.
 
 ```
-denials  ->  floor  ->  packages  ->  ecosystems  ->  defaults
+  denials          passed
+  known_malware    passed
+  cooldown_days    failed    -> quarantine    (published 2 days ago, needs 7)
+  kev              excepted  -> allow         (packages[3], expires 2026-11-30)
+  max_cvss         passed
+  install_scripts  failed    -> block         (no exception)
+
+  decision: block
 ```
 
-#### `denials` — permanent, absolute
+The decision is the strongest action in the vector. The outcome is identical to stopping
+at the first failure, because every check must pass for a package to be delivered. What
+changes is what is known when the answer is given: every reason rather than the first,
+`explain` with nothing to reconstruct, `policy diff` that names which check moved, and
+observe-only as "record it and deliver anyway" rather than a second path through the
+engine.
+
+Four results, and three of them contribute `allow`:
+
+| result | meaning | contributes |
+|---|---|---|
+| `passed` | the check had nothing against this package | `allow` |
+| `failed` | it did | its action |
+| `excepted` | it did, and a `packages` entry excused it | `allow` |
+| `not_applicable` | the check has no meaning for this ecosystem | `allow` |
+
+They are distinguished anyway, because what an operator needs to know is not the same as
+what the decision needs. `excepted` is the one carrying operational risk and is what an
+expiry review has to find; an exception that never reaches `excepted` is doing no work.
+
+The short circuit survives in one place: in front of expensive analysis. None of the
+checks above costs anything worth deferring for, but Stage 4's capability analysis and
+source diff do, and they run only if the cheap vector has not already settled the answer.
+
+### Actions
+
+`allow < quarantine < block`. Each has a producer:
+
+| | meaning | produced by |
+|---|---|---|
+| `allow` | delivered | everything that passes |
+| `quarantine` | refused now, allowed later | a package younger than `cooldown_days` |
+| `block` | refused | denials, known malware, KEV, a CVE over `max_cvss`, install scripts |
+
+`quarantine` lapses without anyone doing anything, which is what separates it from
+`block`. It is a **packument filter**, not an artifact refusal: the version is removed
+from the document the client resolves against, so the client picks an older one by itself
+rather than failing.
+
+There is no `warn`. Nothing delivers-with-a-concern.
+
+### Provenance is recorded, not required
+
+`dist.attestations` and the rest are kept on the package record and shown in `explain`.
+Nothing is refused for lacking them.
+
+Measured on the 138 packages of a real `npm install express eslint`: 112 (81%) publish no
+provenance, against 0 that carry an install script. Every other check fires on a minority,
+which is why per-package exceptions work for them. Requiring provenance would forbid the
+majority and the exception list would become the dependency list.
+
+It is also the one check that cannot be asked of every ecosystem: npm has
+`dist.attestations`, PyPI has PEP 740 at low coverage, cargo has nothing, Maven has GPG
+signatures, which are identity rather than build provenance, and Go has a checksum
+database, which is tamper-evidence. A global requirement would forbid 100% of three
+ecosystems.
+
+### `denials` — permanent, absolute
 
 Structurally separate from `packages`, not a flag on a shared record. Always exact
-version, always tightening, never expires, never overridable by any tier. The type has
-no `expires` field and no code path that consults precedence, so a denial with an
-expiry date is unrepresentable rather than merely discouraged. Evaluated first and
-short-circuits, so denials outrank even the floor.
+version, always tightening, never expires, never overridable. The type has **no `expires`
+field**, so a denial with an expiry date is unrepresentable rather than merely
+discouraged.
 
-#### `floor` — non-overridable minimum, per ecosystem
+### `packages` — the exception tier
 
-Structurally separate from `defaults`. The merge function that handles `defaults` never
-receives floor rules, so no code path exists by which a lower tier could override one.
-In Rust this is a distinct type with no override constructor — compiler-enforced rather
-than a runtime check.
-
-- **Operator-extensible.** Any rule may be promoted into the floor, so a security team
-  can make `provenance_required: true` unbypassable for their org.
-- **`known_malware: block` is pinned and cannot be removed.** Otherwise "editable floor"
-  collapses into "no floor."
-- **Per-ecosystem, and mandatory for every enabled ecosystem.** A missing floor for an
-  enabled ecosystem is a **startup failure**, not a default. You cannot silently begin
-  proxying a new ecosystem with no floor.
-  - ⚠ **Breaking-change policy:** adding an adapter breaks existing configs until a
-    floor is declared. Shipped templates must include floors for every supported
-    ecosystem so the default path is not a startup failure.
-- Floor rules that do not apply to an ecosystem report **not-applicable**, never a
-  violation.
-- **Threat model scope:** the floor guards against careless overrides at lower tiers. It
-  does not defend against someone with write access to the policy file, who can edit the
-  floor directly. State this explicitly; do not imply a stronger guarantee.
-- Because a floor rule can wedge every build with no escape hatch below it, `explain`
-  renders the floor as its own section rather than folding it into effective policy, and
-  `policy check` reports floor blast radius against a recent lockfile before deploy.
-
-#### `packages` — unified override tier
-
-Replaces the earlier separate `exceptions` block. One syntax, one code path. The tier
-handles both loosening (the common case) and tightening (e.g. raising cooldown on a
-package you distrust), so `packages` is the honest name.
+One syntax, one code path. It may only **loosen**: an entry that would tighten is a
+load-time error, because tightening a single package is not something this tier is for and
+allowing it would reopen questions about what outranks what.
 
 - **`ecosystem` is a required field on every selector.** Package names do not collide
-  meaningfully across registries — npm `requests` and PyPI `requests` are unrelated
-  projects — so a cross-ecosystem match is almost always a mistake. Requiring it makes
-  tiers strictly linear, removes an axis from containment logic, and makes
-  `{name: "*", cooldown: 0}` impossible to write by accident. `purl` selectors satisfy
-  this inherently. Additive path if a real case appears: allow `ecosystem: [npm, pypi]`
-  as an explicit list.
-- **Tiers are strictly linear.** Tiers encode how many packages a rule affects, not how
-  narrowly its conditions are scoped.
+  meaningfully across registries, npm `requests` and PyPI `requests` being unrelated
+  projects, so a cross-ecosystem match is almost always a mistake. Requiring it removes an
+  axis from containment logic and makes `{name: "*", cooldown_days: 0}` impossible to
+  write by accident. `purl` selectors satisfy this inherently.
 
-**Loosening requires justification, and emits no warning.** Warnings are correct at the
-ecosystem tier where loosening is unexpected; here it is the tier's purpose, and
-per-entry warnings would become noise that hides the ecosystem-tier warnings that
-matter. A required field cannot be ignored the way a warning can. Tightening entries
-need no justification.
+**Loosening requires justification, and emits no warning.** A warning per entry would
+become noise that hides everything else. A required field cannot be ignored the way a
+warning can.
 
-- `reason` — always required on loosening entries
-- `expires` — required, **maximum 90 days from today**
+- `reason` — always required
+- `expires` — required, **maximum 90 days from today**, configurable
 - `permanent: true` — explicit alternative to `expires`, requires `reason`, and is
-  reported separately by `policy check` so genuine invariants (internal namespaces)
-  stay individually visible instead of hiding among dated entries
+  reported separately by `policy check` so genuine invariants stay individually visible
+  instead of hiding among dated entries
 
-Rationale for expiry: a justification is true when written and silently stops being
-true later. Reviewed versions get superseded, internal packages change owners, the
-blocker gets fixed and nobody deletes the entry. Expiry inverts the default so an
-unexamined entry dies rather than persisting — deletion becomes the outcome of
-inattention, which is the safe direction.
+Rationale for expiry: a justification is true when written and silently stops being true
+later. Reviewed versions get superseded, internal packages change owners, the blocker gets
+fixed and nobody deletes the entry. Expiry inverts the default so an unexamined entry dies
+rather than persisting, which makes deletion the outcome of inattention.
 
-**Loosening is measured against the effective policy above the rule**, not the global
-default. Otherwise a rule that loosens relative to its ecosystem but happens to match
-global slips through unjustified.
+An entry that changes nothing is **valid**. It warns at load and `doctor` flags it,
+because it is almost always a selector that no longer matches what it was written for, but
+it does not stop a policy from loading.
 
 #### Match resolution: most-specific-wins by subset containment
 
@@ -511,68 +524,44 @@ Specificity is a **strict subset relation**, not a heuristic score. A is more sp
 than B if the set of packages A matches is a strict subset of B's:
 
 - `@mycompany/foo` ⊂ `@mycompany/*` ⊂ `*`
-- exact version ⊂ version range ⊂ any version
+- exact version ⊂ any version
 - selector + predicate (`has_install_scripts: true`) ⊂ same selector without it
 
-Decidable because the predicate vocabulary is closed — a direct payoff of the
-hand-rolled engine over Rego, where an open expression language would make containment
-undecidable.
+Decidable because the predicate vocabulary is closed, a direct payoff of the hand-rolled
+engine over Rego, where an open expression language would make containment undecidable.
+Keeping it closed is enforced at load: a name is `*`, `prefix*` or a literal, and a version
+is exact or absent. Admitting a range and reporting "incomparable" would be worse than
+refusing it, because the overlap check below could no longer fire either.
 
-- **Incomparable overlaps are a load-time error.** `{name: "@mycompany/*"}` vs.
-  `{name: "*", has_install_scripts: true}` overlap with neither containing the other.
-  No principled winner exists, so refuse to start and require an explicit disambiguating
-  entry. This is what makes most-specific-wins safe: it never silently guesses.
-- Exact-duplicate selectors are also a load-time error.
+- **Incomparable overlaps are a load-time error.** `{name: "a*", has_install_scripts:
+  true}` vs `{name: "ab*"}` overlap with neither containing the other. No principled
+  winner exists, so refuse to start and require an explicit disambiguating entry. This is
+  what makes most-specific-wins safe: it never silently guesses.
+- **Exact duplicates are a separate load-time error.** They are comparable and still
+  wrong: whichever wins, the other is dead, and which one depends on file order.
 - `explain` shows the winning selector **and** the ones it beat.
-- `policy check` flags selectors that can never win because a strictly more specific
-  entry always shadows them.
+- `policy check` flags selectors that can never win because a strictly more specific entry
+  always shadows them.
+
+#### Defining "looser"
+
+`allow < quarantine < block`. Any move down the order is loosening. Parameterized settings
+need a **declared monotonicity direction per parameter**, which cannot be inferred:
+
+| Parameter | Stricter direction |
+|---|---|
+| `cooldown_days` | higher |
+| `max_cvss` | lower |
+
+Getting one backwards would refuse entries that tighten and accept entries that loosen,
+which is worse than having no check. Where a change is **incomparable**, refuse: an entry
+whose direction cannot be proven is not one to admit.
 
 #### Version ranges
 
 Resolved by the **normalizer** into a concrete match set before the policy engine sees
-them, keeping semver / PEP 440 / cargo range syntax in the adapter layer. Validate
-against the PyPI adapter before freezing the interface.
-
-#### Example
-
-```yaml
-version: 1
-
-denials:
-  - purl: pkg:npm/chalk@5.6.1
-    reason: "compromised release, Sept 2025"
-
-floor:
-  npm:
-    known_malware: block        # pinned, cannot be removed
-    provenance_required: true
-  pypi:
-    known_malware: block
-
-defaults:
-  cooldown: { action: quarantine, days: 7 }
-  install_scripts: warn
-
-ecosystems:
-  npm:
-    install_scripts:
-      action: allow
-      loosens_global: true
-      reason: "node-gyp builds until we vendor prebuilts"
-      expires: 2026-11-30
-
-packages:
-  - match: { ecosystem: npm, name: "@mycompany/*" }
-    set: { cooldown: { days: 0 } }
-    reason: "internal, published by our CI"
-    permanent: true
-    added_by: alice
-  - match: { ecosystem: npm, purl: "pkg:npm/chalk@5.6.2" }
-    set: { cooldown: { days: 0 } }
-    reason: "reviewed by security, fixes GHSA-xxxx"
-    expires: 2026-10-15
-    added_by: alice
-```
+them, keeping semver / PEP 440 / cargo range syntax in the adapter layer. Validate against
+the PyPI adapter before freezing the interface.
 
 ### Policy impact analysis
 
@@ -594,7 +583,7 @@ waharoa policy diff --from policy.yaml --to policy-new.yaml \
   what operators ask for; `block -> allow` is the more dangerous one to ship unnoticed.
 - **`--as-of <date>`.** Cooldown and exception expiry are both time-dependent. Running
   `--as-of +30d` against an *unchanged* policy shows exactly which packages break when
-  exceptions lapse. With the 90-day ceiling this is the renewal workflow: a scheduled job
+  entries lapse. With the 90-day ceiling this is the renewal workflow: a scheduled job
   surfacing upcoming expiries with concrete impact instead of a list of dates nobody can
   prioritize.
 - **Nonzero exit on any loosening transition**, so a policy repo can gate weakening
@@ -606,7 +595,7 @@ axum server-side, reqwest upstream, with no fetch trait in Stage 1. See
 [docs/engineering_decisions/http-stack-axum-reqwest.md](engineering_decisions/http-stack-axum-reqwest.md).
 ### Configuration format
 
-YAML, loaded by `serde-saphyr`. Decided by spike against the real §5.5 policy; see
+YAML, loaded by `serde-saphyr`. Decided by spike against the real policy; see
 [docs/engineering_decisions/config-format-yaml-serde-saphyr.md](engineering_decisions/config-format-yaml-serde-saphyr.md).
 The spike harness is kept runnable as `make spike-config`.
 ### Fetch path: streaming, buffering, and deferral
@@ -805,7 +794,8 @@ reasoning, alternatives and consequences live in the files, not here.
 | 5 | [License](engineering_decisions/license-apache-2.md) | Apache-2.0, DCO, trademark separate |
 | 6 | [Intel distribution](engineering_decisions/intel-distribution-fetch-from-origin.md) | None; fetch from origin. SeaORM over SQLite and Postgres |
 | 7 | [NVD role](engineering_decisions/nvd-role-and-stream-capabilities.md) | `enrich`-only for npm/PyPI; per-ecosystem capability matrix |
-| 8 | [Package override tier](engineering_decisions/package-override-tier.md) | Separate `denials` / `floor` / `packages`; see §5.5 for the schema |
+| 8 | [Package override tier](engineering_decisions/package-override-tier.md) | Superseded by [policy-tier-resolution](engineering_decisions/policy-tier-resolution.md): no floor, `packages` loosens only |
+| 13 | [Policy tiers and evaluation](engineering_decisions/policy-tier-resolution.md) | Global settings, per-package exceptions, decision vector; supersedes the old §5 and §5.5 |
 | 11 | [Config format](engineering_decisions/config-format-yaml-serde-saphyr.md) | YAML via `serde-saphyr`; schema forbids `#[serde(untagged)]` |
 | 12 | [HTTP stack](engineering_decisions/http-stack-axum-reqwest.md) | axum + reqwest; no fetch trait in Stage 1 |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |

@@ -1,7 +1,7 @@
 # Policy shape and how a package is judged
 
-- **Status:** Decided. Supersedes plan §5 and §5.5.
-- **Plan reference:** §5 and §5.5, both of which now describe something else
+- **Status:** Decided. Plan §5 rewritten to match; the old §5.5 is gone.
+- **Plan reference:** §5
 - **Related:** [package-override-tier](package-override-tier.md),
   [policy-engine-hand-rolled](policy-engine-hand-rolled.md)
 
@@ -256,11 +256,11 @@ ecosystems.
 Stage 1 already records all of it: `record::Provenance` carries `attestation_url`,
 `predicate_type`, `registry_signatures` and `trusted_publisher`.
 
-## What this changes in the plan
+## What this changed in the plan
 
-§5 and §5.5 describe a different system. Both need rewriting:
+§5 and §5.5 described a different system. §5 has been rewritten and §5.5 removed:
 
-| plan says | now |
+| the plan said | now |
 |---|---|
 | `ecosystems:` overrides global rules per ecosystem | no per-ecosystem settings exist |
 | `floor:`, mandatory per enabled ecosystem, startup failure if missing | no floor tier |
@@ -273,7 +273,8 @@ Stage 1 already records all of it: `record::Provenance` carries `attestation_url
 | KEV | absent from the plan entirely |
 
 Two things §5.5 got right and keep earning their place: **not-applicable is never a
-violation**, and **specificity is strict subset containment, not a score**.
+violation**, which the redesign made more load-bearing rather than less, and
+**specificity is strict subset containment, not a score**.
 
 ## Evaluation
 
