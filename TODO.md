@@ -1178,14 +1178,36 @@ The spec gets frozen here.
       gone rather than having it ignored.
 - [x] `[!]` `ecosystem` required on every package selector (load-time error if absent).
       Not an `Option` in `Selector`, so a selector without it does not parse.
-- [ ] `[!]` Loosening requires `reason` + `expires`; **no warning emitted**
-- [ ] `[!]` `expires` ceiling of 90 days from today, configurable
+- [x] `[!]` Loosening requires `reason` + `expires`; **no warning emitted**.
+      `src/policy/packages.rs`. Nothing in this tier warns: loosening is its purpose, and
+      a warning per entry would become noise hiding the ecosystem-tier warnings that
+      matter. An unjustified loosening is refused at load instead, because a required
+      field cannot be ignored the way a warning can.
+      - [x] `reason` is required on every entry by the schema, tightening ones included,
+            so what loosening additionally requires is `expires` or `permanent: true`.
+      - [x] An entry that tightens one rule and loosens another is still a loosening. It
+            is not excused by what it gave in the other direction.
+      - [x] Tightening entries need nothing: nothing was given away.
+- [x] `[!]` `expires` ceiling of 90 days from today, configurable.
+      `WAHAROA_EXPIRY_CEILING_DAYS`. Both the ceiling and the day it counts from are
+      arguments, so `policy check --as-of` can ask what a policy would be judged as on
+      another day. The refusal says what it found, what the latest allowed date is, and
+      the ceiling.
+      - [x] The ceiling applies to tightening entries too. An entry that expires is
+            making a claim about time whichever direction it moves the policy.
 - [x] `[!]` `permanent: true` as explicit alternative, requires `reason`. `reason` is
       required on every package rule, so it holds for permanent ones by construction.
       Alternative is enforced: an entry carrying both `expires` and `permanent: true` is
       refused, because it says two different things about when it stops being true and
       whichever the code read would be a silent choice.
-- [ ] `[!]` Loosening measured against effective policy **above the rule**
+- [x] `[!]` Loosening measured against effective policy **above the rule**: the ecosystem
+      merge for the entry's own ecosystem, not the global default. Tested with the case
+      that distinguishes them, where global says `warn`, the ecosystem tightened to
+      `block`, and the entry's `warn` matches global exactly and is still a loosening of
+      what actually applies.
+      - [x] The comparison is shared with the ecosystem tier through `RuleValues` rather
+            than written twice. Two comparisons that could disagree about what "looser"
+            means is the failure the single `direction_of` table prevents one level down.
 - [ ] `[!]` Specificity as strict subset containment, not a score
 - [ ] `[!]` Incomparable overlaps and exact duplicates are load-time errors
 - [ ] Range resolution in the normalizer, never in the engine

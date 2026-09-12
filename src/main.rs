@@ -16,7 +16,7 @@ use waharoa::doctor;
 use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
-use waharoa::policy::{Policy, merge};
+use waharoa::policy::{Policy, merge, packages};
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
 use waharoa::refusal::RefusalStatus;
 use waharoa::store::DEFAULT_MAX_RECORDS;
@@ -51,6 +51,7 @@ Proxy configuration, all through the environment:
   WAHAROA_POLICY                    path to a policy file. Loaded, validated and
                                     reported at startup; NOT yet enforced, because the
                                     engine that would consult it does not exist
+  WAHAROA_EXPIRY_CEILING_DAYS       how far ahead a `packages` entry may be dated (90)
   WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (8)
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
                                     \"default=403,npm/pnpm=451\" (default 403)
@@ -86,14 +87,21 @@ fn report_policy(path: &std::path::Path) {
         .check_enabled(ENABLED_ECOSYSTEMS)
         .unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
 
+    let today = jiff::Zoned::now().date();
+    let ceiling = std::env::var("WAHAROA_EXPIRY_CEILING_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(packages::DEFAULT_EXPIRY_CEILING_DAYS);
+    packages::check(&policy, today, ceiling).unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
+
     warn!(
         path = %path.display(),
         "policy loaded and validated, and NOT enforced: nothing consults it yet"
     );
 
     // §5.5 emits these at config load and never per request, which is the only place
-    // they stay readable.
-    let today = jiff::Zoned::now().date();
+    // they stay readable. The `packages` tier is not among them: loosening is that
+    // tier's purpose, so it is required to justify itself rather than warned about.
     for ecosystem in policy.ecosystems.keys() {
         let (_, findings) = merge::merge(&policy, ecosystem, today);
         for finding in findings {
