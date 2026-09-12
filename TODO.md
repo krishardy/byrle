@@ -1076,16 +1076,38 @@ The spec gets frozen here.
       variants cannot silently reverse the lattice.
       - [x] Comparing two actions is never undecided: the lattice is a total order, so
             incomparability arises only when dimensions are combined.
-- [ ] `[!]` Global -> ecosystem merge; ecosystem overrides win
+- [x] `[!]` Global -> ecosystem merge; ecosystem overrides win. `src/policy/merge.rs`.
+      A rule the ecosystem does not set keeps the default, so a sparse ecosystem block is
+      the normal case. `known_malware` is not in `EcosystemRules` at all, so it cannot be
+      weakened per ecosystem.
 - [x] `[!]` Per-parameter monotonicity declarations (cooldown.days ↑, max_cvss ↓, ...).
       One table, `direction_of`, rather than a direction at each use site, so a parameter
       cannot be compared one way in the merge and the other way in `policy diff`.
       - [x] The two directions are proved mirror images over every pair of values.
             Getting one backwards fires warnings in exactly the wrong direction, which
             the plan calls worse than having none.
-- [ ] `[!]` Loosening detection, including the incomparable case (warn on unprovable)
-- [ ] `[!]` N/A handling — not-applicable rules never count as loosening
-- [ ] `[!]` Loosening warnings emit at config load only, never per-request
+- [x] `[!]` Loosening detection, including the incomparable case (warn on unprovable).
+      Per rule, through `Strictness`. A cooldown moves in two dimensions and they can
+      disagree: `block/3d` overridden by `warn/30d` is incomparable and warns.
+      - [x] **A third answer was needed, and it is the common one.** When nothing above
+            set a rule there is no baseline, so the override loosened nothing. That is not
+            `Same`, which claims a comparison that never happened, and not
+            `NotApplicable`, which claims the rule has no meaning here.
+            `Strictness::Unset` is the ordinary shape of a real config, where `defaults`
+            is sparse and ecosystems fill it in.
+      - [x] `provenance_required` goes through the same machinery as a number rather than
+            being compared its own way: required is stricter, so it runs
+            `HigherIsStricter` over 0 and 1.
+- [x] `[!]` N/A handling — not-applicable rules never count as loosening. Keyed on the
+      ecosystem name as the policy file spells it, not on `identity::Ecosystem`, because a
+      policy can name an ecosystem before an adapter exists. §5.5's own example, Go
+      modules and `install_scripts`, is exactly such a case and is what the test uses: the
+      mechanism would otherwise have no live input and its proofs would be about dead
+      code. A rule applies unless it is known not to, since the other way round would hide
+      a real loosening behind an unrecognised name.
+- [x] `[!]` Loosening warnings emit at config load only, never per-request. `merge`
+      returns findings and logs nothing; the caller decides. Per-package warnings become
+      wallpaper within a day.
 - [ ] `[!]` `loosens_global` acknowledgment with required `reason` + `expires`
 - [ ] Expired acknowledgment re-warns
 - [ ] List-valued rules replace rather than union

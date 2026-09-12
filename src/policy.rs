@@ -34,6 +34,7 @@
 //! by `spikes/config-format/src/bin/poly.rs`, and again here by
 //! `an_unknown_key_inside_the_polymorphic_field_is_named`.
 
+pub mod merge;
 pub mod strictness;
 
 use serde::de::value::{MapAccessDeserializer, StrDeserializer};
@@ -260,7 +261,7 @@ pub enum Action {
 }
 
 /// `install_scripts: warn`, or a table carrying §5's acknowledgment.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ScriptRule {
     Bare(Action),
     Detailed(ScriptDetail),
@@ -292,7 +293,7 @@ impl<'de> Deserialize<'de> for ScriptRule {
     }
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct ScriptDetail {
     pub action: Action,
@@ -304,7 +305,7 @@ pub struct ScriptDetail {
     pub expires: Option<String>,
 }
 
-#[derive(Debug, Deserialize, PartialEq)]
+#[derive(Debug, Deserialize, PartialEq, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct CooldownRule {
     #[serde(default)]
