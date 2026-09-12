@@ -34,6 +34,31 @@ pub fn is_hop_by_hop(name: &str) -> bool {
     HOP_BY_HOP.iter().any(|h| name.eq_ignore_ascii_case(h))
 }
 
+/// Request headers that ask upstream to answer 304 instead of sending a body.
+///
+/// A 304 authorises the client to serve what it has cached. When the proxy rewrites
+/// bodies that is only safe for a body the proxy produced at this address, and only
+/// `If-None-Match` carries enough identity to tell: see [`unmark_if_none_match`]. The
+/// rest are dropped whole while rewriting, so the only conditional that reaches upstream
+/// is one this proxy issued the tag for.
+///
+/// yarn 4 sends `If-Modified-Since` alongside `If-None-Match` on every packument
+/// revalidation, measured over two installs of lodash. npm, pnpm, yarn 1 and bun sent no
+/// conditional at all in the same run: each served the second install from its own cache.
+/// RFC 9110 §13.1.3 has the server ignore the date when a tag is present, so dropping it
+/// changes nothing for yarn 4 and removes the case where a date arrives alone.
+pub const CONDITIONAL: &[&str] = &[
+    "if-none-match",
+    "if-match",
+    "if-modified-since",
+    "if-unmodified-since",
+    "if-range",
+];
+
+pub fn is_conditional(name: &str) -> bool {
+    CONDITIONAL.iter().any(|h| name.eq_ignore_ascii_case(h))
+}
+
 /// What the proxy will ask upstream for when it intends to read the body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestedEncoding {

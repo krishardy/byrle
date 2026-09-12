@@ -455,7 +455,23 @@ implementations.
             failure: the bytes never became a document to model.
       - [x] `DEFAULT_MAX_PACKUMENT_BYTES` moved to `http`, where the decoder is, so the
             proxy's own fetches and the bodies it forwards read one value.
-- [ ] Conditional requests (ETag / If-None-Match) so pass-through stays cheap
+- [x] Conditional requests (ETag / If-None-Match) so pass-through stays cheap. A
+      rewritten packument gets an `ETag` marked with the proxy's own address, and only a
+      tag issued here revalidates. See
+      `docs/engineering_decisions/packument-tarball-url-rewriting.md`.
+      - [x] The 304 response carries the marked tag, not the upstream's one it relays.
+            Four requests for lodash before: 200 (68,970 bytes), 304, 200, 304, because
+            the client stored the upstream tag off the 304 and it was dropped next time.
+            After: 200, then 304 every time.
+      - [x] While rewriting, `If-None-Match` is the only conditional forwarded.
+            `If-Match`, `If-Modified-Since`, `If-Unmodified-Since` and `If-Range` are
+            dropped: a 304 earned by a date says nothing about which proxy rewrote the
+            body the client holds.
+      - [x] Measured against real clients over two installs with a warm cache: yarn 4 is
+            the only one of the five that revalidates, and it sends `If-Modified-Since`
+            alongside `If-None-Match`. Its second run got a 304, saving 247,067 bytes.
+            npm, pnpm, yarn 1 and bun sent no conditional at all, serving the second
+            install from their own caches.
 
 ### Spikes and decisions (do these first)
 - [x] **SPIKE: config format, done. See plan §5.** Decision: **YAML via `serde-saphyr`**
@@ -816,6 +832,10 @@ implementations.
       is the signature of the pnpm behaviour, and would have caught it without anyone
       looking. Noisy, since a client may already hold the artifact or resolve a version it
       does not install, so a heuristic rather than a check.
+      - [ ] A tarball answered 304 is never hashed, because `VerifyingStream` runs over
+            a body and a 304 has none. Safe when the client cached those bytes through
+            this proxy, which is the only way it holds a copy it did not fetch directly.
+            Same family as the item above, one layer down.
       - [x] yarn 2+ and bun tested. Both added to `make dev-setup` as optional, and to
             `make smoke-clients`, which now covers five clients.
             - [x] **Both use `dist.tarball` as written**, like pnpm and yarn 1. npm is the

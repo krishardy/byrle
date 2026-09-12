@@ -135,6 +135,24 @@ which is a capability worth not having. They stay as they are, and
   This costs a packument re-fetch the first time a client with a warm cache meets a
   rewriting proxy. Tarball requests are unaffected, since tarballs are not rewritten and a
   304 on one is harmless.
+- **The 304 response carries the marked tag, not the upstream's.** A 304 relays the
+  upstream's `ETag`, and a client stores whatever comes back. Left alone that replaces the
+  marked tag with the upstream's; the next revalidation sends a tag the rule above drops,
+  and the client gets a full body. Four requests for lodash before the tag was marked on
+  the 304 path: 200 (68,970 bytes), 304, 200, 304. After: 200, then 304 every time. The
+  marked tag is byte-identical on both paths, because `mark_etag` is a function of the
+  upstream tag and the base, and a 304 by definition names the same upstream tag.
+- **While rewriting, `If-None-Match` is the only conditional forwarded.** `If-Match`,
+  `If-Modified-Since`, `If-Unmodified-Since` and `If-Range` are dropped whole, because a
+  304 earned by a date says nothing about which proxy rewrote the body the client holds.
+  yarn 4 sends `If-Modified-Since` alongside `If-None-Match` on every revalidation;
+  RFC 9110 §13.1.3 has the server ignore the date when a tag is present, so dropping it
+  changes nothing for yarn 4 and removes the case where a date arrives alone.
+
+  Measured over two installs of lodash through the proxy with a warm client cache: yarn 4
+  is the only one of the five clients that revalidates. Its second run sent the marked tag
+  and got a 304, saving 247,067 bytes. npm, pnpm, yarn 1 and bun sent no conditional at
+  all; each served the second install entirely from its own cache.
 - **Forwarding a packument unrewritten now means more than it used to.** It used to mean
   the metadata went unobserved; it now means every artifact for that package is fetched
   wherever the document says, which for pnpm and yarn is not through the proxy. Every such
