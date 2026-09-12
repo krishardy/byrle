@@ -86,24 +86,48 @@ fn configured_registry(client: &str) -> Option<String> {
     (!value.is_empty() && value != "undefined").then_some(value)
 }
 
-/// How many entries a client cache holds. `None` when there is no cache to look at.
-fn cache_entries(client: &str) -> Option<u64> {
-    let dir = match client {
-        "npm" => {
-            let output = std::process::Command::new("npm")
-                .args(["config", "get", "cache"])
-                .output()
-                .ok()?;
-            std::path::PathBuf::from(String::from_utf8(output.stdout).ok()?.trim()).join("_cacache")
+/// Where a client keeps its cache, asked of the client itself where it will say.
+///
+/// bun is the exception: `bun pm cache` needs a package.json in the working directory,
+/// which doctor cannot assume, so its documented default is used.
+fn cache_dir(client: &str) -> Option<std::path::PathBuf> {
+    let ask = |program: &str, args: &[&str]| -> Option<std::path::PathBuf> {
+        let output = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
         }
-        _ => return None,
+        let path = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        (!path.is_empty()).then(|| std::path::PathBuf::from(path))
     };
-    let index = dir.join("index-v5");
-    if !index.is_dir() {
-        return Some(0);
+
+    match client {
+        // npm's cache directory holds _cacache, and every cached response is one file
+        // under its index.
+        "npm" => Some(ask("npm", &["config", "get", "cache"])?.join("_cacache/index-v5")),
+        "pnpm" => ask("pnpm", &["store", "path"]),
+        "yarn" => ask("yarn", &["cache", "dir"]),
+        "bun" => match std::env::var("BUN_INSTALL_CACHE_DIR") {
+            Ok(dir) if !dir.is_empty() => Some(std::path::PathBuf::from(dir)),
+            _ => Some(
+                std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".bun/install/cache"),
+            ),
+        },
+        _ => None,
     }
-    // Every cached response is one file under index-v5, nested two levels deep.
-    Some(doctor::count_files(&index))
+}
+
+/// The client's cache when it holds something, `None` when it is empty, absent, or the
+/// client is not installed.
+fn warm_cache(client: &str) -> Option<std::path::PathBuf> {
+    std::process::Command::new(client)
+        .arg("--version")
+        .output()
+        .ok()?;
+    let dir = cache_dir(client)?;
+    (dir.is_dir() && doctor::count_files(&dir) > 0).then_some(dir)
 }
 
 /// Ask the proxy what it is. `None` when nothing answers, which is itself the finding.
@@ -171,7 +195,26 @@ async fn run_doctor() -> std::process::ExitCode {
         findings.push(doctor::check_lockfile(kind, &contents, &proxy));
     }
     findings.push(doctor::check_public_url(public.as_deref(), &recorded));
-    findings.push(doctor::check_cache("npm", cache_entries("npm")));
+    // Every client caches, and what a warm cache supplies never reaches the proxy. How
+    // much it supplies differs, so each is reported with what was measured for it.
+    for (client, bypass) in [
+        ("npm", doctor::CacheBypass::Complete),
+        ("pnpm", doctor::CacheBypass::Complete),
+        ("bun", doctor::CacheBypass::Complete),
+        ("yarn", doctor::CacheBypass::ArtifactsOnly),
+    ] {
+        if std::process::Command::new(client)
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            findings.push(doctor::check_cache(
+                client,
+                warm_cache(client).as_deref(),
+                bypass,
+            ));
+        }
+    }
 
     for finding in &findings {
         println!("{finding}");
