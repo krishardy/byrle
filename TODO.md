@@ -1228,6 +1228,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 ### Intel — advisory streams
 - [~] `[!]` **Verify each stream's data license before implementing it.** Done for four
       of six. `docs/engineering_decisions/advisory-stream-licences.md`.
+      - [x] **OSV's per-source licences read, 2026-09-13**, at
+            <https://google.github.io/osv.dev/data/>. All 17 native sources are permissive.
+            Only two reach npm: OpenSSF Malicious Packages (Apache-2.0, `MAL-`) and GitHub
+            Advisory Database (CC-BY-4.0, `GHSA-`), which together are 228,949 of the
+            228,951 npm advisories measured. **For npm, attribution is owed on GHSA text
+            and nothing else.** Ubuntu's CC-BY-SA-4.0 is the only share-alike term and is
+            an OS source, so it cannot reach an npm verdict; revisit if a Linux-
+            distribution ecosystem is ever added.
       - [x] **OSV records carry no licence field**, checked against a live record. OSV
             aggregates, so the terms are whichever source produced the record and the id
             prefix is the only hint: `GHSA-` is CC-BY-4.0 and needs attribution, `MAL-` is
@@ -1239,9 +1247,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             records and clears the first stream in the build order. CISA KEV is CC0 1.0,
             an explicit dedication rather than the 17 USC 105 inference recorded before,
             and owes no attribution.
-      - [ ] Measure whether every `MAL-` record in the OSV npm bundle originates from
-            OSSF. `database_specific` is where to look. It decides whether the 221,548 npm
-            malware records carry one set of terms or several.
+      - [ ] Identify the 2 npm advisories that are neither `MAL-` nor `GHSA-`. Everything
+            else maps to a source by prefix; these do not, and the prefix mapping is only
+            sound for npm if they resolve to one of the same two sources.
+      - [ ] The prefix-to-licence mapping is npm-only. A `CVE-` record can come from
+            several OSV sources under different terms, so any code deciding an obligation
+            from a prefix has to be scoped to npm or read `database_specific` instead.
       - [ ] **NVD and Aikido not verified.** NVD's terms page did not return its terms to
             an automated fetch and Aikido's public endpoint returned an empty body. A
             blank in that table is a stream that cannot be built yet; someone has to read
