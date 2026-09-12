@@ -38,6 +38,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What a stream is trusted to say about one ecosystem.
+///
+/// `Ord` is derived so these can live in a `BTreeSet` and carries no meaning: `Malware` is
+/// not a stronger `Match`, and no code should compare two of these. The ordered enum in
+/// this codebase is [`crate::policy::Action`], where `allow < quarantine < block` is the
+/// §5.5 lattice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
     /// Answers "what is wrong with this package". Originates findings.
@@ -68,8 +73,43 @@ impl Capability {
 /// answers depending on which was read first.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Score {
-    pub cvss: f64,
+    cvss: f64,
     pub source: String,
+}
+
+impl Score {
+    /// CVSS runs 0.0 to 10.0. A feed reporting anything else, NaN included, has given a
+    /// broken record rather than a low score, and [`Score::new`] returns `None`.
+    ///
+    /// Refusing rather than clamping is what makes [`Finding::enriched_by`] independent of
+    /// the order enrichments arrive in. Every NaN comparison is false, so `9.0 > NaN` and
+    /// `NaN > 9.0` are both false and a NaN would stay wherever it landed first: `[NaN,
+    /// 9.0]` would settle on NaN and `[9.0, NaN]` on 9.0. Keeping the constructor the only
+    /// way to build one, and `cvss` private, is what holds the range.
+    pub fn new(source: &str, cvss: f64) -> Option<Self> {
+        Self::in_range(cvss).then(|| Self {
+            cvss,
+            source: source.to_owned(),
+        })
+    }
+
+    pub fn cvss(&self) -> f64 {
+        self.cvss
+    }
+
+    /// The CVSS range. Rejects NaN and both infinities, because no comparison against
+    /// those is true and `contains` is a pair of comparisons.
+    fn in_range(cvss: f64) -> bool {
+        (0.0..=10.0).contains(&cvss)
+    }
+
+    /// Whether an offered score replaces one already held.
+    ///
+    /// Split out from [`Finding::enriched_by`] because it allocates nothing and is what
+    /// the kani proofs below reason about.
+    fn replaces(held: Option<f64>, offered: f64) -> bool {
+        held.is_none_or(|held| offered > held)
+    }
 }
 
 /// Something wrong with a package. Only a `match` stream can make one.
@@ -96,11 +136,16 @@ impl Finding {
         }
     }
 
+    /// Record a score this stream reported.
+    ///
+    /// A score outside 0.0 to 10.0 is dropped and the finding keeps whatever it had. The
+    /// finding itself survives: the stream still says something is wrong with this
+    /// package, and losing that over a malformed number would be worse than losing the
+    /// number.
     pub fn with_score(mut self, cvss: f64) -> Self {
-        self.score = Some(Score {
-            cvss,
-            source: self.source.clone(),
-        });
+        if let Some(score) = Score::new(&self.source, cvss) {
+            self.score = Some(score);
+        }
         self
     }
 
@@ -118,7 +163,7 @@ impl Finding {
     pub fn enriched_by(mut self, enrichments: &[Enrichment]) -> Self {
         for e in enrichments.iter().filter(|e| e.advisory_id == self.advisory_id) {
             if let Some(score) = &e.score
-                && self.score.as_ref().is_none_or(|held| score.cvss > held.cvss)
+                && Score::replaces(self.score.as_ref().map(Score::cvss), score.cvss)
             {
                 self.score = Some(score.clone());
             }
@@ -148,11 +193,11 @@ impl Enrichment {
         }
     }
 
+    /// Record a score. Out of range is dropped, as in [`Finding::with_score`].
     pub fn with_score(mut self, source: &str, cvss: f64) -> Self {
-        self.score = Some(Score {
-            cvss,
-            source: source.to_owned(),
-        });
+        if let Some(score) = Score::new(source, cvss) {
+            self.score = Some(score);
+        }
         self
     }
 
@@ -231,22 +276,27 @@ impl Capabilities {
 
     /// Ecosystems this build serves with nothing able to originate a finding for them.
     ///
-    /// An ecosystem proxied with no `match`-capable stream is a firewall that
-    /// structurally cannot block anything. It is a startup warning and a `doctor` check
-    /// rather than a startup failure, because a proxy that still verifies digests and
-    /// records what went past is worth more than one that refuses to run.
+    /// §3: for each enabled ecosystem, at least one enabled stream must provide `match`.
+    /// It is a startup warning and a `doctor` check rather than a startup failure, because
+    /// a proxy that still verifies digests and records what went past is worth more than
+    /// one that refuses to run.
+    ///
+    /// `malware` is deliberately not part of this check, though an ecosystem with `match`
+    /// and no `malware` stream can never fire `known_malware`, which is the one check an
+    /// operator cannot except. [`Capabilities::uncovered_by`] reports that separately;
+    /// whether it also warrants a startup warning is open.
     pub fn gaps(&self, enabled: &[&str]) -> Vec<Gap> {
+        self.uncovered_by(enabled, Capability::Match)
+    }
+
+    /// Enabled ecosystems no stream provides `capability` for.
+    pub fn uncovered_by(&self, enabled: &[&str], capability: Capability) -> Vec<Gap> {
         enabled
             .iter()
-            .filter_map(|&ecosystem| {
-                let missing: Vec<Capability> = [Capability::Match, Capability::Malware]
-                    .into_iter()
-                    .filter(|&c| self.providers(ecosystem, c).is_empty())
-                    .collect();
-                (!missing.is_empty()).then(|| Gap {
-                    ecosystem: ecosystem.to_owned(),
-                    missing,
-                })
+            .filter(|&&ecosystem| self.providers(ecosystem, capability).is_empty())
+            .map(|&ecosystem| Gap {
+                ecosystem: ecosystem.to_owned(),
+                missing: capability,
             })
             .collect()
     }
@@ -256,23 +306,88 @@ impl Capabilities {
 #[derive(Debug, PartialEq)]
 pub struct Gap {
     pub ecosystem: String,
-    pub missing: Vec<Capability>,
+    pub missing: Capability,
 }
 
 impl std::fmt::Display for Gap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let missing: Vec<&str> = self.missing.iter().map(|c| c.as_str()).collect();
         write!(
             f,
             "`{}` is served with no stream providing {}. Nothing can {}",
             self.ecosystem,
-            missing.join(" or "),
-            if self.missing.contains(&Capability::Match) {
-                "originate a finding for it"
-            } else {
-                "report malware for it"
+            self.missing.as_str(),
+            match self.missing {
+                Capability::Match => "originate a finding for it",
+                Capability::Enrich => "add to a finding for it",
+                Capability::Malware => "report malware for it",
             }
         )
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::Score;
+
+    /// Apply two offered scores in the order given.
+    fn fold(held: Option<f64>, offered: [f64; 2]) -> Option<f64> {
+        let mut held = held;
+        for offer in offered {
+            if Score::replaces(held, offer) {
+                held = Some(offer);
+            }
+        }
+        held
+    }
+
+    /// Rejecting out-of-range scores is what makes everything below true. Without it a
+    /// NaN reaches `replaces`, where every comparison against it is false.
+    #[kani::proof]
+    fn nothing_outside_the_cvss_range_is_accepted() {
+        let cvss: f64 = kani::any();
+        kani::assume(Score::in_range(cvss));
+
+        assert!(cvss >= 0.0);
+        assert!(cvss <= 10.0);
+        assert!(cvss.is_finite());
+        assert!(!cvss.is_nan());
+    }
+
+    /// Two accepted scores are always comparable, so `>` decides between them.
+    #[kani::proof]
+    fn any_two_accepted_scores_stand_in_exactly_one_relation() {
+        let (a, b): (f64, f64) = (kani::any(), kani::any());
+        kani::assume(Score::in_range(a) && Score::in_range(b));
+
+        assert!(usize::from(a > b) + usize::from(b > a) + usize::from(a == b) == 1);
+    }
+
+    /// The property the whole design rests on: which stream is read first cannot change
+    /// what a finding ends up scored at.
+    #[kani::proof]
+    fn the_order_two_enrichments_arrive_in_does_not_change_the_score() {
+        let (a, b): (f64, f64) = (kani::any(), kani::any());
+        kani::assume(Score::in_range(a) && Score::in_range(b));
+
+        let held: Option<f64> = if kani::any() {
+            let held: f64 = kani::any();
+            kani::assume(Score::in_range(held));
+            Some(held)
+        } else {
+            None
+        };
+
+        assert!(fold(held, [a, b]) == fold(held, [b, a]));
+    }
+
+    /// An enrichment escalates or leaves alone, and never the reverse.
+    #[kani::proof]
+    fn an_enrichment_never_lowers_a_score() {
+        let (held, offered): (f64, f64) = (kani::any(), kani::any());
+        kani::assume(Score::in_range(held) && Score::in_range(offered));
+
+        let after = fold(Some(held), [offered, offered]).unwrap();
+        assert!(after >= held);
     }
 }
 
@@ -281,6 +396,10 @@ mod tests {
     use super::*;
 
     /// Standing in for NVD or KEV: knows advisory ids, knows nothing about packages.
+    ///
+    /// It keys on CVE ids, which is what CISA's catalogue really does. OSV findings carry
+    /// `GHSA-` and `MAL-` ids, so joining the two needs the alias set that is still to be
+    /// built; see the deduplication item in TODO.md.
     struct Catalogue;
 
     impl EnrichStream for Catalogue {
@@ -320,17 +439,28 @@ mod tests {
     }
 
     #[test]
+    fn an_osv_finding_and_a_kev_entry_do_not_join_on_the_ids_they_carry() {
+        // OSV publishes `GHSA-` and `MAL-` ids and CISA keys on `cveID`, so the real pair
+        // matches nothing here. `enriched_by` compares one id against one id; the alias set
+        // that would make this join is still to be built.
+        let finding = Finding::new("osv", "GHSA-jfh8-c2jp-5v3q");
+        let kev = Catalogue.enrichments(&["CVE-2021-44228".to_owned()]);
+
+        assert!(!finding.enriched_by(&kev).exploited());
+    }
+
+    #[test]
     fn an_enrichment_raises_a_score_and_never_lowers_one() {
         let finding = Finding::new("osv", "CVE-1").with_score(5.0);
 
         let raised = finding
             .clone()
             .enriched_by(&[Enrichment::new("CVE-1").with_score("nvd", 9.8)]);
-        assert_eq!(raised.score.as_ref().unwrap().cvss, 9.8);
+        assert_eq!(raised.score.as_ref().unwrap().cvss(), 9.8);
         assert_eq!(raised.score.as_ref().unwrap().source, "nvd");
 
         let lowered = finding.enriched_by(&[Enrichment::new("CVE-1").with_score("nvd", 1.0)]);
-        assert_eq!(lowered.score.as_ref().unwrap().cvss, 5.0);
+        assert_eq!(lowered.score.as_ref().unwrap().cvss(), 5.0);
         assert_eq!(lowered.score.as_ref().unwrap().source, "osv");
     }
 
@@ -339,8 +469,45 @@ mod tests {
         let finding =
             Finding::new("osv", "CVE-1").enriched_by(&[Enrichment::new("CVE-1").with_score("nvd", 4.2)]);
 
-        assert_eq!(finding.score.as_ref().unwrap().cvss, 4.2);
+        assert_eq!(finding.score.as_ref().unwrap().cvss(), 4.2);
         assert_eq!(finding.score.as_ref().unwrap().source, "nvd");
+    }
+
+    #[test]
+    fn a_score_outside_the_cvss_range_is_not_a_score() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.1, 10.1] {
+            assert_eq!(Score::new("nvd", bad), None, "{bad} was accepted");
+        }
+        for good in [0.0, 5.0, 10.0] {
+            assert_eq!(Score::new("nvd", good).unwrap().cvss(), good);
+        }
+    }
+
+    #[test]
+    fn a_malformed_score_is_dropped_and_the_finding_survives() {
+        let finding = Finding::new("osv", "CVE-1").with_score(7.5).with_score(f64::NAN);
+        assert_eq!(finding.score.unwrap().cvss(), 7.5);
+
+        // A finding whose only score is malformed is still a finding.
+        let finding = Finding::new("osv", "CVE-1").with_score(99.9);
+        assert_eq!(finding.advisory_id, "CVE-1");
+        assert_eq!(finding.score, None);
+
+        assert_eq!(Enrichment::new("CVE-1").with_score("nvd", f64::NAN).score, None);
+    }
+
+    #[test]
+    fn a_score_no_stream_could_report_cannot_stick_wherever_it_landed_first() {
+        // Every comparison against NaN is false, so an unvalidated NaN would survive when
+        // read first and be discarded when read second.
+        let nan = Enrichment::new("CVE-1").with_score("a", f64::NAN);
+        let real = Enrichment::new("CVE-1").with_score("b", 9.0);
+
+        let nan_first = Finding::new("osv", "CVE-1").enriched_by(&[nan.clone(), real.clone()]);
+        let nan_second = Finding::new("osv", "CVE-1").enriched_by(&[real, nan]);
+
+        assert_eq!(nan_first, nan_second);
+        assert_eq!(nan_first.score.unwrap().cvss(), 9.0);
     }
 
     #[test]
@@ -361,7 +528,7 @@ mod tests {
             .with_score(2.0)
             .enriched_by(&[Enrichment::new("CVE-2").with_score("nvd", 9.8).exploited()]);
 
-        assert_eq!(finding.score.unwrap().cvss, 2.0);
+        assert_eq!(finding.score.unwrap().cvss(), 2.0);
         assert!(!finding.exploited);
     }
 
@@ -373,7 +540,7 @@ mod tests {
 
         let gaps = caps.gaps(&["npm"]);
         assert_eq!(gaps.len(), 1);
-        assert_eq!(gaps[0].missing, vec![Capability::Match, Capability::Malware]);
+        assert_eq!(gaps[0].missing, Capability::Match);
         assert!(caps.providers("npm", Capability::Match).is_empty());
         assert_eq!(caps.providers("npm", Capability::Enrich), vec!["nvd"]);
     }
@@ -385,7 +552,7 @@ mod tests {
         assert!(caps.has("nvd", "maven", Capability::Match));
         assert!(!caps.has("nvd", "npm", Capability::Match));
         assert!(!caps.has("osv", "maven", Capability::Match));
-        assert_eq!(caps.gaps(&["maven"])[0].missing, vec![Capability::Malware]);
+        assert!(caps.gaps(&["maven"]).is_empty());
     }
 
     #[test]
@@ -394,7 +561,14 @@ mod tests {
 
         assert!(caps.has("ghsa", "npm", Capability::Match));
         assert!(!caps.has("ghsa", "npm", Capability::Malware));
-        assert_eq!(caps.gaps(&["npm"])[0].missing, vec![Capability::Malware]);
+
+        // §3 asks only for `match`, so this is not a gap. `known_malware` can never fire
+        // for npm in this build, and that shows up separately.
+        assert!(caps.gaps(&["npm"]).is_empty());
+        assert_eq!(
+            caps.uncovered_by(&["npm"], Capability::Malware)[0].missing,
+            Capability::Malware
+        );
     }
 
     #[test]
@@ -404,6 +578,7 @@ mod tests {
             .grant("nvd", "npm", &[Capability::Enrich]);
 
         assert!(caps.gaps(&["npm"]).is_empty());
+        assert!(caps.uncovered_by(&["npm"], Capability::Malware).is_empty());
     }
 
     #[test]
@@ -415,19 +590,19 @@ mod tests {
         assert_eq!(gaps[0].ecosystem, "pypi");
         assert_eq!(
             gaps[0].to_string(),
-            "`pypi` is served with no stream providing match or malware. \
+            "`pypi` is served with no stream providing match. \
              Nothing can originate a finding for it"
         );
     }
 
     #[test]
-    fn a_gap_in_malware_alone_says_so() {
-        let caps = Capabilities::new().grant("ghsa", "npm", &[Capability::Match]);
+    fn every_gap_names_what_the_missing_capability_would_have_done() {
+        let caps = Capabilities::new();
+        let said = |c| caps.uncovered_by(&["npm"], c)[0].to_string();
 
-        assert_eq!(
-            caps.gaps(&["npm"])[0].to_string(),
-            "`npm` is served with no stream providing malware. Nothing can report malware for it"
-        );
+        assert!(said(Capability::Match).ends_with("Nothing can originate a finding for it"));
+        assert!(said(Capability::Enrich).ends_with("Nothing can add to a finding for it"));
+        assert!(said(Capability::Malware).ends_with("Nothing can report malware for it"));
     }
 
     #[test]

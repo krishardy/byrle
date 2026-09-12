@@ -1271,6 +1271,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] Startup warning + `doctor` check: ecosystem enabled with no `match`-capable stream.
       `Capabilities::gaps` computes it and `Gap` renders the message; nothing calls it yet
       because no stream is registered.
+- [ ] `[?]` Decide whether an ecosystem with `match` but no `malware` stream is also a
+      startup warning. `known_malware` is the one check with no exception, and it can never
+      fire without a `malware`-capable stream, so a build can look covered while the
+      non-overridable check is dead. `gaps` follows §3 and asks only for `match`;
+      `Capabilities::uncovered_by(&[..], Capability::Malware)` reports the other half.
 - [ ] `waharoa status` shows adapter maturity and intel coverage as separate axes
 - [x] Explicit severity precedence config (enrich may escalate `max_cvss`, never originate).
       Settled as a rule rather than config: an enrichment may raise a score and may set
@@ -1281,7 +1286,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `[!]` Common advisory record schema with alias set (CVE, GHSA, OSV, MAL IDs)
 - [ ] `[!]` OSV.dev stream, lookup by PURL
 - [ ] `[!]` Deduplication across streams via alias reconciliation — before the policy
-      engine, so one vuln never fires three rules
+      engine, so one vuln never fires three rules. It also gates enrichment:
+      `Finding::enriched_by` joins one id against one id, and OSV findings carry `GHSA-`
+      and `MAL-` ids while CISA keys on `cveID`, so today a real OSV finding and a real KEV
+      entry match nothing. Covered by
+      `an_osv_finding_and_a_kev_entry_do_not_join_on_the_ids_they_carry`. The alias set
+      changes `enriched_by`'s signature, so land it before a second stream is built.
 - [ ] `[!]` GitHub Advisory stream (GraphQL, token auth)
 - [ ] `[!]` Aikido Intel stream — free, public, no account; highest-value non-OSV feed
 - [ ] OSSF Malicious Packages stream — publishes natively in OSV format, so it reuses

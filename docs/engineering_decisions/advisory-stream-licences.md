@@ -101,3 +101,17 @@ Nothing yet. Of the three capabilities, `match` and `malware` are what OSV provi
 NVD and Aikido are unread and KEV is third in the order above. The separation is built now
 because retrofitting it after three streams share a record type is more work than starting
 with two types.
+
+## Scores are refused rather than clamped
+
+`Score::new` accepts 0.0 to 10.0 and returns `None` for anything else, NaN and both
+infinities included. The finding survives without a score; only the number is dropped.
+
+The reason is order independence, not tidiness. Every comparison against NaN is false, so
+an unvalidated NaN passed through `>` stays wherever it lands first: `[NaN, 9.0]` settles
+on NaN, `[9.0, NaN]` on 9.0. Four kani proofs in `src/intel.rs` cover this: that nothing
+out of range is accepted, that any two accepted scores stand in exactly one relation, that
+two enrichments in either order reach the same score, and that enrichment never lowers one.
+
+Clamping was rejected. A NaN has no defensible direction to clamp in, and clamping 99.9
+down to 10.0 would invent the one value that blocks everything.

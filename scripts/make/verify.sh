@@ -23,6 +23,12 @@
 # The §5.5 lattice and the monotonicity of parameterised rules are done, in
 # `src/policy/strictness.rs`, and they are what kani is for: total functions over small
 # closed domains, verified in milliseconds each.
+#
+# `src/intel.rs` adds four over symbolic `f64`. They cost about a second each and they
+# earn it: writing `Score::in_range` as `!(cvss < 0.0 || cvss > 10.0)` instead of a range
+# `contains` admits NaN, and all four proofs fail on that mutation. The one-line unit test
+# for the same property passes, because a test has to name NaN to find it and a proof does
+# not.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
