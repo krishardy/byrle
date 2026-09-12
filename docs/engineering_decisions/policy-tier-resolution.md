@@ -46,41 +46,58 @@ subgraph Young_Package_Check
   Package_Has_A_Young_Package_Exception --NO--> RECORD_cooldown_QUARANTINE
 end
 
-RECORD_cooldown_PASS --> Is_There_A_KEV
-RECORD_cooldown_EXCEPTED --> Is_There_A_KEV
-RECORD_cooldown_QUARANTINE --> Is_There_A_KEV
+RECORD_cooldown_PASS --> Start_CVE_KEV_Check
+RECORD_cooldown_EXCEPTED --> Start_CVE_KEV_Check
+RECORD_cooldown_QUARANTINE --> Start_CVE_KEV_Check
 
-subgraph KEV_Check
-  Is_There_A_KEV
-  Package_Has_A_KEV_Exception
-  Is_There_A_KEV --NO--> RECORD_kev_PASS
-  Is_There_A_KEV --YES--> Package_Has_A_KEV_Exception
-  Package_Has_A_KEV_Exception --YES--> RECORD_kev_EXCEPTED
-  Package_Has_A_KEV_Exception --NO--> RECORD_kev_BLOCK
-end
+%% KEV is an attribute of a CVE, not of a package: a KEV entry has a cveID and no
+%% package identifier of any kind. So it is asked once per CVE, inside the loop, and
+%% the two checks it feeds are recorded after it.
 
-RECORD_kev_PASS --> Is_There_A_CVE
-RECORD_kev_EXCEPTED --> Is_There_A_CVE
-RECORD_kev_BLOCK --> Is_There_A_CVE
-
-subgraph CVE_Check
-  Is_There_A_CVE
-  Is_There_A_CVE --NO--> End_CVE_Check
-  Is_There_A_CVE --YES--> Package_Has_Numbered_CVE_Exception
+%% Gather first, then subtract. The loop collects two sets and judges neither: every
+%% CVE, and the subset of them carrying a KEV. Exceptions are applied afterwards, as a
+%% set difference, which is what keeps a `cve_ids` exception out of the KEV answer.
+%%
+%% The two chains below are independent. Neither reads the other's result, and the only
+%% thing they share is the loop that filled the sets.
+subgraph CVE_KEV_Check
+  Start_CVE_KEV_Check --> Next_Package_CVE
 
   subgraph For_Each_Package_CVE
-    Package_Has_Numbered_CVE_Exception
-    Package_Has_Numbered_CVE_Exception --YES--> IGNORE_NUMBERED_CVE
-    Package_Has_Numbered_CVE_Exception --NO--> Accumulate_Maximum_CVSS
-    IGNORE_NUMBERED_CVE --next CVE--> Package_Has_Numbered_CVE_Exception
-    Accumulate_Maximum_CVSS --next CVE--> Package_Has_Numbered_CVE_Exception
+    Next_Package_CVE
+    RECORD_package_cve
+    Does_CVE_Have_KEV
+    RECORD_package_cve_kev
+
+    Next_Package_CVE --a CVE--> RECORD_package_cve
+    RECORD_package_cve --> Does_CVE_Have_KEV
+    Does_CVE_Have_KEV --YES--> RECORD_package_cve_kev
+    Does_CVE_Have_KEV --NO--> Next_Package_CVE
+    RECORD_package_cve_kev --> Next_Package_CVE
   end
 
-  For_Each_Package_CVE --no CVEs left--> End_CVE_Check
-  End_CVE_Check --> Maximum_CVSS_Is_Above_Global_Policy
+  Next_Package_CVE --no more CVEs--> SUBTRACT_cve_exceptions
+  Next_Package_CVE --no more CVEs--> Any_package_cve_kev
+
+  %% Score chain: every CVE, less the ones excepted by id.
+  SUBTRACT_cve_exceptions --> Accumulate_Maximum_CVSS
+  Accumulate_Maximum_CVSS --> Maximum_CVSS_Is_Above_Global_Policy
   Maximum_CVSS_Is_Above_Global_Policy --YES--> RECORD_max_cvss_BLOCK
   Maximum_CVSS_Is_Above_Global_Policy --NO--> RECORD_max_cvss_PASS
+
+  %% Exploitation chain: the KEV subset, less the ones excepted. Asked before the
+  %% subtraction as well as after, because "none at all" and "all of them excused" are
+  %% different answers and only the second is an exception doing work.
+  Any_package_cve_kev --NO--> RECORD_kev_PASS
+  Any_package_cve_kev --YES--> SUBTRACT_kev_exceptions
+  SUBTRACT_kev_exceptions --> Any_kev_remaining
+  Any_kev_remaining --YES--> RECORD_kev_BLOCK
+  Any_kev_remaining --NO--> RECORD_kev_EXCEPTED
 end
+
+RECORD_kev_PASS --> Which_Ecosystem
+RECORD_kev_EXCEPTED --> Which_Ecosystem
+RECORD_kev_BLOCK --> Which_Ecosystem
 
 RECORD_max_cvss_PASS --> Which_Ecosystem
 RECORD_max_cvss_BLOCK --> Which_Ecosystem
@@ -173,7 +190,7 @@ Every setting is global. Every exception is per package. Nothing is per ecosyste
 | known malware | not configurable | no |
 | `denials` | per package | no |
 | `cooldown_days` | global | yes, note 3 |
-| `kev` | global | yes, note 4 |
+| `kev` | global | yes, note 4 only; a `cve_ids` exception does not reach it |
 | `max_cvss` | global | yes, per CVE id, note 5 |
 | `install_scripts` | global | yes, note 6 |
 
@@ -275,6 +292,50 @@ Stage 1 already records all of it: `record::Provenance` carries `attestation_url
 Two things §5.5 got right and keep earning their place: **not-applicable is never a
 violation**, which the redesign made more load-bearing rather than less, and
 **specificity is strict subset containment, not a score**.
+
+## KEV is asked per CVE
+
+A KEV entry carries a `cveID`, a vendor and a product, and **no package identifier of any
+kind**, checked across all 1,709 entries. It cannot be asked "what is wrong with this
+package", only "is this CVE known to be exploited", so it is asked once per CVE inside the
+loop rather than once per package before it. See
+[advisory-stream-licences](advisory-stream-licences.md) for the measurement.
+
+**The loop judges nothing.** It collects two sets, every CVE and the subset carrying a
+KEV, and exceptions are applied afterwards as a set difference. So excepting a CVE by id
+never reaches the KEV answer: a KEV'd CVE needs **both** exceptions to pass, the id in
+`cve_ids` for its score and `kev: allow` for its exploitation.
+
+Gathering before subtracting is what makes that true by construction rather than by the
+order two branches happen to sit in. The two chains that follow are independent, and
+neither reads the other's result.
+
+The two say different things and are not each other's evidence. "This advisory is not
+reachable from our code" is a claim about the package in its place in a particular
+codebase. "This vulnerability is being exploited in the wild" is a fact about the world
+that holds whatever the code does. An operator who has convinced themselves of the first
+has said nothing about the second, and letting one stand for the other would turn the
+narrow exception into a way of dismissing the broader finding by accident.
+
+**A KEV-listed CVE still contributes its score** unless its id is excepted. Being
+exploited does not remove it from the `max_cvss` comparison, so a package excepted from
+`kev` can still be refused for the same advisory's score. The two checks are separate
+results in the vector and both are reported.
+
+The package-level KEV exception in note 4 is the only way to except a KEV. There is no
+per-CVE form, which keeps the wholesale acknowledgement wholesale: an operator accepting
+exploitation does it once, for the package, rather than enumerating ids that change as new
+advisories are published.
+
+Writing it as a subtraction rather than a flag costs nothing and leaves the per-CVE form
+available: a package-level exception is the difference against the whole set, and a
+per-CVE one would be the difference against a list. The chart does not have to change if
+that is ever wanted.
+
+**"None at all" and "all of them excused" are different answers.** The exploitation chain
+asks whether there were any KEVs before subtracting as well as whether any remain after,
+because only the second is an exception doing work. Collapsing them would lose the signal
+that finds a dead exception.
 
 ## Evaluation
 
