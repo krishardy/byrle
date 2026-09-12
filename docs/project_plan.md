@@ -213,10 +213,27 @@ behavior must be explicit in severity precedence config rather than emergent.
 
 ### Intel storage and refresh
 
-**ORM: SeaORM, targeting SQLite and Postgres.** Async-native, one codebase for both
+**ORM: SeaORM, targeting Postgres and SQLite.** Async-native, one codebase for both
 backends. A repository trait sits in front of it; the **bulk refresh path uses raw sqlx
 underneath**, since ORM inserts are far too slow for hundreds of thousands of advisory
 rows. The ORM serves the lookup path only.
+
+**Postgres is the production backend. SQLite is for development only.** SQLite exists so
+a contributor can clone, run and test without standing up a database, and so the test
+suite has a backend it can create and throw away per test. It is not a supported
+deployment target: `waharoa doctor` should say so when it finds SQLite configured outside
+a development profile.
+
+Two things follow, and they are the reason to write this down rather than leave it
+implied:
+
+- **Everything in the multi-instance section below is a production requirement**, not an
+  optional extra for large deployments. Refresh coordination and reading
+  `intel_snapshot_id` from the database are load-bearing for every real deployment,
+  because every real deployment is Postgres.
+- **The easy backend to test is the one nobody runs.** SQLite needs no service, so a test
+  suite left to itself will cover only SQLite and leave the production backend unexercised.
+  The repository trait's conformance tests have to run against both, with Postgres in CI.
 
 **Distribution: none.** Every stream fetches from its own origin — OSV publishes
 per-ecosystem bundles to a public GCS bucket, GitHub Advisory is queried under the
@@ -225,7 +242,8 @@ intel. The artifact stays a single binary.
 
 **Refresh must be atomic.** Build into a temp table and swap, so a failed refresh never
 leaves a half-populated advisory set that silently under-blocks. Postgres gives
-transactional DDL; SQLite needs the temp-table-and-rename dance.
+transactional DDL; SQLite needs the temp-table-and-rename dance. The dance is
+development-only complexity: no production refresh runs on it.
 
 **Postgres implies multi-instance**, which is a bigger change than the storage layer:
 
@@ -796,7 +814,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | 4 | [Quarantine](engineering_decisions/quarantine-filter-metadata.md) | Filter metadata on resolution, hard fail on pinned fetch |
 | 4b | [Cooldown vs. urgent fixes](engineering_decisions/cooldown-waivers-manual-only.md) | Manually reviewed version waivers only |
 | 5 | [License](engineering_decisions/license-apache-2.md) | Apache-2.0, DCO, trademark separate |
-| 6 | [Intel distribution](engineering_decisions/intel-distribution-fetch-from-origin.md) | None; fetch from origin. SeaORM over SQLite and Postgres |
+| 6 | [Intel distribution](engineering_decisions/intel-distribution-fetch-from-origin.md) | None; fetch from origin. SeaORM over Postgres in production, SQLite for development |
 | 7 | [NVD role](engineering_decisions/nvd-role-and-stream-capabilities.md) | `enrich`-only for npm/PyPI; per-ecosystem capability matrix |
 | 8 | [Package override tier](engineering_decisions/package-override-tier.md) | Superseded by [policy-tier-resolution](engineering_decisions/policy-tier-resolution.md): no floor, `packages` loosens only |
 | 13 | [Policy tiers and evaluation](engineering_decisions/policy-tier-resolution.md) | Global settings, per-package exceptions, decision vector; supersedes the old §5 and §5.5 |
