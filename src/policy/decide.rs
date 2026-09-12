@@ -40,9 +40,7 @@ pub struct Facts {
     /// not the same as "old enough".
     pub published: Option<Date>,
     pub known_malware: bool,
-    /// Whether any advisory against this version is in a known-exploited catalogue.
-    pub kev: bool,
-    /// Advisories against this version, by id and CVSS score.
+    /// Advisories against this version.
     pub advisories: Vec<Advisory>,
     pub has_install_scripts: bool,
 }
@@ -51,6 +49,12 @@ pub struct Facts {
 pub struct Advisory {
     pub id: String,
     pub cvss: f64,
+    /// Whether this advisory is in a known-exploited catalogue.
+    ///
+    /// A property of the advisory, not of the package: a KEV entry carries a `cveID` and
+    /// no package identifier of any kind. See
+    /// `docs/engineering_decisions/advisory-stream-licences.md`.
+    pub kev: bool,
 }
 
 /// One check this build performs.
@@ -292,7 +296,34 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             }
         }
 
-        Check::Kev => on_off(facts.kev, policy.kev, set.and_then(|s| s.kev), entry),
+        // Read from the advisories as they came, never from the list `cve_ids` has
+        // filtered. Excepting an advisory by id says it is not reachable from this code;
+        // it says nothing about whether it is being exploited in the wild, and letting
+        // one stand for the other would dismiss the broader finding by accident.
+        //
+        // "None at all" and "all of them excused" are different answers, and only the
+        // second is an exception doing work, so both questions are asked.
+        Check::Kev => {
+            let exploited: Vec<&Advisory> = facts.advisories.iter().filter(|a| a.kev).collect();
+            if exploited.is_empty() {
+                return Outcome::Passed;
+            }
+            // The exception is per package, so the subtraction is all or nothing. Written
+            // as a subtraction anyway, because a per-advisory list would be the same
+            // shape and would change nothing else here.
+            let excused = set.and_then(|s| s.kev) == Some(Action::Allow);
+            let remaining = if excused { 0 } else { exploited.len() };
+
+            match (remaining, entry) {
+                (0, Some(entry)) => Outcome::Excepted {
+                    entry,
+                    action: policy.kev,
+                },
+                _ if policy.kev == Action::Allow => Outcome::Passed,
+                (0, None) => Outcome::Passed,
+                _ => Outcome::Failed(policy.kev),
+            }
+        }
 
         // Advisories the exception names are ignored; the rest are compared against the
         // threshold. Narrower than raising the threshold, which would apply to every
@@ -380,9 +411,25 @@ mod tests {
             version: "4.17.21".to_owned(),
             published: Some(date(2026, 1, 1)),
             known_malware: false,
-            kev: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+        }
+    }
+
+    /// An advisory nobody is exploiting.
+    fn advisory(id: &str, cvss: f64) -> Advisory {
+        Advisory {
+            id: id.to_owned(),
+            cvss,
+            kev: false,
+        }
+    }
+
+    /// One that is.
+    fn exploited(id: &str, cvss: f64) -> Advisory {
+        Advisory {
+            kev: true,
+            ..advisory(id, cvss)
         }
     }
 
@@ -422,7 +469,7 @@ mod tests {
     fn a_package_failing_several_checks_reports_all_of_them() {
         let facts = Facts {
             published: Some(date(2026, 9, 11)),
-            kev: true,
+            advisories: vec![exploited("CVE-2024-1", 9.8)],
             has_install_scripts: true,
             ..clean()
         };
@@ -437,7 +484,11 @@ mod tests {
             *outcome(&d, Check::InstallScripts),
             Outcome::Failed(Action::Block)
         );
-        assert_eq!(d.reasons().len(), 3);
+        // Four, not three: the exploited advisory scores 9.8, so it fails `max_cvss` as
+        // well as `kev`. Being exploited does not remove an advisory from the score
+        // comparison, and the two are separate results in the vector.
+        assert_eq!(*outcome(&d, Check::MaxCvss), Outcome::Failed(Action::Block));
+        assert_eq!(d.reasons().len(), 4);
     }
 
     /// The disposition is the strongest action, so one `block` among quarantines decides
@@ -447,7 +498,7 @@ mod tests {
     fn the_strongest_action_decides_and_leads_the_reasons() {
         let facts = Facts {
             published: Some(date(2026, 9, 11)),
-            kev: true,
+            advisories: vec![exploited("CVE-2024-1", 9.8)],
             ..clean()
         };
         let d = decide(&policy(""), &facts, TODAY);
@@ -627,6 +678,7 @@ mod tests {
             advisories: vec![Advisory {
                 id: "CVE-2024-1234".to_owned(),
                 cvss: 9.8,
+                kev: false,
             }],
             ..clean()
         };
@@ -646,10 +698,12 @@ mod tests {
                 Advisory {
                     id: "CVE-2024-1234".to_owned(),
                     cvss: 9.8,
+                    kev: false,
                 },
                 Advisory {
                     id: "CVE-2025-9999".to_owned(),
                     cvss: 7.5,
+                    kev: false,
                 },
             ],
             ..clean()
@@ -657,6 +711,117 @@ mod tests {
         assert_eq!(
             *outcome(&decide(&p, &more, TODAY), Check::MaxCvss),
             Outcome::Failed(Action::Block)
+        );
+    }
+
+    /// The rule the gather-then-subtract shape exists to guarantee. Excepting an
+    /// advisory by id says it is not reachable from this code; it says nothing about
+    /// whether it is being exploited, and one must not stand for the other.
+    #[test]
+    fn excepting_a_cve_by_id_does_not_excuse_its_exploitation() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { cve_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             permanent: true\n",
+        );
+        let facts = Facts {
+            advisories: vec![exploited("CVE-2024-1234", 9.8)],
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+
+        assert_eq!(
+            *outcome(&d, Check::MaxCvss),
+            Outcome::Excepted {
+                entry: 0,
+                action: Action::Block
+            },
+            "the id exception covers the score"
+        );
+        assert_eq!(
+            *outcome(&d, Check::Kev),
+            Outcome::Failed(Action::Block),
+            "and does not reach the exploitation"
+        );
+        assert!(!d.delivered());
+    }
+
+    /// Both exceptions, and it passes. This is what §5 asks an operator to write for a
+    /// KEV'd advisory they have reviewed and accepted.
+    #[test]
+    fn a_kev_advisory_needs_both_exceptions_to_pass() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { cve_ids: [\"CVE-2024-1234\"], kev: allow }\n    \
+             reason: not reachable, and we accept the exploitation risk\n    \
+             permanent: true\n",
+        );
+        let facts = Facts {
+            advisories: vec![exploited("CVE-2024-1234", 9.8)],
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+        assert!(d.delivered());
+        assert!(matches!(outcome(&d, Check::Kev), Outcome::Excepted { .. }));
+        assert!(matches!(
+            outcome(&d, Check::MaxCvss),
+            Outcome::Excepted { .. }
+        ));
+        assert_eq!(d.exceptions_used(), vec![0]);
+    }
+
+    /// A `kev: allow` exception on its own leaves the score to answer for itself.
+    #[test]
+    fn excusing_the_exploitation_does_not_excuse_the_score() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { kev: allow }\n    reason: accepted\n    permanent: true\n",
+        );
+        let facts = Facts {
+            advisories: vec![exploited("CVE-2024-1234", 9.8)],
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+        assert!(matches!(outcome(&d, Check::Kev), Outcome::Excepted { .. }));
+        assert_eq!(*outcome(&d, Check::MaxCvss), Outcome::Failed(Action::Block));
+        assert!(!d.delivered());
+    }
+
+    /// "None at all" and "all of them excused" are different answers, and only the second
+    /// is an exception doing work. Collapsing them would lose the dead-exception signal.
+    #[test]
+    fn a_package_with_no_exploited_advisory_passes_rather_than_excepts() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { kev: allow }\n    reason: belt and braces\n    permanent: true\n",
+        );
+        // An advisory, but nobody is exploiting it.
+        let facts = Facts {
+            advisories: vec![advisory("CVE-2024-1234", 3.1)],
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+        assert_eq!(*outcome(&d, Check::Kev), Outcome::Passed);
+        assert!(
+            d.exceptions_used().is_empty(),
+            "the exception did no work, so it is not recorded as having done any"
+        );
+    }
+
+    /// Only the exploited advisories are subtracted. A second one nobody is exploiting is
+    /// still scored.
+    #[test]
+    fn only_the_exploited_advisories_answer_the_kev_question() {
+        let facts = Facts {
+            advisories: vec![exploited("CVE-2024-1", 5.0), advisory("CVE-2024-2", 9.8)],
+            ..clean()
+        };
+        let d = decide(&policy(""), &facts, TODAY);
+        assert_eq!(*outcome(&d, Check::Kev), Outcome::Failed(Action::Block));
+        assert_eq!(
+            *outcome(&d, Check::MaxCvss),
+            Outcome::Failed(Action::Block),
+            "scored on the 9.8, which is the one nobody is exploiting"
         );
     }
 
@@ -669,6 +834,7 @@ mod tests {
                 advisories: vec![Advisory {
                     id: "CVE-2024-1".to_owned(),
                     cvss,
+                    kev: false,
                 }],
                 ..clean()
             };
