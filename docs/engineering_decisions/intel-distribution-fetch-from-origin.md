@@ -6,8 +6,8 @@
 ## Decision
 
 We host and redistribute no advisory intel. Every stream fetches from its own origin.
-Storage is SeaORM over SQLite and Postgres. Cold start fails closed with 503. The
-query-on-clean live fallback is adopted, opt-in.
+Storage is SeaORM over **Postgres in production and SQLite for development only**. Cold
+start fails closed with 503. The query-on-clean live fallback is adopted, opt-in.
 
 ## Rationale
 
@@ -18,10 +18,22 @@ binary.
 
 ## Consequences
 
+- **SQLite is not a deployment target.** It exists so a contributor can clone, run and
+  test without standing up a database, and so tests get a backend they can create and
+  discard per case. `waharoa doctor` should report SQLite configured outside a development
+  profile.
+- **The production backend is the harder one to test.** SQLite needs no service, so a test
+  suite left to itself covers only SQLite and leaves Postgres unexercised. Repository
+  conformance tests run against both, with Postgres in CI.
+- **Multi-instance concerns are production concerns.** Refresh coordination and reading
+  `intel_snapshot_id` from the database are not optional extras for large deployments;
+  every real deployment is Postgres, so they are load-bearing everywhere.
 - **Bulk refresh bypasses the ORM.** SeaORM serves the lookup path; the refresh path
   uses raw sqlx, because ORM inserts are too slow for hundreds of thousands of rows.
 - **Refresh must be atomic.** Build into a temp table and swap. A failed refresh must
-  never leave a half-populated advisory set that under-blocks silently.
+  never leave a half-populated advisory set that under-blocks silently. Postgres gives
+  transactional DDL; SQLite's temp-table-and-rename dance is development-only complexity,
+  since no production refresh runs on it.
 - **Postgres implies multi-instance**, which brings refresh coordination (advisory-lock
   leader election, or a separate `waharoa refresh` run as a cron job with the proxies
   read-only) and means `intel_snapshot_id` must be read from the database rather than

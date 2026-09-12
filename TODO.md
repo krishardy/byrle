@@ -1277,7 +1277,8 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `[!]` Advisory stream interface (fetch / mirror / refresh / normalize). What a
       stream may *say* is built (`MatchStream`, `EnrichStream`, `MalwareStream` in
       `src/intel.rs`). Fetch, mirror and refresh need the storage decision (SeaORM over
-      SQLite and Postgres, raw sqlx for bulk refresh) and its dependency review.
+      Postgres in production with SQLite for development, raw sqlx for bulk refresh) and
+      its dependency review.
 - [x] `[!]` Per-ecosystem capability matrix: `match` / `enrich` / `malware` (`src/intel.rs`,
       `Capabilities::grant` / `has` / `providers`). A grant is per stream per ecosystem, so
       NVD can hold `match` for Maven and only `enrich` for npm.
@@ -1335,9 +1336,16 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] Stream authoring guide for third-party sources
 
 ### Intel storage
-- [ ] `[!]` SeaORM over SQLite; repository trait in front
+- [ ] `[!]` SeaORM behind a repository trait. **Postgres is the production backend;
+      SQLite is development only**, so a contributor can clone and test without standing up
+      a database and tests get a backend they can discard per case.
+- [ ] `[!]` Repository conformance tests run against **both** backends, Postgres in CI.
+      SQLite needs no service, so a suite left to itself covers only the backend nobody
+      deploys.
+- [ ] `waharoa doctor` reports SQLite configured outside a development profile
 - [ ] `[!]` Bulk refresh on raw sqlx (ORM too slow at 100k+ rows)
-- [ ] `[!]` Atomic refresh via temp-table swap
+- [ ] `[!]` Atomic refresh via temp-table swap. Postgres has transactional DDL; SQLite's
+      temp-table-and-rename dance is development-only complexity.
 - [ ] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %
 - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, privacy tradeoff documented
 
