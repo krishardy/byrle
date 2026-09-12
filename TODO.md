@@ -524,10 +524,11 @@ implementations.
       binary nobody outside this repository runs, and renaming before release costs a
       find-and-replace. Blocking transport work on a human conversation would have stalled
       the stage for a cost that does not arrive until launch.
-- [ ] Shipped policy template must declare a floor for **every** supported ecosystem, or
-      the default path is a startup failure (§5.5). `examples/policy.yaml` is the spike
-      artifact and is deliberately incomplete: it declares `ecosystems.cargo` with no
-      `floor.cargo`. Complete it when the floor check lands.
+- [x] Shipped policy template must declare a floor for **every** supported ecosystem.
+      Moot: there is no floor tier, and no per-ecosystem configuration at all. See
+      `docs/engineering_decisions/policy-tier-resolution.md`. `examples/policy.yaml` is
+      the config-format spike's artifact and is rewritten against the new shape as part
+      of the Stage 2 deletions.
 - [ ] Defer: single binary vs. workspace crates. Splitting later is cheap; not enough
       information yet.
 
@@ -1054,219 +1055,153 @@ The spec gets frozen here.
       `serde_norway`. See `docs/engineering_decisions/config-format-yaml-serde-saphyr.md`.
 
 ### Policy engine
-- [x] `[!]` YAML loader with **hard error on unknown keys**. `src/policy.rs`:
-      `deny_unknown_fields` on every struct, refused at four depths and inside the
-      polymorphic field.
-      - [x] `install_scripts` hand-writes `Deserialize` rather than using
-            `#[serde(untagged)]`, delegating the map arm so `ScriptDetail`'s own
-            `deny_unknown_fields` applies. It is the only polymorphic field: `cooldown` is
-            always a table.
-      - [x] The test that distinguishes the two is not "is it refused" (both refuse) and
-            not "does the message mention the key" (both do, in the source-context
-            snippet). It is whether the message names the unknown field, lists what was
-            allowed instead, and puts the caret on the typo rather than the line above.
-            Checked by swapping in an untagged version and watching it fail.
+
+The design changed after most of this was built. See
+`docs/engineering_decisions/policy-tier-resolution.md`, which supersedes plan §5 and §5.5.
+What the old design called tiers is now: global settings, per-package exceptions, and a
+decision vector. What was built and then removed is listed at the end of this section, so
+the record of why it went survives the deletion.
+
+- [x] `[!]` Pick `serde_yaml` replacement. `serde-saphyr`, `default-features = false`,
+      `features = ["deserialize"]`, `include`/`include_fs` permanently off, fallback
+      `serde_norway`. See `docs/engineering_decisions/config-format-yaml-serde-saphyr.md`.
+- [x] `[!]` YAML loader with **hard error on unknown keys**. `src/policy.rs`,
+      `deny_unknown_fields` on every struct, refused at four depths.
+      - [x] Never `#[serde(untagged)]` on a polymorphic field. It refuses a typo'd key but
+            names neither the key nor the right line; a hand-written `Deserialize` that
+            delegates keeps the diagnosis. Measured in both formats by the spike's `poly`
+            binary and again by the loader's own test.
+            No polymorphic field survives the redesign, so nothing uses it today. The
+            measurement stands for the next one.
 - [x] `[!]` `version` field; refuse to start on unrecognized version. Read by a probe
       before the body is parsed, so a version 2 document is refused by its version rather
-      than by whichever version 1 key it happens to be missing. The refusal quotes what
-      the line held: a number, a quoted string, a bool, a float, or absent.
-- [x] `[!]` Action lattice: `allow < warn < quarantine < block`. `src/policy/strictness.rs`.
-      `Action::strength` writes the positions out rather than taking them from the
-      declaration order, and a proof holds the two in agreement, so reordering the
-      variants cannot silently reverse the lattice.
-      - [x] Comparing two actions is never undecided: the lattice is a total order, so
-            incomparability arises only when dimensions are combined.
-- [x] `[!]` Global -> ecosystem merge; ecosystem overrides win. `src/policy/merge.rs`.
-      A rule the ecosystem does not set keeps the default, so a sparse ecosystem block is
-      the normal case. `known_malware` is not in `EcosystemRules` at all, so it cannot be
-      weakened per ecosystem.
-- [x] `[!]` Per-parameter monotonicity declarations (cooldown.days ↑, max_cvss ↓, ...).
-      One table, `direction_of`, rather than a direction at each use site, so a parameter
-      cannot be compared one way in the merge and the other way in `policy diff`.
-      - [x] The two directions are proved mirror images over every pair of values.
-            Getting one backwards fires warnings in exactly the wrong direction, which
-            the plan calls worse than having none.
-- [x] `[!]` Loosening detection, including the incomparable case (warn on unprovable).
-      Per rule, through `Strictness`. A cooldown moves in two dimensions and they can
-      disagree: `block/3d` overridden by `warn/30d` is incomparable and warns.
-      - [x] **A third answer was needed, and it is the common one.** When nothing above
-            set a rule there is no baseline, so the override loosened nothing. That is not
-            `Same`, which claims a comparison that never happened, and not
-            `NotApplicable`, which claims the rule has no meaning here.
-            `Strictness::Unset` is the ordinary shape of a real config, where `defaults`
-            is sparse and ecosystems fill it in.
-      - [x] `provenance_required` goes through the same machinery as a number rather than
-            being compared its own way: required is stricter, so it runs
-            `HigherIsStricter` over 0 and 1.
-- [x] `[!]` N/A handling — not-applicable rules never count as loosening. Keyed on the
-      ecosystem name as the policy file spells it, not on `identity::Ecosystem`, because a
-      policy can name an ecosystem before an adapter exists. §5.5's own example, Go
-      modules and `install_scripts`, is exactly such a case and is what the test uses: the
-      mechanism would otherwise have no live input and its proofs would be about dead
-      code. A rule applies unless it is known not to, since the other way round would hide
-      a real loosening behind an unrecognised name.
-- [x] `[!]` Loosening warnings emit at config load only, never per-request. `merge`
-      returns findings and logs nothing; the caller decides. Per-package warnings become
-      wallpaper within a day.
-      - [x] The caller is the binary: `WAHAROA_POLICY` loads, validates and reports a
-            policy at startup, refusing to start on anything unusable. It is **not
-            enforced**: nothing consults it for a decision yet, and the startup log says
-            so every time, because a policy that silently did nothing would be worse than
-            no policy at all.
-- [x] `[!]` `loosens_global` acknowledgment with required `reason` + `expires`. Refused
-      at load, not warned about: a flag on its own silences the warning and records
-      neither, which is worse than not having the mechanism, because the loosening is
-      still there and nothing now reports it. Checked in all four places the schema lets
-      one be written (`defaults`, `ecosystems.*`, `floor.*`, `packages[].set`); a flag
-      enforced in one of four is a gap an operator will find.
-      - [x] An acknowledged, unexpired loosening does not warn. It is still reported as
-            loosening and is marked for the audit trail, which is §5.5's "logs to audit
-            trail, passes `--strict`".
-      - [x] `expires` is parsed at load into `ExpiryDate`, so a policy carrying an
-            unreadable date is refused rather than loaded with a rule whose expiry
-            silently never arrives. A plain calendar date: which second of the day a rule
-            lapses on is not a question a policy file should answer.
-      - [x] Found by the new check: an existing test fixture carried `loosens_global`
-            with a reason and no expiry, and had been loading cleanly.
-- [x] Expired acknowledgment re-warns. The date it is judged against is an argument to
-      `merge`, never the clock, because `policy diff --as-of` has to be able to ask what a
-      policy says on another day. The named date is the last day in force, so a policy
-      does not lapse on the morning of the day an operator wrote down.
-- [x] List-valued rules replace rather than union. True by construction: `merge::pick`
-      takes one side or the other and never combines, so a list-valued rule added later
-      gets replacement without anyone remembering to. No rule in the schema is
-      list-valued yet, so there is nothing to test that would not be testing the absence
-      of a feature.
-- [x] Golden-file tests for the merge. `tests/fixtures/policy/`, seven policies with the
-      whole rendered report beside each. The plan has no merge tables, so the cases are
-      the shapes the merge decides differently: both sides set and loosened, both set and
-      tightened, a cooldown whose two dimensions disagree, sparse defaults, N/A against
-      the same override for an ecosystem where it applies, an acknowledgment in force
-      beside one that has lapsed, and an ecosystem the policy never mentions.
-      - [x] npm is rendered whether or not the file declares it, so the common case in a
-            real deployment, an ecosystem nobody customised, appears in a golden file
-            rather than in none of them.
-      - [x] `WAHAROA_BLESS=1` rewrites them. Confirmed the test fails on a behaviour
-            change rather than only on a formatting one, by flipping Go's install-script
-            applicability and watching it report which file changed.
+      than by whichever version 1 key it happens to be missing.
+- [ ] `[!]` Action lattice: `allow < quarantine < block`. Three values, not four: `warn`
+      left when provenance became a recorded attribute rather than an action, and nothing
+      else delivers-with-a-concern. `src/policy/strictness.rs` has the four-value version
+      and its proofs; `Warn` comes out.
+      - [ ] `Action::strength` becomes the **combiner**: the disposition is `max` over the
+            decision vector. Under the old short-circuit design no two actions were ever
+            combined, so the lattice did no work.
+- [x] `[!]` Per-parameter monotonicity declarations. One table, `direction_of`, rather
+      than a direction at each use site, so a parameter cannot be compared one way in one
+      place and the other way in another. `cooldown_days` higher is stricter, `max_cvss`
+      lower is stricter, proved mirror images over every pair of values.
+- [x] `[!]` Loosening detection, including the incomparable case. Kept, and now serves the
+      `packages` tier alone: an entry may only loosen, so tightening has to be detected to
+      refuse it.
+      - [x] `Strictness::Unset` for a setting nothing above had set, which is neither
+            `Same` nor `NotApplicable`.
+- [x] `[!]` N/A handling. **More load-bearing after the redesign, not less.**
+      `install_scripts` is a global setting asked of every ecosystem, and Go has no install
+      step to ask about, so it reports not-applicable rather than a violation.
+      `merge::applies` already computes it and its Go test already covers it; that function
+      survives the deletion of the rest of `merge.rs`.
+- [ ] `[!]` **The decision vector.** Every check runs and appends one result; the
+      disposition is taken from the whole vector.
+      - [ ] Four results: `passed`, `failed`, `excepted`, `not_applicable`. Three of the
+            four contribute `allow` and are distinguished anyway, because what an operator
+            needs to know is not what the decision needs.
+      - [ ] `excepted` is not `passed`: it is the one carrying operational risk, it is what
+            an expiry review has to find, and an exception that never reaches it is dead.
+      - [ ] The short circuit survives only in front of Stage 4's expensive analysis. None
+            of the checks here costs anything worth deferring for.
+- [ ] An entry that changes nothing is **valid**: it warns at load and `doctor` flags it.
+      Almost always a selector that no longer matches what it was written for, but not a
+      reason to refuse a policy.
+- [x] List-valued rules replace rather than union. True by construction: the merge takes
+      one side or the other and never combines. No setting is list-valued except
+      `cve_ids`, which is a set of exceptions rather than a rule value.
+- [ ] Golden-file tests. `tests/fixtures/policy/` exists with seven policies and their
+      rendered reports; the merge half goes and the rendering becomes the decision vector,
+      which is the thing worth pinning in a file.
+
+#### Built, then removed by the redesign
+
+Not failures, and not dead ends either: each was built to the plan as it stood, and three
+of them produced findings that outlived the code.
+
+- **The global -> ecosystem merge** (`merge.rs`). There are no per-ecosystem settings, so
+  there is nothing to merge. `applies` and `RuleValues` survive; the rest goes.
+- **`loosens_global` with required `reason` + `expires`, and its expiry check.** Nothing
+  acknowledges, because nothing warns at the ecosystem tier. The finding survives: an
+  acknowledgment flag without both fields is worse than no mechanism, since it silences
+  the warning and records neither.
+- **The floor** (`FloorRules`, `check_floors`, `check_enabled`, the startup failure). Which
+  checks may be excepted is fixed by the decision chart rather than configured.
+- **`provenance_required`.** Measured at 81% of a real dependency tree lacking provenance
+  against 0% carrying an install script, which is what made it a signal rather than a gate.
+  Stage 1 already records it.
+- **`ScriptDetail` and `ScriptRule`'s hand-written `Deserialize`.** Polymorphic only to
+  carry the acknowledgment. A `packages` entry carries its own `reason` and `expires` at
+  entry level.
+- **`Action::Warn`.**
+
+### The checks
+
+Each is a setting, an exception shape, and an intel source. None exists yet.
+
+- [ ] `[!]` `denials`, explicitly forbidden packages. Exact version, no exception.
+- [ ] `[!]` Known malware. Not configurable and not exceptable: behaviour, not policy.
+      Needs a `malware`-capable stream, which is gated separately below.
+- [ ] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
+      own, and is a **packument filter** rather than an artifact refusal: Stage 1's
+      `npm::filter_unservable_versions` is the mechanism.
+- [ ] `[!]` `kev`. `block` or `allow`. Absent from the plan before this design; needs a
+      KEV source, which is ecosystem-agnostic.
+- [ ] `[!]` `max_cvss`. A number, not a severity band: bands are not stable across CVSS
+      versions, where the same score falls in different ones under v2 and v3. Exceptions
+      are per CVE id (`cve_ids`), not per package, which is the only exception keyed by
+      something other than the package.
+- [ ] `[!]` `install_scripts`. `block` or `allow`. Global setting, asked of every
+      ecosystem, reporting not-applicable where the ecosystem has no install step.
 
 ### Package tier
 
-- [ ] `[!]` **BLOCKED, open question.** Evaluation order: denials → floor → packages →
-      ecosystems → defaults, first match short-circuits.
-      §5.5 calls the floor a "non-overridable **minimum**" and also puts it in a "first
-      match **short-circuits**" order above `packages`. The two give different answers for
-      exactly one case: a `packages` entry that is *stricter* than the floor for the same
-      rule. Diagrammed in `docs/engineering_decisions/policy-tier-resolution.md`.
-      Implementation stopped until it is answered. Nothing already written depends on the
-      answer.
-- [x] `[!]` `Denial` type with **no** `expires` field and no precedence code path. The
-      field does not exist, so `deny_unknown_fields` refuses a denial that carries one:
-      an expiring denial is unrepresentable rather than discouraged.
-- [~] `[!]` `Floor` type with no override constructor (compiler-enforced). Half done:
-      `FloorRules` is a distinct type from `Defaults` and `merge` never receives it, so
-      no code path exists by which a lower tier could override one.
-      - [ ] The other half needs the evaluation engine, which is where a floor could be
-            consulted wrongly. Nothing consults it yet.
-- [x] `[!]` Floor is per-ecosystem; **startup failure** if an enabled ecosystem has none.
-      `Policy::check_enabled`, called by the binary against the ecosystems it actually
-      serves. Asked of the build rather than of the document: a policy may name an
-      ecosystem no adapter exists for, which is why `examples/policy.yaml` can declare
-      `ecosystems.cargo` with no `floor.cargo` and stay valid. It becomes a failure the
-      day a cargo adapter ships, which is §5.5's breaking-change policy working.
-- [x] `[!]` `known_malware: block` pinned into every floor, not removable. Two halves,
-      because there are two ways to remove it: the schema makes the field mandatory, so a
-      floor without it does not parse, and `check_floors` refuses one that declares it and
-      weakens it. Either alone leaves the other open.
-- [ ] `[!]` Floor rules report not-applicable for ecosystems where they have no meaning
-- [x] `[!]` Unified `packages` tier; `exceptions` block removed. There is no
-      `exceptions` key, so a config written against the old shape is told which key is
-      gone rather than having it ignored.
-- [x] `[!]` `ecosystem` required on every package selector (load-time error if absent).
-      Not an `Option` in `Selector`, so a selector without it does not parse.
-- [x] `[!]` Loosening requires `reason` + `expires`; **no warning emitted**.
-      `src/policy/packages.rs`. Nothing in this tier warns: loosening is its purpose, and
-      a warning per entry would become noise hiding the ecosystem-tier warnings that
-      matter. An unjustified loosening is refused at load instead, because a required
-      field cannot be ignored the way a warning can.
-      - [x] `reason` is required on every entry by the schema, tightening ones included,
-            so what loosening additionally requires is `expires` or `permanent: true`.
-      - [x] An entry that tightens one rule and loosens another is still a loosening. It
-            is not excused by what it gave in the other direction.
-      - [x] Tightening entries need nothing: nothing was given away.
-- [x] `[!]` `expires` ceiling of 90 days from today, configurable.
-      `WAHAROA_EXPIRY_CEILING_DAYS`. Both the ceiling and the day it counts from are
-      arguments, so `policy check --as-of` can ask what a policy would be judged as on
-      another day. The refusal says what it found, what the latest allowed date is, and
-      the ceiling.
-      - [x] The ceiling applies to tightening entries too. An entry that expires is
-            making a claim about time whichever direction it moves the policy.
-- [x] `[!]` `permanent: true` as explicit alternative, requires `reason`. `reason` is
-      required on every package rule, so it holds for permanent ones by construction.
-      Alternative is enforced: an entry carrying both `expires` and `permanent: true` is
-      refused, because it says two different things about when it stops being true and
-      whichever the code read would be a silent choice.
-- [x] `[!]` Loosening measured against effective policy **above the rule**: the ecosystem
-      merge for the entry's own ecosystem, not the global default. Tested with the case
-      that distinguishes them, where global says `warn`, the ecosystem tightened to
-      `block`, and the entry's `warn` matches global exactly and is still a loosening of
-      what actually applies.
-      - [x] The comparison is shared with the ecosystem tier through `RuleValues` rather
-            than written twice. Two comparisons that could disagree about what "looser"
-            means is the failure the single `direction_of` table prevents one level down.
-- [x] `[!]` Specificity as strict subset containment, not a score.
-      `src/policy/selector.rs`. Per dimension, all of them: a selector is narrower only
-      if it is narrower or equal everywhere, so narrower in one and wider in another is
-      neither.
-      - [x] **The vocabulary is restricted at load to keep containment decidable.** A
-            name is `*`, `prefix*` or a literal; a version is exact or absent. §5.5
-            claims containment is decidable because the predicate vocabulary is closed,
-            and a selector taking arbitrary ranges or globs reopens exactly that. Admitting
-            them and reporting "incomparable" would be worse than refusing them: the
-            overlap check could no longer fire either, so the file would carry pairs
-            nobody can reason about and nothing would say so.
-      - [x] Checking for range **operators** is not enough: `1.x` is a range written
-            without one. A wildcard is a whole component of the release part, so
-            `1.0.0-x` stays exact, a prerelease tag of `x` being a real thing to publish.
-      - [x] `purl` and `name`/`version` denote one set through different fields, so every
-            selector is canonicalised before comparison. Compared field by field,
-            `pkg:npm/chalk@5.6.2` and `{name: chalk, version: 5.6.2}` would come out
-            incomparable while being identical. A selector setting both is refused:
-            agreeing is redundant, disagreeing is a contradiction.
-      - [x] The purl's type stays a string rather than resolving to `identity::Ecosystem`,
-            like the floor check and the N/A table, because a policy may name an ecosystem
-            no adapter exists for.
+- [x] `[!]` `Denial` type with **no** `expires` field. The field does not exist, so
+      `deny_unknown_fields` refuses a denial that carries one: an expiring denial is
+      unrepresentable rather than discouraged.
+- [x] `[!]` Unified `packages` tier; `exceptions` block removed.
+- [x] `[!]` `ecosystem` required on every package selector. Not an `Option` in `Selector`.
+- [x] `[!]` Loosening requires `reason` + `expires`; no warning emitted. A warning per
+      entry would be noise; a required field cannot be ignored the way a warning can.
+- [x] `[!]` `expires` ceiling of 90 days from today, configurable. Both the ceiling and
+      the day it counts from are arguments, so `policy check --as-of` can ask what a
+      policy would be judged as on another day.
+- [x] `[!]` `permanent: true` as explicit alternative, requires `reason`. An entry
+      carrying both `expires` and `permanent` is refused.
+- [x] `[!]` Specificity as strict subset containment, not a score. The vocabulary is
+      restricted at load to keep it decidable: a name is `*`, `prefix*` or a literal, a
+      version is exact or absent.
+      - [x] `purl` and `name`/`version` canonicalised before comparison, since they denote
+            one set through different fields.
 - [x] `[!]` Incomparable overlaps and exact duplicates are load-time errors, and separate
-      ones: a duplicate is comparable and still wrong, because whichever wins the other is
-      dead and which that is depends on file order. Checked at load, because the request
-      that would expose an unordered pair may be months away and the file is in front of
-      the operator now.
-      - [x] The incomparable case needs two selectors narrower in different dimensions,
-            `{name: "a*", has_install_scripts: true}` against `{name: "ab*"}`. Written
-            first, so the branch is not one no input reaches.
-      - [x] Four kani harnesses: a selector contains itself, two cannot each be strictly
-            inside the other, containment implies overlap, and overlap does not depend on
-            which side is asked.
-      - [x] Not proved: that equal selectors report as a duplicate rather than as
-            unorderable. Cloning a `Canonical` copies `String` fields and the loop does
-            not unwind at any bound worth waiting for. Reflexivity covers the containment
-            half and a unit test covers the distinction.
+      ones: a duplicate is comparable and still wrong.
+- [ ] `[!]` **An entry that tightens is a load-time error.** The tier may only loosen. This
+      inverts the existing check, which permits a tightening entry and merely asks nothing
+      of it.
+- [ ] `[!]` Loosening measured against the **global settings**, not a merge. Already
+      implemented against the ecosystem merge; the baseline becomes `defaults` directly.
+- [ ] `cve_ids`, the per-CVE exception. A new exception shape: every other one is a
+      boolean about the package.
 - [ ] Range resolution in the normalizer, never in the engine
-- [ ] `explain` shows winning selector and the ones it beat, per tier
+- [ ] `explain` shows the decision vector: every check, its result, and for an `excepted`
+      one the entry and expiry that excused it
 - [ ] `policy check` flags permanently-shadowed selectors
-- [ ] `policy check` reports floor blast radius against a recent lockfile
 - [ ] `policy check` lists `permanent: true` entries separately
-- [ ] Tests: denial cannot be undone by any tier, including floor
-- [ ] Tests: floor survives a hostile config file
-- [ ] Shipped config templates include floors for every supported ecosystem
-- [ ] Document the adapter-addition breaking-change policy
+- [ ] `policy check` and `doctor` flag entries that change nothing
+- [ ] Tests: a denial cannot be undone by any exception
+- [ ] Tests: known malware cannot be excepted, whatever the policy file says
+- [ ] Shipped config template that loads and passes its own rules
 
 ### `waharoa policy diff`
 
 - [ ] `[!]` Evaluate two policies against a real package set
 - [ ] `[!]` Pin `--snapshot` so policy changes are not conflated with intel changes
 - [ ] `[!]` Package set from lockfiles **and** from the audit log
-- [ ] `[!]` Report transitions both directions, grouped with counts
+- [ ] `[!]` Report transitions both directions, grouped with counts. Comparing decision
+      vectors rather than dispositions, so the report names **which check** moved, which
+      is the actionable half
 - [ ] `[!]` Nonzero exit on any loosening transition (CI gate)
 - [ ] `--as-of <date>` for time-dependent verdicts (cooldown, expiry)
 - [ ] Scheduled-job recipe: `--as-of +30d` to surface upcoming expiries with impact

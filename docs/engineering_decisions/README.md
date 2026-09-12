@@ -18,7 +18,7 @@ code, and the file names where.
 | [License: Apache-2.0](license-apache-2.md) | Decided |
 | [Intel distribution: fetch from origin](intel-distribution-fetch-from-origin.md) | Decided |
 | [NVD role and stream capabilities](nvd-role-and-stream-capabilities.md) | Decided |
-| [Package override tier](package-override-tier.md) | Decided |
+| [Package override tier](package-override-tier.md) | Superseded by [policy-tier-resolution](policy-tier-resolution.md) |
 | [Config format: YAML via serde-saphyr](config-format-yaml-serde-saphyr.md) | Decided |
 | [HTTP stack: axum and reqwest](http-stack-axum-reqwest.md) | Decided |
 | [PURL identity rules for npm](purl-identity-rules.md) | Decided |
@@ -27,7 +27,7 @@ code, and the file names where.
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |
 | [The artifact cache does not skip verification](verified-artifact-cache.md) | Implemented, Stage 1 |
 | [Deferral status codes](deferral-status-codes.md) | Measured, decision pending Stage 2 |
-| [How the policy tiers resolve](policy-tier-resolution.md) | Open question, blocking |
+| [Policy shape and how a package is judged](policy-tier-resolution.md) | Decided |
 | [Enforcement tiers](enforcement-tiers.md) | Open question |
 | [Terminating TLS: pre-issued certificates](terminating-tls-certificates.md) | Decided, not implemented |
 | [Stage structure](stage-structure.md) | Staging |
