@@ -16,7 +16,7 @@ use waharoa::doctor;
 use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
-use waharoa::policy::{Policy, merge, packages};
+use waharoa::policy::{Policy, packages};
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
 use waharoa::refusal::RefusalStatus;
 use waharoa::store::DEFAULT_MAX_RECORDS;
@@ -73,19 +73,12 @@ const DEBUG_USAGE: &str = "\
 #[cfg(not(debug_assertions))]
 const DEBUG_USAGE: &str = "";
 
-/// Ecosystems this build actually serves. §5.5 requires a floor for each of them, and
-/// "enabled" means what the binary can proxy, not what the document happens to mention.
-const ENABLED_ECOSYSTEMS: &[&str] = &["npm"];
-
 /// Load a policy, refuse to start if it is unusable, and report what it says.
 ///
 /// Every failure here stops the process. An operator who pointed at a policy and got a
 /// running proxy would reasonably believe it was in force.
 fn report_policy(path: &std::path::Path) {
     let policy = Policy::load(path).unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
-    policy
-        .check_enabled(ENABLED_ECOSYSTEMS)
-        .unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
 
     let today = jiff::Zoned::now().date();
     let ceiling = std::env::var("WAHAROA_EXPIRY_CEILING_DAYS")
@@ -96,44 +89,30 @@ fn report_policy(path: &std::path::Path) {
 
     warn!(
         path = %path.display(),
+        cooldown_days = policy.cooldown_days,
+        max_cvss = policy.max_cvss,
+        install_scripts = %policy.install_scripts,
+        kev = %policy.kev,
+        denials = policy.denials.len(),
+        exceptions = policy.packages.len(),
         "policy loaded and validated, and NOT enforced: nothing consults it yet"
     );
 
-    // §5.5 emits these at config load and never per request, which is the only place
-    // they stay readable. The `packages` tier is not among them: loosening is that
-    // tier's purpose, so it is required to justify itself rather than warned about.
-    for ecosystem in policy.ecosystems.keys() {
-        let (_, findings) = merge::merge(&policy, ecosystem, today);
-        for finding in findings {
-            if finding.warns() {
-                warn!(
-                    ecosystem = %finding.ecosystem,
-                    rule = finding.rule.as_str(),
-                    outcome = ?finding.outcome,
-                    "policy override loosens what is above it, or cannot be proven to tighten it"
-                );
-            } else if finding.audited() {
-                info!(
-                    ecosystem = %finding.ecosystem,
-                    rule = finding.rule.as_str(),
-                    reason = finding
-                        .acknowledgment
-                        .as_ref()
-                        .map(|a| a.reason.as_str())
-                        .unwrap_or("-"),
-                    expires = %finding
-                        .acknowledgment
-                        .as_ref()
-                        .map(|a| a.expires.to_string())
-                        .unwrap_or_default(),
-                    "policy override loosens what is above it, acknowledged"
-                );
-            }
+    // An entry that changes nothing is valid and worth saying out loud, because it is
+    // almost always a selector that no longer matches what it was written for.
+    let findings = packages::findings(&policy);
+    for (index, entry) in policy.packages.iter().enumerate() {
+        if packages::changes_nothing(&findings, index) {
+            warn!(
+                at = format!("packages[{index}]"),
+                reason = %entry.reason,
+                "policy exception changes nothing, so nothing it matches is affected by it"
+            );
         }
     }
 }
 
-/// A comma-separated environment variable, blanks dropped.
+/// A comma-separated environment variable, blanks dropped./// A comma-separated environment variable, blanks dropped.
 fn comma_separated(key: &str) -> Vec<String> {
     std::env::var(key)
         .unwrap_or_default()

@@ -1112,9 +1112,10 @@ the record of why it went survives the deletion.
 - [x] List-valued rules replace rather than union. True by construction: the merge takes
       one side or the other and never combines. No setting is list-valued except
       `cve_ids`, which is a set of exceptions rather than a rule value.
-- [ ] Golden-file tests. `tests/fixtures/policy/` exists with seven policies and their
-      rendered reports; the merge half goes and the rendering becomes the decision vector,
-      which is the thing worth pinning in a file.
+- [ ] Golden-file tests. The seven merge fixtures in `tests/fixtures/policy/` were
+      deleted with the merge: every one of them was a policy in a schema that no longer
+      parses. Recreate them against the decision vector, which is the thing worth pinning
+      in a file, once there is one to render.
 
 #### Built, then removed by the redesign
 
