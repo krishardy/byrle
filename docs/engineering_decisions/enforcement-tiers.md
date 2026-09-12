@@ -28,7 +28,7 @@ right on every machine.
 
 | Tier | Mechanism | Privilege needed | What still escapes |
 |---|---|---|---|
-| 1 | Registry config | none | pnpm and yarn artifacts |
+| 1 | Registry config | none | artifacts for every client except npm |
 | 2 | Artifact URL rewriting | none | `dist.tarball` on an origin the proxy does not front |
 | 3 | Refuse artifacts on unconfigured origins (**done**) | none | clients that ignore the registry config |
 | 4 | hosts / DNS override plus trusted certificates | root, trust-store changes | hosts not listed |

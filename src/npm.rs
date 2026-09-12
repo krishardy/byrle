@@ -451,9 +451,10 @@ impl std::error::Error for RewriteError {}
 /// Point every artifact URL the proxy can serve at the proxy itself.
 ///
 /// Necessary because clients disagree about `dist.tarball`. npm rewrites it to the
-/// configured registry; pnpm 10 and yarn 1 use it verbatim and fetch from whatever host
-/// it names, so against a real registry their artifacts never reach the proxy at all.
-/// Rewriting here makes every client in the ecosystem behave the same way.
+/// configured registry; pnpm 10, yarn 1, yarn 4 and bun 1.3 use it verbatim and fetch
+/// from whatever host it names, so against a real registry their artifacts never reach
+/// the proxy at all. Rewriting here makes every client in the ecosystem behave the same
+/// way.
 ///
 /// Only the **origin** changes. The path is kept, so the request that comes back is the
 /// one [`classify_path`] already understands and the proxy forwards it upstream unchanged.

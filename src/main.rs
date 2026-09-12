@@ -352,8 +352,8 @@ async fn main() -> std::process::ExitCode {
         .unwrap_or(true);
     if !rewrite_artifacts {
         warn!(
-            "artifact URL rewriting is OFF; pnpm and yarn will fetch artifacts directly \
-             and nothing about them is observed"
+            "artifact URL rewriting is OFF; every client except npm will fetch artifacts \
+             directly and nothing about them is observed"
         );
     } else if public_base.is_none() {
         // Measured: with a lockfile whose `resolved` names a proxy address that is no

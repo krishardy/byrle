@@ -227,8 +227,8 @@ pub fn mark_etag(etag: &str, base: &str) -> String {
 ///   artifact URLs that were never pointed here. Measured: after enabling rewriting at an
 ///   address that previously ran without it, npm sent the upstream's own tag, the registry
 ///   answered 304, and the client kept its unrewritten copy. npm re-derives artifact URLs
-///   from the configured registry so it still came through the proxy, but pnpm and yarn
-///   use the URL as written, so for them that cached copy sends every artifact to the
+///   from the configured registry so it still came through the proxy, but pnpm, yarn and
+///   bun use the URL as written, so for them that cached copy sends every artifact to the
 ///   origin registry.
 /// - **`*`**, which asks upstream to 304 if any representation exists at all.
 pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {

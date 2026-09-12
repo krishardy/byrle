@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Where npm, pnpm and yarn diverge when installing through the proxy.
+# Where the npm-ecosystem package managers diverge when installing through the proxy.
 #
 # The proxy only sees what a client chooses to send it, and the clients do not agree about
 # `dist.tarball`: npm rewrites it to the configured registry, pnpm 10 and yarn 1 use it

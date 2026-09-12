@@ -378,7 +378,8 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
             Finding::new(
                 Severity::Warn,
                 "proxy artifact rewriting",
-                "off, so pnpm and yarn fetch artifacts without the proxy seeing them",
+                "off, so every client except npm fetches artifacts without the proxy \
+                 seeing them",
             )
             .with_fix("unset WAHAROA_REWRITE_ARTIFACTS on the proxy"),
         );
@@ -809,7 +810,7 @@ mod tests {
         let findings = check_proxy(Some(&h), PROXY);
         assert_eq!(worst(&findings), Severity::Warn);
         let text: String = findings.iter().map(|f| f.detail.clone()).collect();
-        assert!(text.contains("pnpm and yarn"), "{text}");
+        assert!(text.contains("every client except npm"), "{text}");
         assert!(text.contains("rather than removed"), "{text}");
         assert!(text.contains("cdn.example"), "{text}");
     }
