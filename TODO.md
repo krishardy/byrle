@@ -805,7 +805,27 @@ implementations.
                   reason on anything older.
             - [ ] yarn 2+ is skipped on this machine, where the default node is 16. It
                   passes under node 24.
-- [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
+- [x] Cache bypass confirmed, per client rather than assumed to work like npm's. Measured
+      by installing the same package twice through the proxy with one cache, and counting
+      what the proxy saw the second time:
+      | Client | Second install |
+      |---|---|
+      | npm 11, pnpm 10, bun 1.3 | nothing reached the proxy |
+      | yarn 1, yarn 4 | the packument did, the artifact did not |
+      So the artifact bypass is universal and, for three of the five, so is the metadata
+      one. §7 records it as a bypass vector; this is the evidence.
+      - [x] `waharoa doctor` checks all four caches it can locate, not just npm's, and
+            describes the two behaviours separately because they are different exposures.
+      - [x] Each client gets the command that actually clears its cache.
+            `npm cache clean --force` is not it for bun or pnpm.
+      - [x] Presence and location are reported rather than a count. Every client lays its
+            cache out differently, so one number would mean packages for one and files for
+            another: the same yarn cache is 12,983 entries or 749,073 files depending on
+            which you count.
+      - [x] **Which cache is in play is a per-directory question.** `pnpm store path`
+            answers with a store on the project's own filesystem, so it is
+            `/tmp/.pnpm-store` in a directory under `/tmp` and the user's store elsewhere.
+            Doctor already says which directory it checked from.
 - [x] `waharoa doctor`. `src/doctor.rs` holds the checks as pure functions; the binary
       reads the files and asks each package manager for its own resolved configuration,
       since the effective registry comes from a project `.npmrc`, then the user's, then
@@ -846,7 +866,6 @@ implementations.
                   runtime, and dropping one inside an async context panics. Doctor runs
                   in the same runtime as everything else, so the fetch is async and the
                   `blocking` feature is not enabled.
-- [ ] Confirm npm cache bypass behavior; `npm cache clean --force` needed on onboarding
 
 **Exit:** a real `npm install` completes through the proxy with the full transitive
 graph correctly normalized to PURLs, and the hardcoded block fires before the tarball
