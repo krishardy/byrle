@@ -5,7 +5,13 @@
 - **Related:** [package-override-tier](package-override-tier.md),
   [policy-engine-hand-rolled](policy-engine-hand-rolled.md)
 
-The flow chart below is the decision. Everything after it follows from it.
+The flow chart below defines **which checks exist and what each one decides**. Everything
+after it follows from it.
+
+It draws each failure as an arrow straight to FORBID. Read that as "this check contributes
+`block`", not as "stop here": the checks are evaluated as a vector and combined at the
+end, for the reasons in [Evaluation](#evaluation). The set of checks and their outcomes is
+the same either way.
 
 ## Decision flow chart for what packages are delivered or rejected
 
@@ -150,6 +156,14 @@ Every setting is global. Every exception is per package. Nothing is per ecosyste
 | `max_cvss` | global | yes, per CVE id, note 5 |
 | `install_scripts` | global | yes, note 6 |
 
+`install_scripts` and `kev` take `block` or `allow`, and nothing else. `quarantine` is
+meaningless for both: waiting does not change whether a package has an install script or
+a KEV.
+
+A `packages` entry that changes nothing is **valid**. It warns at load and `doctor` flags
+it, because it is almost always a selector that no longer matches what it was written
+for, but it does not stop a policy from loading.
+
 ## What is not configurable, and why
 
 **Known malware always blocks.** No setting, no exception. The chart gives it no exception
@@ -240,6 +254,67 @@ Stage 1 already records all of it: `record::Provenance` carries `attestation_url
 Two things §5.5 got right and keep earning their place: **not-applicable is never a
 violation**, and **specificity is strict subset containment, not a score**.
 
+## Evaluation
+
+Every check runs. Each returns a result, and the decision is taken from the whole vector
+rather than at the first failure.
+
+```
+  denials          passed
+  known_malware    passed
+  cooldown_days    failed    -> quarantine    (published 2 days ago, needs 7)
+  kev              excepted  -> allow         (packages[3], expires 2026-11-30)
+  max_cvss         passed
+  install_scripts  failed    -> block         (no exception)
+
+  decision: block
+```
+
+The decision is the **strongest action in the vector**, `max` over
+`allow < quarantine < block`. `Action::strength` is already proved to be that order.
+
+**The outcome is identical to stopping at the first failure.** Every check must pass for a
+package to be delivered, so the decision is a plain conjunction, and evaluating it eagerly
+or lazily gives the same answer for every input. What changes is what is known when the
+answer is given:
+
+- **Every reason, not the first.** A package both too young and carrying a KEV reports
+  both. Under a short circuit it reports only "too young", the reason that lapses on its
+  own; an operator grants the age exception and finds it still refused, for a reason they
+  see only then.
+- **`explain` is the vector.** There is nothing to reconstruct or re-run.
+- **`policy diff` gets finer.** Comparing verdicts says a package changed; comparing
+  vectors says which check changed, which is the actionable half.
+- **Observe-only is "compute it, record it, deliver anyway"**, not a second path through
+  the engine.
+- **`quarantine` stays distinct from `block`.** A package refused only for being too young
+  clears by itself; one refused for a KEV does not. The chart's two dispositions lose that
+  difference and an operator needs it.
+
+### Three results, not two
+
+| result | meaning |
+|---|---|
+| `passed` | the check had nothing against this package |
+| `failed` | it did, and contributes its action |
+| `excepted` | it did, and a `packages` entry excused it |
+
+`excepted` is not `passed`. A check that failed and was excused is the one carrying
+operational risk, and it is what an audit trail and an expiry review have to find.
+Recording it as `passed` throws that away, and it is also how a dead exception becomes
+visible: one that never reaches `excepted` is doing no work.
+
+### Where the short circuit survives
+
+In front of expensive analysis, and nowhere else. None of the seven checks here costs
+anything worth deferring for: denials and malware are set lookups, KEV and CVE are
+lookups against a local mirror, age is arithmetic, install scripts is a packument field.
+No network call and no extraction among them.
+
+Stage 4's detectors are different. Capability analysis and source diff are the "expensive
+analysis" §5 defers a request for, and they stay lazy: the cheap checks are a vector, and
+anything expensive runs only if that vector has not already settled the answer.
+
 ## What this means for the code
 
 | | |
@@ -253,6 +328,8 @@ violation**, and **specificity is strict subset containment, not a score**.
 | `ecosystems`, `EcosystemRules` | deleted. |
 | `ScriptDetail`, `ScriptRule`'s hand-written `Deserialize` | deleted. |
 | `Action::Warn` | deleted. |
+| `Action::strength` | the combiner: the decision is `max` over the vector. |
+| the engine | returns a vector of per-check results, not a verdict. `explain`, `policy diff` and observe-only all read it. |
 | `npm::filter_unservable_versions` | reused. `quarantine` is a packument filter, which is what it already does. |
 
 `ScriptRule` is polymorphic only because its detailed form carried the acknowledgment, and
@@ -263,15 +340,3 @@ becomes an `Action`.
 The measurement behind that deserialiser stands on its own and is worth keeping: an
 `untagged` enum refuses a typo'd key but names neither the key nor the right line. The
 next polymorphic field will need the hand-written form.
-
-## Still open
-
-- **Inferred, not stated:** that `install_scripts` and `kev` take `block` or `allow` and
-  nothing else. `quarantine` is meaningless for both, since waiting does not change
-  whether a package has an install script or a KEV.
-- **A `packages` entry that changes nothing** is currently loaded in silence. Refused,
-  warned about, or ignored.
-- **The order reports the reason that will lapse, not the worst one.** A package both too
-  young and carrying a KEV is refused for being too young. Granting the age exception
-  leaves it refused for a reason the operator only then sees. Putting the absolute checks
-  first would report the more serious finding at no cost to the outcome.
