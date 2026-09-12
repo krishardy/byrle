@@ -18,6 +18,7 @@
 //! on the line above the mistake. Measured in both formats by
 //! `spikes/config-format/src/bin/poly.rs`.
 
+pub mod decide;
 pub mod merge;
 pub mod packages;
 pub mod selector;

@@ -57,6 +57,15 @@ impl NamePattern {
         }
     }
 
+    /// Whether one name is covered.
+    fn matches(&self, name: &str) -> bool {
+        match self {
+            Self::Any => true,
+            Self::Prefix(p) => name.starts_with(p.as_str()),
+            Self::Exact(n) => n == name,
+        }
+    }
+
     /// Whether some name is covered by both.
     fn overlaps(&self, other: &Self) -> bool {
         match (self, other) {
@@ -224,6 +233,18 @@ impl Canonical {
                 self.has_install_scripts.as_ref(),
                 other.has_install_scripts.as_ref(),
             )
+    }
+
+    /// Whether one specific package is in the set this selector names.
+    ///
+    /// Containment asks how two selectors relate; this asks whether a package is in one
+    /// of them. Both read the same four dimensions, so a selector cannot match a package
+    /// one way here and be ordered another way there.
+    pub fn matches(&self, ecosystem: &str, name: &str, version: &str, scripts: bool) -> bool {
+        self.ecosystem == ecosystem
+            && self.name.matches(name)
+            && self.version.as_deref().is_none_or(|v| v == version)
+            && self.has_install_scripts.is_none_or(|s| s == scripts)
     }
 
     /// Whether this matches strictly fewer packages than `other`.
@@ -782,6 +803,46 @@ mod tests {
     fn one_selector_has_nothing_to_overlap_with() {
         assert!(check_overlaps(&[canon("npm", Some("x"), None, None)]).is_ok());
         assert!(check_overlaps(&[]).is_ok());
+    }
+
+    /// Matching a package reads the same four dimensions containment does, so a selector
+    /// cannot match one way and be ordered another.
+    #[test]
+    fn a_selector_matches_the_packages_it_names() {
+        let prefix = canon("npm", Some("@mycompany/*"), None, None);
+        assert!(prefix.matches("npm", "@mycompany/foo", "1.0.0", false));
+        assert!(!prefix.matches("npm", "lodash", "1.0.0", false));
+        assert!(!prefix.matches("pypi", "@mycompany/foo", "1.0.0", false));
+
+        let pinned = canon("npm", Some("x"), Some("1.0.0"), None);
+        assert!(pinned.matches("npm", "x", "1.0.0", false));
+        assert!(!pinned.matches("npm", "x", "1.0.1", false));
+
+        let predicated = canon("npm", Some("x"), None, Some(true));
+        assert!(predicated.matches("npm", "x", "1.0.0", true));
+        assert!(!predicated.matches("npm", "x", "1.0.0", false));
+
+        assert!(canon("npm", None, None, None).matches("npm", "anything", "0.0.1", true));
+    }
+
+    /// A narrower selector matches a subset of what a wider one matches. This is the
+    /// relation containment claims, checked against real packages rather than asserted.
+    #[test]
+    fn a_contained_selector_matches_a_subset_of_what_contains_it() {
+        let narrow = canon("npm", Some("@mycompany/foo"), None, None);
+        let wide = canon("npm", Some("@mycompany/*"), None, None);
+        assert!(narrow.strictly_contained_by(&wide));
+
+        for (name, version) in [("@mycompany/foo", "1.0.0"), ("@mycompany/bar", "2.0.0")] {
+            if narrow.matches("npm", name, version, false) {
+                assert!(
+                    wide.matches("npm", name, version, false),
+                    "{name} is matched by the narrower selector and not the wider one"
+                );
+            }
+        }
+        assert!(wide.matches("npm", "@mycompany/bar", "2.0.0", false));
+        assert!(!narrow.matches("npm", "@mycompany/bar", "2.0.0", false));
     }
 
     #[test]
