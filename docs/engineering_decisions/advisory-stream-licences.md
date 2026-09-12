@@ -19,7 +19,7 @@ stream actually contributes, which does not match the order the plan lists them 
 | OSSF Malicious Packages | Apache-2.0 | **Apache-2.0** | notice retention |
 | CISA KEV | n/a | **CC0 1.0** | none |
 | NVD | n/a | **public domain** | none |
-| Aikido Intel | n/a | **not verified** | not verified |
+| Aikido Intel | n/a | **commercial account required** | n/a, deferred |
 
 ### OSV's sources, and which two reach npm
 
@@ -94,15 +94,19 @@ OSSF Malicious Packages and CISA KEV were read by a person (2026-09-13). Both mo
   analysis rather than text carried over from a source, so the compiled-from-elsewhere
   point does not reach our use of it.
 
-### Not verified, and why that is recorded rather than guessed
+### Aikido Intel is not a free public feed
 
-Aikido's public API endpoint returned an empty body to an unauthenticated request. It is
-not implemented, and should not be until someone reads the terms directly. Recording "not
-verified" is the point of the check: a blank in this table is a stream that cannot be
-built yet.
+Its public API endpoint returned an empty body to an unauthenticated request because there
+is no unauthenticated access to have: Aikido Intel requires a commercial account. The plan
+had it listed as "free, public, no account", which was wrong.
 
-Aikido is the last blank. Every other stream in the plan is now cleared, so licensing has
-stopped being what gates the intel layer.
+It is deferred to post-v1, to be revisited after launch when there is a running project to
+approach them about sponsorship with. The plan's thesis was partly resting on it and no
+longer does: what supports the claim that competitive coverage can be assembled from free
+feeds is OSSF's 221,548 npm malware records, measured below.
+
+Every stream that remains in the plan is licence-cleared. Licensing has stopped being what
+gates the intel layer.
 
 ## What each stream is worth, measured
 
@@ -154,7 +158,8 @@ Two consequences:
 3. **CISA KEV**, last. A set lookup over CVE ids the step above already produced, reaching
    13 npm CVEs today. Licence-cleared: CC0 1.0, nothing owed.
 
-NVD and Aikido stay unimplemented until their terms are read by a person.
+NVD is cleared and unimplemented. Aikido is deferred to post-v1: it requires a commercial
+account, so it cannot be a dependency of the launch.
 
 ## What the capability types are worth today
 

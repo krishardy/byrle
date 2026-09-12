@@ -64,7 +64,7 @@ July 2026). Existing implementations:
 | Harness Artifact Registry | Commercial, OPA | Tied to their platform |
 | pkggate | **MIT**, OSV-based, Python | Self-described early prototype, 0 stars, solo maintainer, npm + PyPI only |
 | Datadog supply-chain-firewall | **Open source** | ✅ Evaluated — see below. CLI wrapper, not a proxy. Different architecture. |
-| Aikido Safe Chain | **MIT**, free public Intel feed | Client-side shim rather than a policy proxy |
+| Aikido Safe Chain | **MIT** tool, Intel feed needs a commercial account | Client-side shim rather than a policy proxy |
 | depthfirst | Commercial | Closed agentic detection |
 
 **Datadog supply-chain-firewall — evaluation (Sept 2026).** Not a competitor to this
@@ -86,10 +86,14 @@ the real command or blocks. It never sits in the network path.
 
 **Our thesis (revised, Sept 2026).** The original framing was that malware
 intelligence is an unassailable moat, so an OSS project must compete elsewhere. That is
-now only half true. Between OSV, GitHub Advisory, OSSF Malicious Packages, and Aikido
-Intel — which is free, public, and reports analyzing up to 100,000 malicious packages a
-day, confirming ~19,500 malicious out of ~7.5M versions in Q2 2026 — competitive
-detection coverage can be assembled without owning a detection pipeline.
+now only half true. OSV's npm bundle carries 228,951 advisories, of which 221,548 are
+OSSF Malicious Packages malware records under Apache-2.0, measured directly rather than
+taken from a vendor's claims. Competitive detection coverage can be assembled from free
+feeds without owning a detection pipeline.
+
+Aikido Intel was originally counted in this list on the understanding that it was free and
+public. It requires a commercial account, so it is out of the launch and deferred to
+post-v1. The thesis does not rest on it: the 221,548 figure is OSSF alone.
 
 That makes the **pluggable advisory stream interface the strategic centerpiece**, not a
 nice-to-have. No commercial vendor will aggregate every free feed, because each is
@@ -136,7 +140,7 @@ can enable, disable, or add sources without forking.
 | NVD | **CPE** | ⚠ Not package-keyed. See below. |
 | OSSF Malicious Packages | PURL | Free community malware feed, aggregates several contributors. **Publishes natively in OSV format**, so it reuses the OSV normalization path — no reshaping. Low cost to add. |
 | Datadog malicious-packages | package name/version | Free, public, no account, daily updates. ⚠ **Likely already ingested via OSSF** — Datadog contributes upstream to it. Verify overlap before implementing; skip if it is a strict subset. |
-| Aikido Intel | package name/version | Free, public, no account. High volume, commercial-grade. Highest-value non-OSV addition. |
+| Aikido Intel | package name/version | ⚠ **Requires a commercial account.** Not a free public feed. Deferred to post-v1, pending a sponsorship conversation after launch. |
 
 All streams mirrored locally so lookups never leak the user's dependency graph upstream.
 
