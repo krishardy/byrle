@@ -16,6 +16,7 @@ use waharoa::doctor;
 use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::npm;
+use waharoa::policy::{Policy, merge};
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
 use waharoa::refusal::RefusalStatus;
 use waharoa::store::DEFAULT_MAX_RECORDS;
@@ -47,6 +48,9 @@ Proxy configuration, all through the environment:
   WAHAROA_MAX_PACKUMENT_BYTES       ceiling on a packument body (32 MiB)
   WAHAROA_MAX_RECORDS               packument records held in memory (50,000)
   WAHAROA_MAX_VERIFIED              verified artifact digests remembered (50,000)
+  WAHAROA_POLICY                    path to a policy file. Loaded, validated and
+                                    reported at startup; NOT yet enforced, because the
+                                    engine that would consult it does not exist
   WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (8)
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
                                     \"default=403,npm/pnpm=451\" (default 403)
@@ -67,6 +71,59 @@ const DEBUG_USAGE: &str = "\
 ";
 #[cfg(not(debug_assertions))]
 const DEBUG_USAGE: &str = "";
+
+/// Ecosystems this build actually serves. §5.5 requires a floor for each of them, and
+/// "enabled" means what the binary can proxy, not what the document happens to mention.
+const ENABLED_ECOSYSTEMS: &[&str] = &["npm"];
+
+/// Load a policy, refuse to start if it is unusable, and report what it says.
+///
+/// Every failure here stops the process. An operator who pointed at a policy and got a
+/// running proxy would reasonably believe it was in force.
+fn report_policy(path: &std::path::Path) {
+    let policy = Policy::load(path).unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
+    policy
+        .check_enabled(ENABLED_ECOSYSTEMS)
+        .unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
+
+    warn!(
+        path = %path.display(),
+        "policy loaded and validated, and NOT enforced: nothing consults it yet"
+    );
+
+    // §5.5 emits these at config load and never per request, which is the only place
+    // they stay readable.
+    let today = jiff::Zoned::now().date();
+    for ecosystem in policy.ecosystems.keys() {
+        let (_, findings) = merge::merge(&policy, ecosystem, today);
+        for finding in findings {
+            if finding.warns() {
+                warn!(
+                    ecosystem = %finding.ecosystem,
+                    rule = finding.rule.as_str(),
+                    outcome = ?finding.outcome,
+                    "policy override loosens what is above it, or cannot be proven to tighten it"
+                );
+            } else if finding.audited() {
+                info!(
+                    ecosystem = %finding.ecosystem,
+                    rule = finding.rule.as_str(),
+                    reason = finding
+                        .acknowledgment
+                        .as_ref()
+                        .map(|a| a.reason.as_str())
+                        .unwrap_or("-"),
+                    expires = %finding
+                        .acknowledgment
+                        .as_ref()
+                        .map(|a| a.expires.to_string())
+                        .unwrap_or_default(),
+                    "policy override loosens what is above it, acknowledged"
+                );
+            }
+        }
+    }
+}
 
 /// A comma-separated environment variable, blanks dropped.
 fn comma_separated(key: &str) -> Vec<String> {
@@ -444,6 +501,16 @@ async fn main() -> std::process::ExitCode {
         );
         deferral
     });
+
+    // Loaded, validated and reported. Not consulted for any decision: the engine is
+    // Stage 2 work in progress, and a policy that silently did nothing would be worse
+    // than no policy at all, so the log says so every time.
+    if let Some(path) = std::env::var("WAHAROA_POLICY")
+        .ok()
+        .filter(|p| !p.is_empty())
+    {
+        report_policy(std::path::Path::new(&path));
+    }
 
     let proxy = Proxy::new(client, upstream)
         .with_refusal_status(refusal)

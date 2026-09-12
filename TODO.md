@@ -1108,6 +1108,11 @@ The spec gets frozen here.
 - [x] `[!]` Loosening warnings emit at config load only, never per-request. `merge`
       returns findings and logs nothing; the caller decides. Per-package warnings become
       wallpaper within a day.
+      - [x] The caller is the binary: `WAHAROA_POLICY` loads, validates and reports a
+            policy at startup, refusing to start on anything unusable. It is **not
+            enforced**: nothing consults it for a decision yet, and the startup log says
+            so every time, because a policy that silently did nothing would be worse than
+            no policy at all.
 - [x] `[!]` `loosens_global` acknowledgment with required `reason` + `expires`. Refused
       at load, not warned about: a flag on its own silences the warning and records
       neither, which is worse than not having the mechanism, because the loosening is
@@ -1149,16 +1154,37 @@ The spec gets frozen here.
 
 - [ ] `[!]` Evaluation order: denials → floor → packages → ecosystems → defaults,
       first match short-circuits
-- [ ] `[!]` `Denial` type with **no** `expires` field and no precedence code path
-- [ ] `[!]` `Floor` type with no override constructor (compiler-enforced)
-- [ ] `[!]` Floor is per-ecosystem; **startup failure** if an enabled ecosystem has none
-- [ ] `[!]` `known_malware: block` pinned into every floor, not removable
+- [x] `[!]` `Denial` type with **no** `expires` field and no precedence code path. The
+      field does not exist, so `deny_unknown_fields` refuses a denial that carries one:
+      an expiring denial is unrepresentable rather than discouraged.
+- [~] `[!]` `Floor` type with no override constructor (compiler-enforced). Half done:
+      `FloorRules` is a distinct type from `Defaults` and `merge` never receives it, so
+      no code path exists by which a lower tier could override one.
+      - [ ] The other half needs the evaluation engine, which is where a floor could be
+            consulted wrongly. Nothing consults it yet.
+- [x] `[!]` Floor is per-ecosystem; **startup failure** if an enabled ecosystem has none.
+      `Policy::check_enabled`, called by the binary against the ecosystems it actually
+      serves. Asked of the build rather than of the document: a policy may name an
+      ecosystem no adapter exists for, which is why `examples/policy.yaml` can declare
+      `ecosystems.cargo` with no `floor.cargo` and stay valid. It becomes a failure the
+      day a cargo adapter ships, which is §5.5's breaking-change policy working.
+- [x] `[!]` `known_malware: block` pinned into every floor, not removable. Two halves,
+      because there are two ways to remove it: the schema makes the field mandatory, so a
+      floor without it does not parse, and `check_floors` refuses one that declares it and
+      weakens it. Either alone leaves the other open.
 - [ ] `[!]` Floor rules report not-applicable for ecosystems where they have no meaning
-- [ ] `[!]` Unified `packages` tier; `exceptions` block removed
-- [ ] `[!]` `ecosystem` required on every package selector (load-time error if absent)
+- [x] `[!]` Unified `packages` tier; `exceptions` block removed. There is no
+      `exceptions` key, so a config written against the old shape is told which key is
+      gone rather than having it ignored.
+- [x] `[!]` `ecosystem` required on every package selector (load-time error if absent).
+      Not an `Option` in `Selector`, so a selector without it does not parse.
 - [ ] `[!]` Loosening requires `reason` + `expires`; **no warning emitted**
 - [ ] `[!]` `expires` ceiling of 90 days from today, configurable
-- [ ] `[!]` `permanent: true` as explicit alternative, requires `reason`
+- [x] `[!]` `permanent: true` as explicit alternative, requires `reason`. `reason` is
+      required on every package rule, so it holds for permanent ones by construction.
+      Alternative is enforced: an entry carrying both `expires` and `permanent: true` is
+      refused, because it says two different things about when it stops being true and
+      whichever the code read would be a silent choice.
 - [ ] `[!]` Loosening measured against effective policy **above the rule**
 - [ ] `[!]` Specificity as strict subset containment, not a score
 - [ ] `[!]` Incomparable overlaps and exact duplicates are load-time errors

@@ -65,6 +65,12 @@ pub enum PolicyError {
     Invalid(String),
     /// A `loosens_global` acknowledgment is missing what §5.5 requires of one.
     IncompleteAcknowledgment { at: String, missing: &'static str },
+    /// A floor does not block known malware.
+    FloorDoesNotBlockMalware { ecosystem: String, found: Action },
+    /// An ecosystem this build serves has no floor.
+    NoFloor { ecosystem: String },
+    /// A package rule is both dated and permanent.
+    BothDatedAndPermanent { at: String },
 }
 
 impl fmt::Display for PolicyError {
@@ -79,6 +85,24 @@ impl fmt::Display for PolicyError {
                  version {supported}"
             ),
             Self::Invalid(e) => write!(f, "policy is not valid: {e}"),
+            Self::FloorDoesNotBlockMalware { ecosystem, found } => write!(
+                f,
+                "floor.{ecosystem} sets `known_malware: {}`. It is pinned to `block` and \
+                 cannot be weakened, because a floor that can be talked out of blocking \
+                 malware is not a floor",
+                format!("{found:?}").to_lowercase()
+            ),
+            Self::NoFloor { ecosystem } => write!(
+                f,
+                "this build serves `{ecosystem}` and the policy declares no \
+                 `floor.{ecosystem}`. An ecosystem cannot be proxied with no floor, so \
+                 this is a startup failure rather than a default"
+            ),
+            Self::BothDatedAndPermanent { at } => write!(
+                f,
+                "{at} sets both `expires` and `permanent: true`. They are alternatives: \
+                 one says when the entry stops being true, the other says it does not"
+            ),
             Self::IncompleteAcknowledgment { at, missing } => write!(
                 f,
                 "`loosens_global: true` at {at} has no {missing}. An acknowledgment \
@@ -191,7 +215,60 @@ impl Policy {
         let policy: Self =
             serde_saphyr::from_str(source).map_err(|e| PolicyError::Invalid(e.to_string()))?;
         policy.check_acknowledgments()?;
+        policy.check_floors()?;
+        policy.check_package_expiry_shape()?;
         Ok(policy)
+    }
+
+    /// §5.5: `known_malware: block` is pinned into every floor and cannot be removed.
+    ///
+    /// The schema already makes the field mandatory, so a floor without it does not
+    /// parse. This is the other half: a floor that declares it and weakens it. Otherwise
+    /// "editable floor" collapses into "no floor".
+    fn check_floors(&self) -> Result<(), PolicyError> {
+        for (ecosystem, rules) in &self.floor {
+            if rules.known_malware != Action::Block {
+                return Err(PolicyError::FloorDoesNotBlockMalware {
+                    ecosystem: ecosystem.clone(),
+                    found: rules.known_malware,
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// §5.5: `permanent: true` is the explicit alternative to `expires`, not a companion.
+    ///
+    /// An entry carrying both says two different things about when it stops being true,
+    /// and whichever one the code happened to read would be a silent choice.
+    fn check_package_expiry_shape(&self) -> Result<(), PolicyError> {
+        for (i, rule) in self.packages.iter().enumerate() {
+            if rule.permanent && rule.expires.is_some() {
+                return Err(PolicyError::BothDatedAndPermanent {
+                    at: format!("packages[{i}]"),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Every ecosystem this build serves has a floor.
+    ///
+    /// Separate from parsing, and taking the list as an argument, because it is a
+    /// question about this build rather than about the document. A policy may name an
+    /// ecosystem no adapter exists for yet, which is not an error: `examples/policy.yaml`
+    /// declares `ecosystems.cargo` and is a valid document. It becomes a startup failure
+    /// the day a cargo adapter ships without a `floor.cargo` being written, which is
+    /// §5.5's breaking-change policy working as intended.
+    pub fn check_enabled(&self, enabled: &[&str]) -> Result<(), PolicyError> {
+        for ecosystem in enabled {
+            if !self.floor.contains_key(*ecosystem) {
+                return Err(PolicyError::NoFloor {
+                    ecosystem: (*ecosystem).to_owned(),
+                });
+            }
+        }
+        Ok(())
     }
 
     /// §5.5: an acknowledgment is `loosens_global: true` **plus** a reason and an expiry.
@@ -824,6 +901,113 @@ mod tests {
         assert_eq!(expires.to_string(), "2026-11-30");
         assert!(!expires.has_passed(jiff::civil::date(2026, 11, 30)));
         assert!(expires.has_passed(jiff::civil::date(2026, 12, 1)));
+    }
+
+    /// §5.5: `known_malware: block` is pinned into every floor. Otherwise "editable
+    /// floor" collapses into "no floor".
+    #[test]
+    fn a_floor_that_does_not_block_malware_is_refused() {
+        for weaker in ["allow", "warn", "quarantine"] {
+            let source = format!("version: 1\nfloor:\n  npm:\n    known_malware: {weaker}\n");
+            let error = Policy::parse(&source).unwrap_err();
+            assert!(
+                matches!(error, PolicyError::FloorDoesNotBlockMalware { .. })
+                    && error.to_string().contains(weaker),
+                "`{weaker}` should be refused by name: {error}"
+            );
+        }
+        assert!(Policy::parse("version: 1\nfloor:\n  npm:\n    known_malware: block\n").is_ok());
+    }
+
+    /// The other half is the schema's: a floor with no `known_malware` at all does not
+    /// parse, because the field is not an `Option`.
+    #[test]
+    fn the_two_halves_of_the_pin_cover_removal_and_weakening() {
+        assert!(matches!(
+            Policy::parse("version: 1\nfloor:\n  npm:\n    cooldown: { days: 7 }\n").unwrap_err(),
+            PolicyError::Invalid(_),
+        ));
+        assert!(matches!(
+            Policy::parse("version: 1\nfloor:\n  npm:\n    known_malware: allow\n").unwrap_err(),
+            PolicyError::FloorDoesNotBlockMalware { .. },
+        ));
+    }
+
+    /// §5.5: an ecosystem this build serves and has no floor for is a startup failure,
+    /// not a default. Asked of the build rather than of the document, because a policy
+    /// may name an ecosystem no adapter exists for yet.
+    #[test]
+    fn an_ecosystem_this_build_serves_must_have_a_floor() {
+        let policy =
+            Policy::parse("version: 1\nfloor:\n  npm:\n    known_malware: block\n").unwrap();
+
+        assert!(policy.check_enabled(&["npm"]).is_ok());
+        let error = policy.check_enabled(&["npm", "pypi"]).unwrap_err();
+        assert!(matches!(error, PolicyError::NoFloor { .. }));
+        assert!(
+            error.to_string().contains("floor.pypi"),
+            "the failure has to name the floor that is missing: {error}"
+        );
+        assert!(
+            policy.check_enabled(&[]).is_ok(),
+            "a build serving nothing has nothing to require"
+        );
+    }
+
+    /// The spike artifact declares `ecosystems.cargo` with no `floor.cargo`. That is a
+    /// valid document and stays one until a cargo adapter ships, which is §5.5's
+    /// breaking-change policy rather than a bug in the example.
+    #[test]
+    fn naming_an_ecosystem_with_no_adapter_yet_is_not_a_missing_floor() {
+        let policy = Policy::load(Path::new("examples/policy.yaml")).unwrap();
+        assert!(policy.ecosystems.contains_key("cargo"));
+        assert!(!policy.floor.contains_key("cargo"));
+        assert!(policy.check_enabled(&["npm"]).is_ok());
+        assert!(policy.check_enabled(&["cargo"]).is_err());
+    }
+
+    /// §5.5: `permanent: true` is the alternative to `expires`, not a companion. An entry
+    /// with both says two different things about when it stops being true.
+    #[test]
+    fn a_package_rule_cannot_be_both_dated_and_permanent() {
+        let base = "version: 1\nfloor:\n  npm:\n    known_malware: block\npackages:\n  \
+                    - match: { ecosystem: npm, name: x }\n    set: {}\n    reason: r\n";
+        let both = format!("{base}    expires: \"2026-11-30\"\n    permanent: true\n");
+        assert!(matches!(
+            Policy::parse(&both).unwrap_err(),
+            PolicyError::BothDatedAndPermanent { .. }
+        ));
+
+        assert!(Policy::parse(&format!("{base}    expires: \"2026-11-30\"\n")).is_ok());
+        assert!(Policy::parse(&format!("{base}    permanent: true\n")).is_ok());
+    }
+
+    /// §5.5 replaced the separate `exceptions` block with the unified `packages` tier:
+    /// one syntax, one code path. Writing the old one is a typo now, and
+    /// `deny_unknown_fields` says so rather than ignoring it.
+    #[test]
+    fn the_exceptions_block_no_longer_exists() {
+        let source = "version: 1\nfloor:\n  npm:\n    known_malware: block\nexceptions:\n  \
+                      - match: { ecosystem: npm, name: x }\n";
+        let error = Policy::parse(source).unwrap_err();
+        assert!(matches!(error, PolicyError::Invalid(_)));
+        assert!(
+            error.to_string().contains("exceptions"),
+            "a config written against the old shape has to be told which key is gone: \
+             {error}"
+        );
+    }
+
+    /// A denial has no `expires` field at all, so an expiring denial is unrepresentable
+    /// rather than discouraged. Tested from both sides: writing one is an error, and a
+    /// denial that loads carries only what §5.5 allows it to.
+    #[test]
+    fn a_denial_is_permanent_by_having_nowhere_to_put_an_expiry() {
+        let source = "version: 1\nfloor:\n  npm:\n    known_malware: block\ndenials:\n  \
+                      - purl: pkg:npm/evil\n    reason: malware\n";
+        let policy = Policy::parse(source).unwrap();
+        assert_eq!(policy.denials.len(), 1);
+        assert_eq!(policy.denials[0].reason, "malware");
     }
 
     #[test]
