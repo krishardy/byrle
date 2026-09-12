@@ -16,8 +16,8 @@ stream actually contributes, which does not match the order the plan lists them 
 |---|---|---|---|
 | OSV.dev | Apache-2.0 | **not stated; inherited per source** | depends on the source |
 | GitHub Advisory (GHSA) | n/a | **CC-BY-4.0** | **required** |
-| OSSF Malicious Packages | Apache-2.0 | not separately stated | unclear |
-| CISA KEV | n/a | US Government work, 17 USC 105 | none |
+| OSSF Malicious Packages | Apache-2.0 | **Apache-2.0** | notice retention |
+| CISA KEV | n/a | **CC0 1.0** | none |
 | NVD | n/a | **not verified** | not verified |
 | Aikido Intel | n/a | **not verified** | not verified |
 
@@ -27,13 +27,31 @@ An OSV record has `id`, `summary`, `details`, `affected`, `references`, `severit
 `database_specific` and `aliases`. There is no licence field, checked against a live
 record. OSV aggregates, so the terms on any given record are the terms of whichever
 source produced it, and the **id prefix is the only hint**: a `GHSA-` record is
-CC-BY-4.0 and needs attribution, a `MAL-` record's terms are unstated.
+CC-BY-4.0 and needs attribution, a `MAL-` record is Apache-2.0 where OSSF Malicious
+Packages produced it.
+
+Whether every `MAL-` record in the OSV npm bundle originates from OSSF is a separate
+question and has not been measured. OSV's per-record `database_specific` is the place to
+check, and the answer decides whether the 221,548 npm malware records carry one set of
+terms or several.
 
 That is a real consequence for any tool that repeats what a record says. Ours is
 bounded by [intel-distribution-fetch-from-origin](intel-distribution-fetch-from-origin.md):
 we host and redistribute nothing, every stream is fetched from its own origin, so the
 obligation that attaches is attribution in what we **display**, not in what we ship.
 A verdict that quotes a GHSA summary is quoting CC-BY-4.0 text and has to say so.
+
+### Verified by reading, not by fetching
+
+OSSF Malicious Packages and CISA KEV were read by a person (2026-09-13). Both moved off
+"unclear":
+
+- **OSSF is Apache-2.0 on the data, not only the tooling.** That settles the terms on the
+  `MAL-` records, which are 96.8% of the npm advisories measured below, and clears the
+  first stream in the order below to be built.
+- **CISA KEV is CC0 1.0**, an explicit public-domain dedication rather than the 17 USC 105
+  inference recorded here before. It removes the question of what covers the compiled
+  catalogue as opposed to the US-authored works in it. No attribution is owed.
 
 ### Not verified, and why that is recorded rather than guessed
 
@@ -86,11 +104,11 @@ Two consequences:
 ## Order to implement
 
 1. **OSV malware records.** 221,548 npm records, and the only source for the check that
-   cannot be excepted.
+   cannot be excepted. Licence-cleared: Apache-2.0 via OSSF.
 2. **OSV and GHSA vulnerability records**, for `max_cvss`. Attribution obligation attaches
    here, so the display path needs it before this ships.
 3. **CISA KEV**, last. A set lookup over CVE ids the step above already produced, reaching
-   13 npm CVEs today.
+   13 npm CVEs today. Licence-cleared: CC0 1.0, nothing owed.
 
 NVD and Aikido stay unimplemented until their terms are read by a person.
 
@@ -98,7 +116,8 @@ NVD and Aikido stay unimplemented until their terms are read by a person.
 
 Nothing yet. Of the three capabilities, `match` and `malware` are what OSV provides, and
 `enrich`, the one the type separation exists to constrain, has no implemented producer:
-NVD and Aikido are unread and KEV is third in the order above. The separation is built now
+NVD and Aikido are unread, and KEV, though now licence-cleared, is third in the order
+above. The separation is built now
 because retrofitting it after three streams share a record type is more work than starting
 with two types.
 

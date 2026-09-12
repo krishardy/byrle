@@ -1233,9 +1233,15 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             prefix is the only hint: `GHSA-` is CC-BY-4.0 and needs attribution, `MAL-` is
             unstated. We redistribute nothing, so what attaches is attribution in what we
             **display**: a verdict quoting a GHSA summary is quoting CC-BY-4.0 text.
-      - [x] GitHub Advisory data is CC-BY-4.0, attribution required. CISA KEV is a US
-            Government work with no attribution requirement. OSSF Malicious Packages
-            ships Apache-2.0 tooling and states no separate data licence.
+      - [x] GitHub Advisory data is CC-BY-4.0, attribution required.
+      - [x] **OSSF Malicious Packages and CISA KEV read by a person, 2026-09-13.** OSSF is
+            Apache-2.0 on the data and not only the tooling, which settles the `MAL-`
+            records and clears the first stream in the build order. CISA KEV is CC0 1.0,
+            an explicit dedication rather than the 17 USC 105 inference recorded before,
+            and owes no attribution.
+      - [ ] Measure whether every `MAL-` record in the OSV npm bundle originates from
+            OSSF. `database_specific` is where to look. It decides whether the 221,548 npm
+            malware records carry one set of terms or several.
       - [ ] **NVD and Aikido not verified.** NVD's terms page did not return its terms to
             an automated fetch and Aikido's public endpoint returned an empty body. A
             blank in that table is a stream that cannot be built yet; someone has to read
@@ -1249,7 +1255,8 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] **KEV has no package identifier**, across all 1,709 entries, and is operating
             systems and appliances: Microsoft 388, Cisco 97, Apple 94. It can never
             originate a finding, only escalate a CVE another stream found, so it is
-            `enrich` like NVD and should be type-enforced the same way.
+            `enrich` like NVD. Type-enforced in `src/intel.rs`: `EnrichStream` returns
+            `Enrichment`, which has no conversion to `Finding`.
       - [x] **13 npm CVE ids appear in KEV**, out of 6,032. The check is still worth
             having, because it is a set lookup over ids the CVE step already produced, but
             it goes last.
@@ -1294,11 +1301,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       changes `enriched_by`'s signature, so land it before a second stream is built.
 - [ ] `[!]` GitHub Advisory stream (GraphQL, token auth)
 - [ ] `[!]` Aikido Intel stream — free, public, no account; highest-value non-OSV feed
-- [ ] OSSF Malicious Packages stream — publishes natively in OSV format, so it reuses
+- [ ] OSSF Malicious Packages stream (licence-cleared: Apache-2.0) — publishes natively in OSV format, so it reuses
       the OSV normalization path rather than needing its own
 - [ ] Datadog malicious-packages — **check OSSF overlap first**; Datadog contributes
       upstream to OSSF, so this is likely already ingested. Only implement if it adds
       real coverage. Verify data license and per-version lookup shape.
+- [ ] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed) — `enrich`-only, joined on
+      exact CVE ID. Last in the build order: 13 npm CVEs of 6,032, and it needs the alias
+      set before it can reach an OSV finding at all.
 - [ ] NVD stream — `enrich`-only for npm/PyPI, joined on exact CVE ID
 - [ ] NVD enrichment runs as a background job, never on the hot path
 - [ ] Revisit NVD `match` capability if/when the Maven adapter is scoped
