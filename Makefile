@@ -1,4 +1,4 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test coverage verify check-deps run smoke-npm smoke-clients inspect spike-config
+.PHONY: help dev-setup lint semgrep trufflehog sast test coverage verify check-deps run smoke-npm smoke-clients retry-matrix inspect spike-config
 
 help:
 	@echo "waharoa targets:"
@@ -14,6 +14,7 @@ help:
 	@echo "  run            run the proxy in the foreground"
 	@echo "  smoke-npm      end-to-end check of the proxy against a real npm client"
 	@echo "  smoke-clients  where npm, pnpm and yarn diverge through the proxy"
+	@echo "  retry-matrix   what each client does when the proxy defers a request"
 	@echo "  inspect        show one request per client, for looking at by eye"
 	@echo "  spike-config   re-run the config-format spike (plan §5, decision #11)"
 
@@ -60,6 +61,9 @@ smoke-npm:
 
 smoke-clients:
 	@scripts/make/smoke-clients.sh
+
+retry-matrix:
+	@scripts/make/retry-matrix.sh
 
 inspect:
 	@scripts/make/inspect.sh

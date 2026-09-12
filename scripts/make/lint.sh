@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Lint everything we actually maintain: Rust with clippy, shell with shellcheck.
+# Lint everything we actually maintain: Rust with clippy, shell with shellcheck, and
+# python far enough to know it parses.
 #
 # The shell half is not an afterthought. Per CLAUDE.md, every Makefile recipe is a
 # thin wrapper around a script in this directory, so real logic lives in shell and
@@ -44,9 +45,26 @@ else
     fi
 fi
 
+# Only that the file parses. This is not a python linter and does not pretend to be one:
+# it is the check that would have caught a helper whose quoting was mangled on the way
+# into the repository, which is the failure these scripts actually have.
+note "python (syntax)"
+mapfile -t pyfiles < <(git -C "$repo_root" ls-files '*.py')
+if [[ ${#pyfiles[@]} -eq 0 ]]; then
+    echo "    no python files tracked"
+else
+    printf '    checking %d file(s)\n' "${#pyfiles[@]}"
+    # The byte-code goes under target/ rather than beside the source, so linting does
+    # not leave __pycache__ directories in the tree.
+    if ! (cd "$repo_root" && PYTHONPYCACHEPREFIX="$repo_root/target/pycache" \
+        python3 -m py_compile "${pyfiles[@]}"); then
+        failed=1
+    fi
+fi
+
 note "result"
 if [[ "$failed" -ne 0 ]]; then
     echo "FAIL: see above."
     exit 1
 fi
-echo "OK: rust and shell are clean."
+echo "OK: rust, shell and python are clean."

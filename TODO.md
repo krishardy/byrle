@@ -610,10 +610,33 @@ implementations.
       code distinguishes cold-start from per-artifact analysis on its own)
 - [ ] Log every deferral and whether the client returned inside the window — turns the
       compatibility table into evidence
-- [ ] `[!]` Test real client retry behavior early: npm may apply its own backoff and fail
-      the install rather than waiting. Tune `Retry-After` to land inside npm's retry
-      window; bounded internal wait as fallback for clients that give up.
+- [x] `[!]` Test real client retry behavior early. Done: `make retry-matrix`, five
+      clients against a deferral the proxy is told to produce (`WAHAROA_DEFER_TEST`, debug
+      builds only). Full tables in
+      `docs/engineering_decisions/deferral-status-codes.md`.
+      - [x] **429 is terminal for yarn 1 and bun; 503 is not.** Both stop after one 429
+            and retry a 503. npm, pnpm and yarn 4 make no distinction between the codes.
+            Five clients out of five retry 503; three retry 429. This is the evidence for
+            "unknown user-agent falls back to 503" below.
+      - [x] **Only yarn 4 honours `Retry-After`.** npm and pnpm back off 10s then 60s
+            regardless of the header, yarn 1 uses 3s, bun retries six times inside 0.2s
+            with no delay at all.
+      - [x] **The plan's mitigation aimed at the wrong quantity.** Tuning `Retry-After`
+            into npm's window does nothing, because npm ignores the header. What decides
+            the outcome is total patience, and the ordering is inverted: npm and pnpm wait
+            70s, yarn 1 12s on a packument and 0s on a tarball, yarn 4 3.2s, bun 0.2s.
+      - [x] **An 8-second warm-up** is waited out by npm, pnpm and yarn 1, and fails
+            yarn 4 and bun.
+      - [x] yarn 1 is the only client that varies by request kind: it retries a 503
+            packument five times and gives up on a 503 tarball after one.
+      - [ ] Per-client code table, Stage 2. Keyed on the user-agent the proxy sees, which
+            for yarn 4 is `got (https://github.com/sindresorhus/got)`.
+      - [ ] A bounded internal wait is not a fallback but the main mechanism for bun,
+            which no code and no `Retry-After` buys any time from. Stage 2.
 - [ ] File upstream issues asking npm / pip / uv / cargo to honor `429` + `Retry-After`.
+      The evidence is now measured: four of five npm-ecosystem clients ignore
+      `Retry-After`, and two treat 429 as terminal. See
+      `docs/engineering_decisions/deferral-status-codes.md`.
       Argues on its own merits (a proxy legitimately rate-limiting is a real scenario),
       so it is a small uncontroversial patch. Long lead time — file early.
 - [x] Test with npm, yarn, and pnpm, noting where behaviour diverges. `make

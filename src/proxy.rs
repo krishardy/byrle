@@ -46,6 +46,8 @@
 //! stays acceptable, because for every client except npm it means the bytes are never
 //! seen.
 
+#[cfg(debug_assertions)]
+use crate::defer::DeferTest;
 use crate::http::{
     DEFAULT_MAX_PACKUMENT_BYTES, DecodeError, RequestedEncoding, decode_for_parsing,
     encoding_to_request, gzip, is_conditional, is_hop_by_hop, mark_etag, unmark_if_none_match,
@@ -196,6 +198,11 @@ pub struct Proxy {
     /// request's `Host`. Needed behind a load balancer, and for a stable name in
     /// lockfiles.
     public_base: Option<String>,
+    /// Debug builds only: answer with a deferral instead of fetching, so client retry
+    /// behaviour can be measured before the thing that would cause one exists. See
+    /// [`crate::defer`].
+    #[cfg(debug_assertions)]
+    defer_test: Option<(DeferTest, Instant)>,
 }
 
 impl Proxy {
@@ -220,7 +227,18 @@ impl Proxy {
             packument_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_PACKUMENTS)),
             refusal: Arc::new(RefusalStatus::default()),
             refuse_unservable: true,
+            #[cfg(debug_assertions)]
+            defer_test: None,
         }
+    }
+
+    /// Debug builds only. See [`crate::defer`].
+    #[cfg(debug_assertions)]
+    pub fn with_defer_test(mut self, defer_test: Option<DeferTest>) -> Self {
+        // The instant is taken here rather than at parse, so a bounded deferral is
+        // measured from when the proxy started rather than from when the spec was read.
+        self.defer_test = defer_test.map(|d| (d, Instant::now()));
+        self
     }
 
     pub fn with_refusal_status(mut self, refusal: RefusalStatus) -> Self {
@@ -625,6 +643,20 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             "blocked"
         );
         return (status, format!("waharoa: {key} is blocked by policy\n")).into_response();
+    }
+
+    #[cfg(debug_assertions)]
+    if let Some((deferral, since)) = &proxy.defer_test
+        && let Some((status, retry_after)) = deferral.applies_to(&target, since.elapsed())
+    {
+        return defer_response(
+            status,
+            retry_after,
+            &method,
+            &path_and_query,
+            &client_ua,
+            started,
+        );
     }
 
     let client_accept_encoding = req
@@ -1076,6 +1108,44 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     (forward_status, headers, Body::from(body)).into_response()
 }
 
+/// Build the deferral response, and log the attempt so the harness can count retries.
+///
+/// The body says which request was turned away, so a client that logs it gives an
+/// operator something to act on. Debug builds only; see [`crate::defer`].
+#[cfg(debug_assertions)]
+fn defer_response(
+    status: u16,
+    retry_after: Option<u32>,
+    method: &Method,
+    path_and_query: &str,
+    client_ua: &str,
+    started: Instant,
+) -> Response {
+    // Checked against 400..=599 when the spec was parsed.
+    let code = StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
+    let mut headers = HeaderMap::new();
+    if let Some(seconds) = retry_after
+        && let Ok(value) = HeaderValue::from_str(&seconds.to_string())
+    {
+        headers.insert(header::RETRY_AFTER, value);
+    }
+    info!(
+        %method,
+        path = %path_and_query,
+        status,
+        retry_after = retry_after.map(|s| s.to_string()).unwrap_or_else(|| "-".to_owned()),
+        client = %client_ua,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "deferred (WAHAROA_DEFER_TEST)"
+    );
+    (
+        code,
+        headers,
+        format!("waharoa: {path_and_query} is deferred, not refused\n"),
+    )
+        .into_response()
+}
+
 /// Point a packument's artifacts at the proxy, or explain why it was left alone.
 ///
 /// Returns `None` when the document is forwarded as it came, which always means some
@@ -1173,6 +1243,7 @@ fn rewrite_packument(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::defer::DeferTest;
     use crate::identity::Ecosystem;
     use axum::routing::{any, get};
     use std::io::Write;
@@ -1386,6 +1457,85 @@ mod tests {
             original.len(),
             "this fixture does change length, so the test would pass vacuously otherwise"
         );
+    }
+
+    /// The deferral knob answers instead of fetching, which is what `make retry-matrix`
+    /// measures the clients against. Debug builds only.
+    #[tokio::test]
+    async fn a_deferred_request_is_answered_without_fetching_upstream() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_defer_test(Some(DeferTest::parse("429:1:packument").unwrap()))
+                .router(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+        assert!(response.text().await.unwrap().contains("deferred"));
+
+        // A path that is not a packument is out of scope, so it is forwarded as usual.
+        let other = reqwest::get(format!("{base}/-/ping")).await.unwrap();
+        assert_eq!(other.status(), StatusCode::OK);
+        assert_eq!(
+            seen.lock().unwrap().paths,
+            vec!["/-/ping"],
+            "the deferred request never reached upstream"
+        );
+    }
+
+    /// Without a `Retry-After` the header is absent rather than empty, so a client that
+    /// reads it is measured on the code alone.
+    #[tokio::test]
+    async fn a_deferral_without_retry_after_sends_no_such_header() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_defer_test(Some(DeferTest::parse("503:none:all").unwrap()))
+                .router(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(!response.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    /// A bounded deferral lifts, which is what the warm-up case measures.
+    #[tokio::test]
+    async fn a_bounded_deferral_serves_once_it_has_lifted() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            body,
+        )
+        .await;
+        // Zero seconds: already lifted when the request arrives.
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_defer_test(Some(DeferTest::parse("503:1:all:0").unwrap()))
+                .router(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     /// An upstream that answers 304 to the tag it issued, and 200 to anything else.

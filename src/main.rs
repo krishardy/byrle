@@ -10,6 +10,8 @@
 //! is load-bearing rather than decoration.
 
 use tracing::{info, warn};
+#[cfg(debug_assertions)]
+use waharoa::defer::DeferTest;
 use waharoa::doctor;
 use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 use waharoa::identity::{Ecosystem, PackageKey};
@@ -50,6 +52,19 @@ Proxy configuration, all through the environment:
                                     see, instead of removing them from the packument
   WAHAROA_BLOCK                     THROWAWAY: refuse one package by name
 ";
+
+/// The deferral knob is not compiled into a release binary, so a release binary does not
+/// advertise it either.
+#[cfg(debug_assertions)]
+const DEBUG_USAGE: &str = "\
+  WAHAROA_DEFER_TEST                DEBUG BUILDS ONLY: answer every matching request with
+                                    a deferral instead of fetching, so client retry
+                                    behaviour can be measured. `<status>:<seconds|none>:
+                                    <packument|tarball|all>[:<seconds>]`, e.g.
+                                    \"429:1:tarball\" or \"503:1:all:8\"
+";
+#[cfg(not(debug_assertions))]
+const DEBUG_USAGE: &str = "";
 
 /// A comma-separated environment variable, blanks dropped.
 fn comma_separated(key: &str) -> Vec<String> {
@@ -250,12 +265,12 @@ async fn main() -> std::process::ExitCode {
         None => {}
         Some("doctor") => return run_doctor().await,
         Some("help" | "-h" | "--help") => {
-            print!("{USAGE}");
+            print!("{USAGE}{DEBUG_USAGE}");
             return std::process::ExitCode::SUCCESS;
         }
         Some(other) => {
             eprintln!("waharoa: unknown command `{other}`\n");
-            eprint!("{USAGE}");
+            eprint!("{USAGE}{DEBUG_USAGE}");
             return std::process::ExitCode::from(2);
         }
     }
@@ -407,6 +422,22 @@ async fn main() -> std::process::ExitCode {
         );
     }
 
+    // Debug builds only, and the module is not compiled into a release binary at all: an
+    // env var that makes a proxy turn traffic away is a denial-of-service switch. The
+    // warning is loud because a proxy answering 429 to everything looks like a bug.
+    #[cfg(debug_assertions)]
+    let defer_test = std::env::var("WAHAROA_DEFER_TEST").ok().map(|spec| {
+        let deferral = DeferTest::parse(&spec).unwrap_or_else(|e| {
+            panic!("WAHAROA_DEFER_TEST: {e}");
+        });
+        warn!(
+            %deferral,
+            "WAHAROA_DEFER_TEST is set: matching requests are answered with a deferral \
+             and never fetched. This is a measurement harness, not a feature."
+        );
+        deferral
+    });
+
     let proxy = Proxy::new(client, upstream)
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
@@ -423,6 +454,8 @@ async fn main() -> std::process::ExitCode {
         .with_max_records(max_records)
         .with_artifact_rewriting(rewrite_artifacts)
         .with_public_base(public_base);
+    #[cfg(debug_assertions)]
+    let proxy = proxy.with_defer_test(defer_test);
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
