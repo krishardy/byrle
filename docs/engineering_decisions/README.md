@@ -28,6 +28,7 @@ code, and the file names where.
 | [The artifact cache does not skip verification](verified-artifact-cache.md) | Implemented, Stage 1 |
 | [Deferral status codes](deferral-status-codes.md) | Measured, decision pending Stage 2 |
 | [Policy shape and how a package is judged](policy-tier-resolution.md) | Decided |
+| [Advisory stream data licences](advisory-stream-licences.md) | Verified, two streams outstanding |
 | [Enforcement tiers](enforcement-tiers.md) | Open question |
 | [Terminating TLS: pre-issued certificates](terminating-tls-certificates.md) | Decided, not implemented |
 | [Stage structure](stage-structure.md) | Staging |

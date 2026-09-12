@@ -1152,8 +1152,10 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
       own, and is a **packument filter** rather than an artifact refusal: Stage 1's
       `npm::filter_unservable_versions` is the mechanism.
-- [ ] `[!]` `kev`. `block` or `allow`. Absent from the plan before this design; needs a
-      KEV source, which is ecosystem-agnostic.
+- [ ] `[!]` `kev`. `block` or `allow`. Absent from the plan before this design. The
+      source is CISA's catalogue, which is ecosystem-agnostic because it has no package
+      identifier at all: the check is a set lookup over CVE ids the `max_cvss` step
+      already produced, and reaches 13 npm CVEs today. Build it last.
 - [ ] `[!]` `max_cvss`. A number, not a severity band: bands are not stable across CVSS
       versions, where the same score falls in different ones under v2 and v3. Exceptions
       are per CVE id (`cve_ids`), not per package, which is the only exception keyed by
@@ -1194,9 +1196,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `policy check` flags permanently-shadowed selectors
 - [ ] `policy check` lists `permanent: true` entries separately
 - [ ] `policy check` and `doctor` flag entries that change nothing
-- [ ] Tests: a denial cannot be undone by any exception
-- [ ] Tests: known malware cannot be excepted, whatever the policy file says
-- [ ] Shipped config template that loads and passes its own rules
+- [x] Tests: a denial cannot be undone by any exception. `Check::exceptable` is false
+      for it, and a test puts a matching exception beside a denial and checks both hold.
+- [x] Tests: known malware cannot be excepted, whatever the policy file says.
+- [x] Shipped config template that loads and passes its own rules. `examples/policy.yaml`,
+      checked from both sides: it parses, and it satisfies the package-tier rules.
 
 ### `waharoa policy diff`
 
@@ -1211,9 +1215,33 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] Scheduled-job recipe: `--as-of +30d` to surface upcoming expiries with impact
 
 ### Intel — advisory streams
-- [ ] `[!]` **Verify each stream's data license before implementing it** — separate from
-      the tooling license in the same repo; the two frequently differ (Apache-2.0 code,
-      CC-licensed reports). Record the finding per stream.
+- [~] `[!]` **Verify each stream's data license before implementing it.** Done for four
+      of six. `docs/engineering_decisions/advisory-stream-licences.md`.
+      - [x] **OSV records carry no licence field**, checked against a live record. OSV
+            aggregates, so the terms are whichever source produced the record and the id
+            prefix is the only hint: `GHSA-` is CC-BY-4.0 and needs attribution, `MAL-` is
+            unstated. We redistribute nothing, so what attaches is attribution in what we
+            **display**: a verdict quoting a GHSA summary is quoting CC-BY-4.0 text.
+      - [x] GitHub Advisory data is CC-BY-4.0, attribution required. CISA KEV is a US
+            Government work with no attribution requirement. OSSF Malicious Packages
+            ships Apache-2.0 tooling and states no separate data licence.
+      - [ ] **NVD and Aikido not verified.** NVD's terms page did not return its terms to
+            an automated fetch and Aikido's public endpoint returned an empty body. A
+            blank in that table is a stream that cannot be built yet; someone has to read
+            the terms directly.
+- [x] **Measured what each stream is worth**, which reorders the plan's list.
+      - [x] **The npm advisory database is a malware database.** Of 228,951 npm advisories
+            in OSV, 221,548 (96.8%) are `MAL-` records and 7,401 are `GHSA-`. So
+            `known_malware` has 221,548 records to match against and `max_cvss` has 6,041,
+            two orders of magnitude apart. The plan lists OSV first for coverage; the
+            stronger reason is that it is the malware feed.
+      - [x] **KEV has no package identifier**, across all 1,709 entries, and is operating
+            systems and appliances: Microsoft 388, Cisco 97, Apple 94. It can never
+            originate a finding, only escalate a CVE another stream found, so it is
+            `enrich` like NVD and should be type-enforced the same way.
+      - [x] **13 npm CVE ids appear in KEV**, out of 6,032. The check is still worth
+            having, because it is a set lookup over ids the CVE step already produced, but
+            it goes last.
 - [ ] `[!]` Advisory stream interface (fetch / mirror / refresh / normalize)
 - [ ] `[!]` Per-ecosystem capability matrix: `match` / `enrich` / `malware`
 - [ ] `[!]` Type-enforce that `enrich` records cannot originate a finding
