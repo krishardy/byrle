@@ -132,6 +132,22 @@ Items that I've added that are not stage-bound.
    reports login state, so it is part of setting a machine up rather than a surprise on the
    first scan.
 
+9. [ ] **Watch: `purl` 0.1.6 pulls `smartstring` 1.0.1, flagged RUSTSEC-2026-0249 as
+   unmaintained.** Found by `make check-deps`. Not a vulnerability, and it does not
+   reverse the crate choice: `packageurl` is disqualified on correctness, which is the
+   worse failure. But it is why `make check-deps` is not clean under
+   `CHECK_DEPS_STRICT=1` today. Revisit if it becomes a real advisory; the swap path
+   is the same one-line change described under the identity item.
+   Checked Sept 2026: `purl` is still 0.1.6, no newer release, and the advisory still
+   stands. `make check-deps` passes; `CHECK_DEPS_STRICT=1` fails on it, as designed.
+
+10. [ ] File upstream issues asking npm / pip / uv / cargo to honor `429` + `Retry-After`.
+   The evidence is now measured: four of five npm-ecosystem clients ignore
+   `Retry-After`, and two treat 429 as terminal. See
+   `docs/engineering_decisions/deferral-status-codes.md`.
+   Argues on its own merits (a proxy legitimately rate-limiting is a real scenario),
+   so it is a small uncontroversial patch. Long lead time — file early.
+
 ## Stage 1 — Pass-through proxy (transport)
 
 **Goal:** installs work through us, and every package is correctly identified. **No
@@ -223,14 +239,6 @@ implementations.
       - [x] The probe is gated on whether a local database is in use, not on the argument
             list being empty: strict mode adds `--deny warnings`, which made the first
             version skip the fallback and fail exactly as before.
-- [ ] **Watch: `purl` 0.1.6 pulls `smartstring` 1.0.1, flagged RUSTSEC-2026-0249 as
-      unmaintained.** Found by `make check-deps`. Not a vulnerability, and it does not
-      reverse the crate choice: `packageurl` is disqualified on correctness, which is the
-      worse failure. But it is why `make check-deps` is not clean under
-      `CHECK_DEPS_STRICT=1` today. Revisit if it becomes a real advisory; the swap path
-      is the same one-line change described under the identity item.
-      Checked Sept 2026: `purl` is still 0.1.6, no newer release, and the advisory still
-      stands. `make check-deps` passes; `CHECK_DEPS_STRICT=1` fails on it, as designed.
 - [x] Feed the identity type into the proxy. Every request path is classified by
       `npm::classify_path` into a `PackageKey`, the throwaway block compares keys rather
       than strings (so `/@babel%2fcore` and `/@babel/core` are one package), and every
@@ -529,8 +537,6 @@ implementations.
       `docs/engineering_decisions/policy-tier-resolution.md`. `examples/policy.yaml` is
       the config-format spike's artifact and is rewritten against the new shape as part
       of the Stage 2 deletions.
-- [ ] Defer: single binary vs. workspace crates. Splitting later is cheap; not enough
-      information yet.
 
 ### Fetch path and status codes
 - [x] Read `dist.integrity` from the packument, artifact digest known **before** the
@@ -666,13 +672,6 @@ implementations.
             built by `parse`, which refuses anything else, or by `default`, which is 403.
             That is why there is no configuration surface for a not-ready state to acquire
             a 4xx through.
-- [ ] Per-client code selection inferred from user-agent (already parsed for dialect);
-      shipped table of known clients, operator-forceable global override
-- [ ] Unknown user-agent falls back to **503** — fail toward the more widely retried code
-- [ ] Machine-readable reason + artifact digest in response header and body (neither
-      code distinguishes cold-start from per-artifact analysis on its own)
-- [ ] Log every deferral and whether the client returned inside the window — turns the
-      compatibility table into evidence
 - [x] `[!]` Test real client retry behavior early. Done: `make retry-matrix`, five
       clients against a deferral the proxy is told to produce (`WAHAROA_DEFER_TEST`, debug
       builds only). Full tables in
@@ -696,12 +695,6 @@ implementations.
             for yarn 4 is `got (https://github.com/sindresorhus/got)`.
       - [ ] A bounded internal wait is not a fallback but the main mechanism for bun,
             which no code and no `Retry-After` buys any time from. Stage 2.
-- [ ] File upstream issues asking npm / pip / uv / cargo to honor `429` + `Retry-After`.
-      The evidence is now measured: four of five npm-ecosystem clients ignore
-      `Retry-After`, and two treat 429 as terminal. See
-      `docs/engineering_decisions/deferral-status-codes.md`.
-      Argues on its own merits (a proxy legitimately rate-limiting is a real scenario),
-      so it is a small uncontroversial patch. Long lead time — file early.
 - [x] Test with npm, yarn, and pnpm, noting where behaviour diverges. `make
       smoke-clients` measures packuments, artifacts and verifications per client.
       - [x] **Finding: pnpm and yarn fetch artifacts directly, bypassing the proxy.**
@@ -822,49 +815,8 @@ implementations.
                   5xx for the proxy not being ready.
             - [x] One mechanism for every denial, so the throwaway block uses it too and
                   Stage 2's engine has somewhere to plug in.
-- [ ] Enforcement tiers 4 and 5, recorded in
-      `docs/engineering_decisions/enforcement-tiers.md`. Both are later than tier 3.
-      - [ ] A hosts-file or DNS override needs TLS termination, so it is decision #3
-            wearing different clothes rather than a separate option. `dist.tarball` is
-            always https, so anything intercepting the URL as written needs a CA.
-      - [x] **Settled: pre-issued leaf certificates, no CA key on the proxy.** The
-            registry domains are known in advance, so certificates for them are issued out
-            of band by whatever CA the organisation already has trusted, and only the
-            leaves and their keys go on the proxy. A leaf key signs nothing, and
-            ordinary chain validation is all any client has to do, so nothing on the
-            recommended path rests on an untested assumption.
-            See `docs/engineering_decisions/terminating-tls-certificates.md`.
-      - [ ] Implement it. Per-ecosystem configuration naming the certificate and key
-            files, with the domains read from each certificate's SANs rather than
-            configured separately, so the two cannot disagree and startup can report
-            exactly which names the proxy answers for. rustls resolves by SNI.
-      - [ ] **Report incomplete coverage at startup.** The domains are sets, not one per
-            ecosystem: PyPI serves metadata on `pypi.org` and artifacts on
-            `files.pythonhosted.org` (verified Sept 2026), and crates.io uses `crates.io`,
-            `index.crates.io` and `static.crates.io`. A certificate for the metadata host
-            and not the artifact host reproduces the pnpm failure already measured, seeing
-            the package and never the bytes.
-      - [ ] In this mode artifact URL rewriting is unnecessary and
-            `WAHAROA_REWRITE_ARTIFACTS=0` is correct: `dist.tarball` already names a host
-            the proxy answers for, so lockfiles keep the origin registry's URLs and the
-            `npm ci` failure measured earlier does not arise.
-      - [ ] Onramp (Stage 2): mint certificates on the fly from an **unconstrained** CA
-            key held by the proxy. Name constraints are not used and no work is done on
-            them, so this is what it looks like: a key on the proxy that can sign for any
-            name, and a compromise of it impersonates anything to every client trusting
-            that CA, browsers included. Documented as the less secure option, which is
-            what it is, and the reason pre-issued leaves are the recommended path.
-      - [ ] Leaf keys on the proxy are worth what a compromise of them buys: impersonating
-            those domains to anything on a machine trusting the CA, browsers included.
-            Check file permissions at startup, never log them, and make loading from a
-            secrets manager possible rather than requiring files on disk.
-      - [ ] Node has three trust stores to satisfy: the OS store, `NODE_EXTRA_CA_CERTS`,
-            and npm's `cafile` and `strict-ssl`.
-      - [ ] `HTTPS_PROXY` without termination shows a hostname and nothing else: no
-            package, no version. Useless for policy, worth having as a signal that
-            something is talking to a registry we do not front.
-      - [ ] Only tier 5, no direct egress, covers the non-terminal install paths in §7
-            (IDE extensions, MCP servers). Tiers 1 to 3 are not in their path at all.
+- [x] Enforcement tier 3 is done here (origin refusal, above). **Tiers 4 and 5 moved
+      to Stage 5**, with the client measurements they rest on.
 - [x] `make inspect`: one packument request and one artifact request as each of npm, pnpm
       and yarn, with the headers those clients actually send, printed beside what the
       registry served directly. For looking, where `make smoke-clients` asserts. It hashes
@@ -936,46 +888,9 @@ implementations.
             minutes.
       - [x] Paid, Stage 2: the §5.5 action lattice and per-parameter monotonicity, now
             twelve harnesses in `src/policy/strictness.rs`. The whole set is 21.
-- [ ] Self-detection of bypass: a packument served with no artifact request following it
-      is the signature of the pnpm behaviour, and would have caught it without anyone
-      looking. Noisy, since a client may already hold the artifact or resolve a version it
-      does not install, so a heuristic rather than a check.
-      - [ ] A tarball answered 304 is never hashed, because `VerifyingStream` runs over
-            a body and a 304 has none. Safe when the client cached those bytes through
-            this proxy, which is the only way it holds a copy it did not fetch directly.
-            Same family as the item above, one layer down.
-      - [ ] A dependency specified as a git or http(s) URL rather than a version range
-            is fetched from wherever it names, by every client, and never touches a
-            packument at all. That is a different path from `dist.tarball` and the origin
-            policy does not see it. Not measured; `make offsite-urls` covers the fields
-            inside a packument, not the specifiers in a manifest.
-      - [x] yarn 2+ and bun tested. Both added to `make dev-setup` as optional, and to
-            `make smoke-clients`, which now covers five clients.
-            - [x] **Both use `dist.tarball` as written**, like pnpm and yarn 1. npm is the
-                  only one of the five that rewrites, which is the argument for the proxy
-                  doing it for all of them rather than per client. yarn 4.9.1 goes
-                  further and records the off-registry URL in its lockfile as
-                  `__archiveUrl`.
-            - [x] **Lockfiles: bun records the proxy address, yarn 4 does not.** yarn 4
-                  writes `resolution: "lodash@npm:4.18.1"` with no URL when it matches
-                  the configured registry, the way pnpm does, so its lockfiles stay
-                  portable. bun writes the full URL into `bun.lock`.
-            - [x] **yarn 2+ does not identify itself.** Its user-agent is
-                  `got (https://github.com/sindresorhus/got)`, the HTTP library's default.
-                  A refusal rule written `npm/yarn` does not match it; its client name is
-                  `got`.
-            - [x] **Every client has a cache that skips the proxy.** Measured: bun and
-                  yarn 4 both installed successfully having asked the proxy for nothing.
-                  bun needs `--cache-dir`; yarn 4 needs `globalFolder` and
-                  `enableMirror: false`, not just `enableGlobalCache: false`, because it
-                  copies out of its global mirror otherwise.
-            - [x] yarn 2+ is selected by a project rather than installed, so
-                  `make smoke-clients` sets up corepack shims in its own directory and a
-                  `packageManager` field, leaving the yarn on PATH alone. It needs node 18
-                  or later, since corepack calls `URL.canParse`, and is skipped with that
-                  reason on anything older.
-            - [ ] yarn 2+ is skipped on this machine, where the default node is 16. It
-                  passes under node 24.
+- [x] Bypass measurements taken here (five clients, `dist.tarball` handling,
+      lockfile contents). **The open detection work moved to Stage 5**, carrying
+      those findings with it.
 - [x] Cache bypass confirmed, per client rather than assumed to work like npm's. Measured
       by installing the same package twice through the proxy with one cache, and counting
       what the proxy saw the second time:
@@ -1363,6 +1278,19 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %
 - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, privacy tradeoff documented
 
+### Deferral status codes
+
+Moved from Stage 1, where the client behaviour was measured but nothing could produce
+a deferral: there was no mirror to warm and nothing analysing. See
+`docs/engineering_decisions/deferral-status-codes.md`.
+
+- [ ] Per-client code selection inferred from user-agent (already parsed for dialect);
+      shipped table of known clients, operator-forceable global override
+- [ ] Unknown user-agent falls back to **503** — fail toward the more widely retried code
+- [ ] Machine-readable reason + artifact digest in response header and body (neither
+      code distinguishes cold-start from per-artifact analysis on its own)
+- [ ] Log every deferral and whether the client returned inside the window — turns the
+      compatibility table into evidence
 ### Observability
 - [ ] `[!]` JSON Lines audit log: package, version, ecosystem, verdict, rule, timestamp
 - [ ] `[!]` `waharoa explain --policy` — effective merged policy per ecosystem
@@ -1382,6 +1310,10 @@ merge and loosening case in all tiers; policy schema declared frozen.
 design against. The interface is an output of this stage, not an input. If PyPI forces
 changes to the core, that is the finding — make it now, not after five adapters exist.
 
+- [ ] Defer: single binary vs. workspace crates. Splitting later is cheap; not enough
+      information yet.
+      Moved from Stage 1: this stage extracts the adapter interface, which is when there
+      is enough information to judge.
 - [ ] `[!]` PEP 503 simple-index transport, written concretely first
 - [ ] `[!]` Extract the adapter interface (transport + normalizer) from the two working
       implementations — refactor, not upfront design
@@ -1437,6 +1369,90 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 
 **Goal:** make it something a real team will run in blocking mode.
 
+- [ ] Enforcement tiers 4 and 5, recorded in
+      `docs/engineering_decisions/enforcement-tiers.md`. Both are later than tier 3.
+      - [ ] A hosts-file or DNS override needs TLS termination, so it is decision #3
+            wearing different clothes rather than a separate option. `dist.tarball` is
+            always https, so anything intercepting the URL as written needs a CA.
+      - [x] **Settled: pre-issued leaf certificates, no CA key on the proxy.** The
+            registry domains are known in advance, so certificates for them are issued out
+            of band by whatever CA the organisation already has trusted, and only the
+            leaves and their keys go on the proxy. A leaf key signs nothing, and
+            ordinary chain validation is all any client has to do, so nothing on the
+            recommended path rests on an untested assumption.
+            See `docs/engineering_decisions/terminating-tls-certificates.md`.
+      - [ ] Implement it. Per-ecosystem configuration naming the certificate and key
+            files, with the domains read from each certificate's SANs rather than
+            configured separately, so the two cannot disagree and startup can report
+            exactly which names the proxy answers for. rustls resolves by SNI.
+      - [ ] **Report incomplete coverage at startup.** The domains are sets, not one per
+            ecosystem: PyPI serves metadata on `pypi.org` and artifacts on
+            `files.pythonhosted.org` (verified Sept 2026), and crates.io uses `crates.io`,
+            `index.crates.io` and `static.crates.io`. A certificate for the metadata host
+            and not the artifact host reproduces the pnpm failure already measured, seeing
+            the package and never the bytes.
+      - [ ] In this mode artifact URL rewriting is unnecessary and
+            `WAHAROA_REWRITE_ARTIFACTS=0` is correct: `dist.tarball` already names a host
+            the proxy answers for, so lockfiles keep the origin registry's URLs and the
+            `npm ci` failure measured earlier does not arise.
+      - [ ] Onramp (Stage 2): mint certificates on the fly from an **unconstrained** CA
+            key held by the proxy. Name constraints are not used and no work is done on
+            them, so this is what it looks like: a key on the proxy that can sign for any
+            name, and a compromise of it impersonates anything to every client trusting
+            that CA, browsers included. Documented as the less secure option, which is
+            what it is, and the reason pre-issued leaves are the recommended path.
+      - [ ] Leaf keys on the proxy are worth what a compromise of them buys: impersonating
+            those domains to anything on a machine trusting the CA, browsers included.
+            Check file permissions at startup, never log them, and make loading from a
+            secrets manager possible rather than requiring files on disk.
+      - [ ] Node has three trust stores to satisfy: the OS store, `NODE_EXTRA_CA_CERTS`,
+            and npm's `cafile` and `strict-ssl`.
+      - [ ] `HTTPS_PROXY` without termination shows a hostname and nothing else: no
+            package, no version. Useless for policy, worth having as a signal that
+            something is talking to a registry we do not front.
+      - [ ] Only tier 5, no direct egress, covers the non-terminal install paths in §7
+            (IDE extensions, MCP servers). Tiers 1 to 3 are not in their path at all.
+
+- [ ] Self-detection of bypass: a packument served with no artifact request following it
+      is the signature of the pnpm behaviour, and would have caught it without anyone
+      looking. Noisy, since a client may already hold the artifact or resolve a version it
+      does not install, so a heuristic rather than a check.
+      - [ ] A tarball answered 304 is never hashed, because `VerifyingStream` runs over
+            a body and a 304 has none. Safe when the client cached those bytes through
+            this proxy, which is the only way it holds a copy it did not fetch directly.
+            Same family as the item above, one layer down.
+      - [ ] A dependency specified as a git or http(s) URL rather than a version range
+            is fetched from wherever it names, by every client, and never touches a
+            packument at all. That is a different path from `dist.tarball` and the origin
+            policy does not see it. Not measured; `make offsite-urls` covers the fields
+            inside a packument, not the specifiers in a manifest.
+      - [x] yarn 2+ and bun tested. Both added to `make dev-setup` as optional, and to
+            `make smoke-clients`, which now covers five clients.
+            - [x] **Both use `dist.tarball` as written**, like pnpm and yarn 1. npm is the
+                  only one of the five that rewrites, which is the argument for the proxy
+                  doing it for all of them rather than per client. yarn 4.9.1 goes
+                  further and records the off-registry URL in its lockfile as
+                  `__archiveUrl`.
+            - [x] **Lockfiles: bun records the proxy address, yarn 4 does not.** yarn 4
+                  writes `resolution: "lodash@npm:4.18.1"` with no URL when it matches
+                  the configured registry, the way pnpm does, so its lockfiles stay
+                  portable. bun writes the full URL into `bun.lock`.
+            - [x] **yarn 2+ does not identify itself.** Its user-agent is
+                  `got (https://github.com/sindresorhus/got)`, the HTTP library's default.
+                  A refusal rule written `npm/yarn` does not match it; its client name is
+                  `got`.
+            - [x] **Every client has a cache that skips the proxy.** Measured: bun and
+                  yarn 4 both installed successfully having asked the proxy for nothing.
+                  bun needs `--cache-dir`; yarn 4 needs `globalFolder` and
+                  `enableMirror: false`, not just `enableGlobalCache: false`, because it
+                  copies out of its global mirror otherwise.
+            - [x] yarn 2+ is selected by a project rather than installed, so
+                  `make smoke-clients` sets up corepack shims in its own directory and a
+                  `packageManager` field, leaving the yarn on PATH alone. It needs node 18
+                  or later, since corepack calls `URL.canParse`, and is skipped with that
+                  reason on anything older.
+            - [ ] yarn 2+ is skipped on this machine, where the default node is 16. It
+                  passes under node 24.
 - [ ] `[!]` Analysis cache keyed by **tarball content digest** (install-script presence,
       source diff, capability analysis — permanently valid). Metadata always passes
       through to upstream; no binary caching.
