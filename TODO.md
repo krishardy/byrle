@@ -767,10 +767,11 @@ implementations.
             output with `$(...)` runs it in a subshell and the new PATH dies with it,
             which is what happened first time: npm stayed at 9.9.4.
       - [x] **corepack is no longer bundled.** Node shipped it from 16.9 until it was
-            unbundled in 25, so the latest node has none and `make smoke-clients` skips
-            yarn 2+ until `npm install -g corepack` is run. dev-setup reports that rather
-            than installing it, because the npm in play here points at an authenticated
-            registry and the install fails with E401.
+            unbundled in 25, so the latest node has none. dev-setup installs it, and on
+            failure retries against registry.npmjs.org and says which of the two
+            registries rejected it, because the usual cause is the configured registry
+            rather than corepack.
+      - [x] All five clients pass on this machine under node v25.8.0 with corepack 0.34.7.
       - [x] `make lint` now runs `shellcheck -x`, so the shared helper is checked in the
             context that sources it rather than reported as unreadable.
 - [ ] Self-detection of bypass: a packument served with no artifact request following it

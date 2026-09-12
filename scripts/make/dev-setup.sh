@@ -153,9 +153,25 @@ if ! need corepack; then
     # Node shipped corepack from 16.9 until it was unbundled in 25, so on a current node
     # it has to be installed. It is how a project selects yarn 2+ without replacing the
     # yarn on PATH.
-    echo "    NOT INSTALLED. Node shipped it from 16.9 until it was unbundled in 25,"
-    echo "    so a current node needs it installed: npm install -g corepack"
-    echo "    'make smoke-clients' skips yarn 2+ without it."
+    # Node shipped corepack from 16.9 until it was unbundled in 25, so a current node
+    # needs it installed.
+    if ! need npm; then
+        echo "    NOT INSTALLED, and no npm to install it with."
+    elif npm install -g corepack >/dev/null 2>&1; then
+        echo "    installed $(corepack --version 2>/dev/null)"
+    else
+        # The usual cause is the configured registry, not corepack. Retrying against
+        # npmjs says which of the two is broken instead of leaving it ambiguous.
+        echo "    install from $(npm config get registry 2>/dev/null) failed"
+        if npm install -g corepack --registry https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "    installed $(corepack --version 2>/dev/null) from registry.npmjs.org instead."
+            echo "    Your configured registry rejected the request, which will affect every"
+            echo "    other install too. Check its credentials."
+        else
+            echo "    and so did registry.npmjs.org. 'make smoke-clients' skips yarn 2+"
+            echo "    until 'npm install -g corepack' works."
+        fi
+    fi
 elif ! need node; then
     echo "    node not found, so corepack cannot run."
 else
