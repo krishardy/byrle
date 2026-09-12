@@ -18,7 +18,9 @@
 //! [`crate::policy::strictness`] keeps them apart so `explain` can say which.
 
 use super::strictness::{Direction, Strictness};
-use super::{Action, CooldownRule, Defaults, EcosystemRules, ExpiryDate, Policy, ScriptRule};
+use super::{
+    Action, CooldownRule, Defaults, EcosystemRules, ExpiryDate, Policy, ScriptRule, SetBlock,
+};
 use jiff::civil::Date;
 
 /// A rule an ecosystem can override, for reporting.
@@ -62,6 +64,59 @@ pub fn applies(ecosystem: &str, rule: Rule) -> bool {
         // of a rule that reports not-applicable rather than a violation.
         ("golang" | "go", Rule::InstallScripts) => false,
         _ => true,
+    }
+}
+
+/// The three rules any block can carry, borrowed from whichever block it is.
+///
+/// One shape, so an ecosystem override and a package override are compared by the same
+/// code. Two comparisons that could disagree about what "looser" means is the failure
+/// the single `direction_of` table prevents one level down, and this prevents it one
+/// level up.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RuleValues<'a> {
+    pub cooldown: Option<&'a CooldownRule>,
+    pub install_scripts: Option<&'a ScriptRule>,
+    pub provenance_required: Option<bool>,
+}
+
+impl<'a> From<&'a EcosystemRules> for RuleValues<'a> {
+    fn from(r: &'a EcosystemRules) -> Self {
+        Self {
+            cooldown: r.cooldown.as_ref(),
+            install_scripts: r.install_scripts.as_ref(),
+            provenance_required: r.provenance_required,
+        }
+    }
+}
+
+impl<'a> From<&'a Defaults> for RuleValues<'a> {
+    fn from(r: &'a Defaults) -> Self {
+        Self {
+            cooldown: r.cooldown.as_ref(),
+            install_scripts: r.install_scripts.as_ref(),
+            provenance_required: r.provenance_required,
+        }
+    }
+}
+
+impl<'a> From<&'a SetBlock> for RuleValues<'a> {
+    fn from(r: &'a SetBlock) -> Self {
+        Self {
+            cooldown: r.cooldown.as_ref(),
+            install_scripts: r.install_scripts.as_ref(),
+            provenance_required: r.provenance_required,
+        }
+    }
+}
+
+impl<'a> From<&'a Effective> for RuleValues<'a> {
+    fn from(r: &'a Effective) -> Self {
+        Self {
+            cooldown: r.cooldown.as_ref(),
+            install_scripts: r.install_scripts.as_ref(),
+            provenance_required: r.provenance_required,
+        }
     }
 }
 
@@ -158,7 +213,7 @@ pub fn merge(policy: &Policy, ecosystem: &str, as_of: Date) -> (Effective, Vec<F
             .map(|&rule| Finding {
                 ecosystem: ecosystem.to_owned(),
                 rule,
-                outcome: compare(ecosystem, rule, overrides, defaults),
+                outcome: compare(ecosystem, rule, overrides.into(), defaults.into()),
                 acknowledgment: acknowledgment(rule, overrides, as_of),
             })
             .collect(),
@@ -178,32 +233,32 @@ fn pick<T: Clone>(override_value: Option<&T>, default: Option<&T>) -> Option<T> 
     override_value.or(default).cloned()
 }
 
-/// How one ecosystem rule compares to the policy above it.
-fn compare(
+/// How one rule in an overriding block compares to the same rule above it.
+pub fn compare(
     ecosystem: &str,
     rule: Rule,
-    overrides: &EcosystemRules,
-    defaults: &Defaults,
+    value: RuleValues<'_>,
+    baseline: RuleValues<'_>,
 ) -> Strictness {
     // Applicability is decided for the whole rule, before its dimensions are looked at.
     if !applies(ecosystem, rule) {
         return Strictness::NotApplicable;
     }
     match rule {
-        Rule::Cooldown => match (&overrides.cooldown, &defaults.cooldown) {
+        Rule::Cooldown => match (value.cooldown, baseline.cooldown) {
             (Some(value), Some(baseline)) => cooldown_strictness(value, baseline),
             (Some(_), None) | (None, _) => Strictness::Unset,
         },
-        Rule::InstallScripts => match (&overrides.install_scripts, &defaults.install_scripts) {
+        Rule::InstallScripts => match (value.install_scripts, baseline.install_scripts) {
             (Some(value), Some(baseline)) => {
                 script_action(value).strictness_against(script_action(baseline))
             }
             (Some(_), None) | (None, _) => Strictness::Unset,
         },
         Rule::ProvenanceRequired => {
-            match (overrides.provenance_required, defaults.provenance_required) {
-                // Required is stricter than not, so the flag runs the same way a number with
-                // `HigherIsStricter` does rather than being compared its own way.
+            match (value.provenance_required, baseline.provenance_required) {
+                // Required is stricter than not, so the flag runs the same way a number
+                // with `HigherIsStricter` does rather than being compared its own way.
                 (Some(value), Some(baseline)) => {
                     Direction::HigherIsStricter.strictness(u32::from(value), u32::from(baseline))
                 }

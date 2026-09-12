@@ -35,6 +35,7 @@
 //! `an_unknown_key_inside_the_polymorphic_field_is_named`.
 
 pub mod merge;
+pub mod packages;
 pub mod strictness;
 
 use serde::de::value::{MapAccessDeserializer, StrDeserializer};
