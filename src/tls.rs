@@ -121,23 +121,17 @@ pub fn apply(
     }
 }
 
-/// Build the client, naming the bundle if the TLS backend refuses it.
+/// Build a client that has a bundle applied, naming the file if the backend refuses it.
 ///
-/// `bundle` is only used for the error message. Pass `None` when no bundle was applied,
-/// in which case a failure is not about trust configuration.
+/// Only for the bundle case. With no bundle a build failure is not about trust
+/// configuration, and attributing it to a file that was never named would mislead.
 pub fn build(
     builder: reqwest::ClientBuilder,
-    bundle: Option<&Path>,
+    bundle: &Path,
 ) -> Result<reqwest::Client, TrustError> {
-    builder.build().map_err(|source| match bundle {
-        Some(path) => TrustError::Rejected {
-            path: path.to_path_buf(),
-            source,
-        },
-        None => TrustError::Rejected {
-            path: PathBuf::from("<none>"),
-            source,
-        },
+    builder.build().map_err(|source| TrustError::Rejected {
+        path: bundle.to_path_buf(),
+        source,
     })
 }
 
@@ -210,7 +204,7 @@ mod tests {
         assert_eq!(certificates.len(), 1);
 
         let builder = apply(reqwest::Client::builder(), certificates, TrustMode::Merge);
-        let Err(e) = build(builder, Some(path)) else {
+        let Err(e) = build(builder, path) else {
             panic!("the backend should refuse this");
         };
         assert!(matches!(e, TrustError::Rejected { .. }), "got: {e:?}");
@@ -222,8 +216,7 @@ mod tests {
     fn a_good_bundle_builds_a_client() {
         let certificates = load_bundle(&fixture("test-ca.pem")).unwrap();
         let builder = apply(reqwest::Client::builder(), certificates, TrustMode::Merge);
-        assert!(build(builder, Some(&fixture("test-ca.pem"))).is_ok());
-        assert!(build(reqwest::Client::builder(), None).is_ok());
+        assert!(build(builder, &fixture("test-ca.pem")).is_ok());
     }
 
     #[test]

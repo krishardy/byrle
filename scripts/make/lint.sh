@@ -37,7 +37,9 @@ if [[ ${#scripts[@]} -eq 0 ]]; then
     echo "no shell scripts tracked"
 else
     printf '    checking %d script(s)\n' "${#scripts[@]}"
-    if ! (cd "$repo_root" && shellcheck --color=auto "${scripts[@]}"); then
+    # -x follows `source`, so the shared helper under scripts/make/lib is checked in the
+    # context that uses it rather than reported as unreadable.
+    if ! (cd "$repo_root" && shellcheck -x --color=auto "${scripts[@]}"); then
         failed=1
     fi
 fi

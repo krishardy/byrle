@@ -324,9 +324,12 @@ implementations.
             and deliberately not resolved: the lodash fixture tags `4.18.1` while the
             document carries only `4.17.21`, so a tag can name a version the `versions`
             map omits. See the Stage 2 item.
-- [x] Unit test coverage tooling, for the CLAUDE.md 90% floor. `make coverage` runs
-      cargo-llvm-cov with `--fail-under-lines/-functions/-regions 90`; `COVERAGE_FLOOR`
-      overrides it. The crate is at 95.5% lines, 94.7% regions, 94.2% functions.
+- [x] Unit test coverage tooling, for the CLAUDE.md floor. `make coverage` runs
+      cargo-llvm-cov over the **library** with
+      `--fail-under-lines/-functions/-regions 95`; `COVERAGE_FLOOR` overrides it. The
+      library is at 97.5% lines, 97.0% regions, 98.0% functions. `src/main.rs` is printed
+      for reference and is not part of the floor: it is startup wiring, covered by
+      `make smoke-npm` and `make smoke-clients` running real clients through the binary.
       - [x] The network and corpus tests are compiled out under `cfg(coverage)`, which
             cargo-llvm-cov sets. They do not run in a coverage build, and counting the
             body of a test that cannot run reports a gap that is not one. `cargo test`
@@ -335,9 +338,8 @@ implementations.
             bare name: the leading empty check and the empty-`rest` check in the scoped
             arm already cover it. Now a `debug_assert!`, because a branch no input can
             reach looks like a hole in the tests forever.
-      - [x] **`src/main.rs` was at 0% over 128 lines, and the floor excluded it.** The
-            proxy moved into `src/proxy.rs` in the library, leaving 53 lines of startup
-            in the binary, so the floor now covers the whole crate with no carve-out.
+      - [x] **`src/main.rs` was at 0% over 128 lines.** The proxy moved into
+            `src/proxy.rs` in the library, which is what the floor measures.
 - [x] **`npm ci` requests no packuments at all**, so every artifact was unverified on the
       standard CI path. Measured through the proxy: 69 tarballs, zero packument requests,
       zero digests known. `npm ci` reads `resolved` and `integrity` from
@@ -753,6 +755,24 @@ implementations.
       - [x] **yarn 1 asks for `application/json` and gets the full packument**, where npm
             and pnpm ask for the abbreviated one. Which document arrived is what qualifies
             every absent field on a record, so the script names it.
+- [x] nvm's latest stable node for every target that runs a package manager, via
+      `scripts/make/lib/node.sh`. Without it the node in play was whatever the shell's
+      profile resolved, which on a machine with both nvm and asdf was not stable between
+      invocations: this repository saw node 16 and node 24 from the same PATH minutes
+      apart. That decides behaviour, not just versions, since yarn 2+ is skipped entirely
+      on node 16.
+      - [x] "Latest stable" is `nvm version node`, nvm's own answer, rather than the
+            highest directory name.
+      - [x] The helper sets `WAHAROA_NODE` rather than printing. A caller capturing its
+            output with `$(...)` runs it in a subshell and the new PATH dies with it,
+            which is what happened first time: npm stayed at 9.9.4.
+      - [x] **corepack is no longer bundled.** Node shipped it from 16.9 until it was
+            unbundled in 25, so the latest node has none and `make smoke-clients` skips
+            yarn 2+ until `npm install -g corepack` is run. dev-setup reports that rather
+            than installing it, because the npm in play here points at an authenticated
+            registry and the install fails with E401.
+      - [x] `make lint` now runs `shellcheck -x`, so the shared helper is checked in the
+            context that sources it rather than reported as unreadable.
 - [ ] Self-detection of bypass: a packument served with no artifact request following it
       is the signature of the pnpm behaviour, and would have caught it without anyone
       looking. Noisy, since a client may already hold the artifact or resolve a version it

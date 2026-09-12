@@ -19,6 +19,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
+# shellcheck source=scripts/make/lib/node.sh
+. "$repo_root/scripts/make/lib/node.sh"
+waharoa_use_latest_node
+
 package="${PACKAGE:-lodash}"
 upstream="${WAHAROA_UPSTREAM:-https://registry.npmjs.org}"
 port="${WAHAROA_PORT:-8733}"
