@@ -497,6 +497,10 @@ fn refusal_status(proxy: &Proxy, user_agent: Option<&str>) -> StatusCode {
     let code = proxy
         .refusal
         .for_client(crate::identity::Ecosystem::Npm, user_agent);
+    // Unreachable: `RefusalStatus` is only ever built by `parse`, which refuses anything
+    // outside 400..=599, or by `default`, which is 403. Kept rather than unwrapped
+    // because a panic here would take down a request handler, and 403 is what the
+    // default would have been anyway.
     StatusCode::from_u16(code).unwrap_or(StatusCode::FORBIDDEN)
 }
 
@@ -2050,6 +2054,51 @@ mod tests {
                 .unwrap()
                 .contains("upstream request failed")
         );
+    }
+
+    /// §5: a not-ready state never wears a code that reads as a block. A 4xx from a
+    /// registry proxy means policy denied you, so every state that is not a denial has to
+    /// be a 5xx.
+    ///
+    /// This enumerates the statuses the proxy produces of its own accord. Codes forwarded
+    /// from upstream are not among them: those are the registry's answer, covered by
+    /// `upstream_statuses_pass_through_unchanged`.
+    #[tokio::test]
+    async fn the_only_4xx_this_proxy_produces_is_a_policy_refusal() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let dead = serve(
+            Proxy::new(reqwest::Client::new(), format!("http://{addr}"))
+                .with_blocked(Some(
+                    PackageKey::from_registry_name(Ecosystem::Npm, "left-pad").unwrap(),
+                ))
+                .router(),
+        )
+        .await;
+
+        // Every request kind, because a tarball looks its packument up first and so has
+        // a second way to meet an upstream that is not there.
+        for path in ["/lodash", "/lodash/-/lodash-4.17.21.tgz", "/-/ping"] {
+            let status = reqwest::get(format!("{dead}{path}"))
+                .await
+                .unwrap()
+                .status();
+            assert_eq!(status, StatusCode::BAD_GATEWAY, "{path}");
+        }
+
+        // The one 4xx, and it is a denial rather than a state.
+        let refused = reqwest::get(format!("{dead}/left-pad")).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            RefusalStatus::default().default_status(),
+            403,
+            "the default refusal is what makes the code above a denial and not an accident"
+        );
+
+        // Health is the proxy describing itself, and it is always ready to do that.
+        let health = reqwest::get(format!("{dead}{HEALTH_PATH}")).await.unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
     }
 
     /// A 404 from the registry is the registry's answer and passes through as itself.
