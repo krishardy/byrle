@@ -803,10 +803,9 @@ implementations.
       - [x] **Settled: pre-issued leaf certificates, no CA key on the proxy.** The
             registry domains are known in advance, so certificates for them are issued out
             of band by whatever CA the organisation already has trusted, and only the
-            leaves and their keys go on the proxy. Better than a name-constrained CA on
-            two counts: a leaf key signs nothing, and ordinary chain validation needs no
-            name-constraint support from the verifier, so the assumption that needed
-            testing leaves the recommended path.
+            leaves and their keys go on the proxy. A leaf key signs nothing, and
+            ordinary chain validation is all any client has to do, so nothing on the
+            recommended path rests on an untested assumption.
             See `docs/engineering_decisions/terminating-tls-certificates.md`.
       - [ ] Implement it. Per-ecosystem configuration naming the certificate and key
             files, with the domains read from each certificate's SANs rather than
@@ -822,22 +821,12 @@ implementations.
             `WAHAROA_REWRITE_ARTIFACTS=0` is correct: `dist.tarball` already names a host
             the proxy answers for, so lockfiles keep the origin registry's URLs and the
             `npm ci` failure measured earlier does not arise.
-      - [~] Onramp: mint certificates on the fly from a CA key held by the proxy. Less
-            secure, and the only place name constraints matter, which is where an
-            assumption that has to be tested belongs. Split: the assumption is tested in
-            Stage 1 by a spike, and the feature is built in Stage 2. Shipping it before
-            the spike answers would mean recommending a path whose central premise is
-            untested.
-            - [ ] `[!]` **SPIKE (Stage 1): does a name-constrained CA actually constrain?**
-                  Mint a CA with a `nameConstraints` extension permitting only the registry
-                  domains, mint a leaf for a domain outside the permitted set, and see
-                  which trust stores reject it. OpenSSL and NSS honour name constraints;
-                  macOS and Windows have historically been inconsistent. Node is the
-                  case that decides this, across all three of its trust stores (the OS
-                  store, `NODE_EXTRA_CA_CERTS`, and npm's `cafile`). A "no" does not sink
-                  the onramp, it makes the CA unconstrained and changes what the docs have
-                  to say about what an operator is trusting it with.
-            - [ ] Build it (Stage 2), against whatever the spike found.
+      - [ ] Onramp (Stage 2): mint certificates on the fly from an **unconstrained** CA
+            key held by the proxy. Name constraints are not used and no work is done on
+            them, so this is what it looks like: a key on the proxy that can sign for any
+            name, and a compromise of it impersonates anything to every client trusting
+            that CA, browsers included. Documented as the less secure option, which is
+            what it is, and the reason pre-issued leaves are the recommended path.
       - [ ] Leaf keys on the proxy are worth what a compromise of them buys: impersonating
             those domains to anything on a machine trusting the CA, browsers included.
             Check file permissions at startup, never log them, and make loading from a

@@ -105,12 +105,11 @@ hold.
 
 ## Open questions
 
-~~A name-constrained CA.~~ Settled, and better than the question assumed: the registry
-domains are known in advance, so the proxy holds **pre-issued leaf certificates** for them
-and no CA key at all. A leaf key signs nothing, and ordinary chain validation needs no
-name-constraint support from the verifier, so the assumption that needed testing leaves
-the recommended path. Name constraints still apply to the on-the-fly minting onramp, which
-is where an untested assumption belongs. See
+~~A CA on the proxy.~~ Settled: the registry domains are known in advance, so the proxy
+holds **pre-issued leaf certificates** for them and no CA key at all. A leaf key signs
+nothing, and ordinary chain validation is all any client has to do. Constraining a CA to
+the registry names is not used and is not being evaluated; the minting onramp holds an
+unconstrained CA key, which is why it is the less secure option. See
 [terminating-tls-certificates](terminating-tls-certificates.md).
 
 **Whether `HTTPS_PROXY` without termination is worth anything.** With CONNECT and no TLS
