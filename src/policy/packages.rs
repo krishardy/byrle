@@ -9,12 +9,11 @@
 //! cannot be ignored the way a warning can. So an unjustified loosening is refused at
 //! load and nothing here warns about anything.
 //!
-//! # Measured against the effective policy above the rule
+//! # It may only loosen
 //!
-//! Not against the global default. An entry is compared to what would apply in its
-//! absence, which is the ecosystem merge for its own ecosystem, so a rule that loosens
-//! relative to its ecosystem but happens to match global does not slip through
-//! unjustified.
+//! An entry that would tighten is a load-time error. Tightening one package is not what
+//! this tier is for, and admitting it would reopen questions about what outranks what
+//! that the design settled by not having them.
 //!
 //! # Why an expiry at all
 //!
@@ -45,14 +44,12 @@ pub struct Finding {
     pub outcome: Strictness,
 }
 
-/// How every package entry compares to the policy that would apply without it.
-pub fn findings(policy: &Policy, as_of: Date) -> Vec<Finding> {
+/// How every package entry compares to the settings it overrides.
+pub fn findings(policy: &Policy) -> Vec<Finding> {
     let mut out = Vec::new();
+    let baseline = RuleValues::from(policy);
     for (index, entry) in policy.packages.iter().enumerate() {
         let ecosystem = &entry.selector.ecosystem;
-        // What applies without this entry: the ecosystem merge for its own ecosystem.
-        let (effective, _) = merge::merge(policy, ecosystem, as_of);
-        let baseline = RuleValues::from(&effective);
         let value = RuleValues::from(&entry.set);
 
         for rule in Rule::ALL {
@@ -69,9 +66,8 @@ pub fn findings(policy: &Policy, as_of: Date) -> Vec<Finding> {
 
 /// Whether an entry loosens anything at all.
 ///
-/// Any one rule getting looser, or moving in a direction that cannot be proven, makes
-/// the entry a loosening that has to be answered for. An entry is not excused by having
-/// tightened something else in the same breath.
+/// Any one setting getting looser, or moving in a direction that cannot be proven, makes
+/// the entry a loosening that has to be answered for.
 pub fn loosens(findings: &[Finding], index: usize) -> bool {
     findings
         .iter()
@@ -79,12 +75,34 @@ pub fn loosens(findings: &[Finding], index: usize) -> bool {
         .any(|f| f.outcome.warns())
 }
 
+/// Whether an entry tightens anything, which this tier does not allow.
+pub fn tightens(findings: &[Finding], index: usize) -> bool {
+    findings
+        .iter()
+        .filter(|f| f.index == index)
+        .any(|f| f.outcome == Strictness::Stricter)
+}
+
+/// Whether an entry changes anything at all.
+///
+/// An entry that changes nothing is valid, and almost always a selector that no longer
+/// matches what it was written for. It warns rather than refusing, because a policy that
+/// will not load is a worse outcome than one carrying a line that does nothing.
+pub fn changes_nothing(findings: &[Finding], index: usize) -> bool {
+    findings
+        .iter()
+        .filter(|f| f.index == index)
+        .all(|f| !f.outcome.compared() || f.outcome == Strictness::Same)
+}
+
 /// Why a package entry was refused.
 #[derive(Debug, PartialEq)]
 pub enum PackageError {
-    /// It loosens the policy above it and says neither when it stops nor that it does
+    /// It loosens the settings above it and says neither when it stops nor that it does
     /// not stop.
     Unjustified { at: String, rule: Rule },
+    /// It tightens, which this tier does not allow.
+    Tightens { at: String, rule: Rule },
     /// It is dated further ahead than the ceiling allows.
     TooFarAhead {
         at: String,
@@ -102,6 +120,14 @@ impl std::fmt::Display for PackageError {
                 "{at} loosens `{}` and carries neither `expires` nor `permanent: true`. \
                  A loosening at this tier is expected, which is why it is not warned \
                  about; saying when it stops being true is what is required instead",
+                rule.as_str()
+            ),
+            Self::Tightens { at, rule } => write!(
+                f,
+                "{at} tightens `{}`. This tier is for exceptions, which may only loosen: \
+                 a setting that should be stricter for everyone belongs in the global \
+                 settings, and one that should be stricter for a single package belongs \
+                 in `denials`",
                 rule.as_str()
             ),
             Self::TooFarAhead {
@@ -126,7 +152,7 @@ impl std::error::Error for PackageError {}
 /// `as_of` and the ceiling are arguments rather than a clock and a constant, so
 /// `policy check --as-of` can ask what a policy would be judged as on another day.
 pub fn check(policy: &Policy, as_of: Date, ceiling_days: i64) -> Result<(), PackageError> {
-    let findings = findings(policy, as_of);
+    let findings = findings(policy);
     let latest = as_of
         .checked_add(jiff::Span::new().days(ceiling_days))
         .unwrap_or(Date::MAX);
@@ -145,8 +171,15 @@ pub fn check(policy: &Policy, as_of: Date, ceiling_days: i64) -> Result<(), Pack
             });
         }
 
-        // Tightening entries need no justification: nothing was given away, so there is
-        // nothing to answer for and nothing to revisit.
+        if tightens(&findings, index) {
+            let rule = findings
+                .iter()
+                .find(|f| f.index == index && f.outcome == Strictness::Stricter)
+                .map(|f| f.rule)
+                .expect("tightens() is true only when some setting is stricter");
+            return Err(PackageError::Tightens { at, rule });
+        }
+
         if !loosens(&findings, index) || justified(entry) {
             continue;
         }
@@ -177,142 +210,128 @@ mod tests {
     const TODAY: Date = date(2026, 9, 12);
 
     fn parse(body: &str) -> Result<Policy, PolicyError> {
-        Policy::parse(&format!(
-            "version: 1\nfloor:\n  npm:\n    known_malware: block\n{body}"
-        ))
+        Policy::parse(&format!("version: 1\n{body}"))
     }
 
     fn policy(body: &str) -> Policy {
         parse(body).expect("fixture should parse")
     }
 
-    fn checked(body: &str) -> Result<(), PackageError> {
-        check(&policy(body), TODAY, DEFAULT_EXPIRY_CEILING_DAYS)
+    /// One entry, with whatever `set` and trailing fields the case needs.
+    fn entry(set: &str, tail: &str) -> String {
+        format!(
+            "packages:\n  - match: {{ ecosystem: npm, name: x }}\n    set: {{ {set} }}\n    \
+             reason: reviewed\n{tail}"
+        )
+    }
+
+    fn checked(set: &str, tail: &str) -> Result<(), PackageError> {
+        check(
+            &policy(&entry(set, tail)),
+            TODAY,
+            DEFAULT_EXPIRY_CEILING_DAYS,
+        )
     }
 
     #[test]
     fn a_loosening_entry_with_an_expiry_is_accepted() {
-        assert!(
-            checked(
-                "defaults:\n  install_scripts: block\npackages:\n  \
-                 - match: { ecosystem: npm, name: x }\n    set: { install_scripts: allow }\n    \
-                 reason: reviewed\n    expires: \"2026-10-15\"\n"
-            )
-            .is_ok()
-        );
+        assert!(checked("cooldown_days: 0", "    expires: \"2026-10-15\"\n").is_ok());
     }
 
     #[test]
     fn a_loosening_entry_with_neither_an_expiry_nor_permanence_is_refused() {
-        let error = checked(
-            "defaults:\n  install_scripts: block\npackages:\n  \
-             - match: { ecosystem: npm, name: x }\n    set: { install_scripts: allow }\n    \
-             reason: reviewed\n",
-        )
-        .unwrap_err();
+        let error = checked("cooldown_days: 0", "").unwrap_err();
         assert!(matches!(
             error,
             PackageError::Unjustified {
-                rule: Rule::InstallScripts,
+                rule: Rule::CooldownDays,
                 ..
             }
         ));
         assert!(error.to_string().contains("packages[0]"));
     }
 
-    /// §5.5's explicit alternative, for genuine invariants like an internal namespace.
+    /// The explicit alternative, for a genuine invariant like an internal namespace.
     #[test]
     fn a_loosening_entry_may_say_it_does_not_stop_being_true() {
+        assert!(checked("install_scripts: allow", "    permanent: true\n").is_ok());
+    }
+
+    /// The tier is for exceptions, and an exception loosens. A setting that should be
+    /// stricter for everyone belongs in the global settings.
+    #[test]
+    fn a_tightening_entry_is_refused() {
+        let error = checked("cooldown_days: 30", "    permanent: true\n").unwrap_err();
+        assert!(matches!(
+            error,
+            PackageError::Tightens {
+                rule: Rule::CooldownDays,
+                ..
+            }
+        ));
         assert!(
-            checked(
-                "defaults:\n  install_scripts: block\npackages:\n  \
-                 - match: { ecosystem: npm, name: \"@mycompany/*\" }\n    \
-                 set: { install_scripts: allow }\n    reason: \"published by our CI\"\n    \
-                 permanent: true\n"
-            )
-            .is_ok()
+            error.to_string().contains("denials"),
+            "the refusal has to say where a stricter rule does belong: {error}"
         );
     }
 
-    /// Tightening entries need no justification: nothing was given away.
+    /// An entry that loosens one setting and tightens another is refused for tightening.
+    /// It cannot buy the loosening with the tightening.
     #[test]
-    fn a_tightening_entry_needs_nothing() {
-        assert!(
-            checked(
-                "defaults:\n  install_scripts: warn\npackages:\n  \
-                 - match: { ecosystem: npm, name: x }\n    set: { install_scripts: block }\n    \
-                 reason: \"we distrust this one\"\n"
-            )
-            .is_ok()
-        );
-    }
-
-    /// An entry that tightens one rule and loosens another is still a loosening. It is
-    /// not excused by what it gave in the other direction.
-    #[test]
-    fn tightening_one_rule_does_not_excuse_loosening_another() {
+    fn tightening_alongside_a_loosening_is_still_refused() {
         let error = checked(
-            "defaults:\n  install_scripts: block\n  provenance_required: false\npackages:\n  \
-             - match: { ecosystem: npm, name: x }\n    \
-             set: { install_scripts: allow, provenance_required: true }\n    reason: r\n",
+            "install_scripts: allow, cooldown_days: 30",
+            "    permanent: true\n",
         )
         .unwrap_err();
-        assert!(matches!(error, PackageError::Unjustified { .. }));
+        assert!(matches!(error, PackageError::Tightens { .. }));
     }
 
-    /// §5.5: measured against the effective policy above the rule, not the global
-    /// default. Global says `warn`; the ecosystem tightened to `block`; the entry's
-    /// `warn` matches global exactly and is still a loosening of what actually applies.
+    /// Every exception is measured against the global settings, which is the only
+    /// baseline there is.
     #[test]
-    fn loosening_is_measured_against_the_ecosystem_not_the_global_default() {
-        let body = "defaults:\n  install_scripts: warn\necosystems:\n  npm:\n    \
-                    install_scripts: block\npackages:\n  \
-                    - match: { ecosystem: npm, name: x }\n    set: { install_scripts: warn }\n    \
-                    reason: r\n";
-        let found = findings(&policy(body), TODAY);
-        let scripts = found
-            .iter()
-            .find(|f| f.rule == Rule::InstallScripts)
-            .unwrap();
-        assert_eq!(
-            scripts.outcome,
-            Strictness::Looser,
-            "matching the global default does not make it not a loosening"
-        );
-        assert!(matches!(
-            check(&policy(body), TODAY, DEFAULT_EXPIRY_CEILING_DAYS).unwrap_err(),
-            PackageError::Unjustified { .. }
+    fn loosening_is_measured_against_the_global_settings() {
+        let p = policy(&format!(
+            "cooldown_days: 14\n{}",
+            entry("cooldown_days: 7", "    permanent: true\n")
         ));
+        let found = findings(&p);
+        let cooldown = found.iter().find(|f| f.rule == Rule::CooldownDays).unwrap();
+        assert_eq!(
+            cooldown.outcome,
+            Strictness::Looser,
+            "7 is the shipped default and still a loosening of a policy that says 14"
+        );
     }
 
-    /// An entry for an ecosystem whose merge says nothing has no baseline, so it loosened
-    /// nothing and needs no justification.
+    /// An entry that changes nothing is valid. It is almost always a selector that no
+    /// longer matches what it was written for, which is worth saying and not worth
+    /// refusing a policy over.
     #[test]
-    fn an_entry_with_nothing_above_it_has_loosened_nothing() {
-        assert!(
-            checked(
-                "packages:\n  - match: { ecosystem: npm, name: x }\n    \
-                 set: { install_scripts: allow }\n    reason: r\n"
-            )
-            .is_ok()
-        );
+    fn an_entry_that_changes_nothing_loads_and_is_detectable() {
+        let p = policy(&entry("", "    permanent: true\n"));
+        let found = findings(&p);
+        assert!(changes_nothing(&found, 0));
+        assert!(!loosens(&found, 0));
+        assert!(!tightens(&found, 0));
+        assert!(check(&p, TODAY, DEFAULT_EXPIRY_CEILING_DAYS).is_ok());
+    }
+
+    /// Setting a value to what it already is changes nothing either.
+    #[test]
+    fn restating_the_global_setting_changes_nothing() {
+        let p = policy(&entry("cooldown_days: 7", "    permanent: true\n"));
+        assert!(changes_nothing(&findings(&p), 0));
     }
 
     #[test]
     fn an_expiry_inside_the_ceiling_is_accepted_and_one_past_it_is_not() {
-        let body = |date: &str| {
-            format!(
-                "defaults:\n  install_scripts: block\npackages:\n  \
-                 - match: {{ ecosystem: npm, name: x }}\n    set: {{ install_scripts: allow }}\n    \
-                 reason: r\n    expires: \"{date}\"\n"
-            )
-        };
         // 90 days from 2026-09-12 is 2026-12-11.
         assert!(
-            checked(&body("2026-12-11")).is_ok(),
+            checked("cooldown_days: 0", "    expires: \"2026-12-11\"\n").is_ok(),
             "the ceiling day itself"
         );
-        let error = checked(&body("2026-12-12")).unwrap_err();
+        let error = checked("cooldown_days: 0", "    expires: \"2026-12-12\"\n").unwrap_err();
         assert!(matches!(error, PackageError::TooFarAhead { .. }));
         let text = error.to_string();
         assert!(
@@ -325,68 +344,57 @@ mod tests {
     /// editing the source.
     #[test]
     fn the_ceiling_is_configurable() {
-        let source = policy(
-            "defaults:\n  install_scripts: block\npackages:\n  \
-             - match: { ecosystem: npm, name: x }\n    set: { install_scripts: allow }\n    \
-             reason: r\n    expires: \"2027-09-12\"\n",
-        );
-        assert!(check(&source, TODAY, DEFAULT_EXPIRY_CEILING_DAYS).is_err());
-        assert!(check(&source, TODAY, 365).is_ok());
+        let p = policy(&entry("cooldown_days: 0", "    expires: \"2027-09-12\"\n"));
+        assert!(check(&p, TODAY, DEFAULT_EXPIRY_CEILING_DAYS).is_err());
+        assert!(check(&p, TODAY, 365).is_ok());
     }
 
-    /// The date is an argument too, so the same policy is judged differently as the
-    /// ceiling moves with the day.
+    /// The date is an argument too, so `policy check --as-of` can ask what a policy would
+    /// be judged as on another day.
     #[test]
     fn the_same_entry_passes_today_and_fails_when_today_moves_back() {
-        let source = policy(
-            "defaults:\n  install_scripts: block\npackages:\n  \
-             - match: { ecosystem: npm, name: x }\n    set: { install_scripts: allow }\n    \
-             reason: r\n    expires: \"2026-12-01\"\n",
-        );
-        assert!(check(&source, TODAY, DEFAULT_EXPIRY_CEILING_DAYS).is_ok());
+        let p = policy(&entry("cooldown_days: 0", "    expires: \"2026-12-01\"\n"));
+        assert!(check(&p, TODAY, DEFAULT_EXPIRY_CEILING_DAYS).is_ok());
         assert!(
-            check(&source, date(2026, 1, 1), DEFAULT_EXPIRY_CEILING_DAYS).is_err(),
+            check(&p, date(2026, 1, 1), DEFAULT_EXPIRY_CEILING_DAYS).is_err(),
             "dated eleven months ahead of a January reading"
         );
     }
 
-    /// A tightening entry is not exempt from the ceiling. An entry that expires is making
-    /// a claim about time whichever direction it moves the policy in.
     #[test]
-    fn the_ceiling_applies_to_tightening_entries_too() {
-        assert!(matches!(
-            checked(
-                "defaults:\n  install_scripts: warn\npackages:\n  \
-                 - match: { ecosystem: npm, name: x }\n    set: { install_scripts: block }\n    \
-                 reason: r\n    expires: \"2030-01-01\"\n"
-            )
-            .unwrap_err(),
-            PackageError::TooFarAhead { .. }
-        ));
+    fn a_policy_with_no_entries_has_nothing_to_check() {
+        let p = policy("cooldown_days: 7\n");
+        assert!(findings(&p).is_empty());
+        assert!(check(&p, TODAY, DEFAULT_EXPIRY_CEILING_DAYS).is_ok());
     }
 
     #[test]
-    fn a_policy_with_no_package_entries_has_nothing_to_check() {
-        assert!(checked("defaults:\n  install_scripts: block\n").is_ok());
-        assert!(findings(&policy(""), TODAY).is_empty());
-    }
-
-    #[test]
-    fn every_rule_is_reported_for_every_entry() {
-        let found = findings(
-            &policy(
-                "packages:\n  - match: { ecosystem: npm, name: x }\n    set: {}\n    reason: r\n  \
-                 - match: { ecosystem: npm, name: y }\n    set: {}\n    reason: r\n",
-            ),
-            TODAY,
+    fn every_setting_is_reported_for_every_entry() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: x }\n    set: {}\n    reason: r\n    \
+             permanent: true\n  - match: { ecosystem: npm, name: y }\n    set: {}\n    \
+             reason: r\n    permanent: true\n",
         );
+        let found = findings(&p);
         assert_eq!(found.len(), 2 * Rule::ALL.len());
         assert!(found.iter().all(|f| f.ecosystem == "npm"));
-        assert!(!loosens(&found, 0));
     }
 
-    /// The shipped example is a real §5.5 policy and has to pass its own rules, read on a
-    /// day its entries are still dated ahead of.
+    /// Ignoring a named advisory is a loosening like any other and has to be answered for.
+    #[test]
+    fn ignoring_an_advisory_needs_a_justification() {
+        assert!(matches!(
+            checked("cve_ids: [\"CVE-2024-1234\"]", "").unwrap_err(),
+            PackageError::Unjustified {
+                rule: Rule::CveIds,
+                ..
+            }
+        ));
+        assert!(checked("cve_ids: [\"CVE-2024-1234\"]", "    permanent: true\n").is_ok());
+    }
+
+    /// The shipped example is a real policy and has to pass its own rules, read on a day
+    /// its entries are still dated ahead of.
     #[test]
     fn the_shipped_example_satisfies_the_package_rules() {
         let source = std::fs::read_to_string("examples/policy.yaml").unwrap();

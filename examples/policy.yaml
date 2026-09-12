@@ -1,58 +1,63 @@
-# Spike artifact: the §5.5 policy that decided the config format (see plan §5).
+# A waharoa policy: global settings, and per-package exceptions to them.
 #
-# This is the exact file the config-format spike loaded, kept verbatim as evidence.
-# It is NOT yet template-complete: §5.5 requires a floor for EVERY enabled ecosystem,
-# and `ecosystems` below declares `cargo` while `floor` covers only npm and pypi, so
-# loading this as-is must be a startup failure once the floor check exists. Completing
-# the shipped template is tracked in TODO.md.
+# Nothing here is per ecosystem. Which ecosystems run which check is a property of the
+# ecosystem, not something you set: `install_scripts` is asked of npm and not of Go,
+# because Go has no install step.
+#
+# See docs/engineering_decisions/policy-tier-resolution.md for the decision flow chart
+# these settings serve.
 
 version: 1
 
+# How old a package must be before it is served. A younger one is quarantined, which
+# lapses on its own as the package ages.
+cooldown_days: 7
+
+# The highest CVSS score a package may carry and still be served. At or below is allowed,
+# above is not. A number rather than a severity band, because bands are not stable across
+# CVSS versions: the same score falls in different ones under v2 and v3.
+max_cvss: 6.9
+
+# Whether a package carrying an install script is served. `block` or `allow`.
+install_scripts: block
+
+# Whether a package carrying a known-exploited vulnerability is served.
+kev: block
+
+# Known malware always blocks. It is not listed here because it cannot be configured and
+# cannot be excepted.
+
+# Explicitly forbidden, whatever anything else says. Exact versions, permanent, absolute.
+# There is no `expires` field on a denial, so an expiring one cannot be written.
 denials:
   - purl: "pkg:npm/chalk@5.6.1"
     reason: "compromised release, Sept 2025"
   - purl: "pkg:pypi/ctx@0.1.2"
-    reason: "credential exfiltration, confirmed"
+    reason: "credential exfiltration, May 2022"
 
-floor:
-  npm:
-    known_malware: block
-    provenance_required: true
-  pypi:
-    known_malware: block
-    install_scripts: quarantine
-
-defaults:
-  known_malware: block
-  cooldown: { action: quarantine, days: 7 }
-  install_scripts: warn
-  provenance_required: false
-
-ecosystems:
-  npm:
-    install_scripts:
-      action: allow
-      loosens_global: true
-      reason: "node-gyp builds until we vendor prebuilts"
-      expires: "2026-11-30"
-  cargo:
-    cooldown: { action: block, days: 14 }
-
+# Exceptions. Every entry needs a reason, and either an expiry within 90 days or an
+# explicit `permanent: true`. An entry may only loosen: a setting that should be stricter
+# for everyone belongs above, and one that should be stricter for a single package belongs
+# in `denials`.
 packages:
+  # Our own packages, published by our own CI, do not need to wait.
   - match: { ecosystem: npm, name: "@mycompany/*" }
-    set: { cooldown: { days: 0 } }
+    set: { cooldown_days: 0 }
     reason: "internal, published by our CI"
     permanent: true
     added_by: alice
 
-  - match: { ecosystem: npm, purl: "pkg:npm/chalk@5.6.2" }
-    set: { cooldown: { days: 0 } }
-    reason: "reviewed by security, fixes GHSA-xxxx"
-    expires: "2026-10-15"
+  # One advisory, ignored for one package. Narrower than raising `max_cvss`, which would
+  # apply to every advisory this package carries and every one it acquires later.
+  - match: { ecosystem: npm, purl: "pkg:npm/legacy-thing@2.1.0" }
+    set: { cve_ids: ["CVE-2024-1234"] }
+    reason: "not reachable from our call paths, reviewed by security"
+    expires: "2026-11-30"
     added_by: alice
 
+  # A package whose build steps are the reason to install it.
   - match: { ecosystem: pypi, name: "torch", has_install_scripts: true }
-    set: { install_scripts: allow, cooldown: { action: warn, days: 3 } }
+    set: { install_scripts: allow }
     reason: "vendored CUDA build steps, reviewed"
     expires: "2026-11-01"
     added_by: bob

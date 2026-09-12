@@ -7,7 +7,7 @@
 //!
 //! # Why a direction has to be declared
 //!
-//! For an action the order is given: `allow < warn < quarantine < block`. For a number it
+//! For an action the order is given: `allow < quarantine < block`. For a number it
 //! is not. A higher `cooldown.days` is stricter and a higher `max_cvss` is looser, and
 //! nothing about the value says which. So the direction is declared per parameter, and
 //! getting one backwards fires warnings in exactly the wrong direction, which is worse
@@ -100,7 +100,7 @@ impl Strictness {
 }
 
 impl Action {
-    /// Position in §5.5's lattice, weakest first.
+    /// Position in the lattice, weakest first.
     ///
     /// Given explicitly rather than taken from the declaration order, so reordering the
     /// variants cannot silently reverse the lattice. `ordering_is_the_lattice` proves the
@@ -108,9 +108,8 @@ impl Action {
     pub fn strength(self) -> u8 {
         match self {
             Self::Allow => 0,
-            Self::Warn => 1,
-            Self::Quarantine => 2,
-            Self::Block => 3,
+            Self::Quarantine => 1,
+            Self::Block => 2,
         }
     }
 
@@ -172,12 +171,7 @@ pub fn direction_of(parameter: &str) -> Option<Direction> {
 mod proofs {
     use super::*;
 
-    const ACTIONS: [Action; 4] = [
-        Action::Allow,
-        Action::Warn,
-        Action::Quarantine,
-        Action::Block,
-    ];
+    const ACTIONS: [Action; 3] = [Action::Allow, Action::Quarantine, Action::Block];
 
     const STRICTNESSES: [Strictness; 6] = [
         Strictness::Stricter,
@@ -386,31 +380,26 @@ mod proofs {
 mod tests {
     use super::*;
 
-    const ACTIONS: [Action; 4] = [
-        Action::Allow,
-        Action::Warn,
-        Action::Quarantine,
-        Action::Block,
-    ];
+    const ACTIONS: [Action; 3] = [Action::Allow, Action::Quarantine, Action::Block];
 
     #[test]
-    fn the_lattice_runs_allow_warn_quarantine_block() {
+    fn the_lattice_runs_allow_quarantine_block() {
         let strengths: Vec<u8> = ACTIONS.iter().map(|a| a.strength()).collect();
-        assert_eq!(strengths, vec![0, 1, 2, 3]);
+        assert_eq!(strengths, vec![0, 1, 2]);
     }
 
     #[test]
     fn moving_down_the_lattice_is_loosening() {
         assert_eq!(
-            Action::Warn.strictness_against(Action::Block),
+            Action::Quarantine.strictness_against(Action::Block),
             Strictness::Looser
         );
         assert_eq!(
-            Action::Block.strictness_against(Action::Warn),
+            Action::Block.strictness_against(Action::Quarantine),
             Strictness::Stricter
         );
         assert_eq!(
-            Action::Warn.strictness_against(Action::Warn),
+            Action::Quarantine.strictness_against(Action::Quarantine),
             Strictness::Same
         );
     }
@@ -419,7 +408,7 @@ mod tests {
     /// by `warn/30d` is looser in action and stricter in cooldown.
     #[test]
     fn tighter_in_one_dimension_and_looser_in_another_is_incomparable() {
-        let action = Action::Warn.strictness_against(Action::Block);
+        let action = Action::Quarantine.strictness_against(Action::Block);
         let days = Direction::HigherIsStricter.strictness(30, 3);
         assert_eq!(action, Strictness::Looser);
         assert_eq!(days, Strictness::Stricter);

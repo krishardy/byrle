@@ -1,9 +1,0 @@
-== npm
--- in force
-   known_malware       -
-   cooldown            action=quarantine days=7
-   install_scripts     warn
-   provenance_required -
--- overrides
-   (none: this ecosystem has no block)
-
