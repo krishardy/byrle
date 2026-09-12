@@ -1276,9 +1276,8 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             it goes last.
 - [ ] `[!]` Advisory stream interface (fetch / mirror / refresh / normalize). What a
       stream may *say* is built (`MatchStream`, `EnrichStream`, `MalwareStream` in
-      `src/intel.rs`). Fetch, mirror and refresh need the storage decision (
-      Postgres only, raw sqlx for bulk refresh, ORM undecided) and its dependency
-      review.
+      `src/intel.rs`). Fetch, mirror and refresh need the storage decision (Postgres only,
+      raw sqlx for bulk refresh, ORM undecided) and its dependency review.
 - [x] `[!]` Per-ecosystem capability matrix: `match` / `enrich` / `malware` (`src/intel.rs`,
       `Capabilities::grant` / `has` / `providers`). A grant is per stream per ecosystem, so
       NVD can hold `match` for Maven and only `enrich` for npm.
