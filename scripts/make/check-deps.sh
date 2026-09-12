@@ -7,9 +7,15 @@
 # a target that is red every week stops being read. Set CHECK_DEPS_STRICT=1 to fail on
 # outdated too, which is the right setting for a release gate.
 #
-# Both the main crate and the committed config-format spike are checked. The spike is
-# real committed code that pulls four YAML parsers, so it is exactly where a vulnerable
-# dependency would otherwise sit unnoticed outside the workspace.
+# Both the main crate and the committed config-format spike are audited for
+# vulnerabilities. The spike is real committed code that pulls four YAML parsers, so it is
+# exactly where a vulnerable dependency would otherwise sit unnoticed outside the
+# workspace.
+#
+# Only the main crate is checked for freshness. The spike's Cargo.lock is the record of
+# what the config-format spike actually tested, and bumping it to silence a report would
+# replace that record with a claim about versions nobody ran. A vulnerability in it still
+# has to be known, which is why the two halves treat it differently.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -106,18 +112,19 @@ if ! cargo outdated --version >/dev/null 2>&1; then
     echo "Skipping the outdated check; the vulnerability check above still applies."
     [[ "${CHECK_DEPS_STRICT:-0}" == "1" ]] && failed=1
 else
-    for manifest in "${manifests[@]}"; do
-        printf -- '--- %s\n' "${manifest#"$repo_root"/}"
-        # --root-deps-only: what we chose, not what our dependencies chose. Transitive
-        # churn is not actionable here, and a vulnerable transitive is the audit's job.
-        if ! cargo outdated --manifest-path "$manifest" --root-deps-only --exit-code 1; then
-            if [[ "${CHECK_DEPS_STRICT:-0}" == "1" ]]; then
-                failed=1
-            else
-                echo "    (outdated, not failing; set CHECK_DEPS_STRICT=1 to enforce)"
-            fi
+    printf -- '--- %s\n' "Cargo.toml"
+    # --root-deps-only: what we chose, not what our dependencies chose. Transitive churn
+    # is not actionable here, and a vulnerable transitive is the audit's job.
+    if ! cargo outdated --manifest-path "$repo_root/Cargo.toml" --root-deps-only --exit-code 1; then
+        if [[ "${CHECK_DEPS_STRICT:-0}" == "1" ]]; then
+            failed=1
+        else
+            echo "    (outdated, not failing; set CHECK_DEPS_STRICT=1 to enforce)"
         fi
-    done
+    fi
+    echo "--- spikes/config-format/Cargo.toml"
+    echo "    not checked for freshness: its lock is the record of what the spike ran."
+    echo "    It is still audited for vulnerabilities above."
 fi
 
 note "result"
