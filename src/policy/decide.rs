@@ -1,0 +1,777 @@
+//! Judging one package against a policy.
+//!
+//! Every check runs. Each appends one result to a decision vector, and the disposition is
+//! the strongest action in it. See `docs/engineering_decisions/policy-tier-resolution.md`
+//! for the flow chart this implements.
+//!
+//! # Why not stop at the first failure
+//!
+//! The outcome would be identical: every check must pass for a package to be delivered,
+//! so the decision is a plain conjunction. What changes is what is known when the answer
+//! is given. A package both too young and carrying a known-exploited vulnerability
+//! reports both, rather than only the reason that lapses on its own, which would send an
+//! operator to grant an age exception and find it still refused.
+//!
+//! The cost is that a check runs after one has already failed. None of them costs
+//! anything worth deferring for: they read fields off a struct. Stage 4's expensive
+//! analysis is the exception and short-circuits in front of this.
+//!
+//! # Facts come from somewhere else
+//!
+//! This evaluates a policy against facts, and does not gather them. `Facts` is what the
+//! intel layer and the packument between them have to supply, written down as a type so
+//! the engine can be built and tested before either exists.
+
+use super::merge::{self, Rule};
+use super::selector::Canonical;
+use super::{Action, Policy};
+use jiff::civil::Date;
+
+/// What the policy is asked about one package.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Facts {
+    /// As the policy file spells it, not [`crate::identity::Ecosystem`]: a policy may
+    /// name an ecosystem no adapter exists for.
+    pub ecosystem: String,
+    /// The name the registry uses, scope included.
+    pub name: String,
+    pub version: String,
+    /// When this version was published. `None` when the registry did not say, which is
+    /// not the same as "old enough".
+    pub published: Option<Date>,
+    pub known_malware: bool,
+    /// Whether any advisory against this version is in a known-exploited catalogue.
+    pub kev: bool,
+    /// Advisories against this version, by id and CVSS score.
+    pub advisories: Vec<Advisory>,
+    pub has_install_scripts: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Advisory {
+    pub id: String,
+    pub cvss: f64,
+}
+
+/// One check this build performs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Check {
+    Denials,
+    KnownMalware,
+    CooldownDays,
+    Kev,
+    MaxCvss,
+    InstallScripts,
+}
+
+impl Check {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Denials => "denials",
+            Self::KnownMalware => "known_malware",
+            Self::CooldownDays => "cooldown_days",
+            Self::Kev => "kev",
+            Self::MaxCvss => "max_cvss",
+            Self::InstallScripts => "install_scripts",
+        }
+    }
+
+    /// Every check, in the order the flow chart draws them. One list, so a check added to
+    /// the engine and not here is a compile error rather than one silently never run.
+    pub const ALL: [Check; 6] = [
+        Self::Denials,
+        Self::KnownMalware,
+        Self::CooldownDays,
+        Self::Kev,
+        Self::MaxCvss,
+        Self::InstallScripts,
+    ];
+
+    /// Whether an exception can excuse this check.
+    ///
+    /// Fixed here rather than configured. A denial and known malware have no exception
+    /// branch in the flow chart, which is what makes them the two an operator cannot
+    /// write their way past.
+    pub fn exceptable(self) -> bool {
+        !matches!(self, Self::Denials | Self::KnownMalware)
+    }
+}
+
+/// What one check decided.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Outcome {
+    /// The check had nothing against this package.
+    Passed,
+    /// It did, and this is what it contributes.
+    Failed(Action),
+    /// It did, and an exception excused it. Carries the entry, so an audit trail can say
+    /// which one and a review can find the ones doing work.
+    Excepted { entry: usize, action: Action },
+    /// The check has no meaning for this ecosystem. Not the same as `Passed`: reporting
+    /// it as one would claim a check ran that never could.
+    NotApplicable,
+}
+
+impl Outcome {
+    /// What this contributes to the decision. Three of the four contribute `allow`.
+    pub fn action(&self) -> Action {
+        match self {
+            Self::Failed(action) => *action,
+            Self::Passed | Self::Excepted { .. } | Self::NotApplicable => Action::Allow,
+        }
+    }
+
+    /// Whether the check found something, whatever was then done about it.
+    pub fn found_something(&self) -> bool {
+        matches!(self, Self::Failed(_) | Self::Excepted { .. })
+    }
+}
+
+/// One check and what it decided.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Result {
+    pub check: Check,
+    pub outcome: Outcome,
+}
+
+/// Every check, and the disposition taken from them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Decision {
+    pub results: Vec<Result>,
+}
+
+impl Decision {
+    /// The strongest action in the vector.
+    ///
+    /// `Action::strength` is the lattice order, proved. Under a short circuit no two
+    /// actions were ever combined and the lattice did no work.
+    pub fn action(&self) -> Action {
+        self.results
+            .iter()
+            .map(|r| r.outcome.action())
+            .max_by_key(|a| a.strength())
+            .unwrap_or(Action::Allow)
+    }
+
+    /// Whether the package is delivered.
+    pub fn delivered(&self) -> bool {
+        self.action() == Action::Allow
+    }
+
+    /// The checks that decided against the package, strongest first. What `explain` leads
+    /// with and what a refusal says.
+    pub fn reasons(&self) -> Vec<&Result> {
+        let mut reasons: Vec<&Result> = self
+            .results
+            .iter()
+            .filter(|r| r.outcome.action() != Action::Allow)
+            .collect();
+        reasons.sort_by_key(|r| std::cmp::Reverse(r.outcome.action().strength()));
+        reasons
+    }
+
+    /// The exceptions that did work. An entry that never appears here is doing none.
+    pub fn exceptions_used(&self) -> Vec<usize> {
+        let mut used: Vec<usize> = self
+            .results
+            .iter()
+            .filter_map(|r| match r.outcome {
+                Outcome::Excepted { entry, .. } => Some(entry),
+                _ => None,
+            })
+            .collect();
+        used.sort_unstable();
+        used.dedup();
+        used
+    }
+}
+
+/// Judge one package.
+///
+/// `as_of` decides both whether a package is old enough and whether an exception has
+/// lapsed, and is an argument rather than the clock so `policy diff --as-of` can ask what
+/// a policy says on another day.
+pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
+    let selectors = policy.selectors();
+    let entry = most_specific_match(policy, &selectors, facts, as_of);
+
+    let results = Check::ALL
+        .iter()
+        .map(|&check| Result {
+            check,
+            outcome: run(policy, facts, check, entry, as_of),
+        })
+        .collect();
+
+    Decision { results }
+}
+
+/// The exception that applies, if any.
+///
+/// Most specific wins, by strict subset containment. Overlapping entries that cannot be
+/// ordered are refused at load, so whatever matches here forms a chain and the narrowest
+/// is unique.
+///
+/// A lapsed entry does not match at all, which is what makes an expiry do anything.
+fn most_specific_match(
+    policy: &Policy,
+    selectors: &[Canonical],
+    facts: &Facts,
+    as_of: Date,
+) -> Option<usize> {
+    let mut winner: Option<usize> = None;
+    for (i, selector) in selectors.iter().enumerate() {
+        let entry = &policy.packages[i];
+        if entry.expires.is_some_and(|e| e.has_passed(as_of)) {
+            continue;
+        }
+        if !selector.matches(
+            &facts.ecosystem,
+            &facts.name,
+            &facts.version,
+            facts.has_install_scripts,
+        ) {
+            continue;
+        }
+        winner = match winner {
+            None => Some(i),
+            Some(current) if selector.strictly_contained_by(&selectors[current]) => Some(i),
+            Some(current) => Some(current),
+        };
+    }
+    winner
+}
+
+/// Run one check.
+fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of: Date) -> Outcome {
+    let set = entry.map(|i| &policy.packages[i].set);
+
+    match check {
+        // No exception branch: a denial is absolute.
+        Check::Denials => {
+            let denied = policy.denials.iter().any(|d| {
+                d.purl == format!("pkg:{}/{}@{}", facts.ecosystem, facts.name, facts.version)
+            });
+            if denied {
+                Outcome::Failed(Action::Block)
+            } else {
+                Outcome::Passed
+            }
+        }
+
+        // No exception branch either: behaviour rather than policy.
+        Check::KnownMalware => {
+            if facts.known_malware {
+                Outcome::Failed(Action::Block)
+            } else {
+                Outcome::Passed
+            }
+        }
+
+        // Quarantine, not block: it lapses as the package ages. A package whose
+        // publication date is unknown is treated as too young, because "we do not know"
+        // is not "old enough".
+        Check::CooldownDays => {
+            let required = set
+                .and_then(|s| s.cooldown_days)
+                .unwrap_or(policy.cooldown_days);
+            let old_enough = facts.published.is_some_and(|published| {
+                // A date so far out it cannot be represented is not a date this package
+                // will ever reach, so it is not old enough.
+                published
+                    .checked_add(jiff::Span::new().days(i64::from(required)))
+                    .is_ok_and(|ready| ready <= as_of)
+            });
+            if old_enough {
+                Outcome::Passed
+            } else {
+                // Always `Failed`, never `Excepted`, even when an exception shortened the
+                // wait: the exception applied and the package is still too young, so it
+                // is not what let anything through.
+                Outcome::Failed(Action::Quarantine)
+            }
+        }
+
+        Check::Kev => on_off(facts.kev, policy.kev, set.and_then(|s| s.kev), entry),
+
+        // Advisories the exception names are ignored; the rest are compared against the
+        // threshold. Narrower than raising the threshold, which would apply to every
+        // advisory this package acquires later.
+        Check::MaxCvss => {
+            let ignored = set.map(|s| s.cve_ids.as_slice()).unwrap_or(&[]);
+            let worst = facts
+                .advisories
+                .iter()
+                .filter(|a| !ignored.iter().any(|id| id == &a.id))
+                .map(|a| a.cvss)
+                .fold(f64::NEG_INFINITY, f64::max);
+            if worst <= policy.max_cvss {
+                // Something was ignored and nothing is left over the threshold, so the
+                // exception is what saved it.
+                let saved = !ignored.is_empty()
+                    && facts
+                        .advisories
+                        .iter()
+                        .any(|a| ignored.iter().any(|id| id == &a.id) && a.cvss > policy.max_cvss);
+                match (saved, entry) {
+                    (true, Some(entry)) => Outcome::Excepted {
+                        entry,
+                        action: Action::Block,
+                    },
+                    _ => Outcome::Passed,
+                }
+            } else {
+                Outcome::Failed(Action::Block)
+            }
+        }
+
+        Check::InstallScripts => {
+            if !merge::applies(&facts.ecosystem, Rule::InstallScripts) {
+                return Outcome::NotApplicable;
+            }
+            on_off(
+                facts.has_install_scripts,
+                policy.install_scripts,
+                set.and_then(|s| s.install_scripts),
+                entry,
+            )
+        }
+    }
+}
+
+/// A check that is on or off, with an exception that can turn it off for one package.
+fn on_off(
+    found: bool,
+    setting: Action,
+    exception: Option<Action>,
+    entry: Option<usize>,
+) -> Outcome {
+    if !found {
+        return Outcome::Passed;
+    }
+    match (exception, entry) {
+        // The exception turned the check off, and the check had something to say, so the
+        // exception is what let this package through.
+        (Some(Action::Allow), Some(entry)) => Outcome::Excepted {
+            entry,
+            action: setting,
+        },
+        _ if setting == Action::Allow => Outcome::Passed,
+        _ => Outcome::Failed(setting),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jiff::civil::date;
+
+    const TODAY: Date = date(2026, 9, 12);
+
+    fn policy(body: &str) -> Policy {
+        Policy::parse(&format!("version: 1\n{body}")).expect("fixture should parse")
+    }
+
+    /// A package nothing has anything against.
+    fn clean() -> Facts {
+        Facts {
+            ecosystem: "npm".to_owned(),
+            name: "lodash".to_owned(),
+            version: "4.17.21".to_owned(),
+            published: Some(date(2026, 1, 1)),
+            known_malware: false,
+            kev: false,
+            advisories: Vec::new(),
+            has_install_scripts: false,
+        }
+    }
+
+    fn outcome(d: &Decision, check: Check) -> &Outcome {
+        &d.results
+            .iter()
+            .find(|r| r.check == check)
+            .expect("every check is in the vector")
+            .outcome
+    }
+
+    #[test]
+    fn a_package_nothing_objects_to_is_delivered() {
+        let d = decide(&policy(""), &clean(), TODAY);
+        assert!(d.delivered());
+        assert_eq!(d.action(), Action::Allow);
+        assert!(d.reasons().is_empty());
+        assert!(d.results.iter().all(|r| r.outcome == Outcome::Passed));
+    }
+
+    /// Every check appears in the vector, whatever the answer. A check that ran and found
+    /// nothing is not the same as one that never ran.
+    #[test]
+    fn every_check_is_in_the_vector_every_time() {
+        let d = decide(&policy(""), &clean(), TODAY);
+        assert_eq!(d.results.len(), Check::ALL.len());
+        for check in Check::ALL {
+            assert!(d.results.iter().any(|r| r.check == check), "{check:?}");
+        }
+    }
+
+    /// The point of the vector: a package failing several checks reports all of them, not
+    /// the first. Under a short circuit this would say only "too young", the reason that
+    /// lapses on its own, and an operator granting the age exception would find it still
+    /// refused for a reason they only then see.
+    #[test]
+    fn a_package_failing_several_checks_reports_all_of_them() {
+        let facts = Facts {
+            published: Some(date(2026, 9, 11)),
+            kev: true,
+            has_install_scripts: true,
+            ..clean()
+        };
+        let d = decide(&policy(""), &facts, TODAY);
+
+        assert_eq!(
+            *outcome(&d, Check::CooldownDays),
+            Outcome::Failed(Action::Quarantine)
+        );
+        assert_eq!(*outcome(&d, Check::Kev), Outcome::Failed(Action::Block));
+        assert_eq!(
+            *outcome(&d, Check::InstallScripts),
+            Outcome::Failed(Action::Block)
+        );
+        assert_eq!(d.reasons().len(), 3);
+    }
+
+    /// The disposition is the strongest action, so one `block` among quarantines decides
+    /// it. Reasons come back strongest first, because the one that will not lapse is the
+    /// one to act on.
+    #[test]
+    fn the_strongest_action_decides_and_leads_the_reasons() {
+        let facts = Facts {
+            published: Some(date(2026, 9, 11)),
+            kev: true,
+            ..clean()
+        };
+        let d = decide(&policy(""), &facts, TODAY);
+        assert_eq!(d.action(), Action::Block);
+        assert_eq!(d.reasons()[0].check, Check::Kev);
+    }
+
+    /// A package refused only for being too young is quarantined, which lapses by itself.
+    /// That is the distinction the chart's two dispositions lose.
+    #[test]
+    fn too_young_alone_is_a_quarantine_and_not_a_block() {
+        let facts = Facts {
+            published: Some(date(2026, 9, 11)),
+            ..clean()
+        };
+        let d = decide(&policy(""), &facts, TODAY);
+        assert_eq!(d.action(), Action::Quarantine);
+        assert!(!d.delivered());
+
+        // Five days later the same package and the same policy deliver it.
+        let later = decide(&policy(""), &facts, date(2026, 9, 18));
+        assert!(later.delivered());
+    }
+
+    /// The day the wait is up, not the day after.
+    #[test]
+    fn a_package_is_old_enough_on_the_day_the_wait_ends() {
+        let facts = Facts {
+            published: Some(date(2026, 9, 5)),
+            ..clean()
+        };
+        assert!(decide(&policy(""), &facts, date(2026, 9, 12)).delivered());
+        assert!(!decide(&policy(""), &facts, date(2026, 9, 11)).delivered());
+    }
+
+    /// "We do not know when this was published" is not "old enough".
+    #[test]
+    fn a_package_with_no_publication_date_is_not_old_enough() {
+        let facts = Facts {
+            published: None,
+            ..clean()
+        };
+        assert_eq!(
+            *outcome(&decide(&policy(""), &facts, TODAY), Check::CooldownDays),
+            Outcome::Failed(Action::Quarantine)
+        );
+    }
+
+    #[test]
+    fn a_denied_package_is_blocked() {
+        let p = policy("denials:\n  - purl: \"pkg:npm/lodash@4.17.21\"\n    reason: compromised\n");
+        let d = decide(&p, &clean(), TODAY);
+        assert_eq!(*outcome(&d, Check::Denials), Outcome::Failed(Action::Block));
+        assert_eq!(d.action(), Action::Block);
+
+        // A different version of the same package is not denied.
+        let other = Facts {
+            version: "4.17.20".to_owned(),
+            ..clean()
+        };
+        assert!(decide(&p, &other, TODAY).delivered());
+    }
+
+    #[test]
+    fn known_malware_is_blocked() {
+        let facts = Facts {
+            known_malware: true,
+            ..clean()
+        };
+        let d = decide(&policy(""), &facts, TODAY);
+        assert_eq!(
+            *outcome(&d, Check::KnownMalware),
+            Outcome::Failed(Action::Block)
+        );
+    }
+
+    /// The two checks an operator cannot write their way past.
+    #[test]
+    fn a_denial_and_known_malware_cannot_be_excepted() {
+        assert!(!Check::Denials.exceptable());
+        assert!(!Check::KnownMalware.exceptable());
+        for check in Check::ALL {
+            if !matches!(check, Check::Denials | Check::KnownMalware) {
+                assert!(check.exceptable(), "{check:?}");
+            }
+        }
+
+        // An exception matching the package changes neither.
+        let p = policy(
+            "denials:\n  - purl: \"pkg:npm/lodash@4.17.21\"\n    reason: compromised\npackages:\n  \
+             - match: { ecosystem: npm, name: lodash }\n    set: { kev: allow }\n    \
+             reason: r\n    permanent: true\n",
+        );
+        let facts = Facts {
+            known_malware: true,
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+        assert_eq!(*outcome(&d, Check::Denials), Outcome::Failed(Action::Block));
+        assert_eq!(
+            *outcome(&d, Check::KnownMalware),
+            Outcome::Failed(Action::Block)
+        );
+    }
+
+    /// An exception that let a package through is recorded as `Excepted`, not `Passed`.
+    /// It is the one carrying operational risk, and it is what an expiry review has to
+    /// find.
+    #[test]
+    fn an_exception_that_did_work_is_recorded_as_having_done_it() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { install_scripts: allow }\n    reason: reviewed\n    permanent: true\n",
+        );
+        let facts = Facts {
+            has_install_scripts: true,
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+
+        assert_eq!(
+            *outcome(&d, Check::InstallScripts),
+            Outcome::Excepted {
+                entry: 0,
+                action: Action::Block
+            }
+        );
+        assert!(d.delivered());
+        assert_eq!(d.exceptions_used(), vec![0]);
+    }
+
+    /// An exception on a check that found nothing did no work, so it is not recorded as
+    /// having done any. This is how a dead exception becomes visible.
+    #[test]
+    fn an_exception_the_package_never_needed_is_not_recorded_as_used() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { install_scripts: allow }\n    reason: reviewed\n    permanent: true\n",
+        );
+        let d = decide(&p, &clean(), TODAY);
+        assert_eq!(*outcome(&d, Check::InstallScripts), Outcome::Passed);
+        assert!(d.exceptions_used().is_empty());
+    }
+
+    /// An expiry that has passed means the entry does not apply at all.
+    #[test]
+    fn a_lapsed_exception_stops_excusing_anything() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { install_scripts: allow }\n    reason: reviewed\n    \
+             expires: \"2026-09-12\"\n",
+        );
+        let facts = Facts {
+            has_install_scripts: true,
+            ..clean()
+        };
+        assert!(
+            decide(&p, &facts, TODAY).delivered(),
+            "in force on the day it names"
+        );
+        assert!(
+            !decide(&p, &facts, date(2026, 9, 13)).delivered(),
+            "and not after"
+        );
+    }
+
+    /// Ignoring a named advisory is narrower than raising the threshold, which would apply
+    /// to every advisory this package acquires later.
+    #[test]
+    fn an_advisory_may_be_ignored_by_id() {
+        let p = policy(
+            "max_cvss: 6.9\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { cve_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             permanent: true\n",
+        );
+        let facts = Facts {
+            advisories: vec![Advisory {
+                id: "CVE-2024-1234".to_owned(),
+                cvss: 9.8,
+            }],
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+        assert_eq!(
+            *outcome(&d, Check::MaxCvss),
+            Outcome::Excepted {
+                entry: 0,
+                action: Action::Block
+            }
+        );
+        assert!(d.delivered());
+
+        // A second advisory the exception does not name is still over the threshold.
+        let more = Facts {
+            advisories: vec![
+                Advisory {
+                    id: "CVE-2024-1234".to_owned(),
+                    cvss: 9.8,
+                },
+                Advisory {
+                    id: "CVE-2025-9999".to_owned(),
+                    cvss: 7.5,
+                },
+            ],
+            ..clean()
+        };
+        assert_eq!(
+            *outcome(&decide(&p, &more, TODAY), Check::MaxCvss),
+            Outcome::Failed(Action::Block)
+        );
+    }
+
+    /// At or below the threshold is allowed, above is not.
+    #[test]
+    fn the_cvss_threshold_allows_what_is_at_or_below_it() {
+        let p = policy("max_cvss: 6.9\n");
+        for (cvss, delivered) in [(6.8, true), (6.9, true), (7.0, false)] {
+            let facts = Facts {
+                advisories: vec![Advisory {
+                    id: "CVE-2024-1".to_owned(),
+                    cvss,
+                }],
+                ..clean()
+            };
+            assert_eq!(
+                decide(&p, &facts, TODAY).delivered(),
+                delivered,
+                "cvss {cvss}"
+            );
+        }
+    }
+
+    /// Go has no install step, so the check reports not-applicable rather than a
+    /// violation. Three of the four outcomes contribute `allow` and are distinguished
+    /// anyway.
+    #[test]
+    fn a_check_with_no_meaning_for_an_ecosystem_is_not_applicable() {
+        let facts = Facts {
+            ecosystem: "golang".to_owned(),
+            has_install_scripts: true,
+            ..clean()
+        };
+        let d = decide(&policy(""), &facts, TODAY);
+        assert_eq!(*outcome(&d, Check::InstallScripts), Outcome::NotApplicable);
+        assert!(d.delivered());
+        assert_ne!(*outcome(&d, Check::InstallScripts), Outcome::Passed);
+    }
+
+    /// Turning a check off globally is not the same as excepting one package: nothing was
+    /// excused, so nothing is recorded as having been.
+    #[test]
+    fn a_check_turned_off_globally_passes_rather_than_excepts() {
+        let p = policy("install_scripts: allow\n");
+        let facts = Facts {
+            has_install_scripts: true,
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+        assert_eq!(*outcome(&d, Check::InstallScripts), Outcome::Passed);
+        assert!(d.exceptions_used().is_empty());
+    }
+
+    /// Most specific wins. Overlapping entries that cannot be ordered are refused at
+    /// load, so whatever matches forms a chain and the narrowest is unique.
+    ///
+    /// The narrow entry is written **first** on purpose. With it last, "the narrowest
+    /// wins" and "the last one wins" give the same answer and the test proves neither.
+    #[test]
+    fn the_most_specific_matching_exception_is_the_one_that_applies() {
+        let narrow_first = policy(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { cooldown_days: 0 }\n    reason: narrow\n    permanent: true\n  \
+             - match: { ecosystem: npm, name: \"lo*\" }\n    set: { cooldown_days: 30 }\n    \
+             reason: wide\n    permanent: true\n",
+        );
+        let facts = Facts {
+            published: Some(date(2026, 9, 11)),
+            ..clean()
+        };
+        assert!(
+            decide(&narrow_first, &facts, TODAY).delivered(),
+            "the narrow entry waives the wait, and it is not the last one written"
+        );
+
+        // The same two entries the other way round give the same answer, which is what
+        // makes the result about specificity rather than about file order.
+        let narrow_last = policy(
+            "packages:\n  - match: { ecosystem: npm, name: \"lo*\" }\n    \
+             set: { cooldown_days: 30 }\n    reason: wide\n    permanent: true\n  \
+             - match: { ecosystem: npm, name: lodash }\n    set: { cooldown_days: 0 }\n    \
+             reason: narrow\n    permanent: true\n",
+        );
+        assert!(decide(&narrow_last, &facts, TODAY).delivered());
+
+        // And a package the narrow entry does not name gets the wide one's longer wait.
+        let other = Facts {
+            name: "lolcat".to_owned(),
+            published: Some(date(2026, 9, 11)),
+            ..clean()
+        };
+        assert!(!decide(&narrow_first, &other, TODAY).delivered());
+    }
+
+    #[test]
+    fn an_exception_for_another_package_does_not_apply() {
+        let p = policy(
+            "packages:\n  - match: { ecosystem: npm, name: express }\n    \
+             set: { install_scripts: allow }\n    reason: r\n    permanent: true\n",
+        );
+        let facts = Facts {
+            has_install_scripts: true,
+            ..clean()
+        };
+        assert_eq!(
+            *outcome(&decide(&p, &facts, TODAY), Check::InstallScripts),
+            Outcome::Failed(Action::Block)
+        );
+    }
+
+    #[test]
+    fn every_check_has_a_name() {
+        for check in Check::ALL {
+            assert!(!check.as_str().is_empty());
+        }
+        assert_eq!(Check::ALL.len(), 6);
+    }
+}

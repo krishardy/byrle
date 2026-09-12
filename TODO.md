@@ -1076,11 +1076,9 @@ the record of why it went survives the deletion.
 - [x] `[!]` `version` field; refuse to start on unrecognized version. Read by a probe
       before the body is parsed, so a version 2 document is refused by its version rather
       than by whichever version 1 key it happens to be missing.
-- [ ] `[!]` Action lattice: `allow < quarantine < block`. Three values, not four: `warn`
-      left when provenance became a recorded attribute rather than an action, and nothing
-      else delivers-with-a-concern. `src/policy/strictness.rs` has the four-value version
-      and its proofs; `Warn` comes out.
-      - [ ] `Action::strength` becomes the **combiner**: the disposition is `max` over the
+- [x] `[!]` Action lattice: `allow < quarantine < block`. Three values, not four: `warn`
+      left when provenance became a recorded attribute rather than an action.
+      - [x] `Action::strength` is the **combiner**: the disposition is `max` over the
             decision vector. Under the old short-circuit design no two actions were ever
             combined, so the lattice did no work.
 - [x] `[!]` Per-parameter monotonicity declarations. One table, `direction_of`, rather
@@ -1097,15 +1095,21 @@ the record of why it went survives the deletion.
       step to ask about, so it reports not-applicable rather than a violation.
       `merge::applies` already computes it and its Go test already covers it; that function
       survives the deletion of the rest of `merge.rs`.
-- [ ] `[!]` **The decision vector.** Every check runs and appends one result; the
-      disposition is taken from the whole vector.
-      - [ ] Four results: `passed`, `failed`, `excepted`, `not_applicable`. Three of the
-            four contribute `allow` and are distinguished anyway, because what an operator
-            needs to know is not what the decision needs.
-      - [ ] `excepted` is not `passed`: it is the one carrying operational risk, it is what
-            an expiry review has to find, and an exception that never reaches it is dead.
-      - [ ] The short circuit survives only in front of Stage 4's expensive analysis. None
-            of the checks here costs anything worth deferring for.
+- [x] `[!]` **The decision vector.** `src/policy/decide.rs`. Every check runs and appends
+      one result; the disposition is the strongest action in the vector.
+      - [x] Four results: `passed`, `failed`, `excepted`, `not_applicable`. Three of the
+            four contribute `allow` and are distinguished anyway.
+      - [x] `excepted` carries the entry that excused the check, so `exceptions_used`
+            names the entries doing work and an entry that never appears is dead.
+      - [x] `reasons()` returns the failing checks strongest first, because the one that
+            will not lapse is the one to act on.
+      - [x] A lapsed exception does not match at all, which is what makes an expiry do
+            something.
+      - [x] Mutation-checked five ways. The most-specific-wins test did not discriminate
+            at first: the narrow entry was written last, so "narrowest wins" and "last
+            wins" gave the same answer. It now asserts both orders and a package the
+            narrow entry does not name.
+      - [ ] The short circuit in front of Stage 4's expensive analysis, when there is any.
 - [ ] An entry that changes nothing is **valid**: it warns at load and `doctor` flags it.
       Almost always a selector that no longer matches what it was written for, but not a
       reason to refuse a policy.
@@ -1178,13 +1182,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             one set through different fields.
 - [x] `[!]` Incomparable overlaps and exact duplicates are load-time errors, and separate
       ones: a duplicate is comparable and still wrong.
-- [ ] `[!]` **An entry that tightens is a load-time error.** The tier may only loosen. This
-      inverts the existing check, which permits a tightening entry and merely asks nothing
-      of it.
-- [ ] `[!]` Loosening measured against the **global settings**, not a merge. Already
-      implemented against the ecosystem merge; the baseline becomes `defaults` directly.
-- [ ] `cve_ids`, the per-CVE exception. A new exception shape: every other one is a
-      boolean about the package.
+- [x] `[!]` **An entry that tightens is a load-time error.** The refusal names where a
+      stricter rule does belong: the global settings, or `denials` for a single package.
+- [x] `[!]` Loosening measured against the **global settings**, not a merge.
+- [x] `cve_ids`, the per-CVE exception. The only exception keyed by something other than
+      the package. Narrower than raising `max_cvss`, which would apply to every advisory
+      the package acquires later.
 - [ ] Range resolution in the normalizer, never in the engine
 - [ ] `explain` shows the decision vector: every check, its result, and for an `excepted`
       one the entry and expiry that excused it
