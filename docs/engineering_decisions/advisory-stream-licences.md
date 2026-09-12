@@ -75,7 +75,9 @@ Two consequences:
 
 - **KEV can never originate a finding.** It cannot be asked "what is wrong with this
   package", only "is this CVE known to be exploited". That is the `enrich` capability in
-  the plan's matrix, the same as NVD, and it should be type-enforced the same way.
+  the plan's matrix, the same as NVD. `src/intel.rs` enforces this: `EnrichStream`
+  returns `Enrichment`, which is a different type from `Finding` with no conversion to it,
+  and is asked about advisory ids rather than about a package.
 - **For npm it reaches 13 CVEs**, out of 1,709 entries and 6,032 npm CVEs. The `kev`
   check is still worth having, because it is an escalation on advisories another stream
   already found and so costs a set lookup, but it should not be built before the two
@@ -91,3 +93,11 @@ Two consequences:
    13 npm CVEs today.
 
 NVD and Aikido stay unimplemented until their terms are read by a person.
+
+## What the capability types are worth today
+
+Nothing yet. Of the three capabilities, `match` and `malware` are what OSV provides, and
+`enrich`, the one the type separation exists to constrain, has no implemented producer:
+NVD and Aikido are unread and KEV is third in the order above. The separation is built now
+because retrofitting it after three streams share a record type is more work than starting
+with two types.
