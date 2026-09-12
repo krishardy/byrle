@@ -2,7 +2,7 @@
 
 - **Status:** Decided Sept 2026, not implemented
 - **Plan reference:** decision #3, [enforcement-tiers](enforcement-tiers.md) tiers 4 and 5
-- **Supersedes:** the name-constrained CA question raised in
+- **Supersedes:** the CA-on-the-proxy question raised in
   [enforcement-tiers](enforcement-tiers.md)
 
 ## Decision
@@ -17,25 +17,20 @@ certificate covers are read from its own SANs rather than configured separately.
 Minting certificates on the fly from a CA key held by the proxy stays available as an
 onramp, and is documented as the less secure option.
 
-## Why this is better than a name-constrained CA
+## Why this is better than a CA on the proxy
 
-The earlier framing was that shipping a CA is risky, so constrain it to the registry
-names. Pre-issued leaves are better on two counts, not one.
+**Nothing on the proxy can sign anything new.** A CA key signs certificates for as long as
+it is valid, for whatever names it is asked for. A leaf key signs nothing. Compromise of
+the proxy yields the ability to impersonate exactly the domains those certificates already
+name, and nothing else.
 
-**Nothing on the proxy can sign anything new.** A name-constrained CA key still signs
-certificates for every name inside the constraint, for as long as it is valid. A leaf key
-signs nothing. Compromise of the proxy yields the ability to impersonate exactly the
-domains those certificates already name.
+**Every client already does ordinary chain validation.** Pre-issued leaves need nothing
+beyond it, so there is no property of the verifier that has to hold for this to work, and
+nothing to test per platform before shipping.
 
-**It does not depend on the verifier honouring name constraints.** OpenSSL and NSS do;
-macOS and Windows have historically been inconsistent, and that was recorded as something
-to verify before shipping a CA. Pre-issued leaves need nothing beyond ordinary chain
-validation, which every client does. The unverified assumption disappears from the
-recommended path.
-
-Name constraints still matter, but only for the minting onramp, which is the right place
-for an assumption that has to be tested: if constraints turn out unreliable on some
-platform, the onramp is less secure as labelled and the recommended path is unaffected.
+Constraining a CA to the registry names is not used here and is not being evaluated. The
+minting onramp therefore holds an unconstrained CA key, which is the plain description of
+what it is and why it is the less secure option.
 
 ## The domains are known, and they are sets
 
