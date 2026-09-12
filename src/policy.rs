@@ -36,6 +36,7 @@
 
 pub mod merge;
 pub mod packages;
+pub mod selector;
 pub mod strictness;
 
 use serde::de::value::{MapAccessDeserializer, StrDeserializer};
@@ -72,6 +73,13 @@ pub enum PolicyError {
     NoFloor { ecosystem: String },
     /// A package rule is both dated and permanent.
     BothDatedAndPermanent { at: String },
+    /// A selector is written in a shape containment cannot be decided on.
+    BadSelector {
+        at: String,
+        source: selector::SelectorError,
+    },
+    /// Two entries cannot be ordered by most-specific-wins.
+    Overlapping(selector::OverlapError),
 }
 
 impl fmt::Display for PolicyError {
@@ -104,6 +112,8 @@ impl fmt::Display for PolicyError {
                 "{at} sets both `expires` and `permanent: true`. They are alternatives: \
                  one says when the entry stops being true, the other says it does not"
             ),
+            Self::BadSelector { at, source } => write!(f, "{at}: {source}"),
+            Self::Overlapping(e) => write!(f, "{e}"),
             Self::IncompleteAcknowledgment { at, missing } => write!(
                 f,
                 "`loosens_global: true` at {at} has no {missing}. An acknowledgment \
@@ -218,7 +228,38 @@ impl Policy {
         policy.check_acknowledgments()?;
         policy.check_floors()?;
         policy.check_package_expiry_shape()?;
+        policy.check_selectors()?;
         Ok(policy)
+    }
+
+    /// Every selector is written in a shape containment can be decided on, and no two
+    /// entries leave most-specific-wins without an answer.
+    ///
+    /// At load, because the request that would expose an unordered pair may be months
+    /// away and the file is in front of the operator now.
+    fn check_selectors(&self) -> Result<(), PolicyError> {
+        let mut canonical = Vec::with_capacity(self.packages.len());
+        for (i, rule) in self.packages.iter().enumerate() {
+            canonical.push(selector::Canonical::of(&rule.selector).map_err(|source| {
+                PolicyError::BadSelector {
+                    at: format!("packages[{i}].match"),
+                    source,
+                }
+            })?);
+        }
+        selector::check_overlaps(&canonical).map_err(PolicyError::Overlapping)
+    }
+
+    /// Every package selector, canonicalised. Parsing has already refused the shapes
+    /// that cannot be canonicalised, so this cannot fail.
+    pub fn selectors(&self) -> Vec<selector::Canonical> {
+        self.packages
+            .iter()
+            .map(|rule| {
+                selector::Canonical::of(&rule.selector)
+                    .expect("a policy that loaded has canonicalisable selectors")
+            })
+            .collect()
     }
 
     /// §5.5: `known_malware: block` is pinned into every floor and cannot be removed.
@@ -1009,6 +1050,68 @@ mod tests {
         let policy = Policy::parse(source).unwrap();
         assert_eq!(policy.denials.len(), 1);
         assert_eq!(policy.denials[0].reason, "malware");
+    }
+
+    /// §5.5 resolves overlapping entries by most-specific-wins. A pair it cannot order
+    /// is refused at load, because the request that would expose it may be months away.
+    #[test]
+    fn two_entries_that_cannot_be_ordered_are_refused_at_load() {
+        let source = "version: 1\nfloor:\n  npm:\n    known_malware: block\npackages:\n  \
+                      - match: { ecosystem: npm, name: \"a*\", has_install_scripts: true }\n    \
+                      set: {}\n    reason: r\n  \
+                      - match: { ecosystem: npm, name: \"ab*\" }\n    set: {}\n    reason: r\n";
+        let error = Policy::parse(source).unwrap_err();
+        assert!(matches!(error, PolicyError::Overlapping(_)));
+        assert!(
+            error.to_string().contains("neither is more specific"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_same_entry_written_twice_is_refused_at_load() {
+        let source = "version: 1\nfloor:\n  npm:\n    known_malware: block\npackages:\n  \
+                      - match: { ecosystem: npm, name: x }\n    set: {}\n    reason: first\n  \
+                      - match: { ecosystem: npm, name: x }\n    set: {}\n    reason: second\n";
+        let error = Policy::parse(source).unwrap_err();
+        assert!(matches!(error, PolicyError::Overlapping(_)));
+        assert!(
+            error.to_string().contains("packages[0]") && error.to_string().contains("packages[1]"),
+            "both entries have to be named: {error}"
+        );
+    }
+
+    /// A chain of strictly narrowing selectors is exactly what most-specific-wins is for.
+    #[test]
+    fn entries_that_narrow_each_other_are_accepted() {
+        let source = "version: 1\nfloor:\n  npm:\n    known_malware: block\npackages:\n  \
+                      - match: { ecosystem: npm, name: \"@mycompany/foo\" }\n    set: {}\n    \
+                      reason: r\n  \
+                      - match: { ecosystem: npm, name: \"@mycompany/*\" }\n    set: {}\n    \
+                      reason: r\n";
+        assert!(Policy::parse(source).is_ok());
+    }
+
+    /// A selector written in a shape containment cannot be decided on is refused, and the
+    /// refusal says which entry and why.
+    #[test]
+    fn a_selector_that_cannot_be_compared_names_its_entry() {
+        let source = "version: 1\nfloor:\n  npm:\n    known_malware: block\npackages:\n  \
+                      - match: { ecosystem: npm, name: \"a*b\" }\n    set: {}\n    reason: r\n";
+        let error = Policy::parse(source).unwrap_err();
+        assert!(matches!(error, PolicyError::BadSelector { .. }));
+        let text = error.to_string();
+        assert!(
+            text.contains("packages[0].match") && text.contains("a*b"),
+            "{text}"
+        );
+    }
+
+    /// The shipped example has three entries in two ecosystems, none of them overlapping.
+    #[test]
+    fn the_shipped_examples_selectors_are_all_orderable() {
+        let policy = Policy::load(Path::new("examples/policy.yaml")).unwrap();
+        assert_eq!(policy.selectors().len(), policy.packages.len());
     }
 
     #[test]
