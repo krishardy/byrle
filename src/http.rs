@@ -101,10 +101,26 @@ fn parse_coding(token: &str) -> (String, bool) {
         let p = p.trim();
         p.strip_prefix("q=")
             .or_else(|| p.strip_prefix("Q="))
-            .map(|q| q.trim().parse::<f32>().is_ok_and(|v| v <= 0.0))
-            .unwrap_or(false)
+            .is_some_and(|q| is_zero_qvalue(q.trim()))
     });
     (coding, acceptable)
+}
+
+/// Whether a q-value means "not acceptable".
+///
+/// RFC 9110 §12.4.2 writes a qvalue as `0` or `0.` followed by up to three digits, so the
+/// zero forms are `0`, `0.`, `0.0`, `0.00` and `0.000`. Matched on the text rather than
+/// parsed as a float: the input is attacker-controlled, comparing against zero is the
+/// only question being asked, and float parsing brings rounding and NaN to a decision
+/// that has neither.
+fn is_zero_qvalue(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix('0') else {
+        return false;
+    };
+    match rest.strip_prefix('.') {
+        Some(decimals) => decimals.len() <= 3 && decimals.bytes().all(|b| b == b'0'),
+        None => rest.is_empty(),
+    }
 }
 
 fn names_coding(header: &str, coding: &str) -> bool {
@@ -402,6 +418,25 @@ mod tests {
         }
     }
 
+    /// RFC 9110 §12.4.2 writes a qvalue as `0` or `0.` and up to three digits.
+    #[test]
+    fn the_zero_qvalue_forms_refuse_a_coding() {
+        for zero in ["q=0", "q=0.", "q=0.0", "q=0.00", "q=0.000", "Q=0"] {
+            assert_eq!(
+                encoding_to_request(Some(&format!("gzip;{zero}"))),
+                RequestedEncoding::Identity,
+                "{zero} refuses gzip"
+            );
+        }
+        for nonzero in ["q=1", "q=0.001", "q=0.5", "q=0.0001", "q=", "q=x"] {
+            assert_eq!(
+                encoding_to_request(Some(&format!("gzip;{nonzero}"))),
+                RequestedEncoding::Gzip,
+                "{nonzero} does not refuse gzip"
+            );
+        }
+    }
+
     /// A wildcard covers gzip unless gzip is named and refused.
     #[test]
     fn a_wildcard_offers_gzip_unless_gzip_is_refused_by_name() {
@@ -500,5 +535,53 @@ mod tests {
                 .to_string()
                 .contains("bad header")
         );
+    }
+}
+
+/// Proofs about the q-value grammar.
+///
+/// [`is_zero_qvalue`] decides whether a client refused a coding, on text the client chose.
+/// It is the smallest piece of [`encoding_to_request`] that makes a decision, and the only
+/// one that allocates nothing, which is what makes it provable rather than sampled.
+///
+/// `encoding_to_request` itself is not proved here. It lowercases each token, and a heap
+/// allocation inside a symbolic loop puts it out of reach: three arbitrary bytes did not
+/// finish in two minutes. The tests cover it instead.
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// The characters the grammar is written in, plus one that is not.
+    const ALPHABET: [u8; 4] = [b'0', b'.', b'1', b'a'];
+
+    /// RFC 9110 §12.4.2 writes a qvalue as `0` or `0.` and up to three digits, so these
+    /// are every string that means "not acceptable".
+    const ZERO_FORMS: [&str; 5] = ["0", "0.", "0.0", "0.00", "0.000"];
+
+    /// Total, and true for exactly the zero forms.
+    ///
+    /// The right hand side is an explicit list rather than a restatement of the
+    /// implementation, so this compares the function against the grammar rather than
+    /// against itself.
+    #[kani::proof]
+    #[kani::unwind(6)]
+    fn is_zero_qvalue_accepts_exactly_the_zero_forms() {
+        let bytes: [u8; 5] = kani::any();
+        for byte in bytes {
+            kani::assume(ALPHABET.contains(&byte));
+        }
+        let len: usize = kani::any();
+        kani::assume(len <= bytes.len());
+
+        // Every byte is ASCII, so this cannot fail.
+        let value = core::str::from_utf8(&bytes[..len]).unwrap();
+
+        assert_eq!(is_zero_qvalue(value), ZERO_FORMS.contains(&value));
+    }
+
+    /// An absent header means identity is acceptable, per RFC 9110 §12.5.3.
+    #[kani::proof]
+    fn an_absent_header_is_identity() {
+        assert!(encoding_to_request(None) == RequestedEncoding::Identity);
     }
 }

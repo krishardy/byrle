@@ -779,6 +779,24 @@ implementations.
       - [x] All five clients pass on this machine under node v25.8.0 with corepack 0.34.7.
       - [x] `make lint` now runs `shellcheck -x`, so the shared helper is checked in the
             context that sources it rather than reported as unreadable.
+- [x] First kani harnesses, so `make verify` passes on merit rather than vacuously.
+      `http::is_zero_qvalue` is total and true for exactly the five zero forms RFC 9110
+      §12.4.2 allows, over every string up to five bytes from `{0 . 1 a}`. Verified in
+      4 seconds.
+      - [x] **What is provable is narrower than it looks.** Kani reasons about
+            allocation-free code over small domains. `classify_path` exhausted 14 GB and
+            was killed; `encoding_to_request` did not finish on three arbitrary bytes in
+            two minutes, because it lowercases each token and a heap allocation inside a
+            symbolic loop does not scale. The allocation-free decision inside it verifies
+            in seconds.
+      - [x] The proof compares the function against an explicit list of the zero forms,
+            not against a restatement of its own implementation.
+      - [x] Writing it replaced `parse::<f32>()` with an explicit grammar check, which is
+            better on its own terms: the input is attacker-controlled, comparing against
+            zero is the only question asked, and float parsing brings rounding and NaN to
+            a decision that has neither.
+      - [ ] Still owed, both Stage 2: the §5.5 action lattice and per-parameter
+            monotonicity.
 - [ ] Self-detection of bypass: a packument served with no artifact request following it
       is the signature of the pnpm behaviour, and would have caught it without anyone
       looking. Noisy, since a client may already hold the artifact or resolve a version it

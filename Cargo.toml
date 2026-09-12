@@ -27,4 +27,4 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # `coverage` is set by cargo-llvm-cov, which `make coverage` runs. Declared so the
 # network- and corpus-dependent tests can be compiled out of a coverage build without
 # tripping the unexpected-cfg lint.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(kani)'] }
