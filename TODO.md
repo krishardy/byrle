@@ -48,11 +48,11 @@ Items that I've added that are not stage-bound.
    outdated too and adds `--deny warnings`, making unmaintained crates disqualifying,
    which is the same standard that ruled out `serde_yml` in plan §5.
    Verified end to end after `make dev-setup`: both halves run. cargo-audit flags
-   RUSTSEC-2026-0249 (see below) and cargo-outdated reports `toml 1.1.5 -> 1.1.6` in the
-   spike crate, reported without failing, as designed.
-   Open question: the spike's `Cargo.lock` is frozen evidence of what the config-format
-   spike actually tested, so updating it to silence that report would damage the record.
-   Decide whether the spike should be exempt from the freshness half.
+   RUSTSEC-2026-0249 (see below).
+   Resolved: the spike is audited for vulnerabilities and not checked for freshness. Its
+   `Cargo.lock` records the versions the config-format spike ran against; bumping it to
+   clear a report would replace that record with versions nobody tested. A vulnerability
+   in it still has to be known, so the audit half keeps it.
 5. [x] Add trufflehog to make sast.
    Done. `make sast` now runs semgrep then trufflehog, aggregating both rather than
    stopping at the first failure. Two scans: the working tree, and git history, because
