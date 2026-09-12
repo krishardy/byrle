@@ -72,8 +72,9 @@ registry-versus-source diffing all cover the publish-to-detection gap that feed-
 tools cannot see into.
 
 **Pluggable advisory streams, from day one.** OSV, GitHub Advisory, OSSF Malicious
-Packages, and Aikido Intel are all free and public. No commercial vendor will aggregate
-every free feed, because each is selling their own. Every stream is mirrored locally, so
+Packages, CISA KEV, and NVD are all free and public, and between them carry 221,548 npm
+malware records. No commercial vendor will aggregate every free feed, because each is
+selling their own. Every stream is mirrored locally, so
 lookups never leak your dependency graph upstream.
 
 **A policy engine you can read.** `waharoa explain` (planned) shows the effective merged

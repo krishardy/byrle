@@ -1256,9 +1256,10 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] **NVD is public domain, 2026-09-13.** It compiles from other sources and
             asserts no licence of its own. What we take from it is CVSS scores, which are
             NIST's own analysis rather than text carried from a source.
-      - [ ] **Aikido not verified.** Its public endpoint returned an empty body to an
-            unauthenticated request. A blank in that table is a stream that cannot be
-            built yet; someone has to read the terms directly. It is now the only blank.
+      - [x] **Aikido Intel requires a commercial account**, 2026-09-13. Its public
+            endpoint returned an empty body because there is no unauthenticated access to
+            have. Deferred to post-v1; see below. Every stream that remains in the plan is
+            now licence-cleared.
 - [x] **Measured what each stream is worth**, which reorders the plan's list.
       - [x] **The npm advisory database is a malware database.** Of 228,951 npm advisories
             in OSV, 221,548 (96.8%) are `MAL-` records and 7,401 are `GHSA-`. So
@@ -1313,8 +1314,6 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `an_osv_finding_and_a_kev_entry_do_not_join_on_the_ids_they_carry`. The alias set
       changes `enriched_by`'s signature, so land it before a second stream is built.
 - [ ] `[!]` GitHub Advisory stream (GraphQL, token auth)
-- [ ] `[!]` Aikido Intel stream — free, public, no account; highest-value non-OSV feed.
-      **Blocked: data licence not verified**, and now the only stream that is.
 - [ ] OSSF Malicious Packages stream (licence-cleared: Apache-2.0) — publishes natively in OSV format, so it reuses
       the OSV normalization path rather than needing its own
 - [ ] Datadog malicious-packages — **check OSSF overlap first**; Datadog contributes
@@ -1485,3 +1484,8 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 - [ ] Rego escape hatch for complex org policies
 - [ ] Install-time sandboxing
 - [ ] Hosted intel service (only if there is clear demand and it stays optional)
+- [ ] **Aikido Intel stream.** Requires a commercial account, so it is not a free public
+      feed and cannot be a dependency of the launch. Revisit after launch, when there is a
+      running project to approach them about sponsorship with. It was the highest-value
+      non-OSV addition in the original list; what replaces it is OSSF's 221,548 npm malware
+      records, which are measured rather than claimed.
