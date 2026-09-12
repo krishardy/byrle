@@ -485,10 +485,20 @@ implementations.
       Two assumptions falsified: alias bombs are refused by all three YAML crates (not a
       discriminator), and the Norway problem dissolves under a type-directed parser
       rather than under `serde_norway`.
-- [ ] **Schema constraint from the spike: never `#[serde(untagged)]`** on polymorphic
-      rule fields. Carried into the Stage 2 loader; not a Stage 1 exit blocker. It silently defeats unknown-key rejection in every loader and both
-      formats. Hand-write `Deserialize` with `deserialize_any` + `visit_str`/`visit_map`.
-      Applies to every polymorphic rule field, not just `install_scripts`.
+- [x] **Schema constraint from the spike: never `#[serde(untagged)]`** on polymorphic
+      rule fields. Carried into the Stage 2 loader, where `ScriptRule` hand-writes
+      `Deserialize` with `deserialize_any` + `visit_str`/`visit_map`, delegating the map
+      arm so the struct's own `deny_unknown_fields` applies. Applies to every polymorphic
+      rule field; `install_scripts` is the only one today, since `cooldown` is always a
+      table.
+      - [x] **Correction to how this was written down.** Untagged does not silently accept
+            a typo'd key: it refuses, in both formats. What it destroys is the diagnosis.
+            The error says only "data did not match any variant" and puts the caret on the
+            line *above* the typo, which reads as the correct line being wrong. Measured
+            twice, by the spike's `poly` binary and again by the loader's own test.
+            A test asserting the key appears anywhere in the message does not discriminate
+            either, because the error carries a source-context snippet that quotes the
+            offending line under both.
 - [x] **HTTP stack: axum server-side, reqwest upstream.** Hyper's client is a
       connection, not a client — pooling/redirects/DNS/TLS would all be ours.
 - [x] **Narrow upstream-fetch trait: DEFERRED, confirmed Sept 2026.** The plan had
@@ -1038,11 +1048,28 @@ is fetched. Leave it running for a week and trust it.
 **Goal:** the policy engine and its semantics, on top of a transport you already trust.
 The spec gets frozen here.
 
-- [ ] `[!]` Pick `serde_yaml` replacement before writing the loader (it is archived)
+- [x] `[!]` Pick `serde_yaml` replacement before writing the loader (it is archived).
+      Decided by the Stage 1 spike: **`serde-saphyr`**, `default-features = false`,
+      `features = ["deserialize"]`, `include`/`include_fs` permanently off, fallback
+      `serde_norway`. See `docs/engineering_decisions/config-format-yaml-serde-saphyr.md`.
 
 ### Policy engine
-- [ ] `[!]` YAML loader with **hard error on unknown keys**
-- [ ] `[!]` `version` field; refuse to start on unrecognized version
+- [x] `[!]` YAML loader with **hard error on unknown keys**. `src/policy.rs`:
+      `deny_unknown_fields` on every struct, refused at four depths and inside the
+      polymorphic field.
+      - [x] `install_scripts` hand-writes `Deserialize` rather than using
+            `#[serde(untagged)]`, delegating the map arm so `ScriptDetail`'s own
+            `deny_unknown_fields` applies. It is the only polymorphic field: `cooldown` is
+            always a table.
+      - [x] The test that distinguishes the two is not "is it refused" (both refuse) and
+            not "does the message mention the key" (both do, in the source-context
+            snippet). It is whether the message names the unknown field, lists what was
+            allowed instead, and puts the caret on the typo rather than the line above.
+            Checked by swapping in an untagged version and watching it fail.
+- [x] `[!]` `version` field; refuse to start on unrecognized version. Read by a probe
+      before the body is parsed, so a version 2 document is refused by its version rather
+      than by whichever version 1 key it happens to be missing. The refusal quotes what
+      the line held: a number, a quoted string, a bool, a float, or absent.
 - [ ] `[!]` Action lattice: `allow < warn < quarantine < block`
 - [ ] `[!]` Global -> ecosystem merge; ecosystem overrides win
 - [ ] `[!]` Per-parameter monotonicity declarations (cooldown.days ↑, max_cvss ↓, ...)
