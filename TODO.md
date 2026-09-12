@@ -1152,8 +1152,14 @@ The spec gets frozen here.
 
 ### Package tier
 
-- [ ] `[!]` Evaluation order: denials → floor → packages → ecosystems → defaults,
-      first match short-circuits
+- [ ] `[!]` **BLOCKED, open question.** Evaluation order: denials → floor → packages →
+      ecosystems → defaults, first match short-circuits.
+      §5.5 calls the floor a "non-overridable **minimum**" and also puts it in a "first
+      match **short-circuits**" order above `packages`. The two give different answers for
+      exactly one case: a `packages` entry that is *stricter* than the floor for the same
+      rule. Diagrammed in `docs/engineering_decisions/policy-tier-resolution.md`.
+      Implementation stopped until it is answered. Nothing already written depends on the
+      answer.
 - [x] `[!]` `Denial` type with **no** `expires` field and no precedence code path. The
       field does not exist, so `deny_unknown_fields` refuses a denial that carries one:
       an expiring denial is unrepresentable rather than discouraged.

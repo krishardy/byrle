@@ -27,6 +27,7 @@ code, and the file names where.
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |
 | [The artifact cache does not skip verification](verified-artifact-cache.md) | Implemented, Stage 1 |
 | [Deferral status codes](deferral-status-codes.md) | Measured, decision pending Stage 2 |
+| [How the policy tiers resolve](policy-tier-resolution.md) | Open question, blocking |
 | [Enforcement tiers](enforcement-tiers.md) | Open question |
 | [Terminating TLS: pre-issued certificates](terminating-tls-certificates.md) | Decided, not implemented |
 | [Stage structure](stage-structure.md) | Staging |
