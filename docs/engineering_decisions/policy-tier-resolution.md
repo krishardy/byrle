@@ -5,55 +5,98 @@
 - **Related:** [package-override-tier](package-override-tier.md),
   [policy-engine-hand-rolled](policy-engine-hand-rolled.md)
 
-The flow chart below defines **which checks exist and what each one decides**. Everything
-after it follows from it.
-
-It draws each failure as an arrow straight to FORBID. Read that as "this check contributes
-`block`", not as "stop here": the checks are evaluated as a vector and combined at the
-end, for the reasons in [Evaluation](#evaluation). The set of checks and their outcomes is
-the same either way.
+The flow chart below is the decision. Everything after it follows from it.
 
 ## Decision flow chart for what packages are delivered or rejected
 
 ```mermaid
 flowchart TD
 
-Package_Received
-Is_Package_Explicitly_Forbidden
-Is_Known_Malware
-Package_Has_A_KVE_Exception
-DISPOSITION_FORBID
-DISPOSITION_ALLOW
-IGNORE_NUMBERED_CVE
+%% Every check runs. No check can stop the ones after it.
+%% Each branch ends at a RECORD node, which appends one entry to the decision
+%% vector, and every RECORD node of a check leads to the next check.
+%% The disposition is decided once, at the end, from the whole vector.
+
+Package_Received --> Is_Package_Explicitly_Forbidden
+
+subgraph Denials_Check
+  Is_Package_Explicitly_Forbidden
+  Is_Package_Explicitly_Forbidden --YES--> RECORD_denials_BLOCK
+  Is_Package_Explicitly_Forbidden --NO--> RECORD_denials_PASS
+end
+
+RECORD_denials_BLOCK --> Is_Known_Malware
+RECORD_denials_PASS --> Is_Known_Malware
+
+subgraph Known_Malware_Check
+  Is_Known_Malware
+  Is_Known_Malware --YES--> RECORD_known_malware_BLOCK
+  Is_Known_Malware --NO--> RECORD_known_malware_PASS
+end
+
+RECORD_known_malware_BLOCK --> Is_Package_Too_Young
+RECORD_known_malware_PASS --> Is_Package_Too_Young
 
 subgraph Young_Package_Check
   Is_Package_Too_Young
   Package_Has_A_Young_Package_Exception
+  Is_Package_Too_Young --NO--> RECORD_cooldown_PASS
+  Is_Package_Too_Young --YES--> Package_Has_A_Young_Package_Exception
+  Package_Has_A_Young_Package_Exception --YES--> RECORD_cooldown_EXCEPTED
+  Package_Has_A_Young_Package_Exception --NO--> RECORD_cooldown_QUARANTINE
 end
+
+RECORD_cooldown_PASS --> Is_There_A_KEV
+RECORD_cooldown_EXCEPTED --> Is_There_A_KEV
+RECORD_cooldown_QUARANTINE --> Is_There_A_KEV
 
 subgraph KEV_Check
   Is_There_A_KEV
-  Package_Has_A_KVE_Exception
+  Package_Has_A_KEV_Exception
+  Is_There_A_KEV --NO--> RECORD_kev_PASS
+  Is_There_A_KEV --YES--> Package_Has_A_KEV_Exception
+  Package_Has_A_KEV_Exception --YES--> RECORD_kev_EXCEPTED
+  Package_Has_A_KEV_Exception --NO--> RECORD_kev_BLOCK
 end
+
+RECORD_kev_PASS --> Is_There_A_CVE
+RECORD_kev_EXCEPTED --> Is_There_A_CVE
+RECORD_kev_BLOCK --> Is_There_A_CVE
 
 subgraph CVE_Check
   Is_There_A_CVE
+  Is_There_A_CVE --NO--> End_CVE_Check
+  Is_There_A_CVE --YES--> Package_Has_Numbered_CVE_Exception
+
   subgraph For_Each_Package_CVE
     Package_Has_Numbered_CVE_Exception
-    Accumulate_Maximum_CVSS
-    Package_Has_Numbered_CVE_Exception
-    IGNORE_NUMBERED_CVE
+    Package_Has_Numbered_CVE_Exception --YES--> IGNORE_NUMBERED_CVE
+    Package_Has_Numbered_CVE_Exception --NO--> Accumulate_Maximum_CVSS
+    IGNORE_NUMBERED_CVE --next CVE--> Package_Has_Numbered_CVE_Exception
+    Accumulate_Maximum_CVSS --next CVE--> Package_Has_Numbered_CVE_Exception
   end
-  End_CVE_Check
+
+  For_Each_Package_CVE --no CVEs left--> End_CVE_Check
+  End_CVE_Check --> Maximum_CVSS_Is_Above_Global_Policy
+  Maximum_CVSS_Is_Above_Global_Policy --YES--> RECORD_max_cvss_BLOCK
+  Maximum_CVSS_Is_Above_Global_Policy --NO--> RECORD_max_cvss_PASS
 end
 
+RECORD_max_cvss_PASS --> Which_Ecosystem
+RECORD_max_cvss_BLOCK --> Which_Ecosystem
+
 subgraph Ecosystem_Check
+  Which_Ecosystem
+
   subgraph Ecosystem_Check_NPM
-    Start_Ecosystem_Policy_NPM
     Has_Install_Scripts
     Package_Has_Install_Scripts_Exception
-    Ecosystem_Policy_NPM_Passed
+    Has_Install_Scripts --NO--> RECORD_install_scripts_PASS
+    Has_Install_Scripts --YES--> Package_Has_Install_Scripts_Exception
+    Package_Has_Install_Scripts_Exception --YES--> RECORD_install_scripts_EXCEPTED
+    Package_Has_Install_Scripts_Exception --NO--> RECORD_install_scripts_BLOCK
   end
+
   subgraph Ecosystem_Check_PyPI
   end
   subgraph Ecosystem_Check_Cargo
@@ -61,45 +104,23 @@ subgraph Ecosystem_Check
   subgraph Ecosystem_Check_Maven
   end
   subgraph Ecosystem_Check_Golang
+    RECORD_install_scripts_NOT_APPLICABLE
   end
   subgraph Ecosystem_Check_...
   end
+
+  Which_Ecosystem --npm--> Has_Install_Scripts
+  Which_Ecosystem --golang: no install step exists--> RECORD_install_scripts_NOT_APPLICABLE
 end
 
-Package_Received --> Is_Package_Explicitly_Forbidden
+RECORD_install_scripts_PASS --> Evaluate_Decision_Vector
+RECORD_install_scripts_EXCEPTED --> Evaluate_Decision_Vector
+RECORD_install_scripts_BLOCK --> Evaluate_Decision_Vector
+RECORD_install_scripts_NOT_APPLICABLE --> Evaluate_Decision_Vector
 
-Is_Package_Explicitly_Forbidden --YES--> DISPOSITION_FORBID
-Is_Package_Explicitly_Forbidden --NO--> Is_Known_Malware
-
-Is_Known_Malware --YES--> DISPOSITION_FORBID
-Is_Known_Malware --NO--> Is_Package_Too_Young
-
-Is_Package_Too_Young --YES--> Package_Has_A_Young_Package_Exception
-Is_Package_Too_Young --NO--> Is_There_A_KEV
-Package_Has_A_Young_Package_Exception --YES--> Is_There_A_KEV
-Package_Has_A_Young_Package_Exception --NO--> DISPOSITION_FORBID
-
-Is_There_A_KEV --YES--> Package_Has_A_KVE_Exception
-Package_Has_A_KVE_Exception --YES--> Is_There_A_CVE
-Package_Has_A_KVE_Exception --NO--> DISPOSITION_FORBID
-Is_There_A_KEV --NO--> Is_There_A_CVE
-
-Is_There_A_CVE --YES--> Package_Has_Numbered_CVE_Exception
-Is_There_A_CVE --NO--> End_CVE_Check
-
-Package_Has_Numbered_CVE_Exception --NO--> Accumulate_Maximum_CVSS
-Package_Has_Numbered_CVE_Exception --YES--> IGNORE_NUMBERED_CVE
-For_Each_Package_CVE --> End_CVE_Check
-End_CVE_Check --> Maximum_CVSS_Is_Above_Global_Policy
-Maximum_CVSS_Is_Above_Global_Policy --YES--> DISPOSITION_FORBID
-Maximum_CVSS_Is_Above_Global_Policy --NO--> Start_Ecosystem_Policy_NPM
-
-Start_Ecosystem_Policy_NPM --> Has_Install_Scripts
-Has_Install_Scripts --NO--> Ecosystem_Policy_NPM_Passed
-Has_Install_Scripts --YES--> Package_Has_Install_Scripts_Exception
-Package_Has_Install_Scripts_Exception --YES--> Ecosystem_Policy_NPM_Passed
-Package_Has_Install_Scripts_Exception --NO--> DISPOSITION_FORBID
-Ecosystem_Policy_NPM_Passed --> DISPOSITION_ALLOW
+Evaluate_Decision_Vector --strongest is allow--> DISPOSITION_ALLOW
+Evaluate_Decision_Vector --strongest is quarantine--> DISPOSITION_QUARANTINE
+Evaluate_Decision_Vector --strongest is block--> DISPOSITION_FORBID
 ```
 
 ### NOTES
@@ -291,18 +312,27 @@ answer is given:
   clears by itself; one refused for a KEV does not. The chart's two dispositions lose that
   difference and an operator needs it.
 
-### Three results, not two
+### Four results, not two
 
-| result | meaning |
-|---|---|
-| `passed` | the check had nothing against this package |
-| `failed` | it did, and contributes its action |
-| `excepted` | it did, and a `packages` entry excused it |
+| result | meaning | contributes |
+|---|---|---|
+| `passed` | the check had nothing against this package | `allow` |
+| `failed` | it did | its action: `quarantine` or `block` |
+| `excepted` | it did, and a `packages` entry excused it | `allow` |
+| `not_applicable` | the check has no meaning for this ecosystem | `allow` |
+
+Three of the four contribute `allow` and are distinguished anyway, because what an
+operator needs to know is not the same as what the decision needs.
 
 `excepted` is not `passed`. A check that failed and was excused is the one carrying
 operational risk, and it is what an audit trail and an expiry review have to find.
 Recording it as `passed` throws that away, and it is also how a dead exception becomes
 visible: one that never reaches `excepted` is doing no work.
+
+`not_applicable` is not `passed` either. "This package has no install script" and "this
+ecosystem has no install step" are different facts, and reporting the second as the first
+would claim a check ran that never could. This is §5.5's not-applicable rule, which is
+why it survived everything else in that section.
 
 ### Where the short circuit survives
 
