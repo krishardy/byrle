@@ -1,0 +1,11 @@
+# The plan's own example: block/3d overridden by warn/30d. Tighter in days, looser in
+# action, so neither can be proven and §5.5 fails loud.
+version: 1
+floor:
+  npm:
+    known_malware: block
+defaults:
+  cooldown: { action: block, days: 3 }
+ecosystems:
+  npm:
+    cooldown: { action: warn, days: 30 }

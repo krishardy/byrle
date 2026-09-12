@@ -1127,8 +1127,23 @@ The spec gets frozen here.
       `merge`, never the clock, because `policy diff --as-of` has to be able to ask what a
       policy says on another day. The named date is the last day in force, so a policy
       does not lapse on the morning of the day an operator wrote down.
-- [ ] List-valued rules replace rather than union
-- [ ] Golden-file tests for every merge case in the plan's tables
+- [x] List-valued rules replace rather than union. True by construction: `merge::pick`
+      takes one side or the other and never combines, so a list-valued rule added later
+      gets replacement without anyone remembering to. No rule in the schema is
+      list-valued yet, so there is nothing to test that would not be testing the absence
+      of a feature.
+- [x] Golden-file tests for the merge. `tests/fixtures/policy/`, seven policies with the
+      whole rendered report beside each. The plan has no merge tables, so the cases are
+      the shapes the merge decides differently: both sides set and loosened, both set and
+      tightened, a cooldown whose two dimensions disagree, sparse defaults, N/A against
+      the same override for an ecosystem where it applies, an acknowledgment in force
+      beside one that has lapsed, and an ecosystem the policy never mentions.
+      - [x] npm is rendered whether or not the file declares it, so the common case in a
+            real deployment, an ecosystem nobody customised, appears in a golden file
+            rather than in none of them.
+      - [x] `WAHAROA_BLESS=1` rewrites them. Confirmed the test fails on a behaviour
+            change rather than only on a formatting one, by flipping Go's install-script
+            applicability and watching it report which file changed.
 
 ### Package tier
 

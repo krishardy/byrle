@@ -1,0 +1,11 @@
+# An ecosystem the policy never mentions. There is no override, so there is nothing that
+# could have loosened anything, and the defaults stand untouched. This is what most
+# ecosystems look like in a real deployment.
+version: 1
+floor:
+  npm:
+    known_malware: block
+defaults:
+  install_scripts: warn
+  cooldown: { action: quarantine, days: 7 }
+ecosystems: {}

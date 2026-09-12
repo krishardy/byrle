@@ -168,6 +168,12 @@ pub fn merge(policy: &Policy, ecosystem: &str, as_of: Date) -> (Effective, Vec<F
 }
 
 /// The override if there is one, otherwise the default.
+///
+/// Whole values, never combined. §5.5 requires that a list-valued rule **replaces**
+/// rather than unions, and taking one side or the other is what makes that true by
+/// construction rather than by remembering. No rule in the schema is list-valued yet, so
+/// there is nothing here that could union; when one is added it gets this for free, and
+/// writing a merge that unions would mean not using this function.
 fn pick<T: Clone>(override_value: Option<&T>, default: Option<&T>) -> Option<T> {
     override_value.or(default).cloned()
 }
@@ -599,6 +605,165 @@ mod tests {
             assert_eq!(finding(&findings, rule).rule, rule);
             assert!(!rule.as_str().is_empty());
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Golden files. See tests/fixtures/policy/README.md.
+    // -----------------------------------------------------------------------
+
+    fn fixture_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/policy"
+        ))
+    }
+
+    /// Render a whole merge as text: what is in force, and what every override did.
+    ///
+    /// Written out rather than derived, because the file is read by a person reviewing a
+    /// diff. A `{:?}` dump would change shape whenever a field is added and tell them
+    /// nothing about what moved.
+    fn render(policy: &Policy) -> String {
+        let mut out = String::new();
+        // npm is always rendered, declared or not, so a file that never mentions it
+        // still shows what an ecosystem nobody customised ends up with. That is the
+        // common case in a real deployment and it would otherwise appear in no golden
+        // file at all.
+        let mut names: Vec<&str> = policy.ecosystems.keys().map(String::as_str).collect();
+        if !names.contains(&"npm") {
+            names.push("npm");
+            names.sort_unstable();
+        }
+        for ecosystem in names {
+            let (effective, findings) = merge(policy, ecosystem, TODAY);
+            out.push_str(&format!("== {ecosystem}\n"));
+            out.push_str("-- in force\n");
+            out.push_str(&format!(
+                "   known_malware       {}\n",
+                show_action(effective.known_malware)
+            ));
+            out.push_str(&format!(
+                "   cooldown            {}\n",
+                show_cooldown(effective.cooldown.as_ref())
+            ));
+            out.push_str(&format!(
+                "   install_scripts     {}\n",
+                show_script(effective.install_scripts.as_ref())
+            ));
+            out.push_str(&format!(
+                "   provenance_required {}\n",
+                effective
+                    .provenance_required
+                    .map_or_else(|| "-".to_owned(), |v| v.to_string())
+            ));
+            if findings.is_empty() {
+                out.push_str("-- overrides\n   (none: this ecosystem has no block)\n");
+            } else {
+                out.push_str("-- overrides\n");
+                for f in &findings {
+                    let line = format!(
+                        "   {:<19} {:<13} {:<6} {:<7} {}",
+                        f.rule.as_str(),
+                        format!("{:?}", f.outcome),
+                        if f.warns() { "warns" } else { "-" },
+                        if f.audited() { "audited" } else { "-" },
+                        show_ack(f.acknowledgment.as_ref()),
+                    );
+                    // Trimmed: these files are read in a diff, and trailing spaces show
+                    // up there as changes nobody made.
+                    out.push_str(line.trim_end());
+                    out.push('\n');
+                }
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    fn show_action(action: Option<Action>) -> String {
+        action.map_or_else(|| "-".to_owned(), |a| format!("{a:?}").to_lowercase())
+    }
+
+    fn show_cooldown(rule: Option<&CooldownRule>) -> String {
+        rule.map_or_else(
+            || "-".to_owned(),
+            |c| {
+                format!(
+                    "action={} days={}",
+                    show_action(c.action),
+                    c.days.map_or_else(|| "-".to_owned(), |d| d.to_string())
+                )
+            },
+        )
+    }
+
+    fn show_script(rule: Option<&ScriptRule>) -> String {
+        match rule {
+            None => "-".to_owned(),
+            Some(ScriptRule::Bare(a)) => show_action(Some(*a)),
+            Some(ScriptRule::Detailed(d)) => {
+                format!("{} (table)", show_action(Some(d.action)))
+            }
+        }
+    }
+
+    fn show_ack(ack: Option<&Acknowledgment>) -> String {
+        match ack {
+            None => String::new(),
+            Some(a) => format!(
+                "ack until {}{}: {}",
+                a.expires,
+                if a.expired { " (expired)" } else { "" },
+                a.reason
+            ),
+        }
+    }
+
+    /// Every policy in `tests/fixtures/policy` merges to the report beside it.
+    ///
+    /// `WAHAROA_BLESS=1` rewrites them. Read the diff: the point of the file is that a
+    /// change to the report has to be looked at.
+    #[test]
+    fn merging_every_golden_policy_gives_what_is_recorded_beside_it() {
+        let dir = fixture_dir();
+        let bless = std::env::var("WAHAROA_BLESS").is_ok_and(|v| v == "1");
+        let mut checked = 0;
+
+        let mut entries: Vec<_> = std::fs::read_dir(&dir)
+            .expect("the fixture directory is missing")
+            .map(|e| e.expect("readable entry").path())
+            .filter(|p| p.extension().is_some_and(|e| e == "yaml"))
+            .collect();
+        entries.sort();
+
+        for input in entries {
+            let source = std::fs::read_to_string(&input).unwrap();
+            let policy =
+                Policy::parse(&source).unwrap_or_else(|e| panic!("{}: {e}", input.display()));
+            let rendered = render(&policy);
+            let expected_path = input.with_extension("merged");
+
+            if bless {
+                std::fs::write(&expected_path, &rendered).unwrap();
+                checked += 1;
+                continue;
+            }
+            let expected = std::fs::read_to_string(&expected_path).unwrap_or_else(|_| {
+                panic!(
+                    "{} has no .merged beside it. Run WAHAROA_BLESS=1 cargo test --lib merge",
+                    input.display()
+                )
+            });
+            assert_eq!(
+                rendered,
+                expected,
+                "\n{} changed. If the new output is right, \
+                 WAHAROA_BLESS=1 cargo test --lib merge\n",
+                input.display()
+            );
+            checked += 1;
+        }
+        assert!(checked >= 7, "only {checked} golden policies were read");
     }
 
     /// The shipped example, merged. It declares `ecosystems.cargo` with no

@@ -1,0 +1,14 @@
+# Every dimension moves the other way.
+version: 1
+floor:
+  npm:
+    known_malware: block
+defaults:
+  install_scripts: warn
+  cooldown: { action: warn, days: 3 }
+  provenance_required: false
+ecosystems:
+  npm:
+    install_scripts: block
+    cooldown: { action: block, days: 30 }
+    provenance_required: true
