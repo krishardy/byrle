@@ -18,3 +18,4 @@ pub mod record;
 pub mod refusal;
 pub mod store;
 pub mod tls;
+pub mod verified;

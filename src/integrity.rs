@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::fmt;
 
 /// Hash algorithms SRI names that are worth checking.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Algorithm {
     // Ordered weakest to strongest: `Ord` is how the strongest is picked when an
     // integrity string names several.
@@ -60,7 +60,10 @@ impl fmt::Display for Algorithm {
 }
 
 /// One integrity claim: an algorithm and the digest it expects.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `Hash`, because it is the key plan §5 branches the fetch path on: see
+/// [`crate::verified`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Sri {
     algorithm: Algorithm,
     digest: Vec<u8>,

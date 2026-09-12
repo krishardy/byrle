@@ -25,12 +25,13 @@ code, and the file names where.
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |
+| [The artifact cache does not skip verification](verified-artifact-cache.md) | Implemented, Stage 1 |
 | [Deferral status codes](deferral-status-codes.md) | Measured, decision pending Stage 2 |
 | [Enforcement tiers](enforcement-tiers.md) | Open question |
 | [Terminating TLS: pre-issued certificates](terminating-tls-certificates.md) | Decided, not implemented |
 | [Stage structure](stage-structure.md) | Staging |
 | [Fetch path branching](fetch-path-branching.md) | Staging |
-| [Project name: waharoa](project-name-waharoa.md) | Staging, cultural consultation |
+| [Project name: waharoa](project-name-waharoa.md) | Staging, cultural consultation (Stage 7) |
 
 ## Adding one
 

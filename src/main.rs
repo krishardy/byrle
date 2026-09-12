@@ -20,6 +20,7 @@ use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
 use waharoa::refusal::RefusalStatus;
 use waharoa::store::DEFAULT_MAX_RECORDS;
 use waharoa::tls::{self, TrustMode};
+use waharoa::verified::DEFAULT_MAX_VERIFIED;
 
 const USAGE: &str = "\
 usage: waharoa [command]
@@ -45,6 +46,7 @@ Proxy configuration, all through the environment:
   WAHAROA_CA_BUNDLE_EXCLUSIVE=1     trust only that bundle, not the public roots
   WAHAROA_MAX_PACKUMENT_BYTES       ceiling on a packument body (32 MiB)
   WAHAROA_MAX_RECORDS               packument records held in memory (50,000)
+  WAHAROA_MAX_VERIFIED              verified artifact digests remembered (50,000)
   WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (8)
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
                                     \"default=403,npm/pnpm=451\" (default 403)
@@ -356,6 +358,11 @@ async fn main() -> std::process::ExitCode {
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_MAX_RECORDS);
 
+    let max_verified = std::env::var("WAHAROA_MAX_VERIFIED")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_MAX_VERIFIED);
+
     // Artifact URLs are pointed at the proxy so every client in the ecosystem fetches
     // through it. Setting WAHAROA_PUBLIC_URL pins the address written into them, which
     // is what lockfiles record; without it the request's own Host is used.
@@ -452,6 +459,7 @@ async fn main() -> std::process::ExitCode {
         .with_blocked(blocked)
         .with_max_packument_bytes(max_packument_bytes)
         .with_max_records(max_records)
+        .with_max_verified(max_verified)
         .with_artifact_rewriting(rewrite_artifacts)
         .with_public_base(public_base);
     #[cfg(debug_assertions)]
