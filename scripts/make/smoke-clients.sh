@@ -90,7 +90,9 @@ YML
 
 measure() {
     local client="$1"; shift
-    local runner="$1"
+    # From the client name, not the first word of the command: some commands start with
+    # `env` to place a cache somewhere disposable, and `env` is always installed.
+    local runner="$client"
     [[ "$client" == "yarn-berry" ]] && runner="corepack"
     if ! command -v "$runner" >/dev/null 2>&1; then
         printf '  %-10s NOT INSTALLED, skipped\n' "$client"
@@ -149,7 +151,11 @@ failed=0
 echo "==> installing '$package' through the proxy with each client"
 measure npm npm install "$package" --registry "$registry" \
     --cache "$workdir/npm/cache" --no-audit --no-fund --loglevel=error
-measure pnpm pnpm add "$package" --registry "$registry" \
+# npm_config_cache_dir as well as --store-dir. pnpm keeps packument metadata in a cache
+# of its own, keyed by registry host and port, which --store-dir does not cover, so a
+# second run at the same port can resolve without asking the proxy anything.
+measure pnpm env "npm_config_cache_dir=$workdir/pnpm/metadata" \
+    pnpm add "$package" --registry "$registry" \
     --store-dir "$workdir/pnpm/cache" --reporter=silent
 measure yarn yarn add "$package" --registry "$registry" \
     --cache-folder "$workdir/yarn/cache" --no-lockfile --silent
