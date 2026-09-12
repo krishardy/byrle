@@ -258,22 +258,64 @@ pub fn check_public_url(configured: Option<&str>, recorded: &BTreeSet<String>) -
     .with_fix("serve the proxy at the recorded address, or reinstall to rewrite the lockfiles")
 }
 
-/// A warm client cache serves without consulting the registry at all, so nothing reaches
-/// the proxy to be examined.
-pub fn check_cache(client: &str, entries: Option<u64>) -> Finding {
+/// How much of an install a warm cache supplies without asking the registry.
+///
+/// Measured by installing the same package twice through the proxy with one cache, and
+/// counting what the proxy saw the second time:
+///
+/// | Client | Second install |
+/// |---|---|
+/// | npm 11, pnpm 10, bun 1.3 | nothing reached the proxy |
+/// | yarn 1, yarn 4 | the packument did, the artifact did not |
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheBypass {
+    /// The whole install is served locally.
+    Complete,
+    /// Metadata is still fetched; artifacts are not.
+    ArtifactsOnly,
+}
+
+/// A warm client cache serves without consulting the registry, so what it supplies never
+/// reaches the proxy to be examined.
+///
+/// `cache` is where the client would look **from this directory**, and `None` means there
+/// is nothing there. Which cache is in play is a per-directory question: `pnpm store path`
+/// answers with a store on the project's own filesystem, so it is `/tmp/.pnpm-store` in a
+/// directory under `/tmp` and the user's store elsewhere.
+///
+/// Reports presence and location rather than a count. Every client lays its cache out
+/// differently, so one number would mean packages for one and files for another: the same
+/// yarn cache is 12,983 entries or 749,073 files depending on which you count.
+pub fn check_cache(client: &str, cache: Option<&std::path::Path>, bypass: CacheBypass) -> Finding {
     let title = format!("{client} cache");
-    match entries {
-        None | Some(0) => Finding::new(Severity::Ok, title, "empty, so installs reach the proxy"),
-        Some(n) => Finding::new(
-            Severity::Warn,
+    let Some(cache) = cache else {
+        return Finding::new(
+            Severity::Ok,
             title,
-            format!(
-                "holds {n} cached entries. A warm cache is served without consulting the \
-                 registry, so those packages skip the proxy entirely"
-            ),
-        )
-        .with_fix(format!("{client} cache clean --force")),
-    }
+            "empty or absent, so installs reach the proxy",
+        );
+    };
+
+    let effect = match bypass {
+        CacheBypass::Complete => {
+            "A warm cache supplies the whole install, so those packages never reach the proxy"
+        }
+        CacheBypass::ArtifactsOnly => {
+            "A warm cache still fetches metadata but serves artifacts locally, so those \
+             artifacts are never examined"
+        }
+    };
+    let fix = match client {
+        "bun" => "bun pm cache rm".to_owned(),
+        "pnpm" => "pnpm store prune, or delete the store directory".to_owned(),
+        other => format!("{other} cache clean --force"),
+    };
+    Finding::new(
+        Severity::Warn,
+        title,
+        format!("{} holds cached packages. {effect}", cache.display()),
+    )
+    .with_fix(fix)
 }
 
 /// Whether the proxy is there, and whether it is configured the way this check expects.
@@ -425,6 +467,7 @@ fn join(origins: &[&String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     const PROXY: &str = "http://127.0.0.1:8080";
 
@@ -568,17 +611,79 @@ mod tests {
         assert!(finding.fix.is_some());
     }
 
-    /// npm serves a warm cache without consulting the registry, so those packages never
-    /// reach the proxy. Plan §7 records it as a bypass vector.
+    /// Every client has a cache that serves without consulting the registry. Plan §7
+    /// records it as a bypass vector, and it is measured per client rather than assumed
+    /// to work like npm's.
     #[test]
     fn a_warm_cache_is_reported_as_skipping_the_proxy() {
-        assert_eq!(check_cache("npm", Some(0)).severity, Severity::Ok);
-        assert_eq!(check_cache("npm", None).severity, Severity::Ok);
+        assert_eq!(
+            check_cache("npm", None, CacheBypass::Complete).severity,
+            Severity::Ok
+        );
 
-        let finding = check_cache("npm", Some(1234));
+        let path = Path::new("/home/someone/.npm/_cacache");
+        let finding = check_cache("npm", Some(path), CacheBypass::Complete);
         assert_eq!(finding.severity, Severity::Warn);
-        assert!(finding.detail.contains("skip the proxy"));
+        assert!(
+            finding.detail.contains("never reach the proxy"),
+            "{}",
+            finding.detail
+        );
+        assert!(
+            finding.detail.contains("/home/someone/.npm/_cacache"),
+            "the location is what an operator acts on: {}",
+            finding.detail
+        );
         assert_eq!(finding.fix.as_deref(), Some("npm cache clean --force"));
+    }
+
+    /// yarn re-fetches the packument and serves the artifact locally, which is a
+    /// different exposure from npm's and is described as such.
+    #[test]
+    fn a_partial_bypass_says_what_it_still_fetches() {
+        let finding = check_cache(
+            "yarn",
+            Some(Path::new("/tmp/yarn")),
+            CacheBypass::ArtifactsOnly,
+        );
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(
+            finding.detail.contains("still fetches metadata"),
+            "{}",
+            finding.detail
+        );
+        assert!(
+            finding.detail.contains("never examined"),
+            "{}",
+            finding.detail
+        );
+    }
+
+    /// `npm cache clean` is not the command for every client.
+    #[test]
+    fn each_client_gets_its_own_way_to_clear_the_cache() {
+        assert_eq!(
+            check_cache("bun", Some(Path::new("/tmp/b")), CacheBypass::Complete)
+                .fix
+                .as_deref(),
+            Some("bun pm cache rm")
+        );
+        assert!(
+            check_cache("pnpm", Some(Path::new("/tmp/p")), CacheBypass::Complete)
+                .fix
+                .as_deref()
+                .is_some_and(|f| f.contains("pnpm store prune"))
+        );
+        assert_eq!(
+            check_cache(
+                "yarn",
+                Some(Path::new("/tmp/y")),
+                CacheBypass::ArtifactsOnly
+            )
+            .fix
+            .as_deref(),
+            Some("yarn cache clean --force")
+        );
     }
 
     #[test]
