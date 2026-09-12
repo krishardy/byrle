@@ -213,27 +213,26 @@ behavior must be explicit in severity precedence config rather than emergent.
 
 ### Intel storage and refresh
 
-**ORM: SeaORM, targeting Postgres and SQLite.** Async-native, one codebase for both
-backends. A repository trait sits in front of it; the **bulk refresh path uses raw sqlx
-underneath**, since ORM inserts are far too slow for hundreds of thousands of advisory
-rows. The ORM serves the lookup path only.
+**Postgres is the only backend.** SQLite was targeted alongside it and has been dropped:
+supporting two backends bought portability nobody asked for and constrained the refresh
+path, which is the one place the storage layer has to be fast. There is no embedded
+fallback and no development-only backend.
 
-**Postgres is the production backend. SQLite is for development only.** SQLite exists so
-a contributor can clone, run and test without standing up a database, and so the test
-suite has a backend it can create and throw away per test. It is not a supported
-deployment target: `waharoa doctor` should say so when it finds SQLite configured outside
-a development profile.
+**Development and tests run against Postgres in a container.** `make test-integration`
+starts one, runs the tests that need a database, and tears it down. Tests that do not need
+a database must not require the container: the policy engine, the decision vector and
+everything above the repository trait are pure and stay that way.
 
-Two things follow, and they are the reason to write this down rather than leave it
-implied:
+**The repository trait stays, for a different reason.** It was there for backend
+portability, which is now moot. It remains because §Standards requires 95% unit coverage
+excluding corpus and live tests, so everything above the storage seam has to be testable
+with no database at all. Reading "one backend" and deleting the trait would put the policy
+engine behind a container.
 
-- **Everything in the multi-instance section below is a production requirement**, not an
-  optional extra for large deployments. Refresh coordination and reading
-  `intel_snapshot_id` from the database are load-bearing for every real deployment,
-  because every real deployment is Postgres.
-- **The easy backend to test is the one nobody runs.** SQLite needs no service, so a test
-  suite left to itself will cover only SQLite and leave the production backend unexercised.
-  The repository trait's conformance tests have to run against both, with Postgres in CI.
+**Everything in the multi-instance section below is a production requirement**, not an
+optional extra for large deployments. Every deployment is Postgres, so refresh
+coordination and reading `intel_snapshot_id` from the database are load-bearing
+everywhere.
 
 **Distribution: none.** Every stream fetches from its own origin — OSV publishes
 per-ecosystem bundles to a public GCS bucket, GitHub Advisory is queried under the
@@ -241,11 +240,11 @@ user's token, OSSF Malicious Packages is a git repo. We never host or redistribu
 intel. The artifact stays a single binary.
 
 **Refresh must be atomic.** Build into a temp table and swap, so a failed refresh never
-leaves a half-populated advisory set that silently under-blocks. Postgres gives
-transactional DDL; SQLite needs the temp-table-and-rename dance. The dance is
-development-only complexity: no production refresh runs on it.
+leaves a half-populated advisory set that silently under-blocks. Postgres has
+transactional DDL, so the swap is an ordinary transaction. The temp-table-and-rename dance
+SQLite needed is gone with SQLite.
 
-**Postgres implies multi-instance**, which is a bigger change than the storage layer:
+**Multi-instance**, which is a bigger change than the storage layer:
 
 - **Refresh coordination.** N replicas rebuilding simultaneously is wasteful and racy.
   Needs advisory-lock leader election, or a separate `waharoa refresh` command run as a
@@ -814,7 +813,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | 4 | [Quarantine](engineering_decisions/quarantine-filter-metadata.md) | Filter metadata on resolution, hard fail on pinned fetch |
 | 4b | [Cooldown vs. urgent fixes](engineering_decisions/cooldown-waivers-manual-only.md) | Manually reviewed version waivers only |
 | 5 | [License](engineering_decisions/license-apache-2.md) | Apache-2.0, DCO, trademark separate |
-| 6 | [Intel distribution](engineering_decisions/intel-distribution-fetch-from-origin.md) | None; fetch from origin. SeaORM over Postgres in production, SQLite for development |
+| 6 | [Intel distribution](engineering_decisions/intel-distribution-fetch-from-origin.md) | None; fetch from origin. Postgres only |
 | 7 | [NVD role](engineering_decisions/nvd-role-and-stream-capabilities.md) | `enrich`-only for npm/PyPI; per-ecosystem capability matrix |
 | 8 | [Package override tier](engineering_decisions/package-override-tier.md) | Superseded by [policy-tier-resolution](engineering_decisions/policy-tier-resolution.md): no floor, `packages` loosens only |
 | 13 | [Policy tiers and evaluation](engineering_decisions/policy-tier-resolution.md) | Global settings, per-package exceptions, decision vector; supersedes the old §5 and §5.5 |

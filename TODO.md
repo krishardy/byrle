@@ -1276,9 +1276,9 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             it goes last.
 - [ ] `[!]` Advisory stream interface (fetch / mirror / refresh / normalize). What a
       stream may *say* is built (`MatchStream`, `EnrichStream`, `MalwareStream` in
-      `src/intel.rs`). Fetch, mirror and refresh need the storage decision (SeaORM over
-      Postgres in production with SQLite for development, raw sqlx for bulk refresh) and
-      its dependency review.
+      `src/intel.rs`). Fetch, mirror and refresh need the storage decision (
+      Postgres only, raw sqlx for bulk refresh, ORM undecided) and its dependency
+      review.
 - [x] `[!]` Per-ecosystem capability matrix: `match` / `enrich` / `malware` (`src/intel.rs`,
       `Capabilities::grant` / `has` / `providers`). A grant is per stream per ecosystem, so
       NVD can hold `match` for Maven and only `enrich` for npm.
@@ -1336,16 +1336,25 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] Stream authoring guide for third-party sources
 
 ### Intel storage
-- [ ] `[!]` SeaORM behind a repository trait. **Postgres is the production backend;
-      SQLite is development only**, so a contributor can clone and test without standing up
-      a database and tests get a backend they can discard per case.
-- [ ] `[!]` Repository conformance tests run against **both** backends, Postgres in CI.
-      SQLite needs no service, so a suite left to itself covers only the backend nobody
-      deploys.
-- [ ] `waharoa doctor` reports SQLite configured outside a development profile
-- [ ] `[!]` Bulk refresh on raw sqlx (ORM too slow at 100k+ rows)
-- [ ] `[!]` Atomic refresh via temp-table swap. Postgres has transactional DDL; SQLite's
-      temp-table-and-rename dance is development-only complexity.
+- [ ] `[?]` **Decide whether SeaORM survives Postgres-only.** Its justification in the
+      plan was one codebase for two backends, and there is now one backend. It already
+      served the lookup path only, since bulk refresh bypasses it for raw sqlx, so what
+      is left is a handful of fixed queries. Dropping it removes a dependency rather than
+      swapping one, since SeaORM depends on sqlx. Against: `sqlx::query_as!` needs a
+      database at compile time, or a checked-in `.sqlx` offline cache with
+      `cargo sqlx prepare --check` in CI. For: compile-time checking against the real
+      schema, and direct access to `COPY FROM STDIN`.
+- [ ] `[!]` Repository trait in front of storage. Justified by test isolation now, not
+      portability: the 95% unit floor excludes corpus and live tests, so everything above
+      the storage seam has to be testable with no database.
+- [ ] `[!]` `make test-integration` — start a Postgres container, run the tests that need
+      a database, tear it down. Thin wrapper around `scripts/make/test-integration.sh` per
+      CLAUDE.md. Excluded from the unit coverage floor, like the corpus and live tests.
+- [ ] `[!]` Tests that do not need a database must not require the container
+- [ ] `[!]` Bulk refresh on raw sqlx (ORM too slow at 100k+ rows). Postgres-only makes
+      `COPY FROM STDIN` available, which two-backend support ruled out.
+- [ ] `[!]` Atomic refresh via temp-table swap. Postgres has transactional DDL, so the
+      swap is an ordinary transaction.
 - [ ] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %
 - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, privacy tradeoff documented
 
