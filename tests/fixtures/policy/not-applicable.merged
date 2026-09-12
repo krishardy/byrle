@@ -1,0 +1,22 @@
+== golang
+-- in force
+   known_malware       -
+   cooldown            -
+   install_scripts     allow
+   provenance_required -
+-- overrides
+   cooldown            Unset         -      -
+   install_scripts     NotApplicable -      -
+   provenance_required Unset         -      -
+
+== npm
+-- in force
+   known_malware       -
+   cooldown            -
+   install_scripts     allow
+   provenance_required -
+-- overrides
+   cooldown            Unset         -      -
+   install_scripts     Looser        warns  -
+   provenance_required Unset         -      -
+

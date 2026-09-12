@@ -1,0 +1,14 @@
+# The plain loosening: a default exists and the ecosystem weakens it.
+version: 1
+floor:
+  npm:
+    known_malware: block
+defaults:
+  install_scripts: block
+  cooldown: { action: quarantine, days: 7 }
+  provenance_required: true
+ecosystems:
+  npm:
+    install_scripts: warn
+    cooldown: { action: warn, days: 3 }
+    provenance_required: false
