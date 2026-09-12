@@ -933,8 +933,8 @@ implementations.
             because `base_tag` hashes with SHA-256, and `encoding_to_request`, which
             lowercases each token and did not complete on three arbitrary bytes in two
             minutes.
-      - [ ] Still owed, both Stage 2: the §5.5 action lattice and per-parameter
-            monotonicity.
+      - [x] Paid, Stage 2: the §5.5 action lattice and per-parameter monotonicity, now
+            twelve harnesses in `src/policy/strictness.rs`. The whole set is 21.
 - [ ] Self-detection of bypass: a packument served with no artifact request following it
       is the signature of the pnpm behaviour, and would have caught it without anyone
       looking. Noisy, since a client may already hold the artifact or resolve a version it
@@ -1070,9 +1070,19 @@ The spec gets frozen here.
       before the body is parsed, so a version 2 document is refused by its version rather
       than by whichever version 1 key it happens to be missing. The refusal quotes what
       the line held: a number, a quoted string, a bool, a float, or absent.
-- [ ] `[!]` Action lattice: `allow < warn < quarantine < block`
+- [x] `[!]` Action lattice: `allow < warn < quarantine < block`. `src/policy/strictness.rs`.
+      `Action::strength` writes the positions out rather than taking them from the
+      declaration order, and a proof holds the two in agreement, so reordering the
+      variants cannot silently reverse the lattice.
+      - [x] Comparing two actions is never undecided: the lattice is a total order, so
+            incomparability arises only when dimensions are combined.
 - [ ] `[!]` Global -> ecosystem merge; ecosystem overrides win
-- [ ] `[!]` Per-parameter monotonicity declarations (cooldown.days ↑, max_cvss ↓, ...)
+- [x] `[!]` Per-parameter monotonicity declarations (cooldown.days ↑, max_cvss ↓, ...).
+      One table, `direction_of`, rather than a direction at each use site, so a parameter
+      cannot be compared one way in the merge and the other way in `policy diff`.
+      - [x] The two directions are proved mirror images over every pair of values.
+            Getting one backwards fires warnings in exactly the wrong direction, which
+            the plan calls worse than having none.
 - [ ] `[!]` Loosening detection, including the incomparable case (warn on unprovable)
 - [ ] `[!]` N/A handling — not-applicable rules never count as loosening
 - [ ] `[!]` Loosening warnings emit at config load only, never per-request

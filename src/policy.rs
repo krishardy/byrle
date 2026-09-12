@@ -34,6 +34,8 @@
 //! by `spikes/config-format/src/bin/poly.rs`, and again here by
 //! `an_unknown_key_inside_the_polymorphic_field_is_named`.
 
+pub mod strictness;
+
 use serde::de::value::{MapAccessDeserializer, StrDeserializer};
 use serde::de::{MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
