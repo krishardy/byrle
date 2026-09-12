@@ -1208,8 +1208,43 @@ The spec gets frozen here.
       - [x] The comparison is shared with the ecosystem tier through `RuleValues` rather
             than written twice. Two comparisons that could disagree about what "looser"
             means is the failure the single `direction_of` table prevents one level down.
-- [ ] `[!]` Specificity as strict subset containment, not a score
-- [ ] `[!]` Incomparable overlaps and exact duplicates are load-time errors
+- [x] `[!]` Specificity as strict subset containment, not a score.
+      `src/policy/selector.rs`. Per dimension, all of them: a selector is narrower only
+      if it is narrower or equal everywhere, so narrower in one and wider in another is
+      neither.
+      - [x] **The vocabulary is restricted at load to keep containment decidable.** A
+            name is `*`, `prefix*` or a literal; a version is exact or absent. §5.5
+            claims containment is decidable because the predicate vocabulary is closed,
+            and a selector taking arbitrary ranges or globs reopens exactly that. Admitting
+            them and reporting "incomparable" would be worse than refusing them: the
+            overlap check could no longer fire either, so the file would carry pairs
+            nobody can reason about and nothing would say so.
+      - [x] Checking for range **operators** is not enough: `1.x` is a range written
+            without one. A wildcard is a whole component of the release part, so
+            `1.0.0-x` stays exact, a prerelease tag of `x` being a real thing to publish.
+      - [x] `purl` and `name`/`version` denote one set through different fields, so every
+            selector is canonicalised before comparison. Compared field by field,
+            `pkg:npm/chalk@5.6.2` and `{name: chalk, version: 5.6.2}` would come out
+            incomparable while being identical. A selector setting both is refused:
+            agreeing is redundant, disagreeing is a contradiction.
+      - [x] The purl's type stays a string rather than resolving to `identity::Ecosystem`,
+            like the floor check and the N/A table, because a policy may name an ecosystem
+            no adapter exists for.
+- [x] `[!]` Incomparable overlaps and exact duplicates are load-time errors, and separate
+      ones: a duplicate is comparable and still wrong, because whichever wins the other is
+      dead and which that is depends on file order. Checked at load, because the request
+      that would expose an unordered pair may be months away and the file is in front of
+      the operator now.
+      - [x] The incomparable case needs two selectors narrower in different dimensions,
+            `{name: "a*", has_install_scripts: true}` against `{name: "ab*"}`. Written
+            first, so the branch is not one no input reaches.
+      - [x] Four kani harnesses: a selector contains itself, two cannot each be strictly
+            inside the other, containment implies overlap, and overlap does not depend on
+            which side is asked.
+      - [x] Not proved: that equal selectors report as a duplicate rather than as
+            unorderable. Cloning a `Canonical` copies `String` fields and the loop does
+            not unwind at any bound worth waiting for. Reflexivity covers the containment
+            half and a unit test covers the distinction.
 - [ ] Range resolution in the normalizer, never in the engine
 - [ ] `explain` shows winning selector and the ones it beat, per tier
 - [ ] `policy check` flags permanently-shadowed selectors
