@@ -20,9 +20,9 @@
 # Every harness was checked against a mutation of the thing it claims, because a proof
 # that passes vacuously is worse than none: it reads as coverage.
 #
-# Still owed, both Stage 2: the §5.5 lattice (allow < warn < quarantine < block) and the
-# monotonicity of parameterised rules. Both are total functions over small closed
-# domains, which is kani's sweet spot.
+# The §5.5 lattice and the monotonicity of parameterised rules are done, in
+# `src/policy/strictness.rs`, and they are what kani is for: total functions over small
+# closed domains, verified in milliseconds each.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
