@@ -18,29 +18,51 @@ manifests=("$repo_root/Cargo.toml" "$repo_root/spikes/config-format/Cargo.toml")
 failed=0
 note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
-# `cargo audit` fetches the RustSec database from GitHub over git. If a global
-# url.insteadOf rewrites GitHub HTTPS to SSH and no key is available, that fetch fails
-# with a credentials error that looks nothing like a dependency problem. Point
-# WAHAROA_ADVISORY_DB at a local checkout to skip fetching.
+# `cargo audit` fetches the RustSec database from GitHub over git. A global
+# url.insteadOf rewriting GitHub HTTPS to SSH, with no key available, makes that fetch
+# fail with a credentials error that mentions nothing about dependencies. Left alone it
+# fails the whole target, so the advisory half stops running and the failure gets read as
+# noise.
+#
+# WAHAROA_ADVISORY_DB points at a local checkout. Otherwise the fallback below fetches the
+# database over plain HTTPS, where no git configuration applies.
 audit_args=()
+# Tracked separately from audit_args: strict mode adds flags of its own, so "are we using
+# a local database" cannot be read off whether the array is empty.
+local_db=""
 if [[ -n "${WAHAROA_ADVISORY_DB:-}" ]]; then
-    audit_args+=(--db "$WAHAROA_ADVISORY_DB" -n)
-    echo "using advisory database at $WAHAROA_ADVISORY_DB (no fetch)"
+    local_db="$WAHAROA_ADVISORY_DB"
+    audit_args+=(--db "$local_db" -n)
+    echo "using advisory database at $local_db (no fetch)"
 fi
+
+# The database as a tarball, which needs no git and no credentials.
+advisory_tarball="https://codeload.github.com/RustSec/advisory-db/tar.gz/refs/heads/main"
+advisory_cache="$repo_root/target/advisory-db"
+
+fetch_advisory_db_over_https() {
+    # Kept under target/ so `cargo clean` clears it, and refreshed daily: an advisory
+    # database a week old is worse than useless, because it reports success.
+    if [[ -d "$advisory_cache/crates" ]] \
+        && [[ -n "$(find "$advisory_cache/.fetched" -newermt '-1 day' 2>/dev/null)" ]]; then
+        echo "    using the copy fetched within the last day"
+        return 0
+    fi
+    command -v curl >/dev/null 2>&1 || { echo "    curl is required"; return 1; }
+    echo "    fetching it over HTTPS instead"
+    rm -rf "$advisory_cache"
+    mkdir -p "$advisory_cache"
+    curl -sSL --max-time 300 "$advisory_tarball" | tar xz -C "$advisory_cache" --strip-components=1 \
+        || return 1
+    [[ -d "$advisory_cache/crates" ]] || return 1
+    touch "$advisory_cache/.fetched"
+    return 0
+}
 
 # In strict mode, "unmaintained" is also disqualifying. This project rejected
 # serde_yml on exactly that ground (plan §5), so it would be inconsistent to let an
 # unmaintained crate through our own gate silently.
 [[ "${CHECK_DEPS_STRICT:-0}" == "1" ]] && audit_args+=(--deny warnings)
-
-# The GitHub fetch fails confusingly when a global url.insteadOf rewrites HTTPS to SSH.
-# Say so, because the error text mentions credentials and nothing about dependencies.
-if [[ -z "${WAHAROA_ADVISORY_DB:-}" ]] \
-    && git config --get-regexp 'url\..*\.insteadof' 2>/dev/null | grep -qi 'github'; then
-    echo "note: your git config rewrites GitHub URLs (url.*.insteadOf). If the advisory"
-    echo "      database fetch below fails on credentials, clone it over HTTPS and set"
-    echo "      WAHAROA_ADVISORY_DB to that path."
-fi
 
 if ! cargo audit --version >/dev/null 2>&1; then
     echo "cargo-audit is not installed. Run 'make dev-setup'."
@@ -48,6 +70,23 @@ if ! cargo audit --version >/dev/null 2>&1; then
 fi
 
 note "vulnerable dependencies (cargo audit)"
+
+# One probe, so the fallback is chosen by what actually happens rather than by guessing
+# at the cause. A fetch failure is fast, so the cost when it succeeds is one extra run of
+# the first manifest.
+if [[ -z "$local_db" ]]; then
+    probe="$(cargo audit --file "$repo_root/Cargo.lock" 2>&1 || true)"
+    if grep -q "couldn't fetch advisory database" <<<"$probe"; then
+        echo "    the advisory database could not be fetched over git"
+        if fetch_advisory_db_over_https; then
+            local_db="$advisory_cache"
+            audit_args+=(--db "$local_db" -n)
+        else
+            echo "    and HTTPS failed too, so no advisory check ran"
+            failed=1
+        fi
+    fi
+fi
 for manifest in "${manifests[@]}"; do
     lock="${manifest%/Cargo.toml}/Cargo.lock"
     printf -- '--- %s\n' "${manifest#"$repo_root"/}"

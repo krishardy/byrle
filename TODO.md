@@ -210,12 +210,27 @@ implementations.
             and they parse differently. Caught by the corpus check, invisible to the
             handwritten tests.
       - [x] **Identity comes from the packument `name`**, not the request path.
+- [x] **`make check-deps` could not fetch the advisory database at all**, so the
+      security half had not been running on this machine. A global
+      `url.ssh://git@github.com/.insteadof https://github.com/` with no key makes
+      `cargo audit`'s git fetch fail on credentials, which reads as noise and fails the
+      whole target.
+      - [x] It now probes once, and on a fetch failure downloads the database as a tarball
+            over plain HTTPS, where no git configuration applies. 1,243 advisories loaded,
+            both manifests scanned.
+      - [x] Cached under `target/` so `cargo clean` clears it, refreshed daily. A database
+            a week old is worse than useless, because it reports success.
+      - [x] The probe is gated on whether a local database is in use, not on the argument
+            list being empty: strict mode adds `--deny warnings`, which made the first
+            version skip the fallback and fail exactly as before.
 - [ ] **Watch: `purl` 0.1.6 pulls `smartstring` 1.0.1, flagged RUSTSEC-2026-0249 as
       unmaintained.** Found by `make check-deps`. Not a vulnerability, and it does not
       reverse the crate choice: `packageurl` is disqualified on correctness, which is the
       worse failure. But it is why `make check-deps` is not clean under
       `CHECK_DEPS_STRICT=1` today. Revisit if it becomes a real advisory; the swap path
       is the same one-line change described under the identity item.
+      Checked Sept 2026: `purl` is still 0.1.6, no newer release, and the advisory still
+      stands. `make check-deps` passes; `CHECK_DEPS_STRICT=1` fails on it, as designed.
 - [x] Feed the identity type into the proxy. Every request path is classified by
       `npm::classify_path` into a `PackageKey`, the throwaway block compares keys rather
       than strings (so `/@babel%2fcore` and `/@babel/core` are one package), and every
