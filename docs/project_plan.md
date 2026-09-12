@@ -213,6 +213,17 @@ behavior must be explicit in severity precedence config rather than emergent.
 
 ### Intel storage and refresh
 
+**Storage is sqlx over Postgres, with no ORM.** SeaORM was planned for one reason, "one
+codebase for both backends", and there is one backend. Queries are SQL checked at compile
+time by `sqlx::query_as!` against the real schema; migrations are plain `.sql` under
+`sqlx::migrate!`. This removes a dependency rather than swapping one, since SeaORM is built
+on sqlx and the refresh path was already going to use it directly. See
+[storage-sqlx-postgres](engineering_decisions/storage-sqlx-postgres.md).
+
+The cost is that the macros need a database at compile time. `cargo sqlx prepare` writes an
+offline cache to `.sqlx/`, checked in, so a contributor builds without one; CI runs
+`cargo sqlx prepare --check` so it cannot drift from the migrations.
+
 **Postgres is the only backend.** SQLite was targeted alongside it and has been dropped:
 supporting two backends bought portability nobody asked for and constrained the refresh
 path, which is the one place the storage layer has to be fast. There is no embedded
@@ -226,8 +237,8 @@ everything above the repository trait are pure and stay that way.
 **The repository trait stays, for a different reason.** It was there for backend
 portability, which is now moot. It remains because §Standards requires 95% unit coverage
 excluding corpus and live tests, so everything above the storage seam has to be testable
-with no database at all. Reading "one backend" and deleting the trait would put the policy
-engine behind a container.
+with no database at all. Reading "one backend, no ORM" and deleting the trait would put the
+policy engine behind a container.
 
 **Everything in the multi-instance section below is a production requirement**, not an
 optional extra for large deployments. Every deployment is Postgres, so refresh
@@ -813,12 +824,13 @@ reasoning, alternatives and consequences live in the files, not here.
 | 4 | [Quarantine](engineering_decisions/quarantine-filter-metadata.md) | Filter metadata on resolution, hard fail on pinned fetch |
 | 4b | [Cooldown vs. urgent fixes](engineering_decisions/cooldown-waivers-manual-only.md) | Manually reviewed version waivers only |
 | 5 | [License](engineering_decisions/license-apache-2.md) | Apache-2.0, DCO, trademark separate |
-| 6 | [Intel distribution](engineering_decisions/intel-distribution-fetch-from-origin.md) | None; fetch from origin. Postgres only |
+| 6 | [Intel distribution](engineering_decisions/intel-distribution-fetch-from-origin.md) | None; fetch from origin. Postgres only; ORM choice moved to #14 |
 | 7 | [NVD role](engineering_decisions/nvd-role-and-stream-capabilities.md) | `enrich`-only for npm/PyPI; per-ecosystem capability matrix |
 | 8 | [Package override tier](engineering_decisions/package-override-tier.md) | Superseded by [policy-tier-resolution](engineering_decisions/policy-tier-resolution.md): no floor, `packages` loosens only |
 | 13 | [Policy tiers and evaluation](engineering_decisions/policy-tier-resolution.md) | Global settings, per-package exceptions, decision vector; supersedes the old §5 and §5.5 |
 | 11 | [Config format](engineering_decisions/config-format-yaml-serde-saphyr.md) | YAML via `serde-saphyr`; schema forbids `#[serde(untagged)]` |
 | 12 | [HTTP stack](engineering_decisions/http-stack-axum-reqwest.md) | axum + reqwest; no fetch trait in Stage 1 |
+| 14 | [Storage](engineering_decisions/storage-sqlx-postgres.md) | sqlx over Postgres, no ORM; compile-time checked SQL with a checked-in `.sqlx/` cache |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 
 ### Staging
