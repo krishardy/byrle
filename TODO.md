@@ -1253,10 +1253,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [ ] The prefix-to-licence mapping is npm-only. A `CVE-` record can come from
             several OSV sources under different terms, so any code deciding an obligation
             from a prefix has to be scoped to npm or read `database_specific` instead.
-      - [ ] **NVD and Aikido not verified.** NVD's terms page did not return its terms to
-            an automated fetch and Aikido's public endpoint returned an empty body. A
-            blank in that table is a stream that cannot be built yet; someone has to read
-            the terms directly.
+      - [x] **NVD is public domain, 2026-09-13.** It compiles from other sources and
+            asserts no licence of its own. What we take from it is CVSS scores, which are
+            NIST's own analysis rather than text carried from a source.
+      - [ ] **Aikido not verified.** Its public endpoint returned an empty body to an
+            unauthenticated request. A blank in that table is a stream that cannot be
+            built yet; someone has to read the terms directly. It is now the only blank.
 - [x] **Measured what each stream is worth**, which reorders the plan's list.
       - [x] **The npm advisory database is a malware database.** Of 228,951 npm advisories
             in OSV, 221,548 (96.8%) are `MAL-` records and 7,401 are `GHSA-`. So
@@ -1311,7 +1313,8 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `an_osv_finding_and_a_kev_entry_do_not_join_on_the_ids_they_carry`. The alias set
       changes `enriched_by`'s signature, so land it before a second stream is built.
 - [ ] `[!]` GitHub Advisory stream (GraphQL, token auth)
-- [ ] `[!]` Aikido Intel stream — free, public, no account; highest-value non-OSV feed
+- [ ] `[!]` Aikido Intel stream — free, public, no account; highest-value non-OSV feed.
+      **Blocked: data licence not verified**, and now the only stream that is.
 - [ ] OSSF Malicious Packages stream (licence-cleared: Apache-2.0) — publishes natively in OSV format, so it reuses
       the OSV normalization path rather than needing its own
 - [ ] Datadog malicious-packages — **check OSSF overlap first**; Datadog contributes
@@ -1320,7 +1323,8 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed) — `enrich`-only, joined on
       exact CVE ID. Last in the build order: 13 npm CVEs of 6,032, and it needs the alias
       set before it can reach an OSV finding at all.
-- [ ] NVD stream — `enrich`-only for npm/PyPI, joined on exact CVE ID
+- [ ] NVD stream (licence-cleared: public domain, nothing owed) — `enrich`-only for
+      npm/PyPI, joined on exact CVE ID
 - [ ] NVD enrichment runs as a background job, never on the hot path
 - [ ] Revisit NVD `match` capability if/when the Maven adapter is scoped
 - [ ] Configurable severity precedence when streams disagree on CVSS

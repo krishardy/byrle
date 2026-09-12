@@ -18,7 +18,7 @@ stream actually contributes, which does not match the order the plan lists them 
 | GitHub Advisory (GHSA) | n/a | **CC-BY-4.0** | **required** |
 | OSSF Malicious Packages | Apache-2.0 | **Apache-2.0** | notice retention |
 | CISA KEV | n/a | **CC0 1.0** | none |
-| NVD | n/a | **not verified** | not verified |
+| NVD | n/a | **public domain** | none |
 | Aikido Intel | n/a | **not verified** | not verified |
 
 ### OSV's sources, and which two reach npm
@@ -89,13 +89,20 @@ OSSF Malicious Packages and CISA KEV were read by a person (2026-09-13). Both mo
 - **CISA KEV is CC0 1.0**, an explicit public-domain dedication rather than the 17 USC 105
   inference recorded here before. It removes the question of what covers the compiled
   catalogue as opposed to the US-authored works in it. No attribution is owed.
+- **NVD is public domain.** It compiles from other sources and asserts no licence of its
+  own, so nothing is owed. What we would take from it is CVSS scores, which are NIST's own
+  analysis rather than text carried over from a source, so the compiled-from-elsewhere
+  point does not reach our use of it.
 
 ### Not verified, and why that is recorded rather than guessed
 
-NVD's terms page did not return its terms to an automated fetch, and Aikido's public API
-endpoint returned an empty body to an unauthenticated request. Neither is implemented, and
-neither should be until someone reads the terms directly. Recording "not verified" is the
-point of the check: a blank in this table is a stream that cannot be built yet.
+Aikido's public API endpoint returned an empty body to an unauthenticated request. It is
+not implemented, and should not be until someone reads the terms directly. Recording "not
+verified" is the point of the check: a blank in this table is a stream that cannot be
+built yet.
+
+Aikido is the last blank. Every other stream in the plan is now cleared, so licensing has
+stopped being what gates the intel layer.
 
 ## What each stream is worth, measured
 
@@ -152,9 +159,9 @@ NVD and Aikido stay unimplemented until their terms are read by a person.
 ## What the capability types are worth today
 
 Nothing yet. Of the three capabilities, `match` and `malware` are what OSV provides, and
-`enrich`, the one the type separation exists to constrain, has no implemented producer:
-NVD and Aikido are unread, and KEV, though now licence-cleared, is third in the order
-above. The separation is built now
+`enrich`, the one the type separation exists to constrain, has no implemented producer.
+NVD and KEV are both cleared to be built and both are `enrich`, so that changes: the
+constraint stops being hypothetical as soon as either lands. The separation is built now
 because retrofitting it after three streams share a record type is more work than starting
 with two types.
 
