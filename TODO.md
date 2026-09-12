@@ -599,10 +599,25 @@ implementations.
             during an install.
       - [ ] Recheck that per client and per ecosystem. It is pacote's behaviour, not
             protocol, and pnpm, yarn and PyPI are untested.
-- [ ] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
+- [~] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
       not ready (mirror warming, all requests) · **429** we are ready but this one
-      artifact is under analysis
-- [ ] `[!]` Never 4xx-that-reads-as-a-block for a not-ready state (same rule as cold start)
+      artifact is under analysis.
+      - [x] 502 is implemented and tested, for every request kind. The
+            `WAHAROA_CA_BUNDLE_EXCLUSIVE` handshake failure exercises it against a real
+            registry as well.
+      - [ ] 503 and 429 have no cause in Stage 1: there is no mirror to warm and nothing
+            analyses, so implementing either means inventing the trigger. Stage 2, with
+            the mirror and the analysis queue. What the codes have to be when they exist
+            is measured in `docs/engineering_decisions/deferral-status-codes.md`.
+- [x] `[!]` Never 4xx-that-reads-as-a-block for a not-ready state (same rule as cold
+      start). Held by a test that enumerates the statuses the proxy produces of its own
+      accord: 502 for an unreachable upstream on every request kind, 200 for health, and
+      one 4xx, the policy refusal. Codes forwarded from upstream are the registry's answer
+      and are covered separately.
+      - [x] The refusal status cannot be seated outside 400..=599: `RefusalStatus` is only
+            built by `parse`, which refuses anything else, or by `default`, which is 403.
+            That is why there is no configuration surface for a not-ready state to acquire
+            a 4xx through.
 - [ ] Per-client code selection inferred from user-agent (already parsed for dialect);
       shipped table of known clients, operator-forceable global override
 - [ ] Unknown user-agent falls back to **503** — fail toward the more widely retried code
