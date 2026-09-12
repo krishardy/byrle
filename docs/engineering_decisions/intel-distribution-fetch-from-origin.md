@@ -18,9 +18,10 @@ is Postgres-only and is what loading hundreds of thousands of advisory rows want
 
 Development and tests use Postgres in a container rather than an embedded backend.
 
-**Whether SeaORM is still the right choice is open.** Its justification in the plan was
-one codebase for two backends, and there is now one backend. It already served the lookup
-path only, since bulk refresh bypasses it for raw sqlx. Not decided here.
+**SeaORM is not used.** Its justification was one codebase for two backends, and there is
+now one backend. Storage is sqlx directly; see
+[storage-sqlx-postgres](storage-sqlx-postgres.md), which supersedes the ORM half of this
+document.
 
 ## Rationale
 
@@ -39,9 +40,8 @@ binary.
   tests, so the policy engine and everything above the storage seam has to be testable
   with no database at all. Reading "one backend" and deleting the trait would put the
   policy engine behind a container.
-- **Bulk refresh does not go through an ORM.** It uses raw sqlx, because ORM inserts are
-  too slow for hundreds of thousands of rows. Postgres-only makes `COPY FROM STDIN`
-  available here, which two-backend support ruled out.
+- **Bulk refresh uses `COPY FROM STDIN`**, which Postgres-only makes available and
+  two-backend support ruled out. There is no ORM to bypass any more.
 - **Refresh must be atomic.** Build into a temp table and swap. A failed refresh must
   never leave a half-populated advisory set that under-blocks silently. Postgres has
   transactional DDL, so the swap is an ordinary transaction.
