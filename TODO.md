@@ -315,7 +315,12 @@ implementations.
             `RequestTarget::Tarball` therefore carries `claimed_version`, not a
             `PackageRef`. Resolving it needs the packument record, which is the
             `dist.integrity`-before-fetch item below.
-      - [ ] Make the npm/yarn/pnpm packument tarbar url rewrite behaviour a feature flag.
+      - [x] Make the packument tarball URL rewriting a feature flag. Global, not per
+            client: `WAHAROA_REWRITE_ARTIFACTS=0` turns it off for every client at once,
+            which keeps one behaviour for the ecosystem rather than a user-agent table to
+            maintain. The proxy warns at startup when it is off, because pnpm, yarn and
+            bun then fetch artifacts without it seeing them, and `make smoke-clients`
+            fails in that state, which is how the flag is tested.
       - [ ] `versions_with_install_scripts` in the log counts every version in the
             document, not the version being installed. Stage 2 needs the resolved
             version's answer, which needs the tarball request correlated against the

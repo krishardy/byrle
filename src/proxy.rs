@@ -14,8 +14,9 @@
 //! [`crate::npm::rewrite_artifact_origins`] for why, and what it costs.
 //!
 //! The rewrite exists because clients disagree about `dist.tarball`. npm rewrites it to
-//! the configured registry; pnpm 10 and yarn 1 use it verbatim and fetch from whatever
-//! host it names, so without this their artifacts never reach the proxy at all. See
+//! the configured registry; pnpm 10, yarn 1, yarn 4 and bun 1.3 use it verbatim and
+//! fetch from whatever host it names, so without this their artifacts never reach the
+//! proxy at all. See
 //! `docs/engineering_decisions/packument-tarball-url-rewriting.md`.
 //!
 //! Normalising reads the decoded original, never the rewritten copy. Records built from
@@ -42,7 +43,8 @@
 //! size cap; it cannot be decoded; it cannot be normalised; it cannot be re-serialised;
 //! and, per version, an artifact on an origin the proxy does not front. Stage 1 forwards
 //! in all of them rather than failing an install. Stage 2 has to decide whether that
-//! stays acceptable, because for pnpm and yarn it means the bytes are never seen.
+//! stays acceptable, because for every client except npm it means the bytes are never
+//! seen.
 
 use crate::http::{
     DEFAULT_MAX_PACKUMENT_BYTES, DecodeError, RequestedEncoding, decode_for_parsing,
