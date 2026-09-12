@@ -618,8 +618,24 @@ implementations.
             registry host"), so that host is discarded unconditionally and cannot route a
             client anywhere. `homepage`, `repository.url` and `bugs.url` are not fetched
             during an install.
-      - [ ] Recheck that per client and per ecosystem. It is pacote's behaviour, not
-            protocol, and pnpm, yarn and PyPI are untested.
+      - [x] Rechecked per client: `make offsite-urls`. A registry serves a working
+            package whose `dist.attestations.url`, `dist.signatures`, `homepage`,
+            `repository.url` and `bugs.url` all point at a second server that answers 404
+            and logs what it was asked for.
+            **All five clients installed and none of them made a single request to it.**
+            So of the packument fields that carry a URL and could plausibly be fetched
+            during an install, `dist.tarball` is the one that routes it, for every client
+            rather than for npm alone. Manual target, like `make retry-matrix`; nothing
+            runs it automatically.
+            Measured fields only: a packument has other URL-bearing fields that this does
+            not put a recorder behind.
+            - [x] `npm audit signatures` asks the **configured registry** for
+                  `/-/npm/v1/keys` and never contacts the host the packument named. It
+                  stops at `EMISSINGSIGNATUREKEY` before the attestations fetch, because
+                  the fixture has no real signing key, so this narrows where npm looks
+                  without settling what it does with a valid one. Source is still the
+                  basis for that half.
+            - [ ] PyPI is Stage 3, with its own metadata shape.
 - [~] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
       not ready (mirror warming, all requests) · **429** we are ready but this one
       artifact is under analysis.
@@ -895,6 +911,11 @@ implementations.
             a body and a 304 has none. Safe when the client cached those bytes through
             this proxy, which is the only way it holds a copy it did not fetch directly.
             Same family as the item above, one layer down.
+      - [ ] A dependency specified as a git or http(s) URL rather than a version range
+            is fetched from wherever it names, by every client, and never touches a
+            packument at all. That is a different path from `dist.tarball` and the origin
+            policy does not see it. Not measured; `make offsite-urls` covers the fields
+            inside a packument, not the specifiers in a manifest.
       - [x] yarn 2+ and bun tested. Both added to `make dev-setup` as optional, and to
             `make smoke-clients`, which now covers five clients.
             - [x] **Both use `dist.tarball` as written**, like pnpm and yarn 1. npm is the
