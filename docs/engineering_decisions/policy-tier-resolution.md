@@ -25,12 +25,6 @@ subgraph Young_Package_Check
   Package_Has_A_Young_Package_Exception
 end
 
-subgraph N-1_Check
-  N-1_Restriction_Enabled
-  Is_Package_Version_N-1
-  Package_Has_N-1_Exception
-end
-
 subgraph KEV_Check
   Is_There_A_KEV
   Package_Has_A_KVE_Exception
@@ -75,16 +69,9 @@ Is_Known_Malware --YES--> DISPOSITION_FORBID
 Is_Known_Malware --NO--> Is_Package_Too_Young
 
 Is_Package_Too_Young --YES--> Package_Has_A_Young_Package_Exception
-Is_Package_Too_Young --NO--> N-1_Restriction_Enabled
-Package_Has_A_Young_Package_Exception --YES--> N-1_Restriction_Enabled
+Is_Package_Too_Young --NO--> Is_There_A_KEV
+Package_Has_A_Young_Package_Exception --YES--> Is_There_A_KEV
 Package_Has_A_Young_Package_Exception --NO--> DISPOSITION_FORBID
-
-N-1_Restriction_Enabled --YES--> Is_Package_Version_N-1
-N-1_Restriction_Enabled --NO--> Is_There_A_KEV
-Is_Package_Version_N-1 --YES--> Is_There_A_KEV
-Is_Package_Version_N-1 --NO--> Package_Has_N-1_Exception
-Package_Has_N-1_Exception --NO--> DISPOSITION_FORBID
-Package_Has_N-1_Exception --YES--> Is_There_A_KEV
 
 Is_There_A_KEV --YES--> Package_Has_A_KVE_Exception
 Package_Has_A_KVE_Exception --YES--> Is_There_A_CVE
@@ -107,7 +94,6 @@ Has_Install_Scripts --YES--> Package_Has_Install_Scripts_Exception
 Package_Has_Install_Scripts_Exception --YES--> Ecosystem_Policy_NPM_Passed
 Package_Has_Install_Scripts_Exception --NO--> DISPOSITION_FORBID
 Ecosystem_Policy_NPM_Passed --> DISPOSITION_ALLOW
-
 ```
 
 ### NOTES
@@ -121,8 +107,6 @@ The following settings are configurable in policy:
 5. Packages that are allowed even with specific numbered CVEs.
 6. Packages that are allowed to have install scripts (ecosystem-dependent, package-specific setting).
 7. Packages that are explicitly forbidden.
-8. Global non-bleeding-edge package (N-1) setting.
-9. Packages that are allowed to be on the newest (N) release.
 
 ## The policy file
 
@@ -193,6 +177,17 @@ The chart's two dispositions are the delivery projection of these: FORBID is
 `{quarantine, block}`, ALLOW is `allow`. `explain` has to report which of the three, or an
 operator cannot tell a refusal that will lift by itself from one that will not.
 
+`quarantine` lapses without anyone doing anything: a young package ages. That is what
+separates it from `block`, and why collapsing the two into one disposition would lose the
+thing an operator most needs to know.
+
+**It is a packument filter, not an artifact refusal.** A version that is too young is
+removed from the document the client resolves against, so the client picks an older one by
+itself rather than failing. That is
+[quarantine-filter-metadata](quarantine-filter-metadata.md), and Stage 1 already built
+the mechanism as `npm::filter_unservable_versions`. `block` is the other shape: the
+artifact is refused when asked for.
+
 `warn` is not in the lattice. Nothing delivers-with-a-concern: provenance, the one
 candidate, is a recorded attribute rather than an action.
 
@@ -258,6 +253,7 @@ violation**, and **specificity is strict subset containment, not a score**.
 | `ecosystems`, `EcosystemRules` | deleted. |
 | `ScriptDetail`, `ScriptRule`'s hand-written `Deserialize` | deleted. |
 | `Action::Warn` | deleted. |
+| `npm::filter_unservable_versions` | reused. `quarantine` is a packument filter, which is what it already does. |
 
 `ScriptRule` is polymorphic only because its detailed form carried the acknowledgment, and
 nothing acknowledges now. A `packages` entry carries its own `reason` and `expires` at
@@ -270,9 +266,6 @@ next polymorphic field will need the hand-written form.
 
 ## Still open
 
-- **`max_cvss` as a number against the chart's CRITICAL / HIGH / MEDIUM / LOW bands.**
-  Bands are not stable across CVSS versions; the same score falls in different bands under
-  v2 and v3. A number says what it means.
 - **Inferred, not stated:** that `install_scripts` and `kev` take `block` or `allow` and
   nothing else. `quarantine` is meaningless for both, since waiting does not change
   whether a package has an install script or a KEV.
