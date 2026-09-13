@@ -14,7 +14,8 @@ use sqlx::PgPool;
 use waharoa::intel::load::Snapshot;
 use waharoa::intel::osv::{self, Parsed, Rows};
 use waharoa::intel::postgres::{Loaded, PgIntel};
-use waharoa::intel::store::{Intel, IntelError};
+use waharoa::intel::refresh::StreamDigest;
+use waharoa::intel::store::{Intel, IntelError, LoadedSnapshot};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
@@ -251,15 +252,36 @@ async fn the_newest_snapshot_is_the_one_reported() {
     let intel = skip_without_database!("t_snapshot");
     insert(
         &intel,
-        "INSERT INTO intel_snapshot (digest, taken_at, streams) VALUES \
-         ('older', '2026-01-01T00:00:00Z', '{}'), \
-         ('newer', '2026-09-13T00:00:00Z', '{}')",
+        r#"INSERT INTO intel_snapshot (digest, taken_at, streams) VALUES
+         ('older', '2026-01-01T00:00:00Z', '{}'),
+         ('newer', '2026-09-13T01:02:03.456Z',
+          '{"osv-npm": {"sha256": "ab", "etag": "e1", "last_modified": null},
+            "cisa-kev": {"sha256": "cd", "etag": null, "last_modified": "Sun, 13 Sep 2026 00:00:00 GMT"},
+            "unhashed": {"etag": "e2"}}')"#,
     )
     .await;
 
     assert_eq!(
         intel.snapshot().await.expect("query"),
-        Some("newer".to_owned())
+        Some(LoadedSnapshot {
+            digest: "newer".to_owned(),
+            taken_at: "2026-09-13T01:02:03Z".to_owned(),
+            streams: vec![
+                StreamDigest {
+                    stream: "cisa-kev".to_owned(),
+                    sha256: "cd".to_owned(),
+                    etag: None,
+                    last_modified: Some("Sun, 13 Sep 2026 00:00:00 GMT".to_owned()),
+                },
+                StreamDigest {
+                    stream: "osv-npm".to_owned(),
+                    sha256: "ab".to_owned(),
+                    etag: Some("e1".to_owned()),
+                    last_modified: None,
+                },
+            ],
+        }),
+        "sorted by stream, to the second in UTC, and a stream with no sha256 left out"
     );
 }
 
@@ -339,7 +361,7 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
         assert_eq!(hit[0].source, "osv");
     }
     assert_eq!(
-        intel.snapshot().await.expect("query"),
+        intel.snapshot().await.expect("query").map(|s| s.digest),
         Some("s1".to_owned())
     );
 }
@@ -407,7 +429,7 @@ async fn a_refresh_replaces_what_the_source_held() {
         1
     );
     assert_eq!(
-        intel.snapshot().await.expect("query"),
+        intel.snapshot().await.expect("query").map(|s| s.digest),
         Some("s2".to_owned())
     );
 }
@@ -451,7 +473,7 @@ async fn a_failed_refresh_leaves_the_previous_load_in_place() {
             .is_empty()
     );
     assert_eq!(
-        intel.snapshot().await.expect("query"),
+        intel.snapshot().await.expect("query").map(|s| s.digest),
         Some("s1".to_owned())
     );
 }
@@ -475,7 +497,7 @@ async fn the_same_bundle_loaded_twice_is_one_snapshot() {
         .expect("query");
     assert_eq!(snapshots, 1);
     assert_eq!(
-        intel.snapshot().await.expect("query"),
+        intel.snapshot().await.expect("query").map(|s| s.digest),
         Some("s1".to_owned())
     );
 }
@@ -929,7 +951,7 @@ async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
         1
     );
     assert_eq!(
-        intel.snapshot().await.expect("query"),
+        intel.snapshot().await.expect("query").map(|s| s.digest),
         Some("s1".to_owned())
     );
 }

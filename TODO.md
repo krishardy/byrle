@@ -1441,6 +1441,10 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `pg_isready`, which answers during initdb's temporary server, before the real one
       accepts connections. Both failed on 2026-09-13 with `expected to read 5 bytes, got 0
       bytes at EOF` and passed on rerun. It will be a CI flake.
+- [ ] `the_only_4xx_this_proxy_produces_is_a_policy_refusal` (`src/proxy.rs`) binds a port,
+      drops the listener and expects the port to refuse connections. Failed once on
+      2026-09-14 while coverage, lint, kani and the integration tests ran at once, and
+      passed 3 of 3 alone. Another process can take the freed port. It will be a CI flake.
 - [ ] `src/intel/postgres.rs` counts toward the unit coverage floor at 0% (104 lines). Library
       total is 96.58% lines with it. Decide whether it joins the exclusion for live tests.
 - [x] `[!]` Tests that do not need a database must not require the container. Without
@@ -1450,9 +1454,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Atomic refresh. One source's rows are deleted and copied in one transaction
       rather than a temp-table swap. `a_failed_refresh_leaves_the_previous_load_in_place`,
       mutation-tested.
-- [~] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %.
+- [x] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %.
       503 is built: a store with no snapshot, or one that errors, answers 503 on both paths.
-      The readiness endpoint is not.
+      `GET /-/waharoa/ready` answers 503 in exactly those cases and reports the snapshot and
+      each stream's digest. No percentage: a refresh is one transaction, so there is no
+      partial load to measure. See
+      [readiness-endpoint](docs/engineering_decisions/readiness-endpoint.md).
 - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, privacy tradeoff documented
 
 ### Carried from Stage 1

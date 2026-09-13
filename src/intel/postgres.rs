@@ -7,7 +7,8 @@
 use super::load::{self, Snapshot};
 use super::osv::Rows;
 use super::range::Interval;
-use super::store::{Intel, IntelError, Lookup, PackageIntel, Record};
+use super::refresh::StreamDigest;
+use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
 use sqlx::{PgConnection, PgPool};
 use std::collections::HashMap;
 
@@ -150,12 +151,54 @@ impl Intel for PgIntel {
         })
     }
 
-    fn snapshot(&self) -> Lookup<'_, Option<String>> {
+    fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
         Box::pin(async move {
-            sqlx::query_scalar!("SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1")
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(IntelError::Backend)
+            // One row per stream of the newest snapshot, or one row with no stream when it
+            // records none.
+            let rows = sqlx::query!(
+                r#"
+                SELECT
+                    s.digest AS "digest!",
+                    to_char(s.taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
+                        AS "taken_at!",
+                    e.key AS "stream?",
+                    e.value ->> 'sha256' AS "sha256?",
+                    e.value ->> 'etag' AS "etag?",
+                    e.value ->> 'last_modified' AS "last_modified?"
+                FROM (
+                    SELECT digest, taken_at, streams
+                    FROM intel_snapshot
+                    ORDER BY taken_at DESC
+                    LIMIT 1
+                ) s
+                LEFT JOIN LATERAL jsonb_each(s.streams) e ON TRUE
+                ORDER BY e.key
+                "#
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(IntelError::Backend)?;
+
+            let Some(first) = rows.first() else {
+                return Ok(None);
+            };
+            Ok(Some(LoadedSnapshot {
+                digest: first.digest.clone(),
+                taken_at: first.taken_at.clone(),
+                // Refresh records a sha256 for every stream, so one without is not reported
+                // as if it had been verified.
+                streams: rows
+                    .iter()
+                    .filter_map(|row| {
+                        Some(StreamDigest {
+                            stream: row.stream.clone()?,
+                            sha256: row.sha256.clone()?,
+                            etag: row.etag.clone(),
+                            last_modified: row.last_modified.clone(),
+                        })
+                    })
+                    .collect(),
+            }))
         })
     }
 
