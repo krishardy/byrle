@@ -1,0 +1,11 @@
+Compare two policies over the audit log's packages. Exits 1 on any loosening
+
+Usage: waharoa policy diff [OPTIONS] <FROM> <TO>
+
+Arguments:
+  <FROM>  The policy in force
+  <TO>    The policy that would replace it
+
+Options:
+      --as-of <YYYY-MM-DD>  Judge both policies as of this date [default: today, UTC]
+  -h, --help                Print help

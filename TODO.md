@@ -171,6 +171,14 @@ Items that I've added that are not stage-bound.
       [intel-schema-keys-and-types](docs/engineering_decisions/intel-schema-keys-and-types.md).
       A database that applied the old migrations has to be dropped and refreshed.
 15. Evaluate command line parsers for Rust, and migrate to the selected one.
+    - Decided 2026-09-13: clap 4.6.6, default features off, derive. 4 crates added, against
+      lexopt's 1 and default clap's 11.
+    - Done 2026-09-13: parsing is `src/cli.rs`, unit-tested; help pinned by
+      `tests/fixtures/cli/`. Fixed in passing: `--as-of 2026-01-01` was a usage error, a
+      repeated `--as-of` and unknown flags were ignored, `explain --help` was read as a purl,
+      `--version` was an unknown command. See
+      [cli-parser-clap](docs/engineering_decisions/cli-parser-clap.md).
+16. The environment variables, defaults, usage info, loading and parsing should be extracted into a central environment variable module. You should not have any environment variable name in more than one place in the application.
 
 ## Stage 1 — Pass-through proxy (transport)
 
