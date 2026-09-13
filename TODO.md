@@ -1031,6 +1031,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] **A denial naming no version does not load.** It would match nothing and read
             as a package that had been dealt with. `PolicyError::DenialNeedsAVersion` says
             what to write instead.
+      - [x] **Enforced on a pinned artifact fetch**, verified against the real registry:
+            403 with the reason for the denied version, 200 for another version of the
+            same package.
+      - [ ] `[!]` Resolution-path filtering, so a refused version is dropped from the
+            packument and the resolver picks a clean one. Until it lands, a denial only
+            bites a client that already pinned the version.
 - [ ] `[!]` Known malware. Not configurable and not exceptable: behaviour, not policy.
       Needs a `malware`-capable stream, which is gated separately below.
 - [~] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
@@ -1047,6 +1053,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             `asking_for_cooldown_on_an_abbreviated_record_fails_every_package`: lodash
             4.17.21, published 2021 and years past any cooldown, quarantines on the
             abbreviated record and passes on the full one.
+      - [x] **A cooldown of zero did not turn the check off.** `is_some_and` short
+            circuits on a missing publish date, so `cooldown_days: 0`, which is how an
+            operator disables the check, still failed every package the registry published
+            no time for. Zero days of waiting is satisfied by everything.
+      - [x] **An unanswerable check is dropped and reported, never silently passed.**
+            `enforce::unenforceable` drops `cooldown_days` when the record cannot answer
+            it, and startup says which settings are configured and inert. Without the
+            drop, configuring any policy refused every artifact.
       - [ ] `[!]` Fetch the full packument on the proxy's own behalf, per package.
             `FULL_ACCEPT` exists for exactly this. It is a second request per package on
             the `npm install` path, not a flag on the existing one: the client asked for
@@ -1075,9 +1089,8 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       something other than the package.
 - [~] `[!]` `install_scripts`. `block` or `allow`. Global setting, asked of every
       ecosystem, reporting not-applicable where the ecosystem has no install step.
-      Decided and turned into a refusal; not yet wired into the proxy. Measured to be
-      silent in normal operation: 0 of 138 packages in a real `express + eslint` tree
-      declare one.
+      Enforced on a pinned artifact fetch. Measured to be silent in normal operation: 0
+      of 138 packages in a real `express + eslint` tree declare one.
 
 ### Package tier
 

@@ -65,6 +65,36 @@ impl Refusal {
     }
 }
 
+/// A check this build cannot answer, because the fact it needs is not there.
+///
+/// Not the same as a check that passed. `decide` answers every check in the vector, and
+/// for a missing fact it answers in the safe direction: an unknown publish date is not
+/// old enough, so `cooldown_days` fails. That is right for the engine and wrong for a
+/// proxy, where it refuses every package on a fact the registry never sent.
+///
+/// So the result is dropped here rather than reported as a pass, and the reason is
+/// carried out so startup can say which settings are configured and inert. A check that
+/// quietly became a pass would be the worse failure.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Unenforceable {
+    pub check: Check,
+    pub why: &'static str,
+}
+
+/// The checks this build cannot answer for a record.
+pub fn unenforceable(policy: &Policy, record: &PackageRecord) -> Vec<Unenforceable> {
+    let mut out = Vec::new();
+    if policy.cooldown_days > 0
+        && let super::facts::Answerable::Missing(why) = Facts::can_answer_cooldown(record)
+    {
+        out.push(Unenforceable {
+            check: Check::CooldownDays,
+            why,
+        });
+    }
+    out
+}
+
 /// Decide a pinned artifact request.
 ///
 /// `None` for the policy is Stage 1 behaviour: nothing is enforced and everything
@@ -75,7 +105,13 @@ pub fn artifact(policy: Option<&Policy>, record: &PackageRecord, today: Date) ->
         return Verdict::Serve;
     };
     let facts = Facts::from_record(record);
-    let decision = decide(policy, &facts, today);
+    let mut decision = decide(policy, &facts, today);
+
+    let dropped = unenforceable(policy, record);
+    decision
+        .results
+        .retain(|r| !dropped.iter().any(|d| d.check == r.check));
+
     verdict(&facts, &decision)
 }
 
@@ -247,6 +283,82 @@ mod tests {
             "the block leads: {:?}",
             refusal.reasons
         );
+    }
+
+    fn abbreviated() -> PackageRecord {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/npm/lodash-4.17.21.abbrev.json"
+        );
+        normalize_packument(
+            &std::fs::read(path).expect("fixture is missing"),
+            PackumentDetail::Abbreviated,
+        )
+        .expect("fixture should normalise")
+        .version("4.17.21")
+        .expect("version is in the fixture")
+        .clone()
+    }
+
+    /// The abbreviated packument is what `npm install` asks for and what the proxy
+    /// fetches on its own behalf, so this is every record the build holds. Without the
+    /// drop, a configured `cooldown_days` refuses all of them on a fact the registry
+    /// never sent.
+    #[test]
+    fn a_cooldown_that_cannot_be_answered_is_dropped_rather_than_failed() {
+        let policy = loaded("version: 1\ncooldown_days: 30\n");
+
+        assert_eq!(
+            unenforceable(&policy, &abbreviated()),
+            [Unenforceable {
+                check: Check::CooldownDays,
+                why: "the abbreviated packument carries no publish times",
+            }]
+        );
+        assert_eq!(artifact(Some(&policy), &abbreviated(), TODAY), Verdict::Serve);
+    }
+
+    /// Dropping the check must not drop the rest of the vector.
+    #[test]
+    fn a_denial_still_refuses_an_abbreviated_record() {
+        let policy = loaded(
+            "version: 1\ncooldown_days: 30\n\
+             denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
+        );
+
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &abbreviated(), TODAY) else {
+            panic!("the denial must survive the cooldown being dropped");
+        };
+        assert_eq!(refusal.action, Action::Block);
+        assert_eq!(refusal.reasons, ["denials: this exact version is denied"]);
+    }
+
+    /// A record that can answer is not dropped, so the check still bites where the fact
+    /// exists.
+    #[test]
+    fn a_full_record_still_has_its_cooldown_enforced() {
+        let mut r = record();
+        r.published_at = Some(
+            "2026-09-12T00:00:00Z"
+                .parse()
+                .expect("timestamp should parse"),
+        );
+        let policy = loaded("version: 1\ncooldown_days: 30\n");
+
+        assert!(unenforceable(&policy, &r).is_empty());
+        assert!(matches!(
+            artifact(Some(&policy), &r, TODAY),
+            Verdict::Refuse(_)
+        ));
+    }
+
+    /// A cooldown of zero is off, so there is nothing to report as unenforceable.
+    #[test]
+    fn a_cooldown_of_zero_is_not_reported_as_unenforceable() {
+        let policy = loaded("version: 1\ncooldown_days: 0\n");
+
+        assert!(unenforceable(&policy, &abbreviated()).is_empty());
+        assert_eq!(artifact(Some(&policy), &abbreviated(), TODAY), Verdict::Serve);
     }
 
     #[test]

@@ -77,7 +77,7 @@ const DEBUG_USAGE: &str = "";
 ///
 /// Every failure here stops the process. An operator who pointed at a policy and got a
 /// running proxy would reasonably believe it was in force.
-fn report_policy(path: &std::path::Path) {
+fn report_policy(path: &std::path::Path) -> std::sync::Arc<Policy> {
     let policy = Policy::load(path).unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
 
     let today = jiff::Zoned::now().date();
@@ -87,7 +87,7 @@ fn report_policy(path: &std::path::Path) {
         .unwrap_or(packages::DEFAULT_EXPIRY_CEILING_DAYS);
     packages::check(&policy, today, ceiling).unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
 
-    warn!(
+    info!(
         path = %path.display(),
         cooldown_days = policy.cooldown_days,
         max_cvss = policy.max_cvss,
@@ -95,8 +95,30 @@ fn report_policy(path: &std::path::Path) {
         kev = %policy.kev,
         denials = policy.denials.len(),
         exceptions = policy.packages.len(),
-        "policy loaded and validated, and NOT enforced: nothing consults it yet"
+        "policy loaded and validated"
     );
+
+    // What is configured and what can actually fire are different things, and the gap
+    // has to be said out loud rather than discovered by a package getting through.
+    warn!(
+        "ENFORCED on a pinned artifact fetch: denials, install_scripts. Resolution-path \
+         filtering is not implemented, so a version this policy refuses is still offered \
+         to the resolver"
+    );
+    if policy.cooldown_days > 0 {
+        warn!(
+            cooldown_days = policy.cooldown_days,
+            "NOT ENFORCED: cooldown_days. npm publishes version timestamps only in the \
+             full packument, and the proxy fetches the abbreviated one, so no record \
+             carries a publish date to measure against"
+        );
+    }
+    if policy.max_cvss < f64::INFINITY || policy.kev == waharoa::policy::Action::Block {
+        warn!(
+            "NOT ENFORCED: max_cvss and kev. No advisory stream is built, so nothing can \
+             originate a finding and neither check has anything to read"
+        );
+    }
 
     // An entry that changes nothing is valid and worth saying out loud, because it is
     // almost always a selector that no longer matches what it was written for.
@@ -110,6 +132,8 @@ fn report_policy(path: &std::path::Path) {
             );
         }
     }
+
+    std::sync::Arc::new(policy)
 }
 
 /// A comma-separated environment variable, blanks dropped./// A comma-separated environment variable, blanks dropped.
@@ -492,12 +516,10 @@ async fn main() -> std::process::ExitCode {
     // Loaded, validated and reported. Not consulted for any decision: the engine is
     // Stage 2 work in progress, and a policy that silently did nothing would be worse
     // than no policy at all, so the log says so every time.
-    if let Some(path) = std::env::var("WAHAROA_POLICY")
+    let policy = std::env::var("WAHAROA_POLICY")
         .ok()
         .filter(|p| !p.is_empty())
-    {
-        report_policy(std::path::Path::new(&path));
-    }
+        .map(|path| report_policy(std::path::Path::new(&path)));
 
     let proxy = Proxy::new(client, upstream)
         .with_refusal_status(refusal)
@@ -510,6 +532,7 @@ async fn main() -> std::process::ExitCode {
         // dropped would leave them believing those artifacts are covered.
         .unwrap_or_else(|e| panic!("origin configuration: {e}"))
         .with_max_concurrent_packuments(max_concurrent)
+        .with_policy(policy)
         .with_blocked(blocked)
         .with_max_packument_bytes(max_packument_bytes)
         .with_max_records(max_records)
