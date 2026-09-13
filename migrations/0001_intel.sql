@@ -80,16 +80,28 @@ CREATE UNIQUE INDEX advisory_affected_unique
     ON advisory_affected (advisory_id, ecosystem, name, COALESCE(version, ''));
 CREATE INDEX advisory_affected_lookup ON advisory_affected (ecosystem, name);
 
--- What the mirror holds, so a verdict can name the intel it was reached against.
+-- What the mirror contains, so a verdict can record the intel it used.
 --
--- One row per distinct bundle.
+-- One row per distinct set of rows across every source. See
+-- docs/engineering_decisions/snapshot-identity.md.
 CREATE TABLE intel_snapshot (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     -- What the plan calls `intel_snapshot_id`, the audit log records, and
-    -- `policy diff --snapshot` will pin: `sha256:` and 64 hex digits. See
-    -- `refresh::snapshot`.
+    -- `policy diff --snapshot` will select: `sha256:` and 64 hex digits over every
+    -- `intel_source.digest`. See `load::snapshot_id`.
     digest      VARCHAR(71) NOT NULL UNIQUE,
     taken_at    TIMESTAMPTZ NOT NULL,
-    -- Per-stream digests, so two proxies can agree they hold the same thing.
+    -- The bundles every source's rows were read from, by stream. Recorded, not hashed.
+    streams     JSONB NOT NULL
+);
+
+-- One row per source in the mirror. A refresh replaces its own source's row, then hashes
+-- every row's digest into the snapshot id.
+CREATE TABLE intel_source (
+    id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source      VARCHAR(32) NOT NULL UNIQUE,
+    -- `sha256:` and 64 hex digits over the source's rows. See `load::encode`.
+    digest      VARCHAR(71) NOT NULL,
+    -- The bundles the rows were read from, by stream.
     streams     JSONB NOT NULL
 );

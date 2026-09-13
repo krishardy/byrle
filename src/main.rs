@@ -576,7 +576,7 @@ async fn package_intel(
 /// Connect, migrate, fetch, load, exit. Nothing is written unless every record in the bundle
 /// reads, so a broken bundle leaves the previous load in place.
 async fn run_refresh() -> std::process::ExitCode {
-    use waharoa::intel::{osv, postgres::PgIntel, refresh};
+    use waharoa::intel::{load, osv, postgres::PgIntel, refresh};
 
     let Some(url) = or_exit(env::process().database_url()) else {
         eprintln!(
@@ -613,15 +613,15 @@ async fn run_refresh() -> std::process::ExitCode {
             return std::process::ExitCode::from(1);
         }
     };
-    let snapshot = refresh::snapshot(
-        &[refresh::StreamDigest {
+    let fetch = load::Fetch {
+        taken_at: jiff::Timestamp::now().to_string(),
+        streams: vec![refresh::StreamDigest {
             stream: refresh::NPM_STREAM.to_owned(),
             sha256: refresh::sha256_hex(&bytes),
             etag,
             last_modified,
         }],
-        &jiff::Timestamp::now().to_string(),
-    );
+    };
     drop(bytes);
 
     let intel = match sqlx::PgPool::connect(&url).await {
@@ -636,7 +636,7 @@ async fn run_refresh() -> std::process::ExitCode {
         return std::process::ExitCode::from(1);
     }
     let loaded = match intel
-        .replace_source(osv::SOURCE, &bundle.rows, &snapshot)
+        .replace_source(osv::SOURCE, &bundle.rows, &fetch)
         .await
     {
         Ok(loaded) => loaded,
@@ -651,7 +651,7 @@ async fn run_refresh() -> std::process::ExitCode {
     println!("{:32} {:>8}", "aliases written", loaded.aliases);
     println!("{:32} {:>8}", "affected rows written", loaded.affected);
     println!("{:32} {:>8}", "ranges written", loaded.ranges);
-    println!("snapshot {}", snapshot.digest);
+    println!("snapshot {}", loaded.snapshot);
     println!("took {:.1}s", started.elapsed().as_secs_f64());
     std::process::ExitCode::SUCCESS
 }

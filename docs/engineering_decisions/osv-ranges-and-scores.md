@@ -173,5 +173,6 @@ The audit line for the lodash refusal:
 {"path":"pinned","ecosystem":"npm","name":"lodash","version":"4.17.21","action":"block","checks":["max_cvss"],"unenforceable":["kev"],"intel_snapshot":"sha256:cf3822e6036d97297ed303a25fd3330eab20d13671495aea49b5c435f0c3392f"}
 ```
 
-The snapshot id is the one the malware-only load recorded from the same bundle. It hashes the
+The snapshot id is the one the malware-only load recorded from the same bundle. It hashed the
 bundle bytes, not what a build's loader stored from them.
+[snapshot-identity](snapshot-identity.md) replaced it with a hash over the stored rows.

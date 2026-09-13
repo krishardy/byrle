@@ -6,7 +6,6 @@
 //! holding the bytes avoids a temp file to create, protect and remove. The two ceilings below
 //! bound what a broken or hostile upstream can make this allocate.
 
-use super::load::Snapshot;
 use super::osv::{self, Parsed, Rows, Skipped};
 use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read};
@@ -169,45 +168,14 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// One stream's bundle, as a snapshot records it.
+/// One stream's bundle, as a snapshot records it. Recorded, and part of no digest: the
+/// snapshot id is the digest of the rows. See `load::encode`.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StreamDigest {
     pub stream: String,
     pub sha256: String,
     pub etag: Option<String>,
     pub last_modified: Option<String>,
-}
-
-/// Name what was loaded.
-///
-/// The digest is the hash of the per-stream digests (plan §3), sorted by stream so the order
-/// streams were fetched in cannot change it. `taken_at`, the etag and `last-modified` are
-/// recorded and are not part of the digest, so two proxies holding the same bytes agree.
-pub fn snapshot(streams: &[StreamDigest], taken_at: &str) -> Snapshot {
-    let mut sorted: Vec<&StreamDigest> = streams.iter().collect();
-    sorted.sort_by(|a, b| a.stream.cmp(&b.stream));
-    let joined: String = sorted
-        .iter()
-        .map(|s| format!("{}:{}\n", s.stream, s.sha256))
-        .collect();
-    let recorded: serde_json::Map<String, serde_json::Value> = sorted
-        .iter()
-        .map(|s| {
-            (
-                s.stream.clone(),
-                serde_json::json!({
-                    "sha256": s.sha256,
-                    "etag": s.etag,
-                    "last_modified": s.last_modified,
-                }),
-            )
-        })
-        .collect();
-    Snapshot {
-        digest: format!("sha256:{}", sha256_hex(joined.as_bytes())),
-        taken_at: taken_at.to_owned(),
-        streams: serde_json::Value::Object(recorded).to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -231,15 +199,6 @@ mod tests {
             writer.write_all(bytes).expect("write entry");
         }
         writer.finish().expect("finish archive").into_inner()
-    }
-
-    fn stream(name: &str, sha256: &str) -> StreamDigest {
-        StreamDigest {
-            stream: name.to_owned(),
-            sha256: sha256.to_owned(),
-            etag: Some("\"e\"".to_owned()),
-            last_modified: None,
-        }
     }
 
     #[test]
@@ -404,26 +363,5 @@ mod tests {
             sha256_hex(b""),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
-    }
-
-    #[test]
-    fn the_snapshot_digest_depends_on_the_stream_digests_and_nothing_else() {
-        let a = snapshot(&[stream("osv/npm", "aa"), stream("osv/pypi", "bb")], "t1");
-        let reordered = snapshot(&[stream("osv/pypi", "bb"), stream("osv/npm", "aa")], "t2");
-        assert_eq!(
-            a.digest, reordered.digest,
-            "order and time are not identity"
-        );
-        // `intel_snapshot.digest` is VARCHAR(71).
-        assert!(a.digest.starts_with("sha256:"));
-        assert_eq!(a.digest.len(), 71);
-
-        let changed = snapshot(&[stream("osv/npm", "ab"), stream("osv/pypi", "bb")], "t1");
-        assert_ne!(a.digest, changed.digest);
-
-        let recorded: serde_json::Value = serde_json::from_str(&a.streams).expect("json");
-        assert_eq!(recorded["osv/npm"]["sha256"], "aa");
-        assert_eq!(recorded["osv/npm"]["etag"], "\"e\"");
-        assert_eq!(a.taken_at, "t1");
     }
 }

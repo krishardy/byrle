@@ -10,8 +10,8 @@
 
 Every intel table is keyed by `BIGINT GENERATED ALWAYS AS IDENTITY`, and tables join on it. A
 publisher's id, such as `GHSA-2234-fmw7-43wr`, is `advisory.publisher_id`, a sized column with
-a unique constraint. A snapshot's digest is `intel_snapshot.digest`, the same. Timestamps are
-`TIMESTAMPTZ`. `advisory.summary` is the only `TEXT` column, because OSV does not bound it.
+a unique constraint. A snapshot's digest is `intel_snapshot.digest`, the same, and a source's
+is `intel_source.digest`. Timestamps are `TIMESTAMPTZ`. `advisory.summary` is the only `TEXT` column, because OSV does not bound it.
 
 Strings are sized from the longest value in OSV's npm bundle of 2026-09-13, 228,951 records,
 with headroom for other ecosystems:
@@ -25,9 +25,8 @@ with headroom for other ecosystems:
 | `source`, `cvss_source` | 3, `osv` | `VARCHAR(32)` |
 | `digest` | 71, `sha256:` and 64 hex digits | `VARCHAR(71)`, no headroom |
 
-`digest` is exact because `refresh::snapshot` produces one width, and
-`the_snapshot_digest_depends_on_the_stream_digests_and_nothing_else` asserts it. Another hash
-fails the snapshot insert and needs a migration.
+`digest` is exact because `load::encode` and `load::snapshot_id` produce one width, and their
+tests assert it. Another hash fails the insert and needs a migration.
 
 A value longer than its column fails the refresh. The transaction rolls back, the previous
 load stays, and the error names the table, line and column from Postgres's `where` field:

@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO intel_source (source, digest, streams) VALUES ($1, $2, $3::text::jsonb) ON CONFLICT (source) DO UPDATE SET digest = EXCLUDED.digest, streams = EXCLUDED.streams",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "1129a8cbddfdc1f7386ed03b5b79b9326f6af302abe72e83846f0399188b11ec"
+}

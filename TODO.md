@@ -1238,8 +1238,10 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Evaluate two policies against a real package set. `src/policy/diff.rs`,
       `waharoa policy diff <from> <to>`.
 - [~] `[!]` Pin `--snapshot` so policy changes are not conflated with intel changes.
-      The flag is refused rather than accepted: nothing pins intel because no stream
-      exists, and accepting it silently would imply otherwise.
+      The flag is refused rather than accepted. Postgres keeps only the latest snapshot, so
+      there is no older one to select. Next: `waharoa refresh` writes each load's
+      `load::encode` bytes to a snapshot file, with a retention, and `--snapshot` reads one.
+      See `docs/engineering_decisions/snapshot-identity.md`.
 - [~] `[!]` Package set from lockfiles **and** from the audit log. The audit log is read
       (`audit::packages`): a `pinned` line names one version, a `resolution` line names
       every version it removed. Lockfiles are not read yet.
@@ -1375,9 +1377,13 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `GHSA-f23m-r3pf-42rh 6.5, GHSA-r5fr-rjxr-66jc 8.1, GHSA-xxjr-mmjv-4gpg 7.9`, and only
       the 7.9 blocked it. It now prints the advisories over the threshold that count, then
       the ones the entry excused.
-- [ ] The snapshot id hashes the bundle bytes only. The malware-only loader and this one
+- [x] The snapshot id hashes the bundle bytes only. The malware-only loader and this one
       stored different rows from the same bundle under the same id,
       `sha256:cf3822e6036d97297ed303a25fd3330eab20d13671495aea49b5c435f0c3392f`.
+      The id is now a hash over every source's stored rows (`load::encode`,
+      `load::snapshot_id`, `intel_source`). Live: two refreshes of one bundle recorded
+      `sha256:225131ada035512e110d0c18f027cb1832a200dfc231df294931e518d36c40b9` and one
+      `intel_snapshot` row. See `docs/engineering_decisions/snapshot-identity.md`.
 - [ ] `[!]` Deduplication across streams via alias reconciliation — before the policy
       engine, so one vuln never fires three rules. It also gates enrichment:
       `Finding::enriched_by` joins one id against one id, and OSV findings carry `GHSA-`

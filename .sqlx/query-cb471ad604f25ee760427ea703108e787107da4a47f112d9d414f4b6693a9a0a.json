@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO intel_snapshot (digest, taken_at, streams) SELECT $1, $2::text::timestamptz, COALESCE(jsonb_object_agg(e.key, e.value), '{}') FROM intel_source s CROSS JOIN LATERAL jsonb_each(s.streams) e ON CONFLICT (digest) DO UPDATE SET taken_at = EXCLUDED.taken_at, streams = EXCLUDED.streams",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cb471ad604f25ee760427ea703108e787107da4a47f112d9d414f4b6693a9a0a"
+}
