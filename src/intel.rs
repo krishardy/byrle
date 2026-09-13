@@ -35,6 +35,12 @@
 //! `enrich` capability this machinery exists to constrain has no implemented producer at
 //! all. See `docs/engineering_decisions/advisory-stream-licences.md`.
 
+pub mod load;
+pub mod osv;
+pub mod postgres;
+pub mod refresh;
+pub mod store;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 /// What a stream is trusted to say about one ecosystem.

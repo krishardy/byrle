@@ -75,6 +75,23 @@ if ! cargo audit --version >/dev/null 2>&1; then
     exit 1
 fi
 
+# RUSTSEC-2023-0071 is against `rsa`, which reaches Cargo.lock through `sqlx-mysql`.
+# We build Postgres only, so `rsa` is never compiled: `cargo tree -e normal --target all`
+# finds no `rsa`. cargo-audit reads the lockfile rather than the build, so it reports a
+# crate that is not shipped.
+#
+# The premise is asserted rather than trusted. Enabling a MySQL feature would put `rsa` in
+# the build and this check fails loudly instead of the ignore quietly covering it.
+note "RUSTSEC-2023-0071 premise: rsa is not compiled"
+if cargo tree -e normal --target all 2>/dev/null | grep -q 'rsa v'; then
+    echo "    rsa IS in the build. The RUSTSEC-2023-0071 exception no longer holds."
+    echo "    Remove the --ignore below and deal with the advisory."
+    failed=1
+else
+    echo "    ok: rsa is in Cargo.lock via sqlx-mysql and is not built"
+    audit_args+=(--ignore RUSTSEC-2023-0071)
+fi
+
 note "vulnerable dependencies (cargo audit)"
 
 # One probe, so the fallback is chosen by what actually happens rather than by guessing

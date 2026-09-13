@@ -250,10 +250,9 @@ per-ecosystem bundles to a public GCS bucket, GitHub Advisory is queried under t
 user's token, OSSF Malicious Packages is a git repo. We never host or redistribute
 intel. The artifact stays a single binary.
 
-**Refresh must be atomic.** Build into a temp table and swap, so a failed refresh never
-leaves a half-populated advisory set that silently under-blocks. Postgres has
-transactional DDL, so the swap is an ordinary transaction. The temp-table-and-rename dance
-SQLite needed is gone with SQLite.
+**Refresh must be atomic.** A failed refresh must never leave a half-populated advisory
+set that silently under-blocks. A load deletes one stream's rows and copies the new ones in
+one transaction. See [osv-malware-load](engineering_decisions/osv-malware-load.md).
 
 **Multi-instance**, which is a bigger change than the storage layer:
 
@@ -831,6 +830,9 @@ reasoning, alternatives and consequences live in the files, not here.
 | 11 | [Config format](engineering_decisions/config-format-yaml-serde-saphyr.md) | YAML via `serde-saphyr`; schema forbids `#[serde(untagged)]` |
 | 12 | [HTTP stack](engineering_decisions/http-stack-axum-reqwest.md) | axum + reqwest; no fetch trait in Stage 1 |
 | 14 | [Storage](engineering_decisions/storage-sqlx-postgres.md) | sqlx over Postgres, no ORM; compile-time checked SQL with a checked-in `.sqlx/` cache |
+| n/a | [sqlx version and `rsa` advisory](engineering_decisions/sqlx-0-8-and-rsa-advisory.md) | sqlx held at 0.8 until kani bundles rustc 1.94; RUSTSEC-2023-0071 ignored only while `rsa` is not compiled |
+| n/a | [OSV malware load](engineering_decisions/osv-malware-load.md) | npm `MAL-` records via `waharoa refresh`; `all.zip` read in memory; delete by source and `COPY` in one transaction |
+| n/a | [Intel in decisions](engineering_decisions/intel-in-decisions.md) | One store query per package; a store that cannot answer is a 503 |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 
 ### Staging

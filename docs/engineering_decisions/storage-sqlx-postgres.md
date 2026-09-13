@@ -1,7 +1,10 @@
 # Storage: sqlx over Postgres, no ORM
 
-- **Status:** Decided
+- **Status:** Implemented, lookup path only. `src/intel/store.rs` (trait),
+  `src/intel/postgres.rs`, `migrations/0001_intel.sql`, `tests/intel_postgres.rs`. Refresh
+  is not built.
 - **Plan reference:** decision #14
+- **Version:** sqlx 0.8. See [sqlx-0-8-and-rsa-advisory](sqlx-0-8-and-rsa-advisory.md)
 - **Supersedes:** the ORM half of [intel-distribution-fetch-from-origin](intel-distribution-fetch-from-origin.md)
 
 ## Decision

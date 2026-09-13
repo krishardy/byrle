@@ -42,9 +42,10 @@ binary.
   policy engine behind a container.
 - **Bulk refresh uses `COPY FROM STDIN`**, which Postgres-only makes available and
   two-backend support ruled out. There is no ORM to bypass any more.
-- **Refresh must be atomic.** Build into a temp table and swap. A failed refresh must
-  never leave a half-populated advisory set that under-blocks silently. Postgres has
-  transactional DDL, so the swap is an ordinary transaction.
+- **Refresh must be atomic.** A failed refresh must never leave a half-populated advisory
+  set that under-blocks silently. A load deletes one stream's rows and copies the new ones
+  in one transaction, rather than swapping tables; see
+  [osv-malware-load](osv-malware-load.md).
 - **Multi-instance concerns are production concerns**, not optional extras for large
   deployments: every deployment is Postgres. Refresh coordination needs advisory-lock
   leader election, or a separate `waharoa refresh` run as a cron job with the proxies

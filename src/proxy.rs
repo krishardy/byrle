@@ -56,6 +56,7 @@ use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::audit::{self, AuditLog};
+use crate::intel::store::{Intel, PackageIntel};
 use crate::policy::{Policy, enforce, facts};
 use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
@@ -206,6 +207,9 @@ pub struct Proxy {
     publish_times: Arc<Mutex<HashMap<PackageKey, Arc<facts::PublishTimes>>>>,
     /// One line per policy decision, when a path is configured.
     audit: Option<Arc<AuditLog>>,
+    /// The intel store, when one is configured. With a policy, every decision consults it,
+    /// and a store that cannot answer is a 503 rather than a serve. See [`intel_for`].
+    intel: Option<Arc<dyn Intel>>,
     max_packument_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`rewrite_packument`].
@@ -240,6 +244,7 @@ impl Proxy {
             policy: None,
             publish_times: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
+            intel: None,
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
             rewrite_artifacts: true,
             public_base: None,
@@ -346,6 +351,11 @@ impl Proxy {
 
     pub fn with_policy(mut self, policy: Option<Arc<Policy>>) -> Self {
         self.policy = policy;
+        self
+    }
+
+    pub fn with_intel(mut self, intel: Option<Arc<dyn Intel>>) -> Self {
+        self.intel = intel;
         self
     }
 
@@ -756,23 +766,37 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 // where the exact version and its record are both in hand, and it is
                 // still before a byte is fetched.
                 let times = publish_times_for(&proxy, key).await;
+                let intel = match intel_for(&proxy, key, &path_and_query).await {
+                    Ok(intel) => intel,
+                    Err(unavailable) => return unavailable.response(),
+                };
                 if let (Some(audit), Some(policy)) = (&proxy.audit, proxy.policy.as_deref()) {
                     // Allowed decisions are written too. A log holding only refusals
                     // cannot answer "was this ever evaluated", which is what `policy diff`
                     // needs a package set for.
-                    let facts = crate::policy::decide::Facts::from_record_and_times(&record, times.as_deref());
-                    audit.write(&audit::Event::pinned(
-                        &facts.ecosystem,
-                        &facts.name,
-                        &facts.version,
-                        &crate::policy::decide::decide(policy, &facts, today()),
-                        &enforce::unenforceable(policy, &record, times.as_deref()),
-                    ));
+                    let mut facts = crate::policy::decide::Facts::from_record_and_times(
+                        &record,
+                        times.as_deref(),
+                    );
+                    if let Some(intel) = &intel {
+                        facts = facts.with_intel(intel);
+                    }
+                    audit.write(
+                        &audit::Event::pinned(
+                            &facts.ecosystem,
+                            &facts.name,
+                            &facts.version,
+                            &crate::policy::decide::decide(policy, &facts, today()),
+                            &enforce::unenforceable(policy, &record, times.as_deref(), facts.intel),
+                        )
+                        .with_intel_snapshot(intel.as_ref().map(|i| i.snapshot.as_str())),
+                    );
                 }
                 if let enforce::Verdict::Refuse(refusal) = enforce::artifact(
                     proxy.policy.as_deref(),
                     &record,
                     times.as_deref(),
+                    intel.as_ref(),
                     today(),
                 ) {
                     policy_refusal = Some(refusal);
@@ -1154,6 +1178,15 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         None => None,
     };
 
+    // Asked once per packument rather than once per version: typescript has 3,823.
+    let intel = match normalized.as_deref() {
+        Some(packument) => match intel_for(&proxy, &packument.key, &path_and_query).await {
+            Ok(intel) => intel,
+            Err(unavailable) => return unavailable.response(),
+        },
+        None => None,
+    };
+
     // Not gated on `rewriting`. Filtering refused versions is a policy question and
     // repointing artifact URLs is a transport one, and tying them together meant that
     // turning rewriting off, which `docs/engineering_decisions/enforcement-tiers.md` says
@@ -1167,6 +1200,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             origins: &proxy.origins,
             package_policy: proxy.policy.as_deref(),
             times: times.as_deref(),
+            intel: intel.as_ref(),
             refuse_unservable: proxy.refuse_unservable,
             path: &path_and_query,
             audit: proxy.audit.as_deref(),
@@ -1321,6 +1355,51 @@ async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<Arc<facts:
     Some(times)
 }
 
+/// The intel store could not answer. Already logged; [`IntelUnavailable::response`] is what
+/// the client is sent.
+struct IntelUnavailable;
+
+impl IntelUnavailable {
+    fn response(self) -> Response {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "waharoa: the intel store cannot answer, so nothing is served unchecked\n",
+        )
+            .into_response()
+    }
+}
+
+/// What the intel store knows about a package, when a policy and a store are both configured.
+///
+/// `Ok(None)` is no store, or no policy: the checks that read advisories are dropped as
+/// unenforceable, as they were before a store existed. A store that errors, or holds no
+/// snapshot yet, is `Err`, answered with a 503. Never a serve: `known_malware` has no
+/// exception, and serving while it cannot be asked would pass malware through unseen.
+async fn intel_for(
+    proxy: &Proxy,
+    key: &PackageKey,
+    path: &str,
+) -> Result<Option<PackageIntel>, IntelUnavailable> {
+    let (Some(store), Some(_)) = (proxy.intel.as_deref(), proxy.policy.as_deref()) else {
+        return Ok(None);
+    };
+    let why = match store
+        .package(key.ecosystem().as_str(), &key.registry_name())
+        .await
+    {
+        Ok(Some(found)) => return Ok(Some(found)),
+        Ok(None) => "no intel has been loaded".to_owned(),
+        Err(e) => e.to_string(),
+    };
+    // Logged, not sent: a database error can carry the database's address.
+    error!(
+        path = %path,
+        why = %why,
+        "intel store cannot answer; answering 503 rather than serving unchecked"
+    );
+    Err(IntelUnavailable)
+}
+
 /// The versions in this packument the policy refuses.
 ///
 /// Every version is asked, not just the one a client might resolve to: which one it picks
@@ -1331,6 +1410,7 @@ fn policy_refused_versions(
     packument: &NormalizedPackument,
     policy: Option<&Policy>,
     times: Option<&facts::PublishTimes>,
+    intel: Option<&PackageIntel>,
     path: &str,
     audit: Option<&AuditLog>,
 ) -> HashSet<String> {
@@ -1344,7 +1424,7 @@ fn policy_refused_versions(
     let mut strongest = crate::policy::Action::Allow;
     for record in &packument.records {
         let enforce::Verdict::Refuse(refusal) =
-            enforce::artifact(Some(policy), record, times, today)
+            enforce::artifact(Some(policy), record, times, intel, today)
         else {
             continue;
         };
@@ -1368,16 +1448,25 @@ fn policy_refused_versions(
         let unenforceable = packument
             .records
             .first()
-            .map(|record| enforce::unenforceable(policy, record, times))
+            .map(|record| {
+                let consulted = match intel {
+                    Some(_) => crate::policy::decide::Intel::Consulted,
+                    None => crate::policy::decide::Intel::NotConsulted,
+                };
+                enforce::unenforceable(policy, record, times, consulted)
+            })
             .unwrap_or_default();
-        audit.write(&audit::Event::resolution(
-            packument.key.ecosystem().as_str(),
-            &packument.key.registry_name(),
-            strongest.as_str(),
-            order,
-            checks.into_iter().collect(),
-            &unenforceable,
-        ));
+        audit.write(
+            &audit::Event::resolution(
+                packument.key.ecosystem().as_str(),
+                &packument.key.registry_name(),
+                strongest.as_str(),
+                order,
+                checks.into_iter().collect(),
+                &unenforceable,
+            )
+            .with_intel_snapshot(intel.map(|i| i.snapshot.as_str())),
+        );
     }
 
     if refused.len() == packument.records.len() && !refused.is_empty() {
@@ -1402,6 +1491,8 @@ struct Rewrite<'a> {
     origins: &'a OriginPolicy,
     package_policy: Option<&'a Policy>,
     times: Option<&'a facts::PublishTimes>,
+    /// What the intel store knows about this package. `None` when no store is configured.
+    intel: Option<&'a PackageIntel>,
     refuse_unservable: bool,
     path: &'a str,
     audit: Option<&'a AuditLog>,
@@ -1415,6 +1506,7 @@ fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
         origins: policy,
         package_policy,
         times,
+        intel,
         refuse_unservable,
         path,
         audit,
@@ -1425,7 +1517,8 @@ fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
     // document, so the client's own resolver picks one that is allowed and the install
     // succeeds without anyone being told no. The pinned half, where there is no
     // resolution left to influence, refuses at the artifact request.
-    let refused_by_policy = policy_refused_versions(packument, package_policy, times, path, audit);
+    let refused_by_policy =
+        policy_refused_versions(packument, package_policy, times, intel, path, audit);
 
     // An accepted gap has to stay visible. One that stops being reported outlives the
     // reason it was added.
@@ -2324,6 +2417,117 @@ mod tests {
             paths.iter().any(|p| p.ends_with(".tgz")),
             "a version no denial names must be fetched: {paths:?}"
         );
+    }
+
+    fn malware_everywhere() -> Arc<dyn Intel> {
+        Arc::new(crate::intel::store::testing::FixedIntel(Ok(Some(
+            PackageIntel {
+                snapshot: "s1".to_owned(),
+                records: vec![(
+                    None,
+                    crate::intel::store::Record {
+                        advisory_id: "MAL-1".to_owned(),
+                        source: "osv".to_owned(),
+                        cvss: None,
+                        cvss_source: None,
+                        exploited: false,
+                        malware: true,
+                    },
+                )],
+            },
+        ))))
+    }
+
+    async fn proxy_with_intel(
+        intel: Arc<dyn Intel>,
+        with_policy: bool,
+    ) -> (String, Arc<Mutex<Seen>>) {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let proxy = Proxy::new(reqwest::Client::new(), upstream)
+            .with_intel(Some(intel))
+            .with_refuse_unservable(false);
+        let proxy = if with_policy {
+            proxy.with_policy(Some(policy("version: 1\ncooldown_days: 0\n")))
+        } else {
+            proxy
+        };
+        (serve(proxy.router()).await, seen)
+    }
+
+    #[tokio::test]
+    async fn known_malware_in_the_store_is_refused_on_a_pinned_fetch() {
+        let (base, seen) = proxy_with_intel(malware_everywhere(), true).await;
+
+        let response = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("known_malware"), "{body}");
+        let paths = &seen.lock().unwrap().paths;
+        assert!(!paths.iter().any(|p| p.ends_with(".tgz")), "{paths:?}");
+    }
+
+    #[tokio::test]
+    async fn known_malware_in_the_store_is_filtered_from_the_packument() {
+        let (base, _) = proxy_with_intel(malware_everywhere(), true).await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::ACCEPT, "application/vnd.npm.install-v1+json")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let doc: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert!(doc["versions"].get("4.17.21").is_none(), "{doc}");
+    }
+
+    /// A store that cannot answer is not a store that found nothing.
+    #[tokio::test]
+    async fn a_store_that_cannot_answer_is_a_503_on_both_paths_and_nothing_is_fetched() {
+        use crate::intel::store::testing::FixedIntel;
+        for (label, store) in [
+            ("down", FixedIntel(Err(()))),
+            ("empty", FixedIntel(Ok(None))),
+        ] {
+            let (base, seen) = proxy_with_intel(Arc::new(store), true).await;
+
+            let pinned = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
+                .await
+                .unwrap();
+            assert_eq!(pinned.status(), 503, "{label}");
+            assert!(
+                pinned.text().await.unwrap().contains("intel store"),
+                "{label}"
+            );
+
+            let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
+            assert_eq!(packument.status(), 503, "{label}");
+
+            let paths = &seen.lock().unwrap().paths;
+            assert!(
+                !paths.iter().any(|p| p.ends_with(".tgz")),
+                "{label}: {paths:?}"
+            );
+        }
+    }
+
+    /// With no policy nothing is enforced, so the store is never asked.
+    #[tokio::test]
+    async fn without_a_policy_a_store_that_is_down_changes_nothing() {
+        let store = Arc::new(crate::intel::store::testing::FixedIntel(Err(())));
+        let (base, seen) = proxy_with_intel(store, false).await;
+
+        let _ = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
+        let paths = &seen.lock().unwrap().paths;
+        assert!(paths.iter().any(|p| p.ends_with(".tgz")), "{paths:?}");
     }
 
     /// No policy at all is not the same as a policy that allows everything, and neither
