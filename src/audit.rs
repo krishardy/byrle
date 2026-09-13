@@ -200,7 +200,7 @@ impl AuditLog {
 mod tests {
     use super::*;
     use crate::policy::Policy;
-    use crate::policy::decide::{Facts, decide};
+    use crate::policy::decide::{Facts, Intel, decide};
 
     fn facts() -> Facts {
         Facts {
@@ -211,6 +211,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            intel: Intel::NotConsulted,
         }
     }
 
@@ -344,6 +345,7 @@ mod tests {
         .expect("policy should load");
         let facts = Facts {
             has_install_scripts: true,
+            intel: Intel::NotConsulted,
             ..facts()
         };
         let decision = decide(&policy, &facts, jiff::civil::date(2026, 9, 13));

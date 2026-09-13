@@ -24,7 +24,7 @@
 //! That is why this build does not enforce `cooldown_days`: see
 //! [`Facts::can_answer`].
 
-use super::decide::Facts;
+use super::decide::{Facts, Intel};
 use crate::record::{PackageRecord, PackumentDetail};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
@@ -64,6 +64,7 @@ impl Facts {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: record.has_install_scripts,
+            intel: Intel::NotConsulted,
         }
     }
 
