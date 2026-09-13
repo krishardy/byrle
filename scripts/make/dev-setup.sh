@@ -29,6 +29,18 @@ else
     cargo install cargo-outdated --locked
 fi
 
+# Pinned to the sqlx minor in Cargo.toml, so `make sqlx-prepare` runs the version the build
+# uses. An installed CLI of another minor is replaced rather than kept.
+sqlx_minor="0.8"
+echo "==> sqlx-cli $sqlx_minor (offline query cache, used by 'make sqlx-prepare')"
+if cargo sqlx --version 2>/dev/null | grep -q " $sqlx_minor\."; then
+    echo "    already installed"
+else
+    # Postgres only, matching the one backend. The default features build every driver.
+    cargo install sqlx-cli --version "^$sqlx_minor" --locked --force \
+        --no-default-features --features rustls,postgres
+fi
+
 echo "==> cargo-llvm-cov (unit test coverage, used by 'make coverage')"
 if cargo llvm-cov --version >/dev/null 2>&1; then
     echo "    already installed"

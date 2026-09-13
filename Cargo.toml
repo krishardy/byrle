@@ -20,9 +20,19 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = { version = "1.2", default-features = false, features = ["deserialize"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
+# Postgres only, and rustls rather than native-tls so there is one TLS stack in the tree.
+# `macros` is what checks SQL against the real schema at compile time; see
+# docs/engineering_decisions/storage-sqlx-postgres.md.
+# Held at 0.8: sqlx 0.9 requires rustc 1.94 and kani 0.67 compiles with 1.93. See
+# docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md.
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "macros", "migrate"] }
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+# Reads OSV's per-ecosystem bundle, `npm/all.zip`. All 228,951 entries are deflate. `deflate-flate2`
+# reads it through flate2, already in the tree. `deflate` would add zopfli, which only compresses,
+# and the default features add aes-crypto, bzip2, lzma, ppmd, xz and zstd.
+zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 
 [lints.rust]
 # `coverage` is set by cargo-llvm-cov, which `make coverage` runs. Declared so the

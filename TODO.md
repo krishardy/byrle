@@ -147,6 +147,10 @@ Items that I've added that are not stage-bound.
    `docs/engineering_decisions/deferral-status-codes.md`.
    Argues on its own merits (a proxy legitimately rate-limiting is a real scenario),
    so it is a small uncontroversial patch. Long lead time — file early.
+11. [ ] **`cargo build --release` does not compile.** `src/lib.rs` gates `pub mod audit` on
+   `#[cfg(debug_assertions)]` (since `95c52b0`), and `src/proxy.rs:58` uses `crate::audit`
+   unconditionally, so a release build fails with `could not find audit in the crate root`.
+   `src/audit.rs` gives no reason for the gate.
 
 ## Stage 1 — Pass-through proxy (transport)
 
@@ -1043,8 +1047,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] **The throwaway hardcoded block is gone.** `make smoke-npm` 6/6 proves
             interception against a real denial, both halves of decision #4 at once:
             filtered on resolution, 403 on the pinned fetch, artifact never fetched.
-- [ ] `[!]` Known malware. Not configurable and not exceptable: behaviour, not policy.
-      Needs a `malware`-capable stream, which is gated separately below.
+- [x] `[!]` Known malware. Not configurable and not exceptable: behaviour, not policy.
+      Read from the intel store (`Facts::with_intel`). Verified live against
+      registry.npmjs.org: `--hiljson` filtered from its packument and its tarball refused
+      403 with `known_malware: reported as malware`, `lodash` served.
+      `docs/engineering_decisions/intel-in-decisions.md`.
 - [~] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
       own, and is a **packument filter** rather than an artifact refusal: Stage 1's
       `npm::filter_unservable_versions` is the mechanism.
@@ -1230,8 +1237,8 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             it goes last.
 - [ ] `[!]` Advisory stream interface (fetch / mirror / refresh / normalize). What a
       stream may *say* is built (`MatchStream`, `EnrichStream`, `MalwareStream` in
-      `src/intel.rs`). Fetch, mirror and refresh need the storage decision (Postgres only,
-      sqlx with no ORM) and its dependency review.
+      `src/intel.rs`). The lookup side of storage is built (`src/intel/store.rs`,
+      `src/intel/postgres.rs`). Fetch, mirror and refresh are not.
 - [x] `[!]` Per-ecosystem capability matrix: `match` / `enrich` / `malware` (`src/intel.rs`,
       `Capabilities::grant` / `has` / `providers`). A grant is per stream per ecosystem, so
       NVD can hold `match` for Maven and only `enrich` for npm.
@@ -1256,10 +1263,28 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       Settled as a rule rather than config: an enrichment may raise a score and may set
       `exploited`, never the reverse, so the result does not depend on the order streams
       are read in. `Score` records which stream supplied it, for `explain` only.
-- [ ] Bridge `intel::Finding` to `policy::decide::Advisory`. `Advisory.kev` is a bare bool
-      today; `Finding` carries `exploited` plus the score's source.
+- [~] Bridge `intel::Finding` to `policy::decide::Advisory`. `Facts::with_intel` builds
+      `Advisory` from stored `Record`s, with `kev` from `exploited`. The score's source is
+      not carried into `Advisory`.
 - [ ] `[!]` Common advisory record schema with alias set (CVE, GHSA, OSV, MAL IDs)
-- [ ] `[!]` OSV.dev stream, lookup by PURL
+- [~] `[!]` OSV.dev stream, lookup by PURL. npm `MAL-` records parse (`src/intel/osv.rs`)
+      and load (`PgIntel::replace_source`): 220,684 of 221,548 stored, 533 skipped for
+      needing range evaluation, 331 withdrawn. `waharoa refresh` fetches and loads them.
+      `docs/engineering_decisions/osv-malware-load.md`.
+- [x] `[!]` Choose the OSV fetch: `npm/all.zip`, read from memory with `zip` (`deflate-flate2`
+      only). 228,951 single-record GETs was the alternative. `npm/modified_id.csv`, which
+      lists every record's modified time, is left for an incremental refresh.
+- [x] `[!]` `waharoa refresh`: fetch, parse, `replace_source`, snapshot id from the bundle.
+      Live against Postgres 17: 220,684 advisories and 232,677 affected rows in 46.6s on a
+      debug build. A second run upserts the same snapshot id.
+- [x] `[!]` Wire the intel store into `Facts` (`known_malware`, `Intel::Consulted`) in the
+      proxy, `explain` and `policy diff`. One `Intel::package` query per package.
+      `enforce::artifact` and `enforce::unenforceable` take the intel state from the caller.
+- [ ] `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`. An
+      unscored advisory that is exploited would then be invisible to `kev`. No such record
+      is loaded today.
+- [ ] `explain --policy` reports `kev` and `max_cvss` as enforced once the store answers,
+      and the store holds no scores or exploitation data.
 - [ ] `[!]` Deduplication across streams via alias reconciliation — before the policy
       engine, so one vuln never fires three rules. It also gates enrichment:
       `Finding::enriched_by` joins one id against one id, and OSV findings carry `GHSA-`
@@ -1281,11 +1306,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] NVD enrichment runs as a background job, never on the hot path
 - [ ] Revisit NVD `match` capability if/when the Maven adapter is scoped
 - [ ] Configurable severity precedence when streams disagree on CVSS
-- [ ] Withdrawal propagation — withdrawn advisories must clear from the local mirror
+- [~] Withdrawal propagation. A full load replaces every row a source held, so a withdrawn
+      or deleted record is gone after the next load (`a_refresh_replaces_what_the_source_held`).
+      An incremental refresh would have to delete withdrawn ids itself.
 - [ ] Per-stream refresh scheduling, rate limits, and API key config
 - [ ] Local mirrors for all streams (no dependency-graph leakage)
 - [ ] Per-stream enable/disable in policy config
-- [ ] Configurable fail-open/fail-closed on stream unavailability, default closed
+- [~] Configurable fail-open/fail-closed on stream unavailability, default closed. Closed
+      is built; the setting is not.
 - [ ] Stream authoring guide for third-party sources
 
 ### Intel storage
@@ -1293,28 +1321,41 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `docs/engineering_decisions/storage-sqlx-postgres.md`. SeaORM's stated justification
       was one codebase for two backends and there is one backend; it is built on sqlx, so
       dropping it removes a dependency rather than swapping one.
-- [ ] `[!]` Lookup path as `sqlx::query_as!`, checked against the real schema at compile
-      time
-- [ ] `[!]` Migrations as plain `.sql` under `sqlx::migrate!`
-- [ ] `[!]` `cargo sqlx prepare` writes `.sqlx/`, checked in, so a contributor builds with
-      no database. `make sqlx-prepare` wraps it.
+- [x] `[!]` Lookup path as `sqlx::query_as!`, checked against the real schema at compile
+      time. `PgIntel::lookup` and `PgIntel::snapshot` in `src/intel/postgres.rs`.
+- [x] `[!]` Migrations as plain `.sql` under `sqlx::migrate!`. `migrations/0001_intel.sql`.
+- [x] `[!]` `cargo sqlx prepare` writes `.sqlx/`, checked in, so a contributor builds with
+      no database. `make sqlx-prepare` wraps it. `env -u DATABASE_URL cargo build` succeeds.
 - [ ] `[!]` CI runs `cargo sqlx prepare --check` so the offline cache cannot drift from the
       migrations. A stale cache must be a CI failure, not a runtime surprise.
-- [ ] Add sqlx to `Cargo.toml` and run it through `make check-deps` when the storage work
-      starts. Nothing is added yet.
-- [ ] `sqlx-cli` goes in `scripts/make/dev-setup.sh`, not an ad-hoc `cargo install`
-- [ ] `[!]` Repository trait in front of storage. Justified by test isolation now, not
+      `make sqlx-prepare ARGS=--check` exists and fails on a changed query. There is no CI
+      configuration to run it from.
+- [x] Add sqlx to `Cargo.toml` and run it through `make check-deps`. Held at 0.8, with
+      RUSTSEC-2023-0071 ignored only while `rsa` is not compiled:
+      `docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md`.
+- [ ] Move to sqlx 0.9 once a kani release bundles rustc 1.94 or later. kani 0.67.0 bundles
+      1.93.0-nightly and sqlx 0.9 requires 1.94. Steps are in
+      `docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md`.
+- [x] `sqlx-cli` goes in `scripts/make/dev-setup.sh`, not an ad-hoc `cargo install`.
+      Pinned to 0.8. An installed CLI of another minor is replaced.
+- [x] `[!]` Repository trait in front of storage. Justified by test isolation now, not
       portability: the 95% unit floor excludes corpus and live tests, so everything above
-      the storage seam has to be testable with no database.
-- [ ] `[!]` `make test-integration` — start a Postgres container, run the tests that need
+      the storage seam has to be testable with no database. `Intel` in `src/intel/store.rs`.
+- [x] `[!]` `make test-integration`: start a Postgres container, run the tests that need
       a database, tear it down. Thin wrapper around `scripts/make/test-integration.sh` per
-      CLAUDE.md. Excluded from the unit coverage floor, like the corpus and live tests.
-- [ ] `[!]` Tests that do not need a database must not require the container
-- [ ] `[!]` Bulk refresh via `COPY FROM STDIN BINARY` (`PgCopyIn`), which is what loading
-      221,548 malware records wants and what an ORM's portability layer would have hidden.
-- [ ] `[!]` Atomic refresh via temp-table swap. Postgres has transactional DDL, so the
-      swap is an ordinary transaction.
-- [ ] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %
+      CLAUDE.md. 9 tests.
+- [ ] `src/intel/postgres.rs` counts toward the unit coverage floor at 0% (104 lines). Library
+      total is 96.58% lines with it. Decide whether it joins the exclusion for live tests.
+- [x] `[!]` Tests that do not need a database must not require the container. Without
+      `WAHAROA_TEST_DATABASE_URL`, `tests/intel_postgres.rs` returns early from every test.
+- [x] `[!]` Bulk refresh via `COPY FROM STDIN` (`PgCopyIn`). CSV rather than binary; see
+      `docs/engineering_decisions/osv-malware-load.md`.
+- [x] `[!]` Atomic refresh. One source's rows are deleted and copied in one transaction
+      rather than a temp-table swap. `a_failed_refresh_leaves_the_previous_load_in_place`,
+      mutation-tested.
+- [~] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %.
+      503 is built: a store with no snapshot, or one that errors, answers 503 on both paths.
+      The readiness endpoint is not.
 - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, privacy tradeoff documented
 
 ### Carried from Stage 1
@@ -1378,9 +1419,8 @@ a deferral: there was no mirror to warm and nothing analysing. See
             set for.
       - [x] **Unenforceable checks are named**, so an unenforced `cooldown_days` does not
             read as a passed one.
-      - [x] **`intel_snapshot` exists and is empty.** No stream exists yet. The field is
-            there so lines written now stay comparable with lines written once one lands,
-            which is what `policy diff --snapshot` needs.
+      - [x] **`intel_snapshot` names the snapshot a decision was reached against**, and is
+            absent when no store was consulted.
       - [x] Serialised from `Decision`, not from the refusal message, so the record and
             the text the client reads cannot drift.
       - [x] A write failure warns once and never fails an install. Refusing to open at

@@ -1,4 +1,4 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test coverage verify check-deps update-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config
+.PHONY: help dev-setup lint semgrep trufflehog sast test test-integration coverage verify sqlx-prepare check-deps update-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config
 
 help:
 	@echo "waharoa targets:"
@@ -8,6 +8,8 @@ help:
 	@echo "  trufflehog     credential scanning (working tree and git history)"
 	@echo "  sast           semgrep + trufflehog"
 	@echo "  test           unit tests"
+	@echo "  test-integration  tests needing a real Postgres, in a container"
+	@echo "  sqlx-prepare   regenerate .sqlx/, the offline query cache"
 	@echo "  coverage       unit test coverage, failing under the CLAUDE.md floor"
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
@@ -45,6 +47,12 @@ sast: semgrep trufflehog
 
 test:
 	@cargo test
+
+test-integration:
+	@scripts/make/test-integration.sh
+
+sqlx-prepare:
+	@scripts/make/sqlx-prepare.sh $(ARGS)
 
 coverage:
 	@scripts/make/coverage.sh

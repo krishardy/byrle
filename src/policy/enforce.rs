@@ -18,8 +18,9 @@
 //! other version to pick, so it refuses like a block, and says when it lapses. The
 //! difference survives in what the client is told, not in whether it gets bytes.
 
-use super::decide::{Check, Decision, Outcome};
+use super::decide::{Check, Decision, Intel, Outcome};
 use super::{Action, Policy};
+use crate::intel::store::PackageIntel;
 use crate::policy::decide::{Facts, decide};
 use crate::record::PackageRecord;
 use jiff::civil::Date;
@@ -82,10 +83,15 @@ pub struct Unenforceable {
 }
 
 /// The checks this build cannot answer for a record.
+///
+/// `intel` is whether a store was consulted for these facts, taken from the caller's
+/// `Facts`. Rebuilding the facts here from the record alone would always read
+/// `NotConsulted`.
 pub fn unenforceable(
     policy: &Policy,
     record: &PackageRecord,
     times: Option<&super::facts::PublishTimes>,
+    intel: Intel,
 ) -> Vec<Unenforceable> {
     let mut out = Vec::new();
     if policy.uses_cooldown()
@@ -95,14 +101,15 @@ pub fn unenforceable(
             check: Check::CooldownDays,
             why,
         });
-    }    // Three checks read the advisory list. With nothing to ask, an empty list is an absent
+    }
+    // Three checks read the advisory list. With nothing to ask, an empty list is an absent
     // answer rather than a clean one, and reporting them as passes would claim a check ran
     // that never could.
-    if Facts::from_record(record).intel == super::decide::Intel::NotConsulted {
+    if intel == Intel::NotConsulted {
         out.extend(
             [Check::KnownMalware, Check::Kev, Check::MaxCvss].map(|check| Unenforceable {
                 check,
-                why: "no advisory stream is built, so nothing was asked",
+                why: "no intel store was consulted, so nothing was asked",
             }),
         );
     }
@@ -113,24 +120,27 @@ pub fn unenforceable(
 ///
 /// `None` for the policy is Stage 1 behaviour: nothing is enforced and everything
 /// serves. That is a distinct state from a policy that allows everything, and the log
-/// should be able to tell them apart.
+/// should be able to tell them apart. `None` for `intel` is a build with no store, and the
+/// three checks that read advisories are dropped as unenforceable.
 pub fn artifact(
     policy: Option<&Policy>,
     record: &PackageRecord,
     times: Option<&super::facts::PublishTimes>,
+    intel: Option<&PackageIntel>,
     today: Date,
 ) -> Verdict {
     let Some(policy) = policy else {
         return Verdict::Serve;
     };
-    let facts = Facts::from_record_and_times(record, times);
+    let mut facts = Facts::from_record_and_times(record, times);
+    if let Some(intel) = intel {
+        facts = facts.with_intel(intel);
+    }
     let mut decision = decide(policy, &facts, today);
-
-    let dropped = unenforceable(policy, record, times);
+    let dropped = unenforceable(policy, record, times, facts.intel);
     decision
         .results
         .retain(|r| !dropped.iter().any(|d| d.check == r.check));
-
     verdict(&facts, &decision)
 }
 
@@ -193,16 +203,68 @@ mod tests {
         Policy::parse(yaml).expect("policy should load")
     }
 
+    fn malware_everywhere() -> PackageIntel {
+        PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: vec![(
+                None,
+                crate::intel::store::Record {
+                    advisory_id: "MAL-1".to_owned(),
+                    source: "osv".to_owned(),
+                    cvss: None,
+                    cvss_source: None,
+                    exploited: false,
+                    malware: true,
+                },
+            )],
+        }
+    }
+
+    #[test]
+    fn known_malware_in_the_store_refuses_the_artifact() {
+        let policy = loaded("version: 1\ncooldown_days: 0\n");
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&policy),
+            &record(),
+            None,
+            Some(&malware_everywhere()),
+            TODAY,
+        ) else {
+            panic!("known malware must be refused");
+        };
+        assert_eq!(refusal.action, Action::Block);
+        assert_eq!(refusal.reasons, ["known_malware: reported as malware"]);
+    }
+
+    /// The same record with no store: the malware check is dropped, not failed.
+    #[test]
+    fn without_a_store_the_malware_check_cannot_refuse() {
+        let policy = loaded("version: 1\ncooldown_days: 0\n");
+        assert_eq!(
+            artifact(Some(&policy), &record(), None, None, TODAY),
+            Verdict::Serve
+        );
+    }
+
+    #[test]
+    fn a_consulted_store_leaves_the_intel_checks_enforced() {
+        let policy = loaded("version: 1\ncooldown_days: 0\n");
+        assert!(unenforceable(&policy, &record(), None, Intel::Consulted).is_empty());
+    }
+
     #[test]
     fn no_policy_at_all_serves_everything() {
-        assert_eq!(artifact(None, &record(), None, TODAY), Verdict::Serve);
+        assert_eq!(artifact(None, &record(), None, None, TODAY), Verdict::Serve);
     }
 
     #[test]
     fn a_policy_that_denies_nothing_serves() {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
 
-        assert_eq!(artifact(Some(&policy), &record(), None, TODAY), Verdict::Serve);
+        assert_eq!(
+            artifact(Some(&policy), &record(), None, None, TODAY),
+            Verdict::Serve
+        );
     }
 
     #[test]
@@ -212,7 +274,7 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &record(), None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &record(), None, None, TODAY) else {
             panic!("a denied version must be refused");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -232,7 +294,10 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.20\n    reason: test\n",
         );
 
-        assert_eq!(artifact(Some(&policy), &record(), None, TODAY), Verdict::Serve);
+        assert_eq!(
+            artifact(Some(&policy), &record(), None, None, TODAY),
+            Verdict::Serve
+        );
     }
 
     #[test]
@@ -241,7 +306,7 @@ mod tests {
         r.has_install_scripts = true;
         let policy = loaded("version: 1\ncooldown_days: 0\ninstall_scripts: block\n");
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, None, TODAY) else {
             panic!("install scripts must be refused when the policy blocks them");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -249,7 +314,10 @@ mod tests {
 
         // The same package passes when the policy allows them.
         let allowing = loaded("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n");
-        assert_eq!(artifact(Some(&allowing), &r, None, TODAY), Verdict::Serve);
+        assert_eq!(
+            artifact(Some(&allowing), &r, None, None, TODAY),
+            Verdict::Serve
+        );
     }
 
     /// A pinned fetch has no other version to fall back to, so quarantine refuses. What
@@ -264,7 +332,7 @@ mod tests {
         );
         let policy = loaded("version: 1\ncooldown_days: 30\n");
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, None, TODAY) else {
             panic!("a version inside the cooldown must be refused on a pinned fetch");
         };
         assert_eq!(refusal.action, Action::Quarantine);
@@ -292,7 +360,7 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, None, TODAY) else {
             panic!("must refuse");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -307,7 +375,7 @@ mod tests {
     /// Just the cooldown entry. The advisory checks are always unenforceable in this
     /// build, and that is covered on its own below.
     fn cooldown_entry(policy: &Policy, record: &PackageRecord) -> Option<Unenforceable> {
-        unenforceable(policy, record, None)
+        unenforceable(policy, record, None, Intel::NotConsulted)
             .into_iter()
             .find(|u| u.check == Check::CooldownDays)
     }
@@ -315,10 +383,11 @@ mod tests {
     /// An empty advisory list with nothing to ask is not a clean answer.
     #[test]
     fn the_checks_that_read_advisories_are_unenforceable_with_no_stream() {
-        let reported: Vec<Check> = unenforceable(&loaded("version: 1"), &record(), None)
-            .into_iter()
-            .map(|u| u.check)
-            .collect();
+        let reported: Vec<Check> =
+            unenforceable(&loaded("version: 1"), &record(), None, Intel::NotConsulted)
+                .into_iter()
+                .map(|u| u.check)
+                .collect();
 
         assert!(reported.contains(&Check::KnownMalware), "{reported:?}");
         assert!(reported.contains(&Check::Kev), "{reported:?}");
@@ -355,7 +424,10 @@ mod tests {
                 why: "the abbreviated packument carries no publish times",
             })
         );
-        assert_eq!(artifact(Some(&policy), &abbreviated(), None, TODAY), Verdict::Serve);
+        assert_eq!(
+            artifact(Some(&policy), &abbreviated(), None, None, TODAY),
+            Verdict::Serve
+        );
     }
 
     /// Dropping the check must not drop the rest of the vector.
@@ -366,7 +438,8 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &abbreviated(), None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &abbreviated(), None, None, TODAY)
+        else {
             panic!("the denial must survive the cooldown being dropped");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -387,7 +460,7 @@ mod tests {
 
         assert_eq!(cooldown_entry(&policy, &r), None);
         assert!(matches!(
-            artifact(Some(&policy), &r, None, TODAY),
+            artifact(Some(&policy), &r, None, None, TODAY),
             Verdict::Refuse(_)
         ));
     }
@@ -398,7 +471,10 @@ mod tests {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
 
         assert_eq!(cooldown_entry(&policy, &abbreviated()), None);
-        assert_eq!(artifact(Some(&policy), &abbreviated(), None, TODAY), Verdict::Serve);
+        assert_eq!(
+            artifact(Some(&policy), &abbreviated(), None, None, TODAY),
+            Verdict::Serve
+        );
     }
 
     #[test]
@@ -427,7 +503,7 @@ mod tests {
                  denials:\n  - purl: {spelling}\n    reason: test\n"
             ));
 
-            let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, TODAY) else {
+            let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, None, TODAY) else {
                 panic!("a scoped package must be refusable, written as `{spelling}`");
             };
             assert_eq!(refusal.purl, "pkg:npm/@babel/traverse@8.0.5");

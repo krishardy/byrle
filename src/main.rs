@@ -19,6 +19,7 @@ use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 
 use waharoa::npm;
 use waharoa::audit;
+use waharoa::intel::store::Intel as _;
 use waharoa::policy::{Policy, decide, diff, enforce, packages};
 use waharoa::record;
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
@@ -36,6 +37,8 @@ usage: waharoa [command]
                 policy itself, `explain <purl>` for one version
   policy diff   what changes if one policy replaces another, over the packages
                 the audit log has seen. Exits 1 on any loosening
+  refresh       load OSV's npm malware records into the Postgres at
+                WAHAROA_DATABASE_URL, which the proxy reads when it is set
   help          show this
 
 Proxy configuration, all through the environment:
@@ -56,6 +59,9 @@ Proxy configuration, all through the environment:
   WAHAROA_MAX_PACKUMENT_BYTES       ceiling on a packument body (32 MiB)
   WAHAROA_MAX_RECORDS               packument records held in memory (50,000)
   WAHAROA_MAX_VERIFIED              verified artifact digests remembered (50,000)
+  WAHAROA_DATABASE_URL              Postgres holding intel from `waharoa refresh`. With a
+                                    policy, known_malware is enforced from it, and a
+                                    store that cannot answer is a 503
   WAHAROA_POLICY                    path to a policy file. Loaded, validated and
                                     enforced. Startup reports which checks can fire
   WAHAROA_AUDIT_LOG                 path for one JSON line per policy decision,
@@ -123,8 +129,8 @@ fn report_policy(path: &std::path::Path) -> std::sync::Arc<Policy> {
     }
     if policy.max_cvss < f64::INFINITY || policy.kev == waharoa::policy::Action::Block {
         warn!(
-            "NOT ENFORCED: max_cvss and kev. No advisory stream is built, so nothing can \
-             originate a finding and neither check has anything to read"
+            "NOT ENFORCED: max_cvss and kev. The intel store holds OSV malware records only, \
+             with no scores and no exploitation data, so neither check has anything to read"
         );
     }
 
@@ -270,9 +276,19 @@ async fn run_policy(args: Vec<String>) -> std::process::ExitCode {
     };
     if args.iter().any(|a| a.starts_with("--snapshot")) {
         // Accepting it silently would imply intel is pinned when nothing pins it.
-        eprintln!("waharoa policy diff: --snapshot pins nothing yet; no advisory stream exists");
+        eprintln!(
+            "waharoa policy diff: --snapshot pins nothing yet; the store holds only its latest load"
+        );
         return std::process::ExitCode::from(2);
     }
+
+    let store = match intel_store().await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("waharoa policy diff: WAHAROA_DATABASE_URL: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
 
     let mut loaded = Vec::new();
     for path in [positional[1], positional[2]] {
@@ -332,13 +348,23 @@ async fn run_policy(args: Vec<String>) -> std::process::ExitCode {
         } else {
             None
         };
+        let intel = match package_intel(store.as_ref(), reference.key()).await {
+            Ok(intel) => intel,
+            Err(e) => {
+                eprintln!("waharoa policy diff: {purl}: {e}");
+                return std::process::ExitCode::from(2);
+            }
+        };
         let decided: Vec<(decide::Decision, Vec<enforce::Unenforceable>)> = loaded
             .iter()
             .map(|policy| {
-                let facts = decide::Facts::from_record_and_times(package, times.as_ref());
+                let mut facts = decide::Facts::from_record_and_times(package, times.as_ref());
+                if let Some(intel) = &intel {
+                    facts = facts.with_intel(intel);
+                }
                 (
                     decide::decide(policy, &facts, as_of),
-                    enforce::unenforceable(policy, package, times.as_ref()),
+                    enforce::unenforceable(policy, package, times.as_ref(), facts.intel),
                 )
             })
             .collect();
@@ -389,10 +415,28 @@ async fn run_explain(argument: Option<String>) -> std::process::ExitCode {
         }
     };
 
+    let store = match intel_store().await {
+        Ok(store) => store,
+        Err(e) => {
+            eprintln!("waharoa explain: WAHAROA_DATABASE_URL: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+
     if argument == "--policy" {
-        // No advisory stream exists in this build, so the checks that need one are
+        // A store with no snapshot answers nothing, so the checks that need one are
         // reported as unenforced rather than as settings that will fire.
-        print!("{}", explain::policy(&policy, false));
+        let has_intel = match &store {
+            Some(store) => match store.snapshot().await {
+                Ok(snapshot) => snapshot.is_some(),
+                Err(e) => {
+                    eprintln!("waharoa explain: {e}");
+                    return std::process::ExitCode::from(1);
+                }
+            },
+            None => false,
+        };
+        print!("{}", explain::policy(&policy, has_intel));
         return std::process::ExitCode::SUCCESS;
     }
 
@@ -434,7 +478,17 @@ async fn run_explain(argument: Option<String>) -> std::process::ExitCode {
         None
     };
 
-    let facts = decide::Facts::from_record_and_times(package, times.as_ref());
+    let intel = match package_intel(store.as_ref(), reference.key()).await {
+        Ok(intel) => intel,
+        Err(e) => {
+            eprintln!("waharoa explain: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+    let mut facts = decide::Facts::from_record_and_times(package, times.as_ref());
+    if let Some(intel) = &intel {
+        facts = facts.with_intel(intel);
+    }
     let today = jiff::Timestamp::now()
         .to_zoned(jiff::tz::TimeZone::UTC)
         .date();
@@ -443,7 +497,7 @@ async fn run_explain(argument: Option<String>) -> std::process::ExitCode {
         explain::decision(
             &facts,
             &decide::decide(&policy, &facts, today),
-            &enforce::unenforceable(&policy, package, times.as_ref()),
+            &enforce::unenforceable(&policy, package, times.as_ref(), facts.intel),
         )
     );
     std::process::ExitCode::SUCCESS
@@ -535,6 +589,174 @@ async fn run_doctor() -> std::process::ExitCode {
     }
 }
 
+/// The intel store at `WAHAROA_DATABASE_URL`, migrated. `None` when the variable is unset.
+async fn intel_store() -> Result<Option<waharoa::intel::postgres::PgIntel>, String> {
+    let Some(url) = std::env::var("WAHAROA_DATABASE_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+    else {
+        return Ok(None);
+    };
+    let pool = sqlx::PgPool::connect(&url)
+        .await
+        .map_err(|e| format!("connecting: {e}"))?;
+    let intel = waharoa::intel::postgres::PgIntel::new(pool);
+    intel.migrate().await.map_err(|e| e.to_string())?;
+    Ok(Some(intel))
+}
+
+/// What the store knows about one package, for a command that has to answer with it.
+///
+/// `Ok(None)` is no store configured. A store that errors or holds no snapshot is an error,
+/// so a command cannot print a verdict reached without intel it was told to use.
+async fn package_intel(
+    store: Option<&waharoa::intel::postgres::PgIntel>,
+    key: &waharoa::identity::PackageKey,
+) -> Result<Option<waharoa::intel::store::PackageIntel>, String> {
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    match store
+        .package(key.ecosystem().as_str(), &key.registry_name())
+        .await
+    {
+        Ok(Some(found)) => Ok(Some(found)),
+        Ok(None) => Err("the intel store holds no snapshot; run `waharoa refresh`".to_owned()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+/// `waharoa refresh`: load OSV's npm malware records into the intel store.
+///
+/// Connect, migrate, fetch, load, exit. Nothing is written unless every record in the bundle
+/// reads, so a broken bundle leaves the previous load in place.
+async fn run_refresh() -> std::process::ExitCode {
+    use waharoa::intel::{osv, postgres::PgIntel, refresh};
+
+    let Some(url) = std::env::var("WAHAROA_DATABASE_URL")
+        .ok()
+        .filter(|u| !u.is_empty())
+    else {
+        eprintln!("waharoa refresh: set WAHAROA_DATABASE_URL to the Postgres that holds intel");
+        return std::process::ExitCode::from(2);
+    };
+    let started = std::time::Instant::now();
+
+    let http = match reqwest::Client::builder()
+        .user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")))
+        .build()
+    {
+        Ok(http) => http,
+        Err(e) => {
+            eprintln!("waharoa refresh: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+    eprintln!("waharoa refresh: fetching {}", refresh::NPM_BUNDLE);
+    let (bytes, etag, last_modified) = match fetch_bundle(&http).await {
+        Ok(fetched) => fetched,
+        Err(e) => {
+            eprintln!("waharoa refresh: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+
+    let bundle = match refresh::read_bundle(&bytes) {
+        Ok(bundle) => bundle,
+        Err(e) => {
+            eprintln!("waharoa refresh: nothing loaded: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+    let snapshot = refresh::snapshot(
+        &[refresh::StreamDigest {
+            stream: refresh::NPM_STREAM.to_owned(),
+            sha256: refresh::sha256_hex(&bytes),
+            etag,
+            last_modified,
+        }],
+        &jiff::Timestamp::now().to_string(),
+    );
+    drop(bytes);
+
+    let intel = match sqlx::PgPool::connect(&url).await {
+        Ok(pool) => PgIntel::new(pool),
+        Err(e) => {
+            eprintln!("waharoa refresh: connecting to WAHAROA_DATABASE_URL: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+    if let Err(e) = intel.migrate().await {
+        eprintln!("waharoa refresh: {e}");
+        return std::process::ExitCode::from(1);
+    }
+    let loaded = match intel
+        .replace_source(osv::SOURCE, &bundle.rows, &snapshot)
+        .await
+    {
+        Ok(loaded) => loaded,
+        Err(e) => {
+            eprintln!("waharoa refresh: nothing loaded: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+
+    print!("{}", bundle.tally);
+    println!("{:32} {:>8}", "advisories written", loaded.advisories);
+    println!("{:32} {:>8}", "aliases written", loaded.aliases);
+    println!("{:32} {:>8}", "affected rows written", loaded.affected);
+    println!("snapshot {}", snapshot.id);
+    println!("took {:.1}s", started.elapsed().as_secs_f64());
+    std::process::ExitCode::SUCCESS
+}
+
+/// The npm bundle, with its etag and `last-modified`, refused past `MAX_BUNDLE_BYTES`.
+async fn fetch_bundle(
+    http: &reqwest::Client,
+) -> Result<(Vec<u8>, Option<String>, Option<String>), String> {
+    use futures_util::StreamExt;
+    use waharoa::intel::refresh::{MAX_BUNDLE_BYTES, NPM_BUNDLE};
+
+    let response = http
+        .get(NPM_BUNDLE)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| format!("fetching the bundle: {e}"))?;
+    let header = |name: reqwest::header::HeaderName| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let (etag, last_modified) = (
+        header(reqwest::header::ETAG),
+        header(reqwest::header::LAST_MODIFIED),
+    );
+    if let Some(declared) = response
+        .content_length()
+        .filter(|&n| n > MAX_BUNDLE_BYTES as u64)
+    {
+        return Err(format!(
+            "the bundle declares {declared} bytes, over the {MAX_BUNDLE_BYTES} byte ceiling"
+        ));
+    }
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("reading the bundle: {e}"))?;
+        if body.len() + chunk.len() > MAX_BUNDLE_BYTES {
+            return Err(format!(
+                "the bundle is over the {MAX_BUNDLE_BYTES} byte ceiling"
+            ));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok((body, etag, last_modified))
+}
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     // Anything other than `doctor` is refused rather than falling through to the proxy:
@@ -550,6 +772,7 @@ async fn main() -> std::process::ExitCode {
         Some("explain") => return run_explain(std::env::args().nth(2)).await,
         // nosemgrep: rust.lang.security.args.args
         Some("policy") => return run_policy(std::env::args().skip(2).collect()).await,
+        Some("refresh") => return run_refresh().await,
         Some("help" | "-h" | "--help") => {
             print!("{USAGE}{DEBUG_USAGE}");
             return std::process::ExitCode::SUCCESS;
@@ -741,7 +964,28 @@ async fn main() -> std::process::ExitCode {
         warn!("no audit log configured; set WAHAROA_AUDIT_LOG to record policy decisions");
     }
 
+    // Refusing to start is right, as for the audit log: an operator who configured a store
+    // and silently did not get one would believe known_malware was being enforced.
+    let intel = intel_store()
+        .await
+        .unwrap_or_else(|e| panic!("WAHAROA_DATABASE_URL: {e}"));
+    match (&intel, &policy) {
+        (Some(_), Some(_)) => warn!(
+            "ENFORCED: known_malware, from the intel store at WAHAROA_DATABASE_URL. A store \
+             that cannot answer, or holds no snapshot, is a 503 for every package"
+        ),
+        (None, Some(_)) => warn!(
+            "NOT ENFORCED: known_malware. WAHAROA_DATABASE_URL is not set, so there is no \
+             intel store to ask"
+        ),
+        _ => {}
+    }
+    let intel = intel.map(|store| {
+        std::sync::Arc::new(store) as std::sync::Arc<dyn waharoa::intel::store::Intel>
+    });
+
     let proxy = Proxy::new(client, upstream)
+        .with_intel(intel)
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
         .with_origin_policy(

@@ -79,9 +79,8 @@ pub struct Event {
     pub unenforceable: Vec<String>,
     /// Which intel the verdict was reached against.
     ///
-    /// Always `None` in this build: no advisory stream exists. The field is here so lines
-    /// written now stay comparable with lines written once one does, which is what
-    /// `policy diff --snapshot` needs.
+    /// `None` when no intel store was consulted. Absent rather than empty, so a decision
+    /// reached without intel cannot be read as one reached against an empty snapshot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intel_snapshot: Option<String>,
 }
@@ -126,6 +125,12 @@ impl Event {
             unenforceable: unenforceable.iter().map(|u| u.check.as_str().to_owned()).collect(),
             intel_snapshot: None,
         }
+    }
+
+    /// Name the intel snapshot the decision was reached against.
+    pub fn with_intel_snapshot(mut self, snapshot: Option<&str>) -> Self {
+        self.intel_snapshot = snapshot.map(str::to_owned);
+        self
     }
 
     /// A packument that was filtered.
@@ -366,14 +371,21 @@ mod tests {
         assert!(json.get("version").is_none(), "a resolution decides many");
     }
 
-    /// The field exists before any stream does, so lines written now stay comparable with
-    /// lines written once one lands.
+    /// With no store consulted, the field is absent rather than invented.
     #[test]
     fn the_intel_snapshot_is_absent_rather_than_invented() {
         let event = Event::pinned("npm", "lodash", "4.17.21", &decision("version: 1"), &[]);
 
         assert_eq!(event.intel_snapshot, None);
         assert!(line(&event).get("intel_snapshot").is_none());
+    }
+
+    #[test]
+    fn a_consulted_snapshot_is_recorded() {
+        let event = Event::pinned("npm", "lodash", "4.17.21", &decision("version: 1"), &[])
+            .with_intel_snapshot(Some("sha256:abc"));
+
+        assert_eq!(field(&line(&event), "intel_snapshot"), "sha256:abc");
     }
 
     #[test]

@@ -22,6 +22,10 @@ code, and the file names where.
 | [Config format: YAML via serde-saphyr](config-format-yaml-serde-saphyr.md) | Decided |
 | [HTTP stack: axum and reqwest](http-stack-axum-reqwest.md) | Decided |
 | [PURL identity rules for npm](purl-identity-rules.md) | Decided |
+| [Storage: sqlx over Postgres, no ORM](storage-sqlx-postgres.md) | Implemented, lookup path only |
+| [sqlx held at 0.8, RUSTSEC-2023-0071 accepted while `rsa` is not built](sqlx-0-8-and-rsa-advisory.md) | Implemented |
+| [Loading OSV malware records](osv-malware-load.md) | Implemented, `waharoa refresh` |
+| [Intel in decisions: one lookup per package, fail closed](intel-in-decisions.md) | Implemented |
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |

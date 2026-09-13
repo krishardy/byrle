@@ -24,7 +24,8 @@
 //! That is why this build does not enforce `cooldown_days`: see
 //! [`Facts::can_answer`].
 
-use super::decide::{Facts, Intel};
+use super::decide::{Advisory, Facts, Intel};
+use crate::intel::store::PackageIntel;
 use crate::record::{PackageRecord, PackumentDetail};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
@@ -73,6 +74,29 @@ impl Facts {
     /// The abbreviated packument carries no `time` map, and that is the document both
     /// `npm install` and the proxy's own fetch ask for. Asking the engine anyway would
     /// fail every package on a fact the registry never sent.
+    /// Add what the intel store knows about this version.
+    ///
+    /// Marks the facts consulted even when nothing is known against the version, because
+    /// the store was asked. An advisory with no score is left out of `advisories`, since
+    /// `Advisory::cvss` is a number and zero would be a score nobody gave. It still counts
+    /// toward `known_malware`.
+    pub fn with_intel(mut self, intel: &PackageIntel) -> Self {
+        let records = intel.for_version(&self.version);
+        self.known_malware = records.iter().any(|r| r.malware);
+        self.advisories = records
+            .iter()
+            .filter_map(|r| {
+                r.score().map(|score| Advisory {
+                    id: r.advisory_id.clone(),
+                    cvss: score.cvss(),
+                    kev: r.exploited,
+                })
+            })
+            .collect();
+        self.intel = Intel::Consulted;
+        self
+    }
+
     pub fn can_answer_cooldown(record: &PackageRecord, times: Option<&PublishTimes>) -> Answerable {
         match published_date(record, times) {
             Some(_) => Answerable::Yes,
@@ -142,6 +166,80 @@ mod tests {
 
     fn policy(yaml: &str) -> Policy {
         Policy::parse(yaml).expect("policy should load")
+    }
+
+    fn stored(
+        version: Option<&str>,
+        id: &str,
+        malware: bool,
+        cvss: Option<f64>,
+    ) -> (Option<String>, crate::intel::store::Record) {
+        (
+            version.map(str::to_owned),
+            crate::intel::store::Record {
+                advisory_id: id.to_owned(),
+                source: "osv".to_owned(),
+                cvss,
+                cvss_source: None,
+                exploited: false,
+                malware,
+            },
+        )
+    }
+
+    fn intel(records: Vec<(Option<String>, crate::intel::store::Record)>) -> PackageIntel {
+        PackageIntel {
+            snapshot: "s1".to_owned(),
+            records,
+        }
+    }
+
+    #[test]
+    fn malware_against_every_version_blocks_through_the_facts() {
+        let facts =
+            Facts::from_record(&full()).with_intel(&intel(vec![stored(None, "MAL-1", true, None)]));
+        assert!(facts.known_malware);
+        assert!(
+            facts.advisories.is_empty(),
+            "an unscored record is not an advisory"
+        );
+        assert_eq!(facts.intel, Intel::Consulted);
+
+        let decision = decide(
+            &policy(
+                "version: 1
+cooldown_days: 0
+",
+            ),
+            &facts,
+            jiff::civil::date(2026, 9, 13),
+        );
+        assert_eq!(decision.action(), Action::Block);
+    }
+
+    #[test]
+    fn a_store_that_knows_nothing_was_still_consulted() {
+        let facts = Facts::from_record(&full()).with_intel(&intel(Vec::new()));
+        assert!(!facts.known_malware);
+        assert_eq!(facts.intel, Intel::Consulted);
+    }
+
+    #[test]
+    fn only_scored_advisories_for_this_version_become_advisories() {
+        let facts = Facts::from_record(&full()).with_intel(&intel(vec![
+            stored(Some("4.17.20"), "GHSA-other", false, Some(9.8)),
+            stored(Some("4.17.21"), "GHSA-this", false, Some(5.0)),
+            stored(Some("4.17.21"), "GHSA-unscored", false, None),
+        ]));
+        assert_eq!(
+            facts.advisories,
+            vec![Advisory {
+                id: "GHSA-this".to_owned(),
+                cvss: 5.0,
+                kev: false,
+            }]
+        );
+        assert!(!facts.known_malware);
     }
 
     #[test]
