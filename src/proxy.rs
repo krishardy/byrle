@@ -60,7 +60,7 @@ use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::audit::{self, AuditLog};
-use crate::intel::store::{Intel, PackageIntel};
+use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
 use crate::policy::{Policy, enforce, facts};
 use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
@@ -92,6 +92,38 @@ use tracing::{debug, error, info, warn};
 /// Under `/-/`, which is the registry's own namespace and where a package name can never
 /// live, so it cannot collide with anything a client asks for.
 pub const HEALTH_PATH: &str = "/-/waharoa/health";
+
+/// Where the proxy says whether it can decide on packages now, for an orchestrator's
+/// readiness probe. Under `/-/` for the same reason as [`HEALTH_PATH`].
+pub const READY_PATH: &str = "/-/waharoa/ready";
+
+/// Whether the proxy can decide on a package now. Served at [`READY_PATH`].
+///
+/// 200 when ready and 503 when not, so a probe needs only the status. Ready exactly when a
+/// package request would not be answered with the intel 503. No percentage: `waharoa
+/// refresh` loads in one transaction, so the store holds the previous snapshot or the new
+/// one and never part of one. See `docs/engineering_decisions/readiness-endpoint.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Readiness {
+    pub ready: bool,
+    pub intel: IntelState,
+    /// The snapshot decisions use, when the store holds one.
+    pub snapshot: Option<LoadedSnapshot>,
+}
+
+/// What the intel store means for readiness.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntelState {
+    /// No policy, or no store: nothing asks the store, so nothing waits on it.
+    NotConsulted,
+    /// The store answers and holds a snapshot.
+    Loaded,
+    /// The store answers and holds no snapshot: `waharoa refresh` has not loaded one.
+    Empty,
+    /// The store cannot answer. The cause is logged, not served.
+    Unavailable,
+}
 
 /// What the proxy is, and what it is configured to do.
 ///
@@ -306,6 +338,37 @@ impl Proxy {
             packuments_held,
             records_held,
             artifacts_verified: self.verified.lock().expect("verified artifacts lock").len(),
+        }
+    }
+
+    /// The store every decision asks, when a policy is there to ask it. See [`intel_for`].
+    fn consulted_intel(&self) -> Option<&dyn Intel> {
+        self.policy.as_ref()?;
+        self.intel.as_deref()
+    }
+
+    /// Whether every package can be decided on now. Served at [`READY_PATH`].
+    pub async fn readiness(&self) -> Readiness {
+        let Some(store) = self.consulted_intel() else {
+            return Readiness {
+                ready: true,
+                intel: IntelState::NotConsulted,
+                snapshot: None,
+            };
+        };
+        let (intel, snapshot) = match store.snapshot().await {
+            Ok(Some(snapshot)) => (IntelState::Loaded, Some(snapshot)),
+            Ok(None) => (IntelState::Empty, None),
+            Err(e) => {
+                // Logged, not sent, as in `intel_for`.
+                error!(why = %e, "intel store cannot answer; not ready");
+                (IntelState::Unavailable, None)
+            }
+        };
+        Readiness {
+            ready: intel == IntelState::Loaded,
+            intel,
+            snapshot,
         }
     }
 
@@ -664,13 +727,18 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     // Answered here rather than forwarded. `/-/` is the registry's own namespace and a
     // package name can never live there, so this collides with nothing a client asks for.
-    if path_and_query.split('?').next() == Some(HEALTH_PATH) {
-        return (
-            StatusCode::OK,
-            [(header::CACHE_CONTROL, "no-store")],
-            axum::Json(proxy.health()),
-        )
-            .into_response();
+    match path_and_query.split('?').next() {
+        Some(HEALTH_PATH) => return uncached_json(StatusCode::OK, proxy.health()),
+        Some(READY_PATH) => {
+            let readiness = proxy.readiness().await;
+            let status = if readiness.ready {
+                StatusCode::OK
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            return uncached_json(status, readiness);
+        }
+        _ => {}
     }
 
     let target = npm::classify_path(&path_and_query);
@@ -1334,6 +1402,16 @@ async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<Arc<facts:
     Some(times)
 }
 
+/// JSON about the proxy itself, marked not to be cached: it reports the state at this moment.
+fn uncached_json(status: StatusCode, body: impl Serialize) -> Response {
+    (
+        status,
+        [(header::CACHE_CONTROL, "no-store")],
+        axum::Json(body),
+    )
+        .into_response()
+}
+
 /// The intel store could not answer. Already logged; [`IntelUnavailable::response`] is what
 /// the client is sent.
 struct IntelUnavailable;
@@ -1359,7 +1437,7 @@ async fn intel_for(
     key: &PackageKey,
     path: &str,
 ) -> Result<Option<PackageIntel>, IntelUnavailable> {
-    let (Some(store), Some(_)) = (proxy.intel.as_deref(), proxy.policy.as_deref()) else {
+    let Some(store) = proxy.consulted_intel() else {
         return Ok(None);
     };
     let why = match store
@@ -2504,6 +2582,73 @@ mod tests {
                 "{label}: {paths:?}"
             );
         }
+    }
+
+    /// Ready exactly when a package request would not get the intel 503.
+    #[tokio::test]
+    async fn readiness_depends_on_the_store_only_when_a_policy_is_set() {
+        use crate::intel::store::testing::FixedIntel;
+        let proxy = |intel: Option<Arc<dyn Intel>>, with_policy: bool| {
+            let proxy = Proxy::new(reqwest::Client::new(), "http://127.0.0.1:9").with_intel(intel);
+            if with_policy {
+                proxy.with_policy(Some(policy("version: 1\n")))
+            } else {
+                proxy
+            }
+        };
+        let down = || Some(Arc::new(FixedIntel(Err(()))) as Arc<dyn Intel>);
+        for (label, intel, with_policy, expected) in [
+            ("no store", None, true, (true, IntelState::NotConsulted)),
+            ("no policy", down(), false, (true, IntelState::NotConsulted)),
+            (
+                "loaded",
+                Some(malware_everywhere()),
+                true,
+                (true, IntelState::Loaded),
+            ),
+            (
+                "empty",
+                Some(Arc::new(FixedIntel(Ok(None))) as Arc<dyn Intel>),
+                true,
+                (false, IntelState::Empty),
+            ),
+            ("down", down(), true, (false, IntelState::Unavailable)),
+        ] {
+            let readiness = proxy(intel, with_policy).readiness().await;
+            assert_eq!((readiness.ready, readiness.intel), expected, "{label}");
+            assert_eq!(
+                readiness.snapshot.is_some(),
+                expected.1 == IntelState::Loaded,
+                "{label}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_ready_path_answers_503_until_a_snapshot_can_be_read() {
+        use crate::intel::store::testing::FixedIntel;
+        let (base, _) = proxy_with_intel(Arc::new(FixedIntel(Err(()))), true).await;
+        let response = reqwest::get(format!("{base}{READY_PATH}")).await.unwrap();
+        assert_eq!(response.status(), 503);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            response.text().await.unwrap(),
+            r#"{"ready":false,"intel":"unavailable","snapshot":null}"#,
+            "the store's error is logged, not served"
+        );
+
+        let (base, seen) = proxy_with_intel(malware_everywhere(), true).await;
+        let response = reqwest::get(format!("{base}{READY_PATH}?probe=1"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(
+            response.text().await.unwrap(),
+            r#"{"ready":true,"intel":"loaded","snapshot":{"digest":"s1","taken_at":"2026-09-13T00:00:00Z","streams":[]}}"#,
+            "the body a probe and the README describe"
+        );
+        let paths = &seen.lock().unwrap().paths;
+        assert!(paths.is_empty(), "answered here, not forwarded: {paths:?}");
     }
 
     /// With no policy nothing is enforced, so the store is never asked.

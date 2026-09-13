@@ -171,6 +171,11 @@ The proxy answers `GET /-/waharoa/health` for itself, which reports what it forw
 and which settings are reducing what it examines. That is what `doctor` reads, and it is
 worth curling directly when a client says something unexpected.
 
+`GET /-/waharoa/ready` answers 200 when the proxy can decide on packages and 503 when it
+cannot: a policy and an intel store are configured, and the store holds no snapshot or
+cannot be reached. Point an orchestrator's readiness probe at it. The body reports the loaded
+snapshot and each stream's digest.
+
 To see what the proxy does to a request rather than whether it is being used:
 
 ```

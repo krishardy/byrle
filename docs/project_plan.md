@@ -266,9 +266,12 @@ one transaction. See [osv-malware-load](engineering_decisions/osv-malware-load.m
 reproducibility token across all streams, pinnable and exportable for air-gapped use.
 
 **Cold start fails closed, with 503 — never 403.** A 403 during warming looks like a
-policy violation for a package that is fine, which costs trust immediately. The 503 body
-states that intel is loading and the percentage complete. A readiness endpoint reports
-per-stream progress so orchestrators hold traffic until warm.
+policy violation for a package that is fine, which costs trust immediately. A readiness
+endpoint answers 503 until a snapshot is loaded, so an orchestrator sends the proxy no
+traffic until then.
+It reports each stream's loaded digest rather than a percentage: a refresh is one
+transaction, so there is no partial load to measure. See
+[readiness-endpoint](engineering_decisions/readiness-endpoint.md).
 
 **Query-on-clean live fallback (adopted from pkggate's design).** The mirror answers
 malicious verdicts at zero latency; the live API is queried *only* for versions the
@@ -838,6 +841,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [Command line parser](engineering_decisions/cli-parser-clap.md) | clap 4 with default features off, 4 crates; parsing in `src/cli.rs`, help pinned by golden files |
 | n/a | [Intel schema keys and types](engineering_decisions/intel-schema-keys-and-types.md) | Every table keyed by a `BIGINT` identity; publisher ids and digests are sized unique columns; `TIMESTAMPTZ`; `TEXT` only for `summary`. An over-long value fails the refresh |
 | n/a | [Policy schema v1 frozen](engineering_decisions/policy-schema-v1-frozen.md) | `version: 1` is closed: no key added, removed, renamed or retyped, and no default changed. Anything new is `version: 2` |
+| n/a | [Readiness endpoint](engineering_decisions/readiness-endpoint.md) | `GET /-/waharoa/ready`: 503 when a policy and an intel store are set and the store holds no snapshot or cannot answer; reports each stream's loaded digest, no percentage |
 | n/a | [`policy check`](engineering_decisions/policy-check.md) | Loads as the proxy does; lists entries that change nothing, never win, or are `permanent: true`; `--strict` exits 1 on the first two |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 

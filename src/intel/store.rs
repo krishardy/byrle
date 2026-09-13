@@ -16,8 +16,10 @@
 //! package rather than one per check.
 
 use crate::intel::range::{self, Interval};
+use crate::intel::refresh::StreamDigest;
 use crate::intel::{Enrichment, Finding, Score};
 use semver::Version;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -151,6 +153,17 @@ impl PackageIntel {
     }
 }
 
+/// The load the answers come from, as `waharoa refresh` recorded it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LoadedSnapshot {
+    /// `sha256:` and the hex digest of the per-stream digests.
+    pub digest: String,
+    /// When the refresh that wrote it ran. RFC 3339, UTC, to the second.
+    pub taken_at: String,
+    /// Each stream in the load, sorted by name.
+    pub streams: Vec<StreamDigest>,
+}
+
 /// What the decision engine asks of the mirror.
 ///
 /// A failure is an error rather than an empty answer. An empty answer means a stream was
@@ -166,8 +179,9 @@ pub trait Intel: Send + Sync {
         version: &'a str,
     ) -> Lookup<'a, Vec<Record>>;
 
-    /// Which snapshot the answers above came from, so a verdict can name it.
-    fn snapshot(&self) -> Lookup<'_, Option<String>>;
+    /// Which snapshot the answers above came from, so a verdict can record it and readiness
+    /// can report it. `None` when nothing has been loaded.
+    fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>>;
 
     /// Every record against a package, for all its versions at once, so a packument with
     /// 3,823 versions is one query. `None` when nothing has been loaded, which is not the
@@ -208,8 +222,14 @@ pub mod testing {
             })
         }
 
-        fn snapshot(&self) -> Lookup<'_, Option<String>> {
-            Box::pin(async move { Ok(self.answer()?.map(|p| p.snapshot)) })
+        fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move {
+                Ok(self.answer()?.map(|p| LoadedSnapshot {
+                    digest: p.snapshot,
+                    taken_at: "2026-09-13T00:00:00Z".to_owned(),
+                    streams: Vec::new(),
+                }))
+            })
         }
 
         fn package<'a>(
@@ -377,7 +397,7 @@ mod tests {
             ranges: Vec::new(),
         })));
         assert_eq!(
-            loaded.snapshot().await.expect("answers"),
+            loaded.snapshot().await.expect("answers").map(|s| s.digest),
             Some("s1".to_owned())
         );
         assert_eq!(

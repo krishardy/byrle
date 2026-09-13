@@ -170,7 +170,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// One stream's bundle, as a snapshot records it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StreamDigest {
     pub stream: String,
     pub sha256: String,
