@@ -19,6 +19,7 @@
 //! `spikes/config-format/src/bin/poly.rs`.
 
 pub mod decide;
+pub mod enforce;
 pub mod facts;
 pub mod merge;
 pub mod packages;
@@ -78,6 +79,13 @@ pub enum PolicyError {
     },
     /// Two entries cannot be ordered by most-specific-wins.
     Overlapping(selector::OverlapError),
+    /// A denial does not name one exact version.
+    DenialNeedsAVersion { at: String, purl: String },
+    /// A denial's purl could not be read.
+    UnreadableDenial {
+        at: String,
+        source: selector::SelectorError,
+    },
 }
 
 impl fmt::Display for PolicyError {
@@ -106,6 +114,11 @@ impl fmt::Display for PolicyError {
             ),
             Self::BadSelector { at, source } => write!(f, "{at}: {source}"),
             Self::Overlapping(e) => write!(f, "{e}"),
+            Self::DenialNeedsAVersion { at, purl } => write!(
+                f,
+                "{at} denies `{purl}`, which names no version. A denial is permanent and                  absolute, so it is written against one exact version: `{purl}@<version>`.                  Without one it would match nothing and read as a package that had been                  dealt with"
+            ),
+            Self::UnreadableDenial { at, source } => write!(f, "{at}: {source}"),
         }
     }
 }
@@ -230,6 +243,7 @@ impl Policy {
         policy.check_on_off_settings()?;
         policy.check_package_expiry_shape()?;
         policy.check_selectors()?;
+        policy.check_denials()?;
         Ok(policy)
     }
 
@@ -247,6 +261,30 @@ impl Policy {
     /// Refused rather than silently treated as one of the two. `quarantine` means "refused
     /// now, allowed later", and neither of these lapses: waiting does not change whether a
     /// package has an install script or a known-exploited vulnerability.
+    /// A denial names one exact version, or the file does not load.
+    ///
+    /// `decide` matches denials by parsing the purl, so a denial with no version matches
+    /// nothing. Refusing it at load is the difference between a policy that is wrong and
+    /// a policy that is silently doing nothing.
+    fn check_denials(&self) -> Result<(), PolicyError> {
+        for (i, denial) in self.denials.iter().enumerate() {
+            let at = format!("denials[{i}]");
+            let (_, _, version) = selector::decompose(&denial.purl).map_err(|source| {
+                PolicyError::UnreadableDenial {
+                    at: at.clone(),
+                    source,
+                }
+            })?;
+            if version.is_none() {
+                return Err(PolicyError::DenialNeedsAVersion {
+                    at,
+                    purl: denial.purl.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     fn check_on_off_settings(&self) -> Result<(), PolicyError> {
         let mut checked: Vec<(String, Action)> = vec![
             ("install_scripts".to_owned(), self.install_scripts),
@@ -661,12 +699,48 @@ mod tests {
     #[test]
     fn a_denial_is_permanent_by_having_nowhere_to_put_an_expiry() {
         assert!(matches!(
-            parse("denials:\n  - purl: pkg:npm/evil\n    reason: m\n    expires: \"2026-01-01\"\n")
+            parse("denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: m\n    expires: \"2026-01-01\"\n")
                 .unwrap_err(),
             PolicyError::Invalid(_)
         ));
-        let policy = parse("denials:\n  - purl: pkg:npm/evil\n    reason: malware\n").unwrap();
+        let policy = parse("denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: malware\n").unwrap();
         assert_eq!(policy.denials[0].reason, "malware");
+    }
+
+    /// A denial with no version matches nothing, so the file does not load.
+    ///
+    /// The failure this prevents is silent: an operator writes the package they mean,
+    /// reads it back in the file, and it denies nobody.
+    #[test]
+    fn a_denial_that_names_no_version_is_refused_at_load() {
+        let err = parse("denials:\n  - purl: pkg:npm/evil\n    reason: malware\n")
+            .expect_err("a versionless denial must not load");
+        let message = err.to_string();
+        assert!(message.contains("denials[0]"), "{message}");
+        assert!(message.contains("names no version"), "{message}");
+        assert!(message.contains("pkg:npm/evil@<version>"), "{message}");
+
+        // The same denial with a version loads.
+        assert!(parse("denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: malware\n").is_ok());
+    }
+
+    #[test]
+    fn a_denial_whose_purl_cannot_be_read_is_refused_by_name() {
+        let err = parse("denials:\n  - purl: not-a-purl\n    reason: malware\n")
+            .expect_err("an unreadable denial must not load");
+        assert!(err.to_string().contains("denials[0]"), "{err}");
+    }
+
+    /// A scoped denial is the case the parser exists for: `%40babel` and `@babel` are the
+    /// same package, and the first is what this codebase's own `Display` emits.
+    #[test]
+    fn a_scoped_denial_loads_written_either_way() {
+        for spelling in ["pkg:npm/%40babel/core@1.0.0", "pkg:npm/@babel/core@1.0.0"] {
+            assert!(
+                parse(&format!("denials:\n  - purl: {spelling}\n    reason: m\n")).is_ok(),
+                "{spelling} should load"
+            );
+        }
     }
 
     /// `permanent: true` is the alternative to `expires`, not a companion.
