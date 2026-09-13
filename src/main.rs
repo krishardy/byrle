@@ -161,7 +161,11 @@ fn warm_cache(client: &str) -> Option<std::path::PathBuf> {
     (dir.is_dir() && doctor::count_files(&dir) > 0).then_some(dir)
 }
 
-/// Ask the proxy what it is. `None` when nothing answers, which is itself the finding.
+/// Ask the proxy about itself at `path`. `None` when nothing answers there with the JSON
+/// expected, which is itself the finding.
+///
+/// The status is not checked: readiness answers with its JSON on a 503 too, and anything
+/// that is not a waharoa does not answer with this JSON.
 ///
 /// Async, not `reqwest::blocking`: doctor runs inside the same tokio runtime as
 /// everything else, and a blocking client builds a second runtime, which panics when it
@@ -169,16 +173,12 @@ fn warm_cache(client: &str) -> Option<std::path::PathBuf> {
 ///
 /// The timeout is short because doctor is a command someone is waiting on, and a proxy
 /// that takes seconds to say hello is not one that is working.
-async fn fetch_health(proxy: &str) -> Option<waharoa::proxy::Health> {
-    let url = format!("{proxy}{}", waharoa::proxy::HEALTH_PATH);
+async fn fetch_own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Option<T> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(3))
         .build()
         .ok()?;
-    let response = client.get(url).send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
+    let response = client.get(format!("{proxy}{path}")).send().await.ok()?;
     serde_json::from_str(&response.text().await.ok()?).ok()
 }
 
@@ -454,10 +454,16 @@ async fn run_doctor() -> std::process::ExitCode {
     // Whether the thing at the other end is there at all, and what it says it does.
     // Everything after this reads client configuration, which can be perfect while
     // nothing is listening.
-    findings.extend(doctor::check_proxy(
-        fetch_health(&proxy).await.as_ref(),
-        &proxy,
-    ));
+    let health: Option<waharoa::proxy::Health> =
+        fetch_own(&proxy, waharoa::proxy::HEALTH_PATH).await;
+    findings.extend(doctor::check_proxy(health.as_ref(), &proxy));
+    // A proxy that responds to the health request can still answer every package request
+    // with 503 while its intel store is empty or down.
+    if health.is_some() {
+        let readiness: Option<waharoa::proxy::Readiness> =
+            fetch_own(&proxy, waharoa::proxy::READY_PATH).await;
+        findings.push(doctor::check_readiness(readiness.as_ref(), &proxy));
+    }
 
     // The policy the proxy is configured with, judged as `waharoa policy check` judges it.
     if let Some(path) = or_exit(environment.policy()) {

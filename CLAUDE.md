@@ -19,6 +19,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * Where there is duplication between the project_plan.md and architecture.md, put the content in architecture.md and remove it from project_plan.md.
 * Engineering decisions should be documented in docs/engineering_decisions/<decision_name>.md
 * Write plainly, concretely and succinctly. Things like "Lowercasing therefore silently misses the one rule nobody is allowed to override" is unacceptable because it is a non-specific interprative statement of previous sentences. Let the data and information speak for themselves.
+* Check each word means what you intend, not something near it. Use the literal verb: "uses", "asks", "reports", "contains", "until". "Ready, deciding against intel snapshot X" is wrong because "decide against" means reject; "ready, using intel snapshot X" is the fix. Watch words with a second meaning: "against", "consult", "names", "holds", "through", "pin", "dead". This applies to code identifiers, user-facing strings, doc comments, commit messages and reports.
 * No em-dashes. For love of God and all that is holy, NO EM-DASHES!
 
 ## Reporting to the user

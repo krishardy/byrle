@@ -12,6 +12,7 @@
 use crate::env;
 use crate::policy::check::Report;
 use crate::policy::packages;
+use crate::proxy::{IntelState, READY_PATH, Readiness};
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -418,6 +419,67 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
         ));
     }
     findings
+}
+
+/// The title of every finding about readiness.
+const READINESS_TITLE: &str = "proxy readiness";
+
+/// Whether the proxy can decide on packages now.
+///
+/// A proxy can answer its health request and still answer every package with 503 while its
+/// intel store is empty or down. `readiness` is what [`READY_PATH`] returned, or `None` when
+/// nothing there could be read. Run only when the health request in [`check_proxy`]
+/// succeeded.
+pub fn check_readiness(readiness: Option<&Readiness>, proxy: &str) -> Finding {
+    let Some(readiness) = readiness else {
+        return Finding::new(
+            Severity::Warn,
+            READINESS_TITLE,
+            format!(
+                "nothing readable at {proxy}{READY_PATH}. A proxy older than this doctor does \
+                 not serve it"
+            ),
+        )
+        .with_fix("upgrade the proxy");
+    };
+    match readiness.intel {
+        IntelState::Loaded => Finding::new(
+            Severity::Ok,
+            READINESS_TITLE,
+            readiness.snapshot.as_ref().map_or_else(
+                || "ready".to_owned(),
+                |s| {
+                    format!(
+                        "ready, using intel snapshot {}, taken {}",
+                        s.digest, s.taken_at
+                    )
+                },
+            ),
+        ),
+        IntelState::NotConsulted => Finding::new(
+            Severity::Warn,
+            READINESS_TITLE,
+            "ready, but uses no intel store, so known_malware and max_cvss are not enforced",
+        )
+        .with_fix(format!(
+            "set both {} and {} on the proxy",
+            env::POLICY,
+            env::DATABASE_URL
+        )),
+        IntelState::Empty => Finding::new(
+            Severity::Problem,
+            READINESS_TITLE,
+            "not ready: the intel store holds no snapshot, so every package request is \
+             answered 503",
+        )
+        .with_fix("run `waharoa refresh` against the proxy's database"),
+        IntelState::Unavailable => Finding::new(
+            Severity::Problem,
+            READINESS_TITLE,
+            "not ready: the intel store cannot answer, so every package request is answered 503",
+        )
+        .with_fix("the proxy's log gives the cause"),
+    }
 }
 
 /// Where the proxy is expected to be reachable.
@@ -882,6 +944,60 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Problem);
         assert!(findings[0].detail.contains("nothing answered"));
         assert!(findings[0].fix.is_some());
+    }
+
+    fn readiness(intel: IntelState) -> Readiness {
+        Readiness {
+            ready: matches!(intel, IntelState::Loaded | IntelState::NotConsulted),
+            intel,
+            snapshot: (intel == IntelState::Loaded).then(|| crate::intel::store::LoadedSnapshot {
+                digest: "sha256:ab".into(),
+                taken_at: "2026-09-13T01:02:03Z".into(),
+                streams: vec![],
+            }),
+        }
+    }
+
+    /// Answering its health request is not the same as serving packages.
+    #[test]
+    fn a_proxy_whose_intel_store_cannot_decide_is_a_problem_with_a_fix() {
+        for (intel, cause) in [
+            (IntelState::Empty, "holds no snapshot"),
+            (IntelState::Unavailable, "cannot answer"),
+        ] {
+            let finding = check_readiness(Some(&readiness(intel)), PROXY);
+            assert_eq!(finding.severity, Severity::Problem, "{intel:?}");
+            assert!(
+                finding.detail.contains(cause) && finding.detail.contains("503"),
+                "{finding}"
+            );
+            assert!(finding.fix.is_some(), "{intel:?}");
+        }
+    }
+
+    #[test]
+    fn a_ready_proxy_reports_the_snapshot_it_uses() {
+        let finding = check_readiness(Some(&readiness(IntelState::Loaded)), PROXY);
+        assert_eq!(finding.severity, Severity::Ok);
+        assert_eq!(
+            finding.detail,
+            "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z"
+        );
+    }
+
+    #[test]
+    fn a_proxy_that_uses_no_intel_store_warns_that_intel_checks_are_off() {
+        let finding = check_readiness(Some(&readiness(IntelState::NotConsulted)), PROXY);
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(finding.detail.contains("known_malware"), "{finding}");
+        assert!(finding.fix.is_some());
+    }
+
+    #[test]
+    fn a_proxy_without_the_readiness_endpoint_warns() {
+        let finding = check_readiness(None, PROXY);
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(finding.detail.contains(READY_PATH), "{finding}");
     }
 
     #[test]
