@@ -147,10 +147,16 @@ Items that I've added that are not stage-bound.
    `docs/engineering_decisions/deferral-status-codes.md`.
    Argues on its own merits (a proxy legitimately rate-limiting is a real scenario),
    so it is a small uncontroversial patch. Long lead time — file early.
-11. [ ] **`cargo build --release` does not compile.** `src/lib.rs` gates `pub mod audit` on
+11. [x] **`cargo build --release` does not compile.** `src/lib.rs` gates `pub mod audit` on
    `#[cfg(debug_assertions)]` (since `95c52b0`), and `src/proxy.rs:58` uses `crate::audit`
    unconditionally, so a release build fails with `could not find audit in the crate root`.
    `src/audit.rs` gives no reason for the gate.
+    - Done 2026-09-13: the gate was never meant for `audit`. `95c52b0` put it on
+      `pub mod defer`; `d648995` inserted `pub mod audit;` between the attribute and
+      `defer`, so `audit` was gated and `defer` was compiled into every build. The gate is
+      back on `defer`. The release binary has no `waharoa::defer` symbols (the debug one has
+      44) and does not list `WAHAROA_DEFER_TEST` in `--help`. `make lint` now also runs
+      clippy with `--release`.
 12. [x] In make semgrep, also report on any semgrep exceptions (file, line # and line text)
     - Done 2026-09-13: after the scan, `==> exceptions` lists each finding a `nosemgrep`
       comment suppresses (file, line, rule, line text), comments that suppress nothing, and
@@ -192,7 +198,8 @@ Items that I've added that are not stage-bound.
     - Done 2026-09-13: `src/env.rs`. `a_variable_name_appears_only_in_this_module` fails on a
       name anywhere else in `src/`, `tests/` or `examples/`. `--help` renders from the same
       constants. See [environment-variables](docs/engineering_decisions/environment-variables.md).
-17. [ ] Search for duplicate code or duplicate strings throughout the application and catalog them for later consolidation.
+17. [x] Search for duplicate code or duplicate strings throughout the application and catalog them for later consolidation.
+    - Added a rule to CLAUDE.md
 
 ## Stage 1 — Pass-through proxy (transport)
 

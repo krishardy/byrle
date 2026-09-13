@@ -5,10 +5,10 @@
 //! identity. Splitting into separate *crates* remains deliberately deferred (TODO.md);
 //! a lib plus a bin in one crate is not that split.
 
-/// Debug builds only: see the module docs.
-#[cfg(debug_assertions)]
 pub mod audit;
 pub mod cli;
+/// Debug builds only: see the module docs.
+#[cfg(debug_assertions)]
 pub mod defer;
 pub mod doctor;
 pub mod env;

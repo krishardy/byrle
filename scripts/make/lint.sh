@@ -25,6 +25,15 @@ if ! cargo clippy --manifest-path "$repo_root/Cargo.toml" --all-targets "$@" -- 
     failed=1
 fi
 
+note "rust (clippy, release profile)"
+# The release profile turns off debug_assertions, so it compiles a different crate:
+# `#[cfg(debug_assertions)]` code is removed. With only the debug profile checked, a
+# release build stopped compiling when that attribute ended up on the wrong module in
+# src/lib.rs (d648995), and nothing failed.
+if ! cargo clippy --manifest-path "$repo_root/Cargo.toml" --release --lib --bins "$@" -- -D warnings; then
+    failed=1
+fi
+
 note "shell (shellcheck)"
 if ! command -v shellcheck >/dev/null 2>&1; then
     echo "shellcheck is not installed. Run 'make dev-setup'."
