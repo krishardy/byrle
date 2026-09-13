@@ -1,4 +1,4 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test test-integration coverage verify sqlx-prepare check-deps update-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config
+.PHONY: help dev-setup lint semgrep trufflehog sast test test-integration coverage verify sqlx-prepare check-deps update-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config duplicates
 
 help:
 	@echo "waharoa targets:"
@@ -21,6 +21,7 @@ help:
 	@echo "  offsite-urls   which packument URLs each client fetches as written"
 	@echo "  inspect        show one request per client, for looking at by eye"
 	@echo "  spike-config   re-run the config-format spike (plan §5, decision #11)"
+	@echo "  duplicates     repeated code blocks and string literals (docs/duplication-catalogue.md)"
 
 # The repository path as trufflehog sees it, which is the real path for a native
 # binary. Override it if trufflehog runs in a container, where the repository is
@@ -86,3 +87,6 @@ inspect:
 
 spike-config:
 	@scripts/make/spike-config.sh
+
+duplicates:
+	@scripts/make/duplicates.py

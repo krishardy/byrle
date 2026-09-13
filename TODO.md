@@ -200,6 +200,10 @@ Items that I've added that are not stage-bound.
       constants. See [environment-variables](docs/engineering_decisions/environment-variables.md).
 17. [x] Search for duplicate code or duplicate strings throughout the application and catalog them for later consolidation.
     - Added a rule to CLAUDE.md
+    - Done 2026-09-13: [duplication-catalogue](docs/duplication-catalogue.md), 14 production
+      Rust, 6 script and 12 test-helper entries, none consolidated yet. `make duplicates`
+      re-runs the scan: 30 repeated blocks of 8+ lines, 37 repeated literals of 16+
+      characters touching production code.
 
 ## Stage 1 — Pass-through proxy (transport)
 
