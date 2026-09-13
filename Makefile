@@ -1,4 +1,4 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test coverage verify check-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config
+.PHONY: help dev-setup lint semgrep trufflehog sast test coverage verify check-deps update-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config
 
 help:
 	@echo "waharoa targets:"
@@ -11,6 +11,7 @@ help:
 	@echo "  coverage       unit test coverage, failing under the CLAUDE.md floor"
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
+	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
 	@echo "  run            run the proxy in the foreground"
 	@echo "  smoke-npm      end-to-end check of the proxy against a real npm client"
 	@echo "  smoke-clients  where npm, pnpm and yarn diverge through the proxy"
@@ -53,6 +54,9 @@ verify:
 
 check-deps:
 	@scripts/make/check-deps.sh
+
+update-deps:
+	@scripts/make/update-deps.sh
 
 run:
 	@scripts/make/run.sh
