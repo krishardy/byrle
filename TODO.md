@@ -1063,14 +1063,29 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             circuits on a missing publish date, so `cooldown_days: 0`, which is how an
             operator disables the check, still failed every package the registry published
             no time for. Zero days of waiting is satisfied by everything.
+      - [x] **A cooldown is enforced on both paths**, verified against the real registry:
+            a 10-year cooldown leaves 11 of ms's 32 versions in the packument, and a
+            pinned fetch of 2.1.3 answers 403 "held by policy".
       - [x] **An unanswerable check is dropped and reported, never silently passed.**
             `enforce::unenforceable` drops `cooldown_days` when the record cannot answer
             it, and startup says which settings are configured and inert. Without the
             drop, configuring any policy refused every artifact.
-      - [ ] `[!]` Fetch the full packument on the proxy's own behalf, per package.
-            `FULL_ACCEPT` exists for exactly this. It is a second request per package on
-            the `npm install` path, not a flag on the existing one: the client asked for
-            abbreviated and must still get abbreviated back.
+      - [x] `[!]` **Fetch the full packument for its `time` map, gated on the policy
+            using a cooldown.** `npm::publish_times` parses only the map rather than
+            normalising, because building 3,823 records for typescript to read one field
+            per version is the part worth not doing. Cached per package, bounded at 1,024.
+      - [x] **There is no cheaper source.** `?fields=time` returns the whole document
+            unchanged and `/<package>/time` is a 404, both checked against
+            registry.npmjs.org. Full against abbreviated, measured on eight packages:
+            lodash 3.6x, express 2.4x, eslint 1.7x, debug 2.6x, ms 3.1x, @babel/traverse
+            1.9x, react 2.4x, typescript 1.8x (8.7 MB to 15.7 MB). The 32 MB packument
+            ceiling already allows for that.
+      - [x] **Policy filtering was coupled to `WAHAROA_REWRITE_ARTIFACTS`.** Filtering a
+            refused version is a policy question and repointing artifact URLs is a
+            transport one. `enforcement-tiers.md` says rewriting is correctly turned off
+            once the proxy terminates TLS, which silently stopped the filtering with it.
+            Verified in both modes: 11 of ms's 32 versions survive a 10-year cooldown
+            either way.
       - [ ] The store that would hold it is per-process and dies with the proxy, so
             without persistence every restart re-fetches every full document. See the
             Stage 5 item.

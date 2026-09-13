@@ -100,16 +100,16 @@ fn report_policy(path: &std::path::Path) -> std::sync::Arc<Policy> {
     // What is configured and what can actually fire are different things, and the gap
     // has to be said out loud rather than discovered by a package getting through.
     warn!(
-        "ENFORCED on a pinned artifact fetch: denials, install_scripts. Resolution-path \
-         filtering is not implemented, so a version this policy refuses is still offered \
-         to the resolver"
+        "ENFORCED: denials, install_scripts, cooldown_days. A refused version is removed \
+         from the packument so the resolver picks another, and a pinned fetch of one is \
+         refused"
     );
-    if policy.cooldown_days > 0 {
+    if policy.uses_cooldown() {
         warn!(
             cooldown_days = policy.cooldown_days,
-            "NOT ENFORCED: cooldown_days. npm publishes version timestamps only in the \
-             full packument, and the proxy fetches the abbreviated one, so no record \
-             carries a publish date to measure against"
+            "cooldown_days is enforced, and costs a full-packument fetch per package that \
+             the client never asked for. npm publishes version timestamps only in the full \
+             document, measured at 1.7x to 3.6x the abbreviated one"
         );
     }
     if policy.max_cvss < f64::INFINITY || policy.kev == waharoa::policy::Action::Block {

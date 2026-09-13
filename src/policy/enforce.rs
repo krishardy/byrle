@@ -82,10 +82,14 @@ pub struct Unenforceable {
 }
 
 /// The checks this build cannot answer for a record.
-pub fn unenforceable(policy: &Policy, record: &PackageRecord) -> Vec<Unenforceable> {
+pub fn unenforceable(
+    policy: &Policy,
+    record: &PackageRecord,
+    times: Option<&super::facts::PublishTimes>,
+) -> Vec<Unenforceable> {
     let mut out = Vec::new();
-    if policy.cooldown_days > 0
-        && let super::facts::Answerable::Missing(why) = Facts::can_answer_cooldown(record)
+    if policy.uses_cooldown()
+        && let super::facts::Answerable::Missing(why) = Facts::can_answer_cooldown(record, times)
     {
         out.push(Unenforceable {
             check: Check::CooldownDays,
@@ -100,14 +104,19 @@ pub fn unenforceable(policy: &Policy, record: &PackageRecord) -> Vec<Unenforceab
 /// `None` for the policy is Stage 1 behaviour: nothing is enforced and everything
 /// serves. That is a distinct state from a policy that allows everything, and the log
 /// should be able to tell them apart.
-pub fn artifact(policy: Option<&Policy>, record: &PackageRecord, today: Date) -> Verdict {
+pub fn artifact(
+    policy: Option<&Policy>,
+    record: &PackageRecord,
+    times: Option<&super::facts::PublishTimes>,
+    today: Date,
+) -> Verdict {
     let Some(policy) = policy else {
         return Verdict::Serve;
     };
-    let facts = Facts::from_record(record);
+    let facts = Facts::from_record_and_times(record, times);
     let mut decision = decide(policy, &facts, today);
 
-    let dropped = unenforceable(policy, record);
+    let dropped = unenforceable(policy, record, times);
     decision
         .results
         .retain(|r| !dropped.iter().any(|d| d.check == r.check));
@@ -176,14 +185,14 @@ mod tests {
 
     #[test]
     fn no_policy_at_all_serves_everything() {
-        assert_eq!(artifact(None, &record(), TODAY), Verdict::Serve);
+        assert_eq!(artifact(None, &record(), None, TODAY), Verdict::Serve);
     }
 
     #[test]
     fn a_policy_that_denies_nothing_serves() {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
 
-        assert_eq!(artifact(Some(&policy), &record(), TODAY), Verdict::Serve);
+        assert_eq!(artifact(Some(&policy), &record(), None, TODAY), Verdict::Serve);
     }
 
     #[test]
@@ -193,7 +202,7 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &record(), TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &record(), None, TODAY) else {
             panic!("a denied version must be refused");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -213,7 +222,7 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.20\n    reason: test\n",
         );
 
-        assert_eq!(artifact(Some(&policy), &record(), TODAY), Verdict::Serve);
+        assert_eq!(artifact(Some(&policy), &record(), None, TODAY), Verdict::Serve);
     }
 
     #[test]
@@ -222,7 +231,7 @@ mod tests {
         r.has_install_scripts = true;
         let policy = loaded("version: 1\ncooldown_days: 0\ninstall_scripts: block\n");
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, TODAY) else {
             panic!("install scripts must be refused when the policy blocks them");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -230,7 +239,7 @@ mod tests {
 
         // The same package passes when the policy allows them.
         let allowing = loaded("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n");
-        assert_eq!(artifact(Some(&allowing), &r, TODAY), Verdict::Serve);
+        assert_eq!(artifact(Some(&allowing), &r, None, TODAY), Verdict::Serve);
     }
 
     /// A pinned fetch has no other version to fall back to, so quarantine refuses. What
@@ -245,7 +254,7 @@ mod tests {
         );
         let policy = loaded("version: 1\ncooldown_days: 30\n");
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, TODAY) else {
             panic!("a version inside the cooldown must be refused on a pinned fetch");
         };
         assert_eq!(refusal.action, Action::Quarantine);
@@ -273,7 +282,7 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, TODAY) else {
             panic!("must refuse");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -309,13 +318,13 @@ mod tests {
         let policy = loaded("version: 1\ncooldown_days: 30\n");
 
         assert_eq!(
-            unenforceable(&policy, &abbreviated()),
+            unenforceable(&policy, &abbreviated(), None),
             [Unenforceable {
                 check: Check::CooldownDays,
                 why: "the abbreviated packument carries no publish times",
             }]
         );
-        assert_eq!(artifact(Some(&policy), &abbreviated(), TODAY), Verdict::Serve);
+        assert_eq!(artifact(Some(&policy), &abbreviated(), None, TODAY), Verdict::Serve);
     }
 
     /// Dropping the check must not drop the rest of the vector.
@@ -326,7 +335,7 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &abbreviated(), TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(Some(&policy), &abbreviated(), None, TODAY) else {
             panic!("the denial must survive the cooldown being dropped");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -345,9 +354,9 @@ mod tests {
         );
         let policy = loaded("version: 1\ncooldown_days: 30\n");
 
-        assert!(unenforceable(&policy, &r).is_empty());
+        assert!(unenforceable(&policy, &r, None).is_empty());
         assert!(matches!(
-            artifact(Some(&policy), &r, TODAY),
+            artifact(Some(&policy), &r, None, TODAY),
             Verdict::Refuse(_)
         ));
     }
@@ -357,8 +366,8 @@ mod tests {
     fn a_cooldown_of_zero_is_not_reported_as_unenforceable() {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
 
-        assert!(unenforceable(&policy, &abbreviated()).is_empty());
-        assert_eq!(artifact(Some(&policy), &abbreviated(), TODAY), Verdict::Serve);
+        assert!(unenforceable(&policy, &abbreviated(), None).is_empty());
+        assert_eq!(artifact(Some(&policy), &abbreviated(), None, TODAY), Verdict::Serve);
     }
 
     #[test]
@@ -387,7 +396,7 @@ mod tests {
                  denials:\n  - purl: {spelling}\n    reason: test\n"
             ));
 
-            let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, TODAY) else {
+            let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, TODAY) else {
                 panic!("a scoped package must be refusable, written as `{spelling}`");
             };
             assert_eq!(refusal.purl, "pkg:npm/@babel/traverse@8.0.5");
