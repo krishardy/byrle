@@ -44,6 +44,11 @@ em-dashes included.
   order. The mutation result is what makes it credible, so it is part of the report.
 * Questions and decisions go last and alone: one line, their own paragraph. Never
   appended to a summary.
+* Short sentences: One clause carrying one fact. Two facts joined by "and", "so", "which"
+  or a comma splice should be two sentences. "Filtering a refused version is a policy
+  question and repointing artifact URLs is a transport one, and enforcement-tiers.md says
+  rewriting is correctly turned off once the proxy terminates TLS, which silently stopped
+  the filtering with it" is three sentences pretending to be one.
 * Length: Routine work under 150 words. A session with real findings under 400. Longer
   than that means explaining rather than reporting.
 
