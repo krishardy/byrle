@@ -34,6 +34,9 @@ Proxy configuration, all through the environment:
   WAHAROA_DATABASE_URL              Postgres holding intel from `waharoa refresh`. With a
                                     policy, known_malware is enforced from it, and a
                                     store that cannot answer is a 503
+  WAHAROA_SNAPSHOT_DIR              directory `waharoa refresh` keeps each snapshot in,
+                                    for `policy diff --snapshot`. Unset, none is kept
+  WAHAROA_SNAPSHOT_LIMIT            most snapshots kept there; a refresh removes older ones (default 30)
   WAHAROA_POLICY                    path to a policy file. Loaded, validated and
                                     enforced. Startup reports which checks can fire
   WAHAROA_AUDIT_LOG                 path for one JSON line per policy decision,

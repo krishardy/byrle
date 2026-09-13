@@ -104,6 +104,10 @@ pub const DEFAULT_MAX_CONCURRENT_PACKUMENTS: usize = 8;
 /// again lapses within a quarter.
 pub const DEFAULT_EXPIRY_CEILING_DAYS: i64 = 90;
 
+/// A month of daily refreshes. npm's rows were 5,577,231 bytes gzipped on 2026-09-13, and a
+/// source whose rows did not change is not written again.
+pub const DEFAULT_SNAPSHOT_LIMIT: usize = 30;
+
 /// What §5 says a policy denial is: 403 means policy denied you.
 pub const DEFAULT_REFUSAL_STATUS: u16 = 403;
 
@@ -181,6 +185,20 @@ pub const DATABASE_URL: Var = runtime(
         "store that cannot answer is a 503",
     ],
 );
+pub const SNAPSHOT_DIR: Var = runtime(
+    "WAHAROA_SNAPSHOT_DIR",
+    "",
+    &[
+        "directory `waharoa refresh` keeps each snapshot in,",
+        "for `policy diff --snapshot`. Unset, none is kept",
+    ],
+);
+pub const SNAPSHOT_LIMIT: Var = runtime(
+    "WAHAROA_SNAPSHOT_LIMIT",
+    "",
+    &["most snapshots kept there; a refresh removes older ones"],
+)
+.with_default(Default::Number(DEFAULT_SNAPSHOT_LIMIT as u64));
 pub const POLICY: Var = runtime(
     "WAHAROA_POLICY",
     "",
@@ -275,7 +293,7 @@ pub const BUN_INSTALL_CACHE_DIR: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 26] = [
+pub const ALL: [Var; 28] = [
     LISTEN,
     UPSTREAM,
     PUBLIC_URL,
@@ -288,6 +306,8 @@ pub const ALL: [Var; 26] = [
     MAX_RECORDS,
     MAX_VERIFIED,
     DATABASE_URL,
+    SNAPSHOT_DIR,
+    SNAPSHOT_LIMIT,
     POLICY,
     AUDIT_LOG,
     EXPIRY_CEILING_DAYS,
@@ -521,6 +541,20 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.text(DATABASE_URL)
     }
 
+    pub fn snapshot_dir(&self) -> Result<Option<PathBuf>, EnvError> {
+        self.path(SNAPSHOT_DIR)
+    }
+
+    /// At least one: keeping none would remove the snapshot the refresh just wrote.
+    pub fn snapshot_limit(&self) -> Result<usize, EnvError> {
+        self.parsed(
+            SNAPSHOT_LIMIT,
+            DEFAULT_SNAPSHOT_LIMIT,
+            |v| v.parse().ok().filter(|limit| *limit > 0),
+            "is not a whole number above 0",
+        )
+    }
+
     pub fn policy(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(POLICY)
     }
@@ -621,6 +655,8 @@ mod tests {
             DEFAULT_MAX_CONCURRENT_PACKUMENTS
         );
         assert_eq!(env.database_url().unwrap(), None);
+        assert_eq!(env.snapshot_dir().unwrap(), None);
+        assert_eq!(env.snapshot_limit().unwrap(), DEFAULT_SNAPSHOT_LIMIT);
         assert_eq!(env.policy().unwrap(), None);
         assert_eq!(env.audit_log().unwrap(), None);
         assert_eq!(
@@ -669,6 +705,8 @@ mod tests {
             (MAX_VERIFIED, "20"),
             (MAX_CONCURRENT_PACKUMENTS, "2"),
             (DATABASE_URL, "postgres://db"),
+            (SNAPSHOT_DIR, "/var/lib/waharoa"),
+            (SNAPSHOT_LIMIT, "7"),
             (POLICY, "policy.yaml"),
             (AUDIT_LOG, "audit.jsonl"),
             (EXPIRY_CEILING_DAYS, "30"),
@@ -704,6 +742,11 @@ mod tests {
             env.database_url().unwrap().as_deref(),
             Some("postgres://db")
         );
+        assert_eq!(
+            env.snapshot_dir().unwrap(),
+            Some(PathBuf::from("/var/lib/waharoa"))
+        );
+        assert_eq!(env.snapshot_limit().unwrap(), 7);
         assert_eq!(env.policy().unwrap(), Some(PathBuf::from("policy.yaml")));
         assert_eq!(env.audit_log().unwrap(), Some(PathBuf::from("audit.jsonl")));
         assert_eq!(env.expiry_ceiling_days().unwrap(), 30);
@@ -736,8 +779,9 @@ mod tests {
             (CA_BUNDLE_EXCLUSIVE, "yes"),
             (REWRITE_ARTIFACTS, "false"),
             (REFUSE_UNSERVABLE, "no"),
+            (SNAPSHOT_LIMIT, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 8] = [
+        let cases: [(Result<(), EnvError>, &str); 9] = [
             (
                 env.max_records().map(drop),
                 "WAHAROA_MAX_RECORDS: `5O000` is not a whole number",
@@ -769,6 +813,10 @@ mod tests {
             (
                 env.refuse_unservable().map(drop),
                 "WAHAROA_REFUSE_UNSERVABLE: `no` is not 0 or 1",
+            ),
+            (
+                env.snapshot_limit().map(drop),
+                "WAHAROA_SNAPSHOT_LIMIT: `0` is not a whole number above 0",
             ),
         ];
         for (result, expected) in cases {

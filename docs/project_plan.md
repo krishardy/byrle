@@ -265,8 +265,8 @@ one transaction. See [osv-malware-load](engineering_decisions/osv-malware-load.m
 **Snapshot identity** is a hash over every source's stored rows, so two stores with the same
 id contain the same rows, whichever bundles they were read from. Refresh writes it to
 `intel_snapshot` and every proxy reads it from there. Postgres keeps the latest load only.
-A kept snapshot will be a file of the rows the id hashes, for `policy diff --snapshot`
-and for air-gapped export. See [snapshot-identity](engineering_decisions/snapshot-identity.md).
+`waharoa refresh` also keeps each snapshot as files of the rows the id hashes, which
+`policy diff --snapshot` and air-gapped export will read. See [snapshot-identity](engineering_decisions/snapshot-identity.md).
 
 **Cold start fails closed, with 503 — never 403.** A 403 during warming looks like a
 policy violation for a package that is fine, which costs trust immediately. A readiness
@@ -845,7 +845,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [Intel schema keys and types](engineering_decisions/intel-schema-keys-and-types.md) | Every table keyed by a `BIGINT` identity; publisher ids and digests are sized unique columns; `TIMESTAMPTZ`; `TEXT` only for `summary`. An over-long value fails the refresh |
 | n/a | [Policy schema v1 frozen](engineering_decisions/policy-schema-v1-frozen.md) | `version: 1` is closed: no key added, removed, renamed or retyped, and no default changed. Anything new is `version: 2` |
 | n/a | [Readiness endpoint](engineering_decisions/readiness-endpoint.md) | `GET /-/waharoa/ready`: 503 when a policy and an intel store are set and the store holds no snapshot or cannot answer; reports each stream's loaded digest, no percentage |
-| n/a | [Snapshot identity](engineering_decisions/snapshot-identity.md) | The snapshot id is a hash over every source's stored rows, not the bundles. Postgres keeps the latest load; a kept snapshot will be a file of the same encoding |
+| n/a | [Snapshot identity](engineering_decisions/snapshot-identity.md) | The snapshot id is a hash over every source's stored rows, not the bundles. Postgres keeps the latest load; `waharoa refresh` also keeps each snapshot as files of the same encoding |
 | n/a | [`policy check`](engineering_decisions/policy-check.md) | Loads as the proxy does; lists entries that change nothing, never win, or are `permanent: true`; `--strict` exits 1 on the first two |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 

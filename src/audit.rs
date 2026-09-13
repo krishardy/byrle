@@ -259,6 +259,7 @@ impl AuditLog {
 mod tests {
     use super::*;
     use crate::policy::Policy;
+    use crate::test_support::tempdir;
     use crate::policy::decide::{Facts, Intel, decide};
 
     fn facts() -> Facts {
@@ -491,7 +492,7 @@ not json
 
     #[test]
     fn every_line_is_one_json_object_and_ends_with_a_newline() {
-        let dir = tempdir();
+        let dir = tempdir("audit-lines");
         let path = dir.join("audit.jsonl");
         let log = AuditLog::open(&path).expect("should open");
 
@@ -509,7 +510,7 @@ not json
 
     #[test]
     fn opening_an_existing_log_appends_rather_than_truncates() {
-        let dir = tempdir();
+        let dir = tempdir("audit-append");
         let path = dir.join("audit.jsonl");
         std::fs::write(&path, "{\"kept\":true}\n").expect("should write");
 
@@ -524,17 +525,7 @@ not json
 
     #[test]
     fn a_path_that_cannot_be_opened_is_an_error_rather_than_a_panic() {
-        let dir = tempdir();
+        let dir = tempdir("audit-unopenable");
         assert!(AuditLog::open(&dir.join("no-such-dir").join("audit.jsonl")).is_err());
-    }
-
-    fn tempdir() -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "waharoa-audit-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        std::fs::create_dir_all(&dir).expect("should create");
-        dir
     }
 }

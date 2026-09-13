@@ -2771,10 +2771,7 @@ mod tests {
     /// A log holding only refusals cannot answer "was this ever evaluated".
     #[tokio::test]
     async fn every_decision_reaches_the_audit_log() {
-        let dir = std::env::temp_dir().join(format!("waharoa-proxy-audit-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("should create");
-        let path = dir.join("audit.jsonl");
-        let _ = std::fs::remove_file(&path);
+        let path = crate::test_support::tempdir("proxy-audit").join("audit.jsonl");
         let log = Arc::new(AuditLog::open(&path).expect("should open"));
 
         let (upstream, _) = upstream_serving(

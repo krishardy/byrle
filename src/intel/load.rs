@@ -105,6 +105,8 @@ pub struct Unkeyed(pub String);
 /// One source's rows, as [`encode`] writes them.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Encoded {
+    /// The source the rows are stored under.
+    pub source: String,
     /// CSV for `advisory`, which a load sends to `COPY` as it is.
     pub advisory: Vec<u8>,
     /// The whole encoding.
@@ -152,7 +154,8 @@ pub fn encode(source: &str, rows: &[Rows]) -> Encoded {
         bytes.extend_from_slice(csv);
     }
     Encoded {
-        digest: prefixed_sha256(&bytes),
+        source: source.to_owned(),
+        digest: digest(&bytes),
         advisory,
         bytes,
     }
@@ -160,22 +163,26 @@ pub fn encode(source: &str, rows: &[Rows]) -> Encoded {
 
 /// `sha256:` and the hex digest, the form both `intel_source.digest` and
 /// `intel_snapshot.digest` take.
-fn prefixed_sha256(bytes: &[u8]) -> String {
+pub fn digest(bytes: &[u8]) -> String {
     format!("sha256:{}", sha256_hex(bytes))
 }
 
-/// The snapshot id: `sha256:` and the hex digest of one `source digest` line per source,
-/// sorted.
+/// What a snapshot id is the digest of: one `source digest` line per source, sorted.
 ///
 /// Given every source in the store, not only the one a refresh loaded, two stores with the
 /// same id contain the same rows.
-pub fn snapshot_id<'a>(sources: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
+pub fn manifest<'a>(sources: impl IntoIterator<Item = (&'a str, &'a str)>) -> String {
     let mut lines: Vec<String> = sources
         .into_iter()
         .map(|(source, digest)| format!("{source} {digest}\n"))
         .collect();
     lines.sort();
-    prefixed_sha256(lines.concat().as_bytes())
+    lines.concat()
+}
+
+/// The snapshot id of a [`manifest`].
+pub fn snapshot_id(manifest: &str) -> String {
+    digest(manifest.as_bytes())
 }
 
 /// CSV for `advisory`.
@@ -481,22 +488,22 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_id_is_the_same_for_sources_in_any_order_and_changes_with_any_digest() {
-        let id = snapshot_id([("osv", "sha256:aa"), ("ghsa", "sha256:bb")]);
+    fn a_manifest_is_the_same_for_sources_in_any_order_and_its_id_changes_with_any_digest() {
+        let lines = manifest([("osv", "sha256:aa"), ("ghsa", "sha256:bb")]);
+        assert_eq!(lines, "ghsa sha256:bb\nosv sha256:aa\n");
         assert_eq!(
-            id,
-            snapshot_id([("ghsa", "sha256:bb"), ("osv", "sha256:aa")])
+            lines,
+            manifest([("ghsa", "sha256:bb"), ("osv", "sha256:aa")])
         );
-        assert_eq!(
-            id,
-            format!("sha256:{}", sha256_hex(b"ghsa sha256:bb\nosv sha256:aa\n"))
-        );
+
+        let id = snapshot_id(&lines);
+        assert_eq!(id, format!("sha256:{}", sha256_hex(lines.as_bytes())));
         assert_eq!(id.len(), 71);
         assert_ne!(
             id,
-            snapshot_id([("osv", "sha256:ab"), ("ghsa", "sha256:bb")])
+            snapshot_id(&manifest([("osv", "sha256:ab"), ("ghsa", "sha256:bb")]))
         );
-        assert_ne!(id, snapshot_id([("osv", "sha256:aa")]));
+        assert_ne!(id, snapshot_id(&manifest([("osv", "sha256:aa")])));
     }
 
     #[test]
