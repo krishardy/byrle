@@ -150,8 +150,8 @@ pub fn package(
 
     Package {
         purl: purl.to_owned(),
-        from_verdict: from.0.action(),
-        to_verdict: to.0.action(),
+        from_verdict: super::enforce::enforced(from.0, from.1).action(),
+        to_verdict: super::enforce::enforced(to.0, to.1).action(),
         moved,
     }
 }
@@ -365,6 +365,11 @@ mod tests {
         assert_eq!(d.moved[0].to, Shown::Unenforced);
         assert_eq!(d.moved[0].strictness, Strictness::Looser);
         assert!(d.loosened());
+        assert_eq!(
+            (d.from_verdict, d.to_verdict),
+            (Action::Quarantine, Action::Allow),
+            "the proxy serves it once the check is unenforced"
+        );
     }
 
     /// A check starting to be enforced is the other direction.
@@ -380,6 +385,11 @@ mod tests {
 
         assert_eq!(d.moved[0].strictness, Strictness::Stricter);
         assert!(!d.loosened());
+        assert_eq!(
+            (d.from_verdict, d.to_verdict),
+            (Action::Allow, Action::Quarantine),
+            "the proxy served it while the check was unenforced"
+        );
     }
 
     /// An exception delivers the package, so gaining one is a loosening even though the
@@ -492,6 +502,36 @@ mod tests {
         assert_eq!(report.loosened().len(), 2);
     }
 
+    /// `kev` is unenforced on both sides while no stream marks an advisory exploited, so
+    /// changing its setting moves nothing and does not fail the gate.
+    #[test]
+    fn changing_kev_moves_nothing_while_it_is_unenforced() {
+        let unenforceable = [Unenforceable {
+            check: Check::Kev,
+            why: "no exploitation stream is loaded, so no advisory is marked exploited",
+        }];
+        let facts = Facts {
+            advisories: vec![crate::policy::decide::Advisory {
+                id: "CVE-2024-1".to_owned(),
+                aliases: Vec::new(),
+                cvss: 5.0,
+                kev: true,
+            }],
+            ..facts()
+        };
+        let from = decided("version: 1\nkev: block", &facts);
+        let to = decided("version: 1\nkev: allow", &facts);
+        assert_eq!(from.action(), Action::Block, "the engine alone refuses it");
+
+        let d = package(
+            "pkg:npm/lodash@4.17.21",
+            (&from, &unenforceable),
+            (&to, &unenforceable),
+        );
+        assert!(d.moved.is_empty(), "{:?}", d.moved);
+        assert!(!d.loosened());
+    }
+
     #[test]
     fn every_state_renders_with_its_own_words() {
         assert_eq!(Shown::Pass.as_str(), "pass");
@@ -506,6 +546,7 @@ mod tests {
     fn a_check_absent_from_the_vector_is_not_a_pass() {
         let empty = Decision {
             results: Vec::new(),
+            entry: None,
         };
 
         assert_eq!(shown(&empty, &[], Check::Denials), Shown::Unenforced);

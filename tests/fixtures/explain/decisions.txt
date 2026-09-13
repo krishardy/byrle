@@ -1,0 +1,389 @@
+=== nothing found
+  | version: 1
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: allow
+
+=== denied
+  | version: 1
+  | denials:
+  |   - purl: pkg:npm/lodash@4.17.21
+  |     reason: compromised
+
+pkg:npm/lodash@4.17.21
+
+  denials          FAIL block        this exact version is denied
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: block
+
+=== known malware
+  | version: 1
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    FAIL block        reported as malware; this has no exception
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: block
+
+=== too young
+  | version: 1
+  | cooldown_days: 7
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    FAIL quarantine   published 2026-09-11, cooldown_days 7
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: quarantine
+  quarantine lapses on its own; block does not
+
+=== no publish date
+  | version: 1
+  | cooldown_days: 7
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    FAIL quarantine   no publish date, which is not old enough for cooldown_days 7
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: quarantine
+  quarantine lapses on its own; block does not
+
+=== too young, excepted
+  | version: 1
+  | cooldown_days: 7
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { cooldown_days: 0 }
+  |     reason: internal
+  |     permanent: true
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    excepted          would have been quarantine: published 2026-09-11, cooldown_days 7; packages[0] excused it, permanent
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: allow
+
+=== too young, exception shortens the wait and not enough
+  | version: 1
+  | cooldown_days: 7
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { cooldown_days: 3 }
+  |     reason: internal
+  |     expires: "2026-10-01"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    FAIL quarantine   published 2026-09-11, cooldown_days 3, from packages[0]
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: quarantine
+  quarantine lapses on its own; block does not
+
+=== too young, the narrowest matching entry applies
+  | version: 1
+  | cooldown_days: 7
+  | packages:
+  |   - match: { ecosystem: npm, name: "lod*" }
+  |     set: { cooldown_days: 5 }
+  |     reason: broad
+  |     permanent: true
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { cooldown_days: 0 }
+  |     reason: narrow
+  |     expires: "2026-10-01"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    excepted          would have been quarantine: published 2026-09-11, cooldown_days 7; packages[1] excused it, expires 2026-10-01
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: allow
+
+=== too young, the exception lapsed
+  | version: 1
+  | cooldown_days: 7
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { cooldown_days: 0 }
+  |     reason: internal
+  |     expires: "2026-09-01"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    FAIL quarantine   published 2026-09-11, cooldown_days 7
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: quarantine
+  quarantine lapses on its own; block does not
+
+=== cooldown with no publish times to read
+  | version: 1
+  | cooldown_days: 7
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    unenforced        the abbreviated packument carries no publish times
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: allow
+
+=== exploited
+  | version: 1
+  | max_cvss: 6.9
+  | kev: block
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              FAIL block        CVE-2024-1
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: block
+
+=== exploited, excepted
+  | version: 1
+  | max_cvss: 6.9
+  | kev: block
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { kev: allow }
+  |     reason: mitigated
+  |     expires: "2026-11-30"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              excepted          would have been block: CVE-2024-1; packages[0] excused it, expires 2026-11-30
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: allow
+
+=== exploited, kev: allow
+  | version: 1
+  | max_cvss: 6.9
+  | kev: allow
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+
+  verdict: allow
+
+=== over max_cvss, one advisory under it
+  | version: 1
+  | max_cvss: 7.0
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         FAIL block        over max_cvss 7: CVE-2024-1 9.8
+  install_scripts  pass
+
+  verdict: block
+
+=== over max_cvss, excepted by id
+  | version: 1
+  | max_cvss: 7.0
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { vuln_advisory_ids: ["CVE-2024-1"] }
+  |     reason: unreachable
+  |     expires: "2026-11-30"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         excepted          would have been block: over max_cvss 7: CVE-2024-1 9.8; packages[0] excused it, expires 2026-11-30
+  install_scripts  pass
+
+  verdict: allow
+
+=== over max_cvss, excepted by alias
+  | version: 1
+  | max_cvss: 7.0
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { vuln_advisory_ids: ["CVE-2024-1"] }
+  |     reason: unreachable
+  |     expires: "2026-11-30"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         excepted          would have been block: over max_cvss 7: GHSA-aaaa-bbbb-cccc 9.8; packages[0] excused it, expires 2026-11-30
+  install_scripts  pass
+
+  verdict: allow
+
+=== over max_cvss, one excused and one not
+  | version: 1
+  | max_cvss: 7.0
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { vuln_advisory_ids: ["CVE-2024-1"] }
+  |     reason: unreachable
+  |     expires: "2026-11-30"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         FAIL block        over max_cvss 7: GHSA-dddd-eeee-ffff 7.5; packages[0] excused GHSA-aaaa-bbbb-cccc 9.8
+  install_scripts  pass
+
+  verdict: block
+
+=== install script
+  | version: 1
+  | install_scripts: block
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  FAIL block        declares an install script
+
+  verdict: block
+
+=== install script, excepted
+  | version: 1
+  | install_scripts: block
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash, has_install_scripts: true }
+  |     set: { install_scripts: allow }
+  |     reason: reviewed
+  |     expires: "2026-10-01"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  excepted          would have been block: declares an install script; packages[0] excused it, expires 2026-10-01
+
+  verdict: allow
+
+=== install script, an ecosystem with no install step
+  | version: 1
+  | install_scripts: block
+
+pkg:go/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  n/a               no meaning for go
+
+  verdict: allow
+
+=== no intel store
+  | version: 1
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    unenforced        no intel store was consulted, so nothing was asked
+  cooldown_days    pass
+  kev              unenforced        no intel store was consulted, so nothing was asked
+  max_cvss         unenforced        no intel store was consulted, so nothing was asked
+  install_scripts  pass
+
+  verdict: allow
+
+=== several at once
+  | version: 1
+  | cooldown_days: 7
+  | max_cvss: 7.0
+  | denials:
+  |   - purl: pkg:npm/lodash@4.17.21
+  |     reason: compromised
+
+pkg:npm/lodash@4.17.21
+
+  denials          FAIL block        this exact version is denied
+  known_malware    pass
+  cooldown_days    FAIL quarantine   published 2026-09-11, cooldown_days 7
+  kev              pass
+  max_cvss         FAIL block        over max_cvss 7: CVE-2024-1 9.8
+  install_scripts  pass
+
+  verdict: block
+

@@ -23,7 +23,7 @@ cannot express the truth; the capability has to be a matrix.
 
 `malware` is separate from `match` because the §5.5 non-overridable floor is scoped to
 `known_malware: block`. Any stream holding `malware` for an ecosystem can trigger the
-one rule nobody can override, which is a higher trust bar than reporting a CVE.
+one rule nobody can override, which is a higher trust bar than reporting a vulnerability.
 
 ## Consequences
 

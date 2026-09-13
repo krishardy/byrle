@@ -163,7 +163,7 @@ All streams mirrored locally so lookups never leak the user's dependency graph u
   covers those ecosystems with proper package ranges. NVD may hold `match` for Maven,
   where CPE coverage is stronger — revisit when that adapter is scoped. Enrichment runs
   as a background job, never on the hot path, and NVD failures never block a verdict.
-- **Severity conflicts.** The same CVE routinely carries different CVSS scores across
+- **Severity conflicts.** The same vulnerability routinely carries different CVSS scores across
   NVD and GHSA. Precedence must be configurable, since any `max_cvss` rule is
   meaningless without it.
 - **Withdrawn advisories must propagate.** A withdrawn GHSA that stays cached locally
@@ -194,7 +194,7 @@ streams:
 **`malware` is deliberately separate from `match`.** Known malware always blocks and has
 no exception (§5), so any stream holding `malware` for an ecosystem can trigger the one
 check an operator cannot write their way past. That is a far higher trust bar than
-reporting a CVE, and granting it must be explicit.
+reporting a vulnerability, and granting it must be explicit.
 
 **Declared by the plugin, overridable by the operator.** The plugin ships an honest
 self-assessment; operators can demote a stream they distrust for a given ecosystem.
@@ -409,7 +409,7 @@ packages:
     added_by: alice
 
   - match: { ecosystem: npm, purl: "pkg:npm/legacy-thing@2.1.0" }
-    set: { kev: allow, cve_ids: ["CVE-2024-1234"] }
+    set: { kev: allow, vuln_advisory_ids: ["CVE-2024-1234"] }
     reason: "mitigated by network policy"
     expires: "2026-11-30"
     added_by: bob
@@ -425,7 +425,7 @@ packages:
 | known malware | not configurable | no |
 | `cooldown_days`, the age threshold | global | yes |
 | `kev` | global | yes |
-| `max_cvss` | global | yes, per CVE id |
+| `max_cvss` | global | yes, per advisory id |
 | `install_scripts` | global | yes |
 
 Three things are not configurable at all:
@@ -486,7 +486,7 @@ source diff do, and they run only if the cheap vector has not already settled th
 |---|---|---|
 | `allow` | delivered | everything that passes |
 | `quarantine` | refused now, allowed later | a package younger than `cooldown_days` |
-| `block` | refused | denials, known malware, KEV, a CVE over `max_cvss`, install scripts |
+| `block` | refused | denials, known malware, KEV, an advisory over `max_cvss`, install scripts |
 
 `quarantine` lapses without anyone doing anything, which is what separates it from
 `block`. It is a **packument filter**, not an artifact refusal: the version is removed
@@ -833,7 +833,8 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [sqlx version and `rsa` advisory](engineering_decisions/sqlx-0-8-and-rsa-advisory.md) | sqlx held at 0.8 until kani bundles rustc 1.94; RUSTSEC-2023-0071 ignored only while `rsa` is not compiled |
 | n/a | [OSV malware load](engineering_decisions/osv-malware-load.md) | npm `MAL-` records via `waharoa refresh`; `all.zip` read in memory; delete by source and `COPY` in one transaction |
 | n/a | [Intel in decisions](engineering_decisions/intel-in-decisions.md) | One store query per package; a store that cannot answer is a 503 |
-| n/a | [OSV ranges and scores](engineering_decisions/osv-ranges-and-scores.md) | `GHSA-` records loaded; ranges stored as intervals and compared as SemVer 2.0 at lookup; v4 base score over v3; `cve_ids` matches aliases |
+| n/a | [OSV ranges and scores](engineering_decisions/osv-ranges-and-scores.md) | `GHSA-` records loaded; ranges stored as intervals and compared as SemVer 2.0 at lookup; v4 base score over v3; `vuln_advisory_ids` matches aliases |
+| n/a | [Policy schema v1 frozen](engineering_decisions/policy-schema-v1-frozen.md) | `version: 1` is closed: no key added, removed, renamed or retyped, and no default changed. Anything new is `version: 2` |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 
 ### Staging

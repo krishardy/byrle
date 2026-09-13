@@ -50,7 +50,7 @@ packages:
   # One advisory, ignored for one package. Narrower than raising `max_cvss`, which would
   # apply to every advisory this package carries and every one it acquires later.
   - match: { ecosystem: npm, purl: "pkg:npm/legacy-thing@2.1.0" }
-    set: { cve_ids: ["CVE-2024-1234"] }
+    set: { vuln_advisory_ids: ["CVE-2024-1234"] }
     reason: "not reachable from our call paths, reviewed by security"
     expires: "2026-11-30"
     added_by: alice

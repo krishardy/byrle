@@ -48,7 +48,7 @@ between them.
 `Facts::with_intel` sets `known_malware` from the malware rows and `intel` to `Consulted`.
 `Advisory::cvss` is `f64`, so a record with no score is left out of `advisories` rather than
 entered as 0.0. `advisories` holds the scored `GHSA-` records for the version, each with its
-aliases so a `cve_ids` exception can name it by CVE. See
+aliases so a `vuln_advisory_ids` exception can name it by CVE. See
 [osv-ranges-and-scores](osv-ranges-and-scores.md).
 
 `enforce::artifact` and `enforce::unenforceable` take the intel state from the caller. Before

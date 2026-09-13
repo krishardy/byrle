@@ -67,12 +67,12 @@ written is only in the range.
 An unscored record still counts toward `known_malware` and is left out of `advisories`, so
 `max_cvss` cannot fire for it.
 
-## `cve_ids` exceptions and aliases
+## `vuln_advisory_ids` exceptions and aliases
 
-A `cve_ids` exception names a CVE. OSV stores a GitHub advisory under its `GHSA-` id, with the
-CVE as an alias: 5,972 of 7,052 non-withdrawn `GHSA-` records carry one. `Intel::package`
-returns each advisory's aliases, `Advisory` carries them, and `Advisory::is_named` matches the
-id or any alias.
+A `vuln_advisory_ids` exception names advisories by id, and operators usually know the CVE id.
+OSV stores a GitHub advisory under its `GHSA-` id, with the CVE as an alias: 5,972 of 7,052
+non-withdrawn `GHSA-` records carry one. `Intel::package` returns each advisory's aliases,
+`Advisory` carries them, and `Advisory::is_named` matches the id or any alias.
 
 ## `kev`
 
@@ -130,7 +130,7 @@ Each mutation below was caught.
 | Non-base metrics kept | `threat_and_temporal_metrics_do_not_change_the_base_score` |
 | A repeated base metric accepted | `a_base_metric_given_twice_is_unread` |
 | `GHSA` without the dash read | `the_id_prefix_decides_malware_and_whether_the_record_is_read` |
-| `cve_ids` ignores aliases | `an_advisory_may_be_ignored_by_an_alias` |
+| `vuln_advisory_ids` ignores aliases | `an_advisory_may_be_ignored_by_an_alias` |
 | Ranges ignored by `for_version` | `a_version_sees_the_ranges_holding_it_once_each` |
 | An advisory matched twice returned twice | `a_version_sees_the_ranges_holding_it_once_each` |
 | Score not written to CSV | `a_score_is_written_as_the_number_it_is` |
@@ -164,7 +164,7 @@ Live, 2026-09-13, debug build. `waharoa refresh` into Postgres 17 wrote 228,245 
 
 `GHSA-r5fr-rjxr-66jc` is `introduced: 4.0.0, fixed: 4.18.0`, a range with no `versions` list.
 `GHSA-xxjr-mmjv-4gpg` carries a v3 vector scoring 6.5 and a v4 vector with `E:P`, and 7.9 is
-the v4 base score. With `cve_ids: [CVE-2021-23337]`, an alias of `GHSA-r5fr-rjxr-66jc`, the
+the v4 base score. With `vuln_advisory_ids: [CVE-2021-23337]`, an alias of `GHSA-r5fr-rjxr-66jc`, the
 verdict stays `block` on `GHSA-xxjr-mmjv-4gpg` 7.9.
 
 The audit line for the lodash refusal:

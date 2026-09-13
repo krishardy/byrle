@@ -507,13 +507,14 @@ pub struct SetBlock {
     pub kev: Option<Action>,
     #[serde(default)]
     pub install_scripts: Option<Action>,
-    /// Specific advisories to ignore for this package.
+    /// Specific vulnerability advisories to ignore for this package, by id. An id matches an
+    /// advisory's own id or any of its aliases, so a CVE id reaches a `GHSA-` advisory.
     ///
     /// The only exception keyed by something other than the package itself. Ignoring a
-    /// named CVE is narrower than raising `max_cvss`, which would apply to every advisory
+    /// named advisory is narrower than raising `max_cvss`, which would apply to every advisory
     /// the package carries and every one it acquires later.
     #[serde(default)]
-    pub cve_ids: Vec<String>,
+    pub vuln_advisory_ids: Vec<String>,
 }
 
 #[cfg(test)]
@@ -627,6 +628,78 @@ mod tests {
                 "{depth}: expected a schema error, got {error}"
             );
         }
+    }
+
+    /// Version 1 is closed: `docs/engineering_decisions/policy-schema-v1-frozen.md`.
+    ///
+    /// Refusing an unknown key, serde names every key the struct accepts, so this pins the
+    /// key set at each of the five levels. A key added, removed or renamed fails here, and
+    /// belongs in `version: 2`.
+    #[test]
+    fn the_version_1_key_set_is_closed() {
+        let cases: [(&str, &str, &[&str]); 5] = [
+            (
+                "top level",
+                "unknown: 1\n",
+                &[
+                    "version",
+                    "cooldown_days",
+                    "max_cvss",
+                    "install_scripts",
+                    "kev",
+                    "denials",
+                    "packages",
+                ],
+            ),
+            (
+                "a denial",
+                "denials:\n  - purl: pkg:npm/x@1.0.0\n    unknown: r\n",
+                &["purl", "reason"],
+            ),
+            (
+                "a packages entry",
+                "packages:\n  - match: { ecosystem: npm, name: x }\n    set: {}\n    \
+                 reason: r\n    unknown: 1\n",
+                &["match", "set", "reason", "expires", "permanent", "added_by"],
+            ),
+            (
+                "match",
+                "packages:\n  - match: { ecosystem: npm, unknown: x }\n    set: {}\n    \
+                 reason: r\n",
+                &["ecosystem", "name", "purl", "version", "has_install_scripts"],
+            ),
+            (
+                "set",
+                "packages:\n  - match: { ecosystem: npm, name: x }\n    set: { unknown: 1 }\n    \
+                 reason: r\n",
+                &["cooldown_days", "kev", "install_scripts", "vuln_advisory_ids"],
+            ),
+        ];
+        for (level, body, keys) in cases {
+            let error = parse(body).unwrap_err().to_string();
+            assert_eq!(
+                accepted_keys(&error),
+                keys,
+                "{level}: the keys changed, which version 1 does not allow: {error}"
+            );
+        }
+    }
+
+    /// The keys an unknown-field error lists, whichever way it joins them: `expected one
+    /// of a, b, c` or `expected a or b`, with or without backticks.
+    fn accepted_keys(error: &str) -> Vec<String> {
+        let listed = error
+            .split("expected ")
+            .nth(1)
+            .and_then(|rest| rest.lines().next())
+            .unwrap_or_default();
+        listed
+            .trim_start_matches("one of ")
+            .replace(" or ", ", ")
+            .split(", ")
+            .map(|key| key.trim().trim_matches('`').to_owned())
+            .filter(|key| !key.is_empty())
+            .collect()
     }
 
     /// An action name that is not one of the three is refused rather than read as the

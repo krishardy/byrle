@@ -27,7 +27,7 @@ use std::pin::Pin;
 pub struct Record {
     pub advisory_id: String,
     /// The other ids the advisory is known by, sorted. A GHSA record's CVE id is here, and it
-    /// is what a `cve_ids` exception names.
+    /// is what a `vuln_advisory_ids` exception names.
     pub aliases: Vec<String>,
     pub source: String,
     pub cvss: Option<f64>,

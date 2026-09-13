@@ -112,6 +112,8 @@ impl Event {
         decision: &Decision,
         unenforceable: &[Unenforceable],
     ) -> Self {
+        // What the proxy acted on: an unenforced check's answer is not part of it.
+        let decision = &crate::policy::enforce::enforced(decision, unenforceable);
         Self {
             at: now(),
             path: DecisionPath::Pinned,
@@ -351,6 +353,22 @@ mod tests {
             field(&line(&event), "unenforceable"),
             &serde_json::json!(["cooldown_days"])
         );
+    }
+
+    /// The engine alone quarantines this, and the proxy serves it because the check is
+    /// unenforced. The line records what the proxy did.
+    #[test]
+    fn an_unenforced_check_is_not_in_the_recorded_action() {
+        let unenforceable = [Unenforceable {
+            check: crate::policy::decide::Check::CooldownDays,
+            why: "the abbreviated packument carries no publish times",
+        }];
+        let young = decision("version: 1\ncooldown_days: 36500");
+        assert_eq!(young.action(), crate::policy::Action::Quarantine);
+
+        let json = line(&Event::pinned("npm", "lodash", "4.17.21", &young, &unenforceable));
+        assert_eq!(field(&json, "action"), "allow");
+        assert!(json.get("checks").is_none_or(|c| c == &serde_json::json!([])), "{json}");
     }
 
     #[test]

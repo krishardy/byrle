@@ -125,7 +125,7 @@ fetched Sept 2026:
 
 ### The npm advisory database is a malware database
 
-96.8% of what OSV holds for npm is `MAL-` records, not CVEs. The `known_malware` check
+96.8% of what OSV holds for npm is `MAL-` records, not vulnerability advisories. The `known_malware` check
 therefore has 221,548 records to match against while `max_cvss` has 6,041, two orders of
 magnitude apart. The plan lists OSV first for "best ecosystem coverage"; the stronger
 reason is that it is the malware feed, and the malware feed is almost all of it.

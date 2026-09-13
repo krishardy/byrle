@@ -153,6 +153,17 @@ Items that I've added that are not stage-bound.
    `src/audit.rs` gives no reason for the gate.
 12. In make semgrep, also report on any semgrep exceptions (file, line # and line text)
 13. In the code, policy, documentation, etc. change from "CVE" to "VulnAdvisory". (Has CVE should instead be Has Vulnerability, etc.)
+    - Decided 2026-09-13: the policy key `cve_ids` becomes `vuln_advisory_ids`, before the
+      v1 schema is frozen. `max_cvss` keeps its name: CVSS is the scoring system.
+    - Done 2026-09-13: the key, `Rule::VulnAdvisoryIds`, doc comments, the policy flow chart
+      and the docs where CVE meant a vulnerability advisory. Kept where a CVE id is meant
+      literally: KEV's `cveID`, NVD's join on CVE id, the measured CVE-id counts, and CVE
+      ids used as test data.
+14. Do NOT use TEXT records for everything in the database schema. Use appropriately sized VARCHARS, date, datetime, etc. fields. Only use TEXT where the length is possibly unbounded. IDs should NEVER be TEXT, they should be serial or UUID.
+    - Decided 2026-09-13: this covers publisher ids too. `advisory.id` (`GHSA-...`,
+      `MAL-...`) becomes a sized VARCHAR column with a unique index beside a surrogate key,
+      and joins use the surrogate key.
+15. Evaluate command line parsers for Rust, and migrate to the selected one.
 
 ## Stage 1 — Pass-through proxy (transport)
 
@@ -997,10 +1008,13 @@ the record of why it went survives the deletion.
 - [x] List-valued rules replace rather than union. True by construction: the merge takes
       one side or the other and never combines. No setting is list-valued except
       `cve_ids`, which is a set of exceptions rather than a rule value.
-- [ ] Golden-file tests. The seven merge fixtures in `tests/fixtures/policy/` were
+- [x] Golden-file tests. The seven merge fixtures in `tests/fixtures/policy/` were
       deleted with the merge: every one of them was a policy in a schema that no longer
-      parses. Recreate them against the decision vector, which is the thing worth pinning
-      in a file, once there is one to render.
+      parses. Recreated against the rendered decision vector:
+      `tests/fixtures/explain/decisions.txt`, 22 cases covering every state each check can
+      reach, the narrowest entry winning, a lapsed entry, and an exception that shortens a
+      wait and not enough. `tests/fixtures/explain/policy.txt` pins `explain --policy`,
+      `examples/policy.yaml` included. `WAHAROA_BLESS=1` rewrites both.
 
 #### Built, then removed by the redesign
 
@@ -1150,8 +1164,20 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       the package. Narrower than raising `max_cvss`, which would apply to every advisory
       the package acquires later.
 - [ ] Range resolution in the normalizer, never in the engine
-- [ ] `explain` shows the decision vector: every check, its result, and for an `excepted`
-      one the entry and expiry that excused it
+- [x] `explain` shows the decision vector: every check, its result, and for an `excepted`
+      one the entry and expiry that excused it. `explain::decision` takes the policy, and
+      `max_cvss` names its advisories from `decide::over_max_cvss`, the split the check
+      itself made.
+      - [x] **A cooldown exception that let a package through was recorded `pass`.** The flow
+            chart has `RECORD_cooldown_EXCEPTED`. `decide` compared only against the wait
+            that applied, so `@mycompany/*` with `cooldown_days: 0` never reached
+            `exceptions_used`, the audit log or `explain`. It is now `Excepted` when the
+            global wait fails and the entry's passes.
+      - [x] **`explain`, the audit log and `policy diff` took the verdict from every check,
+            unenforced ones included.** With no publish times, `explain` printed
+            `verdict: quarantine`, the audit line recorded `quarantine`, and the proxy
+            served the package. All three now use `enforce::enforced`, the vector the
+            proxy acts on.
 - [ ] `policy check` flags permanently-shadowed selectors
 - [ ] `policy check` lists `permanent: true` entries separately
 - [ ] `policy check` and `doctor` flag entries that change nothing
@@ -1297,11 +1323,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `cve_ids` names a CVE, and OSV stores a GitHub advisory under its `GHSA-` id.
       `Advisory::is_named` matches the id or any alias. 5,972 of 7,052 `GHSA-` records carry
       a CVE alias.
-- [ ] `explain` prints every scored advisory against the version under a failed `max_cvss`,
-      including ones under the threshold and ones a `cve_ids` exception excused. Live:
-      `lodash@4.17.21` with `max_cvss: 7.0` and `cve_ids: [CVE-2021-23337]` prints
+- [x] `explain` printed every scored advisory against the version under a failed
+      `max_cvss`, including ones under the threshold and ones a `cve_ids` exception excused.
+      Live: `lodash@4.17.21` with `max_cvss: 7.0` and `cve_ids: [CVE-2021-23337]` printed
       `GHSA-f23m-r3pf-42rh 6.5, GHSA-r5fr-rjxr-66jc 8.1, GHSA-xxjr-mmjv-4gpg 7.9`, and only
-      the 7.9 blocked it.
+      the 7.9 blocked it. It now prints the advisories over the threshold that count, then
+      the ones the entry excused.
 - [ ] The snapshot id hashes the bundle bytes only. The malware-only loader and this one
       stored different rows from the same bundle under the same id,
       `sha256:cf3822e6036d97297ed303a25fd3330eab20d13671495aea49b5c435f0c3392f`.
@@ -1364,6 +1391,10 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` `make test-integration`: start a Postgres container, run the tests that need
       a database, tear it down. Thin wrapper around `scripts/make/test-integration.sh` per
       CLAUDE.md. 9 tests.
+- [ ] `scripts/make/test-integration.sh` and `scripts/make/sqlx-prepare.sh` wait on
+      `pg_isready`, which answers during initdb's temporary server, before the real one
+      accepts connections. Both failed on 2026-09-13 with `expected to read 5 bytes, got 0
+      bytes at EOF` and passed on rerun. It will be a CI flake.
 - [ ] `src/intel/postgres.rs` counts toward the unit coverage floor at 0% (104 lines). Library
       total is 96.58% lines with it. Decide whether it joins the exclusion for live tests.
 - [x] `[!]` Tests that do not need a database must not require the container. Without
@@ -1469,6 +1500,13 @@ a deferral: there was no mirror to warm and nothing analysing. See
 **Exit:** a real package blocked for a real reason, with `explain` naming the rule that
 fired; npm enforcing against OSV with a real policy file; `explain` correct across every
 merge and loosening case in all tiers; policy schema declared frozen.
+
+| Exit clause | State, 2026-09-13 |
+|---|---|
+| a real package blocked for a real reason, `explain` naming the rule | done: `lodash@4.17.21` refused on `max_cvss`, `--hiljson@0.0.1-security` on `known_malware`, both live |
+| npm enforcing against OSV with a real policy file | done: live against the full `npm/all.zip` load |
+| `explain` correct across every merge and loosening case | done: `tests/fixtures/explain/decisions.txt`, 22 cases. "Merge" now means global settings and the narrowest matching `packages` entry: there is no per-ecosystem tier |
+| policy schema declared frozen | done: `docs/engineering_decisions/policy-schema-v1-frozen.md`, held by `the_version_1_key_set_is_closed` |
 
 ---
 

@@ -495,6 +495,7 @@ async fn run_explain(argument: Option<String>) -> std::process::ExitCode {
     print!(
         "{}",
         explain::decision(
+            &policy,
             &facts,
             &decide::decide(&policy, &facts, today),
             &enforce::unenforceable(&policy, package, times.as_ref(), facts.intel),
