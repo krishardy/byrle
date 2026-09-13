@@ -1428,6 +1428,8 @@ fn policy_refused_versions(
         else {
             continue;
         };
+        // `enforce::artifact` has already dropped unenforceable checks, so this needs no
+        // `enforce::enforced` call.
         if refusal.action.strength() > strongest.strength() {
             strongest = refusal.action;
         }

@@ -384,13 +384,13 @@ mod tests {
     #[test]
     fn ignoring_an_advisory_needs_a_justification() {
         assert!(matches!(
-            checked("cve_ids: [\"CVE-2024-1234\"]", "").unwrap_err(),
+            checked("vuln_advisory_ids: [\"CVE-2024-1234\"]", "").unwrap_err(),
             PackageError::Unjustified {
-                rule: Rule::CveIds,
+                rule: Rule::VulnAdvisoryIds,
                 ..
             }
         ));
-        assert!(checked("cve_ids: [\"CVE-2024-1234\"]", "    permanent: true\n").is_ok());
+        assert!(checked("vuln_advisory_ids: [\"CVE-2024-1234\"]", "    permanent: true\n").is_ok());
     }
 
     /// The shipped example is a real policy and has to pass its own rules, read on a day

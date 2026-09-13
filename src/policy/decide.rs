@@ -77,7 +77,7 @@ pub struct Advisory {
 }
 
 impl Advisory {
-    /// Whether `id` is this advisory's id or one of its aliases. A `cve_ids` exception
+    /// Whether `id` is this advisory's id or one of its aliases. A `vuln_advisory_ids` exception
     /// names a CVE, and OSV stores the advisory under its GHSA id.
     pub fn is_named(&self, id: &str) -> bool {
         self.id == id || self.aliases.iter().any(|alias| alias == id)
@@ -169,6 +169,8 @@ pub struct Result {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Decision {
     pub results: Vec<Result>,
+    /// The `packages` entry that applied, if any, whether or not it excused anything.
+    pub entry: Option<usize>,
 }
 
 impl Decision {
@@ -234,7 +236,34 @@ pub fn decide(policy: &Policy, facts: &Facts, as_of: Date) -> Decision {
         })
         .collect();
 
-    Decision { results }
+    Decision { results, entry }
+}
+
+/// The wait that applies to a package: the exception's where it sets one, else the global
+/// setting.
+pub fn cooldown_required(policy: &Policy, entry: Option<usize>) -> u32 {
+    entry
+        .and_then(|i| policy.packages[i].set.cooldown_days)
+        .unwrap_or(policy.cooldown_days)
+}
+
+/// The advisories over `max_cvss`, split into those that still count and those the
+/// exception names by id or alias.
+///
+/// Public so `explain` names the advisories from the same split the check decided on.
+pub fn over_max_cvss<'a>(
+    policy: &Policy,
+    facts: &'a Facts,
+    entry: Option<usize>,
+) -> (Vec<&'a Advisory>, Vec<&'a Advisory>) {
+    let ignored = entry
+        .map(|i| policy.packages[i].set.vuln_advisory_ids.as_slice())
+        .unwrap_or(&[]);
+    facts
+        .advisories
+        .iter()
+        .filter(|a| a.cvss > policy.max_cvss)
+        .partition(|a| !ignored.iter().any(|id| a.is_named(id)))
 }
 
 /// The exception that applies, if any.
@@ -313,32 +342,39 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
         // publication date is unknown is treated as too young, because "we do not know"
         // is not "old enough".
         Check::CooldownDays => {
-            let required = set
-                .and_then(|s| s.cooldown_days)
-                .unwrap_or(policy.cooldown_days);
             // Zero days of waiting is satisfied by everything, including a package
             // whose publish date is unknown: there is no wait for it to be inside. This
             // is how the check is turned off, and without the short circuit it fails
             // every package the registry published no time for.
-            let old_enough = required == 0
-                || facts.published.is_some_and(|published| {
-                // A date so far out it cannot be represented is not a date this package
-                // will ever reach, so it is not old enough.
-                    published
-                        .checked_add(jiff::Span::new().days(i64::from(required)))
-                        .is_ok_and(|ready| ready <= as_of)
-                });
-            if old_enough {
+            let waited = |days: u32| {
+                days == 0
+                    || facts.published.is_some_and(|published| {
+                        // A date so far out it cannot be represented is not a date this
+                        // package will ever reach, so it is not old enough.
+                        published
+                            .checked_add(jiff::Span::new().days(i64::from(days)))
+                            .is_ok_and(|ready| ready <= as_of)
+                    })
+            };
+            if waited(policy.cooldown_days) {
                 Outcome::Passed
+            } else if let Some(entry) = entry.filter(|_| waited(cooldown_required(policy, entry)))
+            {
+                // Too young for the global wait and old enough for the exception's, so the
+                // exception is what let it through: the flow chart's
+                // `RECORD_cooldown_EXCEPTED`.
+                Outcome::Excepted {
+                    entry,
+                    action: Action::Quarantine,
+                }
             } else {
-                // Always `Failed`, never `Excepted`, even when an exception shortened the
-                // wait: the exception applied and the package is still too young, so it
-                // is not what let anything through.
+                // No exception, or one that shortened the wait and not enough. Either way
+                // no exception let anything through.
                 Outcome::Failed(Action::Quarantine)
             }
         }
 
-        // Read from the advisories as they came, never from the list `cve_ids` has
+        // Read from the advisories as they came, never from the list `vuln_advisory_ids` has
         // filtered. Excepting an advisory by id says it is not reachable from this code;
         // it says nothing about whether it is being exploited in the wild, and letting
         // one stand for the other would dismiss the broader finding by accident.
@@ -371,29 +407,16 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
         // threshold. Narrower than raising the threshold, which would apply to every
         // advisory this package acquires later.
         Check::MaxCvss => {
-            let ignored = set.map(|s| s.cve_ids.as_slice()).unwrap_or(&[]);
-            let worst = facts
-                .advisories
-                .iter()
-                .filter(|a| !ignored.iter().any(|id| a.is_named(id)))
-                .map(|a| a.cvss)
-                .fold(f64::NEG_INFINITY, f64::max);
-            if worst <= policy.max_cvss {
-                // Something was ignored and nothing is left over the threshold, so the
-                // exception is what saved it.
-                let saved = !ignored.is_empty()
-                    && facts.advisories.iter().any(|a| {
-                        ignored.iter().any(|id| a.is_named(id)) && a.cvss > policy.max_cvss
-                    });
-                match (saved, entry) {
-                    (true, Some(entry)) => Outcome::Excepted {
-                        entry,
-                        action: Action::Block,
-                    },
-                    _ => Outcome::Passed,
-                }
-            } else {
-                Outcome::Failed(Action::Block)
+            let (counting, excused) = over_max_cvss(policy, facts, entry);
+            match (counting.is_empty(), excused.is_empty(), entry) {
+                (false, _, _) => Outcome::Failed(Action::Block),
+                // Something was over the threshold and the exception named all of it, so
+                // the exception is what saved it.
+                (true, false, Some(entry)) => Outcome::Excepted {
+                    entry,
+                    action: Action::Block,
+                },
+                _ => Outcome::Passed,
             }
         }
 
@@ -732,7 +755,7 @@ mod tests {
     fn an_advisory_may_be_ignored_by_id() {
         let p = policy(
             "max_cvss: 6.9\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { cve_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             set: { vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
              permanent: true\n",
         );
         let facts = Facts {
@@ -778,12 +801,54 @@ mod tests {
         );
     }
 
+    /// The flow chart's `RECORD_cooldown_EXCEPTED`: too young for the global wait, old
+    /// enough for the exception's.
+    #[test]
+    fn an_exception_that_shortens_the_wait_enough_is_what_let_the_package_through() {
+        let with = |set: &str| {
+            policy(&format!(
+                "cooldown_days: 7\npackages:\n  - match: {{ ecosystem: npm, name: lodash }}\n    \
+                 set: {{ {set} }}\n    reason: t\n    permanent: true\n"
+            ))
+        };
+        let young = Facts {
+            published: Some(date(2026, 9, 11)),
+            ..clean()
+        };
+
+        let d = decide(&with("cooldown_days: 0"), &young, TODAY);
+        assert_eq!(
+            *outcome(&d, Check::CooldownDays),
+            Outcome::Excepted {
+                entry: 0,
+                action: Action::Quarantine
+            }
+        );
+        assert_eq!(d.exceptions_used(), vec![0]);
+        assert!(d.delivered());
+
+        assert_eq!(
+            *outcome(&decide(&with("cooldown_days: 5"), &young, TODAY), Check::CooldownDays),
+            Outcome::Failed(Action::Quarantine),
+            "shortened, and not enough"
+        );
+        let old = Facts {
+            published: Some(date(2026, 9, 1)),
+            ..clean()
+        };
+        assert_eq!(
+            *outcome(&decide(&with("cooldown_days: 0"), &old, TODAY), Check::CooldownDays),
+            Outcome::Passed,
+            "old enough without it, so it excused nothing"
+        );
+    }
+
     /// OSV stores a GitHub advisory under its GHSA id, with the CVE as an alias.
     #[test]
     fn an_advisory_may_be_ignored_by_an_alias() {
         let p = policy(
             "max_cvss: 6.9\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { cve_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             set: { vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
              permanent: true\n",
         );
         let ghsa = |aliases: &[&str]| Facts {
@@ -812,10 +877,10 @@ mod tests {
     /// advisory by id says it is not reachable from this code; it says nothing about
     /// whether it is being exploited, and one must not stand for the other.
     #[test]
-    fn excepting_a_cve_by_id_does_not_excuse_its_exploitation() {
+    fn excepting_an_advisory_by_id_does_not_excuse_its_exploitation() {
         let p = policy(
             "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { cve_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             set: { vuln_advisory_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
              permanent: true\n",
         );
         let facts = Facts {
@@ -846,7 +911,7 @@ mod tests {
     fn a_kev_advisory_needs_both_exceptions_to_pass() {
         let p = policy(
             "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
-             set: { cve_ids: [\"CVE-2024-1234\"], kev: allow }\n    \
+             set: { vuln_advisory_ids: [\"CVE-2024-1234\"], kev: allow }\n    \
              reason: not reachable, and we accept the exploitation risk\n    \
              permanent: true\n",
         );

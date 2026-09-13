@@ -123,6 +123,20 @@ pub fn unenforceable(
     out
 }
 
+/// The decision with the checks this build cannot answer taken out: what the proxy acts
+/// on.
+///
+/// `Decision::action` over the whole vector counts an answer to a fact that was never
+/// there, such as a quarantine for a publish date the registry did not send. `explain` and
+/// `policy diff` report the action from this, so neither names a verdict the proxy does not
+/// reach.
+pub fn enforced(decision: &Decision, unenforceable: &[Unenforceable]) -> Decision {
+    let mut kept = decision.clone();
+    kept.results
+        .retain(|r| !unenforceable.iter().any(|u| u.check == r.check));
+    kept
+}
+
 /// Decide a pinned artifact request.
 ///
 /// `None` for the policy is Stage 1 behaviour: nothing is enforced and everything
@@ -143,12 +157,8 @@ pub fn artifact(
     if let Some(intel) = intel {
         facts = facts.with_intel(intel);
     }
-    let mut decision = decide(policy, &facts, today);
     let dropped = unenforceable(policy, record, times, facts.intel);
-    decision
-        .results
-        .retain(|r| !dropped.iter().any(|d| d.check == r.check));
-    verdict(&facts, &decision)
+    verdict(&facts, &enforced(&decide(policy, &facts, today), &dropped))
 }
 
 fn verdict(facts: &Facts, decision: &Decision) -> Verdict {

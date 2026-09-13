@@ -13,7 +13,7 @@ pub enum Rule {
     CooldownDays,
     Kev,
     InstallScripts,
-    CveIds,
+    VulnAdvisoryIds,
 }
 
 impl Rule {
@@ -22,7 +22,7 @@ impl Rule {
             Self::CooldownDays => "cooldown_days",
             Self::Kev => "kev",
             Self::InstallScripts => "install_scripts",
-            Self::CveIds => "cve_ids",
+            Self::VulnAdvisoryIds => "vuln_advisory_ids",
         }
     }
 
@@ -32,7 +32,7 @@ impl Rule {
         Self::CooldownDays,
         Self::Kev,
         Self::InstallScripts,
-        Self::CveIds,
+        Self::VulnAdvisoryIds,
     ];
 }
 
@@ -63,7 +63,7 @@ pub struct RuleValues<'a> {
     pub cooldown_days: Option<u32>,
     pub kev: Option<Action>,
     pub install_scripts: Option<Action>,
-    pub cve_ids: Option<&'a [String]>,
+    pub vuln_advisory_ids: Option<&'a [String]>,
 }
 
 impl<'a> From<&'a SetBlock> for RuleValues<'a> {
@@ -74,7 +74,7 @@ impl<'a> From<&'a SetBlock> for RuleValues<'a> {
             install_scripts: s.install_scripts,
             // An empty list is not an exception, so it reads as unset rather than as an
             // exception that ignores nothing.
-            cve_ids: (!s.cve_ids.is_empty()).then_some(s.cve_ids.as_slice()),
+            vuln_advisory_ids: (!s.vuln_advisory_ids.is_empty()).then_some(s.vuln_advisory_ids.as_slice()),
         }
     }
 }
@@ -88,7 +88,7 @@ impl From<&Policy> for RuleValues<'_> {
             // There is no global list of advisories to ignore. An exception naming one has
             // nothing above it to be compared against, and ignoring an advisory can only
             // ever loosen, which `compare` reports directly.
-            cve_ids: None,
+            vuln_advisory_ids: None,
         }
     }
 }
@@ -116,7 +116,7 @@ pub fn compare(
         Rule::InstallScripts => action_strictness(value.install_scripts, baseline.install_scripts),
         // Ignoring an advisory can only loosen. There is nothing above to compare it to,
         // so naming any is a loosening and naming none is no change at all.
-        Rule::CveIds => match value.cve_ids {
+        Rule::VulnAdvisoryIds => match value.vuln_advisory_ids {
             Some(ids) if !ids.is_empty() => Strictness::Looser,
             _ => Strictness::Unset,
         },
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn naming_an_advisory_to_ignore_is_always_a_loosening() {
         assert_eq!(
-            outcome(&set("cve_ids: [\"CVE-2024-1234\"]"), Rule::CveIds),
+            outcome(&set("vuln_advisory_ids: [\"CVE-2024-1234\"]"), Rule::VulnAdvisoryIds),
             Strictness::Looser
         );
     }
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn an_empty_advisory_list_is_not_an_exception() {
         assert_eq!(
-            outcome(&set("cve_ids: []"), Rule::CveIds),
+            outcome(&set("vuln_advisory_ids: []"), Rule::VulnAdvisoryIds),
             Strictness::Unset
         );
     }
