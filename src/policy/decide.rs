@@ -42,7 +42,24 @@ pub struct Facts {
     pub known_malware: bool,
     /// Advisories against this version.
     pub advisories: Vec<Advisory>,
+    /// Whether an advisory stream was asked at all.
+    ///
+    /// An empty `advisories` with `known_malware` false means two different things: a
+    /// package nothing is known against, or a build with nothing to ask. The checks that
+    /// read them cannot tell those apart, so the caller says which it is. Same distinction
+    /// `intel::Capabilities::gaps` reports at startup.
+    pub intel: Intel,
     pub has_install_scripts: bool,
+}
+
+/// Whether anything was in a position to answer about advisories.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intel {
+    /// A stream answered. Empty advisories mean nothing is known against this version.
+    Consulted,
+    /// No stream exists or none covers this ecosystem. Empty advisories mean nothing was
+    /// asked, which is not the same as nothing found.
+    NotConsulted,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -428,6 +445,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            intel: Intel::NotConsulted,
         }
     }
 
@@ -486,6 +504,7 @@ mod tests {
             published: Some(date(2026, 9, 11)),
             advisories: vec![exploited("CVE-2024-1", 9.8)],
             has_install_scripts: true,
+            intel: Intel::NotConsulted,
             ..clean()
         };
         let d = decide(&policy(""), &facts, TODAY);
@@ -645,6 +664,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
+            intel: Intel::NotConsulted,
             ..clean()
         };
         let d = decide(&p, &facts, TODAY);
@@ -683,6 +703,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
+            intel: Intel::NotConsulted,
             ..clean()
         };
         assert!(
@@ -884,6 +905,7 @@ mod tests {
         let facts = Facts {
             ecosystem: "golang".to_owned(),
             has_install_scripts: true,
+            intel: Intel::NotConsulted,
             ..clean()
         };
         let d = decide(&policy(""), &facts, TODAY);
@@ -899,6 +921,7 @@ mod tests {
         let p = policy("install_scripts: allow\n");
         let facts = Facts {
             has_install_scripts: true,
+            intel: Intel::NotConsulted,
             ..clean()
         };
         let d = decide(&p, &facts, TODAY);
@@ -955,6 +978,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
+            intel: Intel::NotConsulted,
             ..clean()
         };
         assert_eq!(

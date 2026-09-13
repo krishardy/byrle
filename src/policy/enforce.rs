@@ -95,6 +95,16 @@ pub fn unenforceable(
             check: Check::CooldownDays,
             why,
         });
+    }    // Three checks read the advisory list. With nothing to ask, an empty list is an absent
+    // answer rather than a clean one, and reporting them as passes would claim a check ran
+    // that never could.
+    if Facts::from_record(record).intel == super::decide::Intel::NotConsulted {
+        out.extend(
+            [Check::KnownMalware, Check::Kev, Check::MaxCvss].map(|check| Unenforceable {
+                check,
+                why: "no advisory stream is built, so nothing was asked",
+            }),
+        );
     }
     out
 }
@@ -294,6 +304,27 @@ mod tests {
         );
     }
 
+    /// Just the cooldown entry. The advisory checks are always unenforceable in this
+    /// build, and that is covered on its own below.
+    fn cooldown_entry(policy: &Policy, record: &PackageRecord) -> Option<Unenforceable> {
+        unenforceable(policy, record, None)
+            .into_iter()
+            .find(|u| u.check == Check::CooldownDays)
+    }
+
+    /// An empty advisory list with nothing to ask is not a clean answer.
+    #[test]
+    fn the_checks_that_read_advisories_are_unenforceable_with_no_stream() {
+        let reported: Vec<Check> = unenforceable(&loaded("version: 1"), &record(), None)
+            .into_iter()
+            .map(|u| u.check)
+            .collect();
+
+        assert!(reported.contains(&Check::KnownMalware), "{reported:?}");
+        assert!(reported.contains(&Check::Kev), "{reported:?}");
+        assert!(reported.contains(&Check::MaxCvss), "{reported:?}");
+    }
+
     fn abbreviated() -> PackageRecord {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -318,11 +349,11 @@ mod tests {
         let policy = loaded("version: 1\ncooldown_days: 30\n");
 
         assert_eq!(
-            unenforceable(&policy, &abbreviated(), None),
-            [Unenforceable {
+            cooldown_entry(&policy, &abbreviated()),
+            Some(Unenforceable {
                 check: Check::CooldownDays,
                 why: "the abbreviated packument carries no publish times",
-            }]
+            })
         );
         assert_eq!(artifact(Some(&policy), &abbreviated(), None, TODAY), Verdict::Serve);
     }
@@ -354,7 +385,7 @@ mod tests {
         );
         let policy = loaded("version: 1\ncooldown_days: 30\n");
 
-        assert!(unenforceable(&policy, &r, None).is_empty());
+        assert_eq!(cooldown_entry(&policy, &r), None);
         assert!(matches!(
             artifact(Some(&policy), &r, None, TODAY),
             Verdict::Refuse(_)
@@ -366,7 +397,7 @@ mod tests {
     fn a_cooldown_of_zero_is_not_reported_as_unenforceable() {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
 
-        assert!(unenforceable(&policy, &abbreviated(), None).is_empty());
+        assert_eq!(cooldown_entry(&policy, &abbreviated()), None);
         assert_eq!(artifact(Some(&policy), &abbreviated(), None, TODAY), Verdict::Serve);
     }
 

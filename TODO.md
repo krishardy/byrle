@@ -1371,8 +1371,23 @@ a deferral: there was no mirror to warm and nothing analysing. See
       - [x] A write failure warns once and never fails an install. Refusing to open at
             startup is different: an operator who asked for a log and silently did not get
             one would believe decisions were being recorded.
-- [ ] `[!]` `waharoa explain --policy` — effective merged policy per ecosystem
-- [ ] `[!]` `waharoa explain <purl>` — verdict plus the rule that fired
+- [x] `[!]` `waharoa explain --policy`. Settings as loaded, plus which checks can fire.
+      A check that is off and a check with no fact source are different states, and
+      reading the file cannot tell them apart.
+- [x] `[!]` `waharoa explain <purl>`. The whole decision vector, not the verdict alone:
+      a refusal naming only the strongest reason hides that two others fired and that a
+      third was never asked. Five states, none collapsed into another: `pass`, `FAIL`,
+      `excepted`, `n/a`, `unenforced`.
+      - [x] Asks the same engine the proxy does, so explain and a refusal cannot disagree.
+      - [x] Fetches from the upstream registry, not through a running proxy. Explain is a
+            question about the policy, and needing the proxy up to ask it is the wrong
+            dependency.
+      - [x] **`Facts::intel` records whether a stream was asked at all.** An empty
+            advisory list with `known_malware` false meant two different things: a package
+            nothing is known against, or a build with nothing to ask. `explain` showed
+            `known_malware`, `kev` and `max_cvss` as `pass` while `explain --policy` said
+            they were unenforced. They now report `unenforced` everywhere, the audit log
+            included.
 - [ ] `waharoa status` — ecosystem maturity tiers
 - [ ] CI lockfile verification: all resolved URLs point at the proxy
 

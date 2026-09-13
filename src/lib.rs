@@ -10,6 +10,7 @@
 pub mod audit;
 pub mod defer;
 pub mod doctor;
+pub mod explain;
 pub mod http;
 pub mod identity;
 pub mod intel;

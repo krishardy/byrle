@@ -13,10 +13,13 @@ use tracing::{info, warn};
 #[cfg(debug_assertions)]
 use waharoa::defer::DeferTest;
 use waharoa::doctor;
+use waharoa::explain;
+use waharoa::identity::PackageRef;
 use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 
 use waharoa::npm;
-use waharoa::policy::{Policy, packages};
+use waharoa::policy::{Policy, decide, enforce, packages};
+use waharoa::record;
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
 use waharoa::refusal::RefusalStatus;
 use waharoa::store::DEFAULT_MAX_RECORDS;
@@ -28,6 +31,8 @@ usage: waharoa [command]
 
   (no command)  run the proxy
   doctor        check whether this machine installs through the proxy
+  explain       why a package is allowed or refused. `explain --policy` for the
+                policy itself, `explain <purl>` for one version
   help          show this
 
 Proxy configuration, all through the environment:
@@ -236,6 +241,94 @@ async fn fetch_health(proxy: &str) -> Option<waharoa::proxy::Health> {
     serde_json::from_str(&response.text().await.ok()?).ok()
 }
 
+/// `waharoa explain`.
+///
+/// Reads the same policy the proxy does and asks the same engine, so an answer here and a
+/// refusal in the proxy cannot disagree. The packument is fetched directly from the
+/// upstream registry rather than through a running proxy: explain is a question about the
+/// policy, and requiring the proxy to be up to ask it would be the wrong dependency.
+async fn run_explain(argument: Option<String>) -> std::process::ExitCode {
+    let Some(argument) = argument else {
+        eprintln!("waharoa explain: needs `--policy` or a purl, for example");
+        eprintln!("  waharoa explain pkg:npm/lodash@4.17.21");
+        return std::process::ExitCode::from(2);
+    };
+
+    let Some(path) = std::env::var("WAHAROA_POLICY")
+        .ok()
+        .filter(|p| !p.is_empty())
+    else {
+        eprintln!("waharoa explain: set WAHAROA_POLICY to the policy file to explain");
+        return std::process::ExitCode::from(2);
+    };
+    let policy = match Policy::load(std::path::Path::new(&path)) {
+        Ok(policy) => policy,
+        Err(e) => {
+            eprintln!("waharoa explain: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+
+    if argument == "--policy" {
+        // No advisory stream exists in this build, so the checks that need one are
+        // reported as unenforced rather than as settings that will fire.
+        print!("{}", explain::policy(&policy, false));
+        return std::process::ExitCode::SUCCESS;
+    }
+
+    let reference = match argument.parse::<PackageRef>() {
+        Ok(reference) => reference,
+        Err(e) => {
+            eprintln!("waharoa explain: `{argument}` is not a package reference: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+
+    let upstream = env_or("WAHAROA_UPSTREAM", npm::DEFAULT_REGISTRY);
+    let client = npm::Client::new(reqwest::Client::new(), upstream);
+    let packument = match client
+        .packument(reference.key(), record::PackumentDetail::Abbreviated)
+        .await
+    {
+        Ok(Ok(packument)) => packument,
+        Ok(Err(e)) => {
+            eprintln!("waharoa explain: packument could not be read: {e}");
+            return std::process::ExitCode::from(1);
+        }
+        Err(e) => {
+            eprintln!("waharoa explain: packument could not be fetched: {e}");
+            return std::process::ExitCode::from(1);
+        }
+    };
+    let Some(package) = packument.version(reference.version()) else {
+        eprintln!(
+            "waharoa explain: the registry does not publish {argument}"
+        );
+        return std::process::ExitCode::from(1);
+    };
+
+    // Only when the policy asks for it, the same gate the proxy uses.
+    let times = if policy.uses_cooldown() {
+        client.publish_times(reference.key()).await.ok().and_then(Result::ok)
+    } else {
+        None
+    };
+
+    let facts = decide::Facts::from_record_and_times(package, times.as_ref());
+    let today = jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date();
+    print!(
+        "{}",
+        explain::decision(
+            &facts,
+            &decide::decide(&policy, &facts, today),
+            &enforce::unenforceable(&policy, package, times.as_ref()),
+        )
+    );
+    std::process::ExitCode::SUCCESS
+}
+
 async fn run_doctor() -> std::process::ExitCode {
     let listen = env_or("WAHAROA_LISTEN", "127.0.0.1:8080");
     let public = std::env::var("WAHAROA_PUBLIC_URL")
@@ -334,6 +427,7 @@ async fn main() -> std::process::ExitCode {
     match std::env::args().nth(1).as_deref() {
         None => {}
         Some("doctor") => return run_doctor().await,
+        Some("explain") => return run_explain(std::env::args().nth(2)).await,
         Some("help" | "-h" | "--help") => {
             print!("{USAGE}{DEBUG_USAGE}");
             return std::process::ExitCode::SUCCESS;
