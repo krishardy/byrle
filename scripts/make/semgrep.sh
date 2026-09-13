@@ -29,6 +29,11 @@
 #
 # SEMGREP_ALLOW_ANONYMOUS=1 runs without one, for an environment where logging in is not
 # possible. It says what it costs.
+#
+# After the scan, `==> exceptions` lists what it was told to leave alone: each finding a
+# suppression comment hides (file, line, rule, line text), suppression comments that hide
+# nothing, and each path not scanned with semgrep's reason. It is a report and does not
+# change the exit status. See scripts/make/lib/semgrep_exceptions.py.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -106,5 +111,29 @@ else
     )
 fi
 
-exec semgrep "${rules[@]}" --metrics=off --error \
-    --exclude=target --exclude='*.lock' "$@" .
+note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
+
+status=0
+semgrep "${rules[@]}" --metrics=off --error \
+    --exclude=target --exclude='*.lock' "$@" . || status=$?
+
+# What the scan above was told to leave alone. semgrep reports a finding that a suppression
+# comment hides only when suppressions are off, so this is a second pass with
+# `--disable-nosem`, and `--verbose` is what adds the skipped paths to its JSON. With the
+# rules cached it took 5s over this repository. The exit status stays the first pass's,
+# unless this pass fails and the list cannot be shown.
+note "exceptions"
+json="$(mktemp)"
+errors="$(mktemp)"
+trap 'rm -f "$json" "$errors"' EXIT
+pass=0
+semgrep "${rules[@]}" --metrics=off --disable-nosem --json --verbose \
+    --exclude=target --exclude='*.lock' "$@" . >"$json" 2>"$errors" || pass=$?
+if [[ "$pass" == 0 ]]; then
+    python3 "$repo_root/scripts/make/lib/semgrep_exceptions.py" "$json"
+else
+    echo "the exceptions pass exited $pass, so they are not listed. semgrep said:"
+    grep -iE 'error|fail|invalid|timed? ?out' "$errors" | tail -10 || tail -10 "$errors"
+    [[ "$status" == 0 ]] && status=1
+fi
+exit "$status"

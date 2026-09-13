@@ -152,6 +152,13 @@ Items that I've added that are not stage-bound.
    unconditionally, so a release build fails with `could not find audit in the crate root`.
    `src/audit.rs` gives no reason for the gate.
 12. In make semgrep, also report on any semgrep exceptions (file, line # and line text)
+    - Done 2026-09-13: after the scan, `==> exceptions` lists each finding a `nosemgrep`
+      comment suppresses (file, line, rule, line text), comments that suppress nothing, and
+      every path not scanned with semgrep's reason. A second pass with `--disable-nosem`,
+      5s with rules cached; `scripts/make/lib/semgrep_exceptions.py`. The exit status is
+      the scan's.
+    - Found: `tests/intel_postgres.rs` is not scanned. With no `.semgrepignore`, semgrep's
+      built-in ignore list skips `tests/`.
 13. In the code, policy, documentation, etc. change from "CVE" to "VulnAdvisory". (Has CVE should instead be Has Vulnerability, etc.)
     - Decided 2026-09-13: the policy key `cve_ids` becomes `vuln_advisory_ids`, before the
       v1 schema is frozen. `max_cvss` keeps its name: CVSS is the scoring system.
