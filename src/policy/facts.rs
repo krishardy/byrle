@@ -40,15 +40,26 @@ pub enum Answerable {
     Missing(&'static str),
 }
 
+/// When each version of a package was published, read from the full packument.
+///
+/// Separate from the record because the record comes from the abbreviated document, which
+/// carries no `time` map. See [`crate::npm::parse_publish_times`].
+pub type PublishTimes = std::collections::BTreeMap<String, jiff::Timestamp>;
+
 impl Facts {
     /// Build the facts from a record, with no intel.
     pub fn from_record(record: &PackageRecord) -> Self {
+        Self::from_record_and_times(record, None)
+    }
+
+    /// The same, with publish times fetched separately.
+    pub fn from_record_and_times(record: &PackageRecord, times: Option<&PublishTimes>) -> Self {
         let key = record.package.key();
         Self {
             ecosystem: key.ecosystem().as_str().to_owned(),
             name: key.registry_name(),
             version: record.package.version().to_owned(),
-            published: published_date(record),
+            published: published_date(record, times),
             // Absent, not clean. Nothing can originate a finding in this build.
             known_malware: false,
             advisories: Vec::new(),
@@ -61,9 +72,12 @@ impl Facts {
     /// The abbreviated packument carries no `time` map, and that is the document both
     /// `npm install` and the proxy's own fetch ask for. Asking the engine anyway would
     /// fail every package on a fact the registry never sent.
-    pub fn can_answer_cooldown(record: &PackageRecord) -> Answerable {
-        match published_date(record) {
+    pub fn can_answer_cooldown(record: &PackageRecord, times: Option<&PublishTimes>) -> Answerable {
+        match published_date(record, times) {
             Some(_) => Answerable::Yes,
+            None if times.is_some() => {
+                Answerable::Missing("the registry published no time for this version")
+            }
             None => Answerable::Missing(match record.source {
                 PackumentDetail::Abbreviated => {
                     "the abbreviated packument carries no publish times"
@@ -79,9 +93,13 @@ impl Facts {
 /// The policy is written in civil dates and the registry publishes an instant, so a
 /// timezone has to be chosen. UTC, so the same package gets the same answer on every
 /// proxy: a local zone would put two replicas a day apart across midnight.
-fn published_date(record: &PackageRecord) -> Option<Date> {
+fn published_date(record: &PackageRecord, times: Option<&PublishTimes>) -> Option<Date> {
     record
         .published_at
+        // The full document is the only source of a `time` map, so a record built from
+        // the abbreviated one has nothing here and the separately fetched times are what
+        // answer.
+        .or_else(|| times?.get(record.package.version()).copied())
         .map(|at| at.to_zoned(TimeZone::UTC).date())
 }
 
@@ -155,13 +173,13 @@ mod tests {
     fn the_abbreviated_packument_answers_no_publish_date() {
         assert_eq!(Facts::from_record(&abbreviated()).published, None);
         assert_eq!(
-            Facts::can_answer_cooldown(&abbreviated()),
+            Facts::can_answer_cooldown(&abbreviated(), None),
             Answerable::Missing("the abbreviated packument carries no publish times")
         );
 
         // The same version read the other way does carry one.
         assert!(Facts::from_record(&full()).published.is_some());
-        assert_eq!(Facts::can_answer_cooldown(&full()), Answerable::Yes);
+        assert_eq!(Facts::can_answer_cooldown(&full(), None), Answerable::Yes);
     }
 
     /// Why `cooldown_days` is not enforced, stated as the engine's own answer rather
@@ -188,13 +206,68 @@ mod tests {
         assert_eq!(decision.action(), Action::Allow);
     }
 
+    /// Separately fetched times answer for a record that has none, which is what makes
+    /// `cooldown_days` enforceable against the abbreviated document.
+    #[test]
+    fn fetched_times_answer_where_the_record_cannot() {
+        let times: PublishTimes = [(
+            "4.17.21".to_owned(),
+            "2021-02-20T15:42:16.891Z".parse().unwrap(),
+        )]
+        .into_iter()
+        .collect();
+
+        assert_eq!(Facts::from_record(&abbreviated()).published, None);
+        assert_eq!(
+            Facts::from_record_and_times(&abbreviated(), Some(&times)).published,
+            Some(jiff::civil::date(2021, 2, 20))
+        );
+        assert_eq!(
+            Facts::can_answer_cooldown(&abbreviated(), Some(&times)),
+            Answerable::Yes
+        );
+    }
+
+    /// Times that do not name this version leave it unanswerable, and the reason is the
+    /// registry's silence rather than the document shape.
+    #[test]
+    fn fetched_times_that_omit_this_version_say_the_registry_published_none() {
+        let times: PublishTimes = [(
+            "4.17.20".to_owned(),
+            "2020-04-27T00:00:00Z".parse().unwrap(),
+        )]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            Facts::can_answer_cooldown(&abbreviated(), Some(&times)),
+            Answerable::Missing("the registry published no time for this version")
+        );
+    }
+
+    /// The record wins where it has one, so a full document needs no second fetch.
+    #[test]
+    fn a_record_that_carries_its_own_time_ignores_the_fetched_map() {
+        let times: PublishTimes = [(
+            "4.17.21".to_owned(),
+            "1999-01-01T00:00:00Z".parse().unwrap(),
+        )]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            Facts::from_record_and_times(&full(), Some(&times)).published,
+            Facts::from_record(&full()).published
+        );
+    }
+
     #[test]
     fn a_full_record_that_still_has_no_time_says_so_differently() {
         let mut r = full();
         r.published_at = None;
 
         assert_eq!(
-            Facts::can_answer_cooldown(&r),
+            Facts::can_answer_cooldown(&r, None),
             Answerable::Missing("the registry published no time for this version")
         );
     }

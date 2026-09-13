@@ -261,6 +261,19 @@ impl Policy {
     /// Refused rather than silently treated as one of the two. `quarantine` means "refused
     /// now, allowed later", and neither of these lapses: waiting does not change whether a
     /// package has an install script or a known-exploited vulnerability.
+    /// Whether any cooldown is in force, globally or in a package entry.
+    ///
+    /// Gates the full-packument fetch: publish times are only in the full document, and
+    /// fetching it is 1.7x to 3.6x the bytes plus a request the client never made. An
+    /// operator who has not turned the check on pays none of that.
+    pub fn uses_cooldown(&self) -> bool {
+        self.cooldown_days > 0
+            || self
+                .packages
+                .iter()
+                .any(|entry| entry.set.cooldown_days.is_some_and(|days| days > 0))
+    }
+
     /// A denial names one exact version, or the file does not load.
     ///
     /// `decide` matches denials by parsing the purl, so a denial with no version matches

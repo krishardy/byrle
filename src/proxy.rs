@@ -54,8 +54,8 @@ use crate::http::{
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
-use std::collections::HashSet;
-use crate::policy::{Policy, enforce};
+use std::collections::{HashMap, HashSet};
+use crate::policy::{Policy, enforce, facts};
 use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
     RequestTarget,
@@ -198,6 +198,11 @@ pub struct Proxy {
     /// state from a policy that allows everything: nothing was asked, rather than asked
     /// and answered yes.
     policy: Option<Arc<Policy>>,
+    /// Publish times, keyed by package, fetched from the full packument.
+    ///
+    /// Only populated when the policy uses a cooldown, because filling it costs a request
+    /// the client never made plus 1.7x to 3.6x the abbreviated document's bytes.
+    publish_times: Arc<Mutex<HashMap<PackageKey, Arc<facts::PublishTimes>>>>,
     max_packument_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`rewrite_packument`].
@@ -230,6 +235,7 @@ impl Proxy {
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             upstream,
             policy: None,
+            publish_times: Arc::new(Mutex::new(HashMap::new())),
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
             rewrite_artifacts: true,
             public_base: None,
@@ -740,9 +746,13 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 // Decision #4's pinned half. Asked here because this is the first point
                 // where the exact version and its record are both in hand, and it is
                 // still before a byte is fetched.
-                if let enforce::Verdict::Refuse(refusal) =
-                    enforce::artifact(proxy.policy.as_deref(), &record, today())
-                {
+                let times = publish_times_for(&proxy, key).await;
+                if let enforce::Verdict::Refuse(refusal) = enforce::artifact(
+                    proxy.policy.as_deref(),
+                    &record,
+                    times.as_deref(),
+                    today(),
+                ) {
                     policy_refusal = Some(refusal);
                 }
                 // Where the packument said the artifact lives, when that is an origin
@@ -1115,19 +1125,29 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // It needs the records, so a document that did not normalise is not rewritten either.
     // That is the honest outcome: without records there is nothing to gate on anyway, and
     // it is already logged as UNINSPECTED above.
+    // Fetched here rather than inside the rewrite, which is sync. Costs a request the
+    // client never made, so it happens only when the policy uses a cooldown.
+    let times = match normalized.as_deref() {
+        Some(packument) => publish_times_for(&proxy, &packument.key).await,
+        None => None,
+    };
+
+    // Not gated on `rewriting`. Filtering refused versions is a policy question and
+    // repointing artifact URLs is a transport one, and tying them together meant that
+    // turning rewriting off, which `docs/engineering_decisions/enforcement-tiers.md` says
+    // is correct once the proxy terminates TLS, silently stopped the policy filtering
+    // with it.
     let forwarded = match (decoded.as_deref(), normalized.as_deref()) {
-        (Some(decoded), Some(packument)) if rewriting => {
-            let base = rewrite_base.as_deref().expect("rewriting implies a base");
-            rewrite_packument(
-                decoded,
-                packument,
-                base,
-                &proxy.origins,
-                proxy.policy.as_deref(),
-                proxy.refuse_unservable,
-                &path_and_query,
-            )
-        }
+        (Some(decoded), Some(packument)) => rewrite_packument(Rewrite {
+            decoded,
+            packument,
+            base: rewriting.then_some(rewrite_base.as_deref()).flatten(),
+            origins: &proxy.origins,
+            package_policy: proxy.policy.as_deref(),
+            times: times.as_deref(),
+            refuse_unservable: proxy.refuse_unservable,
+            path: &path_and_query,
+        }),
         _ => None,
     };
 
@@ -1222,6 +1242,62 @@ fn today() -> jiff::civil::Date {
     jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()
 }
 
+/// How many packages' publish times are kept before the map is dropped whole.
+///
+/// Matches the record store's default. Dropping everything rather than evicting one entry
+/// is what `RecordStore` does, for the same reason: the next install refills what it
+/// needs, and a proxy that never lets go is the failure worth avoiding.
+const MAX_PUBLISH_TIME_PACKAGES: usize = 1024;
+
+/// Publish times for this package, fetched once and kept.
+///
+/// `None` when the policy uses no cooldown, which is the common case and the one that
+/// costs nothing: no request is made and nothing is held. A fetch that fails is not fatal
+/// and is not retried within the process, because the check it feeds reports itself as
+/// unenforceable rather than refusing the package.
+async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<Arc<facts::PublishTimes>> {
+    if !proxy.policy.as_deref().is_some_and(Policy::uses_cooldown) {
+        return None;
+    }
+    if let Some(held) = proxy
+        .publish_times
+        .lock()
+        .expect("publish times lock")
+        .get(key)
+    {
+        return Some(held.clone());
+    }
+
+    let started = Instant::now();
+    let times = match proxy.registry.publish_times(key).await {
+        Ok(Ok(times)) => times,
+        Ok(Err(e)) => {
+            warn!(purl = %key, error = %e, "full packument could not be read for publish times");
+            return None;
+        }
+        Err(e) => {
+            warn!(purl = %key, error = %e, "full packument could not be fetched for publish times");
+            return None;
+        }
+    };
+    info!(
+        purl = %key,
+        versions = times.len(),
+        fetch_ms = started.elapsed().as_millis() as u64,
+        "publish times read from the full packument"
+    );
+
+    let times = Arc::new(times);
+    let mut held = proxy.publish_times.lock().expect("publish times lock");
+    // Bounded the same way the record store is, and by the same argument: an unbounded
+    // map keyed by package is a leak on a long-running proxy.
+    if held.len() >= MAX_PUBLISH_TIME_PACKAGES {
+        held.clear();
+    }
+    held.insert(key.clone(), times.clone());
+    Some(times)
+}
+
 /// The versions in this packument the policy refuses.
 ///
 /// Every version is asked, not just the one a client might resolve to: which one it picks
@@ -1231,6 +1307,7 @@ fn today() -> jiff::civil::Date {
 fn policy_refused_versions(
     packument: &NormalizedPackument,
     policy: Option<&Policy>,
+    times: Option<&facts::PublishTimes>,
     path: &str,
 ) -> HashSet<String> {
     let Some(policy) = policy else {
@@ -1242,7 +1319,7 @@ fn policy_refused_versions(
         .iter()
         .filter(|record| {
             matches!(
-                enforce::artifact(Some(policy), record, today),
+                enforce::artifact(Some(policy), record, times, today),
                 enforce::Verdict::Refuse(_)
             )
         })
@@ -1262,22 +1339,37 @@ fn policy_refused_versions(
     refused
 }
 
-fn rewrite_packument(
-    decoded: &[u8],
-    packument: &NormalizedPackument,
-    base: &str,
-    policy: &OriginPolicy,
-    package_policy: Option<&Policy>,
+/// What the packument path needs to decide what to send back.
+struct Rewrite<'a> {
+    decoded: &'a [u8],
+    packument: &'a NormalizedPackument,
+    /// Where artifact URLs are pointed, when they are pointed anywhere.
+    base: Option<&'a str>,
+    origins: &'a OriginPolicy,
+    package_policy: Option<&'a Policy>,
+    times: Option<&'a facts::PublishTimes>,
     refuse_unservable: bool,
-    path: &str,
-) -> Option<Vec<u8>> {
+    path: &'a str,
+}
+
+fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
+    let Rewrite {
+        decoded,
+        packument,
+        base,
+        origins: policy,
+        package_policy,
+        times,
+        refuse_unservable,
+        path,
+    } = r;
     let (allowed_direct, refused) = packument.unserved_origins(policy);
 
     // Decision #4's resolution half. A version the policy refuses is dropped from the
     // document, so the client's own resolver picks one that is allowed and the install
     // succeeds without anyone being told no. The pinned half, where there is no
     // resolution left to influence, refuses at the artifact request.
-    let refused_by_policy = policy_refused_versions(packument, package_policy, path);
+    let refused_by_policy = policy_refused_versions(packument, package_policy, times, path);
 
     // An accepted gap has to stay visible. One that stops being reported outlives the
     // reason it was added.
@@ -1304,7 +1396,7 @@ fn rewrite_packument(
             policy,
             &refused_by_policy,
             refuse_unservable,
-            base,
+            base.unwrap_or(""),
         ) {
             Ok(filtered) => {
                 warn!(
@@ -1353,6 +1445,9 @@ fn rewrite_packument(
         }
     }
 
+    // Nothing left to do when artifact URLs are not being repointed. Reached when the
+    // operator turned rewriting off and the policy refused nothing.
+    let base = base?;
     let artifacts = packument
         .records
         .iter()
@@ -2240,6 +2335,44 @@ mod tests {
         // the tag never named the denied version and survives. Tag dropping is covered
         // against a document where it does, in `npm::tests::rewriting`.
         assert_eq!(body["dist-tags"]["latest"], "4.18.1");
+    }
+
+    /// Filtering a refused version is a policy question; repointing artifact URLs is a
+    /// transport one. Tying them together meant that turning rewriting off, which
+    /// `enforcement-tiers.md` says is correct once the proxy terminates TLS, silently
+    /// stopped the filtering with it.
+    #[tokio::test]
+    async fn a_denied_version_is_filtered_with_artifact_rewriting_turned_off() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_policy(Some(policy(
+                    "version: 1\ncooldown_days: 0\n\
+                     denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
+                )))
+                .with_artifact_rewriting(false)
+                .with_refuse_unservable(false)
+                .router(),
+        )
+        .await;
+
+        let text = reqwest::get(format!("{base}/lodash"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(
+            body["versions"].get("4.17.21").is_none(),
+            "policy filtering stopped when rewriting was turned off"
+        );
     }
 
     /// Without a policy the same document comes through whole.

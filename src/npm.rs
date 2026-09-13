@@ -1265,6 +1265,71 @@ impl Client {
             Err(e) => Err(FetchError::Undecodable(e)),
         }
     }
+
+    /// Fetch the full packument and read only its `time` map.
+    ///
+    /// A request the client never made, and the only way to learn a publish date. See
+    /// [`parse_publish_times`] for why there is no cheaper source.
+    pub async fn publish_times(
+        &self,
+        key: &PackageKey,
+    ) -> Result<Result<BTreeMap<String, jiff::Timestamp>, NormalizeError>, FetchError> {
+        let response = self
+            .http
+            .get(self.packument_url(key))
+            .header(reqwest::header::ACCEPT, FULL_ACCEPT)
+            .header(reqwest::header::ACCEPT_ENCODING, "gzip")
+            .send()
+            .await
+            .map_err(FetchError::Transport)?;
+
+        if !response.status().is_success() {
+            return Err(FetchError::Status(response.status()));
+        }
+
+        let encoding = response
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
+        let body = response.bytes().await.map_err(FetchError::Transport)?;
+
+        match crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes) {
+            Ok(decoded) => Ok(parse_publish_times(&decoded)),
+            Err(e) => Err(FetchError::Undecodable(e)),
+        }
+    }
+}
+
+/// Only the `time` map, out of a full packument.
+///
+/// npm publishes version timestamps in the full document and nowhere else. The
+/// abbreviated document that `npm install` asks for has no `time` map at all, and the
+/// registry serves no projection of one: `?fields=time` returns the whole document
+/// unchanged and `/<package>/time` is a 404, both checked against registry.npmjs.org.
+///
+/// So reading a publish date means fetching the full document, which is 1.7x to 3.6x the
+/// abbreviated one on eight packages measured, and 15.7 MB for typescript. This parses
+/// only the map rather than normalising, because building 3,823 records to read one field
+/// per version is the part worth not doing.
+#[derive(Deserialize)]
+struct WireTimes {
+    #[serde(default)]
+    time: BTreeMap<String, String>,
+}
+
+/// When each version was published, keyed by version.
+///
+/// `created` and `modified` share the map and describe the package rather than a version,
+/// so they are dropped: npm's own semver parsing rejects both as version names.
+pub fn parse_publish_times(json: &[u8]) -> Result<BTreeMap<String, jiff::Timestamp>, NormalizeError> {
+    let wire: WireTimes = serde_json::from_slice(json).map_err(NormalizeError::Json)?;
+    Ok(wire
+        .time
+        .into_iter()
+        .filter(|(key, _)| key != "created" && key != "modified")
+        .filter_map(|(version, raw)| Some((version, raw.parse::<jiff::Timestamp>().ok()?)))
+        .collect())
 }
 
 #[cfg(test)]
@@ -1278,6 +1343,56 @@ mod tests {
 
     fn normalize(name: &str, detail: PackumentDetail) -> NormalizedPackument {
         normalize_packument(&fixture(name), detail).expect("fixture should normalise")
+    }
+
+    #[test]
+    fn publish_times_are_read_without_normalising() {
+        let times = parse_publish_times(&fixture("lodash-4.17.21.full.json"))
+            .expect("the full fixture carries a time map");
+
+        assert_eq!(
+            times.get("4.17.21").map(|t| t.to_string()),
+            Some("2021-02-20T15:42:16.891Z".to_owned())
+        );
+    }
+
+    /// `created` and `modified` sit in the same map and describe the package. A version
+    /// named either would be rejected by npm's own semver parsing, so dropping them
+    /// cannot lose a real version.
+    #[test]
+    fn the_package_level_timestamps_are_not_versions() {
+        let times = parse_publish_times(
+            br#"{"time":{"created":"2011-01-01T00:00:00.000Z",
+                 "modified":"2021-01-01T00:00:00.000Z","1.0.0":"2012-06-01T00:00:00.000Z"}}"#,
+        )
+        .expect("should parse");
+
+        assert_eq!(times.keys().collect::<Vec<_>>(), ["1.0.0"]);
+    }
+
+    /// The abbreviated document has no `time` map at all, which is why the full one has
+    /// to be fetched.
+    #[test]
+    fn the_abbreviated_document_yields_no_times() {
+        let times = parse_publish_times(&fixture("lodash-4.17.21.abbrev.json"))
+            .expect("should parse");
+
+        assert!(times.is_empty());
+    }
+
+    #[test]
+    fn an_unparseable_timestamp_drops_that_version_rather_than_the_document() {
+        let times = parse_publish_times(
+            br#"{"time":{"1.0.0":"not a timestamp","1.0.1":"2012-06-01T00:00:00.000Z"}}"#,
+        )
+        .expect("should parse");
+
+        assert_eq!(times.keys().collect::<Vec<_>>(), ["1.0.1"]);
+    }
+
+    #[test]
+    fn a_body_that_is_not_json_is_an_error() {
+        assert!(parse_publish_times(b"<html>").is_err());
     }
 
     /// Nothing may be dropped quietly. A version the normaliser cannot read has to be
