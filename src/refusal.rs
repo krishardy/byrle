@@ -28,9 +28,6 @@ use crate::identity::Ecosystem;
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// The default, and what §5 says a policy denial is: 403 means policy denied you.
-pub const DEFAULT_REFUSAL_STATUS: u16 = 403;
-
 /// The client that sent a request, by the first token of its user-agent.
 ///
 /// `None` when there is no user-agent or it is empty. Lowercased, because the table is
@@ -56,7 +53,7 @@ pub struct RefusalStatus {
 impl Default for RefusalStatus {
     fn default() -> Self {
         Self {
-            default: DEFAULT_REFUSAL_STATUS,
+            default: crate::env::DEFAULT_REFUSAL_STATUS,
             by_client: BTreeMap::new(),
         }
     }

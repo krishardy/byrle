@@ -48,9 +48,13 @@
 
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
+use crate::env::{
+    DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
+    DEFAULT_MAX_VERIFIED,
+};
 use crate::http::{
-    DEFAULT_MAX_PACKUMENT_BYTES, DecodeError, RequestedEncoding, decode_for_parsing,
-    encoding_to_request, gzip, is_conditional, is_hop_by_hop, mark_etag, unmark_if_none_match,
+    DecodeError, RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_conditional,
+    is_hop_by_hop, mark_etag, unmark_if_none_match,
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
@@ -64,8 +68,8 @@ use crate::npm::{
 };
 use crate::record::PackumentDetail;
 use crate::refusal::RefusalStatus;
-use crate::store::{DEFAULT_MAX_RECORDS, Lookup, RecordStore};
-use crate::verified::{DEFAULT_MAX_VERIFIED, VerifiedArtifacts};
+use crate::store::{Lookup, RecordStore};
+use crate::verified::VerifiedArtifacts;
 use axum::{
     Router,
     body::Body,
@@ -82,20 +86,6 @@ use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
-
-/// Default ceiling on how many packuments are decoded and rewritten at once.
-///
-/// Reading a packument costs far more than the bytes on the wire: the decoded copy, the
-/// JSON value tree the rewrite walks, the re-serialised output, and the gzip buffer are
-/// all live together. Measured with 24 simultaneous requests for the largest full
-/// packuments (typescript, @types/node, react, next, @angular/core, eslint, webpack,
-/// aws-sdk), the proxy peaked at 1,348 MB while the encoded bodies totalled 27.6 MB.
-/// That is roughly 56 MB per request in flight, and nothing bounded how many there were.
-///
-/// Eight keeps the worst case near half a gigabyte. A normal install does not reach it:
-/// npm's own request parallelism held a six-package install with 165 packuments to a
-/// 141 MB peak.
-pub const DEFAULT_MAX_CONCURRENT_PACKUMENTS: usize = 8;
 
 /// The path the proxy answers for itself rather than forwarding.
 ///
@@ -1277,7 +1267,8 @@ fn defer_response(
         retry_after = retry_after.map(|s| s.to_string()).unwrap_or_else(|| "-".to_owned()),
         client = %client_ua,
         elapsed_ms = started.elapsed().as_millis() as u64,
-        "deferred (WAHAROA_DEFER_TEST)"
+        "deferred ({})",
+        crate::env::DEFER_TEST
     );
     (
         code,

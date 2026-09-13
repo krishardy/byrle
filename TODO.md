@@ -151,7 +151,7 @@ Items that I've added that are not stage-bound.
    `#[cfg(debug_assertions)]` (since `95c52b0`), and `src/proxy.rs:58` uses `crate::audit`
    unconditionally, so a release build fails with `could not find audit in the crate root`.
    `src/audit.rs` gives no reason for the gate.
-12. In make semgrep, also report on any semgrep exceptions (file, line # and line text)
+12. [x] In make semgrep, also report on any semgrep exceptions (file, line # and line text)
     - Done 2026-09-13: after the scan, `==> exceptions` lists each finding a `nosemgrep`
       comment suppresses (file, line, rule, line text), comments that suppress nothing, and
       every path not scanned with semgrep's reason. A second pass with `--disable-nosem`,
@@ -159,14 +159,14 @@ Items that I've added that are not stage-bound.
       the scan's.
     - Found: `tests/intel_postgres.rs` is not scanned. With no `.semgrepignore`, semgrep's
       built-in ignore list skips `tests/`.
-13. In the code, policy, documentation, etc. change from "CVE" to "VulnAdvisory". (Has CVE should instead be Has Vulnerability, etc.)
+13. [x] In the code, policy, documentation, etc. change from "CVE" to "VulnAdvisory". (Has CVE should instead be Has Vulnerability, etc.)
     - Decided 2026-09-13: the policy key `cve_ids` becomes `vuln_advisory_ids`, before the
       v1 schema is frozen. `max_cvss` keeps its name: CVSS is the scoring system.
     - Done 2026-09-13: the key, `Rule::VulnAdvisoryIds`, doc comments, the policy flow chart
       and the docs where CVE meant a vulnerability advisory. Kept where a CVE id is meant
       literally: KEV's `cveID`, NVD's join on CVE id, the measured CVE-id counts, and CVE
       ids used as test data.
-14. Do NOT use TEXT records for everything in the database schema. Use appropriately sized VARCHARS, date, datetime, etc. fields. Only use TEXT where the length is possibly unbounded. IDs should NEVER be TEXT, they should be serial or UUID.
+14. [x] Do NOT use TEXT records for everything in the database schema. Use appropriately sized VARCHARS, date, datetime, etc. fields. Only use TEXT where the length is possibly unbounded. IDs should NEVER be TEXT, they should be serial or UUID.
     - Decided 2026-09-13: this covers publisher ids too. `advisory.id` (`GHSA-...`,
       `MAL-...`) becomes a sized VARCHAR column with a unique index beside a surrogate key,
       and joins use the surrogate key.
@@ -177,7 +177,7 @@ Items that I've added that are not stage-bound.
       `advisory.summary` is the only `TEXT`. See
       [intel-schema-keys-and-types](docs/engineering_decisions/intel-schema-keys-and-types.md).
       A database that applied the old migrations has to be dropped and refreshed.
-15. Evaluate command line parsers for Rust, and migrate to the selected one.
+15. [x] Evaluate command line parsers for Rust, and migrate to the selected one.
     - Decided 2026-09-13: clap 4.6.6, default features off, derive. 4 crates added, against
       lexopt's 1 and default clap's 11.
     - Done 2026-09-13: parsing is `src/cli.rs`, unit-tested; help pinned by
@@ -185,7 +185,14 @@ Items that I've added that are not stage-bound.
       repeated `--as-of` and unknown flags were ignored, `explain --help` was read as a purl,
       `--version` was an unknown command. See
       [cli-parser-clap](docs/engineering_decisions/cli-parser-clap.md).
-16. The environment variables, defaults, usage info, loading and parsing should be extracted into a central environment variable module. You should not have any environment variable name in more than one place in the application.
+16. [x] The environment variables, defaults, usage info, loading and parsing should be extracted into a central environment variable module. You should not have any environment variable name in more than one place in the application.
+    - Decided 2026-09-13: every mention counts, messages and doc comments included; a value
+      that does not parse refuses to start; test-only variables are covered; defaults move
+      into the module.
+    - Done 2026-09-13: `src/env.rs`. `a_variable_name_appears_only_in_this_module` fails on a
+      name anywhere else in `src/`, `tests/` or `examples/`. `--help` renders from the same
+      constants. See [environment-variables](docs/engineering_decisions/environment-variables.md).
+17. [ ] Search for duplicate code or duplicate strings throughout the application and catalog them for later consolidation.
 
 ## Stage 1 — Pass-through proxy (transport)
 

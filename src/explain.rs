@@ -408,21 +408,8 @@ mod tests {
         );
     }
 
-    /// Compare against `tests/fixtures/explain/<name>`. `WAHAROA_BLESS=1` rewrites it first;
-    /// the diff is then what to review.
     fn golden(name: &str, actual: &str) {
-        let path = format!(
-            "{}/tests/fixtures/explain/{name}",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        if std::env::var_os("WAHAROA_BLESS").is_some() {
-            std::fs::write(&path, actual).expect("golden file should write");
-        }
-        let expected = std::fs::read_to_string(&path).expect("golden file should exist");
-        assert!(
-            expected == actual,
-            "{name} differs. Rerun with WAHAROA_BLESS=1 and review the diff:\n{actual}"
-        );
+        crate::golden::assert_matches("explain", name, actual);
     }
 
     struct Case {

@@ -2,7 +2,7 @@
 //!
 //! Parsed by clap with its default features off, which leaves no colour and no typo
 //! suggestions. See `docs/engineering_decisions/cli-parser-clap.md`. The proxy itself is
-//! configured through the environment, which [`environment`] documents after the generated
+//! configured through the environment, which [`crate::env::help`] lists after the generated
 //! help.
 //!
 //! Parsing is here rather than in `main.rs` so it is tested inside the coverage floor.
@@ -15,7 +15,7 @@ use std::path::PathBuf;
     name = "waharoa",
     version,
     about = "Dependency firewall. With no command, runs the proxy.",
-    after_help = environment()
+    after_help = crate::env::help()
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -31,7 +31,10 @@ pub enum Command {
     /// Work with policy files
     #[command(subcommand)]
     Policy(PolicyCommand),
-    /// Load OSV's npm advisories into the Postgres at WAHAROA_DATABASE_URL
+    #[command(about = format!(
+        "Load OSV's npm advisories into the Postgres at {}",
+        crate::env::DATABASE_URL
+    ))]
     Refresh,
 }
 
@@ -39,8 +42,10 @@ pub enum Command {
 #[derive(Debug, PartialEq, Args)]
 #[group(required = true, multiple = false)]
 pub struct Explain {
-    /// The policy in WAHAROA_POLICY as loaded, and which checks can fire
-    #[arg(long)]
+    #[arg(long, help = format!(
+        "The policy in {} as loaded, and which checks can fire",
+        crate::env::POLICY
+    ))]
     pub policy: bool,
     /// One package version, for example pkg:npm/lodash@4.17.21
     pub purl: Option<String>,
@@ -66,56 +71,6 @@ pub struct Diff {
     pub snapshot: Option<String>,
 }
 
-const ENVIRONMENT: &str = "\
-Proxy configuration, all through the environment:
-
-  WAHAROA_LISTEN                    address to listen on (127.0.0.1:8080)
-  WAHAROA_UPSTREAM                  registry to forward to (https://registry.npmjs.org)
-  WAHAROA_PUBLIC_URL                address written into artifact URLs, and therefore
-                                    into lockfiles. Defaults to each request's own Host,
-                                    which is rarely what you want.
-  WAHAROA_ARTIFACT_ORIGINS          comma-separated origins this proxy also serves
-  WAHAROA_ALLOW_DIRECT_ORIGINS      comma-separated origins the proxy does not serve and
-                                    permits anyway, fetched directly and unexamined
-  WAHAROA_REWRITE_ARTIFACTS=0       do not point artifact URLs at the proxy. pnpm and
-                                    yarn then fetch artifacts without the proxy seeing
-                                    them.
-  WAHAROA_CA_BUNDLE                 PEM bundle for the upstream connection
-  WAHAROA_CA_BUNDLE_EXCLUSIVE=1     trust only that bundle, not the public roots
-  WAHAROA_MAX_PACKUMENT_BYTES       ceiling on a packument body (32 MiB)
-  WAHAROA_MAX_RECORDS               packument records held in memory (50,000)
-  WAHAROA_MAX_VERIFIED              verified artifact digests remembered (50,000)
-  WAHAROA_DATABASE_URL              Postgres holding intel from `waharoa refresh`. With a
-                                    policy, known_malware is enforced from it, and a
-                                    store that cannot answer is a 503
-  WAHAROA_POLICY                    path to a policy file. Loaded, validated and
-                                    enforced. Startup reports which checks can fire
-  WAHAROA_AUDIT_LOG                 path for one JSON line per policy decision,
-                                    appended. Refuses to start if it cannot be opened
-  WAHAROA_EXPIRY_CEILING_DAYS       how far ahead a `packages` entry may be dated (90)
-  WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (8)
-  WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
-                                    \"default=403,npm/pnpm=451\" (default 403)
-  WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot
-                                    see, instead of removing them from the packument";
-
-/// The deferral knob is not compiled into a release binary, so a release binary does not
-/// advertise it either.
-#[cfg(debug_assertions)]
-const DEBUG_ENVIRONMENT: &str = "
-  WAHAROA_DEFER_TEST                DEBUG BUILDS ONLY: answer every matching request with
-                                    a deferral instead of fetching, so client retry
-                                    behaviour can be measured. `<status>:<seconds|none>:
-                                    <packument|tarball|all>[:<seconds>]`, e.g.
-                                    \"429:1:tarball\" or \"503:1:all:8\"";
-#[cfg(not(debug_assertions))]
-const DEBUG_ENVIRONMENT: &str = "";
-
-/// The environment variables the proxy reads, shown after the generated help.
-pub fn environment() -> String {
-    format!("{ENVIRONMENT}{DEBUG_ENVIRONMENT}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,16 +88,15 @@ mod tests {
         }
     }
 
-    fn golden(name: &str, actual: &str) {
-        let path = format!("{}/tests/fixtures/cli/{name}", env!("CARGO_MANIFEST_DIR"));
-        if std::env::var_os("WAHAROA_BLESS").is_some() {
-            std::fs::write(&path, actual).expect("golden file should write");
+    /// Assert `args` ends parsing early with `kind`, and hand back the error.
+    fn stops(args: &[&str], kind: ErrorKind) -> clap::Error {
+        match parse(args) {
+            Err(e) => {
+                assert_eq!(e.kind(), kind, "{args:?}: {e}");
+                e
+            }
+            Ok(parsed) => panic!("{args:?} parsed as {parsed:?}"),
         }
-        let expected = std::fs::read_to_string(&path).expect("golden file should exist");
-        assert!(
-            expected == actual,
-            "{name} differs. Rerun with WAHAROA_BLESS=1 and review the diff:\n{actual}"
-        );
     }
 
     #[test]
@@ -254,10 +208,7 @@ mod tests {
             ),
             (&["doctor", "extra"], ErrorKind::UnknownArgument),
         ] {
-            match parse(args) {
-                Err(e) => assert_eq!(e.kind(), kind, "{args:?}: {e}"),
-                Ok(parsed) => panic!("{args:?} parsed as {parsed:?}"),
-            }
+            stops(args, kind);
         }
     }
 
@@ -270,17 +221,18 @@ mod tests {
             (&["policy", "diff", "-h"], ErrorKind::DisplayHelp),
             (&["--version"], ErrorKind::DisplayVersion),
         ] {
-            match parse(args) {
-                Err(e) => assert_eq!(e.kind(), kind, "{args:?}: {e}"),
-                Ok(parsed) => panic!("{args:?} parsed as {parsed:?}"),
-            }
+            stops(args, kind);
         }
         // Exit 0, where every refusal above exits 2.
-        assert_eq!(parse(&["--help"]).expect_err("help").exit_code(), 0);
-        assert_eq!(parse(&["doctr"]).expect_err("refused").exit_code(), 2);
+        assert_eq!(stops(&["--help"], ErrorKind::DisplayHelp).exit_code(), 0);
+        assert_eq!(
+            stops(&["doctr"], ErrorKind::InvalidSubcommand).exit_code(),
+            2
+        );
     }
 
-    /// Debug builds, which is what `cargo test` compiles, show `WAHAROA_DEFER_TEST` too.
+    /// Debug builds, which is what `cargo test` compiles, show [`crate::env::DEFER_TEST`]
+    /// too.
     #[test]
     fn the_help_renders_as_the_golden_files_say() {
         // Rendered from the parse, which is what the binary prints: a subcommand rendered on
@@ -290,8 +242,8 @@ mod tests {
             (&["explain", "--help"], "explain.txt"),
             (&["policy", "diff", "--help"], "policy-diff.txt"),
         ] {
-            let help = parse(args).expect_err("help is an early exit");
-            golden(name, &help.render().to_string());
+            let help = stops(args, ErrorKind::DisplayHelp);
+            crate::golden::assert_matches("cli", name, &help.render().to_string());
         }
     }
 }

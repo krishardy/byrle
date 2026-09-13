@@ -1197,7 +1197,7 @@ impl Client {
         Self {
             http,
             registry: registry.trim_end_matches('/').to_owned(),
-            max_bytes: crate::http::DEFAULT_MAX_PACKUMENT_BYTES,
+            max_bytes: crate::env::DEFAULT_MAX_PACKUMENT_BYTES,
         }
     }
 
@@ -1937,26 +1937,35 @@ mod tests {
     ///     https://registry.npmjs.org/typescript > abbrev/typescript.json
     /// curl -H "Accept: application/json" \
     ///     https://registry.npmjs.org/typescript > full/typescript.json
-    /// WAHAROA_NPM_CORPUS=abbrev WAHAROA_NPM_CORPUS_FULL=full \
-    ///     cargo test --lib -- --ignored --nocapture
+    /// cargo test --lib -- --ignored --nocapture
     /// ```
+    ///
+    /// with [`crate::env::NPM_CORPUS`] set to `abbrev` and [`crate::env::NPM_CORPUS_FULL`]
+    /// to `full`.
     ///
     /// It fails on any skipped version. A registry shape the normaliser cannot read is
     /// exactly what fixtures will not surface.
     #[cfg(not(coverage))]
     #[test]
-    #[ignore = "needs WAHAROA_NPM_CORPUS pointing at a directory of packuments"]
+    #[ignore = "needs a corpus directory of packuments; see the doc comment"]
     fn real_packuments_normalise_without_skipping_anything() {
+        use crate::env;
+        let environment = env::process();
         let corpora: Vec<(String, PackumentDetail)> = [
-            ("WAHAROA_NPM_CORPUS", PackumentDetail::Abbreviated),
-            ("WAHAROA_NPM_CORPUS_FULL", PackumentDetail::Full),
+            (environment.npm_corpus(), PackumentDetail::Abbreviated),
+            (environment.npm_corpus_full(), PackumentDetail::Full),
         ]
-        .iter()
-        .filter_map(|(var, detail)| std::env::var(var).ok().map(|dir| (dir, *detail)))
+        .into_iter()
+        .filter_map(|(dir, detail)| {
+            let dir = dir.unwrap_or_else(|e| panic!("{e}"))?;
+            Some((dir.to_string_lossy().into_owned(), detail))
+        })
         .collect();
         assert!(
             !corpora.is_empty(),
-            "set WAHAROA_NPM_CORPUS and/or WAHAROA_NPM_CORPUS_FULL to corpus directories"
+            "set {} and/or {} to corpus directories",
+            env::NPM_CORPUS,
+            env::NPM_CORPUS_FULL
         );
 
         for (dir, detail) in &corpora {
