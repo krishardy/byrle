@@ -119,7 +119,9 @@ pub fn policy(policy: &Policy, has_advisory_stream: bool) -> String {
     out.push_str("\nchecks\n");
     for check in Check::ALL {
         let state = match check {
-            Check::MaxCvss | Check::Kev | Check::KnownMalware if !has_advisory_stream => {
+            // No stream marks an advisory exploited, whether or not a store answers.
+            Check::Kev => "unenforced, no exploitation stream",
+            Check::MaxCvss | Check::KnownMalware if !has_advisory_stream => {
                 "unenforced, no advisory stream"
             }
             Check::CooldownDays if !policy.uses_cooldown() => "off",
@@ -282,6 +284,7 @@ mod tests {
         let facts = Facts {
             advisories: vec![Advisory {
                 id: "CVE-2024-1234".to_owned(),
+                aliases: Vec::new(),
                 cvss: 9.8,
                 kev: true,
             }],
@@ -332,7 +335,13 @@ mod tests {
         assert!(out.contains("max_cvss         7.5"), "{out}");
         assert!(out.contains("denials          1"), "{out}");
         assert!(out.contains("packages[0]  reviewed"), "{out}");
-        // With a stream, the advisory checks stop being unenforced.
+        // With a stream, the advisory checks stop being unenforced, except `kev`.
         assert!(!out.contains("no advisory stream"), "{out}");
+        assert!(out.contains("max_cvss          enforced"), "{out}");
+        assert!(out.contains("known_malware     enforced"), "{out}");
+        assert!(
+            out.contains("kev               unenforced, no exploitation stream"),
+            "{out}"
+        );
     }
 }

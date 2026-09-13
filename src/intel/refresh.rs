@@ -26,52 +26,63 @@ pub const MAX_RECORD_BYTES: u64 = 1 << 20;
 /// What a bundle's records came to.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Tally {
-    pub every_version: u64,
-    pub listed_versions: u64,
+    pub malware: u64,
+    pub scored: u64,
+    pub unscored: u64,
     pub withdrawn: u64,
-    pub not_malware: u64,
+    pub other_publisher: u64,
     pub no_npm_package: u64,
-    pub needs_range_evaluation: u64,
+    pub nothing_storable: u64,
+    /// Stored records with an entry or a range left out. Already counted above.
+    pub partly_stored: u64,
+    /// CVSS vectors that did not parse, across stored records.
+    pub unread_vectors: u64,
 }
 
 impl Tally {
     fn count(&mut self, parsed: &Parsed) {
         let slot = match parsed {
-            Parsed::Rows(rows) if rows.affected.iter().any(|a| a.version.is_none()) => {
-                &mut self.every_version
+            Parsed::Rows(rows) => {
+                self.partly_stored += u64::from(rows.unexpressed > 0);
+                self.unread_vectors += rows.unread_vectors as u64;
+                match (rows.malware, rows.cvss) {
+                    (true, _) => &mut self.malware,
+                    (false, Some(_)) => &mut self.scored,
+                    (false, None) => &mut self.unscored,
+                }
             }
-            Parsed::Rows(_) => &mut self.listed_versions,
             Parsed::Skipped(Skipped::Withdrawn) => &mut self.withdrawn,
-            Parsed::Skipped(Skipped::NotMalware) => &mut self.not_malware,
+            Parsed::Skipped(Skipped::OtherPublisher) => &mut self.other_publisher,
             Parsed::Skipped(Skipped::NoNpmPackage) => &mut self.no_npm_package,
-            Parsed::Skipped(Skipped::NeedsRangeEvaluation) => &mut self.needs_range_evaluation,
+            Parsed::Skipped(Skipped::NothingStorable) => &mut self.nothing_storable,
         };
         *slot += 1;
     }
 
     pub fn records(&self) -> u64 {
-        self.every_version
-            + self.listed_versions
+        self.malware
+            + self.scored
+            + self.unscored
             + self.withdrawn
-            + self.not_malware
+            + self.other_publisher
             + self.no_npm_package
-            + self.needs_range_evaluation
+            + self.nothing_storable
     }
 }
 
 impl std::fmt::Display for Tally {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         for (label, count) in [
-            ("stored: every version", self.every_version),
-            ("stored: listed versions", self.listed_versions),
+            ("stored: malware", self.malware),
+            ("stored: vulnerability, scored", self.scored),
+            ("stored: vulnerability, unscored", self.unscored),
             ("skipped: withdrawn", self.withdrawn),
-            ("skipped: not malware", self.not_malware),
+            ("skipped: other publisher", self.other_publisher),
             ("skipped: no npm package", self.no_npm_package),
-            (
-                "skipped: needs range evaluation",
-                self.needs_range_evaluation,
-            ),
+            ("skipped: nothing storable", self.nothing_storable),
             ("records", self.records()),
+            ("stored with something left out", self.partly_stored),
+            ("CVSS vectors unread", self.unread_vectors),
         ] {
             writeln!(f, "{label:32} {count:>8}")?;
         }
@@ -237,14 +248,12 @@ mod tests {
         assert_eq!(
             bundle.tally,
             Tally {
-                every_version: 3,
-                listed_versions: 2,
+                malware: 6,
                 withdrawn: 1,
-                needs_range_evaluation: 1,
                 ..Tally::default()
             }
         );
-        assert_eq!(bundle.rows.len(), 5);
+        assert_eq!(bundle.rows.len(), 6);
         assert_eq!(bundle.tally.records(), 7);
     }
 
@@ -326,23 +335,66 @@ mod tests {
     #[test]
     fn the_tally_prints_every_outcome_and_the_total() {
         let tally = Tally {
-            every_version: 2,
-            not_malware: 1,
+            malware: 2,
+            scored: 1,
+            unscored: 1,
+            other_publisher: 1,
             no_npm_package: 1,
-            ..Tally::default()
+            nothing_storable: 1,
+            withdrawn: 1,
+            partly_stored: 3,
+            unread_vectors: 5,
         };
         let text = tally.to_string();
-        assert!(
-            text.contains("stored: every version                   2\n"),
-            "{text}"
+        assert_eq!(
+            text,
+            "stored: malware                         2\n\
+             stored: vulnerability, scored           1\n\
+             stored: vulnerability, unscored         1\n\
+             skipped: withdrawn                      1\n\
+             skipped: other publisher                1\n\
+             skipped: no npm package                 1\n\
+             skipped: nothing storable               1\n\
+             records                                 8\n\
+             stored with something left out          3\n\
+             CVSS vectors unread                     5\n"
         );
-        assert!(
-            text.contains("skipped: no npm package                 1\n"),
-            "{text}"
-        );
-        assert!(
-            text.ends_with("records                                 4\n"),
-            "{text}"
+    }
+
+    #[test]
+    fn stored_records_are_tallied_by_kind_and_what_they_left_out() {
+        let mut tally = Tally::default();
+        let rows = |malware, cvss, unexpressed, unread_vectors| {
+            Parsed::Rows(Rows {
+                id: "X".to_owned(),
+                summary: None,
+                modified: None,
+                malware,
+                cvss,
+                unread_vectors,
+                aliases: Default::default(),
+                affected: Default::default(),
+                ranges: Default::default(),
+                unexpressed,
+            })
+        };
+        tally.count(&rows(true, Some(9.8), 0, 0));
+        tally.count(&rows(false, Some(9.8), 1, 2));
+        tally.count(&rows(false, None, 2, 1));
+        tally.count(&Parsed::Skipped(Skipped::OtherPublisher));
+        tally.count(&Parsed::Skipped(Skipped::NothingStorable));
+        assert_eq!(
+            tally,
+            Tally {
+                malware: 1,
+                scored: 1,
+                unscored: 1,
+                other_publisher: 1,
+                nothing_storable: 1,
+                partly_stored: 2,
+                unread_vectors: 3,
+                ..Tally::default()
+            }
         );
     }
 

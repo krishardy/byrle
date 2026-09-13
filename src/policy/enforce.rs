@@ -112,6 +112,13 @@ pub fn unenforceable(
                 why: "no intel store was consulted, so nothing was asked",
             }),
         );
+    } else {
+        // The store answers, and no stream it loads marks an advisory exploited: OSV
+        // carries no exploitation data and the KEV stream is not built.
+        out.push(Unenforceable {
+            check: Check::Kev,
+            why: "no exploitation stream is loaded, so no advisory is marked exploited",
+        });
     }
     out
 }
@@ -210,6 +217,7 @@ mod tests {
                 None,
                 crate::intel::store::Record {
                     advisory_id: "MAL-1".to_owned(),
+                    aliases: Vec::new(),
                     source: "osv".to_owned(),
                     cvss: None,
                     cvss_source: None,
@@ -217,6 +225,7 @@ mod tests {
                     malware: true,
                 },
             )],
+            ranges: Vec::new(),
         }
     }
 
@@ -247,9 +256,16 @@ mod tests {
     }
 
     #[test]
-    fn a_consulted_store_leaves_the_intel_checks_enforced() {
+    fn a_consulted_store_leaves_every_intel_check_but_kev_enforced() {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
-        assert!(unenforceable(&policy, &record(), None, Intel::Consulted).is_empty());
+        assert_eq!(
+            unenforceable(&policy, &record(), None, Intel::Consulted)
+                .iter()
+                .map(|u| u.check)
+                .collect::<Vec<_>>(),
+            [Check::Kev],
+            "a store that answers still has no exploitation data"
+        );
     }
 
     #[test]

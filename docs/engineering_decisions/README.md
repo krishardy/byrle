@@ -26,6 +26,7 @@ code, and the file names where.
 | [sqlx held at 0.8, RUSTSEC-2023-0071 accepted while `rsa` is not built](sqlx-0-8-and-rsa-advisory.md) | Implemented |
 | [Loading OSV malware records](osv-malware-load.md) | Implemented, `waharoa refresh` |
 | [Intel in decisions: one lookup per package, fail closed](intel-in-decisions.md) | Implemented |
+| [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |

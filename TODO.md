@@ -151,6 +151,8 @@ Items that I've added that are not stage-bound.
    `#[cfg(debug_assertions)]` (since `95c52b0`), and `src/proxy.rs:58` uses `crate::audit`
    unconditionally, so a release build fails with `could not find audit in the crate root`.
    `src/audit.rs` gives no reason for the gate.
+12. In make semgrep, also report on any semgrep exceptions (file, line # and line text)
+13. In the code, policy, documentation, etc. change from "CVE" to "VulnAdvisory". (Has CVE should instead be Has Vulnerability, etc.)
 
 ## Stage 1 — Pass-through proxy (transport)
 
@@ -1267,10 +1269,15 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `Advisory` from stored `Record`s, with `kev` from `exploited`. The score's source is
       not carried into `Advisory`.
 - [ ] `[!]` Common advisory record schema with alias set (CVE, GHSA, OSV, MAL IDs)
-- [~] `[!]` OSV.dev stream, lookup by PURL. npm `MAL-` records parse (`src/intel/osv.rs`)
-      and load (`PgIntel::replace_source`): 220,684 of 221,548 stored, 533 skipped for
-      needing range evaluation, 331 withdrawn. `waharoa refresh` fetches and loads them.
-      `docs/engineering_decisions/osv-malware-load.md`.
+- [~] `[!]` OSV.dev stream, lookup by PURL. npm `MAL-` and `GHSA-` records parse
+      (`src/intel/osv.rs`) and load (`PgIntel::replace_source`): all 221,217 non-withdrawn
+      `MAL-` and 7,028 of 7,052 `GHSA-`, with 10,326 range rows evaluated at lookup
+      (`src/intel/range.rs`). `waharoa refresh` fetches and loads them.
+      `docs/engineering_decisions/osv-malware-load.md`,
+      `docs/engineering_decisions/osv-ranges-and-scores.md`.
+      - [ ] 24 `GHSA-` records store nothing: every npm range holds a version that is not
+            SemVer 2.0, such as `13.0`. Reading them needs npm's own version ordering.
+      - [ ] A packument version that is not SemVer, such as `3.0.0rc1`, is in no range.
 - [x] `[!]` Choose the OSV fetch: `npm/all.zip`, read from memory with `zip` (`deflate-flate2`
       only). 228,951 single-record GETs was the alternative. `npm/modified_id.csv`, which
       lists every record's modified time, is left for an incremental refresh.
@@ -1280,11 +1287,24 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Wire the intel store into `Facts` (`known_malware`, `Intel::Consulted`) in the
       proxy, `explain` and `policy diff`. One `Intel::package` query per package.
       `enforce::artifact` and `enforce::unenforceable` take the intel state from the caller.
-- [ ] `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`. An
-      unscored advisory that is exploited would then be invisible to `kev`. No such record
-      is loaded today.
-- [ ] `explain --policy` reports `kev` and `max_cvss` as enforced once the store answers,
-      and the store holds no scores or exploitation data.
+- [ ] `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`. 688
+      `GHSA-` records carry no CVSS vector, only a `database_specific` severity band, and
+      `max_cvss` cannot fire for them. An unscored advisory that is exploited would also be
+      invisible to `kev`. No stream marks one exploited today.
+- [x] `explain --policy` reported `kev` and `max_cvss` as enforced once the store answered.
+      `max_cvss` now has 6,340 scored records to read. `kev` is reported
+      `unenforced, no exploitation stream`, in `explain --policy` and in every decision.
+- [x] `cve_ids` names a CVE, and OSV stores a GitHub advisory under its `GHSA-` id.
+      `Advisory::is_named` matches the id or any alias. 5,972 of 7,052 `GHSA-` records carry
+      a CVE alias.
+- [ ] `explain` prints every scored advisory against the version under a failed `max_cvss`,
+      including ones under the threshold and ones a `cve_ids` exception excused. Live:
+      `lodash@4.17.21` with `max_cvss: 7.0` and `cve_ids: [CVE-2021-23337]` prints
+      `GHSA-f23m-r3pf-42rh 6.5, GHSA-r5fr-rjxr-66jc 8.1, GHSA-xxjr-mmjv-4gpg 7.9`, and only
+      the 7.9 blocked it.
+- [ ] The snapshot id hashes the bundle bytes only. The malware-only loader and this one
+      stored different rows from the same bundle under the same id,
+      `sha256:cf3822e6036d97297ed303a25fd3330eab20d13671495aea49b5c435f0c3392f`.
 - [ ] `[!]` Deduplication across streams via alias reconciliation — before the policy
       engine, so one vuln never fires three rules. It also gates enrichment:
       `Finding::enriched_by` joins one id against one id, and OSV findings carry `GHSA-`

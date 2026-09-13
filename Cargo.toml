@@ -11,6 +11,8 @@ exclude = ["spikes/config-format"]
 axum = "0.8.9"
 base64 = "0.23.1"
 bytes = "1.12.1"
+# Turns the CVSS vectors OSV records carry into the numbers `max_cvss` compares. v3 and v4.
+cvss = { version = "2.2.0", default-features = false, features = ["std", "v3", "v4"] }
 flate2 = "1.1.10"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 jiff = "0.2.35"
@@ -20,6 +22,9 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = { version = "1.2", default-features = false, features = ["deserialize"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
+# Orders the versions in OSV `SEMVER` ranges. SemVer 2.0 ignores build metadata and this crate
+# compares it, so it is stripped before comparing; see src/intel/range.rs.
+semver = "1.0.28"
 # Postgres only, and rustls rather than native-tls so there is one TLS stack in the tree.
 # `macros` is what checks SQL against the real schema at compile time; see
 # docs/engineering_decisions/storage-sqlx-postgres.md.

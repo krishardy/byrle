@@ -2427,6 +2427,7 @@ mod tests {
                     None,
                     crate::intel::store::Record {
                         advisory_id: "MAL-1".to_owned(),
+                        aliases: Vec::new(),
                         source: "osv".to_owned(),
                         cvss: None,
                         cvss_source: None,
@@ -2434,6 +2435,7 @@ mod tests {
                         malware: true,
                     },
                 )],
+                ranges: Vec::new(),
             },
         ))))
     }

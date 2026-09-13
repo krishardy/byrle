@@ -15,7 +15,7 @@ the intel store:
 | Store | Proxy answers | `known_malware`, `kev`, `max_cvss` |
 |---|---|---|
 | not configured | as before | dropped as unenforceable, and reported so |
-| answers | decides with what the store knows | enforced |
+| answers | decides with what the store knows | `known_malware` and `max_cvss` enforced. `kev` dropped as unenforceable: no stream marks an advisory exploited |
 | holds no snapshot | 503 | not reached |
 | errors | 503 | not reached |
 
@@ -47,8 +47,9 @@ between them.
 
 `Facts::with_intel` sets `known_malware` from the malware rows and `intel` to `Consulted`.
 `Advisory::cvss` is `f64`, so a record with no score is left out of `advisories` rather than
-entered as 0.0. Every record the store holds today is an unscored `MAL-` record, so `kev` and
-`max_cvss` have nothing to read.
+entered as 0.0. `advisories` holds the scored `GHSA-` records for the version, each with its
+aliases so a `cve_ids` exception can name it by CVE. See
+[osv-ranges-and-scores](osv-ranges-and-scores.md).
 
 `enforce::artifact` and `enforce::unenforceable` take the intel state from the caller. Before
 this they rebuilt facts from the record alone, which always read `NotConsulted`.
