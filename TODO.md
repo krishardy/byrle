@@ -1019,7 +1019,18 @@ of them produced findings that outlived the code.
 
 Each is a setting, an exception shape, and an intel source. None exists yet.
 
-- [ ] `[!]` `denials`, explicitly forbidden packages. Exact version, no exception.
+- [~] `[!]` `denials`, explicitly forbidden packages. Exact version, no exception.
+      Decided in `decide.rs`, turned into a refusal in `policy/enforce.rs`. Not yet wired
+      into the proxy.
+      - [x] **Matched by parsing the purl, not by comparing the written form.**
+            `pkg:npm/%40babel/core@1.0.0` and `pkg:npm/@babel/core@1.0.0` are the same
+            package, and the first is what this codebase's own `Display` emits and what
+            OSV publishes. String comparison made a denial spelled the canonical way never
+            fire, while the same spelling in a `packages` selector matched, because
+            `selector::decompose` was already parsing. Denials now use it too.
+      - [x] **A denial naming no version does not load.** It would match nothing and read
+            as a package that had been dealt with. `PolicyError::DenialNeedsAVersion` says
+            what to write instead.
 - [ ] `[!]` Known malware. Not configurable and not exceptable: behaviour, not policy.
       Needs a `malware`-capable stream, which is gated separately below.
 - [~] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
@@ -1062,8 +1073,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       versions, where the same score falls in different ones under v2 and v3. Exceptions
       are per CVE id (`cve_ids`), not per package, which is the only exception keyed by
       something other than the package.
-- [ ] `[!]` `install_scripts`. `block` or `allow`. Global setting, asked of every
+- [~] `[!]` `install_scripts`. `block` or `allow`. Global setting, asked of every
       ecosystem, reporting not-applicable where the ecosystem has no install step.
+      Decided and turned into a refusal; not yet wired into the proxy. Measured to be
+      silent in normal operation: 0 of 138 packages in a real `express + eslint` tree
+      declare one.
 
 ### Package tier
 

@@ -277,7 +277,7 @@ fn intersects<T: PartialEq>(value: Option<&T>, other: Option<&T>) -> bool {
 /// because a policy may name an ecosystem no adapter exists for. That is the same
 /// decision the floor check and the not-applicable table already make: what the document
 /// says and what this build serves are separate questions.
-fn decompose(purl: &str) -> Result<(String, String, Option<String>), SelectorError> {
+pub(super) fn decompose(purl: &str) -> Result<(String, String, Option<String>), SelectorError> {
     use purl::GenericPurl;
     use std::str::FromStr as _;
 

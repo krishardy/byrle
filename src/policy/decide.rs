@@ -253,8 +253,18 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
     match check {
         // No exception branch: a denial is absolute.
         Check::Denials => {
+            // Parsed, not string-compared. `pkg:npm/%40babel/core@1.0.0` and
+            // `pkg:npm/@babel/core@1.0.0` are the same package, and the first is what
+            // this codebase's own `Display` emits and what OSV publishes. Comparing the
+            // written forms made a denial spelled the canonical way never fire, while the
+            // same spelling in a `packages` selector matched: `selector::decompose` was
+            // already parsing, and this now uses it.
             let denied = policy.denials.iter().any(|d| {
-                d.purl == format!("pkg:{}/{}@{}", facts.ecosystem, facts.name, facts.version)
+                super::selector::decompose(&d.purl).is_ok_and(|(ecosystem, name, version)| {
+                    ecosystem == facts.ecosystem
+                        && name == facts.name
+                        && version.as_deref() == Some(facts.version.as_str())
+                })
             });
             if denied {
                 Outcome::Failed(Action::Block)
