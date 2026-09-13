@@ -51,7 +51,17 @@ It is one query, `jsonb_each` over the newest `intel_snapshot.streams`. `taken_a
 reported in UTC to the second. A stream recorded with no `sha256` is left out; refresh
 writes one for every stream.
 
+## `waharoa doctor`
+
+`doctor` reads the endpoint after the health request answers:
+
+| `intel` | Finding |
+|---|---|
+| `loaded` | ok, with the snapshot digest and `taken_at` |
+| `not_consulted` | WARN: `known_malware` and `max_cvss` are not enforced |
+| `empty`, `unavailable` | PROBLEM: every package request is answered 503 |
+| nothing readable | WARN: a proxy older than the endpoint |
+
 ## Not built
 
-- `waharoa doctor` does not read the endpoint.
 - The 503 on a package request still gives no cause and sends no `Retry-After`.
