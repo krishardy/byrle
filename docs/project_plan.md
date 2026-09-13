@@ -266,7 +266,7 @@ one transaction. See [osv-malware-load](engineering_decisions/osv-malware-load.m
 id contain the same rows, whichever bundles they were read from. Refresh writes it to
 `intel_snapshot` and every proxy reads it from there. Postgres keeps the latest load only.
 `waharoa refresh` also keeps each snapshot as files of the rows the id hashes, which
-`policy diff --snapshot` and air-gapped export will read. See [snapshot-identity](engineering_decisions/snapshot-identity.md).
+`policy diff --snapshot` reads and air-gapped export will read. See [snapshot-identity](engineering_decisions/snapshot-identity.md).
 
 **Cold start fails closed, with 503 — never 403.** A 403 during warming looks like a
 policy violation for a package that is fine, which costs trust immediately. A readiness

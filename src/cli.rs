@@ -81,8 +81,8 @@ pub struct Diff {
     /// Judge both policies as of this date [default: today, UTC]
     #[arg(long, value_name = "YYYY-MM-DD")]
     pub as_of: Option<jiff::civil::Date>,
-    /// Accepted so it can be refused by name: nothing pins a snapshot yet
-    #[arg(long, hide = true, value_name = "ID")]
+    /// Judge both against this kept intel snapshot, not the store's latest load
+    #[arg(long, value_name = "ID")]
     pub snapshot: Option<String>,
 }
 
@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn a_hidden_snapshot_is_still_parsed_so_it_can_be_refused() {
+    fn a_snapshot_id_is_taken_as_given() {
         let parsed = diff(&["policy", "diff", "a", "b", "--snapshot", "sha256:x"]).expect("parses");
         assert_eq!(parsed.snapshot.as_deref(), Some("sha256:x"));
     }

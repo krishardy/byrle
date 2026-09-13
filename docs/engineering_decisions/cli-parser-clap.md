@@ -65,8 +65,9 @@ than lexopt, all from the clap-rs project.
 
 - **No wrapping and no colour.** `wrap_help` and `color` are off, so each command's summary is
   kept to one short line, and the environment section is wrapped by hand.
-- **`--snapshot` is a hidden argument.** It is parsed so `policy diff` can refuse it with its own
-  reason (`--snapshot pins nothing yet`) rather than clap's `unexpected argument`.
+- **`--snapshot` was hidden until 2026-09-14.** It was parsed so `policy diff` could refuse it
+  with its own reason rather than clap's `unexpected argument`. It is listed now that
+  [snapshot-identity](snapshot-identity.md) keeps snapshots it can read.
 - **Help is pinned by golden files.** `tests/fixtures/cli/help.txt`, `explain.txt` and
   `policy-diff.txt`, rewritten with `WAHAROA_BLESS=1`. They are rendered by a debug build and show
   `WAHAROA_DEFER_TEST`, which a release build omits.

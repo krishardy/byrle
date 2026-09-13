@@ -8,4 +8,5 @@ Arguments:
 
 Options:
       --as-of <YYYY-MM-DD>  Judge both policies as of this date [default: today, UTC]
+      --snapshot <ID>       Judge both against this kept intel snapshot, not the store's latest load
   -h, --help                Print help
