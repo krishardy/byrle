@@ -11,7 +11,7 @@
 #   3. every one of them was normalized to a PURL, at the version on disk
 #   4. every tarball's digest was known before the fetch and verified on the way past
 #   5. `npm ci`, which requests no packuments at all, still verifies every artifact
-#   6. a hardcoded block returns 403 and fires before any tarball is fetched
+#   6. policy filters a denied version on resolution and refuses it on a pinned fetch
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -41,7 +41,7 @@ fi
 fail() { echo "FAIL: $*"; echo "--- proxy log ---"; cat "$log"; exit 1; }
 
 start_proxy() {
-    WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_BLOCK="${1:-}" \
+    WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_POLICY="${1:-}" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
@@ -171,19 +171,43 @@ ci_fetched="$(grep -c 'on our own behalf' "$clean_log" || true)"
 echo "    ok ($ci_tarballs tarballs, $ci_fetched packuments fetched by the proxy, all verified)"
 stop_proxy
 
-echo "==> 6/6  hardcoded block returns 403 before any tarball is fetched"
-# `ms` is a transitive dependency of `debug`, never a direct install target, so this
-# also proves the block reaches packages the user never named.
-start_proxy "ms"
-if npm_install "$workdir/blocked" debug >/dev/null 2>&1; then
-    fail "install succeeded but should have been blocked"
+echo "==> 6/6  policy refuses a version, both ways decision #4 says it should"
+# `ms` is a transitive dependency of `debug`, never a direct install target, so this also
+# proves policy reaches packages the user never named. 2.1.3 is a long-published version,
+# so the denial names something the registry really serves.
+cat >"$workdir/deny.yaml" <<'YAML'
+version: 1
+cooldown_days: 0
+denials:
+  - purl: pkg:npm/ms@2.1.3
+    reason: smoke test, so the refusal is a real policy answer and not a hardcoded one
+YAML
+start_proxy "$workdir/deny.yaml"
+
+# On resolution: the version is gone from the document, and the answer is still a 200.
+# A 4xx here would read as a broken registry to every client.
+packument_status=$(curl -s -o "$workdir/ms.json" -w '%{http_code}' "http://127.0.0.1:${port}/ms")
+[[ "$packument_status" == "200" ]] \
+    || fail "filtering answered $packument_status; it has to be a 200 with fewer versions"
+if python3 -c "import json,sys; sys.exit(0 if '2.1.3' in json.load(open(sys.argv[1]))['versions'] else 1)" \
+    "$workdir/ms.json"; then
+    fail "the denied version is still in the packument, so a resolver can still pick it"
 fi
-sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -q 'blocked.*path=/ms.*status=403.*purl=pkg:npm/ms' \
-    || fail "no 403 recorded for the blocked package"
-if sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -qE 'proxied.*path=/ms/-/'; then
-    fail "a tarball for the blocked package was fetched; the block came too late"
+python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if len(d['versions'])>0 else 1)" \
+    "$workdir/ms.json" || fail "every version was removed; only 2.1.3 is denied"
+
+# On a pinned fetch: there is no resolution left to influence, so it refuses.
+tarball_status=$(curl -s -o "$workdir/ms.out" -w '%{http_code}' \
+    "http://127.0.0.1:${port}/ms/-/ms-2.1.3.tgz")
+[[ "$tarball_status" == "403" ]] || fail "pinned fetch of a denied version answered $tarball_status"
+grep -q 'pkg:npm/ms@2.1.3' "$workdir/ms.out" \
+    || fail "the refusal does not name the package it refused"
+grep -q 'denials' "$workdir/ms.out" || fail "the refusal does not say which check fired"
+
+if sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -qE 'proxied.*path=/ms/-/ms-2\.1\.3\.tgz'; then
+    fail "the denied artifact was fetched upstream; the refusal came too late"
 fi
-echo "    ok (403 on the packument, no tarball fetched)"
+echo "    ok (filtered on resolution, 403 on the pinned fetch, artifact never fetched)"
 
 echo
 echo "PASS: Stage 1 proxy behaves as the exit criterion requires."

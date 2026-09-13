@@ -14,7 +14,7 @@ use tracing::{info, warn};
 use waharoa::defer::DeferTest;
 use waharoa::doctor;
 use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
-use waharoa::identity::{Ecosystem, PackageKey};
+
 use waharoa::npm;
 use waharoa::policy::{Policy, packages};
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
@@ -57,7 +57,6 @@ Proxy configuration, all through the environment:
                                     \"default=403,npm/pnpm=451\" (default 403)
   WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot
                                     see, instead of removing them from the packument
-  WAHAROA_BLOCK                     THROWAWAY: refuse one package by name
 ";
 
 /// The deferral knob is not compiled into a release binary, so a release binary does not
@@ -405,17 +404,6 @@ async fn main() -> std::process::ExitCode {
             .expect("failed to build upstream HTTP client"),
     };
 
-    let blocked = std::env::var("WAHAROA_BLOCK")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(|name| {
-            PackageKey::from_registry_name(Ecosystem::Npm, &name)
-                .unwrap_or_else(|e| panic!("WAHAROA_BLOCK={name} is not a package name: {e}"))
-        });
-    if let Some(key) = &blocked {
-        info!(package = %key, "THROWAWAY hardcoded block active (Stage 1 interception proof)");
-    }
-
     let max_packument_bytes = std::env::var("WAHAROA_MAX_PACKUMENT_BYTES")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -533,7 +521,6 @@ async fn main() -> std::process::ExitCode {
         .unwrap_or_else(|e| panic!("origin configuration: {e}"))
         .with_max_concurrent_packuments(max_concurrent)
         .with_policy(policy)
-        .with_blocked(blocked)
         .with_max_packument_bytes(max_packument_bytes)
         .with_max_records(max_records)
         .with_max_verified(max_verified)
