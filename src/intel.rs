@@ -40,6 +40,7 @@ pub mod osv;
 pub mod postgres;
 pub mod range;
 pub mod refresh;
+pub mod snapshot_dir;
 pub mod store;
 
 use std::collections::{BTreeMap, BTreeSet};

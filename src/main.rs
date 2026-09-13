@@ -576,7 +576,7 @@ async fn package_intel(
 /// Connect, migrate, fetch, load, exit. Nothing is written unless every record in the bundle
 /// reads, so a broken bundle leaves the previous load in place.
 async fn run_refresh() -> std::process::ExitCode {
-    use waharoa::intel::{load, osv, postgres::PgIntel, refresh};
+    use waharoa::intel::{load, osv, postgres::PgIntel, refresh, snapshot_dir::SnapshotDir};
 
     let Some(url) = or_exit(env::process().database_url()) else {
         eprintln!(
@@ -586,6 +586,21 @@ async fn run_refresh() -> std::process::ExitCode {
         return std::process::ExitCode::from(2);
     };
     let started = std::time::Instant::now();
+
+    // Opened before the fetch, so a second refresh into the same directory waits here rather
+    // than after downloading.
+    let limit = or_exit(env::process().snapshot_limit());
+    let kept = match or_exit(env::process().snapshot_dir())
+        .as_deref()
+        .map(SnapshotDir::open)
+        .transpose()
+    {
+        Ok(kept) => kept,
+        Err(e) => {
+            eprintln!("waharoa refresh: {}: {e}", env::SNAPSHOT_DIR);
+            return std::process::ExitCode::from(1);
+        }
+    };
 
     let http = match reqwest::Client::builder()
         .user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")))
@@ -624,6 +639,16 @@ async fn run_refresh() -> std::process::ExitCode {
     };
     drop(bytes);
 
+    // Written before the load, so a snapshot Postgres records never lacks its rows here. Rows
+    // left by a load that then fails are removed by the next prune.
+    let encoded = load::encode(osv::SOURCE, &bundle.rows);
+    if let Some(kept) = &kept
+        && let Err(e) = kept.write_rows(&encoded)
+    {
+        eprintln!("waharoa refresh: nothing loaded: {e}");
+        return std::process::ExitCode::from(1);
+    }
+
     let intel = match sqlx::PgPool::connect(&url).await {
         Ok(pool) => PgIntel::new(pool),
         Err(e) => {
@@ -635,10 +660,7 @@ async fn run_refresh() -> std::process::ExitCode {
         eprintln!("waharoa refresh: {e}");
         return std::process::ExitCode::from(1);
     }
-    let loaded = match intel
-        .replace_source(osv::SOURCE, &bundle.rows, &fetch)
-        .await
-    {
+    let loaded = match intel.replace_encoded(&encoded, &bundle.rows, &fetch).await {
         Ok(loaded) => loaded,
         Err(e) => {
             eprintln!("waharoa refresh: nothing loaded: {e}");
@@ -652,6 +674,22 @@ async fn run_refresh() -> std::process::ExitCode {
     println!("{:32} {:>8}", "affected rows written", loaded.affected);
     println!("{:32} {:>8}", "ranges written", loaded.ranges);
     println!("snapshot {}", loaded.snapshot);
+    if let Some(kept) = kept {
+        match kept
+            .write_snapshot(&loaded.manifest)
+            .and_then(|path| Ok((path, kept.prune(limit)?)))
+        {
+            Ok((path, pruned)) => {
+                println!("{:32} {}", "snapshot file", path.display());
+                println!("{:32} {:>8}", "snapshot files removed", pruned.snapshots);
+                println!("{:32} {:>8}", "rows files removed", pruned.rows);
+            }
+            Err(e) => {
+                eprintln!("waharoa refresh: loaded, but the snapshot file is not written: {e}");
+                return std::process::ExitCode::from(1);
+            }
+        }
+    }
     println!("took {:.1}s", started.elapsed().as_secs_f64());
     std::process::ExitCode::SUCCESS
 }

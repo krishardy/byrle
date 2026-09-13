@@ -1238,10 +1238,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Evaluate two policies against a real package set. `src/policy/diff.rs`,
       `waharoa policy diff <from> <to>`.
 - [~] `[!]` Pin `--snapshot` so policy changes are not conflated with intel changes.
-      The flag is refused rather than accepted. Postgres keeps only the latest snapshot, so
-      there is no older one to select. Next: `waharoa refresh` writes each load's
-      `load::encode` bytes to a snapshot file, with a retention, and `--snapshot` reads one.
-      See `docs/engineering_decisions/snapshot-identity.md`.
+      The flag is refused rather than accepted. Postgres keeps only the latest snapshot.
+      `waharoa refresh` now also keeps each snapshot in `WAHAROA_SNAPSHOT_DIR`
+      (`src/intel/snapshot_dir.rs`, 30 by default). Next: `--snapshot` reads one, which needs
+      a decoder for `load::encode` and an `Intel` over the decoded rows. See
+      `docs/engineering_decisions/snapshot-identity.md`.
 - [~] `[!]` Package set from lockfiles **and** from the audit log. The audit log is read
       (`audit::packages`): a `pinned` line names one version, a `resolution` line names
       every version it removed. Lockfiles are not read yet.

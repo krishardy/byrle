@@ -343,7 +343,9 @@ fn id_of(sources: &[(&str, &[Rows])]) -> String {
         .iter()
         .map(|(source, rows)| (*source, load::encode(source, rows).digest))
         .collect();
-    load::snapshot_id(digests.iter().map(|(s, d)| (*s, d.as_str())))
+    load::snapshot_id(&load::manifest(
+        digests.iter().map(|(s, d)| (*s, d.as_str())),
+    ))
 }
 
 async fn snapshots(intel: &PgIntel) -> i64 {
@@ -377,6 +379,12 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
             affected: 1,
             ranges: 0,
             snapshot: id_of(&[(osv::SOURCE, std::slice::from_ref(&rows))]),
+            manifest: load::manifest([(
+                osv::SOURCE,
+                load::encode(osv::SOURCE, std::slice::from_ref(&rows))
+                    .digest
+                    .as_str()
+            )]),
         }
     );
 
@@ -615,7 +623,10 @@ async fn a_refresh_waits_for_another_sources_uncommitted_digest() {
     let ours = load::encode(osv::SOURCE, &rows).digest;
     assert_eq!(
         loaded.snapshot,
-        load::snapshot_id([(osv::SOURCE, ours.as_str()), ("other", "sha256:other")])
+        load::snapshot_id(&load::manifest([
+            (osv::SOURCE, ours.as_str()),
+            ("other", "sha256:other")
+        ]))
     );
 }
 

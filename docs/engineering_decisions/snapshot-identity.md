@@ -1,9 +1,10 @@
 # Snapshot identity
 
-- **Status:** Implemented 2026-09-14 for the id. Snapshot files, `policy diff --snapshot` and
-  import are not written yet. `load::encode` and `load::snapshot_id` in `src/intel/load.rs`,
-  `PgIntel::replace_source` in `src/intel/postgres.rs`, `intel_source` in
-  `migrations/0001_intel.sql` (rewritten).
+- **Status:** Implemented 2026-09-14: the id, and the snapshot files `waharoa refresh` writes.
+  `policy diff --snapshot` and import do not read the files yet. `load::encode`,
+  `load::manifest` and `load::snapshot_id` in `src/intel/load.rs`, `PgIntel::replace_encoded`
+  in `src/intel/postgres.rs`, `intel_source` in `migrations/0001_intel.sql` (rewritten),
+  `SnapshotDir` in `src/intel/snapshot_dir.rs`.
 - **Related:** [osv-malware-load](osv-malware-load.md),
   [osv-ranges-and-scores](osv-ranges-and-scores.md),
   [intel-schema-keys-and-types](intel-schema-keys-and-types.md),
@@ -94,11 +95,45 @@ in the 7 days before its newest entry, and 4,608 (2.01%) in 30 days.
 |---|---|---|---|
 | A full copy per snapshot in Postgres | 98 MB | every index gains a snapshot column | no |
 | Advisory rows shared across snapshots, and a membership table | about 0.7% new rows a week, and 228,245 membership rows per snapshot (size not measured) | every lookup joins the membership table | no |
-| Postgres keeps the latest load; each load is also written as a file of the encoding | 4.4 MB with zstd -19 | unchanged | yes |
+| Postgres keeps the latest load; each load is also written as files of the encoding | 5,577,231 bytes with `flate2` gzip, live | unchanged | yes |
 
-A snapshot file contains each source's encoding, so `--snapshot` and export read one format. An import
-checks a file by hashing each source's encoding, then the `source digest` lines. Retention is
-deleting files.
+gzip rather than zstd: `flate2` is already a dependency, and the `zip` features in
+`Cargo.toml` leave zstd out on purpose. It costs 1.1 MB per snapshot against `zstd -19`.
+
+## Snapshot directory
+
+With `WAHAROA_SNAPSHOT_DIR` set, `waharoa refresh` keeps each snapshot there. Every file is
+named by the sha256 of what it contains:
+
+| File | Contains |
+|---|---|
+| `<hex>.rows.gz` | one source's `load::encode` output, gzipped. `<hex>` is `intel_source.digest` |
+| `<hex>.snapshot` | `load::manifest`: one `source digest` line per source. `<hex>` is the snapshot id |
+
+A snapshot is its manifest and the rows files it names, so a source whose rows did not change is
+one file shared by every snapshot that has it. Reading a file checks its contents against its
+name. An import will check a snapshot the same way.
+
+| Step | When | If it fails |
+|---|---|---|
+| Lock `.lock` in the directory | before the fetch, held until exit | exit 1, nothing fetched |
+| Write this source's rows file | after the bundle is read, before the load | exit 1, nothing loaded |
+| Load into Postgres | as before | exit 1, previous load in place. The rows file stays until a prune |
+| Write the manifest | after the load commits, once every rows file it names exists | exit 1, and Postgres has a snapshot the directory does not |
+| Prune | after the manifest | exit 1 |
+
+Rows are written before the load so a snapshot in Postgres never names rows the directory
+lacks because of this refresh. A rows file from another source that was loaded before the
+directory was set is reported by name, and refreshing that source writes it. Each file is
+written to `<name>.partial`, flushed, and renamed, so a crash leaves no truncated file under a
+real name; a prune removes `.partial` files.
+
+The lock serializes refreshes into one directory. Without it, a prune could remove the rows
+file another refresh had written and not yet named in a manifest.
+
+`WAHAROA_SNAPSHOT_LIMIT`, default 30, is the most manifests the directory keeps. A prune
+keeps the newest by modification time and removes the rest. A manifest loaded again is written again, so it counts as the newest.
+Rows files that no kept manifest names are removed. Other files are left alone.
 
 ## Migration
 
@@ -110,8 +145,7 @@ recreated.
 
 | Item | Where |
 |---|---|
-| `waharoa refresh` writes each load's encoding to a file, with a retention | TODO.md, `--snapshot` under `waharoa policy diff` |
-| `policy diff --snapshot` reads a file | the same item |
+| `policy diff --snapshot` reads a snapshot directory | TODO.md, `--snapshot` under `waharoa policy diff` |
 | Export and import | TODO.md Stage 5, offline and air-gapped mode |
 
 ## Evidence
@@ -138,6 +172,30 @@ intel_source    osv  sha256:dad3f11d255aa4b00a3819d9c9631b101e7fa9a2daeb64d86879
 One row in each. The same load took 46.9s and 49.4s under the bundle-digest id
 ([intel-schema-keys-and-types](intel-schema-keys-and-types.md)).
 
+With `WAHAROA_SNAPSHOT_DIR` set, the same bundle, debug build. The first run took 51.9s; later
+runs shared the machine with a test run and are not timings.
+
+```
+snapshot sha256:225131ada035512e110d0c18f027cb1832a200dfc231df294931e518d36c40b9
+snapshot file                    .../kept-live/225131ada035512e110d0c18f027cb1832a200dfc231df294931e518d36c40b9.snapshot
+snapshot files removed                  0
+rows files removed                      0
+```
+
+The directory after a second run, and each file's contents hashed:
+
+```
+      76  225131ada035512e110d0c18f027cb1832a200dfc231df294931e518d36c40b9.snapshot
+ 5577231  dad3f11d255aa4b00a3819d9c9631b101e7fa9a2daeb64d86879014210b16ee5.rows.gz
+dad3f11d...b16ee5.rows.gz contents sha256 dad3f11d255aa4b00a3819d9c9631b101e7fa9a2daeb64d86879014210b16ee5
+225131ad...c40b9.snapshot contents sha256 225131ada035512e110d0c18f027cb1832a200dfc231df294931e518d36c40b9
+osv sha256:dad3f11d255aa4b00a3819d9c9631b101e7fa9a2daeb64d86879014210b16ee5
+```
+
+An older snapshot and its rows were then placed in the directory, dated a day earlier, and
+the refresh run again with `WAHAROA_SNAPSHOT_LIMIT=1`. It printed `snapshot files removed 1`
+and `rows files removed 1`, and left the two files above.
+
 Each mutation below was caught:
 
 | Mutation | Caught by |
@@ -151,3 +209,19 @@ Each mutation below was caught:
 | Sources not sorted before hashing | `a_snapshot_id_is_the_same_for_sources_in_any_order_and_changes_with_any_digest` |
 | No lock on `intel_source` | `a_refresh_waits_for_another_sources_uncommitted_digest` |
 | Id from the loaded source's digest only | `the_snapshot_id_covers_every_source_in_the_store`, `a_refresh_waits_for_another_sources_uncommitted_digest` |
+
+The snapshot directory, each caught:
+
+| Mutation | Caught by |
+|---|---|
+| Rows rewritten when already kept | `rows_already_kept_are_not_written_again` |
+| Manifest written with a rows file missing | `a_snapshot_naming_rows_not_kept_is_not_written` |
+| Manifest not checked against its id | `a_file_whose_contents_do_not_hash_to_its_name_is_refused` |
+| Rows not checked against their digest | the same |
+| No lock | `a_second_open_waits_until_the_first_is_dropped` |
+| Oldest kept instead of newest | `prune_keeps_the_newest_snapshots_and_only_the_rows_they_name`, `a_snapshot_written_again_is_the_newest` |
+| Rows no kept manifest names left in place | `prune_keeps_the_newest_snapshots_and_only_the_rows_they_name` |
+| `.partial` files left in place | the same |
+| A digest longer than 64 digits, or with letters past `f`, made into a path | `a_value_that_is_not_a_digest_never_becomes_a_path` |
+| `.partial` never renamed | 6 tests, `a_load_is_kept_as_rows_named_by_digest_and_a_snapshot_named_by_id` among them |
+| `WAHAROA_SNAPSHOT_LIMIT=0` accepted | `a_value_that_does_not_parse_is_an_error_naming_the_variable_and_the_value` |

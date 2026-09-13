@@ -4,7 +4,7 @@
 //! `sqlx::query_as!`. A renamed column or a changed type is a compile error rather than a
 //! runtime one. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
 
-use super::load::{self, Fetch};
+use super::load::{self, Encoded, Fetch};
 use super::osv::Rows;
 use super::range::Interval;
 use super::refresh::StreamDigest;
@@ -25,6 +25,8 @@ pub struct Loaded {
     pub ranges: u64,
     /// The snapshot id. See [`load::snapshot_id`].
     pub snapshot: String,
+    /// What the snapshot id is the digest of. See [`load::manifest`].
+    pub manifest: String,
 }
 
 /// The advisory mirror.
@@ -78,7 +80,20 @@ impl PgIntel {
         rows: &[Rows],
         fetch: &Fetch,
     ) -> Result<Loaded, IntelError> {
-        let encoded = load::encode(source, rows);
+        self.replace_encoded(&load::encode(source, rows), rows, fetch)
+            .await
+    }
+
+    /// [`PgIntel::replace_source`] with the rows already encoded, so `waharoa refresh` can
+    /// write the same bytes to a snapshot file without encoding twice. `encoded` has to be
+    /// `rows` encoded.
+    pub async fn replace_encoded(
+        &self,
+        encoded: &Encoded,
+        rows: &[Rows],
+        fetch: &Fetch,
+    ) -> Result<Loaded, IntelError> {
+        let source = encoded.source.as_str();
         let mut tx = self.pool.begin().await.map_err(IntelError::Backend)?;
 
         // SHARE ROW EXCLUSIVE conflicts with itself and with any write to the table, and not
@@ -127,11 +142,12 @@ impl PgIntel {
             .fetch_all(&mut *tx)
             .await
             .map_err(IntelError::Backend)?;
-        let snapshot = load::snapshot_id(
+        let manifest = load::manifest(
             sources
                 .iter()
                 .map(|s| (s.source.as_str(), s.digest.as_str())),
         );
+        let snapshot = load::snapshot_id(&manifest);
         // With no stream recorded, the aggregate is NULL and the column is not.
         sqlx::query!(
             "INSERT INTO intel_snapshot (digest, taken_at, streams) \
@@ -153,6 +169,7 @@ impl PgIntel {
             affected,
             ranges,
             snapshot,
+            manifest,
         })
     }
 }

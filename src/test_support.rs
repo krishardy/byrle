@@ -1,5 +1,14 @@
 //! Helpers for unit tests in more than one module.
 
+/// An empty directory for one test. `label` has to differ between the tests that call this,
+/// because the directory is emptied first.
+pub fn tempdir(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("waharoa-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a temporary directory should be creatable");
+    dir
+}
+
 /// The address of a server that accepts each connection and closes it without a response.
 ///
 /// For tests that need an upstream that sends nothing. Binding a port and dropping the
