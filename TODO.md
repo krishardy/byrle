@@ -196,8 +196,10 @@ implementations.
             network fault. `TrustError::Empty` refuses both.
 - [x] Serve `npm install lodash` successfully through the proxy. Covered by `make smoke-npm`.
 - [x] Block one hardcoded package name with HTTP 403, proving interception. Throwaway, and
-      kept deliberately awkward: it is env-only (`WAHAROA_BLOCK`), with no config file
-      behind it, so it cannot quietly become a feature. Stage 2 replaces it.
+      kept deliberately awkward: it was env-only (`WAHAROA_BLOCK`), with no config file
+      behind it, so it could not quietly become a feature. **Removed in Stage 2**, which
+      replaced it with the policy engine. `make smoke-npm` 6/6 now proves interception
+      against a real denial instead.
 - [x] Confirm transitive deps are also intercepted, not just top-level. `npm install
       express` pulls 66 packages and every one was fetched through the proxy at both the
       metadata and tarball leg. The block test goes further: `ms` is blocked while
@@ -1034,9 +1036,13 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] **Enforced on a pinned artifact fetch**, verified against the real registry:
             403 with the reason for the denied version, 200 for another version of the
             same package.
-      - [ ] `[!]` Resolution-path filtering, so a refused version is dropped from the
-            packument and the resolver picks a clean one. Until it lands, a denial only
-            bites a client that already pinned the version.
+      - [x] `[!]` **Resolution-path filtering**, so a refused version is dropped from the
+            packument and the resolver picks a clean one. A 200 with fewer versions, never
+            a 4xx. Shares one pass with the origin filter, because both remove from the
+            same `versions` map and both leave a `dist-tags` entry pointing at nothing.
+      - [x] **The throwaway hardcoded block is gone.** `make smoke-npm` 6/6 proves
+            interception against a real denial, both halves of decision #4 at once:
+            filtered on resolution, 403 on the pinned fetch, artifact never fetched.
 - [ ] `[!]` Known malware. Not configurable and not exceptable: behaviour, not policy.
       Needs a `malware`-capable stream, which is gated separately below.
 - [~] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its

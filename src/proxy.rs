@@ -54,6 +54,7 @@ use crate::http::{
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
+use std::collections::HashSet;
 use crate::policy::{Policy, enforce};
 use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
@@ -193,10 +194,6 @@ pub struct Proxy {
     refuse_unservable: bool,
     /// Upstream registry base, no trailing slash.
     upstream: String,
-    /// THROWAWAY. One hardcoded package, to prove interception happens before anything
-    /// is fetched. Stage 2 replaces this with the policy engine; there is deliberately
-    /// no config file behind it, so it cannot quietly become a feature.
-    blocked: Option<PackageKey>,
     /// The policy, when one is configured. `None` is Stage 1 behaviour and is a distinct
     /// state from a policy that allows everything: nothing was asked, rather than asked
     /// and answered yes.
@@ -232,7 +229,6 @@ impl Proxy {
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             upstream,
-            blocked: None,
             policy: None,
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
             rewrite_artifacts: true,
@@ -335,11 +331,6 @@ impl Proxy {
 
     pub fn with_policy(mut self, policy: Option<Arc<Policy>>) -> Self {
         self.policy = policy;
-        self
-    }
-
-    pub fn with_blocked(mut self, blocked: Option<PackageKey>) -> Self {
-        self.blocked = blocked;
         self
     }
 
@@ -668,28 +659,6 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     }
 
     let target = npm::classify_path(&path_and_query);
-
-    // The block is evaluated on the way in, so it fires on the packument request and the
-    // tarball is never fetched. 403 is correct here and only here: it means policy denied
-    // you. Not-ready states use 502/503/429 (§5), never a 4xx.
-    let requested_key = match &target {
-        RequestTarget::Packument(key) | RequestTarget::Tarball { key, .. } => Some(key),
-        RequestTarget::Other => None,
-    };
-    if let (Some(blocked), Some(key)) = (&proxy.blocked, requested_key)
-        && blocked == key
-    {
-        let status = refusal_status(&proxy, Some(&client_ua));
-        info!(
-            %method,
-            path = %path_and_query,
-            status = status.as_u16(),
-            purl = %key,
-            client = %client_ua,
-            "blocked"
-        );
-        return (status, format!("waharoa: {key} is blocked by policy\n")).into_response();
-    }
 
     #[cfg(debug_assertions)]
     if let Some((deferral, since)) = &proxy.defer_test
@@ -1154,6 +1123,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 packument,
                 base,
                 &proxy.origins,
+                proxy.policy.as_deref(),
                 proxy.refuse_unservable,
                 &path_and_query,
             )
@@ -1252,15 +1222,62 @@ fn today() -> jiff::civil::Date {
     jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()
 }
 
+/// The versions in this packument the policy refuses.
+///
+/// Every version is asked, not just the one a client might resolve to: which one it picks
+/// is what the filtering decides. A check the record cannot answer is dropped, the same
+/// way it is on the artifact path, so a configured `cooldown_days` does not empty the
+/// document on a fact the registry never sent.
+fn policy_refused_versions(
+    packument: &NormalizedPackument,
+    policy: Option<&Policy>,
+    path: &str,
+) -> HashSet<String> {
+    let Some(policy) = policy else {
+        return HashSet::new();
+    };
+    let today = today();
+    let refused: HashSet<String> = packument
+        .records
+        .iter()
+        .filter(|record| {
+            matches!(
+                enforce::artifact(Some(policy), record, today),
+                enforce::Verdict::Refuse(_)
+            )
+        })
+        .map(|record| record.package.version().to_owned())
+        .collect();
+
+    if refused.len() == packument.records.len() && !refused.is_empty() {
+        // Every version gone leaves the resolver nothing to pick, so the install fails
+        // with the registry's own "no matching version" rather than anything this proxy
+        // said. Worth saying out loud, because it reads as a broken registry.
+        warn!(
+            path = %path,
+            versions = refused.len(),
+            "policy refuses every version of this package, so nothing is left to resolve to"
+        );
+    }
+    refused
+}
+
 fn rewrite_packument(
     decoded: &[u8],
     packument: &NormalizedPackument,
     base: &str,
     policy: &OriginPolicy,
+    package_policy: Option<&Policy>,
     refuse_unservable: bool,
     path: &str,
 ) -> Option<Vec<u8>> {
     let (allowed_direct, refused) = packument.unserved_origins(policy);
+
+    // Decision #4's resolution half. A version the policy refuses is dropped from the
+    // document, so the client's own resolver picks one that is allowed and the install
+    // succeeds without anyone being told no. The pinned half, where there is no
+    // resolution left to influence, refuses at the artifact request.
+    let refused_by_policy = policy_refused_versions(packument, package_policy, path);
 
     // An accepted gap has to stay visible. One that stops being reported outlives the
     // reason it was added.
@@ -1273,41 +1290,48 @@ fn rewrite_packument(
         );
     }
 
+    // Either reason to drop a version puts this on the structural path. The byte
+    // rewrite below cannot remove anything, only repoint URLs.
+    if !refused_by_policy.is_empty() || (refuse_unservable && !refused.is_empty()) {
+        let origins: Vec<&String> = refused.keys().collect();
+        let artifacts = packument
+            .records
+            .iter()
+            .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()));
+        return match npm::filter_unservable_versions(
+            decoded,
+            artifacts,
+            policy,
+            &refused_by_policy,
+            refuse_unservable,
+            base,
+        ) {
+            Ok(filtered) => {
+                warn!(
+                    path = %path,
+                    removed = filtered.removed.len(),
+                    by_policy = refused_by_policy.len(),
+                    kept = filtered.rewritten,
+                    allowed = filtered.allowed,
+                    origins = ?origins,
+                    "REFUSED versions removed from the document so the resolver picks \
+                     another"
+                );
+                // Always the filtered body, even when nothing survived. Returning None
+                // here forwards the original, which would put every refused version
+                // straight back into the document.
+                Some(filtered.body)
+            }
+            Err(e) => {
+                warn!(path = %path, error = %e, "UNINSPECTED: packument could not be filtered");
+                None
+            }
+        };
+    }
+
     if !refused.is_empty() {
         let versions: usize = refused.values().sum();
         let origins: Vec<&String> = refused.keys().collect();
-
-        // The only control that works on these. The client fetches `dist.tarball` from
-        // whatever host it names, so refusing the artifact request never happens: the
-        // request goes somewhere else. Decision #4 settles the shape, filter on
-        // resolution and hard fail on a pinned fetch.
-        if refuse_unservable {
-            let artifacts = packument
-                .records
-                .iter()
-                .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()));
-            return match npm::filter_unservable_versions(decoded, artifacts, policy, base) {
-                Ok(filtered) => {
-                    warn!(
-                        path = %path,
-                        removed = filtered.removed.len(),
-                        kept = filtered.rewritten,
-                        allowed = filtered.allowed,
-                        origins = ?origins,
-                        "REFUSED versions whose artifacts are published where this proxy \
-                         cannot see them"
-                    );
-                    // Always the filtered body, even when nothing survived. Returning
-                    // None here forwards the original, which would put every refused
-                    // version straight back into the document.
-                    Some(filtered.body)
-                }
-                Err(e) => {
-                    warn!(path = %path, error = %e, "UNINSPECTED: packument could not be filtered");
-                    None
-                }
-            };
-        }
 
         // Every artifact being off-origin is not the same exposure as some of them being
         // off-origin, and it is the shape someone would construct.
@@ -2075,35 +2099,6 @@ mod tests {
     // Status handling
     // -----------------------------------------------------------------------
 
-    /// The block fires before anything is fetched, so the upstream never sees the
-    /// request at all.
-    #[tokio::test]
-    async fn a_blocked_package_is_refused_before_the_upstream_is_asked() {
-        let (upstream, seen) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new(), upstream)
-                .with_blocked(Some(key("lodash")))
-                .router(),
-        )
-        .await;
-
-        for path in ["/lodash", "/lodash/-/lodash-4.17.21.tgz"] {
-            let response = reqwest::get(format!("{base}{path}")).await.unwrap();
-            assert_eq!(response.status(), 403, "{path}");
-            assert!(response.text().await.unwrap().contains("pkg:npm/lodash"));
-        }
-        assert!(
-            seen.lock().unwrap().paths.is_empty(),
-            "the upstream was contacted for a package policy refused"
-        );
-    }
-
     fn policy(yaml: &str) -> std::sync::Arc<Policy> {
         std::sync::Arc::new(Policy::parse(yaml).expect("policy should load"))
     }
@@ -2207,32 +2202,113 @@ mod tests {
         );
     }
 
-    /// The block is on identity, not on the spelling of the path. `@babel%2fcore` and
-    /// `@babel/core` are the same package.
+    /// Decision #4's resolution half, end to end. The client asks for the packument and
+    /// the refused version is simply not in it, so its own resolver picks another.
     #[tokio::test]
-    async fn the_block_matches_both_spellings_of_a_scoped_name() {
-        let (upstream, _) =
-            upstream_serving(StatusCode::OK, "application/json", None, b"{}".to_vec()).await;
+    async fn a_denied_version_is_absent_from_the_packument_the_client_receives() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
         let base = serve(
             Proxy::new(reqwest::Client::new(), upstream)
-                .with_blocked(Some(key("@babel/core")))
+                .with_policy(Some(policy(
+                    "version: 1\ncooldown_days: 0\n\
+                     denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
+                )))
+                .with_refuse_unservable(false)
                 .router(),
         )
         .await;
 
-        for path in [
-            "/@babel%2fcore",
-            "/@babel/core",
-            "/@babel/core/-/core-7.0.0.tgz",
+        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "filtering is a 200 with fewer versions, never a 4xx"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        assert!(
+            body["versions"].get("4.17.21").is_none(),
+            "the denied version is still offered to the resolver"
+        );
+        // This fixture tags `latest` as 4.18.1, a version the document never carried, so
+        // the tag never named the denied version and survives. Tag dropping is covered
+        // against a document where it does, in `npm::tests::rewriting`.
+        assert_eq!(body["dist-tags"]["latest"], "4.18.1");
+    }
+
+    /// Without a policy the same document comes through whole.
+    #[tokio::test]
+    async fn no_policy_leaves_every_version_in_the_packument() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_refuse_unservable(false)
+                .router(),
+        )
+        .await;
+
+        let text = reqwest::get(format!("{base}/lodash"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert!(body["versions"].get("4.17.21").is_some());
+    }
+
+    /// A refusal is on identity, not on the spelling of the path. `@babel%2ftraverse` and
+    /// `@babel/traverse` are the same package, and a denial written either way reaches
+    /// both.
+    #[tokio::test]
+    async fn a_denial_matches_both_spellings_of_a_scoped_name() {
+        for spelling in [
+            "pkg:npm/%40babel/traverse@8.0.5",
+            "pkg:npm/@babel/traverse@8.0.5",
         ] {
-            assert_eq!(
-                reqwest::get(format!("{base}{path}"))
-                    .await
-                    .unwrap()
-                    .status(),
-                403,
-                "{path}"
-            );
+            let (upstream, _) = upstream_serving(
+                StatusCode::OK,
+                "application/vnd.npm.install-v1+json",
+                None,
+                fixture("@babel_traverse-8.0.5.abbrev.json"),
+            )
+            .await;
+            let base = serve(
+                Proxy::new(reqwest::Client::new(), upstream)
+                    .with_policy(Some(policy(&format!(
+                        "version: 1\ncooldown_days: 0\n\
+                         denials:\n  - purl: {spelling}\n    reason: test\n"
+                    ))))
+                    .with_refuse_unservable(false)
+                    .router(),
+            )
+            .await;
+
+            for path in [
+                "/@babel%2ftraverse/-/traverse-8.0.5.tgz",
+                "/@babel/traverse/-/traverse-8.0.5.tgz",
+            ] {
+                assert_eq!(
+                    reqwest::get(format!("{base}{path}"))
+                        .await
+                        .unwrap()
+                        .status(),
+                    403,
+                    "{spelling} did not reach {path}"
+                );
+            }
         }
     }
 
@@ -2269,14 +2345,7 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         drop(listener);
-        let dead = serve(
-            Proxy::new(reqwest::Client::new(), format!("http://{addr}"))
-                .with_blocked(Some(
-                    PackageKey::from_registry_name(Ecosystem::Npm, "left-pad").unwrap(),
-                ))
-                .router(),
-        )
-        .await;
+        let dead = serve(Proxy::new(reqwest::Client::new(), format!("http://{addr}")).router()).await;
 
         // Every request kind, because a tarball looks its packument up first and so has
         // a second way to meet an upstream that is not there.
@@ -2288,8 +2357,30 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_GATEWAY, "{path}");
         }
 
-        // The one 4xx, and it is a denial rather than a state.
-        let refused = reqwest::get(format!("{dead}/left-pad")).await.unwrap();
+        // The one 4xx, and it is a denial rather than a state. It needs a live upstream:
+        // a denial names an exact version, so the packument has to be read before the
+        // policy has anything to answer about. An unreachable registry is a 502 for every
+        // request, including one the policy would have refused had it known.
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let live = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_policy(Some(policy(
+                    "version: 1\ncooldown_days: 0\n\
+                     denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
+                )))
+                .with_refuse_unservable(false)
+                .router(),
+        )
+        .await;
+        let refused = reqwest::get(format!("{live}/lodash/-/lodash-4.17.21.tgz"))
+            .await
+            .unwrap();
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
         assert_eq!(
             RefusalStatus::default().default_status(),

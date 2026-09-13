@@ -568,7 +568,7 @@ pub fn rewrite_artifact_origins<'a>(
     })
 }
 
-/// Remove versions whose artifacts the proxy cannot serve, then rewrite the rest.
+/// Remove versions the proxy will not serve, then rewrite the rest.
 ///
 /// This is the only control that works on an off-origin artifact. The client fetches
 /// `dist.tarball` from whatever host it names, so a refusal at the artifact request never
@@ -583,10 +583,21 @@ pub fn rewrite_artifact_origins<'a>(
 /// Versions with no `dist.tarball` at all are left alone. They produce no record, so
 /// nothing can install them anyway, and removing them would be a second behaviour hiding
 /// behind this one.
+///
+/// `refuse_unservable` says what happens to an artifact on an origin the proxy does not
+/// front: dropped when true, and when false kept and left exactly as published, because
+/// the operator chose to let the client fetch it directly.
+///
+/// A version is dropped for either of two reasons: its artifact is published somewhere
+/// the proxy cannot see, or the package policy refuses it. They are separate questions
+/// and share one pass because both remove from the same `versions` map and both leave a
+/// `dist-tags` entry pointing at nothing.
 pub fn filter_unservable_versions(
     json: &[u8],
     artifacts: impl IntoIterator<Item = (String, String)>,
     policy: &OriginPolicy,
+    refused_by_policy: &HashSet<String>,
+    refuse_unservable: bool,
     public_base: &str,
 ) -> Result<Filtered, RewriteError> {
     let mut document: serde_json::Value =
@@ -601,6 +612,13 @@ pub fn filter_unservable_versions(
         .and_then(serde_json::Value::as_object_mut)
     {
         for (version, url) in artifacts {
+            // Asked first, because the policy's answer does not depend on where the
+            // artifact lives. A version refused here is gone whatever its origin is.
+            if refused_by_policy.contains(&version) {
+                versions.remove(&version);
+                removed.push(version);
+                continue;
+            }
             match policy.disposition(&url) {
                 Disposition::Served => {
                     let Some(path) = reachable_path(&url, policy.reachable()) else {
@@ -618,10 +636,11 @@ pub fn filter_unservable_versions(
                 // Left exactly as published, so the client fetches it where the registry
                 // said. That is the point of allowing it.
                 Disposition::AllowedDirect(_) => allowed += 1,
-                Disposition::Refused(_) => {
+                Disposition::Refused(_) if refuse_unservable => {
                     versions.remove(&version);
                     removed.push(version);
                 }
+                Disposition::Refused(_) => allowed += 1,
             }
         }
     }
@@ -645,7 +664,7 @@ pub fn filter_unservable_versions(
     })
 }
 
-/// The result of removing versions the proxy cannot serve.
+/// The result of removing versions the proxy will not serve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Filtered {
     pub body: Vec<u8>,
@@ -2634,6 +2653,15 @@ mod tests {
         }
 
         fn filter(json: &str, policy: &OriginPolicy) -> Filtered {
+            filter_refusing(json, policy, &HashSet::new())
+        }
+
+        /// The same, with versions the package policy refuses.
+        fn filter_refusing(
+            json: &str,
+            policy: &OriginPolicy,
+            refused_by_policy: &HashSet<String>,
+        ) -> Filtered {
             let p = normalize_packument(json.as_bytes(), PackumentDetail::Abbreviated)
                 .expect("should normalise");
             let artifacts: Vec<(String, String)> = p
@@ -2641,8 +2669,15 @@ mod tests {
                 .iter()
                 .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()))
                 .collect();
-            filter_unservable_versions(json.as_bytes(), artifacts, policy, PROXY)
-                .expect("should filter")
+            filter_unservable_versions(
+                json.as_bytes(),
+                artifacts,
+                policy,
+                refused_by_policy,
+                true,
+                PROXY,
+            )
+            .expect("should filter")
         }
 
         const MIXED: &str = r#"{"name":"w","dist-tags":{"latest":"1.0.2","old":"1.0.0"},
@@ -2650,6 +2685,92 @@ mod tests {
                 "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}},
                 "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://elsewhere.example/w-1.0.1.tgz"}},
                 "1.0.2":{"version":"1.0.2","dist":{"tarball":"https://elsewhere.example/w-1.0.2.tgz"}}}}"#;
+
+        fn refusing(versions: &[&str]) -> HashSet<String> {
+            versions.iter().map(|v| (*v).to_string()).collect()
+        }
+
+        /// Decision #4's resolution half: the version is gone, so the client's own
+        /// resolver picks another and nobody is told no.
+        #[test]
+        fn a_version_the_package_policy_refuses_is_removed() {
+            let out = filter_refusing(
+                MIXED,
+                &policy(&["https://elsewhere.example"], &[]),
+                &refusing(&["1.0.0"]),
+            );
+
+            assert_eq!(out.removed, ["1.0.0"]);
+            assert_eq!(out.rewritten, 2, "the other two are kept and repointed");
+            let body: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert!(body["versions"].get("1.0.0").is_none());
+            assert!(body["versions"].get("1.0.1").is_some());
+        }
+
+        /// A tag naming a removed version resolves to nothing, so the tag goes too.
+        #[test]
+        fn a_tag_pointing_at_a_refused_version_is_dropped() {
+            let out = filter_refusing(
+                MIXED,
+                &policy(&["https://elsewhere.example"], &[]),
+                &refusing(&["1.0.2"]),
+            );
+
+            let body: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+            assert!(
+                body["dist-tags"].get("latest").is_none(),
+                "`latest` named the refused version"
+            );
+            assert_eq!(body["dist-tags"]["old"], "1.0.0", "other tags survive");
+        }
+
+        /// The policy's answer does not depend on where the artifact lives, so a version
+        /// it refuses goes whether or not the origin is one the proxy fronts.
+        #[test]
+        fn policy_removes_a_version_the_origin_check_would_have_kept() {
+            let out = filter_refusing(MIXED, &policy(&[], &["https://elsewhere.example"]), &refusing(&["1.0.1"]));
+
+            assert_eq!(out.removed, ["1.0.1"]);
+            assert_eq!(out.allowed, 1, "1.0.2 is still allowed direct");
+        }
+
+        /// Both reasons at once, in one pass over one document.
+        #[test]
+        fn the_two_reasons_to_drop_a_version_compose() {
+            let out = filter_refusing(MIXED, &policy(&[], &[]), &refusing(&["1.0.0"]));
+
+            assert_eq!(
+                out.removed,
+                ["1.0.0", "1.0.1", "1.0.2"],
+                "one by policy and two off-origin"
+            );
+            assert_eq!(out.rewritten, 0);
+        }
+
+        /// With the origin check off, an off-origin version stays and is left as
+        /// published, and only the policy removes anything.
+        #[test]
+        fn keeping_off_origin_versions_still_lets_policy_remove_one() {
+            let p = normalize_packument(MIXED.as_bytes(), PackumentDetail::Abbreviated)
+                .expect("should normalise");
+            let artifacts: Vec<(String, String)> = p
+                .records
+                .iter()
+                .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()))
+                .collect();
+            let out = filter_unservable_versions(
+                MIXED.as_bytes(),
+                artifacts,
+                &policy(&[], &[]),
+                &refusing(&["1.0.0"]),
+                false,
+                PROXY,
+            )
+            .expect("should filter");
+
+            assert_eq!(out.removed, ["1.0.0"]);
+            assert_eq!(out.allowed, 2, "both off-origin versions are kept as published");
+        }
 
         /// The only control that works on an off-origin artifact: the client fetches it
         /// from whatever host the packument names, so refusing the artifact request never
@@ -2819,7 +2940,14 @@ mod tests {
         #[test]
         fn filtering_a_body_that_is_not_json_is_an_error() {
             let result =
-                filter_unservable_versions(b"<html>", std::iter::empty(), &policy(&[], &[]), PROXY);
+                filter_unservable_versions(
+                    b"<html>",
+                    std::iter::empty(),
+                    &policy(&[], &[]),
+                    &HashSet::new(),
+                    true,
+                    PROXY,
+                );
             assert!(matches!(result, Err(RewriteError::NotJson(_))));
         }
 
