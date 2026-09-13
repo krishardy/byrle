@@ -1,0 +1,34 @@
+# Package entries that load and do nothing, for `waharoa policy check`.
+version: 1
+cooldown_days: 7
+packages:
+  # Never wins: packages[1] and packages[2] match every package it does, on every day.
+  - match: { ecosystem: npm, name: "left-pad" }
+    set: { install_scripts: allow }
+    reason: "reviewed build step"
+    permanent: true
+  - match: { ecosystem: npm, name: "left-pad", has_install_scripts: true }
+    set: { install_scripts: allow }
+    reason: "reviewed build step, with scripts"
+    permanent: true
+  - match: { ecosystem: npm, name: "left-pad", has_install_scripts: false }
+    set: { cooldown_days: 0 }
+    reason: "no scripts, no wait"
+    permanent: true
+  # Shadowed through 2026-11-30, when packages[5] lapses.
+  - match: { ecosystem: npm, name: "is-odd" }
+    set: { cooldown_days: 0 }
+    reason: "internal mirror"
+    permanent: true
+  - match: { ecosystem: npm, name: "is-odd", has_install_scripts: true }
+    set: { cooldown_days: 0, install_scripts: allow }
+    reason: "internal mirror, reviewed scripts"
+    permanent: true
+  - match: { ecosystem: npm, name: "is-odd", has_install_scripts: false }
+    set: { cooldown_days: 0 }
+    reason: "internal mirror, on trial"
+    expires: "2026-11-30"
+  # Changes nothing: 7 is already the global wait.
+  - match: { ecosystem: npm, name: "ms" }
+    set: { cooldown_days: 7 }
+    reason: "restates the global wait"

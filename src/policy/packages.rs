@@ -58,6 +58,11 @@ pub fn findings(policy: &Policy) -> Vec<Finding> {
     out
 }
 
+/// How an entry is named in messages: by index, because its selector may not be unique.
+pub fn label(index: usize) -> String {
+    format!("packages[{index}]")
+}
+
 /// Whether an entry loosens anything at all.
 ///
 /// Any one setting getting looser, or moving in a direction that cannot be proven, makes
@@ -152,7 +157,7 @@ pub fn check(policy: &Policy, as_of: Date, ceiling_days: i64) -> Result<(), Pack
         .unwrap_or(Date::MAX);
 
     for (index, entry) in policy.packages.iter().enumerate() {
-        let at = format!("packages[{index}]");
+        let at = label(index);
 
         if let Some(expires) = entry.expires
             && expires.0 > latest

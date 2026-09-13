@@ -18,6 +18,7 @@
 //! on the line above the mistake. Measured in both formats by
 //! `spikes/config-format/src/bin/poly.rs`.
 
+pub mod check;
 pub mod decide;
 pub mod diff;
 pub mod enforce;
@@ -38,6 +39,15 @@ use std::path::{Path, PathBuf};
 /// the security boundary, so a document written against a different one is not something
 /// to interpret optimistically.
 pub const SUPPORTED_VERSION: u32 = 1;
+
+/// Today, in UTC.
+///
+/// The policy is written in civil dates, so a zone has to be chosen. UTC, so two replicas
+/// never land a day apart across midnight, and the proxy, `explain`, `policy check` and
+/// `policy diff` judge an expiry on the same day. See `policy::facts`.
+pub fn today() -> jiff::civil::Date {
+    jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()
+}
 
 /// Shipped defaults for the four settings, used when a policy does not name one.
 ///
@@ -328,7 +338,7 @@ impl Policy {
         for (i, rule) in self.packages.iter().enumerate() {
             if rule.permanent && rule.expires.is_some() {
                 return Err(PolicyError::BothDatedAndPermanent {
-                    at: format!("packages[{i}]"),
+                    at: packages::label(i),
                 });
             }
         }

@@ -1,0 +1,11 @@
+Load a policy as the proxy does, and list the package entries that do nothing. Exits 1 if it is refused
+
+Usage: waharoa policy check [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>  The policy file
+
+Options:
+      --as-of <YYYY-MM-DD>  Judge the policy as of this date [default: today, UTC]
+      --strict              Also exit 1 when an entry changes nothing or never wins
+  -h, --help                Print help

@@ -1,0 +1,6 @@
+# A loosening with neither `expires` nor `permanent: true`, which the proxy refuses to start with.
+version: 1
+packages:
+  - match: { ecosystem: npm, name: "left-pad" }
+    set: { cooldown_days: 0 }
+    reason: "no wait"

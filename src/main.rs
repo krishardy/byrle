@@ -20,7 +20,7 @@ use waharoa::identity::PackageRef;
 use waharoa::npm;
 use waharoa::audit;
 use waharoa::intel::store::Intel as _;
-use waharoa::policy::{Policy, decide, diff, enforce, packages};
+use waharoa::policy::{Policy, check, decide, diff, enforce, packages, today};
 use waharoa::record;
 use waharoa::proxy::Proxy;
 use waharoa::tls::{self, TrustMode};
@@ -30,10 +30,8 @@ use waharoa::tls::{self, TrustMode};
 /// Every failure here stops the process. An operator who pointed at a policy and got a
 /// running proxy would reasonably believe it was in force.
 fn report_policy(path: &std::path::Path, ceiling: i64) -> std::sync::Arc<Policy> {
-    let policy = Policy::load(path).unwrap_or_else(|e| panic!("{}: {e}", env::POLICY));
-
-    let today = jiff::Zoned::now().date();
-    packages::check(&policy, today, ceiling).unwrap_or_else(|e| panic!("{}: {e}", env::POLICY));
+    let (policy, report) =
+        check::load(path, today(), ceiling).unwrap_or_else(|e| panic!("{}: {e}", env::POLICY));
 
     info!(
         path = %path.display(),
@@ -68,17 +66,21 @@ fn report_policy(path: &std::path::Path, ceiling: i64) -> std::sync::Arc<Policy>
         );
     }
 
-    // An entry that changes nothing is valid and worth saying out loud, because it is
-    // almost always a selector that no longer matches what it was written for.
-    let findings = packages::findings(&policy);
-    for (index, entry) in policy.packages.iter().enumerate() {
-        if packages::changes_nothing(&findings, index) {
-            warn!(
-                at = format!("packages[{index}]"),
-                reason = %entry.reason,
-                "policy exception changes nothing, so nothing it matches is affected by it"
-            );
-        }
+    // An entry that does nothing is valid and worth saying out loud. `waharoa policy check`
+    // and `doctor` report the same entries.
+    for &index in &report.unchanged {
+        warn!(
+            at = packages::label(index),
+            reason = %policy.packages[index].reason,
+            "policy exception changes nothing, so nothing it matches is affected by it"
+        );
+    }
+    for shadowed in report.never_wins() {
+        warn!(
+            at = packages::label(shadowed.index),
+            "policy exception never wins: {}",
+            shadowed.cover()
+        );
     }
 
     std::sync::Arc::new(policy)
@@ -180,17 +182,37 @@ async fn fetch_health(proxy: &str) -> Option<waharoa::proxy::Health> {
     serde_json::from_str(&response.text().await.ok()?).ok()
 }
 
+/// `waharoa policy check <path> [--as-of YYYY-MM-DD] [--strict]`.
+///
+/// The same load as the proxy at startup, with the same expiry ceiling, so a policy this
+/// accepts is one the proxy starts with.
+fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
+    let as_of = args.as_of.unwrap_or_else(today);
+    let ceiling = or_exit(env::process().expiry_ceiling_days());
+    let report = match check::load(&args.path, as_of, ceiling) {
+        Ok((_, report)) => report,
+        Err(e) => {
+            eprintln!("waharoa policy check: {}: {e}", args.path.display());
+            return std::process::ExitCode::from(e.exit_code());
+        }
+    };
+    print!("{}", report.render());
+    if args.strict
+        && let Some(failure) = report.strict_failure()
+    {
+        eprintln!("\nwaharoa policy check: --strict: {failure}");
+        return std::process::ExitCode::from(1);
+    }
+    std::process::ExitCode::SUCCESS
+}
+
 /// `waharoa policy diff <from> <to> [--as-of YYYY-MM-DD]`.
 ///
 /// The package set is the audit log, which is the only record of what this proxy has
 /// actually been asked about. Lockfiles are the other source named in the plan and are not
 /// read yet.
 async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
-    let as_of = args.as_of.unwrap_or_else(|| {
-        jiff::Timestamp::now()
-            .to_zoned(jiff::tz::TimeZone::UTC)
-            .date()
-    });
+    let as_of = args.as_of.unwrap_or_else(today);
     if args.snapshot.is_some() {
         // Accepting it silently would imply intel is pinned when nothing pins it.
         eprintln!(
@@ -401,15 +423,12 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     if let Some(intel) = &intel {
         facts = facts.with_intel(intel);
     }
-    let today = jiff::Timestamp::now()
-        .to_zoned(jiff::tz::TimeZone::UTC)
-        .date();
     print!(
         "{}",
         explain::decision(
             &policy,
             &facts,
-            &decide::decide(&policy, &facts, today),
+            &decide::decide(&policy, &facts, today()),
             &enforce::unenforceable(&policy, package, times.as_ref(), facts.intel),
         )
     );
@@ -439,6 +458,17 @@ async fn run_doctor() -> std::process::ExitCode {
         fetch_health(&proxy).await.as_ref(),
         &proxy,
     ));
+
+    // The policy the proxy is configured with, judged as `waharoa policy check` judges it.
+    if let Some(path) = or_exit(environment.policy()) {
+        let loaded = check::load(&path, today(), or_exit(environment.expiry_ceiling_days()))
+            .map(|(_, report)| report)
+            .map_err(|e| e.to_string());
+        findings.extend(doctor::check_policy(
+            &path.display().to_string(),
+            loaded.as_ref().map_err(String::as_str),
+        ));
+    }
 
     for client in ["npm", "pnpm", "yarn"] {
         findings.push(doctor::check_registry(
@@ -677,6 +707,9 @@ async fn main() -> std::process::ExitCode {
         None => {}
         Some(cli::Command::Doctor) => return run_doctor().await,
         Some(cli::Command::Explain(target)) => return run_explain(target).await,
+        Some(cli::Command::Policy(cli::PolicyCommand::Check(args))) => {
+            return run_policy_check(args);
+        }
         Some(cli::Command::Policy(cli::PolicyCommand::Diff(args))) => {
             return run_policy_diff(args).await;
         }
