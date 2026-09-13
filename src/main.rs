@@ -18,7 +18,8 @@ use waharoa::identity::PackageRef;
 use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 
 use waharoa::npm;
-use waharoa::policy::{Policy, decide, enforce, packages};
+use waharoa::audit;
+use waharoa::policy::{Policy, decide, diff, enforce, packages};
 use waharoa::record;
 use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
 use waharoa::refusal::RefusalStatus;
@@ -33,6 +34,8 @@ usage: waharoa [command]
   doctor        check whether this machine installs through the proxy
   explain       why a package is allowed or refused. `explain --policy` for the
                 policy itself, `explain <purl>` for one version
+  policy diff   what changes if one policy replaces another, over the packages
+                the audit log has seen. Exits 1 on any loosening
   help          show this
 
 Proxy configuration, all through the environment:
@@ -241,6 +244,123 @@ async fn fetch_health(proxy: &str) -> Option<waharoa::proxy::Health> {
     serde_json::from_str(&response.text().await.ok()?).ok()
 }
 
+/// `waharoa policy diff <from> <to> [--as-of YYYY-MM-DD]`.
+///
+/// The package set is the audit log, which is the only record of what this proxy has
+/// actually been asked about. Lockfiles are the other source named in the plan and are not
+/// read yet.
+async fn run_policy(args: Vec<String>) -> std::process::ExitCode {
+    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+    if positional.first().map(|s| s.as_str()) != Some("diff") || positional.len() != 3 {
+        eprintln!("waharoa policy diff <from.yaml> <to.yaml> [--as-of YYYY-MM-DD]");
+        return std::process::ExitCode::from(2);
+    }
+
+    let as_of = match args.iter().find_map(|a| a.strip_prefix("--as-of=")) {
+        None => jiff::Timestamp::now()
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .date(),
+        Some(raw) => match raw.parse::<jiff::civil::Date>() {
+            Ok(date) => date,
+            Err(e) => {
+                eprintln!("waharoa policy diff: --as-of `{raw}` is not a date: {e}");
+                return std::process::ExitCode::from(2);
+            }
+        },
+    };
+    if args.iter().any(|a| a.starts_with("--snapshot")) {
+        // Accepting it silently would imply intel is pinned when nothing pins it.
+        eprintln!("waharoa policy diff: --snapshot pins nothing yet; no advisory stream exists");
+        return std::process::ExitCode::from(2);
+    }
+
+    let mut loaded = Vec::new();
+    for path in [positional[1], positional[2]] {
+        match Policy::load(std::path::Path::new(path)) {
+            Ok(policy) => loaded.push(policy),
+            Err(e) => {
+                eprintln!("waharoa policy diff: {path}: {e}");
+                return std::process::ExitCode::from(2);
+            }
+        }
+    }
+
+    let Some(log_path) = std::env::var("WAHAROA_AUDIT_LOG")
+        .ok()
+        .filter(|p| !p.is_empty())
+    else {
+        eprintln!("waharoa policy diff: set WAHAROA_AUDIT_LOG to the package set to compare over");
+        return std::process::ExitCode::from(2);
+    };
+    let log = match std::fs::read_to_string(&log_path) {
+        Ok(log) => log,
+        Err(e) => {
+            eprintln!("waharoa policy diff: {log_path}: {e}");
+            return std::process::ExitCode::from(2);
+        }
+    };
+
+    let upstream = env_or("WAHAROA_UPSTREAM", npm::DEFAULT_REGISTRY);
+    let client = npm::Client::new(reqwest::Client::new(), upstream);
+    let needs_times = loaded.iter().any(Policy::uses_cooldown);
+
+    let mut report = diff::Report::default();
+    for (ecosystem, name, version) in audit::packages(&log) {
+        if ecosystem != "npm" {
+            continue;
+        }
+        let purl = format!("pkg:{ecosystem}/{name}@{version}");
+        let Ok(reference) = purl.parse::<PackageRef>() else {
+            continue;
+        };
+        let Ok(Ok(packument)) = client
+            .packument(reference.key(), record::PackumentDetail::Abbreviated)
+            .await
+        else {
+            eprintln!("waharoa policy diff: {purl}: packument could not be read");
+            continue;
+        };
+        let Some(package) = packument.version(&version) else {
+            // The registry no longer publishes it. That is a real answer for a lockfile
+            // and is not a diff between two policies, so it is reported and skipped.
+            eprintln!("waharoa policy diff: {purl}: no longer published");
+            continue;
+        };
+
+        let times = if needs_times {
+            client.publish_times(reference.key()).await.ok().and_then(Result::ok)
+        } else {
+            None
+        };
+        let decided: Vec<(decide::Decision, Vec<enforce::Unenforceable>)> = loaded
+            .iter()
+            .map(|policy| {
+                let facts = decide::Facts::from_record_and_times(package, times.as_ref());
+                (
+                    decide::decide(policy, &facts, as_of),
+                    enforce::unenforceable(policy, package, times.as_ref()),
+                )
+            })
+            .collect();
+        report.push(diff::package(
+            &purl,
+            (&decided[0].0, &decided[0].1),
+            (&decided[1].0, &decided[1].1),
+        ));
+    }
+
+    print!("{}", report.render());
+    if report.fails_the_gate() {
+        eprintln!(
+            "\nwaharoa policy diff: {} loosened, {} incomparable",
+            report.loosened().len(),
+            report.incomparable().len()
+        );
+        return std::process::ExitCode::from(1);
+    }
+    std::process::ExitCode::SUCCESS
+}
+
 /// `waharoa explain`.
 ///
 /// Reads the same policy the proxy does and asks the same engine, so an answer here and a
@@ -428,6 +548,8 @@ async fn main() -> std::process::ExitCode {
         None => {}
         Some("doctor") => return run_doctor().await,
         Some("explain") => return run_explain(std::env::args().nth(2)).await,
+        // nosemgrep: rust.lang.security.args.args
+        Some("policy") => return run_policy(std::env::args().skip(2).collect()).await,
         Some("help" | "-h" | "--help") => {
             print!("{USAGE}{DEBUG_USAGE}");
             return std::process::ExitCode::SUCCESS;

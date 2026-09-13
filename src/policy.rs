@@ -19,6 +19,7 @@
 //! `spikes/config-format/src/bin/poly.rs`.
 
 pub mod decide;
+pub mod diff;
 pub mod enforce;
 pub mod facts;
 pub mod merge;

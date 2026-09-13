@@ -1154,14 +1154,29 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 
 ### `waharoa policy diff`
 
-- [ ] `[!]` Evaluate two policies against a real package set
-- [ ] `[!]` Pin `--snapshot` so policy changes are not conflated with intel changes
-- [ ] `[!]` Package set from lockfiles **and** from the audit log
-- [ ] `[!]` Report transitions both directions, grouped with counts. Comparing decision
-      vectors rather than dispositions, so the report names **which check** moved, which
-      is the actionable half
-- [ ] `[!]` Nonzero exit on any loosening transition (CI gate)
-- [ ] `--as-of <date>` for time-dependent verdicts (cooldown, expiry)
+- [x] `[!]` Evaluate two policies against a real package set. `src/policy/diff.rs`,
+      `waharoa policy diff <from> <to>`.
+- [~] `[!]` Pin `--snapshot` so policy changes are not conflated with intel changes.
+      The flag is refused rather than accepted: nothing pins intel because no stream
+      exists, and accepting it silently would imply otherwise.
+- [~] `[!]` Package set from lockfiles **and** from the audit log. The audit log is read
+      (`audit::packages`): a `pinned` line names one version, a `resolution` line names
+      every version it removed. Lockfiles are not read yet.
+- [x] `[!]` Report transitions both directions, grouped with counts. **Compares decision
+      vectors, not verdicts.** Two policies can both answer `block` for different reasons,
+      and comparing verdicts reports no change there. Held by
+      `two_policies_that_both_block_for_different_reasons_still_show_the_move`.
+- [x] `[!]` Nonzero exit on any loosening transition (CI gate). Verified in three
+      directions: loosening exits 1, tightening and no-change exit 0.
+      - [x] **A check that stops being enforced is a loosening.** The written policy did
+            not loosen, but the package now installs. The gate exists to stop a change
+            slipping something through, so that is what it reports.
+      - [x] **Incomparable fails the gate too.** §5.5 is fail loud when tightening cannot
+            be proven, and a diff that cannot be decided is that case.
+      - [x] Reuses `Strictness` and the `allow < quarantine < block` lattice rather than
+            inventing a second notion of looser.
+- [x] `--as-of <date>` for time-dependent verdicts. Verified to change the answer: with
+      cooldowns straddling ms's age, 1 package moves today and 5 by 2027-06-01.
 - [ ] Scheduled-job recipe: `--as-of +30d` to surface upcoming expiries with impact
 
 ### Intel — advisory streams
