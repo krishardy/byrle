@@ -49,8 +49,9 @@ Proxy configuration, all through the environment:
   WAHAROA_MAX_RECORDS               packument records held in memory (50,000)
   WAHAROA_MAX_VERIFIED              verified artifact digests remembered (50,000)
   WAHAROA_POLICY                    path to a policy file. Loaded, validated and
-                                    reported at startup; NOT yet enforced, because the
-                                    engine that would consult it does not exist
+                                    enforced. Startup reports which checks can fire
+  WAHAROA_AUDIT_LOG                 path for one JSON line per policy decision,
+                                    appended. Refuses to start if it cannot be opened
   WAHAROA_EXPIRY_CEILING_DAYS       how far ahead a `packages` entry may be dated (90)
   WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (8)
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
@@ -509,6 +510,21 @@ async fn main() -> std::process::ExitCode {
         .filter(|p| !p.is_empty())
         .map(|path| report_policy(std::path::Path::new(&path)));
 
+    let audit = std::env::var("WAHAROA_AUDIT_LOG")
+        .ok()
+        .filter(|p| !p.is_empty())
+        .map(|path| {
+            let log = waharoa::audit::AuditLog::open(std::path::Path::new(&path))
+                // Refusing to start is right. An operator who asked for an audit log and
+                // silently did not get one would believe decisions were being recorded.
+                .unwrap_or_else(|e| panic!("WAHAROA_AUDIT_LOG {path}: {e}"));
+            info!(path = %path, "audit log open");
+            std::sync::Arc::new(log)
+        });
+    if audit.is_none() && policy.is_some() {
+        warn!("no audit log configured; set WAHAROA_AUDIT_LOG to record policy decisions");
+    }
+
     let proxy = Proxy::new(client, upstream)
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
@@ -521,6 +537,7 @@ async fn main() -> std::process::ExitCode {
         .unwrap_or_else(|e| panic!("origin configuration: {e}"))
         .with_max_concurrent_packuments(max_concurrent)
         .with_policy(policy)
+        .with_audit_log(audit)
         .with_max_packument_bytes(max_packument_bytes)
         .with_max_records(max_records)
         .with_max_verified(max_verified)

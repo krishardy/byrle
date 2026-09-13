@@ -54,7 +54,8 @@ use crate::http::{
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
+use crate::audit::{self, AuditLog};
 use crate::policy::{Policy, enforce, facts};
 use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
@@ -203,6 +204,8 @@ pub struct Proxy {
     /// Only populated when the policy uses a cooldown, because filling it costs a request
     /// the client never made plus 1.7x to 3.6x the abbreviated document's bytes.
     publish_times: Arc<Mutex<HashMap<PackageKey, Arc<facts::PublishTimes>>>>,
+    /// One line per policy decision, when a path is configured.
+    audit: Option<Arc<AuditLog>>,
     max_packument_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`rewrite_packument`].
@@ -236,6 +239,7 @@ impl Proxy {
             upstream,
             policy: None,
             publish_times: Arc::new(Mutex::new(HashMap::new())),
+            audit: None,
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
             rewrite_artifacts: true,
             public_base: None,
@@ -333,6 +337,11 @@ impl Proxy {
             store: Arc::new(Mutex::new(RecordStore::new(max_records))),
             ..self
         }
+    }
+
+    pub fn with_audit_log(mut self, audit: Option<Arc<AuditLog>>) -> Self {
+        self.audit = audit;
+        self
     }
 
     pub fn with_policy(mut self, policy: Option<Arc<Policy>>) -> Self {
@@ -747,6 +756,19 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 // where the exact version and its record are both in hand, and it is
                 // still before a byte is fetched.
                 let times = publish_times_for(&proxy, key).await;
+                if let (Some(audit), Some(policy)) = (&proxy.audit, proxy.policy.as_deref()) {
+                    // Allowed decisions are written too. A log holding only refusals
+                    // cannot answer "was this ever evaluated", which is what `policy diff`
+                    // needs a package set for.
+                    let facts = crate::policy::decide::Facts::from_record_and_times(&record, times.as_deref());
+                    audit.write(&audit::Event::pinned(
+                        &facts.ecosystem,
+                        &facts.name,
+                        &facts.version,
+                        &crate::policy::decide::decide(policy, &facts, today()),
+                        &enforce::unenforceable(policy, &record, times.as_deref()),
+                    ));
+                }
                 if let enforce::Verdict::Refuse(refusal) = enforce::artifact(
                     proxy.policy.as_deref(),
                     &record,
@@ -1147,6 +1169,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             times: times.as_deref(),
             refuse_unservable: proxy.refuse_unservable,
             path: &path_and_query,
+            audit: proxy.audit.as_deref(),
         }),
         _ => None,
     };
@@ -1309,22 +1332,53 @@ fn policy_refused_versions(
     policy: Option<&Policy>,
     times: Option<&facts::PublishTimes>,
     path: &str,
+    audit: Option<&AuditLog>,
 ) -> HashSet<String> {
     let Some(policy) = policy else {
         return HashSet::new();
     };
     let today = today();
-    let refused: HashSet<String> = packument
-        .records
-        .iter()
-        .filter(|record| {
-            matches!(
-                enforce::artifact(Some(policy), record, times, today),
-                enforce::Verdict::Refuse(_)
-            )
-        })
-        .map(|record| record.package.version().to_owned())
-        .collect();
+    let mut refused = HashSet::new();
+    let mut order = Vec::new();
+    let mut checks: BTreeSet<String> = BTreeSet::new();
+    let mut strongest = crate::policy::Action::Allow;
+    for record in &packument.records {
+        let enforce::Verdict::Refuse(refusal) =
+            enforce::artifact(Some(policy), record, times, today)
+        else {
+            continue;
+        };
+        if refusal.action.strength() > strongest.strength() {
+            strongest = refusal.action;
+        }
+        // The reason line leads with the check name, which is what the log records.
+        checks.extend(
+            refusal
+                .reasons
+                .iter()
+                .filter_map(|r| r.split(':').next().map(str::to_owned)),
+        );
+        order.push(record.package.version().to_owned());
+        refused.insert(record.package.version().to_owned());
+    }
+
+    if let Some(audit) = audit
+        && !order.is_empty()
+    {
+        let unenforceable = packument
+            .records
+            .first()
+            .map(|record| enforce::unenforceable(policy, record, times))
+            .unwrap_or_default();
+        audit.write(&audit::Event::resolution(
+            packument.key.ecosystem().as_str(),
+            &packument.key.registry_name(),
+            strongest.as_str(),
+            order,
+            checks.into_iter().collect(),
+            &unenforceable,
+        ));
+    }
 
     if refused.len() == packument.records.len() && !refused.is_empty() {
         // Every version gone leaves the resolver nothing to pick, so the install fails
@@ -1350,6 +1404,7 @@ struct Rewrite<'a> {
     times: Option<&'a facts::PublishTimes>,
     refuse_unservable: bool,
     path: &'a str,
+    audit: Option<&'a AuditLog>,
 }
 
 fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
@@ -1362,6 +1417,7 @@ fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
         times,
         refuse_unservable,
         path,
+        audit,
     } = r;
     let (allowed_direct, refused) = packument.unserved_origins(policy);
 
@@ -1369,7 +1425,7 @@ fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
     // document, so the client's own resolver picks one that is allowed and the install
     // succeeds without anyone being told no. The pinned half, where there is no
     // resolution left to influence, refuses at the artifact request.
-    let refused_by_policy = policy_refused_versions(packument, package_policy, times, path);
+    let refused_by_policy = policy_refused_versions(packument, package_policy, times, path, audit);
 
     // An accepted gap has to stay visible. One that stops being reported outlives the
     // reason it was added.
@@ -2373,6 +2429,59 @@ mod tests {
             body["versions"].get("4.17.21").is_none(),
             "policy filtering stopped when rewriting was turned off"
         );
+    }
+
+    /// Both halves of decision #4 are recorded, and an allowed package is recorded too.
+    /// A log holding only refusals cannot answer "was this ever evaluated".
+    #[tokio::test]
+    async fn every_decision_reaches_the_audit_log() {
+        let dir = std::env::temp_dir().join(format!("waharoa-proxy-audit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("should create");
+        let path = dir.join("audit.jsonl");
+        let _ = std::fs::remove_file(&path);
+        let log = Arc::new(AuditLog::open(&path).expect("should open"));
+
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_policy(Some(policy(
+                    "version: 1\ncooldown_days: 0\n\
+                     denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
+                )))
+                .with_audit_log(Some(log))
+                .with_refuse_unservable(false)
+                .router(),
+        )
+        .await;
+
+        let _ = reqwest::get(format!("{base}/lodash")).await;
+        let _ = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
+
+        let written = std::fs::read_to_string(&path).expect("should read");
+        let events: Vec<serde_json::Value> = written
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("each line is one object"))
+            .collect();
+
+        let resolution = events
+            .iter()
+            .find(|e| e["path"] == "resolution")
+            .expect("the packument request is recorded");
+        assert_eq!(resolution["removed"], serde_json::json!(["4.17.21"]));
+        assert_eq!(resolution["checks"], serde_json::json!(["denials"]));
+
+        let pinned = events
+            .iter()
+            .find(|e| e["path"] == "pinned")
+            .expect("the artifact request is recorded");
+        assert_eq!(pinned["version"], "4.17.21");
+        assert_eq!(pinned["action"], "block");
     }
 
     /// Without a policy the same document comes through whole.
