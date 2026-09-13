@@ -1352,7 +1352,25 @@ a deferral: there was no mirror to warm and nothing analysing. See
 - [ ] Log every deferral and whether the client returned inside the window — turns the
       compatibility table into evidence
 ### Observability
-- [ ] `[!]` JSON Lines audit log: package, version, ecosystem, verdict, rule, timestamp
+- [x] `[!]` JSON Lines audit log: `src/audit.rs`, `WAHAROA_AUDIT_LOG`. A separate sink,
+      not a tracing layer: tracing output is diagnostic and free to change shape, this is
+      what `policy diff` parses.
+      - [x] **The unit is a request, not a version.** A packument request evaluates every
+            version, and typescript has 3,823. A resolution event names the versions it
+            removed and the checks that removed them; per-version reasoning is `explain`.
+      - [x] **Allowed decisions are recorded too.** A log holding only refusals cannot
+            answer "was this ever evaluated", which is what `policy diff` needs a package
+            set for.
+      - [x] **Unenforceable checks are named**, so an unenforced `cooldown_days` does not
+            read as a passed one.
+      - [x] **`intel_snapshot` exists and is empty.** No stream exists yet. The field is
+            there so lines written now stay comparable with lines written once one lands,
+            which is what `policy diff --snapshot` needs.
+      - [x] Serialised from `Decision`, not from the refusal message, so the record and
+            the text the client reads cannot drift.
+      - [x] A write failure warns once and never fails an install. Refusing to open at
+            startup is different: an operator who asked for a log and silently did not get
+            one would believe decisions were being recorded.
 - [ ] `[!]` `waharoa explain --policy` — effective merged policy per ecosystem
 - [ ] `[!]` `waharoa explain <purl>` — verdict plus the rule that fired
 - [ ] `waharoa status` — ecosystem maturity tiers
