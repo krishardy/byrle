@@ -2890,13 +2890,11 @@ mod tests {
         }
     }
 
-    /// An unreachable upstream is 502. §5 forbids any 4xx for a not-ready state, because
-    /// a 4xx from a registry proxy reads as "policy denied you".
+    /// An upstream that sends no response is 502. §5 forbids any 4xx for a not-ready state,
+    /// because a 4xx from a registry proxy reads as "policy denied you".
     #[tokio::test]
-    async fn an_unreachable_upstream_is_502() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+    async fn an_upstream_that_sends_no_response_is_502() {
+        let addr = crate::test_support::closing_server().await;
 
         let base =
             serve(Proxy::new(reqwest::Client::new(), format!("http://{addr}")).router()).await;
@@ -2920,13 +2918,11 @@ mod tests {
     /// `upstream_statuses_pass_through_unchanged`.
     #[tokio::test]
     async fn the_only_4xx_this_proxy_produces_is_a_policy_refusal() {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        let addr = crate::test_support::closing_server().await;
         let dead = serve(Proxy::new(reqwest::Client::new(), format!("http://{addr}")).router()).await;
 
         // Every request kind, because a tarball looks its packument up first and so has
-        // a second way to meet an upstream that is not there.
+        // a second way to meet an upstream that sends no response.
         for path in ["/lodash", "/lodash/-/lodash-4.17.21.tgz", "/-/ping"] {
             let status = reqwest::get(format!("{dead}{path}"))
                 .await

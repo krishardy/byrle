@@ -11,9 +11,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-image="${WAHAROA_PG_IMAGE:-postgres:17-alpine}"
-name="waharoa-test-pg-$$"
 port="${WAHAROA_PG_PORT:-55433}"
+# shellcheck source=scripts/make/lib/postgres.sh
+. "$repo_root/scripts/make/lib/postgres.sh"
 
 note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
@@ -24,28 +24,9 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; }
-trap cleanup EXIT
-
-note "postgres ($image) on port $port"
-docker run -d --name "$name" \
-    -e POSTGRES_PASSWORD=waharoa -e POSTGRES_USER=waharoa -e POSTGRES_DB=waharoa \
-    -p "$port:5432" "$image" >/dev/null
-
-for _ in $(seq 1 60); do
-    if docker exec "$name" pg_isready -U waharoa >/dev/null 2>&1; then
-        ready=1
-        break
-    fi
-    sleep 1
-done
-if [[ "${ready:-0}" != 1 ]]; then
-    echo "postgres did not become ready within 60s"
-    docker logs "$name" 2>&1 | tail -20
-    exit 1
-fi
+note "postgres ($postgres_image) on port $port"
+start_postgres "waharoa-test-pg-$$" "$port"
 
 note "cargo test --test intel_postgres"
-# `sslmode=disable`: the container serves no TLS.
-WAHAROA_TEST_DATABASE_URL="postgres://waharoa:waharoa@127.0.0.1:$port/waharoa?sslmode=disable" \
+WAHAROA_TEST_DATABASE_URL="$(postgres_url "$port")" \
     cargo test --manifest-path "$repo_root/Cargo.toml" --test intel_postgres -- --test-threads=1

@@ -25,5 +25,7 @@ pub mod proxy;
 pub mod record;
 pub mod refusal;
 pub mod store;
+#[cfg(test)]
+mod test_support;
 pub mod tls;
 pub mod verified;

@@ -2329,14 +2329,12 @@ mod tests {
             }
         }
 
-        /// Nothing listening is a transport failure, and the outer `Result` is what
-        /// carries it. This is the only branch a 502 is the right answer to.
+        /// A registry that closes the connection without a response is a transport failure,
+        /// and the outer `Result` is what carries it. This is the only branch a 502 is the
+        /// right answer to.
         #[tokio::test]
-        async fn an_unreachable_registry_is_a_transport_error() {
-            // Bind and drop, so the port is one nothing is listening on.
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let addr = listener.local_addr().unwrap();
-            drop(listener);
+        async fn a_registry_that_sends_no_response_is_a_transport_error() {
+            let addr = crate::test_support::closing_server().await;
 
             let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
             match client
