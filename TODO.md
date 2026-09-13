@@ -1437,14 +1437,21 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` `make test-integration`: start a Postgres container, run the tests that need
       a database, tear it down. Thin wrapper around `scripts/make/test-integration.sh` per
       CLAUDE.md. 9 tests.
-- [ ] `scripts/make/test-integration.sh` and `scripts/make/sqlx-prepare.sh` wait on
+- [x] `scripts/make/test-integration.sh` and `scripts/make/sqlx-prepare.sh` wait on
       `pg_isready`, which answers during initdb's temporary server, before the real one
       accepts connections. Both failed on 2026-09-13 with `expected to read 5 bytes, got 0
       bytes at EOF` and passed on rerun. It will be a CI flake.
-- [ ] `the_only_4xx_this_proxy_produces_is_a_policy_refusal` (`src/proxy.rs`) binds a port,
+      Fixed 2026-09-14: both source `scripts/make/lib/postgres.sh`, which runs
+      `pg_isready -h 127.0.0.1`. Measured on one container start: the socket check passed at
+      643 ms while TCP got `no response`, and TCP passed at 868 ms, after the temporary
+      server shut down.
+- [x] `the_only_4xx_this_proxy_produces_is_a_policy_refusal` (`src/proxy.rs`) binds a port,
       drops the listener and expects the port to refuse connections. Failed once on
       2026-09-14 while coverage, lint, kani and the integration tests ran at once, and
       passed 3 of 3 alone. Another process can take the freed port. It will be a CI flake.
+      Fixed: it and the two other tests that freed a port use
+      `test_support::closing_server`, which keeps the port bound and closes each
+      connection unanswered.
 - [ ] `src/intel/postgres.rs` counts toward the unit coverage floor at 0% (104 lines). Library
       total is 96.58% lines with it. Decide whether it joins the exclusion for live tests.
 - [x] `[!]` Tests that do not need a database must not require the container. Without

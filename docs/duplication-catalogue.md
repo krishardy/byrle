@@ -76,7 +76,7 @@ A reworded message fails these tests, so the copies cannot drift. Action: leave.
 | # | What | Where | Action | Suggested |
 |---|---|---|---|---|
 | S1 | `note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }` | `check-deps.sh:25`, `lint.sh:19`, `semgrep.sh:114`, `sqlx-prepare.sh:18`, `test-integration.sh:18`, `update-deps.sh:19` | helper | `scripts/make/lib/note.sh` |
-| S2 | Postgres container: start, `pg_isready` wait, cleanup trap. 17 lines | `sqlx-prepare.sh:26-45`, `test-integration.sh:24-43` | consolidate | `scripts/make/lib/postgres.sh` |
+| S2 | Postgres container: start, `pg_isready` wait, cleanup trap. 17 lines | `sqlx-prepare.sh:26-45`, `test-integration.sh:24-43` | done | `scripts/make/lib/postgres.sh`, with the `pg_isready` fix |
 | S3 | Proxy start and wait for `waharoa listening`. 21 lines | `retry-matrix.sh:57-84`, `smoke-clients.sh:41-74`; the wait alone in `inspect.sh`, `smoke-npm.sh` | consolidate | `scripts/make/lib/proxy.sh` |
 | S4 | `mktemp -d` work directory and a cleanup trap that kills the proxy. 11 lines | `retry-matrix.sh:39-54`, `smoke-clients.sh:24-38` | helper | with S3 |
 | S5 | `package.json` and `.yarnrc.yml` heredocs. 9 lines | `offsite-urls.sh:66-74`, `retry-matrix.sh:86-94`, `smoke-clients.sh:76-88` | consolidate | one function writing a client project directory |
