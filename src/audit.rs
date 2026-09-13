@@ -19,7 +19,7 @@
 
 use crate::policy::decide::{Decision, Outcome};
 use crate::policy::enforce::Unenforceable;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -31,7 +31,7 @@ use tracing::warn;
 ///
 /// The same verdict means different things on each. A version filtered out of a packument
 /// left the client free to pick another; a refused pinned fetch did not.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DecisionPath {
     /// The packument was filtered. The client resolves against what is left.
@@ -41,7 +41,11 @@ pub enum DecisionPath {
 }
 
 /// One decision, as written.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+///
+/// `Default` exists for `#[serde(default)]`, so a line written by an older build that
+/// lacks a field still reads rather than being dropped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Event {
     /// RFC 3339, UTC. The zone is fixed so two proxies' logs can be concatenated.
     pub at: String,
@@ -80,6 +84,24 @@ pub struct Event {
     /// `policy diff --snapshot` needs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intel_snapshot: Option<String>,
+}
+
+impl Default for Event {
+    fn default() -> Self {
+        Self {
+            at: String::new(),
+            path: DecisionPath::Pinned,
+            ecosystem: String::new(),
+            name: String::new(),
+            version: None,
+            action: String::new(),
+            removed: Vec::new(),
+            checks: Vec::new(),
+            exceptions_used: Vec::new(),
+            unenforceable: Vec::new(),
+            intel_snapshot: None,
+        }
+    }
 }
 
 impl Event {
@@ -153,6 +175,36 @@ pub fn excepted(decision: &Decision) -> bool {
 
 fn now() -> String {
     jiff::Timestamp::now().to_string()
+}
+
+/// Every package version the log names, oldest first, without duplicates.
+///
+/// The package set `policy diff` re-decides. A `pinned` line names one version. A
+/// `resolution` line names every version it removed, so one request can contribute many.
+/// Versions that were offered and not removed are not in the log at all: a resolution line
+/// records what the policy acted on, not the whole document.
+pub fn packages(log: &str) -> Vec<(String, String, String)> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for line in log.lines().filter(|l| !l.trim().is_empty()) {
+        // A line that will not parse is skipped rather than failing the run. A log with a
+        // torn last write is the ordinary case after a crash.
+        let Ok(event) = serde_json::from_str::<Event>(line) else {
+            continue;
+        };
+        let versions = event
+            .version
+            .into_iter()
+            .chain(event.removed)
+            .collect::<Vec<_>>();
+        for version in versions {
+            let key = (event.ecosystem.clone(), event.name.clone(), version);
+            if seen.insert(key.clone()) {
+                out.push(key);
+            }
+        }
+    }
+    out
 }
 
 /// The audit log, when one is configured.
@@ -354,6 +406,57 @@ mod tests {
         assert_eq!(field(&json, "action"), "allow");
         assert_eq!(field(&json, "exceptions_used"), &serde_json::json!([0]));
         assert!(excepted(&decision), "the exception is what let it through");
+    }
+
+    #[test]
+    fn the_package_set_takes_one_version_from_a_pinned_line_and_many_from_a_resolution() {
+        let log = "\
+{\"at\":\"\",\"path\":\"pinned\",\"ecosystem\":\"npm\",\"name\":\"a\",\"version\":\"1.0.0\",\"action\":\"block\"}
+{\"at\":\"\",\"path\":\"resolution\",\"ecosystem\":\"npm\",\"name\":\"b\",\"action\":\"block\",\"removed\":[\"2.0.0\",\"2.0.1\"]}
+";
+
+        assert_eq!(
+            packages(log),
+            [
+                ("npm".to_owned(), "a".to_owned(), "1.0.0".to_owned()),
+                ("npm".to_owned(), "b".to_owned(), "2.0.0".to_owned()),
+                ("npm".to_owned(), "b".to_owned(), "2.0.1".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_same_version_seen_twice_appears_once() {
+        let line = "{\"at\":\"\",\"path\":\"pinned\",\"ecosystem\":\"npm\",\"name\":\"a\",\"version\":\"1.0.0\",\"action\":\"allow\"}";
+
+        assert_eq!(packages(&format!("{line}\n{line}\n")).len(), 1);
+    }
+
+    /// A torn last write is the ordinary case after a crash, so it is skipped rather than
+    /// failing the run.
+    #[test]
+    fn an_unparseable_line_is_skipped_and_the_rest_still_read() {
+        let log = "\
+not json
+{\"at\":\"\",\"path\":\"pinned\",\"ecosystem\":\"npm\",\"name\":\"a\",\"version\":\"1.0.0\",\"action\":\"allow\"}
+{\"truncated\":
+";
+
+        assert_eq!(packages(log).len(), 1);
+    }
+
+    /// A line written before a field existed still reads.
+    #[test]
+    fn a_line_missing_a_field_this_build_knows_about_still_reads() {
+        let log = "{\"path\":\"pinned\",\"ecosystem\":\"npm\",\"name\":\"a\",\"version\":\"1.0.0\"}";
+
+        assert_eq!(packages(log).len(), 1);
+    }
+
+    #[test]
+    fn an_empty_log_yields_no_packages() {
+        assert!(packages("").is_empty());
+        assert!(packages("\n\n").is_empty());
     }
 
     #[test]
