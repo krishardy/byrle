@@ -11,7 +11,6 @@ Dependency Firewall - Detects and blocks malicious dependencies
 
 * Common maintenance tasks should be added to Makefile.
 * Makefile recipes must be thin wrappers around scripts in `scripts/make/<target>.sh` (or `.py` if it leads to simpler script). Do NOT embed multi-line shell logic (loops, conditionals, error handling) directly in recipes — put it in a real script (`set -euo pipefail`, executable) and have the recipe one-line invoke it. The architecture doc's inline-shell examples are logic to extract, not a template to copy.
-* No em-dashes. For love of God and all that is holy, NO EM-DASHES!
 * Unit test coverage of the library must be 95% or greater. The corpus and live tests are excluded from the test coverage requirement.
 
 ## Documentation standards
@@ -19,11 +18,11 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * Where there is duplication between the project_plan.md and architecture.md, put the content in architecture.md and remove it from project_plan.md.
 * Engineering decisions should be documented in docs/engineering_decisions/<decision_name>.md
 * Write plainly, concretely and succinctly. Things like "Lowercasing therefore silently misses the one rule nobody is allowed to override" is unacceptable because it is a non-specific interprative statement of previous sentences. Let the data and information speak for themselves.
+* No em-dashes. For love of God and all that is holy, NO EM-DASHES!
 
 ## Reporting to the user
 
-These apply to chat messages, not just files. The documentation rules above apply here too,
-em-dashes included.
+These apply to chat messages. The documentation rules above apply here too.
 
 * Lead with the result: First line is what happened and the identifier: `b8221cc`
   landed, 393 tests, smoke 6/6 green. Not "I've completed the work on decision #4."

@@ -11,6 +11,9 @@ exclude = ["spikes/config-format"]
 axum = "0.8.9"
 base64 = "0.23.1"
 bytes = "1.12.1"
+# Parses the command line. Default features off: no colour and no typo suggestions, which
+# adds four crates rather than eleven. See docs/engineering_decisions/cli-parser-clap.md.
+clap = { version = "4.6.6", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 # Turns the CVSS vectors OSV records carry into the numbers `max_cvss` compares. v3 and v4.
 cvss = { version = "2.2.0", default-features = false, features = ["std", "v3", "v4"] }
 flate2 = "1.1.10"

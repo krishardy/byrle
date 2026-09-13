@@ -9,7 +9,9 @@
 //! that every package in the resolved graph is observed and normalised, so the logging
 //! is load-bearing rather than decoration.
 
+use clap::Parser as _;
 use tracing::{info, warn};
+use waharoa::cli;
 #[cfg(debug_assertions)]
 use waharoa::defer::DeferTest;
 use waharoa::doctor;
@@ -27,65 +29,6 @@ use waharoa::refusal::RefusalStatus;
 use waharoa::store::DEFAULT_MAX_RECORDS;
 use waharoa::tls::{self, TrustMode};
 use waharoa::verified::DEFAULT_MAX_VERIFIED;
-
-const USAGE: &str = "\
-usage: waharoa [command]
-
-  (no command)  run the proxy
-  doctor        check whether this machine installs through the proxy
-  explain       why a package is allowed or refused. `explain --policy` for the
-                policy itself, `explain <purl>` for one version
-  policy diff   what changes if one policy replaces another, over the packages
-                the audit log has seen. Exits 1 on any loosening
-  refresh       load OSV's npm malware and vulnerability records into the Postgres at
-                WAHAROA_DATABASE_URL, which the proxy reads when it is set
-  help          show this
-
-Proxy configuration, all through the environment:
-
-  WAHAROA_LISTEN                    address to listen on (127.0.0.1:8080)
-  WAHAROA_UPSTREAM                  registry to forward to (https://registry.npmjs.org)
-  WAHAROA_PUBLIC_URL                address written into artifact URLs, and therefore
-                                    into lockfiles. Defaults to each request's own Host,
-                                    which is rarely what you want.
-  WAHAROA_ARTIFACT_ORIGINS          comma-separated origins this proxy also serves
-  WAHAROA_ALLOW_DIRECT_ORIGINS      comma-separated origins the proxy does not serve and
-                                    permits anyway, fetched directly and unexamined
-  WAHAROA_REWRITE_ARTIFACTS=0       do not point artifact URLs at the proxy. pnpm and
-                                    yarn then fetch artifacts without the proxy seeing
-                                    them.
-  WAHAROA_CA_BUNDLE                 PEM bundle for the upstream connection
-  WAHAROA_CA_BUNDLE_EXCLUSIVE=1     trust only that bundle, not the public roots
-  WAHAROA_MAX_PACKUMENT_BYTES       ceiling on a packument body (32 MiB)
-  WAHAROA_MAX_RECORDS               packument records held in memory (50,000)
-  WAHAROA_MAX_VERIFIED              verified artifact digests remembered (50,000)
-  WAHAROA_DATABASE_URL              Postgres holding intel from `waharoa refresh`. With a
-                                    policy, known_malware is enforced from it, and a
-                                    store that cannot answer is a 503
-  WAHAROA_POLICY                    path to a policy file. Loaded, validated and
-                                    enforced. Startup reports which checks can fire
-  WAHAROA_AUDIT_LOG                 path for one JSON line per policy decision,
-                                    appended. Refuses to start if it cannot be opened
-  WAHAROA_EXPIRY_CEILING_DAYS       how far ahead a `packages` entry may be dated (90)
-  WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (8)
-  WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
-                                    \"default=403,npm/pnpm=451\" (default 403)
-  WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot
-                                    see, instead of removing them from the packument
-";
-
-/// The deferral knob is not compiled into a release binary, so a release binary does not
-/// advertise it either.
-#[cfg(debug_assertions)]
-const DEBUG_USAGE: &str = "\
-  WAHAROA_DEFER_TEST                DEBUG BUILDS ONLY: answer every matching request with
-                                    a deferral instead of fetching, so client retry
-                                    behaviour can be measured. `<status>:<seconds|none>:
-                                    <packument|tarball|all>[:<seconds>]`, e.g.
-                                    \"429:1:tarball\" or \"503:1:all:8\"
-";
-#[cfg(not(debug_assertions))]
-const DEBUG_USAGE: &str = "";
 
 /// Load a policy, refuse to start if it is unusable, and report what it says.
 ///
@@ -255,26 +198,13 @@ async fn fetch_health(proxy: &str) -> Option<waharoa::proxy::Health> {
 /// The package set is the audit log, which is the only record of what this proxy has
 /// actually been asked about. Lockfiles are the other source named in the plan and are not
 /// read yet.
-async fn run_policy(args: Vec<String>) -> std::process::ExitCode {
-    let positional: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
-    if positional.first().map(|s| s.as_str()) != Some("diff") || positional.len() != 3 {
-        eprintln!("waharoa policy diff <from.yaml> <to.yaml> [--as-of YYYY-MM-DD]");
-        return std::process::ExitCode::from(2);
-    }
-
-    let as_of = match args.iter().find_map(|a| a.strip_prefix("--as-of=")) {
-        None => jiff::Timestamp::now()
+async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
+    let as_of = args.as_of.unwrap_or_else(|| {
+        jiff::Timestamp::now()
             .to_zoned(jiff::tz::TimeZone::UTC)
-            .date(),
-        Some(raw) => match raw.parse::<jiff::civil::Date>() {
-            Ok(date) => date,
-            Err(e) => {
-                eprintln!("waharoa policy diff: --as-of `{raw}` is not a date: {e}");
-                return std::process::ExitCode::from(2);
-            }
-        },
-    };
-    if args.iter().any(|a| a.starts_with("--snapshot")) {
+            .date()
+    });
+    if args.snapshot.is_some() {
         // Accepting it silently would imply intel is pinned when nothing pins it.
         eprintln!(
             "waharoa policy diff: --snapshot pins nothing yet; the store holds only its latest load"
@@ -291,11 +221,11 @@ async fn run_policy(args: Vec<String>) -> std::process::ExitCode {
     };
 
     let mut loaded = Vec::new();
-    for path in [positional[1], positional[2]] {
-        match Policy::load(std::path::Path::new(path)) {
+    for path in [&args.from, &args.to] {
+        match Policy::load(path) {
             Ok(policy) => loaded.push(policy),
             Err(e) => {
-                eprintln!("waharoa policy diff: {path}: {e}");
+                eprintln!("waharoa policy diff: {}: {e}", path.display());
                 return std::process::ExitCode::from(2);
             }
         }
@@ -393,13 +323,7 @@ async fn run_policy(args: Vec<String>) -> std::process::ExitCode {
 /// refusal in the proxy cannot disagree. The packument is fetched directly from the
 /// upstream registry rather than through a running proxy: explain is a question about the
 /// policy, and requiring the proxy to be up to ask it would be the wrong dependency.
-async fn run_explain(argument: Option<String>) -> std::process::ExitCode {
-    let Some(argument) = argument else {
-        eprintln!("waharoa explain: needs `--policy` or a purl, for example");
-        eprintln!("  waharoa explain pkg:npm/lodash@4.17.21");
-        return std::process::ExitCode::from(2);
-    };
-
+async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     let Some(path) = std::env::var("WAHAROA_POLICY")
         .ok()
         .filter(|p| !p.is_empty())
@@ -423,7 +347,8 @@ async fn run_explain(argument: Option<String>) -> std::process::ExitCode {
         }
     };
 
-    if argument == "--policy" {
+    // `cli::Explain` holds `--policy` or a purl, never both and never neither.
+    let Some(argument) = target.purl else {
         // A store with no snapshot answers nothing, so the checks that need one are
         // reported as unenforced rather than as settings that will fire.
         let has_intel = match &store {
@@ -438,7 +363,7 @@ async fn run_explain(argument: Option<String>) -> std::process::ExitCode {
         };
         print!("{}", explain::policy(&policy, has_intel));
         return std::process::ExitCode::SUCCESS;
-    }
+    };
 
     let reference = match argument.parse::<PackageRef>() {
         Ok(reference) => reference,
@@ -761,29 +686,18 @@ async fn fetch_bundle(
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    // Anything other than `doctor` is refused rather than falling through to the proxy:
+    // An unknown command or argument exits 2 rather than falling through to the proxy:
     // `waharoa doctr` silently serving traffic is the wrong thing to do with a typo.
-    //
-    // The rule below guards against trusting argv for security decisions, argv[0] in
-    // particular. This reads argv[1] to pick a subcommand, and every trust decision the
-    // proxy makes comes from the environment and the packuments it reads.
-    // nosemgrep: rust.lang.security.args.args
-    match std::env::args().nth(1).as_deref() {
+    // `--help` and `--version` exit 0. Every trust decision the proxy makes comes from the
+    // environment and the packuments it reads, not from argv.
+    match cli::Cli::parse().command {
         None => {}
-        Some("doctor") => return run_doctor().await,
-        Some("explain") => return run_explain(std::env::args().nth(2)).await,
-        // nosemgrep: rust.lang.security.args.args
-        Some("policy") => return run_policy(std::env::args().skip(2).collect()).await,
-        Some("refresh") => return run_refresh().await,
-        Some("help" | "-h" | "--help") => {
-            print!("{USAGE}{DEBUG_USAGE}");
-            return std::process::ExitCode::SUCCESS;
+        Some(cli::Command::Doctor) => return run_doctor().await,
+        Some(cli::Command::Explain(target)) => return run_explain(target).await,
+        Some(cli::Command::Policy(cli::PolicyCommand::Diff(args))) => {
+            return run_policy_diff(args).await;
         }
-        Some(other) => {
-            eprintln!("waharoa: unknown command `{other}`\n");
-            eprint!("{USAGE}{DEBUG_USAGE}");
-            return std::process::ExitCode::from(2);
-        }
+        Some(cli::Command::Refresh) => return run_refresh().await,
     }
 
     tracing_subscriber::fmt()
