@@ -163,6 +163,13 @@ Items that I've added that are not stage-bound.
     - Decided 2026-09-13: this covers publisher ids too. `advisory.id` (`GHSA-...`,
       `MAL-...`) becomes a sized VARCHAR column with a unique index beside a surrogate key,
       and joins use the surrogate key.
+    - Decided 2026-09-13: `0001_intel.sql` and `0002_ranges.sql` are rewritten rather than
+      followed by a new migration. A value longer than its column fails the refresh.
+    - Done 2026-09-13: every table is keyed by a `BIGINT` identity; `advisory.publisher_id`
+      and `intel_snapshot.digest` are sized unique columns; timestamps are `TIMESTAMPTZ`;
+      `advisory.summary` is the only `TEXT`. See
+      [intel-schema-keys-and-types](docs/engineering_decisions/intel-schema-keys-and-types.md).
+      A database that applied the old migrations has to be dropped and refreshed.
 15. Evaluate command line parsers for Rust, and migrate to the selected one.
 
 ## Stage 1 — Pass-through proxy (transport)

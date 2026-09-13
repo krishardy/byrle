@@ -69,12 +69,33 @@ pub enum IntelError {
     /// A stored range does not parse. The loader writes none, so something else wrote the
     /// row. Matching it against nothing would drop the advisory unannounced.
     Range { advisory_id: String },
+    /// A row refers to an advisory the load did not key. `advisory` is written first and
+    /// every other table joins on its key, so this is a loader defect, not bad input.
+    Unkeyed { advisory_id: String },
 }
 
 impl std::fmt::Display for IntelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Backend(e) => write!(f, "intel store: {e}"),
+            Self::Backend(e) => {
+                write!(f, "intel store: {e}")?;
+                // Postgres names the table, line and column a failed `COPY` stopped at here,
+                // such as a value longer than its column.
+                match e
+                    .as_database_error()
+                    .and_then(|d| d.try_downcast_ref::<sqlx::postgres::PgDatabaseError>())
+                    .and_then(|d| d.r#where())
+                {
+                    Some(context) => write!(f, " ({context})"),
+                    None => Ok(()),
+                }
+            }
+            Self::Unkeyed { advisory_id } => {
+                write!(
+                    f,
+                    "intel store: {advisory_id} was not keyed before its rows"
+                )
+            }
             Self::Range { advisory_id } => {
                 write!(
                     f,
@@ -390,6 +411,13 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "intel store: a stored range of GHSA-x does not parse"
+        );
+        let e = IntelError::Unkeyed {
+            advisory_id: "GHSA-x".to_owned(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "intel store: GHSA-x was not keyed before its rows"
         );
     }
 }

@@ -9,6 +9,7 @@ use super::osv::Rows;
 use super::range::Interval;
 use super::store::{Intel, IntelError, Lookup, PackageIntel, Record};
 use sqlx::{PgConnection, PgPool};
+use std::collections::HashMap;
 
 /// Bytes per `CopyData` message. Postgres accepts far larger; this bounds what one send
 /// holds in flight.
@@ -58,31 +59,49 @@ impl PgIntel {
     /// tables leaves other streams' rows alone. The alias, affected and range rows go with
     /// their advisory through `ON DELETE CASCADE`.
     ///
-    /// A snapshot id already recorded, which is the same bundle loaded again, keeps its row and
-    /// takes the new `taken_at`.
+    /// `advisory` is copied first. The keys Postgres assigned are read back in the same
+    /// transaction, and the other tables are copied carrying them.
+    ///
+    /// A snapshot digest already recorded, which is the same bundle loaded again, keeps its
+    /// row and takes the new `taken_at`.
     pub async fn replace_source(
         &self,
         source: &str,
         rows: &[Rows],
         snapshot: &Snapshot,
     ) -> Result<Loaded, IntelError> {
-        let tables = load::tables(source, rows);
         let mut tx = self.pool.begin().await.map_err(IntelError::Backend)?;
 
         sqlx::query!("DELETE FROM advisory WHERE source = $1", source)
             .execute(&mut *tx)
             .await
             .map_err(IntelError::Backend)?;
+        let advisories = copy(&mut tx, load::ADVISORY, &load::advisories(source, rows)).await?;
+        let keys: HashMap<String, i64> = sqlx::query!(
+            "SELECT publisher_id, id FROM advisory WHERE source = $1",
+            source
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(IntelError::Backend)?
+        .into_iter()
+        .map(|row| (row.publisher_id, row.id))
+        .collect();
+        let children = load::children(rows, &keys)
+            .map_err(|load::Unkeyed(advisory_id)| IntelError::Unkeyed { advisory_id })?;
         let loaded = Loaded {
-            advisories: copy(&mut tx, load::ADVISORY, &tables.advisory).await?,
-            aliases: copy(&mut tx, load::ALIAS, &tables.alias).await?,
-            affected: copy(&mut tx, load::AFFECTED, &tables.affected).await?,
-            ranges: copy(&mut tx, load::RANGE, &tables.range).await?,
+            advisories,
+            aliases: copy(&mut tx, load::ALIAS, &children.alias).await?,
+            affected: copy(&mut tx, load::AFFECTED, &children.affected).await?,
+            ranges: copy(&mut tx, load::RANGE, &children.range).await?,
         };
+        // `::text` first, so the parameters are text and sqlx needs no date or JSON type.
         sqlx::query!(
-            "INSERT INTO intel_snapshot (id, taken_at, streams) VALUES ($1, $2, $3::text::jsonb) \
-             ON CONFLICT (id) DO UPDATE SET taken_at = EXCLUDED.taken_at, streams = EXCLUDED.streams",
-            snapshot.id,
+            "INSERT INTO intel_snapshot (digest, taken_at, streams) \
+             VALUES ($1, $2::text::timestamptz, $3::text::jsonb) \
+             ON CONFLICT (digest) DO UPDATE \
+             SET taken_at = EXCLUDED.taken_at, streams = EXCLUDED.streams",
+            snapshot.digest,
             snapshot.taken_at,
             snapshot.streams
         )
@@ -133,7 +152,7 @@ impl Intel for PgIntel {
 
     fn snapshot(&self) -> Lookup<'_, Option<String>> {
         Box::pin(async move {
-            sqlx::query_scalar!("SELECT id FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1")
+            sqlx::query_scalar!("SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1")
                 .fetch_optional(&self.pool)
                 .await
                 .map_err(IntelError::Backend)
@@ -155,13 +174,13 @@ impl Intel for PgIntel {
             let rows = sqlx::query!(
                 r#"
                 SELECT
-                    s.id            AS "snapshot!",
+                    s.digest        AS "snapshot!",
                     m.is_range      AS "is_range?",
                     m.version       AS "version?",
                     m.introduced    AS "introduced?",
                     m.fixed         AS "fixed?",
                     m.last_affected AS "last_affected?",
-                    a.id            AS "advisory_id?",
+                    a.publisher_id  AS "advisory_id?",
                     a.source        AS "source?",
                     a.cvss          AS "cvss?",
                     a.cvss_source   AS "cvss_source?",
@@ -171,18 +190,18 @@ impl Intel for PgIntel {
                         SELECT al.alias FROM advisory_alias al
                         WHERE al.advisory_id = a.id ORDER BY al.alias
                     )               AS "aliases!"
-                FROM (SELECT id FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s
+                FROM (SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s
                 LEFT JOIN (
                     SELECT advisory_id, FALSE AS is_range, version,
-                           NULL::text AS introduced, NULL::text AS fixed,
-                           NULL::text AS last_affected
+                           NULL::varchar AS introduced, NULL::varchar AS fixed,
+                           NULL::varchar AS last_affected
                     FROM advisory_affected WHERE ecosystem = $1 AND name = $2
                     UNION ALL
                     SELECT advisory_id, TRUE, NULL, introduced, fixed, last_affected
                     FROM advisory_range WHERE ecosystem = $1 AND name = $2
                 ) m ON TRUE
                 LEFT JOIN advisory a ON a.id = m.advisory_id
-                ORDER BY a.id, m.is_range, m.version, m.introduced, m.fixed, m.last_affected
+                ORDER BY a.publisher_id, m.is_range, m.version, m.introduced, m.fixed, m.last_affected
                 "#,
                 ecosystem,
                 name

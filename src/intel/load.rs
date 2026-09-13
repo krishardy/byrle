@@ -4,11 +4,15 @@
 //! NULL and a quoted one is an empty string, and a summary holding `\.` on a line of its own
 //! cannot end the data early. Kept apart from `postgres.rs` so the encoding is unit-tested
 //! inside the coverage floor, and only the sending needs a container.
+//!
+//! `advisory` is written first. Every other table refers to the key Postgres assigns an
+//! advisory, so their rows are built from the keys read back after that `COPY`.
 
 use super::osv::Rows;
+use std::collections::HashMap;
 
-pub const ADVISORY: &str =
-    "COPY advisory (id, source, summary, cvss, modified, malware) FROM STDIN (FORMAT csv)";
+pub const ADVISORY: &str = "COPY advisory (publisher_id, source, summary, cvss, modified, \
+                            malware) FROM STDIN (FORMAT csv)";
 pub const ALIAS: &str = "COPY advisory_alias (advisory_id, alias) FROM STDIN (FORMAT csv)";
 pub const AFFECTED: &str =
     "COPY advisory_affected (advisory_id, ecosystem, name, version) FROM STDIN (FORMAT csv)";
@@ -18,29 +22,34 @@ pub const RANGE: &str = "COPY advisory_range (advisory_id, ecosystem, name, intr
 /// What a refresh records about itself in `intel_snapshot`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Snapshot {
-    pub id: String,
+    /// `sha256:` and the hex digest of the per-stream digests.
+    pub digest: String,
     /// RFC 3339 UTC.
     pub taken_at: String,
     /// Per-stream digests, as a JSON object.
     pub streams: String,
 }
 
-/// CSV for each of the four tables, the advisory table first.
+/// CSV for the tables that refer to an advisory.
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct Tables {
-    pub advisory: Vec<u8>,
+pub struct Children {
     pub alias: Vec<u8>,
     pub affected: Vec<u8>,
     pub range: Vec<u8>,
 }
 
-pub fn tables(source: &str, rows: &[Rows]) -> Tables {
-    let mut out = Tables::default();
+/// A record whose publisher id has no key.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Unkeyed(pub String);
+
+/// CSV for `advisory`.
+pub fn advisories(source: &str, rows: &[Rows]) -> Vec<u8> {
+    let mut out = Vec::new();
     for r in rows {
         // `f64`'s `Display` is the shortest text that reads back as the same number.
         let cvss = r.cvss.map(|c| c.to_string());
         line(
-            &mut out.advisory,
+            &mut out,
             &[
                 Some(&r.id),
                 Some(source),
@@ -50,12 +59,25 @@ pub fn tables(source: &str, rows: &[Rows]) -> Tables {
                 Some(if r.malware { "true" } else { "false" }),
             ],
         );
+    }
+    out
+}
+
+/// CSV for the other three tables, each row carrying the key `keys` gives its advisory's
+/// publisher id.
+pub fn children(rows: &[Rows], keys: &HashMap<String, i64>) -> Result<Children, Unkeyed> {
+    let mut out = Children::default();
+    for r in rows {
+        let key = keys
+            .get(&r.id)
+            .ok_or_else(|| Unkeyed(r.id.clone()))?
+            .to_string();
         for ranged in &r.ranges {
             let (fixed, last_affected) = ranged.interval.end.columns();
             line(
                 &mut out.range,
                 &[
-                    Some(&r.id),
+                    Some(&key),
                     Some(&ranged.ecosystem),
                     Some(&ranged.name),
                     ranged.interval.introduced.as_deref(),
@@ -65,13 +87,13 @@ pub fn tables(source: &str, rows: &[Rows]) -> Tables {
             );
         }
         for alias in &r.aliases {
-            line(&mut out.alias, &[Some(&r.id), Some(alias)]);
+            line(&mut out.alias, &[Some(&key), Some(alias)]);
         }
         for a in &r.affected {
             line(
                 &mut out.affected,
                 &[
-                    Some(&r.id),
+                    Some(&key),
                     Some(&a.ecosystem),
                     Some(&a.name),
                     a.version.as_deref(),
@@ -79,7 +101,7 @@ pub fn tables(source: &str, rows: &[Rows]) -> Tables {
             );
         }
     }
-    out
+    Ok(out)
 }
 
 fn line(out: &mut Vec<u8>, fields: &[Option<&str>]) {
@@ -160,23 +182,39 @@ mod tests {
         }
     }
 
+    fn keys() -> HashMap<String, i64> {
+        [("MAL-1".to_owned(), 7)].into()
+    }
+
     fn text(bytes: &[u8]) -> &str {
         std::str::from_utf8(bytes).expect("utf-8")
     }
 
     #[test]
     fn a_quote_is_doubled_and_every_value_is_quoted() {
-        let t = tables("osv", &[rows()]);
         assert_eq!(
-            text(&t.advisory),
+            text(&advisories("osv", &[rows()])),
             "\"MAL-1\",\"osv\",\"say \"\"hi\"\"\n\\.\nafter\",,,\"true\"\n"
         );
-        assert_eq!(text(&t.alias), "\"MAL-1\",\"GHSA-a\"\n");
+    }
+
+    #[test]
+    fn a_child_row_carries_its_advisory_key_rather_than_the_publisher_id() {
+        let c = children(&[rows()], &keys()).expect("keyed");
+        assert_eq!(text(&c.alias), "\"7\",\"GHSA-a\"\n");
+    }
+
+    #[test]
+    fn a_record_with_no_key_is_an_error_naming_it() {
+        assert_eq!(
+            children(&[rows()], &HashMap::new()),
+            Err(Unkeyed("MAL-1".to_owned()))
+        );
     }
 
     #[test]
     fn a_score_is_written_as_the_number_it_is() {
-        let t = tables(
+        let csv = advisories(
             "osv",
             &[Rows {
                 cvss: Some(6.9),
@@ -184,46 +222,47 @@ mod tests {
             }],
         );
         assert!(
-            text(&t.advisory).ends_with(",\"6.9\",,\"true\"\n"),
+            text(&csv).ends_with(",\"6.9\",,\"true\"\n"),
             "{}",
-            text(&t.advisory)
+            text(&csv)
         );
     }
 
     #[test]
     fn each_interval_is_one_row_with_its_end_in_the_column_that_names_it() {
-        let t = tables("osv", &[rows()]);
+        let c = children(&[rows()], &keys()).expect("keyed");
         assert_eq!(
-            text(&t.range),
-            "\"MAL-1\",\"npm\",\"@s/p\",,\"2.0.0\",\n\
-             \"MAL-1\",\"npm\",\"@s/p\",\"3.0.0\",,\"3.1.0\"\n\
-             \"MAL-1\",\"npm\",\"@s/p\",\"4.0.0\",,\n"
+            text(&c.range),
+            "\"7\",\"npm\",\"@s/p\",,\"2.0.0\",\n\
+             \"7\",\"npm\",\"@s/p\",\"3.0.0\",,\"3.1.0\"\n\
+             \"7\",\"npm\",\"@s/p\",\"4.0.0\",,\n"
         );
     }
 
     #[test]
     fn none_is_an_empty_field_and_an_empty_string_is_quoted() {
-        let t = tables("osv", &[rows()]);
+        let c = children(&[rows()], &keys()).expect("keyed");
         assert_eq!(
-            text(&t.affected),
-            "\"MAL-1\",\"npm\",\"@s/p\",\n\"MAL-1\",\"npm\",\"@s/p\",\"\"\n"
+            text(&c.affected),
+            "\"7\",\"npm\",\"@s/p\",\n\"7\",\"npm\",\"@s/p\",\"\"\n"
         );
     }
 
     #[test]
     fn a_vulnerability_row_is_not_marked_malware() {
-        let t = tables(
+        let csv = advisories(
             "osv",
             &[Rows {
                 malware: false,
                 ..rows()
             }],
         );
-        assert!(text(&t.advisory).ends_with(",\"false\"\n"));
+        assert!(text(&csv).ends_with(",\"false\"\n"));
     }
 
     #[test]
-    fn nothing_to_load_is_four_empty_tables() {
-        assert_eq!(tables("osv", &[]), Tables::default());
+    fn nothing_to_load_is_empty_tables() {
+        assert!(advisories("osv", &[]).is_empty());
+        assert_eq!(children(&[], &HashMap::new()), Ok(Children::default()));
     }
 }
