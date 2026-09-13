@@ -11,7 +11,7 @@
 #![cfg(not(coverage))]
 
 use sqlx::PgPool;
-use waharoa::intel::load::Snapshot;
+use waharoa::intel::load::{self, Fetch};
 use waharoa::intel::osv::{self, Parsed, Rows};
 use waharoa::intel::postgres::{Loaded, PgIntel};
 use waharoa::intel::refresh::StreamDigest;
@@ -51,6 +51,13 @@ async fn fresh(name: &'static str) -> Option<PgIntel> {
         .await
         .expect("should set");
 
+    let intel = PgIntel::new(connect(name).await?);
+    intel.migrate().await.expect("migrations should apply");
+    Some(intel)
+}
+
+/// A pool whose connection uses schema `name`, which `fresh` has created.
+async fn connect(name: &'static str) -> Option<PgPool> {
     // One connection, so `search_path` holds for everything the test does.
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
@@ -66,10 +73,7 @@ async fn fresh(name: &'static str) -> Option<PgIntel> {
         .connect(&url()?)
         .await
         .expect("should connect");
-
-    let intel = PgIntel::new(pool);
-    intel.migrate().await.expect("migrations should apply");
-    Some(intel)
+    Some(pool)
 }
 
 /// `raw_sql`, not `query`: a prepared statement takes one command, and these fixtures are
@@ -318,14 +322,35 @@ fn osv_fixture(id: &str) -> Rows {
     }
 }
 
-/// `taken_at` differs per id, because `snapshot()` reports the latest and equal times tie.
-fn snapshot(id: &str) -> Snapshot {
-    let seconds = id.bytes().map(u32::from).sum::<u32>() % 60;
-    Snapshot {
-        digest: id.to_owned(),
+/// `taken_at` differs per tag, because `snapshot()` reports the latest and equal times tie.
+/// The tag is also the stream's name and sha256, so a test can tell fetches apart.
+fn fetch(tag: &str) -> Fetch {
+    let seconds = tag.bytes().map(u32::from).sum::<u32>() % 60;
+    Fetch {
         taken_at: format!("2026-09-13T00:00:{seconds:02}Z"),
-        streams: r#"{"osv": "etag"}"#.to_owned(),
+        streams: vec![StreamDigest {
+            stream: tag.to_owned(),
+            sha256: tag.to_owned(),
+            etag: None,
+            last_modified: None,
+        }],
     }
+}
+
+/// The snapshot id of a store holding exactly these sources' rows.
+fn id_of(sources: &[(&str, &[Rows])]) -> String {
+    let digests: Vec<(&str, String)> = sources
+        .iter()
+        .map(|(source, rows)| (*source, load::encode(source, rows).digest))
+        .collect();
+    load::snapshot_id(digests.iter().map(|(s, d)| (*s, d.as_str())))
+}
+
+async fn snapshots(intel: &PgIntel) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM intel_snapshot")
+        .fetch_one(intel.pool())
+        .await
+        .expect("query")
 }
 
 /// The package a fixture is against, and one version it lists if it lists any.
@@ -341,7 +366,7 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
     let (name, _) = target(&rows);
 
     let loaded = intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &snapshot("s1"))
+        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &fetch("s1"))
         .await
         .expect("load");
     assert_eq!(
@@ -351,6 +376,7 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
             aliases: 0,
             affected: 1,
             ranges: 0,
+            snapshot: id_of(&[(osv::SOURCE, std::slice::from_ref(&rows))]),
         }
     );
 
@@ -362,7 +388,7 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
     }
     assert_eq!(
         intel.snapshot().await.expect("query").map(|s| s.digest),
-        Some("s1".to_owned())
+        Some(loaded.snapshot)
     );
 }
 
@@ -374,7 +400,7 @@ async fn a_record_listing_versions_matches_only_those() {
     let version = version.expect("this fixture lists versions");
 
     let loaded = intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &snapshot("s1"))
+        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &fetch("s1"))
         .await
         .expect("load");
     assert_eq!((loaded.aliases, loaded.affected), (1, 4));
@@ -403,11 +429,11 @@ async fn a_refresh_replaces_what_the_source_held() {
     let (gone, kept) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
 
     intel
-        .replace_source(osv::SOURCE, &[gone.clone(), kept.clone()], &snapshot("s1"))
+        .replace_source(osv::SOURCE, &[gone.clone(), kept.clone()], &fetch("s1"))
         .await
         .expect("first load");
     intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&kept), &snapshot("s2"))
+        .replace_source(osv::SOURCE, std::slice::from_ref(&kept), &fetch("s2"))
         .await
         .expect("second load");
 
@@ -430,7 +456,7 @@ async fn a_refresh_replaces_what_the_source_held() {
     );
     assert_eq!(
         intel.snapshot().await.expect("query").map(|s| s.digest),
-        Some("s2".to_owned())
+        Some(id_of(&[(osv::SOURCE, std::slice::from_ref(&kept))]))
     );
 }
 
@@ -441,15 +467,11 @@ async fn a_failed_refresh_leaves_the_previous_load_in_place() {
     let (first, second) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
 
     intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&first), &snapshot("s1"))
+        .replace_source(osv::SOURCE, std::slice::from_ref(&first), &fetch("s1"))
         .await
         .expect("first load");
     let error = intel
-        .replace_source(
-            osv::SOURCE,
-            &[second.clone(), second.clone()],
-            &snapshot("s2"),
-        )
+        .replace_source(osv::SOURCE, &[second.clone(), second.clone()], &fetch("s2"))
         .await
         .expect_err("a duplicate advisory id should fail the load")
         .to_string();
@@ -474,31 +496,126 @@ async fn a_failed_refresh_leaves_the_previous_load_in_place() {
     );
     assert_eq!(
         intel.snapshot().await.expect("query").map(|s| s.digest),
-        Some("s1".to_owned())
+        Some(id_of(&[(osv::SOURCE, std::slice::from_ref(&first))]))
     );
 }
 
-/// The same bundle fetched twice has the same snapshot id. The second load succeeds.
+/// The same rows from two bundles have one snapshot id. The second load succeeds, and the
+/// snapshot takes its `taken_at` and streams.
 #[tokio::test]
-async fn the_same_bundle_loaded_twice_is_one_snapshot() {
+async fn the_same_rows_loaded_twice_are_one_snapshot() {
     let intel = skip_without_database!("t_load_twice");
     let rows = osv_fixture("MAL-2021-1");
 
-    for _ in 0..2 {
+    for tag in ["s1", "s2"] {
         intel
-            .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &snapshot("s1"))
+            .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &fetch(tag))
             .await
             .expect("load");
     }
 
-    let snapshots: i64 = sqlx::query_scalar("SELECT count(*) FROM intel_snapshot")
-        .fetch_one(intel.pool())
+    assert_eq!(snapshots(&intel).await, 1);
+    let reported = intel
+        .snapshot()
         .await
-        .expect("query");
-    assert_eq!(snapshots, 1);
+        .expect("query")
+        .expect("a snapshot is loaded");
     assert_eq!(
-        intel.snapshot().await.expect("query").map(|s| s.digest),
-        Some("s1".to_owned())
+        reported.digest,
+        id_of(&[(osv::SOURCE, std::slice::from_ref(&rows))])
+    );
+    assert_eq!(reported.taken_at, fetch("s2").taken_at);
+    assert_eq!(reported.streams, fetch("s2").streams);
+}
+
+/// When the id hashed the bundle, the malware-only loader and the one after it stored
+/// different rows from one bundle under one id.
+#[tokio::test]
+async fn different_rows_from_one_bundle_are_different_snapshots() {
+    let intel = skip_without_database!("t_load_differ");
+    let (a, b) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
+
+    let both = intel
+        .replace_source(osv::SOURCE, &[a.clone(), b], &fetch("s1"))
+        .await
+        .expect("load");
+    let one = intel
+        .replace_source(osv::SOURCE, std::slice::from_ref(&a), &fetch("s1"))
+        .await
+        .expect("load");
+
+    assert_ne!(both.snapshot, one.snapshot);
+    assert_eq!(snapshots(&intel).await, 2);
+}
+
+#[tokio::test]
+async fn the_snapshot_id_covers_every_source_in_the_store() {
+    let intel = skip_without_database!("t_load_sources");
+    let (ours, theirs) = ([osv_fixture("MAL-2021-1")], [osv_fixture("MAL-2022-174")]);
+    let both = id_of(&[(osv::SOURCE, &ours[..]), ("other", &theirs[..])]);
+
+    let first = intel
+        .replace_source(osv::SOURCE, &ours, &fetch("s1"))
+        .await
+        .expect("load");
+    assert_eq!(first.snapshot, id_of(&[(osv::SOURCE, &ours[..])]));
+
+    let second = intel
+        .replace_source("other", &theirs, &fetch("s2"))
+        .await
+        .expect("load");
+    assert_eq!(second.snapshot, both);
+    let reported = intel
+        .snapshot()
+        .await
+        .expect("query")
+        .expect("a snapshot is loaded");
+    assert_eq!(reported.digest, both);
+    let streams: Vec<&str> = reported.streams.iter().map(|s| s.stream.as_str()).collect();
+    assert_eq!(streams, ["s1", "s2"]);
+
+    // One source reloaded with the same rows: still both.
+    let third = intel
+        .replace_source(osv::SOURCE, &ours, &fetch("s3"))
+        .await
+        .expect("load");
+    assert_eq!(third.snapshot, both);
+}
+
+/// Two refreshes of different sources at once would each hash the other's previous digest.
+/// The other refresh here is a transaction holding an uncommitted `intel_source` row.
+#[tokio::test]
+async fn a_refresh_waits_for_another_sources_uncommitted_digest() {
+    let intel = skip_without_database!("t_load_lock");
+    let other = connect("t_load_lock")
+        .await
+        .expect("connected a moment ago");
+    let mut tx = other.begin().await.expect("begin");
+    sqlx::query(
+        "INSERT INTO intel_source (source, digest, streams) \
+         VALUES ('other', 'sha256:other', '{}')",
+    )
+    .execute(&mut *tx)
+    .await
+    .expect("insert");
+
+    let rows = [osv_fixture("MAL-2021-1")];
+    let refresh = {
+        let (intel, rows) = (intel.clone(), rows.clone());
+        tokio::spawn(async move { intel.replace_source(osv::SOURCE, &rows, &fetch("s1")).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(
+        !refresh.is_finished(),
+        "the refresh committed before the other source's digest did"
+    );
+
+    tx.commit().await.expect("commit");
+    let loaded = refresh.await.expect("joined").expect("load");
+    let ours = load::encode(osv::SOURCE, &rows).digest;
+    assert_eq!(
+        loaded.snapshot,
+        load::snapshot_id([(osv::SOURCE, ours.as_str()), ("other", "sha256:other")])
     );
 }
 
@@ -514,7 +631,7 @@ async fn a_refresh_leaves_other_sources_alone() {
     .await;
 
     intel
-        .replace_source(osv::SOURCE, &[], &snapshot("s1"))
+        .replace_source(osv::SOURCE, &[], &fetch("s1"))
         .await
         .expect("empty load");
 
@@ -545,7 +662,7 @@ async fn text_copy_treats_specially_round_trips() {
     ];
 
     intel
-        .replace_source(osv::SOURCE, &rows, &snapshot("s1"))
+        .replace_source(osv::SOURCE, &rows, &fetch("s1"))
         .await
         .expect("load");
 
@@ -584,7 +701,7 @@ async fn a_load_larger_than_one_copy_chunk_arrives_whole() {
         .collect();
 
     let loaded = intel
-        .replace_source(osv::SOURCE, &rows, &snapshot("s1"))
+        .replace_source(osv::SOURCE, &rows, &fetch("s1"))
         .await
         .expect("load");
     assert_eq!((loaded.advisories, loaded.affected), (3000, 3000));
@@ -611,12 +728,8 @@ async fn an_empty_store_answers_no_package_intel_at_all() {
 async fn a_loaded_store_answers_every_version_row_for_a_package() {
     let intel = skip_without_database!("t_package_loaded");
     let (every, listed) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
-    intel
-        .replace_source(
-            osv::SOURCE,
-            &[every.clone(), listed.clone()],
-            &snapshot("s1"),
-        )
+    let loaded = intel
+        .replace_source(osv::SOURCE, &[every.clone(), listed.clone()], &fetch("s1"))
         .await
         .expect("load");
 
@@ -626,7 +739,7 @@ async fn a_loaded_store_answers_every_version_row_for_a_package() {
         .await
         .expect("query")
         .expect("a snapshot is loaded");
-    assert_eq!(found.snapshot, "s1");
+    assert_eq!(found.snapshot, loaded.snapshot);
     assert_eq!(found.records.len(), 1);
     assert_eq!(found.records[0].0, None);
     assert!(found.records[0].1.malware);
@@ -646,8 +759,8 @@ async fn a_loaded_store_answers_every_version_row_for_a_package() {
 #[tokio::test]
 async fn a_package_nothing_is_known_against_still_names_the_snapshot() {
     let intel = skip_without_database!("t_package_unknown");
-    intel
-        .replace_source(osv::SOURCE, &[osv_fixture("MAL-2021-1")], &snapshot("s1"))
+    let loaded = intel
+        .replace_source(osv::SOURCE, &[osv_fixture("MAL-2021-1")], &fetch("s1"))
         .await
         .expect("load");
 
@@ -656,7 +769,7 @@ async fn a_package_nothing_is_known_against_still_names_the_snapshot() {
         .await
         .expect("query")
         .expect("a snapshot is loaded");
-    assert_eq!(found.snapshot, "s1");
+    assert_eq!(found.snapshot, loaded.snapshot);
     assert!(found.records.is_empty());
 }
 
@@ -671,7 +784,7 @@ async fn a_package_named_by_two_sources_answers_both() {
         "the fixture this test is written against"
     );
     intel
-        .replace_source(osv::SOURCE, &[malware], &snapshot("s1"))
+        .replace_source(osv::SOURCE, &[malware], &fetch("s1"))
         .await
         .expect("load");
     insert(
@@ -702,7 +815,7 @@ async fn a_loaded_range_is_found_for_the_versions_inside_it() {
     let intel = skip_without_database!("t_range_open");
     let rows = osv_fixture("MAL-2022-219");
     let loaded = intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &snapshot("s1"))
+        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &fetch("s1"))
         .await
         .expect("load");
     assert_eq!((loaded.affected, loaded.ranges), (0, 1));
@@ -733,11 +846,7 @@ async fn a_loaded_range_is_found_for_the_versions_inside_it() {
 async fn a_version_published_into_a_range_after_the_list_was_written_is_found() {
     let intel = skip_without_database!("t_range_and_list");
     intel
-        .replace_source(
-            osv::SOURCE,
-            &[osv_fixture("MAL-2025-3661")],
-            &snapshot("s1"),
-        )
+        .replace_source(osv::SOURCE, &[osv_fixture("MAL-2025-3661")], &fetch("s1"))
         .await
         .expect("load");
 
@@ -779,7 +888,7 @@ async fn a_vulnerability_record_loads_with_its_score_and_aliases() {
         panic!("should be stored");
     };
     let loaded = intel
-        .replace_source(osv::SOURCE, &[rows], &snapshot("s1"))
+        .replace_source(osv::SOURCE, &[rows], &fetch("s1"))
         .await
         .expect("load");
     assert_eq!((loaded.aliases, loaded.ranges), (2, 2));
@@ -881,6 +990,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "advisory_alias",
         "advisory_range",
         "intel_snapshot",
+        "intel_source",
     ];
     for table in tables {
         assert!(
@@ -917,7 +1027,7 @@ async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
     let intel = skip_without_database!("t_too_long");
     let first = osv_fixture("MAL-2021-1");
     intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&first), &snapshot("s1"))
+        .replace_source(osv::SOURCE, std::slice::from_ref(&first), &fetch("s1"))
         .await
         .expect("first load");
 
@@ -931,7 +1041,7 @@ async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
         ..osv_fixture("MAL-2022-174")
     };
     let error = intel
-        .replace_source(osv::SOURCE, &[long], &snapshot("s2"))
+        .replace_source(osv::SOURCE, &[long], &fetch("s2"))
         .await
         .expect_err("a 513-character name should fail the load")
         .to_string();
@@ -952,7 +1062,7 @@ async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
     );
     assert_eq!(
         intel.snapshot().await.expect("query").map(|s| s.digest),
-        Some("s1".to_owned())
+        Some(id_of(&[(osv::SOURCE, std::slice::from_ref(&first))]))
     );
 }
 
@@ -965,7 +1075,7 @@ async fn timestamps_written_as_rfc_3339_are_stored_as_timestamps() {
         ..osv_fixture("MAL-2021-1")
     };
     intel
-        .replace_source(osv::SOURCE, &[rows], &snapshot("s1"))
+        .replace_source(osv::SOURCE, &[rows], &fetch("s1"))
         .await
         .expect("load");
 
@@ -973,10 +1083,37 @@ async fn timestamps_written_as_rfc_3339_are_stored_as_timestamps() {
         "SELECT (SELECT modified = '2026-09-08T03:45:02.886710Z'::timestamptz FROM advisory), \
                 (SELECT taken_at = $1::text::timestamptz FROM intel_snapshot)",
     )
-    .bind(snapshot("s1").taken_at)
+    .bind(fetch("s1").taken_at)
     .fetch_one(intel.pool())
     .await
     .expect("query");
     assert!(modified);
     assert!(taken_at);
+}
+
+/// Postgres prints a `DOUBLE PRECISION` as the shortest text that reads back as the same
+/// number, as Rust does, so a stored score is the text the encoding hashed.
+#[tokio::test]
+async fn a_stored_score_prints_as_the_encoding_wrote_it() {
+    let intel = skip_without_database!("t_score_text");
+    let rows: Vec<Rows> = [6.9, 0.1 + 0.2, 9.3]
+        .into_iter()
+        .enumerate()
+        .map(|(i, cvss)| Rows {
+            id: format!("GHSA-{i}"),
+            cvss: Some(cvss),
+            ..osv_fixture("MAL-2021-1")
+        })
+        .collect();
+    intel
+        .replace_source(osv::SOURCE, &rows, &fetch("s1"))
+        .await
+        .expect("load");
+
+    let stored: Vec<String> =
+        sqlx::query_scalar("SELECT cvss::text FROM advisory ORDER BY publisher_id")
+            .fetch_all(intel.pool())
+            .await
+            .expect("query");
+    assert_eq!(stored, ["6.9", "0.30000000000000004", "9.3"]);
 }

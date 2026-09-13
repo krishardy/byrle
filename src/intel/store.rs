@@ -156,11 +156,11 @@ impl PackageIntel {
 /// The load the answers come from, as `waharoa refresh` recorded it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadedSnapshot {
-    /// `sha256:` and the hex digest of the per-stream digests.
+    /// The snapshot id, over every source's rows. See `load::snapshot_id`.
     pub digest: String,
     /// When the refresh that wrote it ran. RFC 3339, UTC, to the second.
     pub taken_at: String,
-    /// Each stream in the load, sorted by name.
+    /// Each stream the sources' rows were read from, sorted by name.
     pub streams: Vec<StreamDigest>,
 }
 

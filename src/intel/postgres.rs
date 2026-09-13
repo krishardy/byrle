@@ -4,7 +4,7 @@
 //! `sqlx::query_as!`. A renamed column or a changed type is a compile error rather than a
 //! runtime one. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
 
-use super::load::{self, Snapshot};
+use super::load::{self, Fetch};
 use super::osv::Rows;
 use super::range::Interval;
 use super::refresh::StreamDigest;
@@ -16,13 +16,15 @@ use std::collections::HashMap;
 /// holds in flight.
 const COPY_CHUNK: usize = 1 << 20;
 
-/// Rows written by [`PgIntel::replace_source`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Rows written by [`PgIntel::replace_source`], and the snapshot the store contains after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Loaded {
     pub advisories: u64,
     pub aliases: u64,
     pub affected: u64,
     pub ranges: u64,
+    /// The snapshot id. See [`load::snapshot_id`].
+    pub snapshot: String,
 }
 
 /// The advisory mirror.
@@ -52,7 +54,8 @@ impl PgIntel {
             .map_err(|e| IntelError::Backend(sqlx::Error::Migrate(Box::new(e))))
     }
 
-    /// Replace everything `source` supplied with `rows`, and record `snapshot`.
+    /// Replace everything `source` supplied with `rows`, and record the snapshot the store
+    /// contains after it.
     ///
     /// One transaction. A lookup during the load reads the previous rows, because Postgres
     /// shows a transaction's writes to nobody else until it commits, and a load that fails
@@ -63,21 +66,32 @@ impl PgIntel {
     /// `advisory` is copied first. The keys Postgres assigned are read back in the same
     /// transaction, and the other tables are copied carrying them.
     ///
-    /// A snapshot digest already recorded, which is the same bundle loaded again, keeps its
-    /// row and takes the new `taken_at`.
+    /// The snapshot id is hashed from every source's `intel_source.digest`. The transaction
+    /// locks `intel_source` first, so a refresh of another source waits for this one to
+    /// commit and then reads this source's new digest.
+    ///
+    /// A snapshot id already recorded, which is the same rows loaded again, keeps its row and
+    /// takes the new `taken_at` and streams.
     pub async fn replace_source(
         &self,
         source: &str,
         rows: &[Rows],
-        snapshot: &Snapshot,
+        fetch: &Fetch,
     ) -> Result<Loaded, IntelError> {
+        let encoded = load::encode(source, rows);
         let mut tx = self.pool.begin().await.map_err(IntelError::Backend)?;
 
+        // SHARE ROW EXCLUSIVE conflicts with itself and with any write to the table, and not
+        // with a read.
+        sqlx::query!("LOCK TABLE intel_source IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(IntelError::Backend)?;
         sqlx::query!("DELETE FROM advisory WHERE source = $1", source)
             .execute(&mut *tx)
             .await
             .map_err(IntelError::Backend)?;
-        let advisories = copy(&mut tx, load::ADVISORY, &load::advisories(source, rows)).await?;
+        let advisories = copy(&mut tx, load::ADVISORY, &encoded.advisory).await?;
         let keys: HashMap<String, i64> = sqlx::query!(
             "SELECT publisher_id, id FROM advisory WHERE source = $1",
             source
@@ -90,28 +104,56 @@ impl PgIntel {
         .collect();
         let children = load::children(rows, &keys)
             .map_err(|load::Unkeyed(advisory_id)| IntelError::Unkeyed { advisory_id })?;
-        let loaded = Loaded {
-            advisories,
-            aliases: copy(&mut tx, load::ALIAS, &children.alias).await?,
-            affected: copy(&mut tx, load::AFFECTED, &children.affected).await?,
-            ranges: copy(&mut tx, load::RANGE, &children.range).await?,
-        };
+        let (aliases, affected, ranges) = (
+            copy(&mut tx, load::ALIAS, &children.alias).await?,
+            copy(&mut tx, load::AFFECTED, &children.affected).await?,
+            copy(&mut tx, load::RANGE, &children.range).await?,
+        );
+
         // `::text` first, so the parameters are text and sqlx needs no date or JSON type.
         sqlx::query!(
+            "INSERT INTO intel_source (source, digest, streams) \
+             VALUES ($1, $2, $3::text::jsonb) \
+             ON CONFLICT (source) DO UPDATE \
+             SET digest = EXCLUDED.digest, streams = EXCLUDED.streams",
+            source,
+            encoded.digest,
+            fetch.streams_json()
+        )
+        .execute(&mut *tx)
+        .await
+        .map_err(IntelError::Backend)?;
+        let sources = sqlx::query!("SELECT source, digest FROM intel_source")
+            .fetch_all(&mut *tx)
+            .await
+            .map_err(IntelError::Backend)?;
+        let snapshot = load::snapshot_id(
+            sources
+                .iter()
+                .map(|s| (s.source.as_str(), s.digest.as_str())),
+        );
+        // With no stream recorded, the aggregate is NULL and the column is not.
+        sqlx::query!(
             "INSERT INTO intel_snapshot (digest, taken_at, streams) \
-             VALUES ($1, $2::text::timestamptz, $3::text::jsonb) \
+             SELECT $1, $2::text::timestamptz, COALESCE(jsonb_object_agg(e.key, e.value), '{}') \
+             FROM intel_source s CROSS JOIN LATERAL jsonb_each(s.streams) e \
              ON CONFLICT (digest) DO UPDATE \
              SET taken_at = EXCLUDED.taken_at, streams = EXCLUDED.streams",
-            snapshot.digest,
-            snapshot.taken_at,
-            snapshot.streams
+            snapshot,
+            fetch.taken_at
         )
         .execute(&mut *tx)
         .await
         .map_err(IntelError::Backend)?;
 
         tx.commit().await.map_err(IntelError::Backend)?;
-        Ok(loaded)
+        Ok(Loaded {
+            advisories,
+            aliases,
+            affected,
+            ranges,
+            snapshot,
+        })
     }
 }
 
