@@ -54,6 +54,7 @@ use crate::http::{
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
+use crate::policy::{Policy, enforce};
 use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
     RequestTarget,
@@ -196,6 +197,10 @@ pub struct Proxy {
     /// is fetched. Stage 2 replaces this with the policy engine; there is deliberately
     /// no config file behind it, so it cannot quietly become a feature.
     blocked: Option<PackageKey>,
+    /// The policy, when one is configured. `None` is Stage 1 behaviour and is a distinct
+    /// state from a policy that allows everything: nothing was asked, rather than asked
+    /// and answered yes.
+    policy: Option<Arc<Policy>>,
     max_packument_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`rewrite_packument`].
@@ -228,6 +233,7 @@ impl Proxy {
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             upstream,
             blocked: None,
+            policy: None,
             max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
             rewrite_artifacts: true,
             public_base: None,
@@ -325,6 +331,11 @@ impl Proxy {
             store: Arc::new(Mutex::new(RecordStore::new(max_records))),
             ..self
         }
+    }
+
+    pub fn with_policy(mut self, policy: Option<Arc<Policy>>) -> Self {
+        self.policy = policy;
+        self
     }
 
     pub fn with_blocked(mut self, blocked: Option<PackageKey>) -> Self {
@@ -736,6 +747,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let mut artifact_purl = String::new();
     let mut artifact_origin: Option<String> = None;
     let mut unservable_origin: Option<String> = None;
+    let mut policy_refusal: Option<enforce::Refusal> = None;
     if let RequestTarget::Tarball {
         key,
         claimed_version,
@@ -756,6 +768,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                     has_install_scripts = record.has_install_scripts,
                     "artifact requested, digest known"
                 );
+                // Decision #4's pinned half. Asked here because this is the first point
+                // where the exact version and its record are both in hand, and it is
+                // still before a byte is fetched.
+                if let enforce::Verdict::Refuse(refusal) =
+                    enforce::artifact(proxy.policy.as_deref(), &record, today())
+                {
+                    policy_refusal = Some(refusal);
+                }
                 // Where the packument said the artifact lives, when that is an origin
                 // the operator added. Rewriting pointed the client at the proxy, so the
                 // proxy has to know where "here" stood for. Everything else goes to the
@@ -819,6 +839,21 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 claimed_purl = %purl,
                 "artifact requested, no packument seen for it"
             ),
+        }
+
+        if let Some(refusal) = &policy_refusal {
+            let status = refusal_status(&proxy, Some(&client_ua));
+            info!(
+                %method,
+                path = %path_and_query,
+                status = status.as_u16(),
+                claimed_purl = %purl,
+                action = refusal.action.as_str(),
+                reasons = ?refusal.reasons,
+                client = %client_ua,
+                "refused by policy"
+            );
+            return (status, refusal.message()).into_response();
         }
 
         // A pinned fetch of a version the packument filter removes. Decision #4: filter
@@ -1209,6 +1244,14 @@ fn defer_response(
 ///
 /// Returns `None` when the document is forwarded as it came, which always means some
 /// artifacts for this package will be fetched without the proxy seeing them.
+/// Today, in UTC.
+///
+/// The policy is written in civil dates, so a zone has to be chosen. UTC, so two replicas
+/// never land a day apart across midnight. See `policy::facts`.
+fn today() -> jiff::civil::Date {
+    jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()
+}
+
 fn rewrite_packument(
     decoded: &[u8],
     packument: &NormalizedPackument,
@@ -2058,6 +2101,109 @@ mod tests {
         assert!(
             seen.lock().unwrap().paths.is_empty(),
             "the upstream was contacted for a package policy refused"
+        );
+    }
+
+    fn policy(yaml: &str) -> std::sync::Arc<Policy> {
+        std::sync::Arc::new(Policy::parse(yaml).expect("policy should load"))
+    }
+
+    /// Decision #4's pinned half, end to end. `npm ci` fetches an artifact by name
+    /// without asking for a packument, which is the case this covers.
+    #[tokio::test]
+    async fn a_denied_version_is_refused_on_a_pinned_fetch_before_the_artifact_is_fetched() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_policy(Some(policy(
+                    "version: 1\ncooldown_days: 0\n\
+                     denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
+                )))
+                // Off, so the 403 can only be the policy's and not the origin check's.
+                .with_refuse_unservable(false)
+                .router(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("pkg:npm/lodash@4.17.21"), "{body}");
+        assert!(body.contains("denials"), "{body}");
+
+        // The packument was fetched, because the digest has to be known before the
+        // artifact is. The artifact itself never was.
+        let paths = &seen.lock().unwrap().paths;
+        assert!(
+            !paths.iter().any(|p| p.ends_with(".tgz")),
+            "the artifact was fetched for a version policy denied: {paths:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_version_the_policy_allows_is_served() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_policy(Some(policy(
+                    "version: 1\ncooldown_days: 0\n\
+                     denials:\n  - purl: pkg:npm/lodash@4.17.20\n    reason: test\n",
+                )))
+                .with_refuse_unservable(false)
+                .router(),
+        )
+        .await;
+
+        // The upstream serves the packument body for every path, so the artifact fails
+        // its digest check and the stream aborts. What is being tested is whether policy
+        // stopped the request, so the assertion is on what reached upstream.
+        let _ = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
+
+        let paths = &seen.lock().unwrap().paths;
+        assert!(
+            paths.iter().any(|p| p.ends_with(".tgz")),
+            "a version no denial names must be fetched: {paths:?}"
+        );
+    }
+
+    /// No policy at all is not the same as a policy that allows everything, and neither
+    /// refuses.
+    #[tokio::test]
+    async fn no_policy_configured_refuses_nothing() {
+        let (upstream, seen) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new(), upstream)
+                .with_refuse_unservable(false)
+                .router(),
+        )
+        .await;
+
+        let _ = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
+
+        let paths = &seen.lock().unwrap().paths;
+        assert!(
+            paths.iter().any(|p| p.ends_with(".tgz")),
+            "with no policy nothing is refused: {paths:?}"
         );
     }
 

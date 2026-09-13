@@ -289,13 +289,18 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             let required = set
                 .and_then(|s| s.cooldown_days)
                 .unwrap_or(policy.cooldown_days);
-            let old_enough = facts.published.is_some_and(|published| {
+            // Zero days of waiting is satisfied by everything, including a package
+            // whose publish date is unknown: there is no wait for it to be inside. This
+            // is how the check is turned off, and without the short circuit it fails
+            // every package the registry published no time for.
+            let old_enough = required == 0
+                || facts.published.is_some_and(|published| {
                 // A date so far out it cannot be represented is not a date this package
                 // will ever reach, so it is not old enough.
-                published
-                    .checked_add(jiff::Span::new().days(i64::from(required)))
-                    .is_ok_and(|ready| ready <= as_of)
-            });
+                    published
+                        .checked_add(jiff::Span::new().days(i64::from(required)))
+                        .is_ok_and(|ready| ready <= as_of)
+                });
             if old_enough {
                 Outcome::Passed
             } else {
@@ -542,6 +547,21 @@ mod tests {
         };
         assert!(decide(&policy(""), &facts, date(2026, 9, 12)).delivered());
         assert!(!decide(&policy(""), &facts, date(2026, 9, 11)).delivered());
+    }
+
+    /// Zero days of waiting is how the check is turned off, and it has to be off for
+    /// every package, including the ones the registry published no time for.
+    #[test]
+    fn a_cooldown_of_zero_days_passes_a_package_with_no_publish_date() {
+        let facts = Facts {
+            published: None,
+            ..clean()
+        };
+
+        assert_eq!(
+            *outcome(&decide(&policy("cooldown_days: 0"), &facts, date(2026, 9, 13)), Check::CooldownDays),
+            Outcome::Passed
+        );
     }
 
     /// "We do not know when this was published" is not "old enough".
