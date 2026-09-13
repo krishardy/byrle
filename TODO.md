@@ -1042,9 +1042,10 @@ the record of why it went survives the deletion.
             wins" gave the same answer. It now asserts both orders and a package the
             narrow entry does not name.
       - [ ] The short circuit in front of Stage 4's expensive analysis, when there is any.
-- [ ] An entry that changes nothing is **valid**: it warns at load and `doctor` flags it.
+- [x] An entry that changes nothing is **valid**: it warns at load and `doctor` flags it.
       Almost always a selector that no longer matches what it was written for, but not a
-      reason to refuse a policy.
+      reason to refuse a policy. Startup, `doctor` and `policy check` read one
+      `policy::check::Report`.
 - [x] List-valued rules replace rather than union. True by construction: the merge takes
       one side or the other and never combines. No setting is list-valued except
       `cve_ids`, which is a set of exceptions rather than a rule value.
@@ -1218,9 +1219,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             `verdict: quarantine`, the audit line recorded `quarantine`, and the proxy
             served the package. All three now use `enforce::enforced`, the vector the
             proxy acts on.
-- [ ] `policy check` flags permanently-shadowed selectors
-- [ ] `policy check` lists `permanent: true` entries separately
-- [ ] `policy check` and `doctor` flag entries that change nothing
+- [x] `policy check` flags permanently-shadowed selectors. After load refuses duplicates
+      and unordered overlaps, one shape is left: `has_install_scripts: true` and `false`
+      entries below an entry that sets neither. Reported as "never wins" when neither
+      expires, and "shadowed through <date>" when one does. See
+      [policy-check](docs/engineering_decisions/policy-check.md).
+- [x] `policy check` lists `permanent: true` entries separately
+- [x] `policy check` and `doctor` flag entries that change nothing. `--strict` exits 1 on
+      an entry that changes nothing or never wins.
 - [x] Tests: a denial cannot be undone by any exception. `Check::exceptable` is false
       for it, and a test puts a matching exception beside a denial and checks both hold.
 - [x] Tests: known malware cannot be excepted, whatever the policy file says.

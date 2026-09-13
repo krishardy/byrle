@@ -10,6 +10,8 @@
 //! so what is decided here can be tested against fixed inputs.
 
 use crate::env;
+use crate::policy::check::Report;
+use crate::policy::packages;
 use std::collections::BTreeSet;
 use std::fmt;
 
@@ -457,6 +459,62 @@ pub fn worst(findings: &[Finding]) -> Severity {
         .unwrap_or(Severity::Ok)
 }
 
+/// The title of every finding about the policy file.
+const POLICY_TITLE: &str = "policy";
+
+/// What `waharoa policy check --strict` fails on, for the policy the proxy is configured with.
+///
+/// `loaded` is the report from [`crate::policy::check::load`], or its refusal as text. A
+/// refused policy is a problem, because the proxy does not start with it. An entry that
+/// changes nothing or never wins is a warning.
+pub fn check_policy(path: &str, loaded: Result<&Report, &str>) -> Vec<Finding> {
+    let report = match loaded {
+        Ok(report) => report,
+        Err(e) => {
+            return vec![Finding::new(
+                Severity::Problem,
+                POLICY_TITLE,
+                format!("{path}: {e}. The proxy does not start with it"),
+            )];
+        }
+    };
+    let mut findings: Vec<Finding> = report
+        .unchanged
+        .iter()
+        .map(|&index| {
+            Finding::new(
+                Severity::Warn,
+                POLICY_TITLE,
+                format!(
+                    "{} changes nothing: every value it sets is already the global setting",
+                    packages::label(index)
+                ),
+            )
+            .with_fix("delete it")
+        })
+        .collect();
+    findings.extend(report.never_wins().map(|shadowed| {
+        Finding::new(
+            Severity::Warn,
+            POLICY_TITLE,
+            format!(
+                "{} never wins: {}",
+                packages::label(shadowed.index),
+                shadowed.cover()
+            ),
+        )
+        .with_fix("delete it")
+    }));
+    if findings.is_empty() {
+        findings.push(Finding::new(
+            Severity::Ok,
+            POLICY_TITLE,
+            format!("{path} loads, and every package entry can take effect"),
+        ));
+    }
+    findings
+}
+
 fn same_origin(a: &str, b: &str) -> bool {
     match (crate::npm::origin_of_url(a), crate::npm::origin_of_url(b)) {
         (Some(a), Some(b)) => a == b,
@@ -487,6 +545,51 @@ mod tests {
 
     fn origins(items: &[&str]) -> BTreeSet<String> {
         items.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn policy_report(source: &str, as_of: jiff::civil::Date) -> Report {
+        let policy = crate::policy::Policy::parse(source).expect("policy should load");
+        Report::of(&policy, as_of)
+    }
+
+    #[test]
+    fn a_policy_entry_that_does_nothing_is_a_warning() {
+        let report = policy_report(
+            include_str!("../tests/fixtures/policy-check/dead.yaml"),
+            jiff::civil::date(2026, 9, 13),
+        );
+        let found = check_policy("dead.yaml", Ok(&report));
+        let details: Vec<&str> = found.iter().map(|f| f.detail.as_str()).collect();
+        assert_eq!(
+            details,
+            [
+                "packages[6] changes nothing: every value it sets is already the global setting",
+                "packages[0] never wins: packages[1] and packages[2] match every package it does",
+            ]
+        );
+        assert!(found.iter().all(|f| f.severity == Severity::Warn));
+    }
+
+    #[test]
+    fn a_policy_the_proxy_refuses_is_a_problem() {
+        let found = check_policy("p.yaml", Err("policy is not valid: x"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].severity, Severity::Problem);
+        assert_eq!(
+            found[0].detail,
+            "p.yaml: policy is not valid: x. The proxy does not start with it"
+        );
+    }
+
+    #[test]
+    fn a_policy_whose_entries_all_take_effect_is_ok() {
+        let report = policy_report(
+            include_str!("../examples/policy.yaml"),
+            jiff::civil::date(2026, 9, 1),
+        );
+        let found = check_policy("policy.yaml", Ok(&report));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].severity, Severity::Ok);
     }
 
     #[test]

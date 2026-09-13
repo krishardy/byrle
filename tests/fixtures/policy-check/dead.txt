@@ -1,0 +1,17 @@
+7 package entries, as of 2026-09-13
+
+changes nothing
+  packages[6] npm:ms: restates the global wait
+
+never wins
+  packages[0] npm:left-pad: packages[1] and packages[2] match every package it does
+
+shadowed until a narrower entry lapses
+  packages[3] npm:is-odd: packages[4] and packages[5] match every package it does, through 2026-11-30
+
+permanent
+  packages[0] npm:left-pad: reviewed build step
+  packages[1] npm:left-pad has_install_scripts=true: reviewed build step, with scripts
+  packages[2] npm:left-pad has_install_scripts=false: no scripts, no wait
+  packages[3] npm:is-odd: internal mirror
+  packages[4] npm:is-odd has_install_scripts=true: internal mirror, reviewed scripts

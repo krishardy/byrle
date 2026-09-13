@@ -776,7 +776,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                             &facts.ecosystem,
                             &facts.name,
                             &facts.version,
-                            &crate::policy::decide::decide(policy, &facts, today()),
+                            &crate::policy::decide::decide(policy, &facts, crate::policy::today()),
                             &enforce::unenforceable(policy, &record, times.as_deref(), facts.intel),
                         )
                         .with_intel_snapshot(intel.as_ref().map(|i| i.snapshot.as_str())),
@@ -787,7 +787,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                     &record,
                     times.as_deref(),
                     intel.as_ref(),
-                    today(),
+                    crate::policy::today(),
                 ) {
                     policy_refusal = Some(refusal);
                 }
@@ -1278,18 +1278,6 @@ fn defer_response(
         .into_response()
 }
 
-/// Point a packument's artifacts at the proxy, or explain why it was left alone.
-///
-/// Returns `None` when the document is forwarded as it came, which always means some
-/// artifacts for this package will be fetched without the proxy seeing them.
-/// Today, in UTC.
-///
-/// The policy is written in civil dates, so a zone has to be chosen. UTC, so two replicas
-/// never land a day apart across midnight. See `policy::facts`.
-fn today() -> jiff::civil::Date {
-    jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()
-}
-
 /// How many packages' publish times are kept before the map is dropped whole.
 ///
 /// Matches the record store's default. Dropping everything rather than evicting one entry
@@ -1408,7 +1396,7 @@ fn policy_refused_versions(
     let Some(policy) = policy else {
         return HashSet::new();
     };
-    let today = today();
+    let today = crate::policy::today();
     let mut refused = HashSet::new();
     let mut order = Vec::new();
     let mut checks: BTreeSet<String> = BTreeSet::new();
@@ -1491,6 +1479,10 @@ struct Rewrite<'a> {
     audit: Option<&'a AuditLog>,
 }
 
+/// Point a packument's artifacts at the proxy, or explain why it was left alone.
+///
+/// Returns `None` when the document is forwarded as it came, which always means some
+/// artifacts for this package will be fetched without the proxy seeing them.
 fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
     let Rewrite {
         decoded,

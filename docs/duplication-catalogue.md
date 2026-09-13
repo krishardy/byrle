@@ -32,7 +32,7 @@ The Action column uses three values:
 |---|---|---|---|---|
 | P1 | Packument GET: `Accept`, `Accept-Encoding: gzip`, status check, `Content-Encoding`, `decode_for_parsing`. 13 lines | `npm.rs:1236-1266` (`packument`), `npm.rs:1278-1300` (`publish_times`) | consolidate | one private fetch taking the `Accept` value, returning decoded bytes |
 | P2 | Lock `.expect` messages: `"record store lock"` 6, `"verified artifacts lock"` 3, `"publish times lock"` 2 | `proxy.rs:294, 597, 608, 629, 989, 1126`; `308, 455, 816`; `1313, 1339` | helper | one method per mutex on the proxy state that locks and expects |
-| P3 | Today's date: `jiff::Timestamp::now().to_zoned(TimeZone::UTC).date()` | `main.rs:189-193` (`run_policy_diff`), `main.rs:404-406` (`run_explain`), `proxy.rs:1289` (`fn today`) | consolidate | one `pub fn today()`. `main.rs:35` (`report_policy`) uses `jiff::Zoned::now().date()`, local time, as the `as_of` for `packages::check`, whose expiry ceiling is `as_of` plus `WAHAROA_EXPIRY_CEILING_DAYS`. The proxy's per-request date is UTC |
+| P3 | Today's date: `jiff::Timestamp::now().to_zoned(TimeZone::UTC).date()` | `main.rs:189-193` (`run_policy_diff`), `main.rs:404-406` (`run_explain`), `proxy.rs:1289` (`fn today`) | done | `policy::today()`, with `policy check`. `report_policy` used `jiff::Zoned::now().date()`, local time, and now uses it too |
 | P4 | User agent `concat!("waharoa/", env!("CARGO_PKG_VERSION"))` | `main.rs:555`, `main.rs:708` | consolidate | one `const USER_AGENT` |
 | P5 | Command error output: 20 `eprintln!("waharoa <command>: ...")` and 23 `ExitCode::from(n)`. Repeated literals: `"waharoa explain: {e}"` (324, 345, 396), `"waharoa refresh: {e}"` (560, 568, 599), `"waharoa policy diff: {}: {e}"` (205, 215, 231), `"waharoa refresh: nothing loaded: {e}"` (576, 608) | `main.rs` | helper | a function taking the command name, message and exit code, alongside `or_exit` |
 | P6 | `"packument is not valid JSON: {e}"` | `npm.rs:439`, `npm.rs:756` (`NormalizeError::Json`) | consolidate | one `const` or a shared `Display` arm |
@@ -40,7 +40,7 @@ The Action column uses three values:
 | P8 | Finding title `"proxy public URL"` | `doctor.rs:362`, `doctor.rs:376` | consolidate | `const` |
 | P9 | `builder.build()` then `"<invalid purl: {e}>"` in two `Display` impls | `identity.rs:185-189`, `identity.rs:269-272` | helper | one function writing a builder result |
 | P10 | ETag parsing: strip `W/`, then strip the quotes | `http.rs:236-240` (`mark_etag`), `http.rs:271-275` (`unmark_if_none_match`) | helper | one function returning the weak prefix and the inner tag |
-| P11 | `format!("packages[{index}]")` | `main.rs:77`, `policy/packages.rs:155` | consolidate | one function in `policy/packages.rs` |
+| P11 | `format!("packages[{index}]")` | `main.rs:77`, `policy/packages.rs:155` | done | `packages::label()`, with `policy check` |
 | P12 | `"the registry published no time for this version"` | `policy/facts.rs:105`, `policy/facts.rs:111` | consolidate | `const`, or merge the two match arms |
 | P13 | serde `Visitor` with `expecting` and `visit_str` | `policy.rs:159-175`, `policy.rs:411-415`, `npm.rs:956-960` | leave | three small impls with different error text |
 | P14 | `"over max_cvss {}: {}"` | `explain.rs:133`, `explain.rs:140` | leave | two arms of one `match` with different arguments |

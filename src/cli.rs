@@ -53,8 +53,23 @@ pub struct Explain {
 
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum PolicyCommand {
+    /// Load a policy as the proxy does, and list the package entries that do nothing. Exits
+    /// 1 if it is refused
+    Check(Check),
     /// Compare two policies over the audit log's packages. Exits 1 on any loosening
     Diff(Diff),
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct Check {
+    /// The policy file
+    pub path: PathBuf,
+    /// Judge the policy as of this date [default: today, UTC]
+    #[arg(long, value_name = "YYYY-MM-DD")]
+    pub as_of: Option<jiff::civil::Date>,
+    /// Also exit 1 when an entry changes nothing or never wins
+    #[arg(long)]
+    pub strict: bool,
 }
 
 #[derive(Debug, PartialEq, Args)]
@@ -144,6 +159,23 @@ mod tests {
                 snapshot: None,
             }
         );
+        assert_eq!(
+            parse(&[
+                "policy",
+                "check",
+                "p.yaml",
+                "--strict",
+                "--as-of",
+                "2026-01-01"
+            ])
+            .expect("parses")
+            .command,
+            Some(Command::Policy(PolicyCommand::Check(Check {
+                path: "p.yaml".into(),
+                as_of: Some(jiff::civil::date(2026, 1, 1)),
+                strict: true,
+            })))
+        );
     }
 
     /// The hand-written parser answered `--as-of 2026-01-01` with a usage error, although its
@@ -207,6 +239,8 @@ mod tests {
                 ErrorKind::UnknownArgument,
             ),
             (&["doctor", "extra"], ErrorKind::UnknownArgument),
+            (&["policy", "check"], ErrorKind::MissingRequiredArgument),
+            (&["policy", "check", "a", "b"], ErrorKind::UnknownArgument),
         ] {
             stops(args, kind);
         }
@@ -240,6 +274,7 @@ mod tests {
         for (args, name) in [
             (["--help"].as_slice(), "help.txt"),
             (&["explain", "--help"], "explain.txt"),
+            (&["policy", "check", "--help"], "policy-check.txt"),
             (&["policy", "diff", "--help"], "policy-diff.txt"),
         ] {
             let help = stops(args, ErrorKind::DisplayHelp);
