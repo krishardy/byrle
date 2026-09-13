@@ -20,6 +20,8 @@ fn main() {
             print!("{}", bundle.tally);
             let affected: usize = bundle.rows.iter().map(|r| r.affected.len()).sum();
             println!("{:32} {:>8}", "affected rows", affected);
+            let ranges: usize = bundle.rows.iter().map(|r| r.ranges.len()).sum();
+            println!("{:32} {:>8}", "ranges", ranges);
         }
         Err(e) => {
             eprintln!("{e}");

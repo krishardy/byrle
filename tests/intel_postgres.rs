@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use waharoa::intel::load::Snapshot;
 use waharoa::intel::osv::{self, Parsed, Rows};
 use waharoa::intel::postgres::{Loaded, PgIntel};
-use waharoa::intel::store::Intel;
+use waharoa::intel::store::{Intel, IntelError};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
@@ -74,7 +74,17 @@ async fn fresh(name: &'static str) -> Option<PgIntel> {
 /// `raw_sql`, not `query`: a prepared statement takes one command, and these fixtures are
 /// several. `'static` because sqlx 0.9 accepts unaudited SQL only as a literal, and every
 /// fixture is one.
+///
+/// A store with no snapshot has loaded nothing and answers no lookup, so a snapshot older
+/// than any a test names is recorded first.
 async fn insert(intel: &PgIntel, sql: &'static str) {
+    sqlx::raw_sql(
+        "INSERT INTO intel_snapshot (id, taken_at, streams) \
+         VALUES ('fixture', '2000-01-01T00:00:00Z', '{}') ON CONFLICT (id) DO NOTHING",
+    )
+    .execute(intel.pool())
+    .await
+    .expect("fixture snapshot should insert");
     sqlx::raw_sql(sql)
         .execute(intel.pool())
         .await
@@ -232,6 +242,8 @@ async fn an_unscored_advisory_is_null_rather_than_zero() {
     assert!(scored.contains(&Some(0.0)), "{scored:?}");
 }
 
+/// `insert` also records its `fixture` snapshot, dated 2000, so `older` has to be later than
+/// that for this test to say anything.
 #[tokio::test]
 async fn the_newest_snapshot_is_the_one_reported() {
     let intel = skip_without_database!("t_snapshot");
@@ -313,7 +325,8 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
         Loaded {
             advisories: 1,
             aliases: 0,
-            affected: 1
+            affected: 1,
+            ranges: 0,
         }
     );
 
@@ -658,4 +671,147 @@ async fn a_package_named_by_two_sources_answers_both() {
         .collect();
     assert_eq!(ids, ["GHSA-both", "MAL-2021-1"]);
     assert_eq!(found.for_version("2.0.0").len(), 1);
+}
+
+/// `MAL-2022-219` is `introduced: "1.2.2"` with no end and no list.
+#[tokio::test]
+async fn a_loaded_range_is_found_for_the_versions_inside_it() {
+    let intel = skip_without_database!("t_range_open");
+    let rows = osv_fixture("MAL-2022-219");
+    let loaded = intel
+        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &snapshot("s1"))
+        .await
+        .expect("load");
+    assert_eq!((loaded.affected, loaded.ranges), (0, 1));
+
+    let name = "@dydxprotocol/perpetual";
+    for (version, hits) in [("1.2.1", 0), ("1.2.2", 1), ("1.2.2+b", 1), ("40.0.0", 1)] {
+        assert_eq!(
+            intel
+                .lookup("npm", name, version)
+                .await
+                .expect("query")
+                .len(),
+            hits,
+            "{version}"
+        );
+    }
+    let found = intel
+        .package("npm", name)
+        .await
+        .expect("query")
+        .expect("a snapshot is loaded");
+    assert!(found.records.is_empty());
+    assert_eq!(found.ranges.len(), 1);
+}
+
+/// `MAL-2025-3661` lists 99.9.0 and 99.9.1 beside `introduced: "99.9.1"`.
+#[tokio::test]
+async fn a_version_published_into_a_range_after_the_list_was_written_is_found() {
+    let intel = skip_without_database!("t_range_and_list");
+    intel
+        .replace_source(
+            osv::SOURCE,
+            &[osv_fixture("MAL-2025-3661")],
+            &snapshot("s1"),
+        )
+        .await
+        .expect("load");
+
+    let name = "@ebay-business-components/marko-rum";
+    for version in ["99.9.0", "99.9.1", "99.9.5"] {
+        let hit = intel.lookup("npm", name, version).await.expect("query");
+        assert_eq!(hit.len(), 1, "{version}");
+        assert!(hit[0].malware);
+    }
+    assert!(
+        intel
+            .lookup("npm", name, "1.0.0")
+            .await
+            .expect("query")
+            .is_empty()
+    );
+}
+
+/// Synthetic id and no summary: GHSA text is CC-BY-4.0 and none is committed.
+#[tokio::test]
+async fn a_vulnerability_record_loads_with_its_score_and_aliases() {
+    let intel = skip_without_database!("t_ghsa");
+    let record = br#"{
+        "id": "GHSA-0000-0000-0000",
+        "aliases": ["CVE-2099-2", "CVE-2099-1"],
+        "severity": [
+            {"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"},
+            {"type": "CVSS_V4", "score": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N"}
+        ],
+        "affected": [{
+            "package": {"ecosystem": "npm", "name": "vulnerable"},
+            "ranges": [{"type": "SEMVER", "events": [
+                {"introduced": "0"}, {"fixed": "1.0.1"},
+                {"introduced": "2.0.0"}, {"last_affected": "2.3.0"}
+            ]}]
+        }]
+    }"#;
+    let Parsed::Rows(rows) = osv::parse(record).expect("parses") else {
+        panic!("should be stored");
+    };
+    let loaded = intel
+        .replace_source(osv::SOURCE, &[rows], &snapshot("s1"))
+        .await
+        .expect("load");
+    assert_eq!((loaded.aliases, loaded.ranges), (2, 2));
+
+    for (version, hits) in [("1.0.0", 1), ("1.0.1", 0), ("2.3.0", 1), ("2.3.1", 0)] {
+        let hit = intel
+            .lookup("npm", "vulnerable", version)
+            .await
+            .expect("query");
+        assert_eq!(hit.len(), hits, "{version}");
+        if let [hit] = hit.as_slice() {
+            assert_eq!(hit.cvss, Some(6.9));
+            assert!(!hit.malware);
+            assert_eq!(hit.aliases, ["CVE-2099-1", "CVE-2099-2"]);
+        }
+    }
+}
+
+/// The loader writes only strict SemVer, so a row that is not came from somewhere else.
+#[tokio::test]
+async fn a_stored_range_that_does_not_parse_is_an_error_not_an_empty_answer() {
+    let intel = skip_without_database!("t_range_corrupt");
+    insert(
+        &intel,
+        "INSERT INTO advisory (id, source) VALUES ('GHSA-bad', 'ghsa'); \
+         INSERT INTO advisory_range (advisory_id, ecosystem, name, introduced) \
+         VALUES ('GHSA-bad', 'npm', 'p', '13.0')",
+    )
+    .await;
+
+    match intel.package("npm", "p").await {
+        Err(IntelError::Range { advisory_id }) => assert_eq!(advisory_id, "GHSA-bad"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn a_range_row_with_both_ends_or_neither_is_refused_by_the_schema() {
+    let intel = skip_without_database!("t_range_check");
+    insert(
+        &intel,
+        "INSERT INTO advisory (id, source) VALUES ('GHSA-c', 'ghsa')",
+    )
+    .await;
+    for values in [
+        "('GHSA-c', 'npm', 'p', '1.0.0', '2.0.0', '2.0.0')",
+        "('GHSA-c', 'npm', 'p', NULL, NULL, NULL)",
+    ] {
+        let sql = format!(
+            "INSERT INTO advisory_range \
+             (advisory_id, ecosystem, name, introduced, fixed, last_affected) VALUES {values}"
+        );
+        assert!(
+            sqlx::raw_sql(&sql).execute(intel.pool()).await.is_err(),
+            "{values}"
+        );
+    }
 }

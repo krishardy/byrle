@@ -88,6 +88,7 @@ impl Facts {
             .filter_map(|r| {
                 r.score().map(|score| Advisory {
                     id: r.advisory_id.clone(),
+                    aliases: r.aliases.clone(),
                     cvss: score.cvss(),
                     kev: r.exploited,
                 })
@@ -178,6 +179,7 @@ mod tests {
             version.map(str::to_owned),
             crate::intel::store::Record {
                 advisory_id: id.to_owned(),
+                aliases: vec![format!("CVE-of-{id}")],
                 source: "osv".to_owned(),
                 cvss,
                 cvss_source: None,
@@ -191,6 +193,7 @@ mod tests {
         PackageIntel {
             snapshot: "s1".to_owned(),
             records,
+            ranges: Vec::new(),
         }
     }
 
@@ -235,6 +238,7 @@ cooldown_days: 0
             facts.advisories,
             vec![Advisory {
                 id: "GHSA-this".to_owned(),
+                aliases: vec!["CVE-of-GHSA-this".to_owned()],
                 cvss: 5.0,
                 kev: false,
             }]

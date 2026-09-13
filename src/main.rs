@@ -37,7 +37,7 @@ usage: waharoa [command]
                 policy itself, `explain <purl>` for one version
   policy diff   what changes if one policy replaces another, over the packages
                 the audit log has seen. Exits 1 on any loosening
-  refresh       load OSV's npm malware records into the Postgres at
+  refresh       load OSV's npm malware and vulnerability records into the Postgres at
                 WAHAROA_DATABASE_URL, which the proxy reads when it is set
   help          show this
 
@@ -127,10 +127,10 @@ fn report_policy(path: &std::path::Path) -> std::sync::Arc<Policy> {
              document, measured at 1.7x to 3.6x the abbreviated one"
         );
     }
-    if policy.max_cvss < f64::INFINITY || policy.kev == waharoa::policy::Action::Block {
+    if policy.kev == waharoa::policy::Action::Block {
         warn!(
-            "NOT ENFORCED: max_cvss and kev. The intel store holds OSV malware records only, \
-             with no scores and no exploitation data, so neither check has anything to read"
+            "NOT ENFORCED: kev. No stream the intel store loads marks an advisory exploited: \
+             OSV carries no exploitation data and the CISA KEV stream is not built"
         );
     }
 
@@ -705,6 +705,7 @@ async fn run_refresh() -> std::process::ExitCode {
     println!("{:32} {:>8}", "advisories written", loaded.advisories);
     println!("{:32} {:>8}", "aliases written", loaded.aliases);
     println!("{:32} {:>8}", "affected rows written", loaded.affected);
+    println!("{:32} {:>8}", "ranges written", loaded.ranges);
     println!("snapshot {}", snapshot.id);
     println!("took {:.1}s", started.elapsed().as_secs_f64());
     std::process::ExitCode::SUCCESS
@@ -971,12 +972,13 @@ async fn main() -> std::process::ExitCode {
         .unwrap_or_else(|e| panic!("WAHAROA_DATABASE_URL: {e}"));
     match (&intel, &policy) {
         (Some(_), Some(_)) => warn!(
-            "ENFORCED: known_malware, from the intel store at WAHAROA_DATABASE_URL. A store \
-             that cannot answer, or holds no snapshot, is a 503 for every package"
+            "ENFORCED: known_malware and max_cvss, from the intel store at \
+             WAHAROA_DATABASE_URL. A store that cannot answer, or holds no snapshot, is a 503 \
+             for every package"
         ),
         (None, Some(_)) => warn!(
-            "NOT ENFORCED: known_malware. WAHAROA_DATABASE_URL is not set, so there is no \
-             intel store to ask"
+            "NOT ENFORCED: known_malware and max_cvss. WAHAROA_DATABASE_URL is not set, so \
+             there is no intel store to ask"
         ),
         _ => {}
     }

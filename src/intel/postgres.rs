@@ -6,6 +6,7 @@
 
 use super::load::{self, Snapshot};
 use super::osv::Rows;
+use super::range::Interval;
 use super::store::{Intel, IntelError, Lookup, PackageIntel, Record};
 use sqlx::{PgConnection, PgPool};
 
@@ -19,6 +20,7 @@ pub struct Loaded {
     pub advisories: u64,
     pub aliases: u64,
     pub affected: u64,
+    pub ranges: u64,
 }
 
 /// The advisory mirror.
@@ -53,8 +55,8 @@ impl PgIntel {
     /// One transaction. A lookup during the load reads the previous rows, because Postgres
     /// shows a transaction's writes to nobody else until it commits, and a load that fails
     /// at any step leaves them in place. Deleting by `source` rather than swapping whole
-    /// tables leaves other streams' rows alone. The aliases and affected rows go with their
-    /// advisory through `ON DELETE CASCADE`.
+    /// tables leaves other streams' rows alone. The alias, affected and range rows go with
+    /// their advisory through `ON DELETE CASCADE`.
     ///
     /// A snapshot id already recorded, which is the same bundle loaded again, keeps its row and
     /// takes the new `taken_at`.
@@ -75,6 +77,7 @@ impl PgIntel {
             advisories: copy(&mut tx, load::ADVISORY, &tables.advisory).await?,
             aliases: copy(&mut tx, load::ALIAS, &tables.alias).await?,
             affected: copy(&mut tx, load::AFFECTED, &tables.affected).await?,
+            ranges: copy(&mut tx, load::RANGE, &tables.range).await?,
         };
         sqlx::query!(
             "INSERT INTO intel_snapshot (id, taken_at, streams) VALUES ($1, $2, $3::text::jsonb) \
@@ -117,34 +120,14 @@ impl Intel for PgIntel {
         name: &'a str,
         version: &'a str,
     ) -> Lookup<'a, Vec<Record>> {
+        // Ranges compare as SemVer, which SQL does not, so one version is answered the way
+        // the proxy answers every version: read the package, evaluate here.
         Box::pin(async move {
-            // `version IS NULL` is "every version of this package", which is how a malware
-            // report usually reads. Both arms are one query, because two queries could
-            // answer from two different snapshots if a refresh landed between them.
-            sqlx::query_as!(
-                Record,
-                r#"
-                SELECT DISTINCT
-                    a.id          AS "advisory_id!",
-                    a.source      AS "source!",
-                    a.cvss,
-                    a.cvss_source,
-                    a.exploited   AS "exploited!",
-                    a.malware     AS "malware!"
-                FROM advisory a
-                JOIN advisory_affected f ON f.advisory_id = a.id
-                WHERE f.ecosystem = $1
-                  AND f.name = $2
-                  AND (f.version IS NULL OR f.version = $3)
-                ORDER BY a.id
-                "#,
-                ecosystem,
-                name,
-                version
-            )
-            .fetch_all(&self.pool)
-            .await
-            .map_err(IntelError::Backend)
+            Ok(self
+                .package(ecosystem, name)
+                .await?
+                .map(|p| p.for_version(version).into_iter().cloned().collect())
+                .unwrap_or_default())
         })
     }
 
@@ -166,21 +149,40 @@ impl Intel for PgIntel {
             // One statement, so the snapshot id and the rows are read from the same
             // committed state. A refresh replaces both in one transaction, and a second
             // query could see the other side of it.
+            //
+            // `m` is every version-shaped row for the package: listed versions and every
+            // version from `advisory_affected`, intervals from `advisory_range`.
             let rows = sqlx::query!(
                 r#"
                 SELECT
-                    s.id          AS "snapshot!",
-                    f.version     AS "version?",
-                    a.id          AS "advisory_id?",
-                    a.source      AS "source?",
-                    a.cvss        AS "cvss?",
-                    a.cvss_source AS "cvss_source?",
-                    a.exploited   AS "exploited?",
-                    a.malware     AS "malware?"
+                    s.id            AS "snapshot!",
+                    m.is_range      AS "is_range?",
+                    m.version       AS "version?",
+                    m.introduced    AS "introduced?",
+                    m.fixed         AS "fixed?",
+                    m.last_affected AS "last_affected?",
+                    a.id            AS "advisory_id?",
+                    a.source        AS "source?",
+                    a.cvss          AS "cvss?",
+                    a.cvss_source   AS "cvss_source?",
+                    a.exploited     AS "exploited?",
+                    a.malware       AS "malware?",
+                    ARRAY(
+                        SELECT al.alias FROM advisory_alias al
+                        WHERE al.advisory_id = a.id ORDER BY al.alias
+                    )               AS "aliases!"
                 FROM (SELECT id FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s
-                LEFT JOIN advisory_affected f ON f.ecosystem = $1 AND f.name = $2
-                LEFT JOIN advisory a ON a.id = f.advisory_id
-                ORDER BY a.id, f.version
+                LEFT JOIN (
+                    SELECT advisory_id, FALSE AS is_range, version,
+                           NULL::text AS introduced, NULL::text AS fixed,
+                           NULL::text AS last_affected
+                    FROM advisory_affected WHERE ecosystem = $1 AND name = $2
+                    UNION ALL
+                    SELECT advisory_id, TRUE, NULL, introduced, fixed, last_affected
+                    FROM advisory_range WHERE ecosystem = $1 AND name = $2
+                ) m ON TRUE
+                LEFT JOIN advisory a ON a.id = m.advisory_id
+                ORDER BY a.id, m.is_range, m.version, m.introduced, m.fixed, m.last_affected
                 "#,
                 ecosystem,
                 name
@@ -192,23 +194,43 @@ impl Intel for PgIntel {
             let Some(snapshot) = rows.first().map(|row| row.snapshot.clone()) else {
                 return Ok(None);
             };
-            let records = rows
-                .into_iter()
-                .filter_map(|row| {
-                    Some((
-                        row.version,
-                        Record {
-                            advisory_id: row.advisory_id?,
-                            source: row.source?,
-                            cvss: row.cvss,
-                            cvss_source: row.cvss_source,
-                            exploited: row.exploited?,
-                            malware: row.malware?,
-                        },
-                    ))
-                })
-                .collect();
-            Ok(Some(PackageIntel { snapshot, records }))
+            let mut intel = PackageIntel {
+                snapshot,
+                records: Vec::new(),
+                ranges: Vec::new(),
+            };
+            for row in rows {
+                // No advisory is the one row a snapshot with nothing against the package
+                // gives.
+                let (Some(advisory_id), Some(source), Some(exploited), Some(malware)) =
+                    (row.advisory_id, row.source, row.exploited, row.malware)
+                else {
+                    continue;
+                };
+                let record = Record {
+                    advisory_id,
+                    aliases: row.aliases,
+                    source,
+                    cvss: row.cvss,
+                    cvss_source: row.cvss_source,
+                    exploited,
+                    malware,
+                };
+                if row.is_range == Some(true) {
+                    let interval = Interval::from_columns(
+                        row.introduced.as_deref(),
+                        row.fixed.as_deref(),
+                        row.last_affected.as_deref(),
+                    )
+                    .ok_or_else(|| IntelError::Range {
+                        advisory_id: record.advisory_id.clone(),
+                    })?;
+                    intel.ranges.push((interval, record));
+                } else {
+                    intel.records.push((row.version, record));
+                }
+            }
+            Ok(Some(intel))
         })
     }
 }

@@ -15,7 +15,9 @@
 //! that read advisories all answer from that one result, so the proxy makes one query per
 //! package rather than one per check.
 
+use crate::intel::range::{self, Interval};
 use crate::intel::{Enrichment, Finding, Score};
+use semver::Version;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -24,6 +26,9 @@ use std::pin::Pin;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Record {
     pub advisory_id: String,
+    /// The other ids the advisory is known by, sorted. A GHSA record's CVE id is here, and it
+    /// is what a `cve_ids` exception names.
+    pub aliases: Vec<String>,
     pub source: String,
     pub cvss: Option<f64>,
     pub cvss_source: Option<String>,
@@ -61,12 +66,21 @@ impl Record {
 pub enum IntelError {
     /// The database said no. Never treated as "nothing known": see `Intel::NotConsulted`.
     Backend(sqlx::Error),
+    /// A stored range does not parse. The loader writes none, so something else wrote the
+    /// row. Matching it against nothing would drop the advisory unannounced.
+    Range { advisory_id: String },
 }
 
 impl std::fmt::Display for IntelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Backend(e) => write!(f, "intel store: {e}"),
+            Self::Range { advisory_id } => {
+                write!(
+                    f,
+                    "intel store: a stored range of {advisory_id} does not parse"
+                )
+            }
         }
     }
 }
@@ -84,20 +98,33 @@ pub struct PackageIntel {
     pub snapshot: String,
     /// Each record with the version it names. `None` is every version.
     pub records: Vec<(Option<String>, Record)>,
+    /// Each record with an interval of versions it is against.
+    pub ranges: Vec<(Interval<Version>, Record)>,
 }
 
 impl PackageIntel {
     /// The records that apply to one version, each advisory once.
     ///
-    /// An advisory recorded against both every version and this one appears twice in
-    /// `records`. Which copy is kept does not matter: every field of [`Record`] comes from
-    /// the `advisory` row, keyed by id, and only the version comes from the affected row.
+    /// An advisory recorded against every version, this one, and a range holding it appears
+    /// three times. Which copy is kept does not matter: every field of [`Record`] comes from
+    /// the `advisory` row, keyed by id, and only the version or interval differs.
+    ///
+    /// A version that is not SemVer, such as `3.0.0rc1`, is in no range. It still matches a
+    /// listed version and every version.
     pub fn for_version(&self, version: &str) -> Vec<&Record> {
-        let mut seen = BTreeSet::new();
-        self.records
+        let parsed = range::version(version);
+        let listed = self
+            .records
             .iter()
-            .filter(|(v, _)| v.as_deref().is_none_or(|v| v == version))
+            .filter(|(v, _)| v.as_deref().is_none_or(|v| v == version));
+        let ranged = self
+            .ranges
+            .iter()
+            .filter(|(interval, _)| parsed.as_ref().is_some_and(|v| interval.contains(v)));
+        let mut seen = BTreeSet::new();
+        listed
             .map(|(_, record)| record)
+            .chain(ranged.map(|(_, record)| record))
             .filter(|record| seen.insert(record.advisory_id.as_str()))
             .collect()
     }
@@ -109,8 +136,8 @@ impl PackageIntel {
 /// asked and knew nothing; an error means nothing was asked, and the two have to stay
 /// distinguishable all the way up to `Facts::intel`.
 pub trait Intel: Send + Sync {
-    /// Everything recorded against this exact version, plus anything recorded against the
-    /// package as a whole.
+    /// Everything recorded against this exact version, a range holding it, or the package as
+    /// a whole. [`PackageIntel::for_version`] over [`Intel::package`].
     fn lookup<'a>(
         &'a self,
         ecosystem: &'a str,
@@ -181,6 +208,7 @@ mod tests {
     fn record() -> Record {
         Record {
             advisory_id: "GHSA-x".to_owned(),
+            aliases: Vec::new(),
             source: "osv".to_owned(),
             cvss: None,
             cvss_source: None,
@@ -264,6 +292,7 @@ mod tests {
                 at(Some("1.0.0"), "GHSA-2"),
                 at(Some("2.0.0"), "GHSA-3"),
             ],
+            ranges: Vec::new(),
         };
         let ids = |version: &str| -> Vec<String> {
             intel
@@ -277,12 +306,54 @@ mod tests {
         assert_eq!(ids("3.0.0"), ["MAL-1"]);
     }
 
+    fn within(
+        introduced: Option<&str>,
+        fixed: Option<&str>,
+        id: &str,
+    ) -> (Interval<Version>, Record) {
+        (
+            Interval::from_columns(introduced, fixed, None).expect("a test interval parses"),
+            Record {
+                advisory_id: id.to_owned(),
+                ..record()
+            },
+        )
+    }
+
+    #[test]
+    fn a_version_sees_the_ranges_holding_it_once_each() {
+        let intel = PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: vec![at(Some("1.5.0"), "GHSA-1")],
+            ranges: vec![
+                within(Some("1.0.0"), Some("2.0.0"), "GHSA-1"),
+                within(Some("1.0.0"), Some("2.0.0"), "GHSA-2"),
+                within(None, Some("1.2.0"), "GHSA-3"),
+            ],
+        };
+        let ids = |version: &str| -> Vec<String> {
+            intel
+                .for_version(version)
+                .iter()
+                .map(|r| r.advisory_id.clone())
+                .collect()
+        };
+        assert_eq!(ids("1.5.0"), ["GHSA-1", "GHSA-2"]);
+        assert_eq!(ids("1.1.0"), ["GHSA-1", "GHSA-2", "GHSA-3"]);
+        assert_eq!(ids("1.5.0+build"), ["GHSA-1", "GHSA-2"]);
+        assert_eq!(ids("2.0.0-rc.1"), ["GHSA-1", "GHSA-2"]);
+        assert!(ids("2.0.0").is_empty());
+        // Not SemVer, so in no range.
+        assert!(ids("1.5.0rc1").is_empty());
+    }
+
     #[tokio::test]
     async fn the_fixed_store_answers_all_three_questions_from_one_reply() {
         use testing::FixedIntel;
         let loaded = FixedIntel(Ok(Some(PackageIntel {
             snapshot: "s1".to_owned(),
             records: vec![at(None, "MAL-1")],
+            ranges: Vec::new(),
         })));
         assert_eq!(
             loaded.snapshot().await.expect("answers"),
@@ -313,5 +384,12 @@ mod tests {
     fn a_backend_error_names_the_intel_store() {
         let e = IntelError::Backend(sqlx::Error::RowNotFound);
         assert!(e.to_string().starts_with("intel store: "), "{e}");
+        let e = IntelError::Range {
+            advisory_id: "GHSA-x".to_owned(),
+        };
+        assert_eq!(
+            e.to_string(),
+            "intel store: a stored range of GHSA-x does not parse"
+        );
     }
 }

@@ -833,6 +833,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [sqlx version and `rsa` advisory](engineering_decisions/sqlx-0-8-and-rsa-advisory.md) | sqlx held at 0.8 until kani bundles rustc 1.94; RUSTSEC-2023-0071 ignored only while `rsa` is not compiled |
 | n/a | [OSV malware load](engineering_decisions/osv-malware-load.md) | npm `MAL-` records via `waharoa refresh`; `all.zip` read in memory; delete by source and `COPY` in one transaction |
 | n/a | [Intel in decisions](engineering_decisions/intel-in-decisions.md) | One store query per package; a store that cannot answer is a 503 |
+| n/a | [OSV ranges and scores](engineering_decisions/osv-ranges-and-scores.md) | `GHSA-` records loaded; ranges stored as intervals and compared as SemVer 2.0 at lookup; v4 base score over v3; `cve_ids` matches aliases |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 
 ### Staging

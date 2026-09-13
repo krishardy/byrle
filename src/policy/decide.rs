@@ -65,6 +65,8 @@ pub enum Intel {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Advisory {
     pub id: String,
+    /// The other ids it is known by. A GHSA advisory's CVE id is here.
+    pub aliases: Vec<String>,
     pub cvss: f64,
     /// Whether this advisory is in a known-exploited catalogue.
     ///
@@ -72,6 +74,14 @@ pub struct Advisory {
     /// no package identifier of any kind. See
     /// `docs/engineering_decisions/advisory-stream-licences.md`.
     pub kev: bool,
+}
+
+impl Advisory {
+    /// Whether `id` is this advisory's id or one of its aliases. A `cve_ids` exception
+    /// names a CVE, and OSV stores the advisory under its GHSA id.
+    pub fn is_named(&self, id: &str) -> bool {
+        self.id == id || self.aliases.iter().any(|alias| alias == id)
+    }
 }
 
 /// One check this build performs.
@@ -365,17 +375,16 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             let worst = facts
                 .advisories
                 .iter()
-                .filter(|a| !ignored.iter().any(|id| id == &a.id))
+                .filter(|a| !ignored.iter().any(|id| a.is_named(id)))
                 .map(|a| a.cvss)
                 .fold(f64::NEG_INFINITY, f64::max);
             if worst <= policy.max_cvss {
                 // Something was ignored and nothing is left over the threshold, so the
                 // exception is what saved it.
                 let saved = !ignored.is_empty()
-                    && facts
-                        .advisories
-                        .iter()
-                        .any(|a| ignored.iter().any(|id| id == &a.id) && a.cvss > policy.max_cvss);
+                    && facts.advisories.iter().any(|a| {
+                        ignored.iter().any(|id| a.is_named(id)) && a.cvss > policy.max_cvss
+                    });
                 match (saved, entry) {
                     (true, Some(entry)) => Outcome::Excepted {
                         entry,
@@ -453,6 +462,7 @@ mod tests {
     fn advisory(id: &str, cvss: f64) -> Advisory {
         Advisory {
             id: id.to_owned(),
+            aliases: Vec::new(),
             cvss,
             kev: false,
         }
@@ -728,6 +738,7 @@ mod tests {
         let facts = Facts {
             advisories: vec![Advisory {
                 id: "CVE-2024-1234".to_owned(),
+                aliases: Vec::new(),
                 cvss: 9.8,
                 kev: false,
             }],
@@ -748,11 +759,13 @@ mod tests {
             advisories: vec![
                 Advisory {
                     id: "CVE-2024-1234".to_owned(),
+                    aliases: Vec::new(),
                     cvss: 9.8,
                     kev: false,
                 },
                 Advisory {
                     id: "CVE-2025-9999".to_owned(),
+                    aliases: Vec::new(),
                     cvss: 7.5,
                     kev: false,
                 },
@@ -761,6 +774,36 @@ mod tests {
         };
         assert_eq!(
             *outcome(&decide(&p, &more, TODAY), Check::MaxCvss),
+            Outcome::Failed(Action::Block)
+        );
+    }
+
+    /// OSV stores a GitHub advisory under its GHSA id, with the CVE as an alias.
+    #[test]
+    fn an_advisory_may_be_ignored_by_an_alias() {
+        let p = policy(
+            "max_cvss: 6.9\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { cve_ids: [\"CVE-2024-1234\"] }\n    reason: not reachable\n    \
+             permanent: true\n",
+        );
+        let ghsa = |aliases: &[&str]| Facts {
+            advisories: vec![Advisory {
+                aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
+                ..advisory("GHSA-aaaa-bbbb-cccc", 9.8)
+            }],
+            ..clean()
+        };
+
+        let d = decide(&p, &ghsa(&["CVE-2020-1", "CVE-2024-1234"]), TODAY);
+        assert_eq!(
+            *outcome(&d, Check::MaxCvss),
+            Outcome::Excepted {
+                entry: 0,
+                action: Action::Block
+            }
+        );
+        assert_eq!(
+            *outcome(&decide(&p, &ghsa(&["CVE-2020-1"]), TODAY), Check::MaxCvss),
             Outcome::Failed(Action::Block)
         );
     }
@@ -884,6 +927,7 @@ mod tests {
             let facts = Facts {
                 advisories: vec![Advisory {
                     id: "CVE-2024-1".to_owned(),
+                    aliases: Vec::new(),
                     cvss,
                     kev: false,
                 }],

@@ -38,6 +38,7 @@
 pub mod load;
 pub mod osv;
 pub mod postgres;
+pub mod range;
 pub mod refresh;
 pub mod store;
 
