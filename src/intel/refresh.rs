@@ -180,9 +180,9 @@ pub struct StreamDigest {
 
 /// Name what was loaded.
 ///
-/// The id is the hash of the per-stream digests (plan §3), sorted by stream so the order
+/// The digest is the hash of the per-stream digests (plan §3), sorted by stream so the order
 /// streams were fetched in cannot change it. `taken_at`, the etag and `last-modified` are
-/// recorded and are not part of the id, so two proxies holding the same bytes agree.
+/// recorded and are not part of the digest, so two proxies holding the same bytes agree.
 pub fn snapshot(streams: &[StreamDigest], taken_at: &str) -> Snapshot {
     let mut sorted: Vec<&StreamDigest> = streams.iter().collect();
     sorted.sort_by(|a, b| a.stream.cmp(&b.stream));
@@ -204,7 +204,7 @@ pub fn snapshot(streams: &[StreamDigest], taken_at: &str) -> Snapshot {
         })
         .collect();
     Snapshot {
-        id: format!("sha256:{}", sha256_hex(joined.as_bytes())),
+        digest: format!("sha256:{}", sha256_hex(joined.as_bytes())),
         taken_at: taken_at.to_owned(),
         streams: serde_json::Value::Object(recorded).to_string(),
     }
@@ -407,14 +407,19 @@ mod tests {
     }
 
     #[test]
-    fn the_snapshot_id_depends_on_the_digests_and_nothing_else() {
+    fn the_snapshot_digest_depends_on_the_stream_digests_and_nothing_else() {
         let a = snapshot(&[stream("osv/npm", "aa"), stream("osv/pypi", "bb")], "t1");
         let reordered = snapshot(&[stream("osv/pypi", "bb"), stream("osv/npm", "aa")], "t2");
-        assert_eq!(a.id, reordered.id, "order and time are not identity");
-        assert!(a.id.starts_with("sha256:"));
+        assert_eq!(
+            a.digest, reordered.digest,
+            "order and time are not identity"
+        );
+        // `intel_snapshot.digest` is VARCHAR(71).
+        assert!(a.digest.starts_with("sha256:"));
+        assert_eq!(a.digest.len(), 71);
 
         let changed = snapshot(&[stream("osv/npm", "ab"), stream("osv/pypi", "bb")], "t1");
-        assert_ne!(a.id, changed.id);
+        assert_ne!(a.digest, changed.digest);
 
         let recorded: serde_json::Value = serde_json::from_str(&a.streams).expect("json");
         assert_eq!(recorded["osv/npm"]["sha256"], "aa");

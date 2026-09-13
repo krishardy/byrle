@@ -707,7 +707,7 @@ async fn run_refresh() -> std::process::ExitCode {
     println!("{:32} {:>8}", "aliases written", loaded.aliases);
     println!("{:32} {:>8}", "affected rows written", loaded.affected);
     println!("{:32} {:>8}", "ranges written", loaded.ranges);
-    println!("snapshot {}", snapshot.id);
+    println!("snapshot {}", snapshot.digest);
     println!("took {:.1}s", started.elapsed().as_secs_f64());
     std::process::ExitCode::SUCCESS
 }

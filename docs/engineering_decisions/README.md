@@ -27,6 +27,7 @@ code, and the file names where.
 | [Loading OSV malware records](osv-malware-load.md) | Implemented, `waharoa refresh` |
 | [Intel in decisions: one lookup per package, fail closed](intel-in-decisions.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
+| [Intel schema: surrogate keys and sized types](intel-schema-keys-and-types.md) | Implemented |
 | [Policy schema version 1 is frozen](policy-schema-v1-frozen.md) | Decided |
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |

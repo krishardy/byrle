@@ -3,17 +3,18 @@
 -- `advisory_affected` holds "every version" and named versions. A record that gives a range
 -- instead, such as `introduced: 1.2.2, fixed: 2.0.0`, is held here, one row per interval,
 -- and evaluated when a package is looked up: the loader has no list of versions to expand
--- it against. See src/intel/range.rs.
+-- it against. See src/intel/range.rs. Keys and sizes follow 0001_intel.sql.
 CREATE TABLE advisory_range (
-    advisory_id   TEXT NOT NULL REFERENCES advisory (id) ON DELETE CASCADE,
-    ecosystem     TEXT NOT NULL,
-    name          TEXT NOT NULL,
+    id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    advisory_id   BIGINT NOT NULL REFERENCES advisory (id) ON DELETE CASCADE,
+    ecosystem     VARCHAR(64) NOT NULL,
+    name          VARCHAR(512) NOT NULL,
     -- NULL is from the first version, OSV's `introduced: "0"`.
-    introduced    TEXT,
+    introduced    VARCHAR(255),
     -- The first version not affected. Excludes itself.
-    fixed         TEXT,
+    fixed         VARCHAR(255),
     -- The last version affected. Includes itself.
-    last_affected TEXT,
+    last_affected VARCHAR(255),
     CHECK (fixed IS NULL OR last_affected IS NULL),
     -- All three NULL is every version, which `advisory_affected` holds as a NULL version.
     CHECK (introduced IS NOT NULL OR fixed IS NOT NULL OR last_affected IS NOT NULL)

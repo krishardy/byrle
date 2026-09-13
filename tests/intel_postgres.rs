@@ -79,8 +79,8 @@ async fn fresh(name: &'static str) -> Option<PgIntel> {
 /// than any a test names is recorded first.
 async fn insert(intel: &PgIntel, sql: &'static str) {
     sqlx::raw_sql(
-        "INSERT INTO intel_snapshot (id, taken_at, streams) \
-         VALUES ('fixture', '2000-01-01T00:00:00Z', '{}') ON CONFLICT (id) DO NOTHING",
+        "INSERT INTO intel_snapshot (digest, taken_at, streams) \
+         VALUES ('fixture', '2000-01-01T00:00:00Z', '{}') ON CONFLICT (digest) DO NOTHING",
     )
     .execute(intel.pool())
     .await
@@ -130,10 +130,10 @@ async fn an_advisory_against_one_version_is_found_for_that_version_only() {
     let intel = skip_without_database!("t_one_version");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source, cvss, cvss_source) \
+        "INSERT INTO advisory (publisher_id, source, cvss, cvss_source) \
          VALUES ('GHSA-x', 'ghsa', 9.8, 'ghsa'); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
-         VALUES ('GHSA-x', 'npm', 'lodash', '4.17.20')",
+         SELECT id, 'npm', 'lodash', '4.17.20' FROM advisory WHERE publisher_id = 'GHSA-x'",
     )
     .await;
 
@@ -163,9 +163,9 @@ async fn a_null_version_matches_every_version_of_the_package() {
     let intel = skip_without_database!("t_null_version");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source, malware) VALUES ('MAL-1', 'ossf', TRUE); \
+        "INSERT INTO advisory (publisher_id, source, malware) VALUES ('MAL-1', 'ossf', TRUE); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
-         VALUES ('MAL-1', 'npm', 'evil-pkg', NULL)",
+         SELECT id, 'npm', 'evil-pkg', NULL FROM advisory WHERE publisher_id = 'MAL-1'",
     )
     .await;
 
@@ -184,9 +184,9 @@ async fn an_advisory_for_another_ecosystem_is_not_returned() {
     let intel = skip_without_database!("t_ecosystem");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source) VALUES ('GHSA-y', 'ghsa'); \
+        "INSERT INTO advisory (publisher_id, source) VALUES ('GHSA-y', 'ghsa'); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
-         VALUES ('GHSA-y', 'pypi', 'lodash', '1.0.0')",
+         SELECT id, 'pypi', 'lodash', '1.0.0' FROM advisory WHERE publisher_id = 'GHSA-y'",
     )
     .await;
 
@@ -206,9 +206,11 @@ async fn an_advisory_matching_twice_is_returned_once() {
     let intel = skip_without_database!("t_dedupe");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source) VALUES ('GHSA-z', 'ghsa'); \
+        "INSERT INTO advisory (publisher_id, source) VALUES ('GHSA-z', 'ghsa'); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
-         VALUES ('GHSA-z', 'npm', 'lodash', NULL), ('GHSA-z', 'npm', 'lodash', '4.17.21')",
+         SELECT a.id, 'npm', 'lodash', v.version \
+         FROM advisory a, (VALUES (NULL), ('4.17.21')) v (version) \
+         WHERE a.publisher_id = 'GHSA-z'",
     )
     .await;
 
@@ -229,10 +231,10 @@ async fn an_unscored_advisory_is_null_rather_than_zero() {
     let intel = skip_without_database!("t_unscored");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source) VALUES ('MAL-2', 'ossf'); \
-         INSERT INTO advisory (id, source, cvss) VALUES ('GHSA-0', 'ghsa', 0.0); \
+        "INSERT INTO advisory (publisher_id, source) VALUES ('MAL-2', 'ossf'); \
+         INSERT INTO advisory (publisher_id, source, cvss) VALUES ('GHSA-0', 'ghsa', 0.0); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
-         VALUES ('MAL-2', 'npm', 'p', '1.0.0'), ('GHSA-0', 'npm', 'p', '1.0.0')",
+         SELECT id, 'npm', 'p', '1.0.0' FROM advisory WHERE publisher_id IN ('MAL-2', 'GHSA-0')",
     )
     .await;
 
@@ -249,7 +251,7 @@ async fn the_newest_snapshot_is_the_one_reported() {
     let intel = skip_without_database!("t_snapshot");
     insert(
         &intel,
-        "INSERT INTO intel_snapshot (id, taken_at, streams) VALUES \
+        "INSERT INTO intel_snapshot (digest, taken_at, streams) VALUES \
          ('older', '2026-01-01T00:00:00Z', '{}'), \
          ('newer', '2026-09-13T00:00:00Z', '{}')",
     )
@@ -268,10 +270,10 @@ async fn a_row_becomes_a_finding_carrying_its_source_and_score() {
     let intel = skip_without_database!("t_finding");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source, cvss, cvss_source, exploited) \
+        "INSERT INTO advisory (publisher_id, source, cvss, cvss_source, exploited) \
          VALUES ('CVE-1', 'osv', 7.5, 'nvd', TRUE); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
-         VALUES ('CVE-1', 'npm', 'q', '1.0.0')",
+         SELECT id, 'npm', 'q', '1.0.0' FROM advisory WHERE publisher_id = 'CVE-1'",
     )
     .await;
 
@@ -298,7 +300,7 @@ fn osv_fixture(id: &str) -> Rows {
 fn snapshot(id: &str) -> Snapshot {
     let seconds = id.bytes().map(u32::from).sum::<u32>() % 60;
     Snapshot {
-        id: id.to_owned(),
+        digest: id.to_owned(),
         taken_at: format!("2026-09-13T00:00:{seconds:02}Z"),
         streams: r#"{"osv": "etag"}"#.to_owned(),
     }
@@ -420,17 +422,16 @@ async fn a_failed_refresh_leaves_the_previous_load_in_place() {
         .replace_source(osv::SOURCE, std::slice::from_ref(&first), &snapshot("s1"))
         .await
         .expect("first load");
-    assert!(
-        intel
-            .replace_source(
-                osv::SOURCE,
-                &[second.clone(), second.clone()],
-                &snapshot("s2")
-            )
-            .await
-            .is_err(),
-        "a duplicate advisory id should fail the load"
-    );
+    let error = intel
+        .replace_source(
+            osv::SOURCE,
+            &[second.clone(), second.clone()],
+            &snapshot("s2"),
+        )
+        .await
+        .expect_err("a duplicate advisory id should fail the load")
+        .to_string();
+    assert!(error.contains("advisory_publisher_id_key"), "{error}");
 
     let (first_name, _) = target(&first);
     let (second_name, second_version) = target(&second);
@@ -484,9 +485,9 @@ async fn a_refresh_leaves_other_sources_alone() {
     let intel = skip_without_database!("t_load_other_source");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source) VALUES ('GHSA-keep', 'ghsa'); \
+        "INSERT INTO advisory (publisher_id, source) VALUES ('GHSA-keep', 'ghsa'); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
-         VALUES ('GHSA-keep', 'npm', 'kept', '1.0.0')",
+         SELECT id, 'npm', 'kept', '1.0.0' FROM advisory WHERE publisher_id = 'GHSA-keep'",
     )
     .await;
 
@@ -527,7 +528,7 @@ async fn text_copy_treats_specially_round_trips() {
         .expect("load");
 
     let summaries: Vec<(String, Option<String>)> =
-        sqlx::query_as("SELECT id, summary FROM advisory ORDER BY id")
+        sqlx::query_as("SELECT publisher_id, summary FROM advisory ORDER BY publisher_id")
             .fetch_all(intel.pool())
             .await
             .expect("query");
@@ -653,9 +654,9 @@ async fn a_package_named_by_two_sources_answers_both() {
         .expect("load");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source, cvss) VALUES ('GHSA-both', 'ghsa', 7.5); \
+        "INSERT INTO advisory (publisher_id, source, cvss) VALUES ('GHSA-both', 'ghsa', 7.5); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
-         VALUES ('GHSA-both', 'npm', 'cxp-jquery', '1.0.0')",
+         SELECT id, 'npm', 'cxp-jquery', '1.0.0' FROM advisory WHERE publisher_id = 'GHSA-both'",
     )
     .await;
 
@@ -781,9 +782,9 @@ async fn a_stored_range_that_does_not_parse_is_an_error_not_an_empty_answer() {
     let intel = skip_without_database!("t_range_corrupt");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source) VALUES ('GHSA-bad', 'ghsa'); \
+        "INSERT INTO advisory (publisher_id, source) VALUES ('GHSA-bad', 'ghsa'); \
          INSERT INTO advisory_range (advisory_id, ecosystem, name, introduced) \
-         VALUES ('GHSA-bad', 'npm', 'p', '13.0')",
+         SELECT id, 'npm', 'p', '13.0' FROM advisory WHERE publisher_id = 'GHSA-bad'",
     )
     .await;
 
@@ -798,20 +799,162 @@ async fn a_range_row_with_both_ends_or_neither_is_refused_by_the_schema() {
     let intel = skip_without_database!("t_range_check");
     insert(
         &intel,
-        "INSERT INTO advisory (id, source) VALUES ('GHSA-c', 'ghsa')",
+        "INSERT INTO advisory (publisher_id, source) VALUES ('GHSA-c', 'ghsa')",
     )
     .await;
-    for values in [
-        "('GHSA-c', 'npm', 'p', '1.0.0', '2.0.0', '2.0.0')",
-        "('GHSA-c', 'npm', 'p', NULL, NULL, NULL)",
-    ] {
+    for values in ["'1.0.0', '2.0.0', '2.0.0'", "NULL, NULL, NULL"] {
         let sql = format!(
             "INSERT INTO advisory_range \
-             (advisory_id, ecosystem, name, introduced, fixed, last_affected) VALUES {values}"
+             (advisory_id, ecosystem, name, introduced, fixed, last_affected) \
+             SELECT id, 'npm', 'p', {values} FROM advisory WHERE publisher_id = 'GHSA-c'"
         );
         assert!(
             sqlx::raw_sql(&sql).execute(intel.pool()).await.is_err(),
             "{values}"
         );
     }
+}
+
+/// Every table is keyed by a `BIGINT` identity and joins on it. A string column is sized, and
+/// `TEXT` only where a value has no bound. See
+/// docs/engineering_decisions/intel-schema-keys-and-types.md.
+#[tokio::test]
+async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_text() {
+    let intel = skip_without_database!("t_schema_types");
+    // `_sqlx_migrations` is sqlx's own.
+    let columns: Vec<(String, String, String, String, Option<i32>)> = sqlx::query_as(
+        "SELECT table_name::text, column_name::text, data_type::text, is_identity::text, \
+                character_maximum_length::int4 \
+         FROM information_schema.columns \
+         WHERE table_schema = current_schema() AND table_name <> '_sqlx_migrations' \
+         ORDER BY table_name, ordinal_position",
+    )
+    .fetch_all(intel.pool())
+    .await
+    .expect("query");
+    let named = |c: &(String, String, String, String, Option<i32>)| format!("{}.{}", c.0, c.1);
+
+    let text: Vec<String> = columns
+        .iter()
+        .filter(|c| c.2 == "text")
+        .map(named)
+        .collect();
+    assert_eq!(text, ["advisory.summary"]);
+
+    let unsized_strings: Vec<String> = columns
+        .iter()
+        .filter(|c| c.2 == "character varying" && c.4.is_none())
+        .map(named)
+        .collect();
+    assert!(unsized_strings.is_empty(), "{unsized_strings:?}");
+
+    let keys: Vec<(String, String, String)> = columns
+        .iter()
+        .filter(|c| c.1 == "id" || c.1 == "advisory_id")
+        .map(|c| (named(c), c.2.clone(), c.3.clone()))
+        .collect();
+    let tables = [
+        "advisory",
+        "advisory_affected",
+        "advisory_alias",
+        "advisory_range",
+        "intel_snapshot",
+    ];
+    for table in tables {
+        assert!(
+            keys.contains(&(format!("{table}.id"), "bigint".to_owned(), "YES".to_owned())),
+            "{table}: {keys:?}"
+        );
+    }
+    for (column, data_type, _) in keys.iter().filter(|k| k.0.ends_with(".advisory_id")) {
+        assert_eq!(data_type, "bigint", "{column}");
+    }
+
+    let primary: Vec<(String, String)> = sqlx::query_as(
+        "SELECT tc.table_name::text, string_agg(k.column_name::text, ',') \
+         FROM information_schema.table_constraints tc \
+         JOIN information_schema.key_column_usage k \
+           ON k.constraint_schema = tc.constraint_schema \
+          AND k.constraint_name = tc.constraint_name \
+         WHERE tc.table_schema = current_schema() AND tc.constraint_type = 'PRIMARY KEY' \
+           AND tc.table_name <> '_sqlx_migrations' \
+         GROUP BY tc.table_name ORDER BY 1",
+    )
+    .fetch_all(intel.pool())
+    .await
+    .expect("query");
+    assert_eq!(
+        primary,
+        tables.map(|t| (t.to_owned(), "id".to_owned())).to_vec()
+    );
+}
+
+/// The refresh fails rather than dropping the record, and the previous load stays.
+#[tokio::test]
+async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
+    let intel = skip_without_database!("t_too_long");
+    let first = osv_fixture("MAL-2021-1");
+    intel
+        .replace_source(osv::SOURCE, std::slice::from_ref(&first), &snapshot("s1"))
+        .await
+        .expect("first load");
+
+    let long = Rows {
+        affected: [osv::Affected {
+            ecosystem: "npm".to_owned(),
+            name: "x".repeat(513),
+            version: None,
+        }]
+        .into(),
+        ..osv_fixture("MAL-2022-174")
+    };
+    let error = intel
+        .replace_source(osv::SOURCE, &[long], &snapshot("s2"))
+        .await
+        .expect_err("a 513-character name should fail the load")
+        .to_string();
+    assert!(
+        error.contains("character varying(512)") && error.contains("COPY advisory_affected"),
+        "{error}"
+    );
+    assert!(error.contains("column name"), "{error}");
+
+    let (first_name, _) = target(&first);
+    assert_eq!(
+        intel
+            .lookup("npm", &first_name, "1.0.0")
+            .await
+            .expect("query")
+            .len(),
+        1
+    );
+    assert_eq!(
+        intel.snapshot().await.expect("query"),
+        Some("s1".to_owned())
+    );
+}
+
+/// OSV writes `modified` to the nanosecond. Postgres keeps microseconds.
+#[tokio::test]
+async fn timestamps_written_as_rfc_3339_are_stored_as_timestamps() {
+    let intel = skip_without_database!("t_timestamps");
+    let rows = Rows {
+        modified: Some("2026-09-08T03:45:02.886710134Z".to_owned()),
+        ..osv_fixture("MAL-2021-1")
+    };
+    intel
+        .replace_source(osv::SOURCE, &[rows], &snapshot("s1"))
+        .await
+        .expect("load");
+
+    let (modified, taken_at): (bool, bool) = sqlx::query_as(
+        "SELECT (SELECT modified = '2026-09-08T03:45:02.886710Z'::timestamptz FROM advisory), \
+                (SELECT taken_at = $1::text::timestamptz FROM intel_snapshot)",
+    )
+    .bind(snapshot("s1").taken_at)
+    .fetch_one(intel.pool())
+    .await
+    .expect("query");
+    assert!(modified);
+    assert!(taken_at);
 }
