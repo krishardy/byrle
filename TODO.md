@@ -1237,12 +1237,16 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 
 - [x] `[!]` Evaluate two policies against a real package set. `src/policy/diff.rs`,
       `waharoa policy diff <from> <to>`.
-- [~] `[!]` Pin `--snapshot` so policy changes are not conflated with intel changes.
-      The flag is refused rather than accepted. Postgres keeps only the latest snapshot.
-      `waharoa refresh` now also keeps each snapshot in `WAHAROA_SNAPSHOT_DIR`
-      (`src/intel/snapshot_dir.rs`, 30 by default). Next: `--snapshot` reads one, which needs
-      a decoder for `load::encode` and an `Intel` over the decoded rows. See
+- [x] `[!]` Pin `--snapshot` so policy changes are not conflated with intel changes.
+      `waharoa refresh` keeps each snapshot in `WAHAROA_SNAPSHOT_DIR`
+      (`src/intel/snapshot_dir.rs`, `WAHAROA_SNAPSHOT_LIMIT` 30 by default), and
+      `policy diff --snapshot <id>` reads one through `SnapshotIntel`
+      (`src/intel/snapshot_intel.rs`) instead of Postgres. See
       `docs/engineering_decisions/snapshot-identity.md`.
+- [ ] `SnapshotIntel::read` holds every package in memory: 457 MB peak and 0.6s for npm's
+      224,391 packages in a release build, against 28 MB for the same `policy diff` over
+      Postgres. The package set is known before the store is read, so only those packages
+      could be kept.
 - [~] `[!]` Package set from lockfiles **and** from the audit log. The audit log is read
       (`audit::packages`): a `pinned` line names one version, a `resolution` line names
       every version it removed. Lockfiles are not read yet.

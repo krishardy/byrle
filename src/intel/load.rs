@@ -11,7 +11,8 @@
 //!
 //! See docs/engineering_decisions/snapshot-identity.md.
 
-use super::osv::Rows;
+use super::osv::{Affected, Ranged, Rows};
+use super::range::{End, Interval};
 use super::refresh::{StreamDigest, sha256_hex};
 use std::collections::HashMap;
 
@@ -25,6 +26,14 @@ pub const RANGE: &str = "COPY advisory_range (advisory_id, ecosystem, name, intr
 
 /// The first line of an [`encode`]d source. A change to the encoding changes this line.
 pub const FORMAT: &str = "waharoa intel rows 1";
+
+/// The tables an encoding holds, in the order it holds them.
+const TABLES: [&str; 4] = [
+    "advisory",
+    "advisory_alias",
+    "advisory_affected",
+    "advisory_range",
+];
 
 /// What a refresh fetched, as `intel_source` and `intel_snapshot` record it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,12 +153,12 @@ pub fn encode(source: &str, rows: &[Rows]) -> Encoded {
     }
 
     let mut bytes = format!("{FORMAT}\nsource {source}\n").into_bytes();
-    for (table, csv) in [
-        ("advisory", &advisory),
-        ("advisory_alias", &children.alias),
-        ("advisory_affected", &children.affected),
-        ("advisory_range", &children.range),
-    ] {
+    for (table, csv) in TABLES.into_iter().zip([
+        &advisory,
+        &children.alias,
+        &children.affected,
+        &children.range,
+    ]) {
         bytes.extend_from_slice(format!("{table} {}\n", csv.len()).as_bytes());
         bytes.extend_from_slice(csv);
     }
@@ -183,6 +192,223 @@ pub fn manifest<'a>(sources: impl IntoIterator<Item = (&'a str, &'a str)>) -> St
 /// The snapshot id of a [`manifest`].
 pub fn snapshot_id(manifest: &str) -> String {
     digest(manifest.as_bytes())
+}
+
+/// Why bytes are not an [`encode`]d source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Undecodable(pub String);
+
+impl std::fmt::Display for Undecodable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Undecodable {}
+
+/// A source and its rows, read back from [`encode`]'s output.
+///
+/// The rows are encoded again and compared with `bytes`, so a reading that differs from what
+/// was written is refused rather than used. `unread_vectors` and `unexpressed` are not in the
+/// encoding and are 0.
+pub fn decode(bytes: &[u8]) -> Result<(String, Vec<Rows>), Undecodable> {
+    let [advisory, alias, affected, range] = TABLES;
+    let mut rest = bytes;
+    let first = take_line(&mut rest)?;
+    if first != FORMAT {
+        return Err(Undecodable(format!(
+            "the first line is `{first}`, not `{FORMAT}`"
+        )));
+    }
+    let header = take_line(&mut rest)?;
+    let source = header
+        .strip_prefix("source ")
+        .ok_or_else(|| Undecodable(format!("`{header}` is not `source <name>`")))?
+        .to_owned();
+
+    let mut rows = Vec::new();
+    for record in take_table(&mut rest, advisory)? {
+        let [id, _source, summary, cvss, modified, malware] = width(advisory, record)?;
+        let cvss =
+            match cvss {
+                Some(text) => Some(text.parse::<f64>().map_err(|_| {
+                    Undecodable(format!("{advisory}: cvss `{text}` is not a number"))
+                })?),
+                None => None,
+            };
+        let malware = match malware.as_deref() {
+            Some("true") => true,
+            Some("false") => false,
+            other => {
+                return Err(Undecodable(format!(
+                    "{advisory}: malware is `{}`, not true or false",
+                    other.unwrap_or_default()
+                )));
+            }
+        };
+        rows.push(Rows {
+            id: given(advisory, id)?,
+            summary,
+            modified,
+            malware,
+            cvss,
+            unread_vectors: 0,
+            aliases: Default::default(),
+            affected: Default::default(),
+            ranges: Default::default(),
+            unexpressed: 0,
+        });
+    }
+    for record in take_table(&mut rest, alias)? {
+        let [position, name] = width(alias, record)?;
+        let name = given(alias, name)?;
+        at(&mut rows, alias, position)?.aliases.insert(name);
+    }
+    for record in take_table(&mut rest, affected)? {
+        let [position, ecosystem, name, version] = width(affected, record)?;
+        let row = Affected {
+            ecosystem: given(affected, ecosystem)?,
+            name: given(affected, name)?,
+            version,
+        };
+        at(&mut rows, affected, position)?.affected.insert(row);
+    }
+    for record in take_table(&mut rest, range)? {
+        let [position, ecosystem, name, introduced, fixed, last_affected] = width(range, record)?;
+        let end = match (fixed, last_affected) {
+            (None, None) => End::Open,
+            (Some(version), None) => End::Fixed(version),
+            (None, Some(version)) => End::LastAffected(version),
+            (Some(_), Some(_)) => {
+                return Err(Undecodable(format!(
+                    "{range}: a row has both fixed and last_affected"
+                )));
+            }
+        };
+        let row = Ranged {
+            ecosystem: given(range, ecosystem)?,
+            name: given(range, name)?,
+            interval: Interval { introduced, end },
+        };
+        at(&mut rows, range, position)?.ranges.insert(row);
+    }
+    if !rest.is_empty() {
+        return Err(Undecodable(format!("{} bytes follow {range}", rest.len())));
+    }
+    if encode(&source, &rows).bytes != bytes {
+        return Err(Undecodable(
+            "the rows do not encode back to the same bytes".to_owned(),
+        ));
+    }
+    Ok((source, rows))
+}
+
+fn take_line<'a>(rest: &mut &'a [u8]) -> Result<&'a str, Undecodable> {
+    let end = rest
+        .iter()
+        .position(|&b| b == b'\n')
+        .ok_or_else(|| Undecodable("a line has no end".to_owned()))?;
+    let (line, after) = rest.split_at(end);
+    *rest = &after[1..];
+    std::str::from_utf8(line).map_err(|_| Undecodable("a line is not UTF-8".to_owned()))
+}
+
+/// A `table <bytes>` line and the records in the bytes after it.
+fn take_table(rest: &mut &[u8], table: &str) -> Result<Vec<Vec<Option<String>>>, Undecodable> {
+    let header = take_line(rest)?;
+    let length = header
+        .strip_prefix(table)
+        .and_then(|n| n.strip_prefix(' '))
+        .and_then(|n| n.parse::<usize>().ok())
+        .ok_or_else(|| Undecodable(format!("`{header}` is not `{table} <bytes>`")))?;
+    if length > rest.len() {
+        return Err(Undecodable(format!(
+            "{table} is {length} bytes and {} remain",
+            rest.len()
+        )));
+    }
+    let (csv, after) = rest.split_at(length);
+    *rest = after;
+    records(table, csv)
+}
+
+/// Each record's fields, as [`line`] writes them: an empty field is `None`, and a quoted one
+/// is its text with doubled quotes undone. Anything else is refused.
+fn records(table: &str, csv: &[u8]) -> Result<Vec<Vec<Option<String>>>, Undecodable> {
+    let refuse = |at: usize, what: &str| Undecodable(format!("{table}: {what} at byte {at}"));
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < csv.len() {
+        let mut fields = Vec::new();
+        loop {
+            let field = if csv.get(i) == Some(&b'"') {
+                let mut value = Vec::new();
+                i += 1;
+                loop {
+                    match (csv.get(i).copied(), csv.get(i + 1).copied()) {
+                        (Some(b'"'), Some(b'"')) => {
+                            value.push(b'"');
+                            i += 2;
+                        }
+                        (Some(b'"'), _) => {
+                            i += 1;
+                            break;
+                        }
+                        (Some(byte), _) => {
+                            value.push(byte);
+                            i += 1;
+                        }
+                        (None, _) => return Err(refuse(i, "a quoted value does not end")),
+                    }
+                }
+                Some(String::from_utf8(value).map_err(|_| refuse(i, "a value is not UTF-8"))?)
+            } else {
+                None
+            };
+            fields.push(field);
+            match csv.get(i) {
+                Some(b',') => i += 1,
+                Some(b'\n') => {
+                    i += 1;
+                    break;
+                }
+                _ => return Err(refuse(i, "a field is neither empty nor quoted")),
+            }
+        }
+        out.push(fields);
+    }
+    Ok(out)
+}
+
+fn width<const N: usize>(
+    table: &str,
+    record: Vec<Option<String>>,
+) -> Result<[Option<String>; N], Undecodable> {
+    <[Option<String>; N]>::try_from(record).map_err(|record| {
+        Undecodable(format!(
+            "{table}: a row has {} fields, not {N}",
+            record.len()
+        ))
+    })
+}
+
+fn given(table: &str, field: Option<String>) -> Result<String, Undecodable> {
+    field.ok_or_else(|| Undecodable(format!("{table}: a required value is empty")))
+}
+
+/// The record a child row's position refers to, counted from 1.
+fn at<'a>(
+    rows: &'a mut [Rows],
+    table: &str,
+    position: Option<String>,
+) -> Result<&'a mut Rows, Undecodable> {
+    let position = given(table, position)?;
+    let index = position
+        .parse::<usize>()
+        .ok()
+        .and_then(|p| p.checked_sub(1))
+        .filter(|i| *i < rows.len())
+        .ok_or_else(|| Undecodable(format!("{table}: no advisory at position {position}")))?;
+    Ok(&mut rows[index])
 }
 
 /// CSV for `advisory`.
@@ -434,6 +660,131 @@ mod tests {
     fn nothing_to_load_is_empty_tables() {
         assert!(advisories("osv", &[]).is_empty());
         assert_eq!(children(&[], &HashMap::new()), Ok(Children::default()));
+    }
+
+    #[test]
+    fn decoding_an_encoding_gives_back_the_rows() {
+        let given = vec![
+            rows(),
+            plain("GHSA-1", "CVE-a", "a"),
+            Rows {
+                cvss: Some(0.1 + 0.2),
+                modified: Some("2026-09-08T03:45:02.886711Z".to_owned()),
+                ..plain("GHSA-2", "CVE-\"q\"", "b")
+            },
+        ];
+        let (source, decoded) = decode(&encode("osv", &given).bytes).expect("decodes");
+        let mut expected = given.clone();
+        expected.sort_by(|a, b| a.id.cmp(&b.id));
+        assert_eq!((source.as_str(), decoded), ("osv", expected));
+
+        assert_eq!(
+            decode(&encode("ghsa", &[]).bytes),
+            Ok(("ghsa".to_owned(), Vec::new()))
+        );
+    }
+
+    /// The four tables with their lengths, around whatever CSV a case gives.
+    fn framed(tables: [&str; 4]) -> Vec<u8> {
+        let mut out = format!("{FORMAT}\nsource osv\n");
+        for (table, csv) in TABLES.into_iter().zip(tables) {
+            out.push_str(&format!("{table} {}\n{csv}", csv.len()));
+        }
+        out.into_bytes()
+    }
+
+    #[test]
+    fn bytes_that_are_not_an_encoding_are_refused_with_the_reason() {
+        let good = String::from_utf8(encode("osv", &[plain("GHSA-1", "CVE-a", "a")]).bytes)
+            .expect("utf-8");
+        let row = "\"GHSA-1\",\"osv\",,,,\"true\"\n";
+        let cases: Vec<(Vec<u8>, &str)> = vec![
+            (Vec::new(), "a line has no end"),
+            (b"\xff\n".to_vec(), "a line is not UTF-8"),
+            (
+                good.replacen("rows 1", "rows 2", 1).into_bytes(),
+                "the first line is `waharoa intel rows 2`, not `waharoa intel rows 1`",
+            ),
+            (
+                good.replacen("source osv", "origin osv", 1).into_bytes(),
+                "`origin osv` is not `source <name>`",
+            ),
+            (
+                good.replacen("advisory_alias ", "advisory_aliases ", 1)
+                    .into_bytes(),
+                "is not `advisory_alias <bytes>`",
+            ),
+            (
+                good.replacen("advisory_range 0", "advisory_range 9", 1)
+                    .into_bytes(),
+                "advisory_range is 9 bytes and 0 remain",
+            ),
+            (
+                format!("{good}x").into_bytes(),
+                "1 bytes follow advisory_range",
+            ),
+            (
+                framed(["\"GHSA-1\",osv,,,,\"true\"\n", "", "", ""]),
+                "advisory: a field is neither empty nor quoted at byte 9",
+            ),
+            (
+                framed(["\"GHSA-1", "", "", ""]),
+                "advisory: a quoted value does not end at byte 7",
+            ),
+            (
+                framed(["\"X\",\"osv\",,,,\"true\"\n", "", "", ""])
+                    .into_iter()
+                    .map(|b| if b == b'X' { 0xff } else { b })
+                    .collect(),
+                "advisory: a value is not UTF-8",
+            ),
+            (
+                framed(["\"GHSA-1\",\"osv\",,,\"true\"\n", "", "", ""]),
+                "advisory: a row has 5 fields, not 6",
+            ),
+            (
+                framed(["\"GHSA-1\",\"osv\",,\"high\",,\"true\"\n", "", "", ""]),
+                "advisory: cvss `high` is not a number",
+            ),
+            (
+                framed(["\"GHSA-1\",\"osv\",,,,\"yes\"\n", "", "", ""]),
+                "advisory: malware is `yes`, not true or false",
+            ),
+            (
+                framed([",\"osv\",,,,\"true\"\n", "", "", ""]),
+                "advisory: a required value is empty",
+            ),
+            (
+                framed([row, "\"2\",\"CVE-a\"\n", "", ""]),
+                "advisory_alias: no advisory at position 2",
+            ),
+            (
+                framed([row, "\"0\",\"CVE-a\"\n", "", ""]),
+                "advisory_alias: no advisory at position 0",
+            ),
+            (
+                framed([row, "", "\"1\",\"npm\",,\n", ""]),
+                "advisory_affected: a required value is empty",
+            ),
+            (
+                framed([row, "", "", "\"1\",\"npm\",\"a\",,\"2.0.0\",\"1.0.0\"\n"]),
+                "advisory_range: a row has both fixed and last_affected",
+            ),
+            (
+                framed([
+                    "\"MAL-1\",\"osv\",,,,\"true\"\n\"GHSA-1\",\"osv\",,,,\"true\"\n",
+                    "",
+                    "",
+                    "",
+                ]),
+                "the rows do not encode back to the same bytes",
+            ),
+        ];
+        for (bytes, reason) in cases {
+            let err = decode(&bytes).expect_err(reason).to_string();
+            assert!(err.contains(reason), "{err:?} lacks {reason:?}");
+        }
+        assert!(decode(good.as_bytes()).is_ok());
     }
 
     /// Given out of order, so the numbering has to come from sorting.

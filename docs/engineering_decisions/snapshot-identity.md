@@ -1,10 +1,11 @@
 # Snapshot identity
 
-- **Status:** Implemented 2026-09-14: the id, and the snapshot files `waharoa refresh` writes.
-  `policy diff --snapshot` and import do not read the files yet. `load::encode`,
-  `load::manifest` and `load::snapshot_id` in `src/intel/load.rs`, `PgIntel::replace_encoded`
-  in `src/intel/postgres.rs`, `intel_source` in `migrations/0001_intel.sql` (rewritten),
-  `SnapshotDir` in `src/intel/snapshot_dir.rs`.
+- **Status:** Implemented 2026-09-14: the id, the snapshot files `waharoa refresh` writes, and
+  `policy diff --snapshot`, which reads them. Import is not built. `load::encode`,
+  `load::decode`, `load::manifest` and `load::snapshot_id` in `src/intel/load.rs`,
+  `PgIntel::replace_encoded` in `src/intel/postgres.rs`, `intel_source` in
+  `migrations/0001_intel.sql` (rewritten), `SnapshotDir` in `src/intel/snapshot_dir.rs`,
+  `SnapshotIntel` in `src/intel/snapshot_intel.rs`.
 - **Related:** [osv-malware-load](osv-malware-load.md),
   [osv-ranges-and-scores](osv-ranges-and-scores.md),
   [intel-schema-keys-and-types](intel-schema-keys-and-types.md),
@@ -17,7 +18,7 @@
 | Audit attribution | `intel_snapshot` on each audit line | same id, same rows read |
 | Replica agreement | plan §3, `GET /-/waharoa/ready`, `waharoa doctor` | same id, same rows in the database |
 | One `intel_snapshot` row per set of rows | `ON CONFLICT (digest)` in `replace_source` | same rows, same id |
-| `policy diff --snapshot` | refused today | an older snapshot to select |
+| `policy diff --snapshot` | reads a kept snapshot | an older snapshot to select |
 | Air-gapped export and import | plan §7, Stage 5 | a file an import can check |
 
 ## The defect
@@ -131,6 +132,30 @@ real name; a prune removes `.partial` files.
 The lock serializes refreshes into one directory. Without it, a prune could remove the rows
 file another refresh had written and not yet named in a manifest.
 
+## Reading a kept snapshot
+
+`waharoa policy diff --snapshot <id>` reads snapshot `<id>` from `WAHAROA_SNAPSHOT_DIR` and
+answers every package from it instead of Postgres. `WAHAROA_DATABASE_URL` is not needed.
+
+| Step | What is checked |
+|---|---|
+| Read `<hex>.snapshot` | its contents hash to `<id>` |
+| Read each `<hex>.rows.gz` it names | the decompressed contents hash to the digest in the name |
+| `load::decode` the rows | the file holds the source the manifest names, and the decoded rows encode back to the same bytes |
+| Build a `SnapshotIntel` | every stored range parses as SemVer |
+
+Decoding to `Rows` and encoding again is what makes a reader that differs from the writer
+fail rather than answer. `SnapshotIntel` holds every package's `PackageIntel` in memory, so
+one package costs one hash lookup, as `PgIntel::package` costs one query.
+
+The reader takes no lock. A refresh writes a new file under `.partial` and renames it, and
+never changes a file in place, so a read cannot see half a file, and a file that does not hash
+to its name is refused. A prune can remove a file while `policy diff` reads, which fails the
+read. Taking the lock instead would make every refresh wait for every `policy diff`, which
+fetches packuments and can run for minutes.
+
+A kept snapshot records no streams, and its `taken_at` is when the manifest was last written.
+
 `WAHAROA_SNAPSHOT_LIMIT`, default 30, is the most manifests the directory keeps. A prune
 keeps the newest by modification time and removes the rest. A manifest loaded again is written again, so it counts as the newest.
 Rows files that no kept manifest names are removed. Other files are left alone.
@@ -145,7 +170,6 @@ recreated.
 
 | Item | Where |
 |---|---|
-| `policy diff --snapshot` reads a snapshot directory | TODO.md, `--snapshot` under `waharoa policy diff` |
 | Export and import | TODO.md Stage 5, offline and air-gapped mode |
 
 ## Evidence
@@ -196,6 +220,49 @@ An older snapshot and its rows were then placed in the directory, dated a day ea
 the refresh run again with `WAHAROA_SNAPSHOT_LIMIT=1`. It printed `snapshot files removed 1`
 and `rows files removed 1`, and left the two files above.
 
+Reading that snapshot back, against Postgres holding the same load. A temporary example read
+the kept snapshot in a release build, then asked both stores `package()` for every package
+the rows name, lists compared sorted:
+
+```
+SnapshotIntel::read 626.387171ms, VmHWM:	  456992 kB
+packages 224391
+same 224391, differ 0, compared in 59.710736861s
+```
+
+`policy diff` over four audit-log packages (lodash 4.17.20 and 4.17.21, minimist 1.2.5,
+left-pad 1.3.0), debug build:
+
+| Store | Report | Exit | Time | Peak RSS |
+|---|---|---|---|---|
+| Postgres | `nothing moved` | 0 | 0.5s | 28 MB |
+| `--snapshot`, `WAHAROA_DATABASE_URL` unset | `nothing moved`, identical | 0 | 3.8s | 468 MB |
+
+Both policies had an effective `max_cvss` under 7.9, so nothing moved. With `max_cvss: 7.0`
+against `max_cvss: 9.0`, `--snapshot` gives:
+
+```
+pkg:npm/lodash@4.17.20  block -> allow
+    max_cvss          FAIL block -> pass  (LOOSER)
+pkg:npm/lodash@4.17.21  block -> allow
+    max_cvss          FAIL block -> pass  (LOOSER)
+
+waharoa policy diff: 2 loosened, 0 incomparable
+```
+
+and exits 1. With no store and no snapshot the same two policies give `nothing moved`.
+
+Refused, each exit 2:
+
+```
+--snapshot sha256:2251...: WAHAROA_SNAPSHOT_DIR is not set, so there is no kept snapshot to read
+--snapshot latest: `latest` is not `sha256:` and 64 lowercase hex digits
+--snapshot sha256:0000...: .../0000...0000.snapshot: No such file or directory (os error 2)
+```
+
+The whole snapshot is held in memory: 457 MB for npm. A command that reads a few packages
+pays for all 224,391.
+
 Each mutation below was caught:
 
 | Mutation | Caught by |
@@ -225,3 +292,20 @@ The snapshot directory, each caught:
 | A digest longer than 64 digits, or with letters past `f`, made into a path | `a_value_that_is_not_a_digest_never_becomes_a_path` |
 | `.partial` never renamed | 6 tests, `a_load_is_kept_as_rows_named_by_digest_and_a_snapshot_named_by_id` among them |
 | `WAHAROA_SNAPSHOT_LIMIT=0` accepted | `a_value_that_does_not_parse_is_an_error_naming_the_variable_and_the_value` |
+
+Reading a kept snapshot, each caught:
+
+| Mutation | Caught by |
+|---|---|
+| Decoded rows not encoded again and compared | `bytes_that_are_not_an_encoding_are_refused_with_the_reason` |
+| A doubled quote read as nothing | `decoding_an_encoding_gives_back_the_rows` |
+| `fixed` and `last_affected` swapped | the same, and `a_kept_snapshot_answers_each_package_from_its_rows` |
+| Position 0 read as position 1 | `bytes_that_are_not_an_encoding_are_refused_with_the_reason` |
+| Bytes after `advisory_range` accepted | the same |
+| Rows of another source accepted | `rows_of_another_source_than_the_snapshot_names_are_refused` |
+| `taken_at` rounded rather than cut to the second | `a_snapshot_reports_when_it_was_last_written_to_the_second` |
+| Every record given the source `osv` | `every_source_in_the_snapshot_answers` |
+| Aliases dropped | `a_kept_snapshot_answers_each_package_from_its_rows` |
+| Ranges dropped | the same |
+| A listed version read as every version | the same |
+| A package nothing is against given no snapshot id | `a_package_nothing_is_against_is_an_empty_answer_naming_the_snapshot` |

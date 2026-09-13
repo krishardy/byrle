@@ -18,6 +18,7 @@
 //! See docs/engineering_decisions/snapshot-identity.md.
 
 use super::load::{self, Encoded};
+use super::osv::Rows;
 use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
@@ -33,8 +34,9 @@ const LOCK: &str = ".lock";
 #[derive(Debug)]
 pub struct SnapshotDir {
     path: PathBuf,
-    /// Held for its lock, which is released when the file is closed.
-    _lock: File,
+    /// Held for its lock, which is released when the file is closed. `None` from
+    /// [`SnapshotDir::open_to_read`].
+    _lock: Option<File>,
 }
 
 /// What [`SnapshotDir::prune`] removed.
@@ -68,6 +70,16 @@ pub enum KeptError {
         source: String,
         digest: String,
     },
+    /// A rows file whose contents match its name and are not rows of the source named.
+    Undecodable {
+        path: PathBuf,
+        reason: String,
+    },
+    /// A stored range whose versions do not parse. The loader writes none.
+    Range {
+        digest: String,
+        advisory_id: String,
+    },
 }
 
 impl std::fmt::Display for KeptError {
@@ -92,6 +104,14 @@ impl std::fmt::Display for KeptError {
                 "the rows of source {source}, {digest}, are not in the snapshot directory; \
                  refresh {source} to write them"
             ),
+            Self::Undecodable { path, reason } => write!(f, "{}: {reason}", path.display()),
+            Self::Range {
+                digest,
+                advisory_id,
+            } => write!(
+                f,
+                "the rows {digest} hold a range of {advisory_id} that does not parse"
+            ),
         }
     }
 }
@@ -113,8 +133,20 @@ impl SnapshotDir {
         lock.lock().map_err(at(&lock_path))?;
         Ok(Self {
             path: path.to_owned(),
-            _lock: lock,
+            _lock: Some(lock),
         })
+    }
+
+    /// `path`, for reading only, without the lock.
+    ///
+    /// A refresh never changes a file in place, and every read is checked against its digest,
+    /// so a read cannot see a file half written. A prune can remove a file between two reads,
+    /// which fails the second. Writing and pruning go through [`SnapshotDir::open`].
+    pub fn open_to_read(path: &Path) -> Self {
+        Self {
+            path: path.to_owned(),
+            _lock: None,
+        }
     }
 
     /// Write one source's rows, unless a file with that digest is already there.
@@ -167,6 +199,46 @@ impl SnapshotDir {
             .map_err(at(&path))?;
         check(&path, load::digest(&bytes), digest)?;
         Ok(bytes)
+    }
+
+    /// Each source snapshot `id` names, with the digest of its rows.
+    pub fn sources(&self, id: &str) -> Result<Vec<(String, String)>, KeptError> {
+        let manifest = self.read_snapshot(id)?;
+        let path = self.file(id, SNAPSHOT)?;
+        Ok(lines(&path, &manifest)?
+            .into_iter()
+            .map(|(source, digest)| (source.to_owned(), digest.to_owned()))
+            .collect())
+    }
+
+    /// One source's rows, checked against `digest` and against the source named.
+    pub fn read_source(&self, source: &str, digest: &str) -> Result<Vec<Rows>, KeptError> {
+        let bytes = self.read_rows(digest)?;
+        let path = self.file(digest, ROWS)?;
+        let (held, rows) = load::decode(&bytes).map_err(|e| KeptError::Undecodable {
+            path: path.clone(),
+            reason: e.0,
+        })?;
+        if held != source {
+            return Err(KeptError::Undecodable {
+                path,
+                reason: format!("holds source {held}, where the snapshot names {source}"),
+            });
+        }
+        Ok(rows)
+    }
+
+    /// When snapshot `id` was last written, which is when a refresh last loaded it. RFC 3339,
+    /// UTC, to the second.
+    pub fn written(&self, id: &str) -> Result<String, KeptError> {
+        let path = self.file(id, SNAPSHOT)?;
+        let modified = fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .map_err(at(&path))?;
+        jiff::Timestamp::try_from(modified)
+            .and_then(|t| jiff::Timestamp::from_second(t.as_second()))
+            .map(|t| t.to_string())
+            .map_err(|e| at(&path)(io::Error::other(e)))
     }
 
     /// Keep the `limit` newest snapshots and the rows files they name. Remove every other
@@ -581,6 +653,77 @@ mod tests {
         told.recv_timeout(Duration::from_secs(10))
             .expect("opens once the first is dropped");
         second.join().expect("joins").expect("opens");
+    }
+
+    #[test]
+    fn a_reader_neither_waits_for_the_lock_nor_creates_the_directory() {
+        let path = tempdir("kept-reader");
+        let writer = SnapshotDir::open(&path).expect("opens");
+        let osv = encoded("osv", &["MAL-1"]);
+        writer.write_rows(&osv).expect("writes");
+        let manifest = manifest_of(&[&osv]);
+        writer.write_snapshot(&manifest).expect("writes");
+
+        let reader = SnapshotDir::open_to_read(&path);
+        let id = load::snapshot_id(&manifest);
+        assert_eq!(
+            reader
+                .sources(&id)
+                .expect("reads while the writer holds the lock"),
+            [("osv".to_owned(), osv.digest.clone())]
+        );
+
+        let absent = path.join("absent");
+        let err = SnapshotDir::open_to_read(&absent)
+            .read_snapshot(&id)
+            .expect_err("no directory");
+        assert!(matches!(err, KeptError::Io { .. }), "{err:?}");
+        assert!(!absent.exists());
+    }
+
+    #[test]
+    fn a_snapshot_reports_when_it_was_last_written_to_the_second() {
+        let path = tempdir("kept-written");
+        let dir = SnapshotDir::open(&path).expect("opens");
+        let osv = encoded("osv", &["MAL-1"]);
+        dir.write_rows(&osv).expect("writes");
+        let manifest = manifest_of(&[&osv]);
+        let written = dir.write_snapshot(&manifest).expect("writes");
+        let at: jiff::Timestamp = "2026-09-13T01:02:03.9Z".parse().expect("a time");
+        File::options()
+            .write(true)
+            .open(&written)
+            .expect("opens")
+            .set_modified(SystemTime::from(at))
+            .expect("sets the time");
+
+        assert_eq!(
+            dir.written(&load::snapshot_id(&manifest)).expect("reads"),
+            "2026-09-13T01:02:03Z"
+        );
+    }
+
+    #[test]
+    fn rows_of_another_source_than_the_snapshot_names_are_refused() {
+        let path = tempdir("kept-source");
+        let dir = SnapshotDir::open(&path).expect("opens");
+        let osv = encoded("osv", &["MAL-1"]);
+        dir.write_rows(&osv).expect("writes");
+
+        let err = dir
+            .read_source("other", &osv.digest)
+            .expect_err("the rows are osv's");
+        assert_eq!(
+            err.to_string(),
+            format!(
+                "{}: holds source osv, where the snapshot names other",
+                named(&path, &osv.digest, ".rows.gz").display()
+            )
+        );
+        assert_eq!(
+            dir.read_source("osv", &osv.digest).expect("reads"),
+            vec![rows("MAL-1")]
+        );
     }
 
     #[test]

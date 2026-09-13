@@ -33,7 +33,7 @@ code, and the file names where.
 | [Policy schema version 1 is frozen](policy-schema-v1-frozen.md) | Decided |
 | [`waharoa policy check`](policy-check.md) | Implemented |
 | [Readiness endpoint](readiness-endpoint.md) | Implemented |
-| [Snapshot identity](snapshot-identity.md) | Implemented; `--snapshot` does not read the files yet |
+| [Snapshot identity](snapshot-identity.md) | Implemented; import not built |
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |

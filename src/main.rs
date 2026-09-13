@@ -19,7 +19,7 @@ use waharoa::identity::PackageRef;
 
 use waharoa::npm;
 use waharoa::audit;
-use waharoa::intel::store::Intel as _;
+use waharoa::intel::store::Intel;
 use waharoa::policy::{Policy, check, decide, diff, enforce, packages, today};
 use waharoa::record;
 use waharoa::proxy::Proxy;
@@ -206,28 +206,37 @@ fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-/// `waharoa policy diff <from> <to> [--as-of YYYY-MM-DD]`.
+/// `waharoa policy diff <from> <to> [--as-of YYYY-MM-DD] [--snapshot ID]`.
 ///
 /// The package set is the audit log, which is the only record of what this proxy has
 /// actually been asked about. Lockfiles are the other source named in the plan and are not
 /// read yet.
 async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
     let as_of = args.as_of.unwrap_or_else(today);
-    if args.snapshot.is_some() {
-        // Accepting it silently would imply intel is pinned when nothing pins it.
-        eprintln!(
-            "waharoa policy diff: --snapshot pins nothing yet; the store holds only its latest load"
-        );
-        return std::process::ExitCode::from(2);
-    }
 
-    let store = match intel_store().await {
-        Ok(store) => store,
-        Err(e) => {
-            eprintln!("waharoa policy diff: {}: {e}", env::DATABASE_URL);
-            return std::process::ExitCode::from(2);
-        }
+    // A kept snapshot when one is named, so a changed result is the policy's and not an
+    // advisory published since.
+    let store: Option<Box<dyn Intel>> = match &args.snapshot {
+        Some(id) => match kept_snapshot(id) {
+            Ok(kept) => Some(Box::new(kept)),
+            Err(e) => {
+                eprintln!("waharoa policy diff: --snapshot {id}: {e}");
+                return std::process::ExitCode::from(2);
+            }
+        },
+        None => match intel_store().await {
+            Ok(store) => store.map(|store| Box::new(store) as Box<dyn Intel>),
+            Err(e) => {
+                eprintln!("waharoa policy diff: {}: {e}", env::DATABASE_URL);
+                return std::process::ExitCode::from(2);
+            }
+        },
     };
+    if let Some(store) = &store
+        && let Ok(Some(snapshot)) = store.snapshot().await
+    {
+        eprintln!("waharoa policy diff: intel snapshot {}", snapshot.digest);
+    }
 
     let mut loaded = Vec::new();
     for path in [&args.from, &args.to] {
@@ -287,7 +296,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         } else {
             None
         };
-        let intel = match package_intel(store.as_ref(), reference.key()).await {
+        let intel = match package_intel(store.as_deref(), reference.key()).await {
             Ok(intel) => intel,
             Err(e) => {
                 eprintln!("waharoa policy diff: {purl}: {e}");
@@ -412,7 +421,8 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
         None
     };
 
-    let intel = match package_intel(store.as_ref(), reference.key()).await {
+    let store = store.as_ref().map(|store| store as &dyn Intel);
+    let intel = match package_intel(store, reference.key()).await {
         Ok(intel) => intel,
         Err(e) => {
             eprintln!("waharoa explain: {e}");
@@ -550,12 +560,24 @@ async fn intel_store() -> Result<Option<waharoa::intel::postgres::PgIntel>, Stri
     Ok(Some(intel))
 }
 
+/// The snapshot `--snapshot` names, read from the snapshot directory without its lock.
+fn kept_snapshot(id: &str) -> Result<waharoa::intel::snapshot_intel::SnapshotIntel, String> {
+    let Some(path) = or_exit(env::process().snapshot_dir()) else {
+        return Err(format!(
+            "{} is not set, so there is no kept snapshot to read",
+            env::SNAPSHOT_DIR
+        ));
+    };
+    let dir = waharoa::intel::snapshot_dir::SnapshotDir::open_to_read(&path);
+    waharoa::intel::snapshot_intel::SnapshotIntel::read(&dir, id).map_err(|e| e.to_string())
+}
+
 /// What the store knows about one package, for a command that has to answer with it.
 ///
 /// `Ok(None)` is no store configured. A store that errors or holds no snapshot is an error,
 /// so a command cannot print a verdict reached without intel it was told to use.
 async fn package_intel(
-    store: Option<&waharoa::intel::postgres::PgIntel>,
+    store: Option<&dyn Intel>,
     key: &waharoa::identity::PackageKey,
 ) -> Result<Option<waharoa::intel::store::PackageIntel>, String> {
     let Some(store) = store else {

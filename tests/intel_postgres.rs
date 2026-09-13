@@ -15,7 +15,9 @@ use waharoa::intel::load::{self, Fetch};
 use waharoa::intel::osv::{self, Parsed, Rows};
 use waharoa::intel::postgres::{Loaded, PgIntel};
 use waharoa::intel::refresh::StreamDigest;
-use waharoa::intel::store::{Intel, IntelError, LoadedSnapshot};
+use waharoa::intel::snapshot_dir::SnapshotDir;
+use waharoa::intel::snapshot_intel::SnapshotIntel;
+use waharoa::intel::store::{Intel, IntelError, LoadedSnapshot, PackageIntel};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
@@ -1127,4 +1129,66 @@ async fn a_stored_score_prints_as_the_encoding_wrote_it() {
             .await
             .expect("query");
     assert_eq!(stored, ["6.9", "0.30000000000000004", "9.3"]);
+}
+
+/// One snapshot answers the same from its kept files as from Postgres.
+#[tokio::test]
+async fn a_kept_snapshot_answers_as_postgres_does() {
+    let intel = skip_without_database!("t_kept_answers");
+    let rows = [
+        osv_fixture("MAL-2021-1"),
+        osv_fixture("MAL-2022-174"),
+        osv_fixture("MAL-2022-219"),
+        osv_fixture("MAL-2025-3661"),
+        Rows {
+            id: "GHSA-0000-0000-0000".to_owned(),
+            malware: false,
+            cvss: Some(6.9),
+            ..osv_fixture("MAL-2022-174")
+        },
+    ];
+    let encoded = load::encode(osv::SOURCE, &rows);
+    let loaded = intel
+        .replace_encoded(&encoded, &rows, &fetch("s1"))
+        .await
+        .expect("load");
+
+    let path = std::env::temp_dir().join(format!("waharoa-it-kept-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&path);
+    let dir = SnapshotDir::open(&path).expect("opens");
+    dir.write_rows(&encoded).expect("writes rows");
+    dir.write_snapshot(&loaded.manifest)
+        .expect("writes the snapshot");
+    let kept = SnapshotIntel::read(&dir, &loaded.snapshot).expect("reads");
+
+    let names: std::collections::BTreeSet<&str> = rows
+        .iter()
+        .flat_map(|r| {
+            r.affected
+                .iter()
+                .map(|a| a.name.as_str())
+                .chain(r.ranges.iter().map(|x| x.name.as_str()))
+        })
+        .chain(["lodash"])
+        .collect();
+    assert_eq!(names.len(), 5, "{names:?}");
+    for name in names {
+        let from_postgres = intel.package("npm", name).await.expect("query");
+        let from_files = kept.package("npm", name).await.expect("answers");
+        assert_eq!(from_files.map(sorted), from_postgres.map(sorted), "{name}");
+    }
+    assert_eq!(
+        kept.snapshot().await.expect("answers").map(|s| s.digest),
+        Some(loaded.snapshot)
+    );
+}
+
+/// A package's answer with its rows in one order. Postgres orders text by collation, and the
+/// files by byte.
+fn sorted(intel: PackageIntel) -> (String, Vec<String>, Vec<String>) {
+    let mut records: Vec<String> = intel.records.iter().map(|r| format!("{r:?}")).collect();
+    let mut ranges: Vec<String> = intel.ranges.iter().map(|r| format!("{r:?}")).collect();
+    records.sort();
+    ranges.sort();
+    (intel.snapshot, records, ranges)
 }
