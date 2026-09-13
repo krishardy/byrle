@@ -12,37 +12,28 @@
 use clap::Parser as _;
 use tracing::{info, warn};
 use waharoa::cli;
-#[cfg(debug_assertions)]
-use waharoa::defer::DeferTest;
 use waharoa::doctor;
+use waharoa::env;
 use waharoa::explain;
 use waharoa::identity::PackageRef;
-use waharoa::http::DEFAULT_MAX_PACKUMENT_BYTES;
 
 use waharoa::npm;
 use waharoa::audit;
 use waharoa::intel::store::Intel as _;
 use waharoa::policy::{Policy, decide, diff, enforce, packages};
 use waharoa::record;
-use waharoa::proxy::{DEFAULT_MAX_CONCURRENT_PACKUMENTS, Proxy};
-use waharoa::refusal::RefusalStatus;
-use waharoa::store::DEFAULT_MAX_RECORDS;
+use waharoa::proxy::Proxy;
 use waharoa::tls::{self, TrustMode};
-use waharoa::verified::DEFAULT_MAX_VERIFIED;
 
 /// Load a policy, refuse to start if it is unusable, and report what it says.
 ///
 /// Every failure here stops the process. An operator who pointed at a policy and got a
 /// running proxy would reasonably believe it was in force.
-fn report_policy(path: &std::path::Path) -> std::sync::Arc<Policy> {
-    let policy = Policy::load(path).unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
+fn report_policy(path: &std::path::Path, ceiling: i64) -> std::sync::Arc<Policy> {
+    let policy = Policy::load(path).unwrap_or_else(|e| panic!("{}: {e}", env::POLICY));
 
     let today = jiff::Zoned::now().date();
-    let ceiling = std::env::var("WAHAROA_EXPIRY_CEILING_DAYS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(packages::DEFAULT_EXPIRY_CEILING_DAYS);
-    packages::check(&policy, today, ceiling).unwrap_or_else(|e| panic!("WAHAROA_POLICY: {e}"));
+    packages::check(&policy, today, ceiling).unwrap_or_else(|e| panic!("{}: {e}", env::POLICY));
 
     info!(
         path = %path.display(),
@@ -93,18 +84,13 @@ fn report_policy(path: &std::path::Path) -> std::sync::Arc<Policy> {
     std::sync::Arc::new(policy)
 }
 
-/// A comma-separated environment variable, blanks dropped./// A comma-separated environment variable, blanks dropped.
-fn comma_separated(key: &str) -> Vec<String> {
-    std::env::var(key)
-        .unwrap_or_default()
-        .split(',')
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .collect()
-}
-
-fn env_or(key: &str, default: &str) -> String {
-    std::env::var(key).unwrap_or_else(|_| default.to_string())
+/// A variable that does not parse ends the process with exit 2, as a malformed command line
+/// does: the operator asked for something, and continuing without it would hide that.
+fn or_exit<T>(result: Result<T, env::EnvError>) -> T {
+    result.unwrap_or_else(|e| {
+        eprintln!("waharoa: {e}");
+        std::process::exit(2)
+    })
 }
 
 /// Ask a package manager what registry it is actually configured to use.
@@ -151,12 +137,13 @@ fn cache_dir(client: &str) -> Option<std::path::PathBuf> {
         "npm" => Some(ask("npm", &["config", "get", "cache"])?.join("_cacache/index-v5")),
         "pnpm" => ask("pnpm", &["store", "path"]),
         "yarn" => ask("yarn", &["cache", "dir"]),
-        "bun" => match std::env::var("BUN_INSTALL_CACHE_DIR") {
-            Ok(dir) if !dir.is_empty() => Some(std::path::PathBuf::from(dir)),
-            _ => Some(
-                std::path::PathBuf::from(std::env::var("HOME").ok()?).join(".bun/install/cache"),
-            ),
-        },
+        "bun" => {
+            let environment = env::process();
+            match or_exit(environment.bun_install_cache_dir()) {
+                Some(dir) => Some(dir),
+                None => Some(or_exit(environment.home())?.join(".bun/install/cache")),
+            }
+        }
         _ => None,
     }
 }
@@ -215,7 +202,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
     let store = match intel_store().await {
         Ok(store) => store,
         Err(e) => {
-            eprintln!("waharoa policy diff: WAHAROA_DATABASE_URL: {e}");
+            eprintln!("waharoa policy diff: {}: {e}", env::DATABASE_URL);
             return std::process::ExitCode::from(2);
         }
     };
@@ -231,22 +218,22 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         }
     }
 
-    let Some(log_path) = std::env::var("WAHAROA_AUDIT_LOG")
-        .ok()
-        .filter(|p| !p.is_empty())
-    else {
-        eprintln!("waharoa policy diff: set WAHAROA_AUDIT_LOG to the package set to compare over");
+    let Some(log_path) = or_exit(env::process().audit_log()) else {
+        eprintln!(
+            "waharoa policy diff: set {} to the package set to compare over",
+            env::AUDIT_LOG
+        );
         return std::process::ExitCode::from(2);
     };
     let log = match std::fs::read_to_string(&log_path) {
         Ok(log) => log,
         Err(e) => {
-            eprintln!("waharoa policy diff: {log_path}: {e}");
+            eprintln!("waharoa policy diff: {}: {e}", log_path.display());
             return std::process::ExitCode::from(2);
         }
     };
 
-    let upstream = env_or("WAHAROA_UPSTREAM", npm::DEFAULT_REGISTRY);
+    let upstream = or_exit(env::process().upstream());
     let client = npm::Client::new(reqwest::Client::new(), upstream);
     let needs_times = loaded.iter().any(Policy::uses_cooldown);
 
@@ -324,14 +311,14 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
 /// upstream registry rather than through a running proxy: explain is a question about the
 /// policy, and requiring the proxy to be up to ask it would be the wrong dependency.
 async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
-    let Some(path) = std::env::var("WAHAROA_POLICY")
-        .ok()
-        .filter(|p| !p.is_empty())
-    else {
-        eprintln!("waharoa explain: set WAHAROA_POLICY to the policy file to explain");
+    let Some(path) = or_exit(env::process().policy()) else {
+        eprintln!(
+            "waharoa explain: set {} to the policy file to explain",
+            env::POLICY
+        );
         return std::process::ExitCode::from(2);
     };
-    let policy = match Policy::load(std::path::Path::new(&path)) {
+    let policy = match Policy::load(&path) {
         Ok(policy) => policy,
         Err(e) => {
             eprintln!("waharoa explain: {e}");
@@ -342,7 +329,7 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     let store = match intel_store().await {
         Ok(store) => store,
         Err(e) => {
-            eprintln!("waharoa explain: WAHAROA_DATABASE_URL: {e}");
+            eprintln!("waharoa explain: {}: {e}", env::DATABASE_URL);
             return std::process::ExitCode::from(1);
         }
     };
@@ -373,7 +360,7 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
         }
     };
 
-    let upstream = env_or("WAHAROA_UPSTREAM", npm::DEFAULT_REGISTRY);
+    let upstream = or_exit(env::process().upstream());
     let client = npm::Client::new(reqwest::Client::new(), upstream);
     let packument = match client
         .packument(reference.key(), record::PackumentDetail::Abbreviated)
@@ -430,10 +417,9 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
 }
 
 async fn run_doctor() -> std::process::ExitCode {
-    let listen = env_or("WAHAROA_LISTEN", "127.0.0.1:8080");
-    let public = std::env::var("WAHAROA_PUBLIC_URL")
-        .ok()
-        .filter(|s| !s.is_empty());
+    let environment = env::process();
+    let listen = or_exit(environment.listen());
+    let public = or_exit(environment.public_url());
     let proxy = doctor::expected_proxy_url(public.as_deref(), &listen);
 
     println!("waharoa doctor");
@@ -515,12 +501,9 @@ async fn run_doctor() -> std::process::ExitCode {
     }
 }
 
-/// The intel store at `WAHAROA_DATABASE_URL`, migrated. `None` when the variable is unset.
+/// The intel store at [`env::DATABASE_URL`], migrated. `None` when the variable is unset.
 async fn intel_store() -> Result<Option<waharoa::intel::postgres::PgIntel>, String> {
-    let Some(url) = std::env::var("WAHAROA_DATABASE_URL")
-        .ok()
-        .filter(|u| !u.is_empty())
-    else {
+    let Some(url) = or_exit(env::process().database_url()) else {
         return Ok(None);
     };
     let pool = sqlx::PgPool::connect(&url)
@@ -559,11 +542,11 @@ async fn package_intel(
 async fn run_refresh() -> std::process::ExitCode {
     use waharoa::intel::{osv, postgres::PgIntel, refresh};
 
-    let Some(url) = std::env::var("WAHAROA_DATABASE_URL")
-        .ok()
-        .filter(|u| !u.is_empty())
-    else {
-        eprintln!("waharoa refresh: set WAHAROA_DATABASE_URL to the Postgres that holds intel");
+    let Some(url) = or_exit(env::process().database_url()) else {
+        eprintln!(
+            "waharoa refresh: set {} to the Postgres that holds intel",
+            env::DATABASE_URL
+        );
         return std::process::ExitCode::from(2);
     };
     let started = std::time::Instant::now();
@@ -608,7 +591,7 @@ async fn run_refresh() -> std::process::ExitCode {
     let intel = match sqlx::PgPool::connect(&url).await {
         Ok(pool) => PgIntel::new(pool),
         Err(e) => {
-            eprintln!("waharoa refresh: connecting to WAHAROA_DATABASE_URL: {e}");
+            eprintln!("waharoa refresh: connecting to {}: {e}", env::DATABASE_URL);
             return std::process::ExitCode::from(1);
         }
     };
@@ -700,16 +683,20 @@ async fn main() -> std::process::ExitCode {
         Some(cli::Command::Refresh) => return run_refresh().await,
     }
 
+    let environment = env::process();
+    let filter = or_exit(environment.log_filter());
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "waharoa=info".into()),
+            tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|e| {
+                eprintln!("waharoa: {}: `{filter}` {e}", env::LOG_FILTER);
+                std::process::exit(2)
+            }),
         )
         .with_target(false)
         .init();
 
-    let listen = env_or("WAHAROA_LISTEN", "127.0.0.1:8080");
-    let upstream = env_or("WAHAROA_UPSTREAM", npm::DEFAULT_REGISTRY);
+    let listen = or_exit(environment.listen());
+    let upstream = or_exit(environment.upstream());
 
     // reqwest 0.13 defaults to rustls with rustls-platform-verifier, so the upstream leg
     // validates against the OS trust store. The inbound leg stays plain HTTP on
@@ -722,16 +709,10 @@ async fn main() -> std::process::ExitCode {
     let mut bundle_path: Option<std::path::PathBuf> = None;
 
     // A private registry with an internal CA, or a corporate TLS-inspecting middlebox,
-    // needs roots the OS store may not carry. WAHAROA_CA_BUNDLE_EXCLUSIVE=1 drops the
+    // needs roots the OS store may not carry. `env::CA_BUNDLE_EXCLUSIVE` set to 1 drops the
     // public roots entirely, which pins the upstream to whoever issued the bundle.
-    if let Some(path) = std::env::var("WAHAROA_CA_BUNDLE")
-        .ok()
-        .filter(|s| !s.is_empty())
-    {
-        let path = std::path::PathBuf::from(path);
-        let exclusive = std::env::var("WAHAROA_CA_BUNDLE_EXCLUSIVE")
-            .map(|v| v == "1")
-            .unwrap_or(false);
+    if let Some(path) = or_exit(environment.ca_bundle()) {
+        let exclusive = or_exit(environment.ca_bundle_exclusive());
         let mode = if exclusive {
             TrustMode::Exclusive
         } else {
@@ -760,30 +741,15 @@ async fn main() -> std::process::ExitCode {
             .expect("failed to build upstream HTTP client"),
     };
 
-    let max_packument_bytes = std::env::var("WAHAROA_MAX_PACKUMENT_BYTES")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_PACKUMENT_BYTES);
-
-    let max_records = std::env::var("WAHAROA_MAX_RECORDS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_RECORDS);
-
-    let max_verified = std::env::var("WAHAROA_MAX_VERIFIED")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_VERIFIED);
+    let max_packument_bytes = or_exit(environment.max_packument_bytes());
+    let max_records = or_exit(environment.max_records());
+    let max_verified = or_exit(environment.max_verified());
 
     // Artifact URLs are pointed at the proxy so every client in the ecosystem fetches
-    // through it. Setting WAHAROA_PUBLIC_URL pins the address written into them, which
-    // is what lockfiles record; without it the request's own Host is used.
-    let public_base = std::env::var("WAHAROA_PUBLIC_URL")
-        .ok()
-        .filter(|s| !s.is_empty());
-    let rewrite_artifacts = std::env::var("WAHAROA_REWRITE_ARTIFACTS")
-        .map(|v| v != "0")
-        .unwrap_or(true);
+    // through it. Setting `env::PUBLIC_URL` pins the address written into them, which is
+    // what lockfiles record; without it the request's own Host is used.
+    let public_base = or_exit(environment.public_url());
+    let rewrite_artifacts = or_exit(environment.rewrite_artifacts());
     if !rewrite_artifacts {
         warn!(
             "artifact URL rewriting is OFF; every client except npm will fetch artifacts \
@@ -794,32 +760,28 @@ async fn main() -> std::process::ExitCode {
         // longer reachable, `npm ci` fails outright. It does not fall back to the
         // registry it was given on the command line.
         warn!(
-            "WAHAROA_PUBLIC_URL is not set, so artifact URLs use whatever Host each \
-             client used. That address is written into lockfiles, and `npm ci` fails if \
-             it later becomes unreachable. Set it to a stable name."
+            "{} is not set, so {}. `npm ci` fails if that address later becomes unreachable. \
+             Set it to a stable name.",
+            env::PUBLIC_URL,
+            doctor::WITHOUT_PUBLIC_URL
         );
     }
 
-    let max_concurrent = std::env::var("WAHAROA_MAX_CONCURRENT_PACKUMENTS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_MAX_CONCURRENT_PACKUMENTS);
+    let max_concurrent = or_exit(environment.max_concurrent_packuments());
 
     // Additional origins whose artifacts this proxy serves, for a registry that publishes
     // them somewhere else. The upstream and the default registry are always included.
-    let served_origins = comma_separated("WAHAROA_ARTIFACT_ORIGINS");
+    let served_origins = or_exit(environment.artifact_origins());
 
     // Origins the proxy does not serve and permits anyway, so the client fetches those
     // artifacts directly and unexamined. Without this the only escape from a refusal is
-    // WAHAROA_REFUSE_UNSERVABLE=0, which trades one origin's exemption for every
+    // setting `env::REFUSE_UNSERVABLE` to 0, which trades one origin's exemption for every
     // origin's.
-    let allowed_direct = comma_separated("WAHAROA_ALLOW_DIRECT_ORIGINS");
+    let allowed_direct = or_exit(environment.allow_direct_origins());
 
-    // What a policy refusal answers with. 403 unless an operator finds a client that
-    // mishandles it: `WAHAROA_REFUSAL_STATUS=default=403,npm/pnpm=451`.
-    let refusal =
-        RefusalStatus::parse(&std::env::var("WAHAROA_REFUSAL_STATUS").unwrap_or_default())
-            .unwrap_or_else(|e| panic!("WAHAROA_REFUSAL_STATUS: {e}"));
+    // What a policy refusal answers with: `env::DEFAULT_REFUSAL_STATUS` unless an operator
+    // finds a client that mishandles it.
+    let refusal = or_exit(environment.refusal_status());
     for status in refusal.misleading() {
         warn!(
             status,
@@ -831,13 +793,12 @@ async fn main() -> std::process::ExitCode {
     // Versions whose artifacts are published where this proxy cannot see them are removed
     // from the packument, so a resolver picks one that can be examined. Setting this to 0
     // forwards them instead, and the client then fetches those artifacts directly.
-    let refuse_unservable = std::env::var("WAHAROA_REFUSE_UNSERVABLE")
-        .map(|v| v != "0")
-        .unwrap_or(true);
+    let refuse_unservable = or_exit(environment.refuse_unservable());
     if !refuse_unservable {
         warn!(
-            "WAHAROA_REFUSE_UNSERVABLE=0: artifacts published off this registry are \
-             forwarded, and the client fetches them without the proxy seeing them"
+            "{}=0: artifacts published off this registry are forwarded, and the client \
+             fetches them without the proxy seeing them",
+            env::REFUSE_UNSERVABLE
         );
     }
 
@@ -845,55 +806,51 @@ async fn main() -> std::process::ExitCode {
     // env var that makes a proxy turn traffic away is a denial-of-service switch. The
     // warning is loud because a proxy answering 429 to everything looks like a bug.
     #[cfg(debug_assertions)]
-    let defer_test = std::env::var("WAHAROA_DEFER_TEST").ok().map(|spec| {
-        let deferral = DeferTest::parse(&spec).unwrap_or_else(|e| {
-            panic!("WAHAROA_DEFER_TEST: {e}");
-        });
+    let defer_test = or_exit(environment.defer_test()).inspect(|deferral| {
         warn!(
             %deferral,
-            "WAHAROA_DEFER_TEST is set: matching requests are answered with a deferral \
-             and never fetched. This is a measurement harness, not a feature."
+            "{} is set: matching requests are answered with a deferral and never fetched. \
+             This is a measurement harness, not a feature.",
+            env::DEFER_TEST
         );
-        deferral
     });
 
     // Loaded, validated and reported. Not consulted for any decision: the engine is
     // Stage 2 work in progress, and a policy that silently did nothing would be worse
     // than no policy at all, so the log says so every time.
-    let policy = std::env::var("WAHAROA_POLICY")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .map(|path| report_policy(std::path::Path::new(&path)));
+    let policy = or_exit(environment.policy())
+        .map(|path| report_policy(&path, or_exit(environment.expiry_ceiling_days())));
 
-    let audit = std::env::var("WAHAROA_AUDIT_LOG")
-        .ok()
-        .filter(|p| !p.is_empty())
-        .map(|path| {
-            let log = waharoa::audit::AuditLog::open(std::path::Path::new(&path))
-                // Refusing to start is right. An operator who asked for an audit log and
-                // silently did not get one would believe decisions were being recorded.
-                .unwrap_or_else(|e| panic!("WAHAROA_AUDIT_LOG {path}: {e}"));
-            info!(path = %path, "audit log open");
-            std::sync::Arc::new(log)
-        });
+    let audit = or_exit(environment.audit_log()).map(|path| {
+        let log = waharoa::audit::AuditLog::open(&path)
+            // Refusing to start is right. An operator who asked for an audit log and
+            // silently did not get one would believe decisions were being recorded.
+            .unwrap_or_else(|e| panic!("{} {}: {e}", env::AUDIT_LOG, path.display()));
+        info!(path = %path.display(), "audit log open");
+        std::sync::Arc::new(log)
+    });
     if audit.is_none() && policy.is_some() {
-        warn!("no audit log configured; set WAHAROA_AUDIT_LOG to record policy decisions");
+        warn!(
+            "no audit log configured; set {} to record policy decisions",
+            env::AUDIT_LOG
+        );
     }
 
     // Refusing to start is right, as for the audit log: an operator who configured a store
     // and silently did not get one would believe known_malware was being enforced.
     let intel = intel_store()
         .await
-        .unwrap_or_else(|e| panic!("WAHAROA_DATABASE_URL: {e}"));
+        .unwrap_or_else(|e| panic!("{}: {e}", env::DATABASE_URL));
     match (&intel, &policy) {
         (Some(_), Some(_)) => warn!(
-            "ENFORCED: known_malware and max_cvss, from the intel store at \
-             WAHAROA_DATABASE_URL. A store that cannot answer, or holds no snapshot, is a 503 \
-             for every package"
+            "ENFORCED: known_malware and max_cvss, from the intel store at {}. A store that \
+             cannot answer, or holds no snapshot, is a 503 for every package",
+            env::DATABASE_URL
         ),
         (None, Some(_)) => warn!(
-            "NOT ENFORCED: known_malware and max_cvss. WAHAROA_DATABASE_URL is not set, so \
-             there is no intel store to ask"
+            "NOT ENFORCED: known_malware and max_cvss. {} is not set, so there is no intel \
+             store to ask",
+            env::DATABASE_URL
         ),
         _ => {}
     }

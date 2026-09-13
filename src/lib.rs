@@ -11,7 +11,10 @@ pub mod audit;
 pub mod cli;
 pub mod defer;
 pub mod doctor;
+pub mod env;
 pub mod explain;
+#[cfg(test)]
+mod golden;
 pub mod http;
 pub mod identity;
 pub mod intel;

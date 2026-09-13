@@ -27,12 +27,6 @@ use super::strictness::Strictness;
 use super::{PackageRule, Policy};
 use jiff::civil::Date;
 
-/// §5.5's ceiling on how far ahead a package entry may be dated.
-///
-/// Long enough to cover a review cycle, short enough that an entry nobody looked at
-/// again lapses within a quarter.
-pub const DEFAULT_EXPIRY_CEILING_DAYS: i64 = 90;
-
 /// What one package entry does to one rule of the policy above it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
@@ -204,6 +198,7 @@ fn justified(entry: &PackageRule) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::env::DEFAULT_EXPIRY_CEILING_DAYS;
     use crate::policy::PolicyError;
     use jiff::civil::date;
 

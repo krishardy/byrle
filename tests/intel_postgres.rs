@@ -1,7 +1,7 @@
 //! The repository trait against a real Postgres.
 //!
 //! Not unit tests. They need a database, which `make test-integration` starts in a
-//! container and points at with `WAHAROA_TEST_DATABASE_URL`. Without that variable every
+//! container and points at with `waharoa::env::TEST_DATABASE_URL`. Without that variable every
 //! test here is skipped, so `cargo test` stays runnable with nothing installed.
 //!
 //! These exist because SQLite was dropped and Postgres is the only backend. A suite left
@@ -18,9 +18,9 @@ use waharoa::intel::store::{Intel, IntelError};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
-    std::env::var("WAHAROA_TEST_DATABASE_URL")
-        .ok()
-        .filter(|u| !u.is_empty())
+    waharoa::env::process()
+        .test_database_url()
+        .unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// A schema of its own per test, so tests cannot see each other's rows.

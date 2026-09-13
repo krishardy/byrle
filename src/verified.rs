@@ -27,13 +27,6 @@
 use crate::integrity::Sri;
 use std::collections::HashMap;
 
-/// Default budget, in artifacts.
-///
-/// An entry is an algorithm and a digest, on the order of 64 bytes, so this is a few
-/// megabytes. Larger than the record store's budget would be pointless: an artifact only
-/// reaches here after a packument named it.
-pub const DEFAULT_MAX_VERIFIED: usize = 50_000;
-
 /// Whether this artifact has been fetched and verified before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Seen {
@@ -136,7 +129,7 @@ mod tests {
 
     #[test]
     fn an_artifact_is_novel_until_it_has_been_verified() {
-        let mut seen = VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED);
+        let mut seen = VerifiedArtifacts::new(crate::env::DEFAULT_MAX_VERIFIED);
         assert_eq!(seen.lookup(&sri(1)), Seen::First);
         assert!(seen.is_empty());
 
@@ -148,7 +141,7 @@ mod tests {
 
     #[test]
     fn recording_the_same_artifact_twice_holds_one_entry() {
-        let mut seen = VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED);
+        let mut seen = VerifiedArtifacts::new(crate::env::DEFAULT_MAX_VERIFIED);
         seen.record(sri(1));
         seen.record(sri(1));
         assert_eq!(seen.len(), 1);

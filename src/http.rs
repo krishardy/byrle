@@ -6,15 +6,6 @@
 
 use std::io::{Read, Write};
 
-/// Default ceiling on a packument body, applied both to the bytes buffered and to the
-/// bytes decompression is allowed to produce.
-///
-/// The largest packument measured is typescript: 8.7 MB as the abbreviated document,
-/// 15.7 MB as the full one, 2.0 MB gzipped. This is roughly 2x headroom on that. Over
-/// the limit the proxy forwards the response without normalising it, because an install
-/// must not fail on account of what the proxy could not inspect.
-pub const DEFAULT_MAX_PACKUMENT_BYTES: usize = 32 * 1024 * 1024;
-
 /// Headers that describe a single hop and must not be forwarded to the next one.
 ///
 /// `Host` is not here because it is handled separately: reqwest sets it from the

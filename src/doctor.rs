@@ -9,8 +9,13 @@
 //! The checks are pure. Reading files and running package managers happens in the binary,
 //! so what is decided here can be tested against fixed inputs.
 
+use crate::env;
 use std::collections::BTreeSet;
 use std::fmt;
+
+/// What follows from a proxy with no public URL, said by `doctor` and by the proxy at startup.
+pub const WITHOUT_PUBLIC_URL: &str =
+    "artifact URLs use whatever Host each client used, and that address is what lockfiles record";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Severity {
@@ -228,12 +233,12 @@ pub fn check_public_url(configured: Option<&str>, recorded: &BTreeSet<String>) -
         return Finding::new(
             Severity::Warn,
             title,
-            "WAHAROA_PUBLIC_URL is not set, so artifact URLs use whatever Host each client \
-             used, and that address is what lockfiles record",
+            format!("{} is not set, so {WITHOUT_PUBLIC_URL}", env::PUBLIC_URL),
         )
-        .with_fix(
-            "set WAHAROA_PUBLIC_URL to a stable name everyone who uses the lockfile can reach",
-        );
+        .with_fix(format!(
+            "set {} to a stable name everyone who uses the lockfile can reach",
+            env::PUBLIC_URL
+        ));
     };
 
     let origin = crate::npm::origin_of_url(configured).unwrap_or_else(|| configured.to_owned());
@@ -360,16 +365,24 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
                      {proxy}. Lockfiles will record {base}"
                 ),
             )
-            .with_fix("check which address clients use, and set WAHAROA_PUBLIC_URL to it"),
+            .with_fix(format!(
+                "check which address clients use, and set {} to it",
+                env::PUBLIC_URL
+            )),
         ),
         None => findings.push(
             Finding::new(
                 Severity::Warn,
                 "proxy public URL",
-                "the proxy has no WAHAROA_PUBLIC_URL, so artifact URLs use whatever Host each \
-                 client used, and that is what lockfiles record",
+                format!(
+                    "the proxy has no {}, so {WITHOUT_PUBLIC_URL}",
+                    env::PUBLIC_URL
+                ),
             )
-            .with_fix("set WAHAROA_PUBLIC_URL on the proxy to a stable name"),
+            .with_fix(format!(
+                "set {} on the proxy to a stable name",
+                env::PUBLIC_URL
+            )),
         ),
     }
 
@@ -381,7 +394,7 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
                 "off, so every client except npm fetches artifacts without the proxy \
                  seeing them",
             )
-            .with_fix("unset WAHAROA_REWRITE_ARTIFACTS on the proxy"),
+            .with_fix(format!("unset {} on the proxy", env::REWRITE_ARTIFACTS)),
         );
     }
     if !health.refuse_unservable {
@@ -407,7 +420,7 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
 
 /// Where the proxy is expected to be reachable.
 ///
-/// `WAHAROA_PUBLIC_URL` is the address written into artifact URLs and therefore into
+/// [`env::PUBLIC_URL`] is the address written into artifact URLs and therefore into
 /// lockfiles, so it is the one that matters. Otherwise the listen address is the best
 /// guess available, and it is often wrong in the way the public URL check reports:
 /// `0.0.0.0` is not an address a client reaches the proxy on.

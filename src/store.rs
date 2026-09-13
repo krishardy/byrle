@@ -21,13 +21,6 @@ use crate::npm::NormalizedPackument;
 use crate::record::PackageRecord;
 use std::collections::HashMap;
 
-/// Default budget, in records rather than bytes.
-///
-/// Roughly five installs of the size measured above. A record is on the order of a few
-/// hundred bytes, so this is tens of megabytes; `RecordStore::records` reports the live
-/// count for anyone measuring it properly.
-pub const DEFAULT_MAX_RECORDS: usize = 50_000;
-
 struct Entry {
     packument: NormalizedPackument,
     last_used: u64,
