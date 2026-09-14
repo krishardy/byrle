@@ -1287,10 +1287,10 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       of six. `docs/engineering_decisions/advisory-stream-licences.md`.
       - [x] **OSV's per-source licences read, 2026-09-13**, at
             <https://google.github.io/osv.dev/data/>. All 17 native sources are permissive.
-            Only two reach npm: OpenSSF Malicious Packages (Apache-2.0, `MAL-`) and GitHub
-            Advisory Database (CC-BY-4.0, `GHSA-`), which together are 228,949 of the
-            228,951 npm advisories measured. **For npm, attribution is owed on GHSA text
-            and nothing else.** Ubuntu's CC-BY-SA-4.0 is the only share-alike term and is
+            Four reach npm. OpenSSF Malicious Packages (Apache-2.0, `MAL-`) and GitHub
+            Advisory Database (CC-BY-4.0, `GHSA-`) are 228,949 of the 228,951 npm
+            advisories measured, and the other 2 are below. **For npm, attribution is owed
+            on GHSA text and nothing else that is stored.** Ubuntu's CC-BY-SA-4.0 is the only share-alike term and is
             an OS source, so it cannot reach an npm verdict; revisit if a Linux-
             distribution ecosystem is ever added.
       - [x] **OSV records carry no licence field**, checked against a live record. OSV
@@ -1304,12 +1304,16 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             records and clears the first stream in the build order. CISA KEV is CC0 1.0,
             an explicit dedication rather than the 17 USC 105 inference recorded before,
             and owes no attribution.
-      - [ ] Identify the 2 npm advisories that are neither `MAL-` nor `GHSA-`. Everything
-            else maps to a source by prefix; these do not, and the prefix mapping is only
-            sound for npm if they resolve to one of the same two sources.
-      - [ ] The prefix-to-licence mapping is npm-only. A `CVE-` record can come from
-            several OSV sources under different terms, so any code deciding an obligation
-            from a prefix has to be scoped to npm or read `database_specific` instead.
+      - [x] The 2 npm advisories that are neither `MAL-` nor `GHSA-`, read 2026-09-15.
+            `EEF-CVE-2026-56812` is from the Erlang Ecosystem Foundation CNA (CC-BY-4.0),
+            and `GSD-2022-1000008` from the Global Security Database (CC0 1.0). Both are
+            skipped. The EEF record's npm `phoenix` ranges are the same as
+            `GHSA-63mc-hw7g-86rr`'s, which is loaded. The GSD record lists `faker.js` with
+            no version or range, so it would store nothing; `GHSA-5w9c-rv96-fr7g` lists
+            `faker` 6.6.6.
+      - [x] The prefix-to-licence mapping is npm-only. npm's four prefixes are four
+            sources: `MAL-`, `GHSA-`, `EEF-` and `GSD-`. No code decides an obligation from
+            a prefix: `osv::parse` reads `MAL-` and `GHSA-` records and skips the rest.
       - [x] **NVD is public domain, 2026-09-13.** It compiles from other sources and
             asserts no licence of its own. What we take from it is CVSS scores, which are
             NIST's own analysis rather than text carried from a source.
