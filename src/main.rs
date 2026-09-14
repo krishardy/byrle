@@ -59,13 +59,6 @@ fn report_policy(path: &std::path::Path, ceiling: i64) -> std::sync::Arc<Policy>
              document, measured at 1.7x to 3.6x the abbreviated one"
         );
     }
-    if policy.kev == waharoa::policy::Action::Block {
-        warn!(
-            "NOT ENFORCED: kev. No stream the intel store loads marks an advisory exploited: \
-             OSV carries no exploitation data and the CISA KEV stream is not built"
-        );
-    }
-
     // An entry that does nothing is valid and worth saying out loud. `waharoa policy check`
     // and `doctor` report the same entries.
     for &index in &report.unchanged {
@@ -429,18 +422,25 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     // `cli::Explain` holds `--policy` or a purl, never both and never neither.
     let Some(argument) = target.purl else {
         // A store with no snapshot answers nothing, so the checks that need one are
-        // reported as unenforced rather than as settings that will fire.
-        let has_intel = match &store {
+        // reported as unenforced rather than as settings that will fire. A snapshot records
+        // the stream of every source it includes.
+        let intel = match &store {
             Some(store) => match store.snapshot().await {
-                Ok(snapshot) => snapshot.is_some(),
+                Ok(Some(snapshot)) => decide::Intel::Consulted {
+                    exploitation_loaded: snapshot
+                        .streams
+                        .iter()
+                        .any(|s| s.stream == waharoa::intel::kev::SOURCE),
+                },
+                Ok(None) => decide::Intel::NotConsulted,
                 Err(e) => {
                     eprintln!("waharoa explain: {e}");
                     return std::process::ExitCode::from(1);
                 }
             },
-            None => false,
+            None => decide::Intel::NotConsulted,
         };
-        print!("{}", explain::policy(&policy, has_intel));
+        print!("{}", explain::policy(&policy, intel));
         return std::process::ExitCode::SUCCESS;
     };
 
@@ -662,12 +662,14 @@ async fn package_intel(
     }
 }
 
-/// `waharoa refresh`: load OSV's npm malware records into the intel store.
+/// `waharoa refresh`: load OSV's npm records and CISA's KEV catalogue into the intel store.
 ///
-/// Connect, migrate, fetch, load, exit. Nothing is written unless every record in the bundle
-/// reads, so a broken bundle leaves the previous load in place.
+/// Connect, migrate, fetch, load, exit. Nothing is written unless every record in the OSV
+/// bundle reads, so a broken bundle leaves the previous load in place. A catalogue that cannot
+/// be fetched or read leaves the previous KEV load in place: OSV still loads, and the exit is 1.
 async fn run_refresh() -> std::process::ExitCode {
-    use waharoa::intel::{load, osv, postgres::PgIntel, refresh, snapshot_dir::SnapshotDir};
+    use waharoa::intel::postgres::{PgIntel, Replacement};
+    use waharoa::intel::{kev, load, osv, refresh, snapshot_dir::SnapshotDir};
 
     let Some(url) = or_exit(env::process().database_url()) else {
         eprintln!(
@@ -703,41 +705,53 @@ async fn run_refresh() -> std::process::ExitCode {
             return std::process::ExitCode::from(1);
         }
     };
-    eprintln!("waharoa refresh: fetching {}", refresh::NPM_BUNDLE);
-    let (bytes, etag, last_modified) = match fetch_bundle(&http).await {
+    let bundle = match fetch(&http, refresh::NPM_BUNDLE, refresh::MAX_BUNDLE_BYTES).await {
         Ok(fetched) => fetched,
         Err(e) => {
             eprintln!("waharoa refresh: {e}");
             return std::process::ExitCode::from(1);
         }
     };
-
-    let bundle = match refresh::read_bundle(&bytes) {
-        Ok(bundle) => bundle,
+    let osv_rows = match refresh::read_bundle(&bundle.bytes) {
+        Ok(read) => read,
         Err(e) => {
             eprintln!("waharoa refresh: nothing loaded: {e}");
             return std::process::ExitCode::from(1);
         }
     };
-    let fetch = load::Fetch {
-        taken_at: jiff::Timestamp::now().to_string(),
-        streams: vec![refresh::StreamDigest {
-            stream: refresh::NPM_STREAM.to_owned(),
-            sha256: refresh::sha256_hex(&bytes),
-            etag,
-            last_modified,
-        }],
+    let osv_streams = [bundle.stream(refresh::NPM_STREAM)];
+    drop(bundle);
+
+    let catalogue = match fetch(&http, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES)
+        .await
+        .and_then(|fetched| {
+            let ids = kev::parse(&fetched.bytes).map_err(|e| e.to_string())?;
+            Ok((ids, [fetched.stream(kev::SOURCE)]))
+        }) {
+        Ok(catalogue) => Some(catalogue),
+        Err(e) => {
+            eprintln!(
+                "waharoa refresh: {} is not loaded, and its last load stays: {e}",
+                kev::SOURCE
+            );
+            None
+        }
     };
-    drop(bytes);
+    let taken_at = jiff::Timestamp::now().to_string();
 
     // Written before the load, so a snapshot Postgres records never lacks its rows here. Rows
     // left by a load that then fails are removed by the next prune.
-    let encoded = load::encode(osv::SOURCE, &bundle.rows);
-    if let Some(kept) = &kept
-        && let Err(e) = kept.write_rows(&encoded)
-    {
-        eprintln!("waharoa refresh: nothing loaded: {e}");
-        return std::process::ExitCode::from(1);
+    let encoded = load::encode(osv::SOURCE, &osv_rows.rows);
+    let exploited = catalogue
+        .as_ref()
+        .map(|(ids, _)| load::encode_exploited(kev::SOURCE, ids));
+    if let Some(kept) = &kept {
+        for rows in std::iter::once(&encoded).chain(&exploited) {
+            if let Err(e) = kept.write_rows(rows) {
+                eprintln!("waharoa refresh: nothing loaded: {e}");
+                return std::process::ExitCode::from(1);
+            }
+        }
     }
 
     let intel = match sqlx::PgPool::connect(&url).await {
@@ -751,7 +765,19 @@ async fn run_refresh() -> std::process::ExitCode {
         eprintln!("waharoa refresh: {e}");
         return std::process::ExitCode::from(1);
     }
-    let loaded = match intel.replace_encoded(&encoded, &bundle.rows, &fetch).await {
+    let mut sources = vec![Replacement {
+        encoded: &encoded,
+        rows: &osv_rows.rows,
+        streams: &osv_streams,
+    }];
+    if let (Some(encoded), Some((_, streams))) = (&exploited, &catalogue) {
+        sources.push(Replacement {
+            encoded,
+            rows: &[],
+            streams,
+        });
+    }
+    let loaded = match intel.replace(&sources, &taken_at).await {
         Ok(loaded) => loaded,
         Err(e) => {
             eprintln!("waharoa refresh: nothing loaded: {e}");
@@ -759,11 +785,12 @@ async fn run_refresh() -> std::process::ExitCode {
         }
     };
 
-    print!("{}", bundle.tally);
+    print!("{}", osv_rows.tally);
     println!("{:32} {:>8}", "advisories written", loaded.advisories);
     println!("{:32} {:>8}", "aliases written", loaded.aliases);
     println!("{:32} {:>8}", "affected rows written", loaded.affected);
     println!("{:32} {:>8}", "ranges written", loaded.ranges);
+    println!("{:32} {:>8}", "exploited CVE ids written", loaded.exploited);
     println!("snapshot {}", loaded.snapshot);
     if let Some(kept) = kept {
         match kept
@@ -782,22 +809,42 @@ async fn run_refresh() -> std::process::ExitCode {
         }
     }
     println!("took {:.1}s", started.elapsed().as_secs_f64());
-    std::process::ExitCode::SUCCESS
+    match catalogue {
+        Some(_) => std::process::ExitCode::SUCCESS,
+        None => std::process::ExitCode::from(1),
+    }
 }
 
-/// The npm bundle, with its etag and `last-modified`, refused past `MAX_BUNDLE_BYTES`.
-async fn fetch_bundle(
-    http: &reqwest::Client,
-) -> Result<(Vec<u8>, Option<String>, Option<String>), String> {
-    use futures_util::StreamExt;
-    use waharoa::intel::refresh::{MAX_BUNDLE_BYTES, NPM_BUNDLE};
+/// A body `waharoa refresh` fetched, with the headers a snapshot records.
+struct Fetched {
+    bytes: Vec<u8>,
+    etag: Option<String>,
+    last_modified: Option<String>,
+}
 
+impl Fetched {
+    /// The body as a snapshot records it under `stream`.
+    fn stream(&self, stream: &str) -> waharoa::intel::refresh::StreamDigest {
+        waharoa::intel::refresh::StreamDigest {
+            stream: stream.to_owned(),
+            sha256: waharoa::intel::refresh::sha256_hex(&self.bytes),
+            etag: self.etag.clone(),
+            last_modified: self.last_modified.clone(),
+        }
+    }
+}
+
+/// The body at `url`, refused past `ceiling` bytes.
+async fn fetch(http: &reqwest::Client, url: &str, ceiling: usize) -> Result<Fetched, String> {
+    use futures_util::StreamExt;
+
+    eprintln!("waharoa refresh: fetching {url}");
     let response = http
-        .get(NPM_BUNDLE)
+        .get(url)
         .send()
         .await
         .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| format!("fetching the bundle: {e}"))?;
+        .map_err(|e| format!("fetching {url}: {e}"))?;
     let header = |name: reqwest::header::HeaderName| {
         response
             .headers()
@@ -809,27 +856,26 @@ async fn fetch_bundle(
         header(reqwest::header::ETAG),
         header(reqwest::header::LAST_MODIFIED),
     );
-    if let Some(declared) = response
-        .content_length()
-        .filter(|&n| n > MAX_BUNDLE_BYTES as u64)
-    {
+    if let Some(declared) = response.content_length().filter(|&n| n > ceiling as u64) {
         return Err(format!(
-            "the bundle declares {declared} bytes, over the {MAX_BUNDLE_BYTES} byte ceiling"
+            "{url} declares {declared} bytes, over the {ceiling} byte ceiling"
         ));
     }
 
-    let mut body = Vec::new();
+    let mut bytes = Vec::new();
     let mut stream = response.bytes_stream();
     while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| format!("reading the bundle: {e}"))?;
-        if body.len() + chunk.len() > MAX_BUNDLE_BYTES {
-            return Err(format!(
-                "the bundle is over the {MAX_BUNDLE_BYTES} byte ceiling"
-            ));
+        let chunk = chunk.map_err(|e| format!("reading {url}: {e}"))?;
+        if bytes.len() + chunk.len() > ceiling {
+            return Err(format!("{url} is over the {ceiling} byte ceiling"));
         }
-        body.extend_from_slice(&chunk);
+        bytes.extend_from_slice(&chunk);
     }
-    Ok((body, etag, last_modified))
+    Ok(Fetched {
+        bytes,
+        etag,
+        last_modified,
+    })
 }
 
 #[tokio::main]
@@ -1023,13 +1069,14 @@ async fn main() -> std::process::ExitCode {
         .unwrap_or_else(|e| panic!("{}: {e}", env::DATABASE_URL));
     match (&intel, &policy) {
         (Some(_), Some(_)) => warn!(
-            "ENFORCED: known_malware and max_cvss, from the intel store at {}. A store that \
-             cannot answer, or holds no snapshot, is a 503 for every package",
+            "ENFORCED: known_malware and max_cvss, from the intel store at {}, and kev once \
+             the store has loaded the KEV catalogue. A store that cannot answer, or holds no \
+             snapshot, is a 503 for every package",
             env::DATABASE_URL
         ),
         (None, Some(_)) => warn!(
-            "NOT ENFORCED: known_malware and max_cvss. {} is not set, so there is no intel \
-             store to ask",
+            "NOT ENFORCED: known_malware, max_cvss and kev. {} is not set, so there is no \
+             intel store to ask",
             env::DATABASE_URL
         ),
         _ => {}

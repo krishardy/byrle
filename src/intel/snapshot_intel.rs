@@ -13,6 +13,7 @@ use super::load::Row;
 use super::range::Interval;
 use super::snapshot_dir::{KeptError, SnapshotDir};
 use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
+use super::{ids, kev};
 use std::collections::{HashMap, HashSet};
 
 /// A package, by ecosystem and name.
@@ -26,6 +27,8 @@ pub struct SnapshotIntel {
     read: HashSet<Package>,
     /// Those of them with an advisory.
     packages: HashMap<Package, PackageIntel>,
+    /// Whether the snapshot includes the KEV catalogue.
+    exploitation_loaded: bool,
 }
 
 impl SnapshotIntel {
@@ -36,15 +39,18 @@ impl SnapshotIntel {
         packages: HashSet<Package>,
     ) -> Result<Self, KeptError> {
         let taken_at = dir.written(id)?;
+        let sources = dir.sources(id)?;
+        let exploitation_loaded = sources.iter().any(|(source, _)| source == kev::SOURCE);
         let mut found = HashMap::new();
-        for (source, digest) in dir.sources(id)? {
+        let mut exploited: HashSet<String> = HashSet::new();
+        for (source, digest) in sources {
             // By index in the advisory table. Aliases are read before affected rows and ranges,
             // so a record has every alias when it is copied to a package.
             let mut records: Vec<Record> = Vec::new();
             dir.read_source(&source, &digest, |row| {
                 match row {
                     // Every column but `cvss_source` and `exploited` comes from the rows. The
-                    // loader writes neither.
+                    // loader writes no `cvss_source`, and `exploited` is marked below.
                     Row::Advisory(rows) => records.push(Record {
                         advisory_id: rows.id,
                         aliases: Vec::new(),
@@ -81,9 +87,26 @@ impl SnapshotIntel {
                                 .push((interval, records[i].clone()));
                         }
                     }
+                    Row::Exploited(cve_id) => {
+                        exploited.insert(cve_id);
+                    }
                 }
                 Ok(())
             })?;
+        }
+        // After every source is read, so ids mark advisories in whichever order the manifest
+        // lists their sources.
+        for package in found.values_mut() {
+            let (records, ranges) = (&mut package.records, &mut package.ranges);
+            for record in records
+                .iter_mut()
+                .map(|(_, r)| r)
+                .chain(ranges.iter_mut().map(|(_, r)| r))
+            {
+                record.exploited =
+                    ids(&record.advisory_id, &record.aliases).any(|id| exploited.contains(id));
+            }
+            package.exploitation_loaded = exploitation_loaded;
         }
         Ok(Self {
             snapshot: LoadedSnapshot {
@@ -93,6 +116,7 @@ impl SnapshotIntel {
             },
             read: packages,
             packages: found,
+            exploitation_loaded,
         })
     }
 
@@ -106,7 +130,10 @@ impl SnapshotIntel {
             .packages
             .get(&package)
             .cloned()
-            .unwrap_or_else(|| nothing_against(&self.snapshot.digest)))
+            .unwrap_or_else(|| PackageIntel {
+                exploitation_loaded: self.exploitation_loaded,
+                ..nothing_against(&self.snapshot.digest)
+            }))
     }
 }
 
@@ -120,12 +147,13 @@ fn entry<'a>(
         .or_insert_with(|| nothing_against(id))
 }
 
-/// A package no advisory in snapshot `id` is against.
+/// A package no advisory in snapshot `id` affects, before the snapshot's sources are known.
 fn nothing_against(id: &str) -> PackageIntel {
     PackageIntel {
         snapshot: id.to_owned(),
         records: Vec::new(),
         ranges: Vec::new(),
+        exploitation_loaded: false,
     }
 }
 
@@ -212,16 +240,83 @@ mod tests {
 
     /// Keep `sources` as one snapshot in a directory of its own, and give its id.
     fn kept(label: &str, sources: &[(&str, Vec<Rows>)]) -> (SnapshotDir, String) {
+        let encoded: Vec<load::Encoded> = sources
+            .iter()
+            .map(|(source, rows)| load::encode(source, rows))
+            .collect();
+        kept_encoded(label, &encoded)
+    }
+
+    fn kept_encoded(label: &str, sources: &[load::Encoded]) -> (SnapshotDir, String) {
         let dir = SnapshotDir::open(&tempdir(label)).expect("opens");
-        let mut digests = Vec::new();
-        for (source, rows) in sources {
-            let encoded = load::encode(source, rows);
-            dir.write_rows(&encoded).expect("writes rows");
-            digests.push((source.to_string(), encoded.digest));
+        for encoded in sources {
+            dir.write_rows(encoded).expect("writes rows");
         }
-        let manifest = load::manifest(digests.iter().map(|(s, d)| (s.as_str(), d.as_str())));
+        let manifest = load::manifest(
+            sources
+                .iter()
+                .map(|e| (e.source.as_str(), e.digest.as_str())),
+        );
         dir.write_snapshot(&manifest).expect("writes the snapshot");
         (dir, load::snapshot_id(&manifest))
+    }
+
+    #[tokio::test]
+    async fn a_kept_catalogue_marks_each_advisory_it_lists_by_id_or_alias() {
+        let by_alias = Rows {
+            aliases: ["CVE-2020-11023".to_owned()].into(),
+            ranges: [ranged("jquery", "1.2.0", End::Fixed("3.5.0".to_owned()))].into(),
+            ..advisory("GHSA-jpcq-cgw6-v4j6")
+        };
+        let by_id = Rows {
+            affected: [affected("jquery", Some("3.4.0"))].into(),
+            ..advisory("CVE-2021-1")
+        };
+        let unlisted = Rows {
+            aliases: ["CVE-2099-1".to_owned()].into(),
+            affected: [affected("jquery", None)].into(),
+            ..advisory("GHSA-2")
+        };
+        let catalogue: std::collections::BTreeSet<String> =
+            ["CVE-2020-11023", "CVE-2021-1"].map(str::to_owned).into();
+        let (dir, id) = kept_encoded(
+            "intel-kev",
+            &[
+                load::encode("osv", &[by_alias, by_id, unlisted]),
+                load::encode_exploited(kev::SOURCE, &catalogue),
+            ],
+        );
+        let intel = SnapshotIntel::read(&dir, &id, npm(&["jquery", "lodash"])).expect("reads");
+
+        let jquery = intel
+            .package("npm", "jquery")
+            .await
+            .expect("answers")
+            .expect("loaded");
+        assert!(jquery.exploitation_loaded);
+        let mut marked: Vec<(&str, bool)> = jquery
+            .records
+            .iter()
+            .map(|(_, r)| r)
+            .chain(jquery.ranges.iter().map(|(_, r)| r))
+            .map(|r| (r.advisory_id.as_str(), r.exploited))
+            .collect();
+        marked.sort();
+        assert_eq!(
+            marked,
+            [
+                ("CVE-2021-1", true),
+                ("GHSA-2", false),
+                ("GHSA-jpcq-cgw6-v4j6", true)
+            ]
+        );
+
+        let lodash = intel
+            .package("npm", "lodash")
+            .await
+            .expect("answers")
+            .expect("loaded");
+        assert!(lodash.exploitation_loaded && lodash.records.is_empty());
     }
 
     #[tokio::test]
@@ -267,6 +362,7 @@ mod tests {
                     }
                 )],
                 ranges: Vec::new(),
+                exploitation_loaded: false,
             }
         );
 

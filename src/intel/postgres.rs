@@ -4,7 +4,8 @@
 //! `sqlx::query_as!`. A renamed column or a changed type is a compile error rather than a
 //! runtime one. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
 
-use super::load::{self, Encoded, Fetch};
+use super::kev;
+use super::load::{self, Encoded, Fetch, Kind};
 use super::osv::Rows;
 use super::range::Interval;
 use super::refresh::StreamDigest;
@@ -16,17 +17,29 @@ use std::collections::HashMap;
 /// holds in flight.
 const COPY_CHUNK: usize = 1 << 20;
 
-/// Rows written by [`PgIntel::replace_source`], and the snapshot the store contains after it.
+/// Rows written by [`PgIntel::replace`], and the snapshot the store contains after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Loaded {
     pub advisories: u64,
     pub aliases: u64,
     pub affected: u64,
     pub ranges: u64,
+    pub exploited: u64,
     /// The snapshot id. See [`load::snapshot_id`].
     pub snapshot: String,
     /// What the snapshot id is the digest of. See [`load::manifest`].
     pub manifest: String,
+}
+
+/// One source a load replaces.
+#[derive(Debug, Clone, Copy)]
+pub struct Replacement<'a> {
+    pub encoded: &'a Encoded,
+    /// The rows `encoded` encodes when it contains advisories, which the other tables are built
+    /// from once Postgres has keyed them. Empty for exploited ids.
+    pub rows: &'a [Rows],
+    /// The bundles the rows were read from. Recorded, and part of no digest.
+    pub streams: &'a [StreamDigest],
 }
 
 /// The advisory mirror.
@@ -57,16 +70,37 @@ impl PgIntel {
     }
 
     /// Replace everything `source` supplied with `rows`, and record the snapshot the store
-    /// contains after it.
+    /// contains after it. [`PgIntel::replace`] for one source of advisories.
+    pub async fn replace_source(
+        &self,
+        source: &str,
+        rows: &[Rows],
+        fetch: &Fetch,
+    ) -> Result<Loaded, IntelError> {
+        let encoded = load::encode(source, rows);
+        self.replace(
+            &[Replacement {
+                encoded: &encoded,
+                rows,
+                streams: &fetch.streams,
+            }],
+            &fetch.taken_at,
+        )
+        .await
+    }
+
+    /// Replace everything each source supplied with its rows, and record the snapshot the store
+    /// contains after it. `taken_at` is RFC 3339 UTC.
     ///
-    /// One transaction. A lookup during the load reads the previous rows, because Postgres
-    /// shows a transaction's writes to nobody else until it commits, and a load that fails
-    /// at any step leaves them in place. Deleting by `source` rather than swapping whole
-    /// tables leaves other streams' rows alone. The alias, affected and range rows go with
-    /// their advisory through `ON DELETE CASCADE`.
+    /// One transaction, so one refresh records one snapshot. A lookup during the load reads the
+    /// previous rows, because Postgres shows a transaction's writes to nobody else until it
+    /// commits, and a load that fails at any step leaves them in place. Deleting by source
+    /// rather than swapping whole tables leaves other sources' rows alone. The alias, affected
+    /// and range rows go with their advisory by `ON DELETE CASCADE`.
     ///
-    /// `advisory` is copied first. The keys Postgres assigned are read back in the same
-    /// transaction, and the other tables are copied carrying them.
+    /// For advisories, `advisory` is copied first. The keys Postgres assigned are read back in
+    /// the same transaction, and the other tables are copied carrying them. Exploited ids are
+    /// one table, copied as encoded.
     ///
     /// The snapshot id is hashed from every source's `intel_source.digest`. The transaction
     /// locks `intel_source` first, so a refresh of another source waits for this one to
@@ -74,26 +108,11 @@ impl PgIntel {
     ///
     /// A snapshot id already recorded, which is the same rows loaded again, keeps its row and
     /// takes the new `taken_at` and streams.
-    pub async fn replace_source(
+    pub async fn replace(
         &self,
-        source: &str,
-        rows: &[Rows],
-        fetch: &Fetch,
+        sources: &[Replacement<'_>],
+        taken_at: &str,
     ) -> Result<Loaded, IntelError> {
-        self.replace_encoded(&load::encode(source, rows), rows, fetch)
-            .await
-    }
-
-    /// [`PgIntel::replace_source`] with the rows already encoded, so `waharoa refresh` can
-    /// write the same bytes to a snapshot file without encoding twice. `encoded` has to be
-    /// `rows` encoded.
-    pub async fn replace_encoded(
-        &self,
-        encoded: &Encoded,
-        rows: &[Rows],
-        fetch: &Fetch,
-    ) -> Result<Loaded, IntelError> {
-        let source = encoded.source.as_str();
         let mut tx = self.pool.begin().await.map_err(IntelError::Backend)?;
 
         // SHARE ROW EXCLUSIVE conflicts with itself and with any write to the table, and not
@@ -102,42 +121,59 @@ impl PgIntel {
             .execute(&mut *tx)
             .await
             .map_err(IntelError::Backend)?;
-        sqlx::query!("DELETE FROM advisory WHERE source = $1", source)
+        let (mut advisories, mut aliases, mut affected, mut ranges, mut exploited) =
+            (0, 0, 0, 0, 0);
+        for replacement in sources {
+            let encoded = replacement.encoded;
+            let source = encoded.source.as_str();
+            // Both tables, so a source is replaced whole whichever kind it was before.
+            sqlx::query!("DELETE FROM advisory WHERE source = $1", source)
+                .execute(&mut *tx)
+                .await
+                .map_err(IntelError::Backend)?;
+            sqlx::query!("DELETE FROM exploited_cve WHERE source = $1", source)
+                .execute(&mut *tx)
+                .await
+                .map_err(IntelError::Backend)?;
+            match encoded.kind {
+                Kind::Exploited => {
+                    exploited += copy(&mut tx, load::EXPLOITED, &encoded.first_table).await?;
+                }
+                Kind::Advisories => {
+                    advisories += copy(&mut tx, load::ADVISORY, &encoded.first_table).await?;
+                    let keys: HashMap<String, i64> = sqlx::query!(
+                        "SELECT publisher_id, id FROM advisory WHERE source = $1",
+                        source
+                    )
+                    .fetch_all(&mut *tx)
+                    .await
+                    .map_err(IntelError::Backend)?
+                    .into_iter()
+                    .map(|row| (row.publisher_id, row.id))
+                    .collect();
+                    let children = load::children(replacement.rows, &keys).map_err(
+                        |load::Unkeyed(advisory_id)| IntelError::Unkeyed { advisory_id },
+                    )?;
+                    aliases += copy(&mut tx, load::ALIAS, &children.alias).await?;
+                    affected += copy(&mut tx, load::AFFECTED, &children.affected).await?;
+                    ranges += copy(&mut tx, load::RANGE, &children.range).await?;
+                }
+            }
+
+            // `::text` first, so the parameters are text and sqlx needs no date or JSON type.
+            sqlx::query!(
+                "INSERT INTO intel_source (source, digest, streams) \
+                 VALUES ($1, $2, $3::text::jsonb) \
+                 ON CONFLICT (source) DO UPDATE \
+                 SET digest = EXCLUDED.digest, streams = EXCLUDED.streams",
+                source,
+                encoded.digest,
+                load::streams_json(replacement.streams)
+            )
             .execute(&mut *tx)
             .await
             .map_err(IntelError::Backend)?;
-        let advisories = copy(&mut tx, load::ADVISORY, &encoded.advisory).await?;
-        let keys: HashMap<String, i64> = sqlx::query!(
-            "SELECT publisher_id, id FROM advisory WHERE source = $1",
-            source
-        )
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(IntelError::Backend)?
-        .into_iter()
-        .map(|row| (row.publisher_id, row.id))
-        .collect();
-        let children = load::children(rows, &keys)
-            .map_err(|load::Unkeyed(advisory_id)| IntelError::Unkeyed { advisory_id })?;
-        let (aliases, affected, ranges) = (
-            copy(&mut tx, load::ALIAS, &children.alias).await?,
-            copy(&mut tx, load::AFFECTED, &children.affected).await?,
-            copy(&mut tx, load::RANGE, &children.range).await?,
-        );
-
-        // `::text` first, so the parameters are text and sqlx needs no date or JSON type.
-        sqlx::query!(
-            "INSERT INTO intel_source (source, digest, streams) \
-             VALUES ($1, $2, $3::text::jsonb) \
-             ON CONFLICT (source) DO UPDATE \
-             SET digest = EXCLUDED.digest, streams = EXCLUDED.streams",
-            source,
-            encoded.digest,
-            fetch.streams_json()
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(IntelError::Backend)?;
+        }
         let sources = sqlx::query!("SELECT source, digest FROM intel_source")
             .fetch_all(&mut *tx)
             .await
@@ -156,7 +192,7 @@ impl PgIntel {
              ON CONFLICT (digest) DO UPDATE \
              SET taken_at = EXCLUDED.taken_at, streams = EXCLUDED.streams",
             snapshot,
-            fetch.taken_at
+            taken_at
         )
         .execute(&mut *tx)
         .await
@@ -168,6 +204,7 @@ impl PgIntel {
             aliases,
             affected,
             ranges,
+            exploited,
             snapshot,
             manifest,
         })
@@ -273,10 +310,15 @@ impl Intel for PgIntel {
             //
             // `m` is every version-shaped row for the package: listed versions and every
             // version from `advisory_affected`, intervals from `advisory_range`.
+            //
+            // An advisory is exploited when its id or an alias is in `exploited_cve`, the same
+            // match as `intel::is_named`.
             let rows = sqlx::query!(
                 r#"
                 SELECT
                     s.digest        AS "snapshot!",
+                    EXISTS (SELECT 1 FROM intel_source WHERE source = $3)
+                                    AS "exploitation_loaded!",
                     m.is_range      AS "is_range?",
                     m.version       AS "version?",
                     m.introduced    AS "introduced?",
@@ -286,7 +328,13 @@ impl Intel for PgIntel {
                     a.source        AS "source?",
                     a.cvss          AS "cvss?",
                     a.cvss_source   AS "cvss_source?",
-                    a.exploited     AS "exploited?",
+                    (a.exploited OR EXISTS (
+                        SELECT 1 FROM exploited_cve k
+                        WHERE k.cve_id = a.publisher_id
+                           OR k.cve_id IN (
+                               SELECT al.alias FROM advisory_alias al WHERE al.advisory_id = a.id
+                           )
+                    ))              AS "exploited?",
                     a.malware       AS "malware?",
                     ARRAY(
                         SELECT al.alias FROM advisory_alias al
@@ -306,19 +354,21 @@ impl Intel for PgIntel {
                 ORDER BY a.publisher_id, m.is_range, m.version, m.introduced, m.fixed, m.last_affected
                 "#,
                 ecosystem,
-                name
+                name,
+                kev::SOURCE
             )
             .fetch_all(&self.pool)
             .await
             .map_err(IntelError::Backend)?;
 
-            let Some(snapshot) = rows.first().map(|row| row.snapshot.clone()) else {
+            let Some(first) = rows.first() else {
                 return Ok(None);
             };
             let mut intel = PackageIntel {
-                snapshot,
+                snapshot: first.snapshot.clone(),
                 records: Vec::new(),
                 ranges: Vec::new(),
+                exploitation_loaded: first.exploitation_loaded,
             };
             for row in rows {
                 // No advisory is the one row a snapshot with nothing against the package

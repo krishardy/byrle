@@ -1157,7 +1157,8 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [ ] The store that would hold it is per-process and dies with the proxy, so
             without persistence every restart re-fetches every full document. See the
             Stage 5 item.
-- [~] `[!]` `kev`. `block` or `allow`. Logic done in `decide.rs`; the source is not.
+- [x] `[!]` `kev`. `block` or `allow`. Logic in `decide.rs`; the source is CISA's catalogue,
+      loaded as `cisa/kev` ([kev-stream](docs/engineering_decisions/kev-stream.md)).
       CISA's catalogue is ecosystem-agnostic because it has no package identifier at all,
       so `kev` is a property of an **advisory**, not of a package, and the engine reads it
       off `Advisory`.
@@ -1446,12 +1447,15 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] Datadog malicious-packages — **check OSSF overlap first**; Datadog contributes
       upstream to OSSF, so this is likely already ingested. Only implement if it adds
       real coverage. Verify data license and per-version lookup shape.
-- [ ] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed) — `enrich`-only, joined on
-      exact CVE ID or an alias. Catalogue `2026.09.14`, 1,710 CVE ids, reaches 13 stored
-      npm `GHSA-` records. Decided 2026-09-15: its own source, `cisa/kev`, with its own
-      digest in the snapshot; a failed fetch keeps the last KEV load and exits 1; kept
-      snapshot files carry the KEV rows. Nothing sets `advisory.exploited` today, and kept
-      snapshots read it as `false`.
+- [x] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed). `enrich`-only, joined on
+      exact CVE ID or an alias. Source `cisa/kev` in `exploited_cve`, loaded by `waharoa
+      refresh` in the same transaction as OSV; a failed fetch keeps the last KEV load and
+      exits 1; kept snapshot files carry the rows as `waharoa intel exploited 1`. Loaded
+      2026-09-15: 1,710 CVE ids mark 13 stored npm `GHSA-` records exploited, all 13 scored.
+      [kev-stream](docs/engineering_decisions/kev-stream.md).
+      - [ ] `explain --policy` reads whether `cisa/kev` is loaded from the newest snapshot's
+            streams, and `PgIntel::package` from `intel_source`. A refresh records a stream
+            for every source it loads, so both agree today. Read one of them for both.
 - [ ] NVD stream (licence-cleared: public domain, nothing owed) — `enrich`-only for
       npm/PyPI, joined on exact CVE ID
 - [ ] NVD enrichment runs as a background job, never on the hot path

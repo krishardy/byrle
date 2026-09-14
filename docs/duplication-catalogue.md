@@ -65,8 +65,8 @@ A reworded message fails these tests, so the copies cannot drift. Action: leave.
 | `expected <ecosystem>/<client>=<status> or default=<status>`, `status is not a number`, `expected <ecosystem>/<client>`, `unknown ecosystem` | `refusal.rs:96-123` (`parse`) | `refusal.rs:336-340` |
 | `scheme is not http or https` | `npm.rs:257` | `npm.rs:2533, 3001` |
 | `` version has no `dist` object ``, `` version has no `dist.tarball` `` | `npm.rs:1054, 1059` | `npm.rs:1694, 1698` |
-| `this exact version is denied`, `which this policy does not have`, `unenforced, no advisory stream` | `explain.rs:97, 155, 183` | `explain.rs:263, 661, 374` |
-| `no intel store was consulted, so nothing was asked`, `no exploitation stream is loaded, so no advisory is marked exploited` | `policy/enforce.rs:112, 120` | `explain.rs:598`, `policy/diff.rs:511` |
+| `this exact version is denied`, `which this policy does not have`, `unenforced, no advisory stream` | `explain.rs:97, 155, 180` | `explain.rs:266, 690, 377` |
+| `no intel store was consulted, so nothing was asked`, `no exploitation stream is loaded, so no advisory is marked exploited` | `policy/enforce.rs:112, 121` | `explain.rs:606`, `policy/diff.rs:659` |
 | `upstream request failed`, `x-forwarded-proto` | `proxy.rs:948, 573` | `proxy.rs:2773, 3544` |
 
 ## Scripts

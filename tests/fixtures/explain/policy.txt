@@ -11,7 +11,7 @@ checks
   denials           enforced
   known_malware     unenforced, no advisory stream
   cooldown_days     enforced
-  kev               unenforced, no exploitation stream
+  kev               unenforced, no advisory stream
   max_cvss          unenforced, no advisory stream
   install_scripts   enforced
 
@@ -28,11 +28,11 @@ checks
   denials           enforced
   known_malware     unenforced, no advisory stream
   cooldown_days     off
-  kev               unenforced, no exploitation stream
+  kev               unenforced, no advisory stream
   max_cvss          unenforced, no advisory stream
   install_scripts   enforced
 
-=== examples/policy.yaml, a store that answers
+=== examples/policy.yaml, a store without the KEV catalogue
 settings
   cooldown_days    7
   max_cvss         6.9
@@ -46,6 +46,29 @@ checks
   known_malware     enforced
   cooldown_days     enforced
   kev               unenforced, no exploitation stream
+  max_cvss          enforced
+  install_scripts   enforced
+
+packages[0]  internal, published by our CI
+
+packages[1]  not reachable from our call paths, reviewed by security
+
+packages[2]  vendored CUDA build steps, reviewed
+
+=== examples/policy.yaml, a store with the KEV catalogue
+settings
+  cooldown_days    7
+  max_cvss         6.9
+  install_scripts  block
+  kev              block
+  denials          2
+  packages         3
+
+checks
+  denials           enforced
+  known_malware     enforced
+  cooldown_days     enforced
+  kev               enforced
   max_cvss          enforced
   install_scripts   enforced
 

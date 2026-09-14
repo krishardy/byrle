@@ -105,20 +105,24 @@ pub fn unenforceable(
     // Three checks read the advisory list. With nothing to ask, an empty list is an absent
     // answer rather than a clean one, and reporting them as passes would claim a check ran
     // that never could.
-    if intel == Intel::NotConsulted {
-        out.extend(
-            [Check::KnownMalware, Check::Kev, Check::MaxCvss].map(|check| Unenforceable {
+    match intel {
+        Intel::NotConsulted => out.extend([Check::KnownMalware, Check::Kev, Check::MaxCvss].map(
+            |check| Unenforceable {
                 check,
                 why: "no intel store was consulted, so nothing was asked",
-            }),
-        );
-    } else {
-        // The store answers, and no stream it loads marks an advisory exploited: OSV
-        // carries no exploitation data and the KEV stream is not built.
-        out.push(Unenforceable {
+            },
+        )),
+        // The store answers and has not loaded the KEV catalogue. OSV carries no exploitation
+        // data.
+        Intel::Consulted {
+            exploitation_loaded: false,
+        } => out.push(Unenforceable {
             check: Check::Kev,
             why: "no exploitation stream is loaded, so no advisory is marked exploited",
-        });
+        }),
+        Intel::Consulted {
+            exploitation_loaded: true,
+        } => {}
     }
     out
 }
@@ -217,23 +221,69 @@ mod tests {
         Policy::parse(yaml).expect("policy should load")
     }
 
-    fn malware_everywhere() -> PackageIntel {
+    /// A store with one advisory for every version.
+    fn everywhere(record: crate::intel::store::Record, exploitation_loaded: bool) -> PackageIntel {
         PackageIntel {
             snapshot: "s1".to_owned(),
-            records: vec![(
-                None,
-                crate::intel::store::Record {
-                    advisory_id: "MAL-1".to_owned(),
-                    aliases: Vec::new(),
-                    source: "osv".to_owned(),
-                    cvss: None,
-                    cvss_source: None,
-                    exploited: false,
-                    malware: true,
-                },
-            )],
+            records: vec![(None, record)],
             ranges: Vec::new(),
+            exploitation_loaded,
         }
+    }
+
+    fn malware_everywhere() -> PackageIntel {
+        everywhere(
+            crate::intel::store::Record {
+                advisory_id: "MAL-1".to_owned(),
+                aliases: Vec::new(),
+                source: "osv".to_owned(),
+                cvss: None,
+                cvss_source: None,
+                exploited: false,
+                malware: true,
+            },
+            false,
+        )
+    }
+
+    /// Exploited, and scored under the default `max_cvss`, so only `kev` can refuse it.
+    #[test]
+    fn an_exploited_advisory_refuses_only_once_the_catalogue_is_loaded() {
+        let policy = loaded("version: 1\ncooldown_days: 0\n");
+        let exploited = |exploitation_loaded| {
+            everywhere(
+                crate::intel::store::Record {
+                    advisory_id: "GHSA-1".to_owned(),
+                    aliases: vec!["CVE-2020-11023".to_owned()],
+                    source: "osv".to_owned(),
+                    cvss: Some(5.0),
+                    cvss_source: None,
+                    exploited: exploitation_loaded,
+                    malware: false,
+                },
+                exploitation_loaded,
+            )
+        };
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&policy),
+            &record(),
+            None,
+            Some(&exploited(true)),
+            TODAY,
+        ) else {
+            panic!("an exploited advisory must be refused");
+        };
+        assert_eq!(refusal.reasons, ["kev: block"]);
+        assert_eq!(
+            artifact(
+                Some(&policy),
+                &record(),
+                None,
+                Some(&exploited(false)),
+                TODAY
+            ),
+            Verdict::Serve
+        );
     }
 
     #[test]
@@ -265,14 +315,25 @@ mod tests {
     #[test]
     fn a_consulted_store_leaves_every_intel_check_but_kev_enforced() {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
+        let dropped = |exploitation_loaded| {
+            unenforceable(
+                &policy,
+                &record(),
+                None,
+                Intel::Consulted {
+                    exploitation_loaded,
+                },
+            )
+            .iter()
+            .map(|u| u.check)
+            .collect::<Vec<_>>()
+        };
         assert_eq!(
-            unenforceable(&policy, &record(), None, Intel::Consulted)
-                .iter()
-                .map(|u| u.check)
-                .collect::<Vec<_>>(),
+            dropped(false),
             [Check::Kev],
-            "a store that answers still has no exploitation data"
+            "a store without the KEV catalogue has no exploitation data"
         );
+        assert_eq!(dropped(true), []);
     }
 
     #[test]

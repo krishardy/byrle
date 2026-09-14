@@ -52,8 +52,12 @@ Each table's CSV is the `COPY` encoding, and the `advisory` CSV is the bytes `CO
 Records are sorted by publisher id. A child row carries its advisory's position in that
 order, from 1.
 
+`load::encode_exploited` writes a source of exploited CVE ids, such as `cisa/kev`, as
+`waharoa intel exploited 1` and one `exploited_cve` table. See [kev-stream](kev-stream.md).
+
 `load::snapshot_id` hashes one `source digest` line per `intel_source` row, sorted, and that
-is `intel_snapshot.digest`. `replace_source` computes both inside its transaction. It locks
+is `intel_snapshot.digest`. `PgIntel::replace` computes both inside its transaction, after
+replacing every source it is given. It locks
 `intel_source` first (`SHARE ROW EXCLUSIVE`, which a lookup's reads do not wait for), so a
 refresh of another source waits and then reads the new digest.
 

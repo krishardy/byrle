@@ -105,10 +105,10 @@ non-withdrawn `GHSA-` records carry one. `Intel::package` returns each advisory'
 
 ## `kev`
 
-No stream the store loads marks an advisory exploited. OSV carries no exploitation data and
-the CISA KEV stream is not built. `enforce::unenforceable` reports `kev` whenever the store
-answers, `explain --policy` prints `unenforced, no exploitation stream`, and startup warns
-`NOT ENFORCED: kev` under `kev: block`.
+OSV carries no exploitation data. Until the KEV stream was built, `enforce::unenforceable`
+reported `kev` whenever the store answered, and startup warned `NOT ENFORCED: kev` under
+`kev: block`. It is now enforced once a snapshot includes `cisa/kev`: see
+[kev-stream](kev-stream.md).
 
 ## Licence
 

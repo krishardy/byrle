@@ -94,7 +94,7 @@ impl Facts {
                 })
             })
             .collect();
-        self.intel = Intel::Consulted;
+        self.intel = Intel::of(Some(intel));
         self
     }
 
@@ -110,6 +110,18 @@ impl Facts {
                 }
                 PackumentDetail::Full => "the registry published no time for this version",
             }),
+        }
+    }
+}
+
+impl Intel {
+    /// What a store's answer for a package lets the checks read. `None` is no store.
+    pub fn of(intel: Option<&PackageIntel>) -> Self {
+        match intel {
+            Some(intel) => Self::Consulted {
+                exploitation_loaded: intel.exploitation_loaded,
+            },
+            None => Self::NotConsulted,
         }
     }
 }
@@ -190,7 +202,41 @@ mod tests {
             snapshot: "s1".to_owned(),
             records,
             ranges: Vec::new(),
+            exploitation_loaded: false,
         }
+    }
+
+    #[test]
+    fn an_exploited_record_is_a_kev_advisory_and_the_facts_say_the_catalogue_was_asked() {
+        let exploited = |version| {
+            let (version, record) = stored(version, "GHSA-1", false, Some(5.0));
+            (
+                version,
+                crate::intel::store::Record {
+                    exploited: true,
+                    ..record
+                },
+            )
+        };
+        let facts = Facts::from_record(&full()).with_intel(&PackageIntel {
+            exploitation_loaded: true,
+            ..intel(vec![exploited(None)])
+        });
+        assert_eq!(
+            facts.intel,
+            Intel::Consulted {
+                exploitation_loaded: true
+            }
+        );
+        assert_eq!(
+            facts
+                .advisories
+                .iter()
+                .map(|a| (a.id.as_str(), a.kev))
+                .collect::<Vec<_>>(),
+            [("GHSA-1", true)]
+        );
+        assert_eq!(Intel::of(None), Intel::NotConsulted);
     }
 
     #[test]
@@ -202,7 +248,12 @@ mod tests {
             facts.advisories.is_empty(),
             "an unscored record is not an advisory"
         );
-        assert_eq!(facts.intel, Intel::Consulted);
+        assert_eq!(
+            facts.intel,
+            Intel::Consulted {
+                exploitation_loaded: false
+            }
+        );
 
         let decision = decide(
             &policy(
@@ -220,7 +271,12 @@ cooldown_days: 0
     fn a_store_that_knows_nothing_was_still_consulted() {
         let facts = Facts::from_record(&full()).with_intel(&intel(Vec::new()));
         assert!(!facts.known_malware);
-        assert_eq!(facts.intel, Intel::Consulted);
+        assert_eq!(
+            facts.intel,
+            Intel::Consulted {
+                exploitation_loaded: false
+            }
+        );
     }
 
     #[test]

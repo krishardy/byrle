@@ -15,7 +15,7 @@ the intel store:
 | Store | Proxy answers | `known_malware`, `kev`, `max_cvss` |
 |---|---|---|
 | not configured | as before | dropped as unenforceable, and reported so |
-| answers | decides with what the store knows | `known_malware` and `max_cvss` enforced. `kev` dropped as unenforceable: no stream marks an advisory exploited |
+| answers | decides with what the store knows | `known_malware` and `max_cvss` enforced. `kev` enforced once the snapshot includes `cisa/kev`, and dropped as unenforceable before: see [kev-stream](kev-stream.md) |
 | holds no snapshot | 503 | not reached |
 | errors | 503 | not reached |
 

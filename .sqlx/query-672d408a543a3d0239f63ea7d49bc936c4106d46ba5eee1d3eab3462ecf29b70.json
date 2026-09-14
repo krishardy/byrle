@@ -1,0 +1,102 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT\n                    s.digest        AS \"snapshot!\",\n                    EXISTS (SELECT 1 FROM intel_source WHERE source = $3)\n                                    AS \"exploitation_loaded!\",\n                    m.is_range      AS \"is_range?\",\n                    m.version       AS \"version?\",\n                    m.introduced    AS \"introduced?\",\n                    m.fixed         AS \"fixed?\",\n                    m.last_affected AS \"last_affected?\",\n                    a.publisher_id  AS \"advisory_id?\",\n                    a.source        AS \"source?\",\n                    a.cvss          AS \"cvss?\",\n                    a.cvss_source   AS \"cvss_source?\",\n                    (a.exploited OR EXISTS (\n                        SELECT 1 FROM exploited_cve k\n                        WHERE k.cve_id = a.publisher_id\n                           OR k.cve_id IN (\n                               SELECT al.alias FROM advisory_alias al WHERE al.advisory_id = a.id\n                           )\n                    ))              AS \"exploited?\",\n                    a.malware       AS \"malware?\",\n                    ARRAY(\n                        SELECT al.alias FROM advisory_alias al\n                        WHERE al.advisory_id = a.id ORDER BY al.alias\n                    )               AS \"aliases!\"\n                FROM (SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s\n                LEFT JOIN (\n                    SELECT advisory_id, FALSE AS is_range, version,\n                           NULL::varchar AS introduced, NULL::varchar AS fixed,\n                           NULL::varchar AS last_affected\n                    FROM advisory_affected WHERE ecosystem = $1 AND name = $2\n                    UNION ALL\n                    SELECT advisory_id, TRUE, NULL, introduced, fixed, last_affected\n                    FROM advisory_range WHERE ecosystem = $1 AND name = $2\n                ) m ON TRUE\n                LEFT JOIN advisory a ON a.id = m.advisory_id\n                ORDER BY a.publisher_id, m.is_range, m.version, m.introduced, m.fixed, m.last_affected\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "snapshot!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "exploitation_loaded!",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 2,
+        "name": "is_range?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 3,
+        "name": "version?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "introduced?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "fixed?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_affected?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "advisory_id?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "source?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 9,
+        "name": "cvss?",
+        "type_info": "Float8"
+      },
+      {
+        "ordinal": 10,
+        "name": "cvss_source?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 11,
+        "name": "exploited?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 12,
+        "name": "malware?",
+        "type_info": "Bool"
+      },
+      {
+        "ordinal": 13,
+        "name": "aliases!",
+        "type_info": "VarcharArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      false,
+      false,
+      true,
+      true,
+      null,
+      false,
+      null
+    ]
+  },
+  "hash": "672d408a543a3d0239f63ea7d49bc936c4106d46ba5eee1d3eab3462ecf29b70"
+}

@@ -11,9 +11,11 @@
 #![cfg(not(coverage))]
 
 use sqlx::PgPool;
+use std::collections::BTreeSet;
+use waharoa::intel::kev;
 use waharoa::intel::load::{self, Fetch};
 use waharoa::intel::osv::{self, Parsed, Rows};
-use waharoa::intel::postgres::{Loaded, PgIntel};
+use waharoa::intel::postgres::{Loaded, PgIntel, Replacement};
 use waharoa::intel::refresh::StreamDigest;
 use waharoa::intel::snapshot_dir::SnapshotDir;
 use waharoa::intel::snapshot_intel::SnapshotIntel;
@@ -380,6 +382,7 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
             aliases: 0,
             affected: 1,
             ranges: 0,
+            exploited: 0,
             snapshot: id_of(&[(osv::SOURCE, std::slice::from_ref(&rows))]),
             manifest: load::manifest([(
                 osv::SOURCE,
@@ -1002,6 +1005,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "advisory_affected",
         "advisory_alias",
         "advisory_range",
+        "exploited_cve",
         "intel_snapshot",
         "intel_source",
     ];
@@ -1144,12 +1148,29 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
             id: "GHSA-0000-0000-0000".to_owned(),
             malware: false,
             cvss: Some(6.9),
+            aliases: ["CVE-2099-1".to_owned()].into(),
             ..osv_fixture("MAL-2022-174")
         },
     ];
     let encoded = load::encode(osv::SOURCE, &rows);
+    let exploited = load::encode_exploited(kev::SOURCE, &["CVE-2099-1".to_owned()].into());
+    let s1 = fetch("s1");
     let loaded = intel
-        .replace_encoded(&encoded, &rows, &fetch("s1"))
+        .replace(
+            &[
+                Replacement {
+                    encoded: &encoded,
+                    rows: &rows,
+                    streams: &s1.streams,
+                },
+                Replacement {
+                    encoded: &exploited,
+                    rows: &[],
+                    streams: &[],
+                },
+            ],
+            &s1.taken_at,
+        )
         .await
         .expect("load");
 
@@ -1157,6 +1178,7 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
     let _ = std::fs::remove_dir_all(&path);
     let dir = SnapshotDir::open(&path).expect("opens");
     dir.write_rows(&encoded).expect("writes rows");
+    dir.write_rows(&exploited).expect("writes rows");
     dir.write_snapshot(&loaded.manifest)
         .expect("writes the snapshot");
     let names: std::collections::BTreeSet<&str> = rows
@@ -1175,11 +1197,21 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         .map(|name| ("npm".to_owned(), name.to_string()))
         .collect();
     let kept = SnapshotIntel::read(&dir, &loaded.snapshot, packages).expect("reads");
+    let mut exploited_records = 0;
     for name in names {
         let from_postgres = intel.package("npm", name).await.expect("query");
+        exploited_records += from_postgres
+            .iter()
+            .flat_map(|p| &p.records)
+            .filter(|(_, r)| r.exploited)
+            .count();
         let from_files = kept.package("npm", name).await.expect("answers");
         assert_eq!(from_files.map(sorted), from_postgres.map(sorted), "{name}");
     }
+    assert!(
+        exploited_records > 0,
+        "the catalogue marks GHSA-0000-0000-0000"
+    );
     assert_eq!(
         kept.snapshot().await.expect("answers").map(|s| s.digest),
         Some(loaded.snapshot)
@@ -1188,10 +1220,143 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
 
 /// A package's answer with its rows in one order. Postgres orders text by collation, and the
 /// files by byte.
-fn sorted(intel: PackageIntel) -> (String, Vec<String>, Vec<String>) {
+fn sorted(intel: PackageIntel) -> (String, bool, Vec<String>, Vec<String>) {
     let mut records: Vec<String> = intel.records.iter().map(|r| format!("{r:?}")).collect();
     let mut ranges: Vec<String> = intel.ranges.iter().map(|r| format!("{r:?}")).collect();
     records.sort();
     ranges.sort();
-    (intel.snapshot, records, ranges)
+    (intel.snapshot, intel.exploitation_loaded, records, ranges)
+}
+
+/// Each advisory affecting `name` once, with whether it is exploited, and whether the snapshot
+/// includes the catalogue.
+async fn exploitation(intel: &PgIntel, name: &str) -> (bool, Vec<(String, bool)>) {
+    let found = intel
+        .package("npm", name)
+        .await
+        .expect("query")
+        .expect("a snapshot is loaded");
+    let mut marked: Vec<(String, bool)> = found
+        .records
+        .iter()
+        .map(|(_, r)| (r.advisory_id.clone(), r.exploited))
+        .collect();
+    marked.sort();
+    marked.dedup();
+    (found.exploitation_loaded, marked)
+}
+
+/// Sources replaced together are one snapshot. An advisory is exploited when its id or an
+/// alias is listed. Reloading OSV alone, as a refresh whose catalogue fetch failed does, leaves
+/// the catalogue loaded, and reloading the catalogue alone leaves OSV.
+#[tokio::test]
+async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_osv() {
+    let intel = skip_without_database!("t_kev");
+    let advisory = |id: &str, alias: &str| Rows {
+        id: id.to_owned(),
+        malware: false,
+        cvss: Some(6.9),
+        aliases: [alias.to_owned()].into(),
+        ..osv_fixture("MAL-2022-174")
+    };
+    let rows = [
+        advisory("CVE-2099-2", "GHSA-0000-0000-0002"),
+        advisory("GHSA-0000-0000-0001", "CVE-2099-1"),
+        advisory("GHSA-0000-0000-0003", "CVE-2099-3"),
+    ];
+    let (name, _) = target(&rows[0]);
+    let marked = |flags: [bool; 3]| -> Vec<(String, bool)> {
+        rows.iter().map(|r| r.id.clone()).zip(flags).collect()
+    };
+
+    intel
+        .replace_source(osv::SOURCE, &rows, &fetch("s1"))
+        .await
+        .expect("load");
+    assert_eq!(
+        exploitation(&intel, &name).await,
+        (false, marked([false, false, false]))
+    );
+
+    let catalogue: BTreeSet<String> = ["CVE-2099-1", "CVE-2099-2", "CVE-2099-9"]
+        .map(str::to_owned)
+        .into();
+    let (osv_rows, exploited) = (
+        load::encode(osv::SOURCE, &rows),
+        load::encode_exploited(kev::SOURCE, &catalogue),
+    );
+    let kev_streams = [StreamDigest {
+        stream: kev::SOURCE.to_owned(),
+        sha256: "kev".to_owned(),
+        etag: None,
+        last_modified: None,
+    }];
+    let kev_only = |encoded| {
+        [Replacement {
+            encoded,
+            rows: &[],
+            streams: &kev_streams,
+        }]
+    };
+    let before = snapshots(&intel).await;
+    let s2 = fetch("s2");
+    let loaded = intel
+        .replace(
+            &[
+                Replacement {
+                    encoded: &osv_rows,
+                    rows: &rows,
+                    streams: &s2.streams,
+                },
+                kev_only(&exploited)[0],
+            ],
+            &s2.taken_at,
+        )
+        .await
+        .expect("load");
+    assert_eq!((loaded.advisories, loaded.exploited), (3, 3));
+    assert_eq!(snapshots(&intel).await, before + 1);
+    assert_eq!(
+        loaded.manifest,
+        load::manifest([
+            (osv::SOURCE, osv_rows.digest.as_str()),
+            (kev::SOURCE, exploited.digest.as_str()),
+        ])
+    );
+    assert_eq!(
+        exploitation(&intel, &name).await,
+        (true, marked([true, true, false]))
+    );
+    let streams = intel
+        .snapshot()
+        .await
+        .expect("query")
+        .expect("loaded")
+        .streams;
+    assert!(
+        streams.iter().any(|s| s.stream == kev::SOURCE),
+        "{streams:?}"
+    );
+
+    let reloaded = intel
+        .replace_source(osv::SOURCE, &rows, &fetch("s3"))
+        .await
+        .expect("load");
+    assert_eq!(reloaded.exploited, 0);
+    assert_eq!(reloaded.manifest, loaded.manifest);
+    assert_eq!(
+        exploitation(&intel, &name).await,
+        (true, marked([true, true, false]))
+    );
+
+    let smaller = load::encode_exploited(kev::SOURCE, &["CVE-2099-3".to_owned()].into());
+    let replaced = intel
+        .replace(&kev_only(&smaller), &fetch("s4").taken_at)
+        .await
+        .expect("load");
+    assert_eq!((replaced.advisories, replaced.exploited), (0, 1));
+    assert_eq!(
+        exploitation(&intel, &name).await,
+        (true, marked([false, false, true]))
+    );
 }

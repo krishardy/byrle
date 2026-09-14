@@ -35,6 +35,7 @@
 //! `enrich` capability this machinery exists to constrain has no implemented producer at
 //! all. See `docs/engineering_decisions/advisory-stream-licences.md`.
 
+pub mod kev;
 pub mod load;
 pub mod osv;
 pub mod postgres;
@@ -127,7 +128,12 @@ impl Score {
 /// exception, a KEV entry or NVD gives the CVE. See
 /// docs/engineering_decisions/alias-matching.md.
 pub fn is_named(advisory_id: &str, aliases: &[String], wanted: &str) -> bool {
-    advisory_id == wanted || aliases.iter().any(|alias| alias == wanted)
+    ids(advisory_id, aliases).any(|id| id == wanted)
+}
+
+/// `advisory_id`, then each of its `aliases`.
+pub fn ids<'a>(advisory_id: &'a str, aliases: &'a [String]) -> impl Iterator<Item = &'a str> {
+    std::iter::once(advisory_id).chain(aliases.iter().map(String::as_str))
 }
 
 /// Something wrong with a package. Only a `match` stream can make one.
