@@ -1,0 +1,12 @@
+{
+  "name": "lock-probe",
+  "version": "1.0.0",
+  "dependencies": {
+    "lodash": "4.17.20",
+    "@babel/code-frame": "7.22.13",
+    "my-lodash": "npm:lodash@4.17.21"
+  },
+  "devDependencies": {
+    "minimist": "1.2.5"
+  }
+}

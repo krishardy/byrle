@@ -56,7 +56,8 @@ pub enum PolicyCommand {
     /// Load a policy as the proxy does, and list the package entries that do nothing. Exits
     /// 1 if it is refused
     Check(Check),
-    /// Compare two policies over the audit log's packages. Exits 1 on any loosening
+    /// Compare two policies over the audit log's and lockfiles' packages. Exits 1 on any
+    /// loosening
     Diff(Diff),
 }
 
@@ -84,6 +85,9 @@ pub struct Diff {
     /// Judge both against this kept intel snapshot, not the store's latest load
     #[arg(long, value_name = "ID")]
     pub snapshot: Option<String>,
+    /// Compare over this lockfile's packages too. Repeatable
+    #[arg(long, value_name = "PATH")]
+    pub lockfile: Vec<PathBuf>,
 }
 
 #[cfg(test)]
@@ -157,6 +161,7 @@ mod tests {
                 to: "b.yaml".into(),
                 as_of: None,
                 snapshot: None,
+                lockfile: Vec::new(),
             }
         );
         assert_eq!(
@@ -196,6 +201,34 @@ mod tests {
     fn a_snapshot_id_is_taken_as_given() {
         let parsed = diff(&["policy", "diff", "a", "b", "--snapshot", "sha256:x"]).expect("parses");
         assert_eq!(parsed.snapshot.as_deref(), Some("sha256:x"));
+    }
+
+    #[test]
+    fn a_lockfile_can_be_given_more_than_once() {
+        let parsed = diff(&[
+            "policy",
+            "diff",
+            "a",
+            "b",
+            "--lockfile",
+            "app/package-lock.json",
+            "--lockfile",
+            "yarn.lock",
+        ])
+        .expect("parses");
+        assert_eq!(
+            parsed.lockfile,
+            [
+                PathBuf::from("app/package-lock.json"),
+                PathBuf::from("yarn.lock")
+            ]
+        );
+        assert!(
+            diff(&["policy", "diff", "a", "b"])
+                .expect("parses")
+                .lockfile
+                .is_empty()
+        );
     }
 
     /// Each of these the hand-written parser accepted, ignored or misread.

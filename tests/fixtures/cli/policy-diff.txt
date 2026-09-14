@@ -1,4 +1,4 @@
-Compare two policies over the audit log's packages. Exits 1 on any loosening
+Compare two policies over the audit log's and lockfiles' packages. Exits 1 on any loosening
 
 Usage: waharoa policy diff [OPTIONS] <FROM> <TO>
 
@@ -9,4 +9,5 @@ Arguments:
 Options:
       --as-of <YYYY-MM-DD>  Judge both policies as of this date [default: today, UTC]
       --snapshot <ID>       Judge both against this kept intel snapshot, not the store's latest load
+      --lockfile <PATH>     Compare over this lockfile's packages too. Repeatable
   -h, --help                Print help

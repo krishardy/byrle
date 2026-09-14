@@ -34,6 +34,7 @@ code, and the file names where.
 | [`waharoa policy check`](policy-check.md) | Implemented |
 | [Readiness endpoint](readiness-endpoint.md) | Implemented |
 | [Snapshot identity](snapshot-identity.md) | Implemented; import not built |
+| [`policy diff` reads lockfiles](policy-diff-lockfiles.md) | Implemented |
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |
