@@ -400,9 +400,16 @@ why it survived everything else in that section.
 ### Where the short circuit survives
 
 In front of expensive analysis, and nowhere else. None of the seven checks here costs
-anything worth deferring for: denials and malware are set lookups, KEV and advisories are
-lookups against a local mirror, age is arithmetic, install scripts is a packument field.
-No network call and no extraction among them.
+anything worth deferring for once its facts are in hand: denials and malware are set
+lookups, KEV and advisories are lookups in a local mirror, age is arithmetic, install
+scripts is a packument field. No extraction among them.
+
+Gathering one fact does cost a request. `cooldown_days` needs publish times, which only the
+full packument carries, measured at 1.7x to 3.6x the abbreviated one. `publish_times_for` in
+`src/proxy.rs` fetches it once per package when the policy uses a cooldown, before any check
+runs, and keeps it for up to 1,024 packages. It is fetched even when another check already
+blocks the version, so the vector reports the cooldown's real result rather than
+`unenforced`. Decided 2026-09-15: skipping it is not the short circuit this section keeps.
 
 Stage 4's detectors are different. Capability analysis and source diff are the "expensive
 analysis" §5 defers a request for, and they stay lazy: the cheap checks are a vector, and

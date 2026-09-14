@@ -1041,7 +1041,8 @@ the record of why it went survives the deletion.
             at first: the narrow entry was written last, so "narrowest wins" and "last
             wins" gave the same answer. It now asserts both orders and a package the
             narrow entry does not name.
-      - [ ] The short circuit in front of Stage 4's expensive analysis, when there is any.
+      - The short circuit in front of expensive analysis moved to Stage 4, under the
+        analysis cost tier: there is no expensive analysis to put it in front of yet.
 - [x] An entry that changes nothing is **valid**: it warns at load and `doctor` flags it.
       Almost always a selector that no longer matches what it was written for, but not a
       reason to refuse a policy. Startup, `doctor` and `policy check` read one
@@ -1369,7 +1370,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] `[!]` Common advisory record schema with alias set (CVE, GHSA, OSV, MAL IDs)
 - [~] `[!]` OSV.dev stream, lookup by PURL. npm `MAL-` and `GHSA-` records parse
       (`src/intel/osv.rs`) and load (`PgIntel::replace_source`): all 221,217 non-withdrawn
-      `MAL-` and 7,028 of 7,052 `GHSA-`, with 10,326 range rows evaluated at lookup
+      `MAL-` and all 7,052 `GHSA-`, with 10,357 range rows evaluated at lookup
       (`src/intel/range.rs`). `waharoa refresh` fetches and loads them.
       `docs/engineering_decisions/osv-malware-load.md`,
       `docs/engineering_decisions/osv-ranges-and-scores.md`.
@@ -1388,10 +1389,13 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Wire the intel store into `Facts` (`known_malware`, `Intel::Consulted`) in the
       proxy, `explain` and `policy diff`. One `Intel::package` query per package.
       `enforce::artifact` and `enforce::unenforceable` take the intel state from the caller.
-- [ ] `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`. 688
-      `GHSA-` records carry no CVSS vector, only a `database_specific` severity band, and
-      `max_cvss` cannot fire for them. An unscored advisory that is exploited would also be
-      invisible to `kev`. No stream marks one exploited today.
+- [ ] `[?]` `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`.
+      689 `GHSA-` records carry no CVSS vector, only a `database_specific` severity band, and
+      `max_cvss` cannot fire for them (689 over `npm/all.zip` fetched 2026-09-13, after
+      padding). An unscored advisory that is exploited would also be invisible to `kev`. No
+      stream marks one exploited today. Needs a decision: whether a band maps to a score, and
+      to which. `osv-ranges-and-scores.md` records "a band is not a number" as the reason for
+      no score today.
 - [x] `explain --policy` reported `kev` and `max_cvss` as enforced once the store answered.
       `max_cvss` now has 6,340 scored records to read. `kev` is reported
       `unenforced, no exploitation stream`, in `explain --policy` and in every decision.
@@ -1652,6 +1656,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       detectors buffer inline (tar listing, ~tens of ms); expensive detectors defer with
       429. Only expensive ones may produce a retry. The tier is part of the detector
       contract, not a runtime guess.
+  - [ ] Short circuit in front of expensive analysis, moved from Stage 2's policy engine:
+        an expensive detector runs only if the cheap decision vector has not already
+        settled the answer. See `docs/engineering_decisions/policy-tier-resolution.md`,
+        "Where the short circuit survives".
 - [ ] **Registry tarball vs. git source diffing** — expensive tier (git clone, ~tens of s)
   - [ ] Resolve repo URL and matching tag from package metadata
   - [ ] Normalize for expected build artifacts and packaging noise
