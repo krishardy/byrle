@@ -2559,86 +2559,72 @@ mod tests {
         doc["versions"].get(version).is_some()
     }
 
-    #[tokio::test]
-    async fn known_malware_in_the_store_is_refused_on_a_pinned_fetch() {
-        let (base, seen) = proxy_with_intel(malware_everywhere(), true).await;
-
-        let response = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 403);
-        let body = response.text().await.unwrap();
-        assert!(body.contains("known_malware"), "{body}");
-        let paths = &seen.lock().unwrap().paths;
-        assert!(!paths.iter().any(|p| p.ends_with(".tgz")), "{paths:?}");
-    }
-
-    #[tokio::test]
-    async fn known_malware_in_the_store_is_filtered_from_the_packument() {
-        let (base, _) = proxy_with_intel(malware_everywhere(), true).await;
-
-        let response = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
-            .header(header::ACCEPT, "application/vnd.npm.install-v1+json")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 200);
-        let doc: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
-        assert!(doc["versions"].get("4.17.21").is_none(), "{doc}");
-    }
-
     const LODASH: &str = "lodash-4.17.21.abbrev.json";
+    /// The only lodash fixture with publish times, which `cooldown_days` needs.
+    const LODASH_FULL: &str = "lodash-4.17.21.full.json";
     /// esbuild 0.28.2 carries `hasInstallScript`.
     const ESBUILD: &str = "esbuild-0.28.2.abbrev.json";
 
-    fn scored_everywhere() -> Option<Arc<dyn Intel>> {
-        Some(everywhere("GHSA-0000-0000-0000", Some(8.1), false))
-    }
-
+    /// Every check refuses on a pinned fetch and filters the packument. The `match` has no
+    /// wildcard, so a check added to `Check` without a case here does not compile.
     #[tokio::test]
-    async fn an_advisory_over_max_cvss_is_refused_on_a_pinned_fetch() {
-        let yaml = "version: 1\ncooldown_days: 0\nmax_cvss: 7.0\n";
-        let (base, seen) = proxy_for(LODASH, scored_everywhere(), Some(yaml)).await;
-        assert_refused_pinned(&base, &seen, "/lodash/-/lodash-4.17.21.tgz", "max_cvss").await;
-    }
+    async fn every_check_refuses_on_a_pinned_fetch_and_filters_the_packument() {
+        use crate::policy::decide::Check;
+        const BASE: &str = "version: 1\ncooldown_days: 0\n";
+        for check in Check::ALL {
+            let (packument, name, version, intel, yaml): (_, _, _, Option<Arc<dyn Intel>>, _) =
+                match check {
+                    Check::Denials => (
+                        LODASH,
+                        "lodash",
+                        "4.17.21",
+                        None,
+                        format!(
+                            "{BASE}denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n"
+                        ),
+                    ),
+                    Check::KnownMalware => (
+                        LODASH,
+                        "lodash",
+                        "4.17.21",
+                        Some(malware_everywhere()),
+                        BASE.to_owned(),
+                    ),
+                    Check::CooldownDays => (
+                        LODASH_FULL,
+                        "lodash",
+                        "4.17.21",
+                        None,
+                        "version: 1\ncooldown_days: 36500\n".to_owned(),
+                    ),
+                    // No stream marks an advisory exploited, so `kev` is unenforceable whenever
+                    // the store answers. Give it a case when the KEV stream exists.
+                    Check::Kev => continue,
+                    Check::MaxCvss => (
+                        LODASH,
+                        "lodash",
+                        "4.17.21",
+                        Some(everywhere("GHSA-0000-0000-0000", Some(8.1), false)),
+                        format!("{BASE}max_cvss: 7.0\n"),
+                    ),
+                    Check::InstallScripts => (
+                        ESBUILD,
+                        "esbuild",
+                        "0.28.2",
+                        None,
+                        format!("{BASE}install_scripts: block\n"),
+                    ),
+                };
+            let (base, seen) = proxy_for(packument, intel, Some(&yaml)).await;
+            let tarball = format!("/{name}/-/{name}-{version}.tgz");
+            assert_refused_pinned(&base, &seen, &tarball, check.as_str()).await;
+            assert!(!offered(&base, name, version).await, "{}", check.as_str());
 
-    #[tokio::test]
-    async fn an_advisory_over_max_cvss_is_filtered_from_the_packument_and_one_at_it_is_not() {
-        for (max_cvss, offers) in [("7.0", false), ("8.1", true)] {
-            let yaml = format!("version: 1\ncooldown_days: 0\nmax_cvss: {max_cvss}\n");
-            let (base, _) = proxy_for(LODASH, scored_everywhere(), Some(&yaml)).await;
-            assert_eq!(
-                offered(&base, "lodash", "4.17.21").await,
-                offers,
-                "max_cvss {max_cvss}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn an_install_script_is_refused_on_a_pinned_fetch_under_block() {
-        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
-        let (base, seen) = proxy_for(ESBUILD, None, Some(yaml)).await;
-        assert_refused_pinned(
-            &base,
-            &seen,
-            "/esbuild/-/esbuild-0.28.2.tgz",
-            "install_scripts",
-        )
-        .await;
-    }
-
-    #[tokio::test]
-    async fn an_install_script_is_filtered_from_the_packument_under_block_only() {
-        for (setting, offers) in [("block", false), ("allow", true)] {
-            let yaml = format!("version: 1\ncooldown_days: 0\ninstall_scripts: {setting}\n");
-            let (base, _) = proxy_for(ESBUILD, None, Some(&yaml)).await;
-            assert_eq!(
-                offered(&base, "esbuild", "0.28.2").await,
-                offers,
-                "{setting}"
-            );
+            // The same document under a policy that refuses nothing is offered, so the
+            // filtering above is the check's.
+            let allowing = format!("{BASE}install_scripts: allow\n");
+            let (base, _) = proxy_for(packument, None, Some(&allowing)).await;
+            assert!(offered(&base, name, version).await, "{}", check.as_str());
         }
     }
 
