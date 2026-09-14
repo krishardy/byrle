@@ -1369,9 +1369,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       (`src/intel/range.rs`). `waharoa refresh` fetches and loads them.
       `docs/engineering_decisions/osv-malware-load.md`,
       `docs/engineering_decisions/osv-ranges-and-scores.md`.
-      - [ ] 24 `GHSA-` records store nothing: every npm range holds a version that is not
-            SemVer 2.0, such as `13.0`. Reading them needs npm's own version ordering.
-      - [ ] A packument version that is not SemVer, such as `3.0.0rc1`, is in no range.
+      - [x] 24 `GHSA-` records stored nothing and 4 stored part: their ranges held versions
+            such as `13.0` and `2026.04.1`. `range::padded` reads them as osv.dev does,
+            `13.0.0` and `2026.4.1`, and they are stored padded: nothing storable 24 to 0,
+            ranges 10,326 to 10,357. None is a published version.
+      - [x] A packument version that is not SemVer is in no range. None was seen: 0 in 103
+            packages. `3.0.0rc1` is `express`'s tarball name; its packument lists `3.0.0-rc1`.
 - [x] `[!]` Choose the OSV fetch: `npm/all.zip`, read from memory with `zip` (`deflate-flate2`
       only). 228,951 single-record GETs was the alternative. `npm/modified_id.csv`, which
       lists every record's modified time, is left for an incremental refresh.

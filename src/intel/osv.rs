@@ -269,7 +269,13 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
         if refused > 0 || (entry.versions.is_empty() && intervals.is_empty()) {
             unexpressed += 1;
         }
-        affected.extend(entry.versions.iter().map(Some).map(row));
+        // Padded as a range's versions are, so a listed `12.0` matches the published `12.0.0`.
+        // One that does not pad is kept as written.
+        let listed = entry
+            .versions
+            .iter()
+            .map(|v| range::padded(v).unwrap_or_else(|| v.clone()));
+        affected.extend(listed.map(|v| row(Some(&v))));
         ranges.extend(intervals.into_iter().map(|interval| Ranged {
             ecosystem: NPM.to_owned(),
             name: package.name.clone(),
@@ -476,7 +482,7 @@ mod tests {
                            "ranges": [{"type": "SEMVER", "events": [{"introduced": "0", "last_affected": "1.0.0"}]}]}"#;
         assert_eq!(inline(two_keys), Parsed::Skipped(Skipped::NothingStorable));
         let not_semver = r#"{"package": {"ecosystem": "npm", "name": "p"},
-                             "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "13.0"}]}]}"#;
+                             "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "1.0.0rc1"}]}]}"#;
         assert_eq!(
             inline(not_semver),
             Parsed::Skipped(Skipped::NothingStorable)
@@ -510,7 +516,7 @@ mod tests {
         let rows = stored(inline(
             r#"{"package": {"ecosystem": "npm", "name": "a"}, "versions": ["1.0.0", "1.0.0"]},
                {"package": {"ecosystem": "npm", "name": "b"},
-                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "2026.04.1"}]}]}"#,
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "v2026.4.1"}]}]}"#,
         ));
         // The repeated version is one row, or the unique index refuses the load.
         assert_eq!(rows.affected.len(), 1);
@@ -522,11 +528,30 @@ mod tests {
         let rows = stored(inline(
             r#"{"package": {"ecosystem": "npm", "name": "a"}, "versions": ["1.0.0"],
                 "ranges": [{"type": "SEMVER", "events": [{"introduced": "1.0.0"}, {"fixed": "2.0.0"}]},
-                           {"type": "ECOSYSTEM", "events": [{"introduced": "13.0"}]}]}"#,
+                           {"type": "ECOSYSTEM", "events": [{"introduced": "1.0.0rc1"}]}]}"#,
         ));
         assert_eq!(rows.affected.len(), 1);
         assert_eq!(rows.ranges.len(), 1);
         assert_eq!(rows.unexpressed, 1);
+    }
+
+    /// Shaped as `GHSA-3h52-269p-cp9r` for `next` and `GHSA-pwvp-h579-hfxg` for `total4`,
+    /// which stored nothing before.
+    #[test]
+    fn a_short_version_in_a_range_or_a_list_is_stored_padded() {
+        let rows = stored(inline(
+            r#"{"package": {"ecosystem": "npm", "name": "a"}, "versions": ["12.0", "12.0.0", "1.0.0rc1"],
+                "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "13.0"}, {"fixed": "14.2.30"}]}]}"#,
+        ));
+        assert_eq!(versions(&rows), vec![Some("1.0.0rc1"), Some("12.0.0")]);
+        assert_eq!(
+            intervals(&rows),
+            vec![&Interval {
+                introduced: Some("13.0.0".to_owned()),
+                end: End::Fixed("14.2.30".to_owned()),
+            }]
+        );
+        assert_eq!(rows.unexpressed, 0);
     }
 
     #[test]
