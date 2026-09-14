@@ -214,30 +214,6 @@ fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
 async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
     let as_of = args.as_of.unwrap_or_else(today);
 
-    // A kept snapshot when one is named, so a changed result is the policy's and not an
-    // advisory published since.
-    let store: Option<Box<dyn Intel>> = match &args.snapshot {
-        Some(id) => match kept_snapshot(id) {
-            Ok(kept) => Some(Box::new(kept)),
-            Err(e) => {
-                eprintln!("waharoa policy diff: --snapshot {id}: {e}");
-                return std::process::ExitCode::from(2);
-            }
-        },
-        None => match intel_store().await {
-            Ok(store) => store.map(|store| Box::new(store) as Box<dyn Intel>),
-            Err(e) => {
-                eprintln!("waharoa policy diff: {}: {e}", env::DATABASE_URL);
-                return std::process::ExitCode::from(2);
-            }
-        },
-    };
-    if let Some(store) = &store
-        && let Ok(Some(snapshot)) = store.snapshot().await
-    {
-        eprintln!("waharoa policy diff: intel snapshot {}", snapshot.digest);
-    }
-
     let mut loaded = Vec::new();
     for path in [&args.from, &args.to] {
         match Policy::load(path) {
@@ -264,19 +240,53 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         }
     };
 
+    // The npm package versions the log lists, each with its purl.
+    let versions: Vec<(String, PackageRef, String)> = audit::packages(&log)
+        .into_iter()
+        .filter(|(ecosystem, _, _)| ecosystem == "npm")
+        .filter_map(|(ecosystem, name, version)| {
+            let purl = format!("pkg:{ecosystem}/{name}@{version}");
+            let reference = purl.parse::<PackageRef>().ok()?;
+            Some((purl, reference, version))
+        })
+        .collect();
+
+    // A kept snapshot when one is named, so a changed result is the policy's and not an
+    // advisory published since. It is read for the packages above only.
+    let store: Option<Box<dyn Intel>> = match &args.snapshot {
+        Some(id) => {
+            let packages = versions
+                .iter()
+                .map(|(_, reference, _)| intel_key(reference.key()))
+                .collect();
+            match kept_snapshot(id, packages) {
+                Ok(kept) => Some(Box::new(kept)),
+                Err(e) => {
+                    eprintln!("waharoa policy diff: --snapshot {id}: {e}");
+                    return std::process::ExitCode::from(2);
+                }
+            }
+        }
+        None => match intel_store().await {
+            Ok(store) => store.map(|store| Box::new(store) as Box<dyn Intel>),
+            Err(e) => {
+                eprintln!("waharoa policy diff: {}: {e}", env::DATABASE_URL);
+                return std::process::ExitCode::from(2);
+            }
+        },
+    };
+    if let Some(store) = &store
+        && let Ok(Some(snapshot)) = store.snapshot().await
+    {
+        eprintln!("waharoa policy diff: intel snapshot {}", snapshot.digest);
+    }
+
     let upstream = or_exit(env::process().upstream());
     let client = npm::Client::new(reqwest::Client::new(), upstream);
     let needs_times = loaded.iter().any(Policy::uses_cooldown);
 
     let mut report = diff::Report::default();
-    for (ecosystem, name, version) in audit::packages(&log) {
-        if ecosystem != "npm" {
-            continue;
-        }
-        let purl = format!("pkg:{ecosystem}/{name}@{version}");
-        let Ok(reference) = purl.parse::<PackageRef>() else {
-            continue;
-        };
+    for (purl, reference, version) in &versions {
         let Ok(Ok(packument)) = client
             .packument(reference.key(), record::PackumentDetail::Abbreviated)
             .await
@@ -284,7 +294,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
             eprintln!("waharoa policy diff: {purl}: packument could not be read");
             continue;
         };
-        let Some(package) = packument.version(&version) else {
+        let Some(package) = packument.version(version) else {
             // The registry no longer publishes it. That is a real answer for a lockfile
             // and is not a diff between two policies, so it is reported and skipped.
             eprintln!("waharoa policy diff: {purl}: no longer published");
@@ -317,7 +327,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
             })
             .collect();
         report.push(diff::package(
-            &purl,
+            purl,
             (&decided[0].0, &decided[0].1),
             (&decided[1].0, &decided[1].1),
         ));
@@ -561,7 +571,10 @@ async fn intel_store() -> Result<Option<waharoa::intel::postgres::PgIntel>, Stri
 }
 
 /// The snapshot `--snapshot` names, read from the snapshot directory without its lock.
-fn kept_snapshot(id: &str) -> Result<waharoa::intel::snapshot_intel::SnapshotIntel, String> {
+fn kept_snapshot(
+    id: &str,
+    packages: std::collections::HashSet<waharoa::intel::snapshot_intel::Package>,
+) -> Result<waharoa::intel::snapshot_intel::SnapshotIntel, String> {
     let Some(path) = or_exit(env::process().snapshot_dir()) else {
         return Err(format!(
             "{} is not set, so there is no kept snapshot to read",
@@ -569,7 +582,13 @@ fn kept_snapshot(id: &str) -> Result<waharoa::intel::snapshot_intel::SnapshotInt
         ));
     };
     let dir = waharoa::intel::snapshot_dir::SnapshotDir::open_to_read(&path);
-    waharoa::intel::snapshot_intel::SnapshotIntel::read(&dir, id).map_err(|e| e.to_string())
+    waharoa::intel::snapshot_intel::SnapshotIntel::read(&dir, id, packages)
+        .map_err(|e| e.to_string())
+}
+
+/// The ecosystem and name an intel store keys a package by.
+fn intel_key(key: &waharoa::identity::PackageKey) -> waharoa::intel::snapshot_intel::Package {
+    (key.ecosystem().as_str().to_owned(), key.registry_name())
 }
 
 /// What the store knows about one package, for a command that has to answer with it.
@@ -583,10 +602,8 @@ async fn package_intel(
     let Some(store) = store else {
         return Ok(None);
     };
-    match store
-        .package(key.ecosystem().as_str(), &key.registry_name())
-        .await
-    {
+    let (ecosystem, name) = intel_key(key);
+    match store.package(&ecosystem, &name).await {
         Ok(Some(found)) => Ok(Some(found)),
         Ok(None) => Err("the intel store holds no snapshot; run `waharoa refresh`".to_owned()),
         Err(e) => Err(e.to_string()),

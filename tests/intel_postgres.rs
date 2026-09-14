@@ -1159,8 +1159,6 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
     dir.write_rows(&encoded).expect("writes rows");
     dir.write_snapshot(&loaded.manifest)
         .expect("writes the snapshot");
-    let kept = SnapshotIntel::read(&dir, &loaded.snapshot).expect("reads");
-
     let names: std::collections::BTreeSet<&str> = rows
         .iter()
         .flat_map(|r| {
@@ -1172,6 +1170,11 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         .chain(["lodash"])
         .collect();
     assert_eq!(names.len(), 5, "{names:?}");
+    let packages = names
+        .iter()
+        .map(|name| ("npm".to_owned(), name.to_string()))
+        .collect();
+    let kept = SnapshotIntel::read(&dir, &loaded.snapshot, packages).expect("reads");
     for name in names {
         let from_postgres = intel.package("npm", name).await.expect("query");
         let from_files = kept.package("npm", name).await.expect("answers");

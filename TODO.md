@@ -1243,10 +1243,9 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `policy diff --snapshot <id>` reads one through `SnapshotIntel`
       (`src/intel/snapshot_intel.rs`) instead of Postgres. See
       `docs/engineering_decisions/snapshot-identity.md`.
-- [ ] `SnapshotIntel::read` holds every package in memory: 457 MB peak and 0.6s for npm's
-      224,391 packages in a release build, against 28 MB for the same `policy diff` over
-      Postgres. The package set is known before the store is read, so only those packages
-      could be kept.
+- [x] `policy diff --snapshot` peaked at 468 MB for npm, where Postgres took 28 MB. Rows are
+      now decoded one at a time and only the audit log's packages are kept: 103 MB. See
+      docs/engineering_decisions/snapshot-identity.md.
 - [~] `[!]` Package set from lockfiles **and** from the audit log. The audit log is read
       (`audit::packages`): a `pinned` line names one version, a `resolution` line names
       every version it removed. Lockfiles are not read yet.

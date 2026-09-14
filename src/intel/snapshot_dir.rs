@@ -17,11 +17,10 @@
 //!
 //! See docs/engineering_decisions/snapshot-identity.md.
 
-use super::load::{self, Encoded};
-use super::osv::Rows;
+use super::load::{self, Decoder, Encoded, Row};
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 const ROWS: &str = ".rows.gz";
@@ -192,8 +191,21 @@ impl SnapshotDir {
     /// One source's encoded rows, checked against `digest`.
     pub fn read_rows(&self, digest: &str) -> Result<Vec<u8>, KeptError> {
         let path = self.file(digest, ROWS)?;
-        let file = File::open(&path).map_err(at(&path))?;
+        let mut file = File::open(&path).map_err(at(&path))?;
+        // A gzip file ends with the length of what it contains, modulo 2^32. It is read before
+        // the contents are checked, so it is used only as a capacity, at most 16 times the
+        // file: a wrong one costs a reallocation, and a right one saves growing to twice the
+        // 35 MB npm's rows are, which gzip to 5.6 MB.
+        let mut length = [0; 4];
+        let capacity = file
+            .seek(SeekFrom::End(-4))
+            .and_then(|at_end| file.read_exact(&mut length).map(|_| at_end))
+            .and_then(|at_end| file.rewind().map(|_| at_end))
+            .map_or(0, |at_end| {
+                u64::from(u32::from_le_bytes(length)).min((at_end + 4).saturating_mul(16))
+            });
         let mut bytes = Vec::new();
+        let _ = bytes.try_reserve_exact(usize::try_from(capacity).unwrap_or(0));
         flate2::read::GzDecoder::new(file)
             .read_to_end(&mut bytes)
             .map_err(at(&path))?;
@@ -211,21 +223,31 @@ impl SnapshotDir {
             .collect())
     }
 
-    /// One source's rows, checked against `digest` and against the source named.
-    pub fn read_source(&self, source: &str, digest: &str) -> Result<Vec<Rows>, KeptError> {
+    /// One source's rows, checked against `digest` and against the source named, given to
+    /// `each` one at a time as they are decoded.
+    pub fn read_source(
+        &self,
+        source: &str,
+        digest: &str,
+        mut each: impl FnMut(Row) -> Result<(), KeptError>,
+    ) -> Result<(), KeptError> {
         let bytes = self.read_rows(digest)?;
         let path = self.file(digest, ROWS)?;
-        let (held, rows) = load::decode(&bytes).map_err(|e| KeptError::Undecodable {
+        let undecodable = |reason: String| KeptError::Undecodable {
             path: path.clone(),
-            reason: e.0,
-        })?;
-        if held != source {
-            return Err(KeptError::Undecodable {
-                path,
-                reason: format!("holds source {held}, where the snapshot names {source}"),
-            });
+            reason,
+        };
+        let decoder = Decoder::new(&bytes).map_err(|e| undecodable(e.0))?;
+        if decoder.source() != source {
+            return Err(undecodable(format!(
+                "holds source {}, where the snapshot names {source}",
+                decoder.source()
+            )));
         }
-        Ok(rows)
+        for row in decoder {
+            each(row.map_err(|e| undecodable(e.0))?)?;
+        }
+        Ok(())
     }
 
     /// When snapshot `id` was last written, which is when a refresh last loaded it. RFC 3339,
@@ -479,6 +501,23 @@ mod tests {
     }
 
     #[test]
+    fn a_rows_file_too_short_or_with_a_false_length_is_refused() {
+        let path = tempdir("kept-short");
+        let dir = SnapshotDir::open(&path).expect("opens");
+        let osv = encoded("osv", &["MAL-1"]);
+        let rows_path = dir.write_rows(&osv).expect("writes");
+        let mut false_length = fs::read(&rows_path).expect("reads");
+        let end = false_length.len();
+        false_length[end - 4..].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        for contents in [vec![0x1f, 0x8b], false_length] {
+            fs::write(&rows_path, contents).expect("overwrites");
+            let err = dir.read_rows(&osv.digest).expect_err("not the rows");
+            assert!(matches!(err, KeptError::Io { .. }), "{err:?}");
+        }
+    }
+
+    #[test]
     fn a_file_whose_contents_do_not_hash_to_its_name_is_refused() {
         let path = tempdir("kept-mismatch");
         let dir = SnapshotDir::open(&path).expect("opens");
@@ -710,9 +749,14 @@ mod tests {
         let osv = encoded("osv", &["MAL-1"]);
         dir.write_rows(&osv).expect("writes");
 
+        let mut read = Vec::new();
         let err = dir
-            .read_source("other", &osv.digest)
+            .read_source("other", &osv.digest, |row| {
+                read.push(row);
+                Ok(())
+            })
             .expect_err("the rows are osv's");
+        assert!(read.is_empty());
         assert_eq!(
             err.to_string(),
             format!(
@@ -720,9 +764,20 @@ mod tests {
                 named(&path, &osv.digest, ".rows.gz").display()
             )
         );
+        dir.read_source("osv", &osv.digest, |row| {
+            read.push(row);
+            Ok(())
+        })
+        .expect("reads");
         assert_eq!(
-            dir.read_source("osv", &osv.digest).expect("reads"),
-            vec![rows("MAL-1")]
+            read,
+            vec![
+                Row::Advisory(Rows {
+                    affected: Default::default(),
+                    ..rows("MAL-1")
+                }),
+                Row::Affected(0, rows("MAL-1").affected.pop_first().expect("one")),
+            ]
         );
     }
 

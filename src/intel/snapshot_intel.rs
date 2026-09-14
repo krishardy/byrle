@@ -1,63 +1,89 @@
 //! An intel store read from a kept snapshot, for `waharoa policy diff --snapshot`.
 //!
 //! Answers what [`PgIntel`](super::postgres::PgIntel) answers, from a snapshot's files
-//! rather than Postgres's latest load. Every source's rows are decoded and indexed by package
-//! when the snapshot is read. See docs/engineering_decisions/snapshot-identity.md.
+//! rather than Postgres's latest load. The snapshot is read for a set of packages given up
+//! front, and only their records are kept: npm's 224,391 packages cost 195 MB, and `policy
+//! diff` asks for the few its audit log lists. Any other package is an error. See
+//! docs/engineering_decisions/snapshot-identity.md.
 //!
 //! A kept snapshot records no streams: its manifest holds only what the id is the digest of.
 //! `taken_at` is when the manifest was last written.
 
+use super::load::Row;
 use super::range::Interval;
 use super::snapshot_dir::{KeptError, SnapshotDir};
-use super::store::{Intel, LoadedSnapshot, Lookup, PackageIntel, Record};
-use std::collections::HashMap;
+use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
+use std::collections::{HashMap, HashSet};
 
-/// One kept snapshot, in memory.
+/// A package, by ecosystem and name.
+pub type Package = (String, String);
+
+/// One kept snapshot, in memory, for the packages it was read for.
 #[derive(Debug)]
 pub struct SnapshotIntel {
     snapshot: LoadedSnapshot,
-    /// By ecosystem and name.
-    packages: HashMap<(String, String), PackageIntel>,
+    /// The packages given to [`SnapshotIntel::read`].
+    read: HashSet<Package>,
+    /// Those of them with an advisory.
+    packages: HashMap<Package, PackageIntel>,
 }
 
 impl SnapshotIntel {
-    /// Read snapshot `id` from `dir`. Every file is checked against its digest.
-    pub fn read(dir: &SnapshotDir, id: &str) -> Result<Self, KeptError> {
+    /// Read snapshot `id` from `dir` for `packages`. Every file is checked against its digest.
+    pub fn read(
+        dir: &SnapshotDir,
+        id: &str,
+        packages: HashSet<Package>,
+    ) -> Result<Self, KeptError> {
         let taken_at = dir.written(id)?;
-        let mut packages = HashMap::new();
+        let mut found = HashMap::new();
         for (source, digest) in dir.sources(id)? {
-            for rows in dir.read_source(&source, &digest)? {
-                // Every column but these two comes from the rows. The loader writes neither.
-                let record = Record {
-                    advisory_id: rows.id.clone(),
-                    aliases: rows.aliases.iter().cloned().collect(),
-                    source: source.clone(),
-                    cvss: rows.cvss,
-                    cvss_source: None,
-                    exploited: false,
-                    malware: rows.malware,
-                };
-                for affected in &rows.affected {
-                    package(&mut packages, id, &affected.ecosystem, &affected.name)
-                        .records
-                        .push((affected.version.clone(), record.clone()));
+            // By index in the advisory table. Aliases are read before affected rows and ranges,
+            // so a record has every alias when it is copied to a package.
+            let mut records: Vec<Record> = Vec::new();
+            dir.read_source(&source, &digest, |row| {
+                match row {
+                    // Every column but `cvss_source` and `exploited` comes from the rows. The
+                    // loader writes neither.
+                    Row::Advisory(rows) => records.push(Record {
+                        advisory_id: rows.id,
+                        aliases: Vec::new(),
+                        source: source.clone(),
+                        cvss: rows.cvss,
+                        cvss_source: None,
+                        exploited: false,
+                        malware: rows.malware,
+                    }),
+                    Row::Alias(i, alias) => records[i].aliases.push(alias),
+                    Row::Affected(i, affected) => {
+                        let package = (affected.ecosystem, affected.name);
+                        if packages.contains(&package) {
+                            entry(&mut found, id, package)
+                                .records
+                                .push((affected.version, records[i].clone()));
+                        }
+                    }
+                    Row::Ranged(i, ranged) => {
+                        let package = (ranged.ecosystem, ranged.name);
+                        if packages.contains(&package) {
+                            let (fixed, last_affected) = ranged.interval.end.columns();
+                            let interval = Interval::from_columns(
+                                ranged.interval.introduced.as_deref(),
+                                fixed,
+                                last_affected,
+                            )
+                            .ok_or_else(|| KeptError::Range {
+                                digest: digest.clone(),
+                                advisory_id: records[i].advisory_id.clone(),
+                            })?;
+                            entry(&mut found, id, package)
+                                .ranges
+                                .push((interval, records[i].clone()));
+                        }
+                    }
                 }
-                for ranged in &rows.ranges {
-                    let (fixed, last_affected) = ranged.interval.end.columns();
-                    let interval = Interval::from_columns(
-                        ranged.interval.introduced.as_deref(),
-                        fixed,
-                        last_affected,
-                    )
-                    .ok_or_else(|| KeptError::Range {
-                        digest: digest.clone(),
-                        advisory_id: rows.id.clone(),
-                    })?;
-                    package(&mut packages, id, &ranged.ecosystem, &ranged.name)
-                        .ranges
-                        .push((interval, record.clone()));
-                }
-            }
+                Ok(())
+            })?;
         }
         Ok(Self {
             snapshot: LoadedSnapshot {
@@ -65,26 +91,32 @@ impl SnapshotIntel {
                 taken_at,
                 streams: Vec::new(),
             },
-            packages,
+            read: packages,
+            packages: found,
         })
     }
 
-    fn answer(&self, ecosystem: &str, name: &str) -> PackageIntel {
-        self.packages
-            .get(&(ecosystem.to_owned(), name.to_owned()))
+    fn answer(&self, ecosystem: &str, name: &str) -> Result<PackageIntel, IntelError> {
+        let package = (ecosystem.to_owned(), name.to_owned());
+        if !self.read.contains(&package) {
+            let (ecosystem, name) = package;
+            return Err(IntelError::Unread { ecosystem, name });
+        }
+        Ok(self
+            .packages
+            .get(&package)
             .cloned()
-            .unwrap_or_else(|| nothing_against(&self.snapshot.digest))
+            .unwrap_or_else(|| nothing_against(&self.snapshot.digest)))
     }
 }
 
-fn package<'a>(
-    packages: &'a mut HashMap<(String, String), PackageIntel>,
+fn entry<'a>(
+    packages: &'a mut HashMap<Package, PackageIntel>,
     id: &str,
-    ecosystem: &str,
-    name: &str,
+    package: Package,
 ) -> &'a mut PackageIntel {
     packages
-        .entry((ecosystem.to_owned(), name.to_owned()))
+        .entry(package)
         .or_insert_with(|| nothing_against(id))
 }
 
@@ -106,7 +138,7 @@ impl Intel for SnapshotIntel {
     ) -> Lookup<'a, Vec<Record>> {
         Box::pin(async move {
             Ok(self
-                .answer(ecosystem, name)
+                .answer(ecosystem, name)?
                 .for_version(version)
                 .into_iter()
                 .cloned()
@@ -118,13 +150,14 @@ impl Intel for SnapshotIntel {
         Box::pin(async move { Ok(Some(self.snapshot.clone())) })
     }
 
-    /// Always `Some`: a snapshot that was read has been loaded.
+    /// `Some` for every package the snapshot was read for: a snapshot that was read has been
+    /// loaded.
     fn package<'a>(
         &'a self,
         ecosystem: &'a str,
         name: &'a str,
     ) -> Lookup<'a, Option<PackageIntel>> {
-        Box::pin(async move { Ok(Some(self.answer(ecosystem, name))) })
+        Box::pin(async move { self.answer(ecosystem, name).map(Some) })
     }
 }
 
@@ -170,6 +203,13 @@ mod tests {
         }
     }
 
+    fn npm(names: &[&str]) -> HashSet<Package> {
+        names
+            .iter()
+            .map(|name| ("npm".to_owned(), name.to_string()))
+            .collect()
+    }
+
     /// Keep `sources` as one snapshot in a directory of its own, and give its id.
     fn kept(label: &str, sources: &[(&str, Vec<Rows>)]) -> (SnapshotDir, String) {
         let dir = SnapshotDir::open(&tempdir(label)).expect("opens");
@@ -197,8 +237,13 @@ mod tests {
             ranges: [ranged("lib", "2.0.0", End::Fixed("2.1.0".to_owned()))].into(),
             ..advisory("GHSA-1")
         };
-        let (dir, id) = kept("intel-answers", &[("osv", vec![malware, vulnerability])]);
-        let intel = SnapshotIntel::read(&dir, &id).expect("reads");
+        // Sorts first, so neither record under test is the advisory at index 0.
+        let first = advisory("GHSA-0");
+        let (dir, id) = kept(
+            "intel-answers",
+            &[("osv", vec![malware, vulnerability, first])],
+        );
+        let intel = SnapshotIntel::read(&dir, &id, npm(&["evil", "lib"])).expect("reads");
 
         let evil = intel
             .package("npm", "evil")
@@ -239,9 +284,14 @@ mod tests {
             ..advisory("MAL-1")
         };
         let (dir, id) = kept("intel-nothing", &[("osv", vec![malware])]);
-        let intel = SnapshotIntel::read(&dir, &id).expect("reads");
+        let wanted = [("npm", "lodash"), ("PyPI", "evil")];
+        let packages = wanted
+            .iter()
+            .map(|(e, n)| (e.to_string(), n.to_string()))
+            .collect();
+        let intel = SnapshotIntel::read(&dir, &id, packages).expect("reads");
 
-        for (ecosystem, name) in [("npm", "lodash"), ("PyPI", "evil")] {
+        for (ecosystem, name) in wanted {
             assert_eq!(
                 intel.package(ecosystem, name).await.expect("answers"),
                 Some(nothing_against(&id)),
@@ -252,6 +302,41 @@ mod tests {
         assert_eq!(snapshot.digest, id);
         assert!(snapshot.streams.is_empty());
         assert_eq!(snapshot.taken_at.len(), "2026-09-13T01:02:03Z".len());
+    }
+
+    #[tokio::test]
+    async fn a_package_the_snapshot_was_not_read_for_is_an_error_and_is_not_kept() {
+        let rows = vec![
+            Rows {
+                affected: [affected("evil", None)].into(),
+                ..advisory("MAL-1")
+            },
+            Rows {
+                affected: [affected("lib", Some("1.0.0"))].into(),
+                // Not SemVer, and not refused: nothing asked for `other`.
+                ranges: [ranged("other", "13.0", End::Open)].into(),
+                ..advisory("GHSA-1")
+            },
+        ];
+        let (dir, id) = kept("intel-unread", &[("osv", rows)]);
+        let intel = SnapshotIntel::read(&dir, &id, npm(&["evil"])).expect("reads");
+
+        let err = intel
+            .package("npm", "lib")
+            .await
+            .expect_err("lib was not read");
+        assert_eq!(
+            err.to_string(),
+            "intel store: the kept snapshot was not read for npm lib"
+        );
+        assert!(matches!(
+            intel.lookup("npm", "lib", "1.0.0").await,
+            Err(IntelError::Unread { .. })
+        ));
+        assert_eq!(
+            intel.packages.keys().collect::<Vec<_>>(),
+            [&("npm".to_owned(), "evil".to_owned())]
+        );
     }
 
     #[tokio::test]
@@ -268,7 +353,7 @@ mod tests {
             "intel-sources",
             &[("osv", vec![ours]), ("other", vec![theirs])],
         );
-        let intel = SnapshotIntel::read(&dir, &id).expect("reads");
+        let intel = SnapshotIntel::read(&dir, &id, npm(&["evil"])).expect("reads");
 
         let mut found: Vec<(String, String)> = intel
             .lookup("npm", "evil", "1.0.0")
@@ -297,7 +382,7 @@ mod tests {
         let digest = load::encode("osv", &rows).digest;
         let (dir, id) = kept("intel-range", &[("osv", rows)]);
 
-        let err = SnapshotIntel::read(&dir, &id).expect_err("13.0 is not SemVer");
+        let err = SnapshotIntel::read(&dir, &id, npm(&["lib"])).expect_err("13.0 is not SemVer");
         assert_eq!(
             err.to_string(),
             format!("the rows {digest} hold a range of GHSA-1 that does not parse")
@@ -307,8 +392,8 @@ mod tests {
     #[test]
     fn a_snapshot_not_in_the_directory_is_an_error() {
         let (dir, _) = kept("intel-absent", &[("osv", Vec::new())]);
-        let err =
-            SnapshotIntel::read(&dir, &load::digest(b"no such snapshot")).expect_err("not kept");
+        let err = SnapshotIntel::read(&dir, &load::digest(b"no such snapshot"), npm(&[]))
+            .expect_err("not kept");
         assert!(matches!(err, KeptError::Io { .. }), "{err:?}");
     }
 }

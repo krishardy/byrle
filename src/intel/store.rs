@@ -74,6 +74,9 @@ pub enum IntelError {
     /// A row refers to an advisory the load did not key. `advisory` is written first and
     /// every other table joins on its key, so this is a loader defect, not bad input.
     Unkeyed { advisory_id: String },
+    /// A package a kept snapshot was not read for. Answering it as nothing known would be
+    /// wrong for any package with an advisory.
+    Unread { ecosystem: String, name: String },
 }
 
 impl std::fmt::Display for IntelError {
@@ -102,6 +105,12 @@ impl std::fmt::Display for IntelError {
                 write!(
                     f,
                     "intel store: a stored range of {advisory_id} does not parse"
+                )
+            }
+            Self::Unread { ecosystem, name } => {
+                write!(
+                    f,
+                    "intel store: the kept snapshot was not read for {ecosystem} {name}"
                 )
             }
         }

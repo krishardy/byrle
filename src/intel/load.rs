@@ -77,32 +77,13 @@ impl Children {
     /// One record's rows, each carrying `key`.
     fn push(&mut self, key: &str, r: &Rows) {
         for ranged in &r.ranges {
-            let (fixed, last_affected) = ranged.interval.end.columns();
-            line(
-                &mut self.range,
-                &[
-                    Some(key),
-                    Some(&ranged.ecosystem),
-                    Some(&ranged.name),
-                    ranged.interval.introduced.as_deref(),
-                    fixed,
-                    last_affected,
-                ],
-            );
+            range_line(&mut self.range, key, ranged);
         }
         for alias in &r.aliases {
-            line(&mut self.alias, &[Some(key), Some(alias)]);
+            alias_line(&mut self.alias, key, alias);
         }
         for a in &r.affected {
-            line(
-                &mut self.affected,
-                &[
-                    Some(key),
-                    Some(&a.ecosystem),
-                    Some(&a.name),
-                    a.version.as_deref(),
-                ],
-            );
+            affected_line(&mut self.affected, key, a);
         }
     }
 }
@@ -206,99 +187,248 @@ impl std::fmt::Display for Undecodable {
 
 impl std::error::Error for Undecodable {}
 
-/// A source and its rows, read back from [`encode`]'s output.
-///
-/// The rows are encoded again and compared with `bytes`, so a reading that differs from what
-/// was written is refused rather than used. `unread_vectors` and `unexpressed` are not in the
-/// encoding and are 0.
-pub fn decode(bytes: &[u8]) -> Result<(String, Vec<Rows>), Undecodable> {
-    let [advisory, alias, affected, range] = TABLES;
-    let mut rest = bytes;
-    let first = take_line(&mut rest)?;
-    if first != FORMAT {
-        return Err(Undecodable(format!(
-            "the first line is `{first}`, not `{FORMAT}`"
-        )));
-    }
-    let header = take_line(&mut rest)?;
-    let source = header
-        .strip_prefix("source ")
-        .ok_or_else(|| Undecodable(format!("`{header}` is not `source <name>`")))?
-        .to_owned();
+/// One row of an [`encode`]d source, in the order the encoding contains them. A child row
+/// carries its advisory's index in the advisory table, from 0.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Row {
+    /// A record with no aliases, affected entries or ranges. Those follow as rows of their own.
+    /// `unread_vectors` and `unexpressed` are not in the encoding and are 0.
+    Advisory(Rows),
+    Alias(usize, String),
+    Affected(usize, Affected),
+    Ranged(usize, Ranged),
+}
 
-    let mut rows = Vec::new();
-    for record in take_table(&mut rest, advisory)? {
-        let [id, _source, summary, cvss, modified, malware] = width(advisory, record)?;
-        let cvss =
-            match cvss {
-                Some(text) => Some(text.parse::<f64>().map_err(|_| {
-                    Undecodable(format!("{advisory}: cvss `{text}` is not a number"))
-                })?),
-                None => None,
-            };
-        let malware = match malware.as_deref() {
-            Some("true") => true,
-            Some("false") => false,
-            other => {
-                return Err(Undecodable(format!(
-                    "{advisory}: malware is `{}`, not true or false",
-                    other.unwrap_or_default()
-                )));
+/// Whether `next` can follow `previous`: advisories in publisher id order, then each table's
+/// rows in position and row order, none repeated. [`Decoder`] reads the tables in order, so
+/// rows of different tables always can.
+fn follows(previous: &Row, next: &Row) -> bool {
+    match (previous, next) {
+        (Row::Advisory(a), Row::Advisory(b)) => a.id < b.id,
+        (Row::Alias(i, a), Row::Alias(j, b)) => (i, a) < (j, b),
+        (Row::Affected(i, a), Row::Affected(j, b)) => (i, a) < (j, b),
+        (Row::Ranged(i, a), Row::Ranged(j, b)) => (i, a) < (j, b),
+        _ => true,
+    }
+}
+
+/// The rows of an [`encode`]d source, read one at a time.
+///
+/// Each row is encoded again and compared with the bytes it was read from, and must follow the
+/// row before it, so a reading that differs from what was written is refused rather than used.
+/// Only one row is decoded at a time, so reading a source costs its bytes and not its rows.
+#[derive(Debug)]
+pub struct Decoder<'a> {
+    source: String,
+    /// The bytes after the table being read.
+    rest: &'a [u8],
+    /// The table being read, as an index into [`TABLES`].
+    table: usize,
+    records: Records<'a>,
+    advisories: usize,
+    previous: Option<Row>,
+    /// Every row is read, or one was refused.
+    done: bool,
+}
+
+impl<'a> Decoder<'a> {
+    /// Read the lines before the first table.
+    pub fn new(bytes: &'a [u8]) -> Result<Self, Undecodable> {
+        let mut rest = bytes;
+        let first = take_line(&mut rest)?;
+        if first != FORMAT {
+            return Err(Undecodable(format!(
+                "the first line is `{first}`, not `{FORMAT}`"
+            )));
+        }
+        let header = take_line(&mut rest)?;
+        let source = header
+            .strip_prefix("source ")
+            .ok_or_else(|| Undecodable(format!("`{header}` is not `source <name>`")))?
+            .to_owned();
+        let records = take_table(&mut rest, TABLES[0])?;
+        Ok(Self {
+            source,
+            rest,
+            table: 0,
+            records,
+            advisories: 0,
+            previous: None,
+            done: false,
+        })
+    }
+
+    /// The source the rows are stored under.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    fn next_row(&mut self) -> Result<Option<Row>, Undecodable> {
+        loop {
+            let table = TABLES[self.table];
+            if let Some(record) = self.records.next() {
+                let (bytes, fields) = record?;
+                let row = self.row(table, fields)?;
+                let mut written = Vec::new();
+                self.write(&row, &mut written);
+                if written != bytes {
+                    return Err(Undecodable(format!(
+                        "{table}: a row does not encode back to the same bytes"
+                    )));
+                }
+                if self.previous.as_ref().is_some_and(|p| !follows(p, &row)) {
+                    return Err(Undecodable(format!(
+                        "{table}: a row is out of order or repeated"
+                    )));
+                }
+                self.previous = Some(row.clone());
+                return Ok(Some(row));
             }
-        };
-        rows.push(Rows {
-            id: given(advisory, id)?,
-            summary,
-            modified,
-            malware,
-            cvss,
-            unread_vectors: 0,
-            aliases: Default::default(),
-            affected: Default::default(),
-            ranges: Default::default(),
-            unexpressed: 0,
-        });
-    }
-    for record in take_table(&mut rest, alias)? {
-        let [position, name] = width(alias, record)?;
-        let name = given(alias, name)?;
-        at(&mut rows, alias, position)?.aliases.insert(name);
-    }
-    for record in take_table(&mut rest, affected)? {
-        let [position, ecosystem, name, version] = width(affected, record)?;
-        let row = Affected {
-            ecosystem: given(affected, ecosystem)?,
-            name: given(affected, name)?,
-            version,
-        };
-        at(&mut rows, affected, position)?.affected.insert(row);
-    }
-    for record in take_table(&mut rest, range)? {
-        let [position, ecosystem, name, introduced, fixed, last_affected] = width(range, record)?;
-        let end = match (fixed, last_affected) {
-            (None, None) => End::Open,
-            (Some(version), None) => End::Fixed(version),
-            (None, Some(version)) => End::LastAffected(version),
-            (Some(_), Some(_)) => {
-                return Err(Undecodable(format!(
-                    "{range}: a row has both fixed and last_affected"
-                )));
+            self.table += 1;
+            match TABLES.get(self.table) {
+                Some(next) => self.records = take_table(&mut self.rest, next)?,
+                None if self.rest.is_empty() => return Ok(None),
+                None => {
+                    return Err(Undecodable(format!(
+                        "{} bytes follow {table}",
+                        self.rest.len()
+                    )));
+                }
             }
-        };
-        let row = Ranged {
-            ecosystem: given(range, ecosystem)?,
-            name: given(range, name)?,
-            interval: Interval { introduced, end },
-        };
-        at(&mut rows, range, position)?.ranges.insert(row);
+        }
     }
-    if !rest.is_empty() {
-        return Err(Undecodable(format!("{} bytes follow {range}", rest.len())));
+
+    /// A record of `table`, the table at `self.table`.
+    fn row(&mut self, table: &str, fields: Vec<Option<String>>) -> Result<Row, Undecodable> {
+        Ok(match self.table {
+            0 => {
+                let [id, _source, summary, cvss, modified, malware] = width(table, fields)?;
+                let cvss = match cvss {
+                    Some(text) => Some(text.parse::<f64>().map_err(|_| {
+                        Undecodable(format!("{table}: cvss `{text}` is not a number"))
+                    })?),
+                    None => None,
+                };
+                let malware = match malware.as_deref() {
+                    Some("true") => true,
+                    Some("false") => false,
+                    other => {
+                        return Err(Undecodable(format!(
+                            "{table}: malware is `{}`, not true or false",
+                            other.unwrap_or_default()
+                        )));
+                    }
+                };
+                self.advisories += 1;
+                Row::Advisory(Rows {
+                    id: given(table, id)?,
+                    summary,
+                    modified,
+                    malware,
+                    cvss,
+                    unread_vectors: 0,
+                    aliases: Default::default(),
+                    affected: Default::default(),
+                    ranges: Default::default(),
+                    unexpressed: 0,
+                })
+            }
+            1 => {
+                let [position, name] = width(table, fields)?;
+                Row::Alias(self.index(table, position)?, given(table, name)?)
+            }
+            2 => {
+                let [position, ecosystem, name, version] = width(table, fields)?;
+                Row::Affected(
+                    self.index(table, position)?,
+                    Affected {
+                        ecosystem: given(table, ecosystem)?,
+                        name: given(table, name)?,
+                        version,
+                    },
+                )
+            }
+            // `advisory_range`, the last table.
+            _ => {
+                let [position, ecosystem, name, introduced, fixed, last_affected] =
+                    width(table, fields)?;
+                let end = match (fixed, last_affected) {
+                    (None, None) => End::Open,
+                    (Some(version), None) => End::Fixed(version),
+                    (None, Some(version)) => End::LastAffected(version),
+                    (Some(_), Some(_)) => {
+                        return Err(Undecodable(format!(
+                            "{table}: a row has both fixed and last_affected"
+                        )));
+                    }
+                };
+                Row::Ranged(
+                    self.index(table, position)?,
+                    Ranged {
+                        ecosystem: given(table, ecosystem)?,
+                        name: given(table, name)?,
+                        interval: Interval { introduced, end },
+                    },
+                )
+            }
+        })
     }
-    if encode(&source, &rows).bytes != bytes {
-        return Err(Undecodable(
-            "the rows do not encode back to the same bytes".to_owned(),
-        ));
+
+    /// The index of the advisory a child row's position, counted from 1, refers to.
+    fn index(&self, table: &str, position: Option<String>) -> Result<usize, Undecodable> {
+        let position = given(table, position)?;
+        position
+            .parse::<usize>()
+            .ok()
+            .and_then(|p| p.checked_sub(1))
+            .filter(|i| *i < self.advisories)
+            .ok_or_else(|| Undecodable(format!("{table}: no advisory at position {position}")))
+    }
+
+    /// `row` as [`encode`] writes it.
+    fn write(&self, row: &Row, out: &mut Vec<u8>) {
+        let key = |index: usize| (index + 1).to_string();
+        match row {
+            Row::Advisory(r) => advisory_line(out, &self.source, r),
+            Row::Alias(i, alias) => alias_line(out, &key(*i), alias),
+            Row::Affected(i, a) => affected_line(out, &key(*i), a),
+            Row::Ranged(i, r) => range_line(out, &key(*i), r),
+        }
+    }
+}
+
+impl Iterator for Decoder<'_> {
+    type Item = Result<Row, Undecodable>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        let next = self.next_row().transpose();
+        self.done = !matches!(next, Some(Ok(_)));
+        next
+    }
+}
+
+/// A source and its rows, collected from a [`Decoder`].
+#[cfg(test)]
+pub fn decode(bytes: &[u8]) -> Result<(String, Vec<Rows>), Undecodable> {
+    let decoder = Decoder::new(bytes)?;
+    let source = decoder.source().to_owned();
+    let mut rows: Vec<Rows> = Vec::new();
+    for row in decoder {
+        match row? {
+            Row::Advisory(r) => rows.push(r),
+            Row::Alias(i, alias) => {
+                rows[i].aliases.insert(alias);
+            }
+            Row::Affected(i, a) => {
+                rows[i].affected.insert(a);
+            }
+            Row::Ranged(i, r) => {
+                rows[i].ranges.insert(r);
+            }
+        }
     }
     Ok((source, rows))
 }
@@ -314,12 +444,12 @@ fn take_line<'a>(rest: &mut &'a [u8]) -> Result<&'a str, Undecodable> {
 }
 
 /// A `table <bytes>` line and the records in the bytes after it.
-fn take_table(rest: &mut &[u8], table: &str) -> Result<Vec<Vec<Option<String>>>, Undecodable> {
+fn take_table<'a>(rest: &mut &'a [u8], table: &'static str) -> Result<Records<'a>, Undecodable> {
     let header = take_line(rest)?;
     let length = header
         .strip_prefix(table)
         .and_then(|n| n.strip_prefix(' '))
-        .and_then(|n| n.parse::<usize>().ok())
+        .and_then(|n| n.parse::<usize>().ok().filter(|l| l.to_string() == n))
         .ok_or_else(|| Undecodable(format!("`{header}` is not `{table} <bytes>`")))?;
     if length > rest.len() {
         return Err(Undecodable(format!(
@@ -329,54 +459,69 @@ fn take_table(rest: &mut &[u8], table: &str) -> Result<Vec<Vec<Option<String>>>,
     }
     let (csv, after) = rest.split_at(length);
     *rest = after;
-    records(table, csv)
+    Ok(Records { table, csv, i: 0 })
 }
 
-/// Each record's fields, as [`line`] writes them: an empty field is `None`, and a quoted one
-/// is its text with doubled quotes undone. Anything else is refused.
-fn records(table: &str, csv: &[u8]) -> Result<Vec<Vec<Option<String>>>, Undecodable> {
-    let refuse = |at: usize, what: &str| Undecodable(format!("{table}: {what} at byte {at}"));
-    let (mut out, mut i) = (Vec::new(), 0);
-    while i < csv.len() {
+/// Each record's bytes and fields, as [`line`] writes them: an empty field is `None`, and a
+/// quoted one is its text with doubled quotes undone. Anything else is refused.
+#[derive(Debug)]
+struct Records<'a> {
+    table: &'static str,
+    csv: &'a [u8],
+    /// Where the next record starts.
+    i: usize,
+}
+
+impl<'a> Iterator for Records<'a> {
+    type Item = Result<(&'a [u8], Vec<Option<String>>), Undecodable>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        (self.i < self.csv.len()).then(|| self.record())
+    }
+}
+
+impl<'a> Records<'a> {
+    fn record(&mut self) -> Result<(&'a [u8], Vec<Option<String>>), Undecodable> {
+        let (table, csv, start) = (self.table, self.csv, self.i);
+        let refuse = |at: usize, what: &str| Undecodable(format!("{table}: {what} at byte {at}"));
+        let i = &mut self.i;
         let mut fields = Vec::new();
         loop {
-            let field = if csv.get(i) == Some(&b'"') {
+            let field = if csv.get(*i) == Some(&b'"') {
                 let mut value = Vec::new();
-                i += 1;
+                *i += 1;
                 loop {
-                    match (csv.get(i).copied(), csv.get(i + 1).copied()) {
+                    match (csv.get(*i).copied(), csv.get(*i + 1).copied()) {
                         (Some(b'"'), Some(b'"')) => {
                             value.push(b'"');
-                            i += 2;
+                            *i += 2;
                         }
                         (Some(b'"'), _) => {
-                            i += 1;
+                            *i += 1;
                             break;
                         }
                         (Some(byte), _) => {
                             value.push(byte);
-                            i += 1;
+                            *i += 1;
                         }
-                        (None, _) => return Err(refuse(i, "a quoted value does not end")),
+                        (None, _) => return Err(refuse(*i, "a quoted value does not end")),
                     }
                 }
-                Some(String::from_utf8(value).map_err(|_| refuse(i, "a value is not UTF-8"))?)
+                Some(String::from_utf8(value).map_err(|_| refuse(*i, "a value is not UTF-8"))?)
             } else {
                 None
             };
             fields.push(field);
-            match csv.get(i) {
-                Some(b',') => i += 1,
+            match csv.get(*i) {
+                Some(b',') => *i += 1,
                 Some(b'\n') => {
-                    i += 1;
-                    break;
+                    *i += 1;
+                    return Ok((&csv[start..*i], fields));
                 }
-                _ => return Err(refuse(i, "a field is neither empty nor quoted")),
+                _ => return Err(refuse(*i, "a field is neither empty nor quoted")),
             }
         }
-        out.push(fields);
     }
-    Ok(out)
 }
 
 fn width<const N: usize>(
@@ -395,42 +540,61 @@ fn given(table: &str, field: Option<String>) -> Result<String, Undecodable> {
     field.ok_or_else(|| Undecodable(format!("{table}: a required value is empty")))
 }
 
-/// The record a child row's position refers to, counted from 1.
-fn at<'a>(
-    rows: &'a mut [Rows],
-    table: &str,
-    position: Option<String>,
-) -> Result<&'a mut Rows, Undecodable> {
-    let position = given(table, position)?;
-    let index = position
-        .parse::<usize>()
-        .ok()
-        .and_then(|p| p.checked_sub(1))
-        .filter(|i| *i < rows.len())
-        .ok_or_else(|| Undecodable(format!("{table}: no advisory at position {position}")))?;
-    Ok(&mut rows[index])
-}
-
 /// CSV for `advisory`.
 pub fn advisories<'a>(source: &str, rows: impl IntoIterator<Item = &'a Rows>) -> Vec<u8> {
     let mut out = Vec::new();
     for r in rows {
-        // `f64`'s `Display` is the shortest text that reads back as the same number.
-        let cvss = r.cvss.map(|c| c.to_string());
-        let modified = r.modified.as_deref().map(timestamp);
-        line(
-            &mut out,
-            &[
-                Some(&r.id),
-                Some(source),
-                r.summary.as_deref(),
-                cvss.as_deref(),
-                modified.as_deref(),
-                Some(if r.malware { "true" } else { "false" }),
-            ],
-        );
+        advisory_line(&mut out, source, r);
     }
     out
+}
+
+fn advisory_line(out: &mut Vec<u8>, source: &str, r: &Rows) {
+    // `f64`'s `Display` is the shortest text that reads back as the same number.
+    let cvss = r.cvss.map(|c| c.to_string());
+    let modified = r.modified.as_deref().map(timestamp);
+    line(
+        out,
+        &[
+            Some(&r.id),
+            Some(source),
+            r.summary.as_deref(),
+            cvss.as_deref(),
+            modified.as_deref(),
+            Some(if r.malware { "true" } else { "false" }),
+        ],
+    );
+}
+
+fn alias_line(out: &mut Vec<u8>, key: &str, alias: &str) {
+    line(out, &[Some(key), Some(alias)]);
+}
+
+fn affected_line(out: &mut Vec<u8>, key: &str, a: &Affected) {
+    line(
+        out,
+        &[
+            Some(key),
+            Some(&a.ecosystem),
+            Some(&a.name),
+            a.version.as_deref(),
+        ],
+    );
+}
+
+fn range_line(out: &mut Vec<u8>, key: &str, ranged: &Ranged) {
+    let (fixed, last_affected) = ranged.interval.end.columns();
+    line(
+        out,
+        &[
+            Some(key),
+            Some(&ranged.ecosystem),
+            Some(&ranged.name),
+            ranged.interval.introduced.as_deref(),
+            fixed,
+            last_affected,
+        ],
+    );
 }
 
 /// `value` in UTC, rounded to the microsecond.
@@ -777,7 +941,62 @@ mod tests {
                     "",
                     "",
                 ]),
-                "the rows do not encode back to the same bytes",
+                "advisory: a row is out of order or repeated",
+            ),
+            (
+                framed([&format!("{row}{row}"), "", "", ""]),
+                "advisory: a row is out of order or repeated",
+            ),
+            (
+                framed([row, "\"1\",\"CVE-b\"\n\"1\",\"CVE-a\"\n", "", ""]),
+                "advisory_alias: a row is out of order or repeated",
+            ),
+            (
+                framed([row, "\"1\",\"CVE-a\"\n\"1\",\"CVE-a\"\n", "", ""]),
+                "advisory_alias: a row is out of order or repeated",
+            ),
+            (
+                framed([row, "", "\"1\",\"npm\",\"a\",\n\"1\",\"npm\",\"a\",\n", ""]),
+                "advisory_affected: a row is out of order or repeated",
+            ),
+            (
+                framed([row, "", "\"1\",\"npm\",\"b\",\n\"1\",\"npm\",\"a\",\n", ""]),
+                "advisory_affected: a row is out of order or repeated",
+            ),
+            (
+                framed([
+                    row,
+                    "",
+                    "",
+                    "\"1\",\"npm\",\"a\",,\"1.0.0\",\n\"1\",\"npm\",\"a\",,\"1.0.0\",\n",
+                ]),
+                "advisory_range: a row is out of order or repeated",
+            ),
+            (
+                framed([
+                    row,
+                    "",
+                    "",
+                    "\"1\",\"npm\",\"a\",,\"2.0.0\",\n\"1\",\"npm\",\"a\",,\"1.0.0\",\n",
+                ]),
+                "advisory_range: a row is out of order or repeated",
+            ),
+            (
+                framed(["\"GHSA-1\",\"osv\",,\"7.50\",,\"true\"\n", "", "", ""]),
+                "advisory: a row does not encode back to the same bytes",
+            ),
+            (
+                framed(["\"GHSA-1\",\"ghsa\",,,,\"true\"\n", "", "", ""]),
+                "advisory: a row does not encode back to the same bytes",
+            ),
+            (
+                framed([row, "\"01\",\"CVE-a\"\n", "", ""]),
+                "advisory_alias: a row does not encode back to the same bytes",
+            ),
+            (
+                good.replacen("advisory_range 0", "advisory_range +0", 1)
+                    .into_bytes(),
+                "is not `advisory_range <bytes>`",
             ),
         ];
         for (bytes, reason) in cases {
