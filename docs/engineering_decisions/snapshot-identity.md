@@ -2,7 +2,7 @@
 
 - **Status:** Implemented 2026-09-14: the id, the snapshot files `waharoa refresh` writes, and
   `policy diff --snapshot`, which reads them. Import is not built. `load::encode`,
-  `load::decode`, `load::manifest` and `load::snapshot_id` in `src/intel/load.rs`,
+  `load::Decoder`, `load::manifest` and `load::snapshot_id` in `src/intel/load.rs`,
   `PgIntel::replace_encoded` in `src/intel/postgres.rs`, `intel_source` in
   `migrations/0001_intel.sql` (rewritten), `SnapshotDir` in `src/intel/snapshot_dir.rs`,
   `SnapshotIntel` in `src/intel/snapshot_intel.rs`.
@@ -141,12 +141,17 @@ answers every package from it instead of Postgres. `WAHAROA_DATABASE_URL` is not
 |---|---|
 | Read `<hex>.snapshot` | its contents hash to `<id>` |
 | Read each `<hex>.rows.gz` it names | the decompressed contents hash to the digest in the name |
-| `load::decode` the rows | the file holds the source the manifest names, and the decoded rows encode back to the same bytes |
-| Build a `SnapshotIntel` | every stored range parses as SemVer |
+| `load::Decoder` reads the rows one at a time | the file contains the source the manifest lists; each row encodes back to the bytes it was read from and follows the row before it |
+| `SnapshotIntel` keeps the records of the packages it is read for | every stored range of those packages parses as SemVer |
 
-Decoding to `Rows` and encoding again is what makes a reader that differs from the writer
-fail rather than answer. `SnapshotIntel` holds every package's `PackageIntel` in memory, so
-one package costs one hash lookup, as `PgIntel::package` costs one query.
+Encoding each row again and comparing it with its bytes is what makes a reader that differs
+from the writer fail rather than answer. Requiring each row to follow the one before it, by
+publisher id and then by position and row, refuses a row repeated or moved, which the
+comparison of one row alone accepts.
+
+One row is decoded at a time, and only the records of the packages asked for are kept.
+`policy diff` reads its audit log before the snapshot and asks for the packages the log lists.
+A package the snapshot was not read for is `IntelError::Unread`, not an empty answer.
 
 The reader takes no lock. A refresh writes a new file under `.partial` and renames it, and
 never changes a file in place, so a read cannot see half a file, and a file that does not hash
@@ -236,7 +241,8 @@ left-pad 1.3.0), debug build:
 | Store | Report | Exit | Time | Peak RSS |
 |---|---|---|---|---|
 | Postgres | `nothing moved` | 0 | 0.5s | 28 MB |
-| `--snapshot`, `WAHAROA_DATABASE_URL` unset | `nothing moved`, identical | 0 | 3.8s | 468 MB |
+| `--snapshot`, `WAHAROA_DATABASE_URL` unset, every package read | `nothing moved`, identical | 0 | 3.8s | 468 MB |
+| `--snapshot`, `WAHAROA_DATABASE_URL` unset, the 4 packages read | `nothing moved`, identical | 0 | 3.0s | 103 MB |
 
 Both policies had an effective `max_cvss` under 7.9, so nothing moved. With `max_cvss: 7.0`
 against `max_cvss: 9.0`, `--snapshot` gives:
@@ -260,8 +266,19 @@ Refused, each exit 2:
 --snapshot sha256:0000...: .../0000...0000.snapshot: No such file or directory (os error 2)
 ```
 
-The whole snapshot is held in memory: 457 MB for npm. A command that reads a few packages
-pays for all 224,391.
+Reading npm's snapshot, release build, one read per process. A temporary example measured
+peak RSS and, with a counting allocator, the bytes allocated:
+
+| Read | Peak RSS |
+|---|---|
+| Every record decoded to `Rows`, then encoded again whole | 462 MB |
+| The same, not encoded again | 381 MB |
+| One row at a time, every package kept | 304 MB, 195 MB of it the packages |
+| One row at a time, the 4 packages kept | 98 MB |
+| The same, the gunzipped buffer reserved at the length in the gzip trailer, at most 16 times the file | 84 MB |
+
+The gunzipped rows, 34,681,127 bytes, are in memory while they are decoded. Without the
+reservation, the buffer grows to 67 MB while holding 35 MB.
 
 Each mutation below was caught:
 
@@ -293,7 +310,8 @@ The snapshot directory, each caught:
 | `.partial` never renamed | 6 tests, `a_load_is_kept_as_rows_named_by_digest_and_a_snapshot_named_by_id` among them |
 | `WAHAROA_SNAPSHOT_LIMIT=0` accepted | `a_value_that_does_not_parse_is_an_error_naming_the_variable_and_the_value` |
 
-Reading a kept snapshot, each caught:
+Reading a kept snapshot, when every record was decoded to `Rows` and every package kept, each
+caught:
 
 | Mutation | Caught by |
 |---|---|
@@ -309,3 +327,28 @@ Reading a kept snapshot, each caught:
 | Ranges dropped | the same |
 | A listed version read as every version | the same |
 | A package nothing is against given no snapshot id | `a_package_nothing_is_against_is_an_empty_answer_naming_the_snapshot` |
+
+Reading one row at a time for the packages asked for, each caught:
+
+| Mutation | Caught by |
+|---|---|
+| No row encoded again and compared with its bytes | `bytes_that_are_not_an_encoding_are_refused_with_the_reason` |
+| No order check | the same |
+| A repeated advisory accepted | the same |
+| A repeated alias accepted | the same |
+| Affected rows out of order accepted | the same |
+| Ranges out of order accepted | the same |
+| A repeated range accepted | the same |
+| A table length `encode` does not write, such as `+0`, accepted | the same |
+| Bytes after `advisory_range` accepted | the same |
+| Position 0 read as position 1 | the same |
+| Positions encoded again from 0 | 8 tests, `decoding_an_encoding_gives_back_the_rows` among them |
+| Rows of another source accepted | `rows_of_another_source_than_the_snapshot_names_are_refused` |
+| Every affected package kept | `a_package_the_snapshot_was_not_read_for_is_an_error_and_is_not_kept` |
+| Every range parsed and kept | the same |
+| A package not read answered as nothing known | the same |
+| Aliases dropped | `a_kept_snapshot_answers_each_package_from_its_rows` |
+| A range given the advisory at index 0 | the same |
+
+`policy diff` builds the package set in `src/main.rs`, which no test runs. The live run above
+reads the snapshot for the 4 packages and gives the report Postgres gives.
