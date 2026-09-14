@@ -153,7 +153,7 @@ which no test runs. The runs above are their evidence.
 
 Before this, a packument that could not be read was skipped and not counted, and a publish-time
 read that failed made `cooldown_days` unenforced on both sides, so it did not move. With
-`WAHAROA_UPSTREAM` set to `nope`, `ftp://x` or `http://`, which it accepts as text, every read
+`WAHAROA_UPSTREAM` set to `nope`, `ftp://x` or `http://`, which it then accepted as text, every read
 failed and the run printed `0 packages evaluated` and `nothing moved`, exit 0.
 
 Now `npm::fetched` says which request failed and how, `Report::unread` counts it, and `Report::judged_none` is
@@ -191,4 +191,5 @@ runs above are their evidence. Each mutation below was caught:
 | A failed request called an unreadable body | the same |
 | A read value refused | the same |
 
-`WAHAROA_UPSTREAM` being accepted without a URL check is in TODO.md.
+`WAHAROA_UPSTREAM` is now refused unless it is an http or https URL with a host, so `nope`
+exits 4 before any read. See [environment-variables](environment-variables.md).
