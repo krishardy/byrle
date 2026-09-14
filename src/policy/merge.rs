@@ -74,7 +74,8 @@ impl<'a> From<&'a SetBlock> for RuleValues<'a> {
             install_scripts: s.install_scripts,
             // An empty list is not an exception, so it reads as unset rather than as an
             // exception that ignores nothing.
-            vuln_advisory_ids: (!s.vuln_advisory_ids.is_empty()).then_some(s.vuln_advisory_ids.as_slice()),
+            vuln_advisory_ids: (!s.vuln_advisory_ids.is_empty())
+                .then_some(s.vuln_advisory_ids.as_slice()),
         }
     }
 }
@@ -180,7 +181,10 @@ mod tests {
     #[test]
     fn naming_an_advisory_to_ignore_is_always_a_loosening() {
         assert_eq!(
-            outcome(&set("vuln_advisory_ids: [\"CVE-2024-1234\"]"), Rule::VulnAdvisoryIds),
+            outcome(
+                &set("vuln_advisory_ids: [\"CVE-2024-1234\"]"),
+                Rule::VulnAdvisoryIds
+            ),
             Strictness::Looser
         );
     }

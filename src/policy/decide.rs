@@ -359,8 +359,7 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             };
             if waited(policy.cooldown_days) {
                 Outcome::Passed
-            } else if let Some(entry) = entry.filter(|_| waited(cooldown_required(policy, entry)))
-            {
+            } else if let Some(entry) = entry.filter(|_| waited(cooldown_required(policy, entry))) {
                 // Too young for the global wait and old enough for the exception's, so the
                 // exception is what let it through: the flow chart's
                 // `RECORD_cooldown_EXCEPTED`.
@@ -612,7 +611,10 @@ mod tests {
         };
 
         assert_eq!(
-            *outcome(&decide(&policy("cooldown_days: 0"), &facts, date(2026, 9, 13)), Check::CooldownDays),
+            *outcome(
+                &decide(&policy("cooldown_days: 0"), &facts, date(2026, 9, 13)),
+                Check::CooldownDays
+            ),
             Outcome::Passed
         );
     }
@@ -829,7 +831,10 @@ mod tests {
         assert!(d.delivered());
 
         assert_eq!(
-            *outcome(&decide(&with("cooldown_days: 5"), &young, TODAY), Check::CooldownDays),
+            *outcome(
+                &decide(&with("cooldown_days: 5"), &young, TODAY),
+                Check::CooldownDays
+            ),
             Outcome::Failed(Action::Quarantine),
             "shortened, and not enough"
         );
@@ -838,7 +843,10 @@ mod tests {
             ..clean()
         };
         assert_eq!(
-            *outcome(&decide(&with("cooldown_days: 0"), &old, TODAY), Check::CooldownDays),
+            *outcome(
+                &decide(&with("cooldown_days: 0"), &old, TODAY),
+                Check::CooldownDays
+            ),
             Outcome::Passed,
             "old enough without it, so it excused nothing"
         );

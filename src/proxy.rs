@@ -46,6 +46,7 @@
 //! stays acceptable, because for every client except npm it means the bytes are never
 //! seen.
 
+use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
 use crate::env::{
@@ -58,14 +59,12 @@ use crate::http::{
 };
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
-use std::collections::{BTreeSet, HashMap, HashSet};
-use crate::audit::{self, AuditLog};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
-use crate::policy::{Policy, enforce, facts};
 use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
     RequestTarget,
 };
+use crate::policy::{Policy, enforce, facts};
 use crate::record::PackumentDetail;
 use crate::refusal::RefusalStatus;
 use crate::store::{Lookup, RecordStore};
@@ -80,6 +79,7 @@ use axum::{
 use bytes::{Bytes, BytesMut};
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -3004,7 +3004,8 @@ mod tests {
     #[tokio::test]
     async fn the_only_4xx_this_proxy_produces_is_a_policy_refusal() {
         let addr = crate::test_support::closing_server().await;
-        let dead = serve(Proxy::new(reqwest::Client::new(), format!("http://{addr}")).router()).await;
+        let dead =
+            serve(Proxy::new(reqwest::Client::new(), format!("http://{addr}")).router()).await;
 
         // Every request kind, because a tarball looks its packument up first and so has
         // a second way to meet an upstream that sends no response.

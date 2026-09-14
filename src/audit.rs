@@ -124,7 +124,10 @@ impl Event {
             removed: Vec::new(),
             checks: decided_against(decision),
             exceptions_used: decision.exceptions_used(),
-            unenforceable: unenforceable.iter().map(|u| u.check.as_str().to_owned()).collect(),
+            unenforceable: unenforceable
+                .iter()
+                .map(|u| u.check.as_str().to_owned())
+                .collect(),
             intel_snapshot: None,
         }
     }
@@ -154,7 +157,10 @@ impl Event {
             removed,
             checks,
             exceptions_used: Vec::new(),
-            unenforceable: unenforceable.iter().map(|u| u.check.as_str().to_owned()).collect(),
+            unenforceable: unenforceable
+                .iter()
+                .map(|u| u.check.as_str().to_owned())
+                .collect(),
             intel_snapshot: None,
         }
     }
@@ -259,8 +265,8 @@ impl AuditLog {
 mod tests {
     use super::*;
     use crate::policy::Policy;
-    use crate::test_support::tempdir;
     use crate::policy::decide::{Facts, Intel, decide};
+    use crate::test_support::tempdir;
 
     fn facts() -> Facts {
         Facts {
@@ -308,9 +314,7 @@ mod tests {
             "npm",
             "lodash",
             "4.17.21",
-            &decision(
-                "version: 1\ndenials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: t\n",
-            ),
+            &decision("version: 1\ndenials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: t\n"),
             &[],
         );
         let json = line(&event);
@@ -348,7 +352,13 @@ mod tests {
             check: crate::policy::decide::Check::CooldownDays,
             why: "the abbreviated packument carries no publish times",
         }];
-        let event = Event::pinned("npm", "lodash", "4.17.21", &decision("version: 1"), &unenforceable);
+        let event = Event::pinned(
+            "npm",
+            "lodash",
+            "4.17.21",
+            &decision("version: 1"),
+            &unenforceable,
+        );
 
         assert_eq!(
             field(&line(&event), "unenforceable"),
@@ -367,9 +377,19 @@ mod tests {
         let young = decision("version: 1\ncooldown_days: 36500");
         assert_eq!(young.action(), crate::policy::Action::Quarantine);
 
-        let json = line(&Event::pinned("npm", "lodash", "4.17.21", &young, &unenforceable));
+        let json = line(&Event::pinned(
+            "npm",
+            "lodash",
+            "4.17.21",
+            &young,
+            &unenforceable,
+        ));
         assert_eq!(field(&json, "action"), "allow");
-        assert!(json.get("checks").is_none_or(|c| c == &serde_json::json!([])), "{json}");
+        assert!(
+            json.get("checks")
+                .is_none_or(|c| c == &serde_json::json!([])),
+            "{json}"
+        );
     }
 
     #[test]
@@ -385,8 +405,14 @@ mod tests {
         let json = line(&event);
 
         assert_eq!(field(&json, "path"), "resolution");
-        assert_eq!(field(&json, "removed"), &serde_json::json!(["2.1.3", "2.1.2"]));
-        assert_eq!(field(&json, "checks"), &serde_json::json!(["cooldown_days"]));
+        assert_eq!(
+            field(&json, "removed"),
+            &serde_json::json!(["2.1.3", "2.1.2"])
+        );
+        assert_eq!(
+            field(&json, "checks"),
+            &serde_json::json!(["cooldown_days"])
+        );
         assert!(json.get("version").is_none(), "a resolution decides many");
     }
 
@@ -479,7 +505,8 @@ not json
     /// A line written before a field existed still reads.
     #[test]
     fn a_line_missing_a_field_this_build_knows_about_still_reads() {
-        let log = "{\"path\":\"pinned\",\"ecosystem\":\"npm\",\"name\":\"a\",\"version\":\"1.0.0\"}";
+        let log =
+            "{\"path\":\"pinned\",\"ecosystem\":\"npm\",\"name\":\"a\",\"version\":\"1.0.0\"}";
 
         assert_eq!(packages(log).len(), 1);
     }
@@ -496,8 +523,20 @@ not json
         let path = dir.join("audit.jsonl");
         let log = AuditLog::open(&path).expect("should open");
 
-        log.write(&Event::pinned("npm", "a", "1.0.0", &decision("version: 1"), &[]));
-        log.write(&Event::pinned("npm", "b", "2.0.0", &decision("version: 1"), &[]));
+        log.write(&Event::pinned(
+            "npm",
+            "a",
+            "1.0.0",
+            &decision("version: 1"),
+            &[],
+        ));
+        log.write(&Event::pinned(
+            "npm",
+            "b",
+            "2.0.0",
+            &decision("version: 1"),
+            &[],
+        ));
 
         let written = std::fs::read_to_string(&path).expect("should read");
         assert!(written.ends_with('\n'));
@@ -516,7 +555,13 @@ not json
 
         AuditLog::open(&path)
             .expect("should open")
-            .write(&Event::pinned("npm", "a", "1.0.0", &decision("version: 1"), &[]));
+            .write(&Event::pinned(
+                "npm",
+                "a",
+                "1.0.0",
+                &decision("version: 1"),
+                &[],
+            ));
 
         let written = std::fs::read_to_string(&path).expect("should read");
         assert_eq!(written.lines().count(), 2);

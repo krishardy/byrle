@@ -18,6 +18,13 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 failed=0
 note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
+note "rust (rustfmt)"
+# Checked, not applied, so a lint run never edits the tree. `cargo fmt` applies it.
+if ! cargo fmt --manifest-path "$repo_root/Cargo.toml" --check; then
+    echo "not formatted: run 'cargo fmt'"
+    failed=1
+fi
+
 note "rust (clippy)"
 # --all-targets matters: tests and examples are where unchecked unwraps and dead
 # helpers accumulate, and they are excluded by default.

@@ -631,7 +631,11 @@ mod tests {
         let rows = scored(&severity("CVSS_V3", &twice));
         assert_eq!((rows.cvss, rows.unread_vectors), (None, 1));
         let rows = scored(&severity("CVSS_V4", "CVSS:2.0/AV:N"));
-        assert_eq!((rows.cvss, rows.unread_vectors), (None, 1), "unknown prefix");
+        assert_eq!(
+            (rows.cvss, rows.unread_vectors),
+            (None, 1),
+            "unknown prefix"
+        );
     }
 
     #[test]

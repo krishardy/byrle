@@ -128,7 +128,12 @@ fn when(value: &str) -> Result<When, String> {
 /// other command line exits what clap gives: 0 for help and version, 2 for a refusal.
 pub fn exit_code(error: &clap::Error, args: &[std::ffi::OsString]) -> u8 {
     let code = u8::try_from(error.exit_code()).unwrap_or(crate::policy::diff::ERROR);
-    let words: Vec<&str> = args.iter().skip(1).take(2).filter_map(|a| a.to_str()).collect();
+    let words: Vec<&str> = args
+        .iter()
+        .skip(1)
+        .take(2)
+        .filter_map(|a| a.to_str())
+        .collect();
     if code != 0 && words == ["policy", "diff"] {
         crate::policy::diff::ERROR
     } else {

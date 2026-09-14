@@ -158,11 +158,7 @@ mod tests {
     }
 
     fn full() -> PackageRecord {
-        record(
-            "lodash-4.17.21.full.json",
-            PackumentDetail::Full,
-            "4.17.21",
-        )
+        record("lodash-4.17.21.full.json", PackumentDetail::Full, "4.17.21")
     }
 
     fn policy(yaml: &str) -> Policy {

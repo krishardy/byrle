@@ -170,7 +170,10 @@ impl Finding {
     /// behaviour to be explicit rather than emergent: without it, two streams disagreeing
     /// would resolve to whichever was read last.
     pub fn enriched_by(mut self, enrichments: &[Enrichment]) -> Self {
-        for e in enrichments.iter().filter(|e| e.advisory_id == self.advisory_id) {
+        for e in enrichments
+            .iter()
+            .filter(|e| e.advisory_id == self.advisory_id)
+        {
             if let Some(score) = &e.score
                 && Score::replaces(self.score.as_ref().map(Score::cvss), score.cvss)
             {
@@ -475,8 +478,8 @@ mod tests {
 
     #[test]
     fn an_enrichment_supplies_a_score_the_matching_stream_did_not_have() {
-        let finding =
-            Finding::new("osv", "CVE-1").enriched_by(&[Enrichment::new("CVE-1").with_score("nvd", 4.2)]);
+        let finding = Finding::new("osv", "CVE-1")
+            .enriched_by(&[Enrichment::new("CVE-1").with_score("nvd", 4.2)]);
 
         assert_eq!(finding.score.as_ref().unwrap().cvss(), 4.2);
         assert_eq!(finding.score.as_ref().unwrap().source, "nvd");
@@ -494,7 +497,9 @@ mod tests {
 
     #[test]
     fn a_malformed_score_is_dropped_and_the_finding_survives() {
-        let finding = Finding::new("osv", "CVE-1").with_score(7.5).with_score(f64::NAN);
+        let finding = Finding::new("osv", "CVE-1")
+            .with_score(7.5)
+            .with_score(f64::NAN);
         assert_eq!(finding.score.unwrap().cvss(), 7.5);
 
         // A finding whose only score is malformed is still a finding.
@@ -502,7 +507,10 @@ mod tests {
         assert_eq!(finding.advisory_id, "CVE-1");
         assert_eq!(finding.score, None);
 
-        assert_eq!(Enrichment::new("CVE-1").with_score("nvd", f64::NAN).score, None);
+        assert_eq!(
+            Enrichment::new("CVE-1").with_score("nvd", f64::NAN).score,
+            None
+        );
     }
 
     #[test]
@@ -556,7 +564,8 @@ mod tests {
 
     #[test]
     fn holding_a_capability_for_one_ecosystem_does_not_grant_it_for_another() {
-        let caps = Capabilities::new().grant("nvd", "maven", &[Capability::Match, Capability::Enrich]);
+        let caps =
+            Capabilities::new().grant("nvd", "maven", &[Capability::Match, Capability::Enrich]);
 
         assert!(caps.has("nvd", "maven", Capability::Match));
         assert!(!caps.has("nvd", "npm", Capability::Match));
@@ -592,7 +601,8 @@ mod tests {
 
     #[test]
     fn an_ecosystem_served_with_no_stream_at_all_is_a_gap() {
-        let caps = Capabilities::new().grant("osv", "npm", &[Capability::Match, Capability::Malware]);
+        let caps =
+            Capabilities::new().grant("osv", "npm", &[Capability::Match, Capability::Malware]);
 
         let gaps = caps.gaps(&["npm", "pypi"]);
         assert_eq!(gaps.len(), 1);

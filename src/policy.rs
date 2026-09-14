@@ -46,7 +46,9 @@ pub const SUPPORTED_VERSION: u32 = 1;
 /// never land a day apart across midnight, and the proxy, `explain`, `policy check` and
 /// `policy diff` judge an expiry on the same day. See `policy::facts`.
 pub fn today() -> jiff::civil::Date {
-    jiff::Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date()
+    jiff::Timestamp::now()
+        .to_zoned(jiff::tz::TimeZone::UTC)
+        .date()
 }
 
 /// Shipped defaults for the four settings, used when a policy does not name one.
@@ -676,13 +678,24 @@ mod tests {
                 "match",
                 "packages:\n  - match: { ecosystem: npm, unknown: x }\n    set: {}\n    \
                  reason: r\n",
-                &["ecosystem", "name", "purl", "version", "has_install_scripts"],
+                &[
+                    "ecosystem",
+                    "name",
+                    "purl",
+                    "version",
+                    "has_install_scripts",
+                ],
             ),
             (
                 "set",
                 "packages:\n  - match: { ecosystem: npm, name: x }\n    set: { unknown: 1 }\n    \
                  reason: r\n",
-                &["cooldown_days", "kev", "install_scripts", "vuln_advisory_ids"],
+                &[
+                    "cooldown_days",
+                    "kev",
+                    "install_scripts",
+                    "vuln_advisory_ids",
+                ],
             ),
         ];
         for (level, body, keys) in cases {
@@ -800,7 +813,8 @@ mod tests {
                 .unwrap_err(),
             PolicyError::Invalid(_)
         ));
-        let policy = parse("denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: malware\n").unwrap();
+        let policy =
+            parse("denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: malware\n").unwrap();
         assert_eq!(policy.denials[0].reason, "malware");
     }
 
