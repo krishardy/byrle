@@ -22,10 +22,11 @@
 //!
 //! # Exit bits
 //!
-//! The exit code is the OR of [`LOOSENED`] and [`TIGHTENED`], so a scheduled run can see a
-//! lapsing entry tighten a package while a CI gate still fails only on a loosening.
-//! [`ERROR`] stops the run and is never OR-ed with the others. See
-//! docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
+//! The exit code is the OR of [`LOOSENED`], [`TIGHTENED`] and [`ERROR`], so a scheduled run can
+//! see a lapsing entry tighten a package while a CI gate still fails only on a loosening.
+//! [`ERROR`] is set when a listed version could not be read or none was judged, so a run that
+//! judged nothing cannot pass. An error before the report, such as a policy that does not load,
+//! exits [`ERROR`] alone. See docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
 
 use super::decide::{Check, Decision, Outcome};
 use super::enforce::Unenforceable;
@@ -36,7 +37,7 @@ use super::Action;
 pub const LOOSENED: u8 = 1;
 /// Exit bit: a check got stricter.
 pub const TIGHTENED: u8 = 2;
-/// Exit code: the diff could not be run.
+/// Exit bit: a listed version could not be read, none was judged, or the diff could not be run.
 pub const ERROR: u8 = 4;
 
 /// What a check answered, as the report shows it.
@@ -180,6 +181,10 @@ pub fn package(
 /// Every package that moved, and what it means for the gate.
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Report {
+    /// Package versions listed to compare, including ones not judged.
+    pub listed: usize,
+    /// Listed versions whose packument or publish times could not be read.
+    pub unread: usize,
     /// Packages evaluated, including ones that did not move.
     pub evaluated: usize,
     /// Only the packages that moved.
@@ -206,20 +211,32 @@ impl Report {
         self.changed.iter().filter(|p| p.tightened()).collect()
     }
 
-    /// The exit code: [`LOOSENED`] if a check loosened or cannot be compared, OR-ed with
-    /// [`TIGHTENED`] if one got stricter.
+    /// Whether versions were listed and none was judged, for any reason.
+    pub fn judged_none(&self) -> bool {
+        self.listed > 0 && self.evaluated == 0
+    }
+
+    /// The exit code: [`LOOSENED`] if a check loosened or cannot be compared,
+    /// [`TIGHTENED`] if one got stricter, and [`ERROR`] if a listed version could not be read
+    /// or none was judged, OR-ed.
     ///
     /// Incomparable sets the loosening bit: §5.5 is fail loud when tightening cannot be
     /// proven, and a diff that cannot be decided is exactly that case.
     pub fn exit_bits(&self) -> u8 {
         let loosened = !self.loosened().is_empty() || !self.incomparable().is_empty();
         let tightened = !self.tightened().is_empty();
-        (if loosened { LOOSENED } else { 0 }) | (if tightened { TIGHTENED } else { 0 })
+        let failed = self.unread > 0 || self.judged_none();
+        (if loosened { LOOSENED } else { 0 })
+            | (if tightened { TIGHTENED } else { 0 })
+            | (if failed { ERROR } else { 0 })
     }
 
     /// Grouped by check and direction, which is what a person reads first.
     pub fn render(&self) -> String {
         let mut out = format!("{} packages evaluated\n", self.evaluated);
+        if self.unread > 0 {
+            out.push_str(&format!("{} could not be read\n", self.unread));
+        }
         if self.changed.is_empty() {
             out.push_str("nothing moved\n");
             return out;
@@ -472,6 +489,39 @@ mod tests {
             }],
         });
         assert_eq!(report.exit_bits(), LOOSENED);
+    }
+
+    #[test]
+    fn a_version_not_read_or_nothing_judged_sets_the_error_bit() {
+        let loosening = diff(
+            "version: 1\ndenials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: t\n",
+            "version: 1",
+            &facts(),
+        );
+        let mut report = Report {
+            listed: 2,
+            unread: 1,
+            ..Report::default()
+        };
+        report.push(loosening);
+        assert_eq!(report.exit_bits(), LOOSENED | ERROR);
+        assert!(
+            report
+                .render()
+                .contains("1 packages evaluated\n1 could not be read\n")
+        );
+
+        let none = Report {
+            listed: 3,
+            ..Report::default()
+        };
+        assert!(none.judged_none());
+        assert_eq!(none.exit_bits(), ERROR);
+        assert!(!none.render().contains("could not be read"));
+
+        let nothing_listed = Report::default();
+        assert!(!nothing_listed.judged_none());
+        assert_eq!(nothing_listed.exit_bits(), 0);
     }
 
     /// Scripts read these numbers, so the values are part of the command.
