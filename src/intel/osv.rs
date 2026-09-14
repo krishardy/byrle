@@ -8,8 +8,10 @@
 //! | `MAL-` | OpenSSF Malicious Packages | 221,217 | true |
 //! | `GHSA-` | GitHub Advisory Database | 7,052 | false |
 //!
-//! The other two, `EEF-CVE-2026-56812` and `GSD-2022-1000008`, are skipped as
-//! [`Skipped::OtherPublisher`].
+//! The other two, `EEF-CVE-2026-56812` from the Erlang Ecosystem Foundation CNA and
+//! `GSD-2022-1000008` from the Global Security Database, are skipped as
+//! [`Skipped::OtherPublisher`]. `GHSA-63mc-hw7g-86rr` has the EEF record's npm ranges, and the
+//! GSD record lists no version or range.
 //!
 //! Each npm `affected` entry becomes rows:
 //!
