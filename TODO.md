@@ -1246,9 +1246,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `policy diff --snapshot` peaked at 468 MB for npm, where Postgres took 28 MB. Rows are
       now decoded one at a time and only the audit log's packages are kept: 103 MB. See
       docs/engineering_decisions/snapshot-identity.md.
-- [~] `[!]` Package set from lockfiles **and** from the audit log. The audit log is read
-      (`audit::packages`): a `pinned` line names one version, a `resolution` line names
-      every version it removed. Lockfiles are not read yet.
+- [x] `[!]` Package set from lockfiles **and** from the audit log. The audit log is read
+      (`audit::packages`): a `pinned` line lists one version, a `resolution` line lists
+      every version it removed. `--lockfile <path>`, repeatable, adds each lockfile's
+      registry versions (`src/lockfile.rs`): `package-lock.json`, `npm-shrinkwrap.json`,
+      `yarn.lock` v1, `pnpm-lock.yaml` 9 and `bun.lock`. See
+      `docs/engineering_decisions/policy-diff-lockfiles.md`.
 - [x] `[!]` Report transitions both directions, grouped with counts. **Compares decision
       vectors, not verdicts.** Two policies can both answer `block` for different reasons,
       and comparing verdicts reports no change there. Held by

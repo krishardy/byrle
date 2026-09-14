@@ -606,8 +606,8 @@ the PyPI adapter before freezing the interface.
 config in isolation.
 
 ```
-waharoa policy diff --from policy.yaml --to policy-new.yaml \
-                  --against ./lockfiles/ --snapshot <intel_id>
+waharoa policy diff policy.yaml policy-new.yaml \
+                  --lockfile package-lock.json --snapshot <intel_id>
 ```
 
 - **Intel snapshot is pinned.** Without it, a new block cannot be attributed to the edit
@@ -847,6 +847,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [Readiness endpoint](engineering_decisions/readiness-endpoint.md) | `GET /-/waharoa/ready`: 503 when a policy and an intel store are set and the store holds no snapshot or cannot answer; reports each stream's loaded digest, no percentage |
 | n/a | [Snapshot identity](engineering_decisions/snapshot-identity.md) | The snapshot id is a hash over every source's stored rows, not the bundles. Postgres keeps the latest load; `waharoa refresh` also keeps each snapshot as files of the same encoding |
 | n/a | [`policy check`](engineering_decisions/policy-check.md) | Loads as the proxy does; lists entries that change nothing, never win, or are `permanent: true`; `--strict` exits 1 on the first two |
+| n/a | [`policy diff` reads lockfiles](engineering_decisions/policy-diff-lockfiles.md) | `--lockfile <path>`, repeatable, adds the registry versions of `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` v1, `pnpm-lock.yaml` 9 or `bun.lock` to the audit log's |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 
 ### Staging

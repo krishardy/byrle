@@ -225,25 +225,40 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         }
     }
 
-    let Some(log_path) = or_exit(env::process().audit_log()) else {
+    let log_path = or_exit(env::process().audit_log());
+    if log_path.is_none() && args.lockfile.is_empty() {
         eprintln!(
-            "waharoa policy diff: set {} to the package set to compare over",
+            "waharoa policy diff: set {} or pass --lockfile, for the packages to compare over",
             env::AUDIT_LOG
         );
         return std::process::ExitCode::from(2);
-    };
-    let log = match std::fs::read_to_string(&log_path) {
-        Ok(log) => log,
-        Err(e) => {
-            eprintln!("waharoa policy diff: {}: {e}", log_path.display());
-            return std::process::ExitCode::from(2);
+    }
+    let mut listed = Vec::new();
+    if let Some(log_path) = log_path {
+        match std::fs::read_to_string(&log_path) {
+            Ok(log) => listed.extend(audit::packages(&log)),
+            Err(e) => {
+                eprintln!("waharoa policy diff: {}: {e}", log_path.display());
+                return std::process::ExitCode::from(2);
+            }
         }
-    };
+    }
+    for path in &args.lockfile {
+        match waharoa::lockfile::read(path) {
+            Ok(locked) => listed.extend(locked),
+            Err(e) => {
+                eprintln!("waharoa policy diff: {e}");
+                return std::process::ExitCode::from(2);
+            }
+        }
+    }
 
-    // The npm package versions the log lists, each with its purl.
-    let versions: Vec<(String, PackageRef, String)> = audit::packages(&log)
+    // The npm package versions the log and the lockfiles list, each once, with its purl.
+    let mut seen = std::collections::HashSet::new();
+    let versions: Vec<(String, PackageRef, String)> = listed
         .into_iter()
         .filter(|(ecosystem, _, _)| ecosystem == "npm")
+        .filter(|package| seen.insert(package.clone()))
         .filter_map(|(ecosystem, name, version)| {
             let purl = format!("pkg:{ecosystem}/{name}@{version}");
             let reference = purl.parse::<PackageRef>().ok()?;
