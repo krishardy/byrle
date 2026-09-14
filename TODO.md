@@ -1278,8 +1278,9 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       read, a 404 included, is counted and ORs 4 into the exit, and so does a run that judged
       none of the versions listed: exit 4 for `nope`. Publish times that cannot be read count
       the same, and `explain` exits 1 for them.
-- [ ] `WAHAROA_UPSTREAM` is read as text and never parsed as a URL, so `nope` is accepted
-      by `policy diff` and, unchecked, by the proxy.
+- [x] `WAHAROA_UPSTREAM` was read as text. `policy diff` and `explain` sent every request
+      to `nope`, and the proxy panicked on it, exit 101. `env::Env::upstream` now refuses a
+      value that is not an http or https URL with a host: exit 2, and 4 for `policy diff`.
 
 ### Intel — advisory streams
 - [~] `[!]` **Verify each stream's data license before implementing it.** Done for four

@@ -493,8 +493,18 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.text_or(LISTEN, DEFAULT_LISTEN)
     }
 
+    /// An http or https URL with a host. The value is returned as given, path included, so a
+    /// registry served under a path keeps it.
     pub fn upstream(&self) -> Result<String, EnvError> {
-        self.text_or(UPSTREAM, DEFAULT_UPSTREAM)
+        let value = self.text_or(UPSTREAM, DEFAULT_UPSTREAM)?;
+        match crate::npm::normalise_origin(&value) {
+            Ok(_) => Ok(value),
+            Err(e) => Err(EnvError::new(
+                UPSTREAM,
+                value,
+                format!("is not usable: {}", e.reason),
+            )),
+        }
     }
 
     pub fn public_url(&self) -> Result<Option<String>, EnvError> {
@@ -822,6 +832,32 @@ mod tests {
         for (result, expected) in cases {
             assert_eq!(result.expect_err(expected).to_string(), expected);
         }
+    }
+
+    /// `policy diff` and `explain` used to send every request to `nope`, and the proxy
+    /// panicked on it.
+    #[test]
+    fn an_upstream_is_an_http_or_https_url_with_a_host() {
+        for (value, expected) in [
+            ("nope", "WAHAROA_UPSTREAM: `nope` is not usable: not a URL"),
+            (
+                "http://",
+                "WAHAROA_UPSTREAM: `http://` is not usable: not a URL",
+            ),
+            (
+                "ftp://x",
+                "WAHAROA_UPSTREAM: `ftp://x` is not usable: scheme is not http or https",
+            ),
+            (
+                "file:///tmp",
+                "WAHAROA_UPSTREAM: `file:///tmp` is not usable: no host",
+            ),
+        ] {
+            let error = with(&[(UPSTREAM, value)]).upstream().expect_err(value);
+            assert_eq!(error.to_string(), expected);
+        }
+        let mirror = "https://artifacts.example/api/npm/npm-remote/";
+        assert_eq!(with(&[(UPSTREAM, mirror)]).upstream().unwrap(), mirror);
     }
 
     #[test]

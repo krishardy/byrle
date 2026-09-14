@@ -36,8 +36,21 @@ the help text wrote `(50,000)` and `(32 MiB)` by hand beside the constants.
 | `WAHAROA_CA_BUNDLE_EXCLUSIVE` was on only for `1`; `WAHAROA_REWRITE_ARTIFACTS` and `WAHAROA_REFUSE_UNSERVABLE` were off only for `0`. Anything else was silently the default | each accepts `0` or `1`, and refuses anything else |
 | `WAHAROA_LISTEN=` and `WAHAROA_UPSTREAM=` were used as the empty string | an empty value is unset, for every variable |
 | `RUST_LOG` that did not parse fell back to `waharoa=info` | refused, exit 2 |
+| `WAHAROA_UPSTREAM` was used as text: `policy diff` and `explain` sent every request to `nope`, and the proxy panicked on it, exit 101 | refused unless an http or https URL with a host: `WAHAROA_UPSTREAM: \`nope\` is not usable: not a URL`, exit 2, and 4 for `policy diff`. A path is kept |
 | `RUST_LOG` was read by tracing and not listed in `--help` | listed, default `waharoa=info` |
 | `WAHAROA_REFUSAL_STATUS` and `WAHAROA_DEFER_TEST` panicked on a bad value | exit 2 with the same reason |
+
+`WAHAROA_UPSTREAM` is checked with `npm::normalise_origin`, the check `WAHAROA_ARTIFACT_ORIGINS`
+already had, and returned as given. Live, with `nope`, `ftp://x` and `http://`, the proxy and
+`explain` exit 2 and `policy diff` exits 4. With `https://registry.npmjs.org/some/path/` the
+proxy starts with upstream `https://registry.npmjs.org/some/path`. Each mutation below was caught:
+
+| Mutation | Caught by |
+|---|---|
+| Any upstream accepted | `an_upstream_is_an_http_or_https_url_with_a_host` |
+| The origin returned in place of the value | the same |
+| The reason dropped from the message | the same |
+| An unset upstream defaults to an unusable one | `unset_is_the_default` |
 
 `WAHAROA_CA_BUNDLE_EXCLUSIVE` is read only when `WAHAROA_CA_BUNDLE` is set, as before, so a bad
 value is refused only then.

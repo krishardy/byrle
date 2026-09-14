@@ -250,8 +250,8 @@ pub struct Proxy {
 impl Proxy {
     pub fn new(client: reqwest::Client, upstream: impl Into<String>) -> Self {
         let upstream = upstream.into().trim_end_matches('/').to_owned();
-        // The upstream is a URL the operator already gave us, so this only fails if that
-        // is unusable, in which case nothing else would work either.
+        // `env::Env::upstream` refuses an upstream this would refuse, so only a caller that
+        // skips it reaches the panic, and nothing else would work with that upstream either.
         let reachable = ReachableOrigins::new(&upstream, std::iter::empty())
             .unwrap_or_else(|e| panic!("upstream is not a usable origin: {e}"));
         let origins = OriginPolicy::new(reachable, std::iter::empty())

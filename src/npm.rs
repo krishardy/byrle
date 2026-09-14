@@ -240,7 +240,7 @@ impl ReachableOrigins {
     }
 }
 
-fn normalise_origin(base: &str) -> Result<String, OriginError> {
+pub(crate) fn normalise_origin(base: &str) -> Result<String, OriginError> {
     let url = reqwest::Url::parse(base).map_err(|_| OriginError {
         value: base.to_owned(),
         reason: "not a URL",
