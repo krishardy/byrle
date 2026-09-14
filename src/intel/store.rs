@@ -142,7 +142,9 @@ impl PackageIntel {
     /// the `advisory` row, keyed by id, and only the version or interval differs.
     ///
     /// A version that is not SemVer, such as `3.0.0rc1`, is in no range. It still matches a
-    /// listed version and every version.
+    /// listed version and every version. No packument version seen is one: 0 in 103 packages
+    /// on 2026-09-15, and `express` lists `3.0.0-rc1`, which only its tarball name spells
+    /// `3.0.0rc1`.
     pub fn for_version(&self, version: &str) -> Vec<&Record> {
         let parsed = range::version(version);
         let listed = self

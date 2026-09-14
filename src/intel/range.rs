@@ -6,10 +6,11 @@
 //! end has no upper bound. This is the evaluation in the OSV schema's pseudocode, done once at
 //! load so the store holds intervals rather than events.
 //!
-//! npm ranges are `SEMVER` or `ECOSYSTEM`, and both order by SemVer 2.0. A version is parsed
-//! strictly. Measured over `npm/all.zip` fetched 2026-09-13, the 31 `ECOSYSTEM` ranges all
-//! hold versions such as `13.0` and `2026.04.1` that are not SemVer, and a range holding one
-//! is not stored rather than guessed at.
+//! npm ranges are `SEMVER` or `ECOSYSTEM`, and both order by SemVer 2.0. Measured over
+//! `npm/all.zip` fetched 2026-09-13, the 31 `ECOSYSTEM` ranges contain versions such as `13.0`
+//! and `2026.04.1`. Each version is read by [`padded`], as osv.dev reads it, and stored
+//! padded, so a stored column is strict SemVer. A range containing a version that is still not
+//! SemVer is not stored rather than guessed at.
 //!
 //! SemVer 2.0 gives build metadata no precedence and the `semver` crate compares it, so it
 //! is removed before any comparison. Pre-releases order below their release, so
@@ -23,6 +24,24 @@ pub fn version(s: &str) -> Option<Version> {
     let mut v = Version::parse(s).ok()?;
     v.build = BuildMetadata::EMPTY;
     Some(v)
+}
+
+/// A version as osv.dev reads an npm one: a missing minor or patch is 0 and leading zeros are
+/// dropped, so `13.0` is `13.0.0` and `2026.04.1` is `2026.4.1`. What follows the numbers
+/// must be SemVer's `-` pre-release or `+` build. `None` when the result is not SemVer 2.0.
+pub fn padded(s: &str) -> Option<String> {
+    let (numbers, rest) = s.split_at(s.find(['-', '+']).unwrap_or(s.len()));
+    let mut parts = Vec::with_capacity(3);
+    for part in numbers.split('.') {
+        // `-` and `+` are split off above, and parsing refuses anything else but digits.
+        if parts.len() == 3 {
+            return None;
+        }
+        parts.push(part.parse::<u64>().ok()?);
+    }
+    parts.resize(3, 0);
+    let written = format!("{}.{}.{}{rest}", parts[0], parts[1], parts[2]);
+    version(&written).map(|_| written)
 }
 
 /// Where an interval stops.
@@ -103,7 +122,7 @@ pub enum Unstorable {
     Event(String),
     /// An event object with other than one key.
     Malformed,
-    /// A version that is not SemVer 2.0.
+    /// A version that is not SemVer 2.0 once [`padded`].
     NotSemver(String),
 }
 
@@ -114,7 +133,7 @@ enum Kind {
     LastAffected,
 }
 
-/// The intervals a range's events describe, versions kept as written.
+/// The intervals a range's events describe, each version [`padded`].
 pub fn intervals(
     kind: Option<&str>,
     events: &[BTreeMap<String, String>],
@@ -136,11 +155,14 @@ pub fn intervals(
             other => return Err(Unstorable::Event(other.to_owned())),
         };
         // `0` is OSV's "before the first version", and only means that as a lower bound.
-        let at = match (kind, value.as_str()) {
-            (Kind::Introduced, "0") => None,
-            _ => Some(version(value).ok_or_else(|| Unstorable::NotSemver(value.clone()))?),
+        let (at, written) = match (kind, value.as_str()) {
+            (Kind::Introduced, "0") => (None, value.clone()),
+            _ => {
+                let written = padded(value).ok_or_else(|| Unstorable::NotSemver(value.clone()))?;
+                (version(&written), written)
+            }
         };
-        sorted.push((at, kind, value));
+        sorted.push((at, kind, written));
     }
     // Stable, so events at the same version keep the order the record gave them, which is
     // what the OSV pseudocode does with them.
@@ -207,6 +229,33 @@ mod tests {
             assert_eq!(version(not), None, "{not}");
         }
         assert!(version("1.0.0-rc.1").is_some());
+    }
+
+    /// Every such version in `npm/all.zip` on 2026-09-13 is a short or zero-padded one, and
+    /// none is published: `next` publishes `13.0.0` and `qwc2` `2025.8.14`.
+    #[test]
+    fn a_short_or_zero_padded_version_is_padded_as_osv_dev_reads_it() {
+        for (written, read) in [
+            ("13.0", "13.0.0"),
+            ("2026.04.1", "2026.4.1"),
+            ("20260509.0340.15", "20260509.340.15"),
+            ("1", "1.0.0"),
+            ("1.0-rc.1+b", "1.0.0-rc.1+b"),
+            ("1.2.3", "1.2.3"),
+        ] {
+            assert_eq!(padded(written).as_deref(), Some(read), "{written}");
+        }
+        for not in [
+            "v1.0.0",
+            "1.0.0rc1",
+            "1.2.3.4",
+            "1..2",
+            "",
+            "1.0-",
+            "99999999999999999999",
+        ] {
+            assert_eq!(padded(not), None, "{not}");
+        }
     }
 
     #[test]
@@ -312,6 +361,36 @@ mod tests {
     }
 
     #[test]
+    fn a_range_is_stored_and_ordered_by_its_padded_versions() {
+        let written = intervals(
+            Some("ECOSYSTEM"),
+            &events(&[
+                ("fixed", "13.1"),
+                ("introduced", "13.0"),
+                ("introduced", "2026.04.1"),
+            ]),
+        )
+        .expect("storable");
+        assert_eq!(
+            written,
+            vec![
+                Interval {
+                    introduced: Some("13.0.0".to_owned()),
+                    end: End::Fixed("13.1.0".to_owned()),
+                },
+                Interval {
+                    introduced: Some("2026.4.1".to_owned()),
+                    end: End::Open,
+                },
+            ]
+        );
+        assert!(written.iter().all(|i| {
+            let (fixed, last) = i.end.columns();
+            Interval::from_columns(i.introduced.as_deref(), fixed, last).is_some()
+        }));
+    }
+
+    #[test]
     fn ecosystem_ranges_are_read_and_git_ones_are_not() {
         let e = events(&[("introduced", "1.0.0")]);
         assert!(intervals(Some("ECOSYSTEM"), &e).is_ok());
@@ -327,17 +406,20 @@ mod tests {
         assert_eq!(
             intervals(
                 Some("ECOSYSTEM"),
-                &events(&[("introduced", "0"), ("fixed", "13.0")])
+                &events(&[("introduced", "0"), ("fixed", "1.0.0rc1")])
             ),
-            Err(Unstorable::NotSemver("13.0".to_owned()))
+            Err(Unstorable::NotSemver("1.0.0rc1".to_owned()))
         );
         assert_eq!(
             intervals(Some("SEMVER"), &events(&[("limit", "1.0.0")])),
             Err(Unstorable::Event("limit".to_owned()))
         );
         assert_eq!(
-            intervals(Some("SEMVER"), &events(&[("fixed", "0")])),
-            Err(Unstorable::NotSemver("0".to_owned()))
+            intervals(
+                Some("SEMVER"),
+                &events(&[("introduced", "1.0.0"), ("fixed", "v2")])
+            ),
+            Err(Unstorable::NotSemver("v2".to_owned()))
         );
         let two_keys: BTreeMap<String, String> = [
             ("introduced".to_owned(), "0".to_owned()),

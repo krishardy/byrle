@@ -40,13 +40,42 @@ both packages below:
 
 | Choice | Value | Why |
 |---|---|---|
-| Comparator | `semver` 1.0, strict SemVer 2.0 | OSV `SEMVER` ranges are SemVer 2.0. The 31 npm `ECOSYSTEM` ranges all hold versions such as `13.0` and `2026.04.1` |
-| A range holding a version that is not SemVer | not stored, counted in `unexpressed` | reading it needs a second comparator |
+| Comparator | `semver` 1.0, strict SemVer 2.0 | OSV `SEMVER` ranges are SemVer 2.0 |
+| A range or listed version such as `13.0` or `2026.04.1` | padded by `range::padded` and stored padded: `13.0.0`, `2026.4.1` | see [Short and zero-padded versions](#short-and-zero-padded-versions) |
+| A range containing a version that is not SemVer once padded, such as `1.0.0rc1` | not stored, counted in `unexpressed` | none is in the data. osv.dev refuses it too |
+| A listed version that is not SemVer once padded | stored as written | |
 | Build metadata | removed before comparing | SemVer 2.0 gives it no precedence and `semver` compares it |
-| A packument version that is not SemVer, such as `3.0.0rc1` | in no range. Still matches a listed version and every version | |
+| A packument version that is not SemVer | in no range. Still matches a listed version and every version | none seen: 0 in 103 packages. `express` lists `3.0.0-rc1`, and only its tarball name spells `3.0.0rc1` |
 | A stored range that does not parse | `IntelError::Range`, a 503 | the loader writes none. Matching it against nothing would drop the advisory |
 | `limit` events, `GIT` ranges | not stored | no npm record carried either |
 | An event object with more than one key | not stored | the schema allows one |
+
+### Short and zero-padded versions
+
+On 2026-09-13 the 31 npm `ECOSYSTEM` ranges in 28 `GHSA-` records held 17 versions that are not
+SemVer, and `total4` listed `12.0` in 2 records. Every one is short or zero-padded, and none is
+published. The registry, asked on 2026-09-15:
+
+| Written | Published |
+|---|---|
+| `next` `13.0` | `13.0.0` |
+| `@solana/web3.js` `1.77`, `1.78`, `1.89`, `1.90` | `1.77.0`, `1.78.0`, `1.89.0`, `1.90.0` |
+| `directus` `9.11`, `9.22` | `9.11.0`, `9.22.0` |
+| `ckeditor4-dev` `4.16` | `4.16.0` |
+| `qwc2` `2025.08.14` | `2025.8.14` |
+| `openclaw` `2026.03.28` | `2026.3.28` |
+| `@tmlmobilidade/utils` `20260509.0340.15` | `20260509.340.15` |
+| `nocodb` `2026.04.1`, `2026.05.1`; `nodebb` `0.70`; `primefaces` `8.0`; `qooxdoo` `1.3`; `servify-express` `1.2`; `total4` `12.0` | no version with those first two numbers |
+
+| Reader | `13.0` | `2026.04.1` | `1.0.0rc1` |
+|---|---|---|---|
+| osv.dev `semver_index.coerce` | `13.0.0` | `2026.4.1` | refused, sorted above every version |
+| osv-scalibr `ParseSemverVersion` | equal to `13.0.0` | equal to `2026.4.1` | `rc1` read as a pre-release |
+| node-semver, loose | invalid | `2026.4.1` | `3.0.0-rc1` |
+| `range::padded` | `13.0.0` | `2026.4.1` | refused |
+
+`padded` follows osv.dev. The two OSV readers agree on every version in the data. They differ only
+on a pre-release with no hyphen, which no npm range contains.
 
 A list and a range beside it are both stored. `MAL-2025-3661` lists `99.9.0` and `99.9.1`
 beside `introduced: "99.9.1"`, and a version published into that range after the list was
@@ -93,23 +122,26 @@ ids.
 
 ```
 stored: malware                    221217
-stored: vulnerability, scored        6340
-stored: vulnerability, unscored       688
+stored: vulnerability, scored        6363
+stored: vulnerability, unscored       689
 skipped: withdrawn                    680
 skipped: other publisher                2
 skipped: no npm package                 0
-skipped: nothing storable              24
+skipped: nothing storable               0
 records                            228951
-stored with something left out          4
+stored with something left out          0
 CVSS vectors unread                     0
 affected rows                      233239
-ranges                              10326
+ranges                              10357
 ```
+
+Before versions were padded, the same bundle gave `scored 6340`, `unscored 688`,
+`nothing storable 24`, `stored with something left out 4` and `ranges 10326`. `affected rows`
+is unchanged: `total4`'s `12.0` became `12.0.0`, one row for one.
 
 Against [osv-malware-load](osv-malware-load.md), the 533 `MAL-` records that needed range
 evaluation are stored. The 2 other-publisher records are `EEF-CVE-2026-56812` and
-`GSD-2022-1000008`. The 24 records storing nothing hold only ranges with versions that are not
-SemVer.
+`GSD-2022-1000008`.
 
 ## Evidence
 
@@ -117,6 +149,15 @@ Each mutation below was caught.
 
 | Mutation | Caught by |
 |---|---|
+| A short version not padded | `a_short_or_zero_padded_version_is_padded_as_osv_dev_reads_it`, `a_range_is_stored_and_ordered_by_its_padded_versions`, `a_short_version_in_a_range_or_a_list_is_stored_padded` |
+| A fourth number accepted | `a_short_or_zero_padded_version_is_padded_as_osv_dev_reads_it` |
+| The padded result not checked as SemVer | the same |
+| The pre-release and build dropped | the same |
+| Build metadata read as numbers | `build_metadata_does_not_order` |
+| A range sorted by its written versions | `a_range_is_stored_and_ordered_by_its_padded_versions`, `a_short_version_in_a_range_or_a_list_is_stored_padded` |
+| A range stored as written | the same two |
+| A listed version not padded | `a_short_version_in_a_range_or_a_list_is_stored_padded` |
+| A listed version that does not pad dropped | the same |
 | `fixed` includes itself | `fixed_excludes_itself_and_last_affected_includes_itself` |
 | `last_affected` excludes itself | `fixed_excludes_itself_and_last_affected_includes_itself` |
 | Build metadata kept | `build_metadata_does_not_order` |
