@@ -1272,9 +1272,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] Scheduled-job recipe: `policy diff policy.yaml policy.yaml --to-date +30d`. Exit 2 is
       an entry lapsing, 1 a package passing its cooldown. Live: an entry expiring
       2026-09-30 tightened `@babel/helper-validator-identifier`, exit 2.
-- [ ] A packument that cannot be read is skipped with a message and not counted, so a run
-      where every read fails prints `0 packages evaluated`, `nothing moved`, and exits 0.
-      Seen with `WAHAROA_UPSTREAM` set to `nope`, `ftp://x` and `http://`: 15 skipped each.
+- [x] A packument that could not be read was skipped with a message and not counted, so a
+      run where every read failed printed `0 packages evaluated`, `nothing moved`, and exited
+      0. Seen with `WAHAROA_UPSTREAM` set to `nope`, `ftp://x` and `http://`. Now a failed
+      read, a 404 included, is counted and ORs 4 into the exit, and so does a run that judged
+      none of the versions listed: exit 4 for `nope`. Publish times that cannot be read count
+      the same, and `explain` exits 1 for them.
 - [ ] `WAHAROA_UPSTREAM` is read as text and never parsed as a URL, so `nope` is accepted
       by `policy diff` and, unchecked, by the proxy.
 

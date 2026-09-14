@@ -311,14 +311,23 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
     let client = npm::Client::new(reqwest::Client::new(), upstream);
     let needs_times = loaded.iter().any(Policy::uses_cooldown);
 
-    let mut report = diff::Report::default();
+    let mut report = diff::Report {
+        listed: versions.len(),
+        ..diff::Report::default()
+    };
     for (purl, reference, version) in &versions {
-        let Ok(Ok(packument)) = client
+        // A packument that cannot be read is reported and counted, and the run goes on, so
+        // one bad package does not hide the rest. The count sets the exit's error bit.
+        let fetched = client
             .packument(reference.key(), record::PackumentDetail::Abbreviated)
-            .await
-        else {
-            eprintln!("waharoa policy diff: {purl}: packument could not be read");
-            continue;
+            .await;
+        let packument = match npm::fetched(fetched, "packument") {
+            Ok(packument) => packument,
+            Err(e) => {
+                eprintln!("waharoa policy diff: {purl}: {e}");
+                report.unread += 1;
+                continue;
+            }
         };
         let Some(package) = packument.version(version) else {
             // The registry no longer publishes it. That is a real answer for a lockfile
@@ -328,7 +337,14 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         };
 
         let times = if needs_times {
-            client.publish_times(reference.key()).await.ok().and_then(Result::ok)
+            match npm::fetched(client.publish_times(reference.key()).await, "publish times") {
+                Ok(times) => Some(times),
+                Err(e) => {
+                    eprintln!("waharoa policy diff: {purl}: {e}");
+                    report.unread += 1;
+                    continue;
+                }
+            }
         } else {
             None
         };
@@ -364,10 +380,17 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
     let bits = report.exit_bits();
     if bits != 0 {
         eprintln!(
-            "\nwaharoa policy diff: {} loosened, {} incomparable, {} tightened",
+            "\nwaharoa policy diff: {} loosened, {} incomparable, {} tightened, {} could not be read",
             report.loosened().len(),
             report.incomparable().len(),
-            report.tightened().len()
+            report.tightened().len(),
+            report.unread
+        );
+    }
+    if report.judged_none() {
+        eprintln!(
+            "waharoa policy diff: none of the {} package versions listed was judged",
+            report.listed
         );
     }
     std::process::ExitCode::from(bits)
@@ -431,17 +454,13 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
 
     let upstream = or_exit(env::process().upstream());
     let client = npm::Client::new(reqwest::Client::new(), upstream);
-    let packument = match client
+    let fetched = client
         .packument(reference.key(), record::PackumentDetail::Abbreviated)
-        .await
-    {
-        Ok(Ok(packument)) => packument,
-        Ok(Err(e)) => {
-            eprintln!("waharoa explain: packument could not be read: {e}");
-            return std::process::ExitCode::from(1);
-        }
+        .await;
+    let packument = match npm::fetched(fetched, "packument") {
+        Ok(packument) => packument,
         Err(e) => {
-            eprintln!("waharoa explain: packument could not be fetched: {e}");
+            eprintln!("waharoa explain: {e}");
             return std::process::ExitCode::from(1);
         }
     };
@@ -453,8 +472,15 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     };
 
     // Only when the policy asks for it, the same gate the proxy uses.
+    // A cooldown that cannot be judged is an answer `explain` cannot give.
     let times = if policy.uses_cooldown() {
-        client.publish_times(reference.key()).await.ok().and_then(Result::ok)
+        match npm::fetched(client.publish_times(reference.key()).await, "publish times") {
+            Ok(times) => Some(times),
+            Err(e) => {
+                eprintln!("waharoa explain: {e}");
+                return std::process::ExitCode::from(1);
+            }
+        }
     } else {
         None
     };

@@ -1301,6 +1301,19 @@ impl Client {
     }
 }
 
+/// A registry request's value, or what went wrong: `<what> could not be fetched: ...` when
+/// the request failed, and `<what> could not be read: ...` when the body did not parse.
+pub fn fetched<T>(
+    result: Result<Result<T, NormalizeError>, FetchError>,
+    what: &str,
+) -> Result<T, String> {
+    match result {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(e)) => Err(format!("{what} could not be read: {e}")),
+        Err(e) => Err(format!("{what} could not be fetched: {e}")),
+    }
+}
+
 /// Only the `time` map, out of a full packument.
 ///
 /// npm publishes version timestamps in the full document and nowhere else. The
@@ -2193,6 +2206,28 @@ mod tests {
     /// The transport, against a server on localhost rather than the registry. This is
     /// what covers `Client::packument`: the live tests below are ignored by default, so
     /// without this the fetch path is exercised by nothing that runs in CI.
+    #[test]
+    fn a_failed_request_and_an_unreadable_body_are_told_apart() {
+        let json = serde_json::from_str::<serde_json::Value>("{").expect_err("not JSON");
+        let unreadable: Result<Result<(), NormalizeError>, FetchError> =
+            Ok(Err(NormalizeError::Json(json)));
+        let read = super::fetched(unreadable, "packument").expect_err("unreadable");
+        assert!(
+            read.starts_with("packument could not be read: packument is not valid JSON"),
+            "{read}"
+        );
+
+        let missing: Result<Result<(), NormalizeError>, FetchError> =
+            Err(FetchError::Status(reqwest::StatusCode::NOT_FOUND));
+        assert_eq!(
+            super::fetched(missing, "publish times"),
+            Err("publish times could not be fetched: registry answered 404 Not Found".to_owned())
+        );
+
+        let answered: Result<Result<u8, NormalizeError>, FetchError> = Ok(Ok(7));
+        assert_eq!(super::fetched(answered, "packument"), Ok(7));
+    }
+
     mod transport {
         use super::*;
         use axum::Router;
