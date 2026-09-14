@@ -1083,9 +1083,12 @@ of them produced findings that outlived the code.
 
 Each is a setting, an exception shape, and an intel source. None exists yet.
 
-- [~] `[!]` `denials`, explicitly forbidden packages. Exact version, no exception.
-      Decided in `decide.rs`, turned into a refusal in `policy/enforce.rs`. Not yet wired
-      into the proxy.
+- [x] `[!]` `denials`, explicitly forbidden packages. Exact version, no exception.
+      Decided in `decide.rs`, turned into a refusal in `policy/enforce.rs`, and enforced by
+      the proxy on both paths with `enforce::artifact`:
+      `a_denied_version_is_refused_on_a_pinned_fetch_before_the_artifact_is_fetched` and
+      `a_denied_version_is_absent_from_the_packument_the_client_receives` in
+      `src/proxy.rs`, and `make smoke-npm` step 6 with the real registry.
       - [x] **Matched by parsing the purl, not by comparing the written form.**
             `pkg:npm/%40babel/core@1.0.0` and `pkg:npm/@babel/core@1.0.0` are the same
             package, and the first is what this codebase's own `Display` emits and what
@@ -1169,14 +1172,26 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             never had an exploited advisory to excuse is not recorded as having worked.
       - [ ] The source itself: a set lookup over CVE ids the advisory stream produced,
             reaching 13 npm CVEs today. Build it last.
-- [ ] `[!]` `max_cvss`. A number, not a severity band: bands are not stable across CVSS
+- [x] `[!]` `max_cvss`. A number, not a severity band: bands are not stable across CVSS
       versions, where the same score falls in different ones under v2 and v3. Exceptions
       are per CVE id (`cve_ids`), not per package, which is the only exception keyed by
-      something other than the package.
+      something other than the package. Decided in `decide.rs`
+      (`the_cvss_threshold_allows_what_is_at_or_below_it`), scored from OSV in `osv.rs`,
+      and enforced by the proxy with `enforce::artifact`:
+      `an_advisory_over_max_cvss_is_refused_on_a_pinned_fetch` and
+      `an_advisory_over_max_cvss_is_filtered_from_the_packument_and_one_at_it_is_not` in
+      `src/proxy.rs`. Live: `lodash@4.17.21` refused 403 on `max_cvss`. The unscored
+      advisories are the `[?]` item under the intel streams.
 - [~] `[!]` `install_scripts`. `block` or `allow`. Global setting, asked of every
       ecosystem, reporting not-applicable where the ecosystem has no install step.
-      Enforced on a pinned artifact fetch. Measured to be silent in normal operation: 0
-      of 138 packages in a real `express + eslint` tree declare one.
+      Enforced by the proxy on both paths: `an_install_script_is_refused_on_a_pinned_fetch_under_block`
+      and `an_install_script_is_filtered_from_the_packument_under_block_only` in
+      `src/proxy.rs`, over esbuild 0.28.2, which carries `hasInstallScript`. Measured to be
+      silent in normal operation: 0 of 138 packages in a real `express + eslint` tree
+      declare one.
+      - [ ] Not-applicable for an ecosystem with no install step reaches no proxy path until
+            a second ecosystem exists (Stage 3). `merge::applies` and its Go test cover the
+            engine.
 
 ### Package tier
 

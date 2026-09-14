@@ -2482,20 +2482,21 @@ mod tests {
         );
     }
 
-    fn malware_everywhere() -> Arc<dyn Intel> {
+    /// A store with one advisory for every version.
+    fn everywhere(advisory_id: &str, cvss: Option<f64>, malware: bool) -> Arc<dyn Intel> {
         Arc::new(crate::intel::store::testing::FixedIntel(Ok(Some(
             PackageIntel {
                 snapshot: "s1".to_owned(),
                 records: vec![(
                     None,
                     crate::intel::store::Record {
-                        advisory_id: "MAL-1".to_owned(),
+                        advisory_id: advisory_id.to_owned(),
                         aliases: Vec::new(),
                         source: "osv".to_owned(),
-                        cvss: None,
+                        cvss,
                         cvss_source: None,
                         exploited: false,
-                        malware: true,
+                        malware,
                     },
                 )],
                 ranges: Vec::new(),
@@ -2503,26 +2504,59 @@ mod tests {
         ))))
     }
 
+    fn malware_everywhere() -> Arc<dyn Intel> {
+        everywhere("MAL-1", None, true)
+    }
+
     async fn proxy_with_intel(
         intel: Arc<dyn Intel>,
         with_policy: bool,
+    ) -> (String, Arc<Mutex<Seen>>) {
+        let yaml = with_policy.then_some("version: 1\ncooldown_days: 0\n");
+        proxy_for("lodash-4.17.21.abbrev.json", Some(intel), yaml).await
+    }
+
+    /// A proxy in front of an upstream serving `packument` for every path. The origin check
+    /// is off, so a 403 can only be the policy's.
+    async fn proxy_for(
+        packument: &str,
+        intel: Option<Arc<dyn Intel>>,
+        yaml: Option<&str>,
     ) -> (String, Arc<Mutex<Seen>>) {
         let (upstream, seen) = upstream_serving(
             StatusCode::OK,
             "application/vnd.npm.install-v1+json",
             None,
-            fixture("lodash-4.17.21.abbrev.json"),
+            fixture(packument),
         )
         .await;
         let proxy = Proxy::new(reqwest::Client::new(), upstream)
-            .with_intel(Some(intel))
-            .with_refuse_unservable(false);
-        let proxy = if with_policy {
-            proxy.with_policy(Some(policy("version: 1\ncooldown_days: 0\n")))
-        } else {
-            proxy
-        };
+            .with_intel(intel)
+            .with_refuse_unservable(false)
+            .with_policy(yaml.map(policy));
         (serve(proxy.router()).await, seen)
+    }
+
+    /// A pinned fetch of `tarball` answers 403 on `check`, and the artifact is never fetched.
+    async fn assert_refused_pinned(base: &str, seen: &Mutex<Seen>, tarball: &str, check: &str) {
+        let response = reqwest::get(format!("{base}{tarball}")).await.unwrap();
+        assert_eq!(response.status(), 403, "{tarball}");
+        let body = response.text().await.unwrap();
+        assert!(body.contains(check), "{body}");
+        let paths = &seen.lock().unwrap().paths;
+        assert!(!paths.iter().any(|p| p.ends_with(".tgz")), "{paths:?}");
+    }
+
+    /// Whether the packument the client receives offers `version`.
+    async fn offered(base: &str, name: &str, version: &str) -> bool {
+        let response = reqwest::get(format!("{base}/{name}")).await.unwrap();
+        assert_eq!(
+            response.status(),
+            200,
+            "filtering is a 200 with fewer versions"
+        );
+        let doc: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
+        doc["versions"].get(version).is_some()
     }
 
     #[tokio::test]
@@ -2552,6 +2586,60 @@ mod tests {
         assert_eq!(response.status(), 200);
         let doc: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
         assert!(doc["versions"].get("4.17.21").is_none(), "{doc}");
+    }
+
+    const LODASH: &str = "lodash-4.17.21.abbrev.json";
+    /// esbuild 0.28.2 carries `hasInstallScript`.
+    const ESBUILD: &str = "esbuild-0.28.2.abbrev.json";
+
+    fn scored_everywhere() -> Option<Arc<dyn Intel>> {
+        Some(everywhere("GHSA-0000-0000-0000", Some(8.1), false))
+    }
+
+    #[tokio::test]
+    async fn an_advisory_over_max_cvss_is_refused_on_a_pinned_fetch() {
+        let yaml = "version: 1\ncooldown_days: 0\nmax_cvss: 7.0\n";
+        let (base, seen) = proxy_for(LODASH, scored_everywhere(), Some(yaml)).await;
+        assert_refused_pinned(&base, &seen, "/lodash/-/lodash-4.17.21.tgz", "max_cvss").await;
+    }
+
+    #[tokio::test]
+    async fn an_advisory_over_max_cvss_is_filtered_from_the_packument_and_one_at_it_is_not() {
+        for (max_cvss, offers) in [("7.0", false), ("8.1", true)] {
+            let yaml = format!("version: 1\ncooldown_days: 0\nmax_cvss: {max_cvss}\n");
+            let (base, _) = proxy_for(LODASH, scored_everywhere(), Some(&yaml)).await;
+            assert_eq!(
+                offered(&base, "lodash", "4.17.21").await,
+                offers,
+                "max_cvss {max_cvss}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_install_script_is_refused_on_a_pinned_fetch_under_block() {
+        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let (base, seen) = proxy_for(ESBUILD, None, Some(yaml)).await;
+        assert_refused_pinned(
+            &base,
+            &seen,
+            "/esbuild/-/esbuild-0.28.2.tgz",
+            "install_scripts",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn an_install_script_is_filtered_from_the_packument_under_block_only() {
+        for (setting, offers) in [("block", false), ("allow", true)] {
+            let yaml = format!("version: 1\ncooldown_days: 0\ninstall_scripts: {setting}\n");
+            let (base, _) = proxy_for(ESBUILD, None, Some(&yaml)).await;
+            assert_eq!(
+                offered(&base, "esbuild", "0.28.2").await,
+                offers,
+                "{setting}"
+            );
+        }
     }
 
     /// A store that cannot answer is not a store that found nothing.
