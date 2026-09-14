@@ -306,7 +306,9 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
-            intel: Intel::Consulted,
+            intel: Intel::Consulted {
+                exploitation_loaded: true,
+            },
         }
     }
 
@@ -648,7 +650,7 @@ mod tests {
         assert_eq!(report.loosened().len(), 2);
     }
 
-    /// `kev` is unenforced on both sides while no stream marks an advisory exploited, so
+    /// `kev` is unenforced on both sides when the store has not loaded the KEV catalogue, so
     /// changing its setting moves nothing and does not fail the gate.
     #[test]
     fn changing_kev_moves_nothing_while_it_is_unenforced() {

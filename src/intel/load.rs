@@ -9,12 +9,13 @@
 //! `advisory` is written first. Every other table refers to the key Postgres assigns an
 //! advisory, so their rows are built from the keys read back after that `COPY`.
 //!
-//! See docs/engineering_decisions/snapshot-identity.md.
+//! A source contains advisories or exploited CVE ids, never both. See
+//! docs/engineering_decisions/snapshot-identity.md and docs/engineering_decisions/kev-stream.md.
 
 use super::osv::{Affected, Ranged, Rows};
 use super::range::{End, Interval};
 use super::refresh::{StreamDigest, sha256_hex};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 pub const ADVISORY: &str = "COPY advisory (publisher_id, source, summary, cvss, modified, \
                             malware) FROM STDIN (FORMAT csv)";
@@ -23,17 +24,44 @@ pub const AFFECTED: &str =
     "COPY advisory_affected (advisory_id, ecosystem, name, version) FROM STDIN (FORMAT csv)";
 pub const RANGE: &str = "COPY advisory_range (advisory_id, ecosystem, name, introduced, fixed, \
                          last_affected) FROM STDIN (FORMAT csv)";
+pub const EXPLOITED: &str = "COPY exploited_cve (source, cve_id) FROM STDIN (FORMAT csv)";
 
 /// The first line of an [`encode`]d source. A change to the encoding changes this line.
 pub const FORMAT: &str = "waharoa intel rows 1";
 
-/// The tables an encoding holds, in the order it holds them.
-const TABLES: [&str; 4] = [
-    "advisory",
-    "advisory_alias",
-    "advisory_affected",
-    "advisory_range",
-];
+/// The first line of an [`encode_exploited`] source.
+pub const EXPLOITED_FORMAT: &str = "waharoa intel exploited 1";
+
+/// What a source's encoding contains.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    /// From [`encode`]: `advisory` and the three tables that refer to it.
+    Advisories,
+    /// From [`encode_exploited`]: `exploited_cve`.
+    Exploited,
+}
+
+impl Kind {
+    fn format(self) -> &'static str {
+        match self {
+            Self::Advisories => FORMAT,
+            Self::Exploited => EXPLOITED_FORMAT,
+        }
+    }
+
+    /// The tables an encoding contains, in the order it contains them.
+    fn tables(self) -> &'static [&'static str] {
+        match self {
+            Self::Advisories => &[
+                "advisory",
+                "advisory_alias",
+                "advisory_affected",
+                "advisory_range",
+            ],
+            Self::Exploited => &["exploited_cve"],
+        }
+    }
+}
 
 /// What a refresh fetched, as `intel_source` and `intel_snapshot` record it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,25 +72,22 @@ pub struct Fetch {
     pub streams: Vec<StreamDigest>,
 }
 
-impl Fetch {
-    /// The streams as a JSON object keyed by stream.
-    pub fn streams_json(&self) -> String {
-        let recorded: serde_json::Map<String, serde_json::Value> = self
-            .streams
-            .iter()
-            .map(|s| {
-                (
-                    s.stream.clone(),
-                    serde_json::json!({
-                        "sha256": s.sha256,
-                        "etag": s.etag,
-                        "last_modified": s.last_modified,
-                    }),
-                )
-            })
-            .collect();
-        serde_json::Value::Object(recorded).to_string()
-    }
+/// `streams` as a JSON object keyed by stream.
+pub fn streams_json(streams: &[StreamDigest]) -> String {
+    let recorded: serde_json::Map<String, serde_json::Value> = streams
+        .iter()
+        .map(|s| {
+            (
+                s.stream.clone(),
+                serde_json::json!({
+                    "sha256": s.sha256,
+                    "etag": s.etag,
+                    "last_modified": s.last_modified,
+                }),
+            )
+        })
+        .collect();
+    serde_json::Value::Object(recorded).to_string()
 }
 
 /// CSV for the tables that refer to an advisory.
@@ -92,13 +117,15 @@ impl Children {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Unkeyed(pub String);
 
-/// One source's rows, as [`encode`] writes them.
+/// One source's rows, as [`encode`] or [`encode_exploited`] writes them.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Encoded {
     /// The source the rows are stored under.
     pub source: String,
-    /// CSV for `advisory`, which a load sends to `COPY` as it is.
-    pub advisory: Vec<u8>,
+    pub kind: Kind,
+    /// CSV for the first table, `advisory` or `exploited_cve`, which a load sends to `COPY` as
+    /// it is.
+    pub first_table: Vec<u8>,
     /// The whole encoding.
     pub bytes: Vec<u8>,
     /// `sha256:` and the hex digest of `bytes`.
@@ -133,22 +160,58 @@ pub fn encode(source: &str, rows: &[Rows]) -> Encoded {
         children.push(&position.to_string(), r);
     }
 
-    let mut bytes = format!("{FORMAT}\nsource {source}\n").into_bytes();
-    for (table, csv) in TABLES.into_iter().zip([
-        &advisory,
-        &children.alias,
-        &children.affected,
-        &children.range,
-    ]) {
+    let bytes = frame(
+        Kind::Advisories,
+        source,
+        [
+            &advisory[..],
+            &children.alias,
+            &children.affected,
+            &children.range,
+        ],
+    );
+    Encoded {
+        source: source.to_owned(),
+        kind: Kind::Advisories,
+        digest: digest(&bytes),
+        first_table: advisory,
+        bytes,
+    }
+}
+
+/// Encode one source's exploited CVE ids, the way [`encode`] encodes advisories.
+///
+/// ```text
+/// waharoa intel exploited 1
+/// source cisa/kev
+/// exploited_cve 47189
+/// (47,189 bytes of CSV)
+/// ```
+///
+/// A row is the source and the id, in id order.
+pub fn encode_exploited(source: &str, ids: &BTreeSet<String>) -> Encoded {
+    let mut csv = Vec::new();
+    for id in ids {
+        exploited_line(&mut csv, source, id);
+    }
+    let bytes = frame(Kind::Exploited, source, [&csv[..]]);
+    Encoded {
+        source: source.to_owned(),
+        kind: Kind::Exploited,
+        digest: digest(&bytes),
+        first_table: csv,
+        bytes,
+    }
+}
+
+/// The format line, the source line, and each of `kind`'s tables with its length.
+fn frame<const N: usize>(kind: Kind, source: &str, tables: [&[u8]; N]) -> Vec<u8> {
+    let mut bytes = format!("{}\nsource {source}\n", kind.format()).into_bytes();
+    for (table, csv) in kind.tables().iter().zip(tables) {
         bytes.extend_from_slice(format!("{table} {}\n", csv.len()).as_bytes());
         bytes.extend_from_slice(csv);
     }
-    Encoded {
-        source: source.to_owned(),
-        digest: digest(&bytes),
-        advisory,
-        bytes,
-    }
+    bytes
 }
 
 /// `sha256:` and the hex digest, the form both `intel_source.digest` and
@@ -197,14 +260,17 @@ pub enum Row {
     Alias(usize, String),
     Affected(usize, Affected),
     Ranged(usize, Ranged),
+    /// A CVE id an exploited catalogue lists.
+    Exploited(String),
 }
 
 /// Whether `next` can follow `previous`: advisories in publisher id order, then each table's
-/// rows in position and row order, none repeated. [`Decoder`] reads the tables in order, so
-/// rows of different tables always can.
+/// rows in position and row order, none repeated. Exploited ids in id order. [`Decoder`] reads
+/// the tables in order, so rows of different tables always can.
 fn follows(previous: &Row, next: &Row) -> bool {
     match (previous, next) {
         (Row::Advisory(a), Row::Advisory(b)) => a.id < b.id,
+        (Row::Exploited(a), Row::Exploited(b)) => a < b,
         (Row::Alias(i, a), Row::Alias(j, b)) => (i, a) < (j, b),
         (Row::Affected(i, a), Row::Affected(j, b)) => (i, a) < (j, b),
         (Row::Ranged(i, a), Row::Ranged(j, b)) => (i, a) < (j, b),
@@ -220,9 +286,10 @@ fn follows(previous: &Row, next: &Row) -> bool {
 #[derive(Debug)]
 pub struct Decoder<'a> {
     source: String,
+    kind: Kind,
     /// The bytes after the table being read.
     rest: &'a [u8],
-    /// The table being read, as an index into [`TABLES`].
+    /// The table being read, as an index into [`Kind::tables`].
     table: usize,
     records: Records<'a>,
     advisories: usize,
@@ -236,19 +303,23 @@ impl<'a> Decoder<'a> {
     pub fn new(bytes: &'a [u8]) -> Result<Self, Undecodable> {
         let mut rest = bytes;
         let first = take_line(&mut rest)?;
-        if first != FORMAT {
-            return Err(Undecodable(format!(
-                "the first line is `{first}`, not `{FORMAT}`"
-            )));
-        }
+        let kind = [Kind::Advisories, Kind::Exploited]
+            .into_iter()
+            .find(|kind| kind.format() == first)
+            .ok_or_else(|| {
+                Undecodable(format!(
+                    "the first line is `{first}`, not `{FORMAT}` or `{EXPLOITED_FORMAT}`"
+                ))
+            })?;
         let header = take_line(&mut rest)?;
         let source = header
             .strip_prefix("source ")
             .ok_or_else(|| Undecodable(format!("`{header}` is not `source <name>`")))?
             .to_owned();
-        let records = take_table(&mut rest, TABLES[0])?;
+        let records = take_table(&mut rest, kind.tables()[0])?;
         Ok(Self {
             source,
+            kind,
             rest,
             table: 0,
             records,
@@ -264,8 +335,9 @@ impl<'a> Decoder<'a> {
     }
 
     fn next_row(&mut self) -> Result<Option<Row>, Undecodable> {
+        let tables = self.kind.tables();
         loop {
-            let table = TABLES[self.table];
+            let table = tables[self.table];
             if let Some(record) = self.records.next() {
                 let (bytes, fields) = record?;
                 let row = self.row(table, fields)?;
@@ -285,7 +357,7 @@ impl<'a> Decoder<'a> {
                 return Ok(Some(row));
             }
             self.table += 1;
-            match TABLES.get(self.table) {
+            match tables.get(self.table) {
                 Some(next) => self.records = take_table(&mut self.rest, next)?,
                 None if self.rest.is_empty() => return Ok(None),
                 None => {
@@ -300,8 +372,13 @@ impl<'a> Decoder<'a> {
 
     /// A record of `table`, the table at `self.table`.
     fn row(&mut self, table: &str, fields: Vec<Option<String>>) -> Result<Row, Undecodable> {
-        Ok(match self.table {
-            0 => {
+        Ok(match (self.kind, self.table) {
+            // `exploited_cve`, the only table.
+            (Kind::Exploited, _) => {
+                let [_source, id] = width(table, fields)?;
+                Row::Exploited(given(table, id)?)
+            }
+            (Kind::Advisories, 0) => {
                 let [id, _source, summary, cvss, modified, malware] = width(table, fields)?;
                 let cvss = match cvss {
                     Some(text) => Some(text.parse::<f64>().map_err(|_| {
@@ -333,11 +410,11 @@ impl<'a> Decoder<'a> {
                     unexpressed: 0,
                 })
             }
-            1 => {
+            (Kind::Advisories, 1) => {
                 let [position, name] = width(table, fields)?;
                 Row::Alias(self.index(table, position)?, given(table, name)?)
             }
-            2 => {
+            (Kind::Advisories, 2) => {
                 let [position, ecosystem, name, version] = width(table, fields)?;
                 Row::Affected(
                     self.index(table, position)?,
@@ -349,7 +426,7 @@ impl<'a> Decoder<'a> {
                 )
             }
             // `advisory_range`, the last table.
-            _ => {
+            (Kind::Advisories, _) => {
                 let [position, ecosystem, name, introduced, fixed, last_affected] =
                     width(table, fields)?;
                 let end = match (fixed, last_affected) {
@@ -393,6 +470,7 @@ impl<'a> Decoder<'a> {
             Row::Alias(i, alias) => alias_line(out, &key(*i), alias),
             Row::Affected(i, a) => affected_line(out, &key(*i), a),
             Row::Ranged(i, r) => range_line(out, &key(*i), r),
+            Row::Exploited(id) => exploited_line(out, &self.source, id),
         }
     }
 }
@@ -427,6 +505,11 @@ pub fn decode(bytes: &[u8]) -> Result<(String, Vec<Rows>), Undecodable> {
             }
             Row::Ranged(i, r) => {
                 rows[i].ranges.insert(r);
+            }
+            Row::Exploited(id) => {
+                return Err(Undecodable(format!(
+                    "{id} is an exploited id, not an advisory"
+                )));
             }
         }
     }
@@ -564,6 +647,10 @@ fn advisory_line(out: &mut Vec<u8>, source: &str, r: &Rows) {
             Some(if r.malware { "true" } else { "false" }),
         ],
     );
+}
+
+fn exploited_line(out: &mut Vec<u8>, source: &str, id: &str) {
+    line(out, &[Some(source), Some(id)]);
 }
 
 fn alias_line(out: &mut Vec<u8>, key: &str, alias: &str) {
@@ -851,7 +938,7 @@ mod tests {
     /// The four tables with their lengths, around whatever CSV a case gives.
     fn framed(tables: [&str; 4]) -> Vec<u8> {
         let mut out = format!("{FORMAT}\nsource osv\n");
-        for (table, csv) in TABLES.into_iter().zip(tables) {
+        for (table, csv) in Kind::Advisories.tables().iter().zip(tables) {
             out.push_str(&format!("{table} {}\n{csv}", csv.len()));
         }
         out.into_bytes()
@@ -867,7 +954,8 @@ mod tests {
             (b"\xff\n".to_vec(), "a line is not UTF-8"),
             (
                 good.replacen("rows 1", "rows 2", 1).into_bytes(),
-                "the first line is `waharoa intel rows 2`, not `waharoa intel rows 1`",
+                "the first line is `waharoa intel rows 2`, not `waharoa intel rows 1` or \
+                 `waharoa intel exploited 1`",
             ),
             (
                 good.replacen("source osv", "origin osv", 1).into_bytes(),
@@ -1029,7 +1117,7 @@ mod tests {
                 affected.len(),
             )
         );
-        assert_eq!(text(&encoded.advisory), advisory);
+        assert_eq!(text(&encoded.first_table), advisory);
         assert_eq!(
             encoded.digest,
             format!("sha256:{}", sha256_hex(&encoded.bytes))
@@ -1077,21 +1165,110 @@ mod tests {
     }
 
     #[test]
-    fn a_fetch_records_each_stream_by_name() {
-        let fetch = Fetch {
-            taken_at: "t1".to_owned(),
-            streams: vec![StreamDigest {
-                stream: "osv/npm".to_owned(),
-                sha256: "aa".to_owned(),
-                etag: Some("\"e\"".to_owned()),
-                last_modified: None,
-            }],
-        };
+    fn streams_are_recorded_as_an_object_keyed_by_stream() {
+        let streams = [StreamDigest {
+            stream: "osv/npm".to_owned(),
+            sha256: "aa".to_owned(),
+            etag: Some("\"e\"".to_owned()),
+            last_modified: None,
+        }];
         let recorded: serde_json::Value =
-            serde_json::from_str(&fetch.streams_json()).expect("json");
+            serde_json::from_str(&streams_json(&streams)).expect("json");
         assert_eq!(
             recorded,
             serde_json::json!({"osv/npm": {"sha256": "aa", "etag": "\"e\"", "last_modified": null}})
         );
+    }
+
+    /// The source and ids an exploited encoding contains.
+    fn exploited_ids(bytes: &[u8]) -> Result<(String, Vec<String>), Undecodable> {
+        let decoder = Decoder::new(bytes)?;
+        let source = decoder.source().to_owned();
+        let mut ids = Vec::new();
+        for row in decoder {
+            let Row::Exploited(id) = row? else {
+                panic!("an advisory row in an exploited encoding");
+            };
+            ids.push(id);
+        }
+        Ok((source, ids))
+    }
+
+    #[test]
+    fn exploited_ids_are_one_table_of_source_and_id_and_decode_back() {
+        let ids: BTreeSet<String> = ["CVE-2026-76461", "CVE-2020-11023"]
+            .map(str::to_owned)
+            .into();
+        let encoded = encode_exploited("cisa/kev", &ids);
+        let csv = "\"cisa/kev\",\"CVE-2020-11023\"\n\"cisa/kev\",\"CVE-2026-76461\"\n";
+        assert_eq!(
+            text(&encoded.bytes),
+            format!(
+                "waharoa intel exploited 1\nsource cisa/kev\nexploited_cve {}\n{csv}",
+                csv.len()
+            )
+        );
+        assert_eq!(
+            (text(&encoded.first_table), encoded.kind),
+            (csv, Kind::Exploited)
+        );
+        assert_eq!(encoded.digest, digest(&encoded.bytes));
+        assert_ne!(encoded.digest, encode_exploited("other", &ids).digest);
+
+        assert_eq!(
+            exploited_ids(&encoded.bytes),
+            Ok(("cisa/kev".to_owned(), ids.into_iter().collect()))
+        );
+        assert_eq!(
+            decode(&encoded.bytes),
+            Err(Undecodable(
+                "CVE-2020-11023 is an exploited id, not an advisory".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn exploited_bytes_that_are_not_an_encoding_are_refused_with_the_reason() {
+        let framed = |csv: &str| {
+            format!(
+                "{EXPLOITED_FORMAT}\nsource cisa/kev\nexploited_cve {}\n{csv}",
+                csv.len()
+            )
+            .into_bytes()
+        };
+        let cases = [
+            (
+                framed("\"cisa/kev\"\n"),
+                "exploited_cve: a row has 1 fields, not 2",
+            ),
+            (
+                framed("\"cisa/kev\",\n"),
+                "exploited_cve: a required value is empty",
+            ),
+            (
+                framed("\"other\",\"CVE-2020-11023\"\n"),
+                "exploited_cve: a row does not encode back to the same bytes",
+            ),
+            (
+                framed("\"cisa/kev\",\"CVE-2\"\n\"cisa/kev\",\"CVE-1\"\n"),
+                "exploited_cve: a row is out of order or repeated",
+            ),
+            (
+                framed("\"cisa/kev\",\"CVE-1\"\n\"cisa/kev\",\"CVE-1\"\n"),
+                "exploited_cve: a row is out of order or repeated",
+            ),
+            (
+                format!("{EXPLOITED_FORMAT}\nsource cisa/kev\nadvisory 0\n").into_bytes(),
+                "`advisory 0` is not `exploited_cve <bytes>`",
+            ),
+            (
+                format!("{}x", text(&framed(""))).into_bytes(),
+                "1 bytes follow exploited_cve",
+            ),
+        ];
+        for (bytes, reason) in cases {
+            let err = exploited_ids(&bytes).expect_err(reason).to_string();
+            assert!(err.contains(reason), "{err:?} lacks {reason:?}");
+        }
     }
 }

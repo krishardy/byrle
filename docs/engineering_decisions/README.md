@@ -30,6 +30,7 @@ code, and the file names where.
 | [Intel in decisions: one lookup per package, fail closed](intel-in-decisions.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
+| [The CISA KEV catalogue is a source of its own, joined at lookup](kev-stream.md) | Implemented, `waharoa refresh` |
 | [Intel schema: surrogate keys and sized types](intel-schema-keys-and-types.md) | Implemented |
 | [Policy schema version 1 is frozen](policy-schema-v1-frozen.md) | Decided |
 | [`waharoa policy check`](policy-check.md) | Implemented |

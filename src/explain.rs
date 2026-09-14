@@ -18,7 +18,7 @@
 //! `n/a` and `unenforced` both mean the check did not decide, for different reasons, and
 //! neither is `pass`. Reporting either as a pass would claim a check ran that never could.
 
-use crate::policy::decide::{self, Advisory, Check, Decision, Facts, Outcome};
+use crate::policy::decide::{self, Advisory, Check, Decision, Facts, Intel, Outcome};
 use crate::policy::enforce::Unenforceable;
 use crate::policy::{Action, Policy};
 
@@ -160,7 +160,7 @@ fn lasts(policy: &Policy, entry: usize) -> String {
 ///
 /// Separate from the settings themselves because a configured check with no fact source is
 /// not the same as one that is off, and reading the file cannot tell them apart.
-pub fn policy(policy: &Policy, has_advisory_stream: bool) -> String {
+pub fn policy(policy: &Policy, intel: Intel) -> String {
     let mut out = String::from("settings\n");
     out.push_str(&format!("  cooldown_days    {}\n", policy.cooldown_days));
     out.push_str(&format!("  max_cvss         {}\n", policy.max_cvss));
@@ -174,15 +174,18 @@ pub fn policy(policy: &Policy, has_advisory_stream: bool) -> String {
 
     out.push_str("\nchecks\n");
     for check in Check::ALL {
-        let state = match check {
-            // No stream marks an advisory exploited, whether or not a store answers.
-            // `enforce::unenforceable` states the same fact for a package. Change both
-            // when a KEV stream loads; `policy.txt` and `decisions.txt` pin each one.
-            Check::Kev => "unenforced, no exploitation stream",
-            Check::MaxCvss | Check::KnownMalware if !has_advisory_stream => {
+        // `enforce::unenforceable` gives the same answers for a package.
+        let state = match (check, intel) {
+            (Check::MaxCvss | Check::KnownMalware | Check::Kev, Intel::NotConsulted) => {
                 "unenforced, no advisory stream"
             }
-            Check::CooldownDays if !policy.uses_cooldown() => "off",
+            (
+                Check::Kev,
+                Intel::Consulted {
+                    exploitation_loaded: false,
+                },
+            ) => "unenforced, no exploitation stream",
+            (Check::CooldownDays, _) if !policy.uses_cooldown() => "off",
             _ => "enforced",
         };
         out.push_str(&format!("  {:16}  {state}\n", check.as_str()));
@@ -368,7 +371,7 @@ mod tests {
 
     #[test]
     fn the_policy_view_separates_a_check_that_is_off_from_one_with_no_source() {
-        let out = policy(&loaded("version: 1\ncooldown_days: 0"), false);
+        let out = policy(&loaded("version: 1\ncooldown_days: 0"), Intel::NotConsulted);
 
         assert!(out.contains("cooldown_days     off"), "{out}");
         assert!(out.contains("unenforced, no advisory stream"), "{out}");
@@ -377,7 +380,10 @@ mod tests {
 
     #[test]
     fn the_policy_view_reports_a_cooldown_as_enforced_once_it_is_set() {
-        let out = policy(&loaded("version: 1\ncooldown_days: 30"), false);
+        let out = policy(
+            &loaded("version: 1\ncooldown_days: 30"),
+            Intel::NotConsulted,
+        );
 
         assert!(out.contains("cooldown_days     enforced"), "{out}");
     }
@@ -392,13 +398,15 @@ mod tests {
                  \x20   set: { install_scripts: allow }\n    reason: reviewed\n\
                  \x20   permanent: true\n",
             ),
-            true,
+            Intel::Consulted {
+                exploitation_loaded: false,
+            },
         );
 
         assert!(out.contains("max_cvss         7.5"), "{out}");
         assert!(out.contains("denials          1"), "{out}");
         assert!(out.contains("packages[0]  reviewed"), "{out}");
-        // With a stream, the advisory checks stop being unenforced, except `kev`.
+        // A store without the KEV catalogue enforces every advisory check but `kev`.
         assert!(!out.contains("no advisory stream"), "{out}");
         assert!(out.contains("max_cvss          enforced"), "{out}");
         assert!(out.contains("known_malware     enforced"), "{out}");
@@ -428,12 +436,12 @@ mod tests {
         }
     }
 
-    /// Every state each check can reach, and the exception cases around them. Several are
-    /// unreachable in production today and are here anyway: no stream marks an advisory
-    /// exploited, so `kev` never fails outside a test.
+    /// Every state each check can reach, and the exception cases around them.
     fn cases() -> Vec<Case> {
         let consulted = || Facts {
-            intel: Intel::Consulted,
+            intel: Intel::Consulted {
+                exploitation_loaded: true,
+            },
             ..facts()
         };
         let young = || Facts {
@@ -634,26 +642,43 @@ mod tests {
 
     #[test]
     fn the_policy_view_renders_as_the_golden_file_says() {
-        let shipped = loaded(include_str!("../examples/policy.yaml"));
+        let shipped = || loaded(include_str!("../examples/policy.yaml"));
         let mut out = String::new();
-        for (name, policy, store) in [
-            ("version: 1, no store", loaded("version: 1"), false),
+        for (name, policy, intel) in [
+            (
+                "version: 1, no store",
+                loaded("version: 1"),
+                Intel::NotConsulted,
+            ),
             (
                 "version: 1, cooldown_days: 0, no store",
                 loaded("version: 1\ncooldown_days: 0"),
-                false,
+                Intel::NotConsulted,
             ),
-            ("examples/policy.yaml, a store that answers", shipped, true),
+            (
+                "examples/policy.yaml, a store without the KEV catalogue",
+                shipped(),
+                Intel::Consulted {
+                    exploitation_loaded: false,
+                },
+            ),
+            (
+                "examples/policy.yaml, a store with the KEV catalogue",
+                shipped(),
+                Intel::Consulted {
+                    exploitation_loaded: true,
+                },
+            ),
         ] {
             out.push_str(&format!("=== {name}\n"));
-            out.push_str(&policy_view(&policy, store));
+            out.push_str(&policy_view(&policy, intel));
             out.push('\n');
         }
         golden("policy.txt", &out);
     }
 
-    fn policy_view(p: &Policy, store: bool) -> String {
-        policy(p, store)
+    fn policy_view(p: &Policy, intel: Intel) -> String {
+        policy(p, intel)
     }
 
     #[test]

@@ -57,7 +57,11 @@ pub struct Facts {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Intel {
     /// A stream answered. Empty advisories mean nothing is known against this version.
-    Consulted,
+    Consulted {
+        /// Whether the answer included the KEV catalogue. Without it, no advisory is marked
+        /// exploited because nothing was asked.
+        exploitation_loaded: bool,
+    },
     /// No stream exists or none covers this ecosystem. Empty advisories mean nothing was
     /// asked, which is not the same as nothing found.
     NotConsulted,

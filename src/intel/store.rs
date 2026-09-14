@@ -132,6 +132,9 @@ pub struct PackageIntel {
     pub records: Vec<(Option<String>, Record)>,
     /// Each record with an interval of versions it is against.
     pub ranges: Vec<(Interval<Version>, Record)>,
+    /// Whether the snapshot includes the KEV catalogue. Without it, `exploited` is false on
+    /// every record because nothing was asked, and `kev` cannot be answered.
+    pub exploitation_loaded: bool,
 }
 
 impl PackageIntel {
@@ -360,6 +363,7 @@ mod tests {
                 at(Some("2.0.0"), "GHSA-3"),
             ],
             ranges: Vec::new(),
+            exploitation_loaded: false,
         };
         let ids = |version: &str| -> Vec<String> {
             intel
@@ -397,6 +401,7 @@ mod tests {
                 within(Some("1.0.0"), Some("2.0.0"), "GHSA-2"),
                 within(None, Some("1.2.0"), "GHSA-3"),
             ],
+            exploitation_loaded: false,
         };
         let ids = |version: &str| -> Vec<String> {
             intel
@@ -421,6 +426,7 @@ mod tests {
             snapshot: "s1".to_owned(),
             records: vec![at(None, "MAL-1")],
             ranges: Vec::new(),
+            exploitation_loaded: false,
         })));
         assert_eq!(
             loaded.snapshot().await.expect("answers").map(|s| s.digest),

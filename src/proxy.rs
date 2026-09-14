@@ -1508,11 +1508,12 @@ fn policy_refused_versions(
             .records
             .first()
             .map(|record| {
-                let consulted = match intel {
-                    Some(_) => crate::policy::decide::Intel::Consulted,
-                    None => crate::policy::decide::Intel::NotConsulted,
-                };
-                enforce::unenforceable(policy, record, times, consulted)
+                enforce::unenforceable(
+                    policy,
+                    record,
+                    times,
+                    crate::policy::decide::Intel::of(intel),
+                )
             })
             .unwrap_or_default();
         audit.write(
@@ -2482,24 +2483,32 @@ mod tests {
         );
     }
 
-    /// A store with one advisory for every version.
+    /// A store with one advisory for every version, without the KEV catalogue.
     fn everywhere(advisory_id: &str, cvss: Option<f64>, malware: bool) -> Arc<dyn Intel> {
+        store_with(
+            crate::intel::store::Record {
+                advisory_id: advisory_id.to_owned(),
+                aliases: Vec::new(),
+                source: "osv".to_owned(),
+                cvss,
+                cvss_source: None,
+                exploited: false,
+                malware,
+            },
+            false,
+        )
+    }
+
+    fn store_with(
+        record: crate::intel::store::Record,
+        exploitation_loaded: bool,
+    ) -> Arc<dyn Intel> {
         Arc::new(crate::intel::store::testing::FixedIntel(Ok(Some(
             PackageIntel {
                 snapshot: "s1".to_owned(),
-                records: vec![(
-                    None,
-                    crate::intel::store::Record {
-                        advisory_id: advisory_id.to_owned(),
-                        aliases: Vec::new(),
-                        source: "osv".to_owned(),
-                        cvss,
-                        cvss_source: None,
-                        exploited: false,
-                        malware,
-                    },
-                )],
+                records: vec![(None, record)],
                 ranges: Vec::new(),
+                exploitation_loaded,
             },
         ))))
     }
@@ -2597,9 +2606,29 @@ mod tests {
                         None,
                         "version: 1\ncooldown_days: 36500\n".to_owned(),
                     ),
-                    // No stream marks an advisory exploited, so `kev` is unenforceable whenever
-                    // the store answers. Give it a case when the KEV stream exists.
-                    Check::Kev => continue,
+                    // Scored under the default `max_cvss`, so only `kev` refuses it.
+                    Check::Kev => (
+                        LODASH,
+                        "lodash",
+                        "4.17.21",
+                        Some(store_with(
+                            crate::intel::store::Record {
+                                exploited: true,
+                                aliases: vec!["CVE-2020-11023".to_owned()],
+                                ..crate::intel::store::Record {
+                                    advisory_id: "GHSA-0000-0000-0000".to_owned(),
+                                    aliases: Vec::new(),
+                                    source: "osv".to_owned(),
+                                    cvss: Some(5.0),
+                                    cvss_source: None,
+                                    exploited: false,
+                                    malware: false,
+                                }
+                            },
+                            true,
+                        )),
+                        BASE.to_owned(),
+                    ),
                     Check::MaxCvss => (
                         LODASH,
                         "lodash",
