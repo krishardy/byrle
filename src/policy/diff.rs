@@ -28,10 +28,10 @@
 //! judged nothing cannot pass. An error before the report, such as a policy that does not load,
 //! exits [`ERROR`] alone. See docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
 
+use super::Action;
 use super::decide::{Check, Decision, Outcome};
 use super::enforce::Unenforceable;
 use super::strictness::Strictness;
-use super::Action;
 
 /// Exit bit: a check got looser, or cannot be compared.
 pub const LOOSENED: u8 = 1;
@@ -404,7 +404,11 @@ mod tests {
         }];
         let from = decided("version: 1\ncooldown_days: 3650", &facts());
         let to = decided("version: 1\ncooldown_days: 3650", &facts());
-        let d = package("pkg:npm/lodash@4.17.21", (&from, &[]), (&to, &unenforceable));
+        let d = package(
+            "pkg:npm/lodash@4.17.21",
+            (&from, &[]),
+            (&to, &unenforceable),
+        );
 
         assert_eq!(d.moved.len(), 1);
         assert_eq!(d.moved[0].to, Shown::Unenforced);
@@ -426,7 +430,11 @@ mod tests {
         }];
         let from = decided("version: 1\ncooldown_days: 3650", &facts());
         let to = decided("version: 1\ncooldown_days: 3650", &facts());
-        let d = package("pkg:npm/lodash@4.17.21", (&from, &unenforceable), (&to, &[]));
+        let d = package(
+            "pkg:npm/lodash@4.17.21",
+            (&from, &unenforceable),
+            (&to, &[]),
+        );
 
         assert_eq!(d.moved[0].strictness, Strictness::Stricter);
         assert!(!d.loosened());

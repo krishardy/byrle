@@ -638,7 +638,11 @@ mod tests {
         let mut out = String::new();
         for (name, policy, store) in [
             ("version: 1, no store", loaded("version: 1"), false),
-            ("version: 1, cooldown_days: 0, no store", loaded("version: 1\ncooldown_days: 0"), false),
+            (
+                "version: 1, cooldown_days: 0, no store",
+                loaded("version: 1\ncooldown_days: 0"),
+                false,
+            ),
             ("examples/policy.yaml, a store that answers", shipped, true),
         ] {
             out.push_str(&format!("=== {name}\n"));

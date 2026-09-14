@@ -168,10 +168,7 @@ fn verdict(facts: &Facts, decision: &Decision) -> Verdict {
     }
     Verdict::Refuse(Refusal {
         action,
-        purl: format!(
-            "pkg:{}/{}@{}",
-            facts.ecosystem, facts.name, facts.version
-        ),
+        purl: format!("pkg:{}/{}@{}", facts.ecosystem, facts.name, facts.version),
         reasons: decision.reasons().iter().map(|r| reason(r)).collect(),
     })
 }
@@ -363,9 +360,9 @@ mod tests {
         };
         assert_eq!(refusal.action, Action::Quarantine);
         assert!(
-            refusal.message().starts_with(
-                "waharoa: pkg:npm/lodash@4.17.21 is held by policy"
-            ),
+            refusal
+                .message()
+                .starts_with("waharoa: pkg:npm/lodash@4.17.21 is held by policy"),
             "held, not blocked: {}",
             refusal.message()
         );

@@ -1335,7 +1335,9 @@ struct WireTimes {
 ///
 /// `created` and `modified` share the map and describe the package rather than a version,
 /// so they are dropped: npm's own semver parsing rejects both as version names.
-pub fn parse_publish_times(json: &[u8]) -> Result<BTreeMap<String, jiff::Timestamp>, NormalizeError> {
+pub fn parse_publish_times(
+    json: &[u8],
+) -> Result<BTreeMap<String, jiff::Timestamp>, NormalizeError> {
     let wire: WireTimes = serde_json::from_slice(json).map_err(NormalizeError::Json)?;
     Ok(wire
         .time
@@ -1387,8 +1389,8 @@ mod tests {
     /// to be fetched.
     #[test]
     fn the_abbreviated_document_yields_no_times() {
-        let times = parse_publish_times(&fixture("lodash-4.17.21.abbrev.json"))
-            .expect("should parse");
+        let times =
+            parse_publish_times(&fixture("lodash-4.17.21.abbrev.json")).expect("should parse");
 
         assert!(times.is_empty());
     }
@@ -2885,7 +2887,11 @@ mod tests {
         /// it refuses goes whether or not the origin is one the proxy fronts.
         #[test]
         fn policy_removes_a_version_the_origin_check_would_have_kept() {
-            let out = filter_refusing(MIXED, &policy(&[], &["https://elsewhere.example"]), &refusing(&["1.0.1"]));
+            let out = filter_refusing(
+                MIXED,
+                &policy(&[], &["https://elsewhere.example"]),
+                &refusing(&["1.0.1"]),
+            );
 
             assert_eq!(out.removed, ["1.0.1"]);
             assert_eq!(out.allowed, 1, "1.0.2 is still allowed direct");
@@ -2926,7 +2932,10 @@ mod tests {
             .expect("should filter");
 
             assert_eq!(out.removed, ["1.0.0"]);
-            assert_eq!(out.allowed, 2, "both off-origin versions are kept as published");
+            assert_eq!(
+                out.allowed, 2,
+                "both off-origin versions are kept as published"
+            );
         }
 
         /// The only control that works on an off-origin artifact: the client fetches it
@@ -3096,15 +3105,14 @@ mod tests {
 
         #[test]
         fn filtering_a_body_that_is_not_json_is_an_error() {
-            let result =
-                filter_unservable_versions(
-                    b"<html>",
-                    std::iter::empty(),
-                    &policy(&[], &[]),
-                    &HashSet::new(),
-                    true,
-                    PROXY,
-                );
+            let result = filter_unservable_versions(
+                b"<html>",
+                std::iter::empty(),
+                &policy(&[], &[]),
+                &HashSet::new(),
+                true,
+                PROXY,
+            );
             assert!(matches!(result, Err(RewriteError::NotJson(_))));
         }
 

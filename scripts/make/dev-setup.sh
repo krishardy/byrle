@@ -51,6 +51,13 @@ else
     cargo install cargo-llvm-cov --locked
 fi
 
+echo "==> cargo-mutants (mutation testing, used by 'make mutants')"
+if cargo mutants --version >/dev/null 2>&1; then
+    echo "    already installed"
+else
+    cargo install cargo-mutants --locked
+fi
+
 echo "==> trufflehog (credential scanning, used by 'make sast')"
 if need trufflehog; then
     echo "    found $(trufflehog --version 2>&1 | head -1)"

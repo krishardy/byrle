@@ -1,9 +1,9 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test test-integration coverage verify sqlx-prepare check-deps update-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config duplicates
+.PHONY: help dev-setup lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config duplicates
 
 help:
 	@echo "waharoa targets:"
 	@echo "  dev-setup      install development dependencies"
-	@echo "  lint           clippy and shellcheck, warnings as errors"
+	@echo "  lint           rustfmt, clippy and shellcheck, warnings as errors"
 	@echo "  semgrep        pattern-based static analysis"
 	@echo "  trufflehog     credential scanning (working tree and git history)"
 	@echo "  sast           semgrep + trufflehog"
@@ -11,6 +11,7 @@ help:
 	@echo "  test-integration  tests needing a real Postgres, in a container"
 	@echo "  sqlx-prepare   regenerate .sqlx/, the offline query cache"
 	@echo "  coverage       unit test coverage, failing under the CLAUDE.md floor"
+	@echo "  mutants        mutation testing of the Rust changed since BASE (default HEAD)"
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
@@ -57,6 +58,9 @@ sqlx-prepare:
 
 coverage:
 	@scripts/make/coverage.sh
+
+mutants:
+	@scripts/make/mutants.sh $(BASE)
 
 verify:
 	@scripts/make/verify.sh

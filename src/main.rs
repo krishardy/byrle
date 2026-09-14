@@ -17,12 +17,12 @@ use waharoa::env;
 use waharoa::explain;
 use waharoa::identity::PackageRef;
 
-use waharoa::npm;
 use waharoa::audit;
 use waharoa::intel::store::Intel;
+use waharoa::npm;
 use waharoa::policy::{Policy, check, decide, diff, enforce, packages, today};
-use waharoa::record;
 use waharoa::proxy::Proxy;
+use waharoa::record;
 use waharoa::tls::{self, TrustMode};
 
 /// Load a policy, refuse to start if it is unusable, and report what it says.
@@ -465,9 +465,7 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
         }
     };
     let Some(package) = packument.version(reference.version()) else {
-        eprintln!(
-            "waharoa explain: the registry does not publish {argument}"
-        );
+        eprintln!("waharoa explain: the registry does not publish {argument}");
         return std::process::ExitCode::from(1);
     };
 

@@ -390,7 +390,13 @@ mod tests {
                 ..
             }
         ));
-        assert!(checked("vuln_advisory_ids: [\"CVE-2024-1234\"]", "    permanent: true\n").is_ok());
+        assert!(
+            checked(
+                "vuln_advisory_ids: [\"CVE-2024-1234\"]",
+                "    permanent: true\n"
+            )
+            .is_ok()
+        );
     }
 
     /// The shipped example is a real policy and has to pass its own rules, read on a day
