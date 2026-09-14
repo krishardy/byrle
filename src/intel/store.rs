@@ -44,7 +44,7 @@ impl Record {
     /// A row is a `match`-stream result by construction: it names a package. See
     /// `src/intel.rs` for why that matters and why an `Enrichment` cannot be built here.
     pub fn finding(&self) -> Finding {
-        let mut finding = Finding::new(&self.source, &self.advisory_id);
+        let mut finding = Finding::new(&self.source, &self.advisory_id).with_aliases(&self.aliases);
         if let Some(cvss) = self.cvss {
             finding = finding.with_score(cvss);
         }
@@ -286,6 +286,21 @@ mod tests {
         .finding();
         assert_eq!(finding.score.as_ref().map(Score::cvss), Some(7.5));
         assert!(finding.exploited());
+    }
+
+    #[test]
+    fn a_row_gives_its_aliases_to_the_finding_so_an_enrichment_keyed_on_one_applies() {
+        let finding = Record {
+            aliases: vec!["CVE-1".to_owned()],
+            ..record()
+        }
+        .finding();
+        assert_eq!(finding.aliases, ["CVE-1"]);
+        assert!(
+            finding
+                .enriched_by(&[Enrichment::new("CVE-1").exploited()])
+                .exploited()
+        );
     }
 
     #[test]

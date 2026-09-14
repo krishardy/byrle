@@ -1430,13 +1430,16 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `load::snapshot_id`, `intel_source`). Live: two refreshes of one bundle recorded
       `sha256:225131ada035512e110d0c18f027cb1832a200dfc231df294931e518d36c40b9` and one
       `intel_snapshot` row. See `docs/engineering_decisions/snapshot-identity.md`.
-- [ ] `[!]` Deduplication across streams via alias reconciliation — before the policy
-      engine, so one vuln never fires three rules. It also gates enrichment:
-      `Finding::enriched_by` joins one id against one id, and OSV findings carry `GHSA-`
-      and `MAL-` ids while CISA keys on `cveID`, so today a real OSV finding and a real KEV
-      entry match nothing. Covered by
-      `an_osv_finding_and_a_kev_entry_do_not_join_on_the_ids_they_carry`. The alias set
-      changes `enriched_by`'s signature, so land it before a second stream is built.
+- [x] `[!]` Alias reconciliation. Aliases are matched, and records are not merged.
+      `Finding` carries its aliases and `enriched_by` applies an enrichment naming the id or
+      any alias, so a KEV entry keyed on a CVE reaches the `GHSA-` record carrying it:
+      `a_kev_entry_reaches_an_osv_finding_through_its_alias_and_only_through_it`.
+      `intel::is_named` is the one match, also used by `vuln_advisory_ids` exceptions.
+      Merging was dropped: 31 groups of stored npm records share ids by aliases, and
+      GitHub links a fix bypass to the advisory it bypasses that way, as separate bugs with
+      separate fixed versions (lodash `GHSA-xxjr-mmjv-4gpg` and `GHSA-f23m-r3pf-42rh`). One
+      vulnerability never fires three rules: `decide` gives each check one result.
+      [alias-matching](docs/engineering_decisions/alias-matching.md).
 - [ ] `[!]` GitHub Advisory stream (GraphQL, token auth)
 - [ ] OSSF Malicious Packages stream (licence-cleared: Apache-2.0) — publishes natively in OSV format, so it reuses
       the OSV normalization path rather than needing its own
@@ -1444,8 +1447,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       upstream to OSSF, so this is likely already ingested. Only implement if it adds
       real coverage. Verify data license and per-version lookup shape.
 - [ ] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed) — `enrich`-only, joined on
-      exact CVE ID. Last in the build order: 13 npm CVEs of 6,032, and it needs the alias
-      set before it can reach an OSV finding at all.
+      exact CVE ID or an alias. Catalogue `2026.09.14`, 1,710 CVE ids, reaches 13 stored
+      npm `GHSA-` records. Decided 2026-09-15: its own source, `cisa/kev`, with its own
+      digest in the snapshot; a failed fetch keeps the last KEV load and exits 1; kept
+      snapshot files carry the KEV rows. Nothing sets `advisory.exploited` today, and kept
+      snapshots read it as `false`.
 - [ ] NVD stream (licence-cleared: public domain, nothing owed) — `enrich`-only for
       npm/PyPI, joined on exact CVE ID
 - [ ] NVD enrichment runs as a background job, never on the hot path
