@@ -89,9 +89,14 @@ fn report_policy(path: &std::path::Path, ceiling: i64) -> std::sync::Arc<Policy>
 /// A variable that does not parse ends the process with exit 2, as a malformed command line
 /// does: the operator asked for something, and continuing without it would hide that.
 fn or_exit<T>(result: Result<T, env::EnvError>) -> T {
+    or_exit_with(result, 2)
+}
+
+/// [`or_exit`] with `code`, for a command whose exit 2 means something else.
+fn or_exit_with<T>(result: Result<T, env::EnvError>, code: u8) -> T {
     result.unwrap_or_else(|e| {
         eprintln!("waharoa: {e}");
-        std::process::exit(2)
+        std::process::exit(i32::from(code))
     })
 }
 
@@ -206,13 +211,19 @@ fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-/// `waharoa policy diff <from> <to> [--as-of YYYY-MM-DD] [--snapshot ID]`.
+/// `waharoa policy diff <from> <to> [--from-date DATE] [--to-date DATE] [--snapshot ID]
+/// [--lockfile PATH]...`.
 ///
-/// The package set is the audit log, which is the only record of what this proxy has
-/// actually been asked about. Lockfiles are the other source named in the plan and are not
-/// read yet.
+/// The package set is the audit log's versions, which record what this proxy has actually
+/// been asked about, and each lockfile's. The exit code is the OR of `diff::LOOSENED` and
+/// `diff::TIGHTENED`, or `diff::ERROR` alone.
 async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
-    let as_of = args.as_of.unwrap_or_else(today);
+    let now = today();
+    let from_date = args.from_date.map_or(now, |when| when.date(now));
+    let to_date = args.to_date.map_or(now, |when| when.date(now));
+    if from_date != to_date {
+        eprintln!("waharoa policy diff: <FROM> as of {from_date}, <TO> as of {to_date}");
+    }
 
     let mut loaded = Vec::new();
     for path in [&args.from, &args.to] {
@@ -220,18 +231,18 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
             Ok(policy) => loaded.push(policy),
             Err(e) => {
                 eprintln!("waharoa policy diff: {}: {e}", path.display());
-                return std::process::ExitCode::from(2);
+                return std::process::ExitCode::from(diff::ERROR);
             }
         }
     }
 
-    let log_path = or_exit(env::process().audit_log());
+    let log_path = or_exit_with(env::process().audit_log(), diff::ERROR);
     if log_path.is_none() && args.lockfile.is_empty() {
         eprintln!(
             "waharoa policy diff: set {} or pass --lockfile, for the packages to compare over",
             env::AUDIT_LOG
         );
-        return std::process::ExitCode::from(2);
+        return std::process::ExitCode::from(diff::ERROR);
     }
     let mut listed = Vec::new();
     if let Some(log_path) = log_path {
@@ -239,7 +250,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
             Ok(log) => listed.extend(audit::packages(&log)),
             Err(e) => {
                 eprintln!("waharoa policy diff: {}: {e}", log_path.display());
-                return std::process::ExitCode::from(2);
+                return std::process::ExitCode::from(diff::ERROR);
             }
         }
     }
@@ -248,7 +259,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
             Ok(locked) => listed.extend(locked),
             Err(e) => {
                 eprintln!("waharoa policy diff: {e}");
-                return std::process::ExitCode::from(2);
+                return std::process::ExitCode::from(diff::ERROR);
             }
         }
     }
@@ -278,7 +289,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
                 Ok(kept) => Some(Box::new(kept)),
                 Err(e) => {
                     eprintln!("waharoa policy diff: --snapshot {id}: {e}");
-                    return std::process::ExitCode::from(2);
+                    return std::process::ExitCode::from(diff::ERROR);
                 }
             }
         }
@@ -286,7 +297,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
             Ok(store) => store.map(|store| Box::new(store) as Box<dyn Intel>),
             Err(e) => {
                 eprintln!("waharoa policy diff: {}: {e}", env::DATABASE_URL);
-                return std::process::ExitCode::from(2);
+                return std::process::ExitCode::from(diff::ERROR);
             }
         },
     };
@@ -296,7 +307,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         eprintln!("waharoa policy diff: intel snapshot {}", snapshot.digest);
     }
 
-    let upstream = or_exit(env::process().upstream());
+    let upstream = or_exit_with(env::process().upstream(), diff::ERROR);
     let client = npm::Client::new(reqwest::Client::new(), upstream);
     let needs_times = loaded.iter().any(Policy::uses_cooldown);
 
@@ -325,12 +336,13 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
             Ok(intel) => intel,
             Err(e) => {
                 eprintln!("waharoa policy diff: {purl}: {e}");
-                return std::process::ExitCode::from(2);
+                return std::process::ExitCode::from(diff::ERROR);
             }
         };
         let decided: Vec<(decide::Decision, Vec<enforce::Unenforceable>)> = loaded
             .iter()
-            .map(|policy| {
+            .zip([from_date, to_date])
+            .map(|(policy, as_of)| {
                 let mut facts = decide::Facts::from_record_and_times(package, times.as_ref());
                 if let Some(intel) = &intel {
                     facts = facts.with_intel(intel);
@@ -349,15 +361,16 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
     }
 
     print!("{}", report.render());
-    if report.fails_the_gate() {
+    let bits = report.exit_bits();
+    if bits != 0 {
         eprintln!(
-            "\nwaharoa policy diff: {} loosened, {} incomparable",
+            "\nwaharoa policy diff: {} loosened, {} incomparable, {} tightened",
             report.loosened().len(),
-            report.incomparable().len()
+            report.incomparable().len(),
+            report.tightened().len()
         );
-        return std::process::ExitCode::from(1);
     }
-    std::process::ExitCode::SUCCESS
+    std::process::ExitCode::from(bits)
 }
 
 /// `waharoa explain`.
@@ -797,11 +810,23 @@ async fn fetch_bundle(
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    // An unknown command or argument exits 2 rather than falling through to the proxy:
-    // `waharoa doctr` silently serving traffic is the wrong thing to do with a typo.
+    // An unknown command or argument exits 2, or 4 for `policy diff`, rather than falling
+    // through to the proxy: `waharoa doctr` silently serving traffic is the wrong thing to do
+    // with a typo.
     // `--help` and `--version` exit 0. Every trust decision the proxy makes comes from the
     // environment and the packuments it reads, not from argv.
-    match cli::Cli::parse().command {
+    // The rule below warns about trusting argv for security decisions. These arguments only
+    // choose the exit code for a command line clap refused, and the program path is skipped.
+    // nosemgrep: rust.lang.security.args-os.args-os
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let parsed = match cli::Cli::try_parse_from(&args) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            let _ = e.print();
+            return std::process::ExitCode::from(cli::exit_code(&e, &args));
+        }
+    };
+    match parsed.command {
         None => {}
         Some(cli::Command::Doctor) => return run_doctor().await,
         Some(cli::Command::Explain(target)) => return run_explain(target).await,

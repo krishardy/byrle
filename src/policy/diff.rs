@@ -19,11 +19,25 @@
 //! `n/a` moves only if the ecosystem did, and a package does not change ecosystem between
 //! two policies. A `n/a` on one side and anything else on the other is
 //! [`Strictness::Incomparable`], which fails the gate rather than being guessed at.
+//!
+//! # Exit bits
+//!
+//! The exit code is the OR of [`LOOSENED`] and [`TIGHTENED`], so a scheduled run can see a
+//! lapsing entry tighten a package while a CI gate still fails only on a loosening.
+//! [`ERROR`] stops the run and is never OR-ed with the others. See
+//! docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
 
 use super::decide::{Check, Decision, Outcome};
 use super::enforce::Unenforceable;
 use super::strictness::Strictness;
 use super::Action;
+
+/// Exit bit: a check got looser, or cannot be compared.
+pub const LOOSENED: u8 = 1;
+/// Exit bit: a check got stricter.
+pub const TIGHTENED: u8 = 2;
+/// Exit code: the diff could not be run.
+pub const ERROR: u8 = 4;
 
 /// What a check answered, as the report shows it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,6 +140,13 @@ impl Package {
             .iter()
             .any(|m| m.strictness == Strictness::Incomparable)
     }
+
+    /// Whether any check got stricter.
+    pub fn tightened(&self) -> bool {
+        self.moved
+            .iter()
+            .any(|m| m.strictness == Strictness::Stricter)
+    }
 }
 
 /// Compare one package under two policies.
@@ -181,12 +202,19 @@ impl Report {
         self.changed.iter().filter(|p| p.incomparable()).collect()
     }
 
-    /// Whether the gate fails.
+    pub fn tightened(&self) -> Vec<&Package> {
+        self.changed.iter().filter(|p| p.tightened()).collect()
+    }
+
+    /// The exit code: [`LOOSENED`] if a check loosened or cannot be compared, OR-ed with
+    /// [`TIGHTENED`] if one got stricter.
     ///
-    /// Incomparable fails too: §5.5 is fail loud when tightening cannot be proven, and a
-    /// diff that cannot be decided is exactly that case.
-    pub fn fails_the_gate(&self) -> bool {
-        !self.loosened().is_empty() || !self.incomparable().is_empty()
+    /// Incomparable sets the loosening bit: §5.5 is fail loud when tightening cannot be
+    /// proven, and a diff that cannot be decided is exactly that case.
+    pub fn exit_bits(&self) -> u8 {
+        let loosened = !self.loosened().is_empty() || !self.incomparable().is_empty();
+        let tightened = !self.tightened().is_empty();
+        (if loosened { LOOSENED } else { 0 }) | (if tightened { TIGHTENED } else { 0 })
     }
 
     /// Grouped by check and direction, which is what a person reads first.
@@ -443,11 +471,17 @@ mod tests {
                 strictness: Strictness::Incomparable,
             }],
         });
-        assert!(report.fails_the_gate());
+        assert_eq!(report.exit_bits(), LOOSENED);
+    }
+
+    /// Scripts read these numbers, so the values are part of the command.
+    #[test]
+    fn the_exit_bits_are_1_2_and_4() {
+        assert_eq!((LOOSENED, TIGHTENED, ERROR), (1, 2, 4));
     }
 
     #[test]
-    fn the_gate_passes_when_everything_tightened() {
+    fn everything_tightening_sets_only_the_tightening_bit() {
         let mut report = Report::default();
         report.push(diff(
             "version: 1",
@@ -457,7 +491,61 @@ mod tests {
 
         assert_eq!(report.evaluated, 1);
         assert_eq!(report.changed.len(), 1);
-        assert!(!report.fails_the_gate());
+        assert_eq!(report.tightened().len(), 1);
+        assert_eq!(report.exit_bits(), TIGHTENED);
+    }
+
+    /// The scheduled run: one policy today and in 30 days. The exception lapses, which
+    /// tightens `install_scripts`, and the package ages past its cooldown, which loosens it.
+    #[test]
+    fn one_policy_at_two_dates_tightens_as_an_entry_lapses_and_loosens_as_a_cooldown_passes() {
+        let policy = Policy::parse(
+            "version: 1\ncooldown_days: 30\ninstall_scripts: block\n\
+             packages:\n  - match: { ecosystem: npm, name: lodash }\n\
+             \x20   set: { install_scripts: allow }\n    reason: t\n    expires: \"2026-09-20\"\n",
+        )
+        .expect("policy should load");
+        let facts = Facts {
+            has_install_scripts: true,
+            published: Some(jiff::civil::date(2026, 9, 1)),
+            ..facts()
+        };
+        let later = jiff::civil::date(2026, 10, 13);
+        let d = package(
+            "pkg:npm/lodash@4.17.21",
+            (&decide(&policy, &facts, TODAY), &[]),
+            (&decide(&policy, &facts, later), &[]),
+        );
+
+        let moved: Vec<(Check, Shown, Shown, Strictness)> = d
+            .moved
+            .iter()
+            .map(|m| (m.check, m.from, m.to, m.strictness))
+            .collect();
+        assert_eq!(
+            moved,
+            [
+                (
+                    Check::CooldownDays,
+                    Shown::Fail(Action::Quarantine),
+                    Shown::Pass,
+                    Strictness::Looser
+                ),
+                (
+                    Check::InstallScripts,
+                    Shown::Excepted(0),
+                    Shown::Fail(Action::Block),
+                    Strictness::Stricter
+                ),
+            ]
+        );
+        let mut report = Report::default();
+        report.push(d);
+        assert_eq!(report.exit_bits(), LOOSENED | TIGHTENED);
+
+        let mut unmoved = Report::default();
+        unmoved.push(diff("version: 1", "version: 1", &facts));
+        assert_eq!(unmoved.exit_bits(), 0);
     }
 
     #[test]
@@ -498,7 +586,7 @@ mod tests {
         assert!(out.contains("2 moved"), "{out}");
         assert!(out.contains("2  denials LOOSER"), "{out}");
         assert!(out.contains("pkg:npm/a@4.17.21  block -> allow"), "{out}");
-        assert!(report.fails_the_gate());
+        assert_eq!(report.exit_bits(), LOOSENED);
         assert_eq!(report.loosened().len(), 2);
     }
 
