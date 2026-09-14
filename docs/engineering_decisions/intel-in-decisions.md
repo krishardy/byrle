@@ -21,7 +21,7 @@ the intel store:
 
 With no policy nothing is enforced and the store is not asked.
 
-`waharoa explain` exits 1 and `waharoa policy diff` exits 2 when a configured store cannot
+`waharoa explain` exits 1 and `waharoa policy diff` exits 4 when a configured store cannot
 answer, rather than print a verdict reached without it. The proxy refuses to start when
 `WAHAROA_DATABASE_URL` is set and the connection or migration fails.
 

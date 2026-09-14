@@ -618,13 +618,14 @@ waharoa policy diff policy.yaml policy-new.yaml \
   resolved but never locked. Support both.
 - **Transitions reported in both directions**, grouped with counts. `allow -> block` is
   what operators ask for; `block -> allow` is the more dangerous one to ship unnoticed.
-- **`--as-of <date>`.** Cooldown and exception expiry are both time-dependent. Running
-  `--as-of +30d` against an *unchanged* policy shows exactly which packages break when
-  entries lapse. With the 90-day ceiling this is the renewal workflow: a scheduled job
+- **`--from-date` and `--to-date`, one date per policy.** Cooldown and exception expiry are
+  both time-dependent. Comparing an *unchanged* policy with itself at `--to-date +30d`
+  shows exactly which packages break when entries lapse. With the 90-day ceiling this is the renewal workflow: a scheduled job
   surfacing upcoming expiries with concrete impact instead of a list of dates nobody can
   prioritize.
 - **Nonzero exit on any loosening transition**, so a policy repo can gate weakening
-  changes on review.
+  changes on review. The exit code is the OR of 1 for a loosening and 2 for a tightening,
+  and 4 alone for an error.
 
 ### HTTP stack
 
@@ -847,6 +848,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [Readiness endpoint](engineering_decisions/readiness-endpoint.md) | `GET /-/waharoa/ready`: 503 when a policy and an intel store are set and the store holds no snapshot or cannot answer; reports each stream's loaded digest, no percentage |
 | n/a | [Snapshot identity](engineering_decisions/snapshot-identity.md) | The snapshot id is a hash over every source's stored rows, not the bundles. Postgres keeps the latest load; `waharoa refresh` also keeps each snapshot as files of the same encoding |
 | n/a | [`policy check`](engineering_decisions/policy-check.md) | Loads as the proxy does; lists entries that change nothing, never win, or are `permanent: true`; `--strict` exits 1 on the first two |
+| n/a | [`policy diff`: a date per policy, and exit bits](engineering_decisions/policy-diff-dates-and-exit-bits.md) | `--from-date` and `--to-date` replace `--as-of`; exit is the OR of 1 loosening and 2 tightening, or 4 alone for an error |
 | n/a | [`policy diff` reads lockfiles](engineering_decisions/policy-diff-lockfiles.md) | `--lockfile <path>`, repeatable, adds the registry versions of `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` v1, `pnpm-lock.yaml` 9 or `bun.lock` to the audit log's |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 

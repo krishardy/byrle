@@ -10,7 +10,7 @@
 
 `waharoa policy diff <from> <to> --lockfile <path>`, repeatable. The package set is every
 registry version each lockfile locks, plus every version the audit log lists when
-`WAHAROA_AUDIT_LOG` is set. Each version is compared once. With neither, the command exits 2:
+`WAHAROA_AUDIT_LOG` is set. Each version is compared once. With neither, the command exits 4:
 
 ```
 waharoa policy diff: set WAHAROA_AUDIT_LOG or pass --lockfile, for the packages to compare over
@@ -101,7 +101,8 @@ pkg:npm/lodash@4.17.21  block -> allow
 waharoa policy diff: 2 loosened, 0 incomparable
 ```
 
-Refused, each exit 2:
+Refused, each exit 2 when run, and 4 since
+[policy-diff-dates-and-exit-bits](policy-diff-dates-and-exit-bits.md):
 
 ```
 waharoa policy diff: set WAHAROA_AUDIT_LOG or pass --lockfile, for the packages to compare over

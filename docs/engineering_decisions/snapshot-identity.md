@@ -258,7 +258,8 @@ waharoa policy diff: 2 loosened, 0 incomparable
 
 and exits 1. With no store and no snapshot the same two policies give `nothing moved`.
 
-Refused, each exit 2:
+Refused, each exit 2 when run, and 4 since
+[policy-diff-dates-and-exit-bits](policy-diff-dates-and-exit-bits.md):
 
 ```
 --snapshot sha256:2251...: WAHAROA_SNAPSHOT_DIR is not set, so there is no kept snapshot to read

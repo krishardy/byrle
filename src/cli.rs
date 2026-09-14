@@ -56,8 +56,8 @@ pub enum PolicyCommand {
     /// Load a policy as the proxy does, and list the package entries that do nothing. Exits
     /// 1 if it is refused
     Check(Check),
-    /// Compare two policies over the audit log's and lockfiles' packages. Exits 1 on any
-    /// loosening
+    /// Compare two policies over the audit log's and lockfiles' packages. The exit code is the
+    /// OR of 1 for a loosening, 2 for a tightening, and 4 on its own for an error
     Diff(Diff),
 }
 
@@ -79,15 +79,61 @@ pub struct Diff {
     pub from: PathBuf,
     /// The policy that would replace it
     pub to: PathBuf,
-    /// Judge both policies as of this date [default: today, UTC]
-    #[arg(long, value_name = "YYYY-MM-DD")]
-    pub as_of: Option<jiff::civil::Date>,
+    /// Judge <FROM> as of this date, YYYY-MM-DD or +<days>d [default: today, UTC]
+    #[arg(long, value_name = "DATE", value_parser = when)]
+    pub from_date: Option<When>,
+    /// Judge <TO> as of this date, YYYY-MM-DD or +<days>d [default: today, UTC]
+    #[arg(long, value_name = "DATE", value_parser = when)]
+    pub to_date: Option<When>,
     /// Judge both against this kept intel snapshot, not the store's latest load
     #[arg(long, value_name = "ID")]
     pub snapshot: Option<String>,
     /// Compare over this lockfile's packages too. Repeatable
     #[arg(long, value_name = "PATH")]
     pub lockfile: Vec<PathBuf>,
+}
+
+/// A date given to `policy diff`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum When {
+    On(jiff::civil::Date),
+    /// `+<days>d`.
+    DaysFromToday(u32),
+}
+
+impl When {
+    /// The date this is, when today is `today`. Past the last date jiff has, that date.
+    pub fn date(self, today: jiff::civil::Date) -> jiff::civil::Date {
+        match self {
+            Self::On(date) => date,
+            Self::DaysFromToday(days) => jiff::Span::new()
+                .try_days(i64::from(days))
+                .map_or(jiff::civil::Date::MAX, |span| today.saturating_add(span)),
+        }
+    }
+}
+
+fn when(value: &str) -> Result<When, String> {
+    let parsed = match value.strip_prefix('+').and_then(|v| v.strip_suffix('d')) {
+        Some(days) => days.parse().ok().map(When::DaysFromToday),
+        None => value.parse().ok().map(When::On),
+    };
+    parsed.ok_or_else(|| format!("`{value}` is neither YYYY-MM-DD nor +<days>d"))
+}
+
+/// The exit code for a command line clap refused or answered.
+///
+/// A refused command line that starts `policy diff` exits
+/// [`ERROR`](crate::policy::diff::ERROR), because 2 is that command's tightening bit. Every
+/// other command line exits what clap gives: 0 for help and version, 2 for a refusal.
+pub fn exit_code(error: &clap::Error, args: &[std::ffi::OsString]) -> u8 {
+    let code = u8::try_from(error.exit_code()).unwrap_or(crate::policy::diff::ERROR);
+    let words: Vec<&str> = args.iter().skip(1).take(2).filter_map(|a| a.to_str()).collect();
+    if code != 0 && words == ["policy", "diff"] {
+        crate::policy::diff::ERROR
+    } else {
+        code
+    }
 }
 
 #[cfg(test)]
@@ -159,7 +205,8 @@ mod tests {
             Diff {
                 from: "a.yaml".into(),
                 to: "b.yaml".into(),
-                as_of: None,
+                from_date: None,
+                to_date: None,
                 snapshot: None,
                 lockfile: Vec::new(),
             }
@@ -187,14 +234,78 @@ mod tests {
     /// usage line spelled it that way, and read only `--as-of=2026-01-01`.
     #[test]
     fn a_value_is_taken_with_a_space_or_an_equals_sign() {
-        let date = jiff::civil::date(2026, 1, 1);
+        let date = When::On(jiff::civil::date(2026, 1, 1));
         for args in [
-            ["policy", "diff", "a", "b", "--as-of", "2026-01-01"].as_slice(),
-            &["policy", "diff", "a", "b", "--as-of=2026-01-01"],
-            &["policy", "diff", "--as-of", "2026-01-01", "a", "b"],
+            ["policy", "diff", "a", "b", "--from-date", "2026-01-01"].as_slice(),
+            &["policy", "diff", "a", "b", "--from-date=2026-01-01"],
+            &["policy", "diff", "--from-date", "2026-01-01", "a", "b"],
         ] {
-            assert_eq!(diff(args).expect("parses").as_of, Some(date), "{args:?}");
+            assert_eq!(
+                diff(args).expect("parses").from_date,
+                Some(date),
+                "{args:?}"
+            );
         }
+    }
+
+    #[test]
+    fn a_date_is_a_calendar_date_or_days_after_today() {
+        let today = jiff::civil::date(2026, 9, 14);
+        for (given, expected) in [
+            ("2026-01-01", jiff::civil::date(2026, 1, 1)),
+            ("+30d", jiff::civil::date(2026, 10, 14)),
+            ("+0d", today),
+        ] {
+            let parsed = diff(&["policy", "diff", "a", "b", "--to-date", given]).expect(given);
+            assert_eq!(
+                parsed.to_date.expect(given).date(today),
+                expected,
+                "{given}"
+            );
+            assert_eq!(parsed.from_date, None);
+        }
+        assert_eq!(
+            When::DaysFromToday(u32::MAX).date(today),
+            jiff::civil::Date::MAX
+        );
+        for bad in ["30d", "+30", "+-3d", "+d", "tomorrow", "2026-13-01"] {
+            let e = stops(
+                &["policy", "diff", "a", "b", "--from-date", bad],
+                ErrorKind::ValueValidation,
+            );
+            assert!(
+                e.to_string()
+                    .contains(&format!("`{bad}` is neither YYYY-MM-DD nor +<days>d")),
+                "{e}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_malformed_policy_diff_exits_its_error_bit_and_other_commands_exit_2() {
+        let code = |args: &[&str]| {
+            let argv: Vec<std::ffi::OsString> = std::iter::once("waharoa")
+                .chain(args.iter().copied())
+                .map(Into::into)
+                .collect();
+            let e = Cli::try_parse_from(&argv).expect_err("answered or refused");
+            exit_code(&e, &argv)
+        };
+        let error = crate::policy::diff::ERROR;
+        assert_eq!(code(&["policy", "diff", "a"]), error);
+        assert_eq!(
+            code(&["policy", "diff", "--lockfile", "x", "a", "b", "c"]),
+            error
+        );
+        assert_eq!(
+            code(&["policy", "diff", "a", "b", "--as-of", "2026-01-01"]),
+            error
+        );
+        assert_eq!(code(&["policy", "diff", "--help"]), 0);
+        assert_eq!(code(&["policy", "check"]), 2);
+        assert_eq!(code(&["policy", "dif", "a", "b"]), 2);
+        assert_eq!(code(&["doctr"]), 2);
+        assert_eq!(code(&["--version"]), 0);
     }
 
     #[test]
@@ -252,14 +363,18 @@ mod tests {
                     "diff",
                     "a",
                     "b",
-                    "--as-of=2026-01-01",
-                    "--as-of=2026-01-02",
+                    "--to-date=2026-01-01",
+                    "--to-date=2026-01-02",
                 ],
                 ErrorKind::ArgumentConflict,
             ),
             (
-                &["policy", "diff", "a", "b", "--as-of", "nope"],
+                &["policy", "diff", "a", "b", "--from-date", "nope"],
                 ErrorKind::ValueValidation,
+            ),
+            (
+                &["policy", "diff", "a", "b", "--as-of", "2026-01-01"],
+                ErrorKind::UnknownArgument,
             ),
             (&["explain"], ErrorKind::MissingRequiredArgument),
             (&["explain", "--polcy"], ErrorKind::UnknownArgument),

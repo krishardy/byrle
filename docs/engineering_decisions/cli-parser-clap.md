@@ -26,6 +26,10 @@ against `examples/policy.yaml` before the change:
 | `--version` | `unknown command`, exit 2 | `waharoa 0.1.0`, exit 0 |
 | `doctr` | `unknown command`, exit 2 | `unrecognized subcommand 'doctr'`, exit 2 |
 
+Since 2026-09-14 `policy diff` has `--from-date` and `--to-date` in place of `--as-of`, and a
+refused `policy diff` command line exits 4, because 2 is its tightening bit. See
+[policy-diff-dates-and-exit-bits](policy-diff-dates-and-exit-bits.md).
+
 No test exercised the dispatch. `cli::tests` now covers each row.
 
 ## Candidates

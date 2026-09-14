@@ -35,6 +35,7 @@ code, and the file names where.
 | [Readiness endpoint](readiness-endpoint.md) | Implemented |
 | [Snapshot identity](snapshot-identity.md) | Implemented; import not built |
 | [`policy diff` reads lockfiles](policy-diff-lockfiles.md) | Implemented |
+| [`policy diff`: a date per policy, and exit bits](policy-diff-dates-and-exit-bits.md) | Implemented |
 | [Reading a packument without changing it](packument-body-inspection.md) | Implemented, Stage 1 |
 | [Verifying the artifact digest on the way past](artifact-digest-verification.md) | Implemented, Stage 1 |
 | [Rewriting `dist.tarball` to point at the proxy](packument-tarball-url-rewriting.md) | Implemented, Stage 1 |

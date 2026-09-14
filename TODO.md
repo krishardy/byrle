@@ -1256,8 +1256,9 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       vectors, not verdicts.** Two policies can both answer `block` for different reasons,
       and comparing verdicts reports no change there. Held by
       `two_policies_that_both_block_for_different_reasons_still_show_the_move`.
-- [x] `[!]` Nonzero exit on any loosening transition (CI gate). Verified in three
-      directions: loosening exits 1, tightening and no-change exit 0.
+- [x] `[!]` Nonzero exit on any loosening transition (CI gate). The exit code is the OR of
+      1 for a loosening and 2 for a tightening, and 4 alone for an error. Verified: 0, 1, 2,
+      3 and 4 live. See `docs/engineering_decisions/policy-diff-dates-and-exit-bits.md`.
       - [x] **A check that stops being enforced is a loosening.** The written policy did
             not loosen, but the package now installs. The gate exists to stop a change
             slipping something through, so that is what it reports.
@@ -1266,8 +1267,16 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] Reuses `Strictness` and the `allow < quarantine < block` lattice rather than
             inventing a second notion of looser.
 - [x] `--as-of <date>` for time-dependent verdicts. Verified to change the answer: with
-      cooldowns straddling ms's age, 1 package moves today and 5 by 2027-06-01.
-- [ ] Scheduled-job recipe: `--as-of +30d` to surface upcoming expiries with impact
+      cooldowns straddling ms's age, 1 package moves today and 5 by 2027-06-01. Replaced by
+      `--from-date` and `--to-date`, one per policy, each `YYYY-MM-DD` or `+<days>d`.
+- [x] Scheduled-job recipe: `policy diff policy.yaml policy.yaml --to-date +30d`. Exit 2 is
+      an entry lapsing, 1 a package passing its cooldown. Live: an entry expiring
+      2026-09-30 tightened `@babel/helper-validator-identifier`, exit 2.
+- [ ] A packument that cannot be read is skipped with a message and not counted, so a run
+      where every read fails prints `0 packages evaluated`, `nothing moved`, and exits 0.
+      Seen with `WAHAROA_UPSTREAM` set to `nope`, `ftp://x` and `http://`: 15 skipped each.
+- [ ] `WAHAROA_UPSTREAM` is read as text and never parsed as a URL, so `nope` is accepted
+      by `policy diff` and, unchecked, by the proxy.
 
 ### Intel — advisory streams
 - [~] `[!]` **Verify each stream's data license before implementing it.** Done for four
