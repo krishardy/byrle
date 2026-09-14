@@ -121,10 +121,21 @@ impl Score {
     }
 }
 
+/// Whether `wanted` is `advisory_id` or one of its `aliases`.
+///
+/// OSV stores a GitHub advisory under its `GHSA-` id with the CVE id as an alias, and an
+/// exception, a KEV entry or NVD gives the CVE. See
+/// docs/engineering_decisions/alias-matching.md.
+pub fn is_named(advisory_id: &str, aliases: &[String], wanted: &str) -> bool {
+    advisory_id == wanted || aliases.iter().any(|alias| alias == wanted)
+}
+
 /// Something wrong with a package. Only a `match` stream can make one.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
     pub advisory_id: String,
+    /// The other ids the advisory is known by. An enrichment keyed on any of them applies.
+    pub aliases: Vec<String>,
     pub score: Option<Score>,
     /// Which stream originated this.
     pub source: String,
@@ -139,10 +150,17 @@ impl Finding {
     pub fn new(source: &str, advisory_id: &str) -> Self {
         Self {
             advisory_id: advisory_id.to_owned(),
+            aliases: Vec::new(),
             score: None,
             source: source.to_owned(),
             exploited: false,
         }
+    }
+
+    /// Record the other ids this stream gave the advisory.
+    pub fn with_aliases(mut self, aliases: &[String]) -> Self {
+        self.aliases = aliases.to_vec();
+        self
     }
 
     /// Record a score this stream reported.
@@ -169,10 +187,14 @@ impl Finding {
     /// order enrichments arrive in, which is what the plan means by requiring the
     /// behaviour to be explicit rather than emergent: without it, two streams disagreeing
     /// would resolve to whichever was read last.
+    ///
+    /// An enrichment applies when its id is the advisory's id or any alias. GitHub gives a fix
+    /// bypass the CVE ids of the advisory it bypasses, so an enrichment keyed on such a CVE
+    /// applies to both.
     pub fn enriched_by(mut self, enrichments: &[Enrichment]) -> Self {
         for e in enrichments
             .iter()
-            .filter(|e| e.advisory_id == self.advisory_id)
+            .filter(|e| is_named(&self.advisory_id, &self.aliases, &e.advisory_id))
         {
             if let Some(score) = &e.score
                 && Score::replaces(self.score.as_ref().map(Score::cvss), score.cvss)
@@ -410,8 +432,7 @@ mod tests {
     /// Standing in for NVD or KEV: knows advisory ids, knows nothing about packages.
     ///
     /// It keys on CVE ids, which is what CISA's catalogue really does. OSV findings carry
-    /// `GHSA-` and `MAL-` ids, so joining the two needs the alias set that is still to be
-    /// built; see the deduplication item in TODO.md.
+    /// `GHSA-` and `MAL-` ids, and match it by their aliases.
     struct Catalogue;
 
     impl EnrichStream for Catalogue {
@@ -450,15 +471,22 @@ mod tests {
         assert!(enriched.exploited());
     }
 
+    /// OSV publishes `GHSA-` and `MAL-` ids and CISA keys on `cveID`. GHSA-jfh8-c2jp-5v3q
+    /// carries CVE-2021-44228 as an alias, and the KEV entry reaches it only by that alias.
     #[test]
-    fn an_osv_finding_and_a_kev_entry_do_not_join_on_the_ids_they_carry() {
-        // OSV publishes `GHSA-` and `MAL-` ids and CISA keys on `cveID`, so the real pair
-        // matches nothing here. `enriched_by` compares one id against one id; the alias set
-        // that would make this join is still to be built.
-        let finding = Finding::new("osv", "GHSA-jfh8-c2jp-5v3q");
+    fn a_kev_entry_reaches_an_osv_finding_through_its_alias_and_only_through_it() {
         let kev = Catalogue.enrichments(&["CVE-2021-44228".to_owned()]);
+        let finding = Finding::new("osv", "GHSA-jfh8-c2jp-5v3q");
 
-        assert!(!finding.enriched_by(&kev).exploited());
+        assert!(!finding.clone().enriched_by(&kev).exploited());
+        let aliased = finding.with_aliases(&["CVE-2021-44228".to_owned()]);
+        assert!(aliased.enriched_by(&kev).exploited());
+        assert!(
+            !Finding::new("osv", "GHSA-other")
+                .with_aliases(&["CVE-2021-45046".to_owned()])
+                .enriched_by(&kev)
+                .exploited()
+        );
     }
 
     #[test]

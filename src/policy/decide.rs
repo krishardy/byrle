@@ -81,7 +81,7 @@ impl Advisory {
     /// Whether `id` is this advisory's id or one of its aliases. A `vuln_advisory_ids` exception
     /// names a CVE, and OSV stores the advisory under its GHSA id.
     pub fn is_named(&self, id: &str) -> bool {
-        self.id == id || self.aliases.iter().any(|alias| alias == id)
+        crate::intel::is_named(&self.id, &self.aliases, id)
     }
 }
 
