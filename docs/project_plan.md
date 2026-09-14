@@ -481,8 +481,10 @@ what the decision needs. `excepted` is the one carrying operational risk and is 
 expiry review has to find; an exception that never reaches `excepted` is doing no work.
 
 The short circuit survives in one place: in front of expensive analysis. None of the
-checks above costs anything worth deferring for, but Stage 4's capability analysis and
-source diff do, and they run only if the cheap vector has not already settled the answer.
+checks above costs anything worth deferring for once its facts are gathered, and the one
+fact that costs a request, publish times for `cooldown_days`, is fetched once per package
+and kept. Stage 4's capability analysis and source diff do cost enough, and they run only
+if the cheap vector has not already settled the answer.
 
 ### Actions
 

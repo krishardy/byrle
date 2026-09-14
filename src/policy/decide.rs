@@ -12,9 +12,10 @@
 //! reports both, rather than only the reason that lapses on its own, which would send an
 //! operator to grant an age exception and find it still refused.
 //!
-//! The cost is that a check runs after one has already failed. None of them costs
-//! anything worth deferring for: they read fields off a struct. Stage 4's expensive
-//! analysis is the exception and short-circuits in front of this.
+//! The cost is that a check runs after one has already failed. Here that is reading
+//! fields off a struct. Gathering the facts can cost more: publish times for
+//! `cooldown_days` are a full-packument request, made before this runs. Stage 4's
+//! expensive analysis is the exception and short-circuits in front of this.
 //!
 //! # Facts come from somewhere else
 //!
