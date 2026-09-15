@@ -45,8 +45,12 @@ pub struct Rows {
     /// RFC 3339, as OSV wrote it.
     pub modified: Option<String>,
     pub malware: bool,
-    /// The CVSS base score. `None` when the record carries no CVSS vector that parses.
+    /// The CVSS base score. From a vector when one parses; otherwise, when the record carries
+    /// no CVSS vector at all, the top of its severity band. `None` when neither gives one.
     pub cvss: Option<f64>,
+    /// The `database_specific.severity` band `cvss` was read from: `LOW`, `MODERATE`, `HIGH`
+    /// or `CRITICAL`. `None` when a vector gave the score, or nothing did.
+    pub band: Option<String>,
     /// CVSS vectors in the record that did not parse.
     pub unread_vectors: usize,
     pub aliases: BTreeSet<String>,
@@ -87,7 +91,8 @@ pub enum Skipped {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Parsed {
-    Rows(Rows),
+    /// Boxed: a record's rows are far larger than a reason to skip it.
+    Rows(Box<Rows>),
     Skipped(Skipped),
 }
 
@@ -101,6 +106,9 @@ struct Record {
     aliases: Vec<String>,
     #[serde(default)]
     severity: Vec<Severity>,
+    /// Read only for `severity`, a GitHub band. Any shape is accepted, so a publisher's other
+    /// fields cannot refuse the record.
+    database_specific: Option<serde_json::Value>,
     #[serde(default)]
     affected: Vec<Entry>,
 }
@@ -135,13 +143,41 @@ struct Range {
     events: Vec<BTreeMap<String, String>>,
 }
 
+/// The score, the band it was read from, and how many CVSS vectors did not parse.
+///
+/// The base score of the newest CVSS version the record carries. Newest rather than highest.
+/// v3 and v4 are different scoring systems, and taking the larger of the two would compare
+/// them as one. On 2026-09-13, 809 GHSA records carried both. Only `CVSS_V3` and `CVSS_V4`
+/// entries are read; no npm record carried another type.
+///
+/// A record with no CVSS vector at all is scored at the top of its `band`, as
+/// [`band_ceiling`] gives it: 689 npm `GHSA-` records on 2026-09-15. A vector that did not parse
+/// is not replaced by the band, so it stays counted and the record unscored.
+fn score(severity: &[Severity], band: Option<&str>) -> (Option<f64>, Option<String>, usize) {
+    let (cvss, unread) = vector_score(severity);
+    match (cvss, band.and_then(|b| Some((b, band_ceiling(b)?)))) {
+        (None, Some((band, ceiling))) if unread == 0 => (Some(ceiling), Some(band.to_owned()), 0),
+        _ => (cvss, None, unread),
+    }
+}
+
+/// The highest CVSS score a GitHub severity band covers, the qualitative ranges of CVSS v3.1:
+/// `LOW` 0.1 to 3.9, `MODERATE` 4.0 to 6.9, `HIGH` 7.0 to 8.9, `CRITICAL` 9.0 to 10.0. The top,
+/// decided 2026-09-15, so a threshold inside a band refuses what the band could be. `None` for
+/// any other text.
+fn band_ceiling(band: &str) -> Option<f64> {
+    match band {
+        "LOW" => Some(3.9),
+        "MODERATE" => Some(6.9),
+        "HIGH" => Some(8.9),
+        "CRITICAL" => Some(10.0),
+        _ => None,
+    }
+}
+
 /// The base score of the newest CVSS version the record carries, and how many of its
 /// vectors did not parse.
-///
-/// Newest rather than highest. v3 and v4 are different scoring systems, and taking the
-/// larger of the two would compare them as one. On 2026-09-13, 809 GHSA records carried
-/// both. Only `CVSS_V3` and `CVSS_V4` entries are read; no npm record carried another type.
-fn score(severity: &[Severity]) -> (Option<f64>, usize) {
+fn vector_score(severity: &[Severity]) -> (Option<f64>, usize) {
     let vectors = severity
         .iter()
         .filter(|s| matches!(s.kind.as_str(), "CVSS_V3" | "CVSS_V4"));
@@ -286,19 +322,25 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
     if affected.is_empty() && ranges.is_empty() {
         return Ok(Parsed::Skipped(Skipped::NothingStorable));
     }
-    let (cvss, unread_vectors) = score(&record.severity);
-    Ok(Parsed::Rows(Rows {
+    let band = record
+        .database_specific
+        .as_ref()
+        .and_then(|d| d.get("severity"))
+        .and_then(serde_json::Value::as_str);
+    let (cvss, band, unread_vectors) = score(&record.severity, band);
+    Ok(Parsed::Rows(Box::new(Rows {
         id: record.id,
         summary: record.summary,
         modified: record.modified,
         malware,
         cvss,
+        band,
         unread_vectors,
         aliases: record.aliases.into_iter().collect(),
         affected,
         ranges,
         unexpressed,
-    }))
+    })))
 }
 
 #[cfg(test)]
@@ -316,7 +358,7 @@ mod tests {
 
     fn rows(id: &str) -> Rows {
         match fixture(id) {
-            Parsed::Rows(rows) => rows,
+            Parsed::Rows(rows) => *rows,
             other => panic!("{id}: {other:?}"),
         }
     }
@@ -340,7 +382,7 @@ mod tests {
 
     fn stored(parsed: Parsed) -> Rows {
         match parsed {
-            Parsed::Rows(rows) => rows,
+            Parsed::Rows(rows) => *rows,
             other => panic!("{other:?}"),
         }
     }
@@ -639,6 +681,71 @@ mod tests {
         assert_eq!((rows.cvss, rows.unread_vectors), (None, 0));
         let other = scored(&severity("Ubuntu", "high"));
         assert_eq!((other.cvss, other.unread_vectors), (None, 0));
+    }
+
+    /// [`scored`], with `database_specific` given as JSON text.
+    fn banded(database_specific: &str, severity: &str) -> Rows {
+        stored(
+            parse(
+                format!(
+                    r#"{{"id": "GHSA-0000-0000-0000", "severity": [{severity}],
+                         "database_specific": {database_specific},
+                         "affected": [{{"package": {{"ecosystem": "npm", "name": "p"}},
+                                        "versions": ["1.0.0"]}}]}}"#
+                )
+                .as_bytes(),
+            )
+            .expect("should parse"),
+        )
+    }
+
+    #[test]
+    fn a_record_with_only_a_band_is_scored_at_the_top_of_the_band() {
+        for (band, cvss) in [
+            ("LOW", 3.9),
+            ("MODERATE", 6.9),
+            ("HIGH", 8.9),
+            ("CRITICAL", 10.0),
+        ] {
+            let rows = banded(&format!(r#"{{"severity": "{band}", "cwe_ids": []}}"#), "");
+            assert_eq!(
+                (rows.cvss, rows.band.as_deref(), rows.unread_vectors),
+                (Some(cvss), Some(band), 0),
+                "{band}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_vector_is_read_over_a_band_and_an_unread_one_is_not_replaced_by_it() {
+        let high = r#"{"severity": "HIGH"}"#;
+        let rows = banded(high, &severity("CVSS_V3", V31_CRITICAL));
+        assert_eq!((rows.cvss, rows.band), (Some(9.8), None));
+        let rows = banded(high, &severity("CVSS_V3", "CVSS:3.1/AV:N"));
+        assert_eq!((rows.cvss, rows.band, rows.unread_vectors), (None, None, 1));
+        let rows = banded(high, &severity("Ubuntu", "high"));
+        assert_eq!((rows.cvss, rows.band.as_deref()), (Some(8.9), Some("HIGH")));
+    }
+
+    #[test]
+    fn a_band_this_build_does_not_know_scores_nothing_and_refuses_nothing() {
+        for database_specific in [
+            r#"{"severity": "moderate"}"#,
+            r#"{"severity": "MEDIUM"}"#,
+            r#"{"severity": ""}"#,
+            r#"{"severity": 7}"#,
+            r#"{"severity": null}"#,
+            r#"{}"#,
+            r#""HIGH""#,
+            "null",
+        ] {
+            let rows = banded(database_specific, "");
+            assert_eq!(
+                (rows.cvss, rows.band, rows.unread_vectors),
+                (None, None, 0),
+                "{database_specific}"
+            );
+        }
     }
 
     #[test]

@@ -101,6 +101,7 @@ fn record(name: String, versions: Option<Vec<String>>) -> Result<Rows, DatadogEr
         modified: None,
         malware: true,
         cvss: None,
+        band: None,
         unread_vectors: 0,
         aliases: BTreeSet::new(),
         affected,

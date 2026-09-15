@@ -73,6 +73,8 @@ pub struct Advisory {
     /// The other ids it is known by. A GHSA advisory's CVE id is here.
     pub aliases: Vec<String>,
     pub cvss: f64,
+    /// The severity band `cvss` was read from, for `explain`. `None` when a vector gave it.
+    pub band: Option<String>,
     /// Whether this advisory is in a known-exploited catalogue.
     ///
     /// A property of the advisory, not of the package: a KEV entry carries a `cveID` and
@@ -491,6 +493,7 @@ mod tests {
             id: id.to_owned(),
             aliases: Vec::new(),
             cvss,
+            band: None,
             kev: false,
         }
     }
@@ -770,6 +773,7 @@ mod tests {
                 id: "CVE-2024-1234".to_owned(),
                 aliases: Vec::new(),
                 cvss: 9.8,
+                band: None,
                 kev: false,
             }],
             ..clean()
@@ -791,12 +795,14 @@ mod tests {
                     id: "CVE-2024-1234".to_owned(),
                     aliases: Vec::new(),
                     cvss: 9.8,
+                    band: None,
                     kev: false,
                 },
                 Advisory {
                     id: "CVE-2025-9999".to_owned(),
                     aliases: Vec::new(),
                     cvss: 7.5,
+                    band: None,
                     kev: false,
                 },
             ],
@@ -1007,6 +1013,7 @@ mod tests {
                     id: "CVE-2024-1".to_owned(),
                     aliases: Vec::new(),
                     cvss,
+                    band: None,
                     kev: false,
                 }],
                 ..clean()

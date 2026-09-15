@@ -124,7 +124,10 @@ fn found(
             let named = |advisories: &[&Advisory]| {
                 advisories
                     .iter()
-                    .map(|a| format!("{} {:.1}", a.id, a.cvss))
+                    .map(|a| match &a.band {
+                        Some(band) => format!("{} {:.1} from band {band}", a.id, a.cvss),
+                        None => format!("{} {:.1}", a.id, a.cvss),
+                    })
                     .collect::<Vec<_>>()
                     .join(", ")
             };
@@ -348,17 +351,30 @@ mod tests {
     #[test]
     fn an_advisory_that_fired_is_named_by_id() {
         let facts = Facts {
-            advisories: vec![Advisory {
-                id: "CVE-2024-1234".to_owned(),
-                aliases: Vec::new(),
-                cvss: 9.8,
-                kev: true,
-            }],
+            advisories: vec![
+                Advisory {
+                    id: "CVE-2024-1234".to_owned(),
+                    aliases: Vec::new(),
+                    cvss: 9.8,
+                    band: None,
+                    kev: true,
+                },
+                Advisory {
+                    id: "GHSA-0000-0000-0000".to_owned(),
+                    aliases: Vec::new(),
+                    cvss: 8.9,
+                    band: Some("HIGH".to_owned()),
+                    kev: false,
+                },
+            ],
             ..facts()
         };
         let out = rendered("version: 1\nmax_cvss: 7.0", &facts, &[]);
 
-        assert!(out.contains("CVE-2024-1234 9.8"), "{out}");
+        assert!(
+            out.contains("CVE-2024-1234 9.8, GHSA-0000-0000-0000 8.9 from band HIGH"),
+            "{out}"
+        );
         assert!(out.contains("verdict: block"), "{out}");
     }
 
@@ -432,6 +448,7 @@ mod tests {
             id: id.to_owned(),
             aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
             cvss,
+            band: None,
             kev,
         }
     }

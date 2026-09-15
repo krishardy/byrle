@@ -90,6 +90,7 @@ impl Facts {
                     id: r.advisory_id.clone(),
                     aliases: r.aliases.clone(),
                     cvss: score.cvss(),
+                    band: r.band.clone(),
                     kev: r.exploited,
                 })
             })
@@ -190,6 +191,7 @@ mod tests {
                 aliases: vec![format!("CVE-of-{id}")],
                 source: "osv".to_owned(),
                 cvss,
+                band: None,
                 cvss_source: None,
                 exploited: false,
                 malware,
@@ -285,15 +287,35 @@ cooldown_days: 0
             stored(Some("4.17.20"), "GHSA-other", false, Some(9.8)),
             stored(Some("4.17.21"), "GHSA-this", false, Some(5.0)),
             stored(Some("4.17.21"), "GHSA-unscored", false, None),
+            {
+                let (version, record) = stored(Some("4.17.21"), "GHSA-banded", false, Some(8.9));
+                (
+                    version,
+                    crate::intel::store::Record {
+                        band: Some("HIGH".to_owned()),
+                        ..record
+                    },
+                )
+            },
         ]));
         assert_eq!(
             facts.advisories,
-            vec![Advisory {
-                id: "GHSA-this".to_owned(),
-                aliases: vec!["CVE-of-GHSA-this".to_owned()],
-                cvss: 5.0,
-                kev: false,
-            }]
+            vec![
+                Advisory {
+                    id: "GHSA-this".to_owned(),
+                    aliases: vec!["CVE-of-GHSA-this".to_owned()],
+                    cvss: 5.0,
+                    band: None,
+                    kev: false,
+                },
+                Advisory {
+                    id: "GHSA-banded".to_owned(),
+                    aliases: vec!["CVE-of-GHSA-banded".to_owned()],
+                    cvss: 8.9,
+                    band: Some("HIGH".to_owned()),
+                    kev: false,
+                }
+            ]
         );
         assert!(!facts.known_malware);
     }

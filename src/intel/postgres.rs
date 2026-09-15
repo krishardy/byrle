@@ -427,6 +427,7 @@ impl Intel for PgIntel {
                     a.source        AS "source?",
                     a.cvss          AS "cvss?",
                     a.cvss_source   AS "cvss_source?",
+                    a.severity_band AS "severity_band?",
                     (a.exploited OR EXISTS (
                         SELECT 1 FROM exploited_cve k
                         WHERE k.cve_id = a.publisher_id
@@ -483,6 +484,7 @@ impl Intel for PgIntel {
                     source,
                     cvss: row.cvss,
                     cvss_source: row.cvss_source,
+                    band: row.severity_band,
                     exploited,
                     malware,
                 };
