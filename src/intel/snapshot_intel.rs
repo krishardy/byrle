@@ -9,11 +9,11 @@
 //! A kept snapshot records no streams: its manifest holds only what the id is the digest of.
 //! `taken_at` is when the manifest was last written.
 
+use super::ids;
 use super::load::Row;
 use super::range::Interval;
 use super::snapshot_dir::{KeptError, SnapshotDir};
 use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
-use super::{ids, kev};
 use std::collections::{HashMap, HashSet};
 
 /// A package, by ecosystem and name.
@@ -27,8 +27,6 @@ pub struct SnapshotIntel {
     read: HashSet<Package>,
     /// Those of them with an advisory.
     packages: HashMap<Package, PackageIntel>,
-    /// Whether the snapshot includes the KEV catalogue.
-    exploitation_loaded: bool,
 }
 
 impl SnapshotIntel {
@@ -38,9 +36,14 @@ impl SnapshotIntel {
         id: &str,
         packages: HashSet<Package>,
     ) -> Result<Self, KeptError> {
-        let taken_at = dir.written(id)?;
         let sources = dir.sources(id)?;
-        let exploitation_loaded = sources.iter().any(|(source, _)| source == kev::SOURCE);
+        let snapshot = LoadedSnapshot {
+            digest: id.to_owned(),
+            taken_at: dir.written(id)?,
+            sources: sources.iter().map(|(source, _)| source.clone()).collect(),
+            streams: Vec::new(),
+        };
+        let exploitation_loaded = snapshot.exploitation_loaded();
         let mut found = HashMap::new();
         let mut exploited: HashSet<String> = HashSet::new();
         for (source, digest) in sources {
@@ -109,14 +112,9 @@ impl SnapshotIntel {
             package.exploitation_loaded = exploitation_loaded;
         }
         Ok(Self {
-            snapshot: LoadedSnapshot {
-                digest: id.to_owned(),
-                taken_at,
-                streams: Vec::new(),
-            },
+            snapshot,
             read: packages,
             packages: found,
-            exploitation_loaded,
         })
     }
 
@@ -131,7 +129,7 @@ impl SnapshotIntel {
             .get(&package)
             .cloned()
             .unwrap_or_else(|| PackageIntel {
-                exploitation_loaded: self.exploitation_loaded,
+                exploitation_loaded: self.snapshot.exploitation_loaded(),
                 ..nothing_against(&self.snapshot.digest)
             }))
     }
@@ -192,9 +190,9 @@ impl Intel for SnapshotIntel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intel::load;
     use crate::intel::osv::{Affected, Ranged, Rows};
     use crate::intel::range::End;
+    use crate::intel::{kev, load};
     use crate::test_support::tempdir;
 
     fn advisory(id: &str) -> Rows {

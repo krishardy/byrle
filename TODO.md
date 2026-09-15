@@ -1463,9 +1463,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       exits 1; kept snapshot files carry the rows as `waharoa intel exploited 1`. Loaded
       2026-09-15: 1,710 CVE ids mark 13 stored npm `GHSA-` records exploited, all 13 scored.
       [kev-stream](docs/engineering_decisions/kev-stream.md).
-      - [ ] `explain --policy` reads whether `cisa/kev` is loaded from the newest snapshot's
+      - [x] `explain --policy` reads whether `cisa/kev` is loaded from the newest snapshot's
             streams, and `PgIntel::package` from `intel_source`. A refresh records a stream
             for every source it loads, so both agree today. Read one of them for both.
+            Sources: `LoadedSnapshot` carries them (`/-/waharoa/ready` too) and
+            `exploitation_loaded` reads them for `explain --policy` and `SnapshotIntel`. A
+            kept snapshot records no streams. [kev-stream](docs/engineering_decisions/kev-stream.md).
 - [ ] NVD stream (licence-cleared: public domain, nothing owed) — `enrich`-only for
       npm/PyPI, joined on exact CVE ID
 - [ ] NVD enrichment runs as a background job, never on the hot path

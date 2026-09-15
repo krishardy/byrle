@@ -275,6 +275,7 @@ async fn the_newest_snapshot_is_the_one_reported() {
         Some(LoadedSnapshot {
             digest: "newer".to_owned(),
             taken_at: "2026-09-13T01:02:03Z".to_owned(),
+            sources: Vec::new(),
             streams: vec![
                 StreamDigest {
                     stream: "cisa-kev".to_owned(),
@@ -1325,10 +1326,12 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         "the catalogue marks GHSA-0000-0000-0000"
     );
     assert_eq!(datadog_records, 2, "one row each for {every} and {listed}");
-    assert_eq!(
-        kept.snapshot().await.expect("answers").map(|s| s.digest),
-        Some(loaded.snapshot)
-    );
+    let kept_snapshot = kept.snapshot().await.expect("answers").expect("kept");
+    assert_eq!(kept_snapshot.digest, loaded.snapshot);
+    // The catalogue was loaded with no stream, so only its source says it is there.
+    let stored = intel.snapshot().await.expect("query").expect("loaded");
+    assert_eq!(kept_snapshot.sources, stored.sources);
+    assert!(kept_snapshot.exploitation_loaded() && stored.exploitation_loaded());
 }
 
 /// A package's answer with its rows in one order. Postgres orders text by collation, and the
@@ -1441,15 +1444,13 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         exploitation(&intel, &name).await,
         (true, marked([true, true, false]))
     );
-    let streams = intel
-        .snapshot()
-        .await
-        .expect("query")
-        .expect("loaded")
-        .streams;
+    let snapshot = intel.snapshot().await.expect("query").expect("loaded");
+    assert_eq!(snapshot.sources, [kev::SOURCE, osv::SOURCE]);
+    assert!(snapshot.exploitation_loaded());
     assert!(
-        streams.iter().any(|s| s.stream == kev::SOURCE),
-        "{streams:?}"
+        snapshot.streams.iter().any(|s| s.stream == kev::SOURCE),
+        "{:?}",
+        snapshot.streams
     );
 
     let reloaded = intel

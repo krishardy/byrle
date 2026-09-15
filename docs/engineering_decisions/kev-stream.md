@@ -77,7 +77,21 @@ there:
 |---|---|
 | `PgIntel::package` | an `intel_source` row for `cisa/kev`, in the same statement as the rows |
 | `SnapshotIntel` | the manifest listing `cisa/kev` |
-| `explain --policy` | the newest snapshot's streams including `cisa/kev` |
+| `explain --policy` | the newest snapshot's sources including `cisa/kev`, `LoadedSnapshot::exploitation_loaded` |
+
+`explain --policy` read the newest snapshot's streams until 2026-09-15. It matched because KEV's
+stream and source are both named `cisa/kev`; OSV's and Datadog's are not (`osv/npm` and `osv`,
+`datadog/npm` and `datadog`). A snapshot loaded with no stream recorded for the catalogue gave
+`PgIntel::package` true and `explain --policy` false. `SnapshotIntel` and `explain --policy` now
+both call `LoadedSnapshot::exploitation_loaded`, which reads `sources`, and `PgIntel::package`
+asks `intel_source` in its statement. A kept snapshot records no streams, so streams could not
+be the one record.
+
+Live, 2026-09-15, `examples/policy.yaml`: `explain --policy` printed `kev unenforced, no advisory
+stream` on an empty store and `kev enforced` after a refresh, and `GET /-/waharoa/ready` answered
+200 with `"sources":["cisa/kev","datadog","osv"]`. `make mutants` over the change: 14 mutants, 4
+caught, 9 unviable, 1 missed, `run_explain` in `main.rs` returning a default exit code, which
+has no unit tests.
 
 Before this, `explain --policy` printed `unenforced, no exploitation stream` for `kev` with no
 store at all. It now prints `unenforced, no advisory stream`, the reason `unenforceable` gives.
