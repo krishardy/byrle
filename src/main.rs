@@ -491,13 +491,15 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     if let Some(intel) = &intel {
         facts = facts.with_intel(intel);
     }
+    let as_of = today();
     print!(
         "{}",
         explain::decision(
             &policy,
             &facts,
-            &decide::decide(&policy, &facts, today()),
+            &decide::decide(&policy, &facts, as_of),
             &enforce::unenforceable(&policy, package, times.as_ref(), facts.intel),
+            as_of,
         )
     );
     std::process::ExitCode::SUCCESS

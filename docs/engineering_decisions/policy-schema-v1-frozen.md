@@ -17,9 +17,10 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 
 | Level | Keys |
 |---|---|
-| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `denials`, `packages` |
+| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `denials`, `packages`, `advisory_scores` |
 | a `denials` entry | `purl`, `reason` |
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
+| an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
 | `set` | `cooldown_days`, `kev`, `install_scripts`, `vuln_advisory_ids` |
 
@@ -40,10 +41,14 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 | `match.version` | an exact version | none |
 | `match.has_install_scripts` | `true` or `false` | none |
 | `set.vuln_advisory_ids` | advisory ids, each matched against an advisory's id and its aliases | empty |
+| `advisory_scores[].advisory_id` | an advisory id, matched against an advisory's id and its aliases | required |
+| `advisory_scores[].cvss` | a number, 0.0 to 10.0 | required |
 
 The rules the keys obey are fixed with them: every key refused when unknown, at every level;
 a `packages` entry that loosens needs `expires` or `permanent: true`; an entry that tightens
-is refused; overlapping entries that cannot be ordered by subset containment are refused.
+is refused; overlapping entries that cannot be ordered by subset containment are refused;
+every `advisory_scores` entry needs `expires` or `permanent: true`, and not both; two
+`advisory_scores` entries with the same `advisory_id` are refused.
 
 ## What is not frozen
 
@@ -54,7 +59,7 @@ is refused; overlapping entries that cannot be ordered by subset containment are
 ## Held by
 
 `the_version_1_key_set_is_closed` in `src/policy.rs`. Refusing an unknown key, serde names
-every key the struct accepts, and the test pins those lists at all five levels. Adding,
+every key the struct accepts, and the test pins those lists at all six levels. Adding,
 removing or renaming a key fails it. `a_policy_that_says_nothing_blocks_both_checks` pins the
 four defaults. `the_shipped_example_parses` loads `examples/policy.yaml`.
 
@@ -62,3 +67,10 @@ four defaults. `the_shipped_example_parses` loads `examples/policy.yaml`.
 
 `cve_ids` became `vuln_advisory_ids` on 2026-09-13. The list matches any advisory id or
 alias, `GHSA-` and `MAL-` ids included, so version 1 never carried a name that says CVE.
+
+## Added after the freeze, before deployment
+
+`advisory_scores` was added to `version: 1` on 2026-09-15. The user chose this over opening
+`version: 2`, as no version 1 policy had been deployed. `max_cvss` refuses a non-malware
+advisory with no score, and an entry gives it one. See
+[osv-ranges-and-scores](osv-ranges-and-scores.md#advisories-with-no-score-2026-09-15).

@@ -24,7 +24,7 @@
 
 use super::merge::{self, Rule, RuleValues};
 use super::strictness::Strictness;
-use super::{PackageRule, Policy};
+use super::{AdvisoryScore, ExpiryDate, PackageRule, Policy};
 use jiff::civil::Date;
 
 /// What one package entry does to one rule of the policy above it.
@@ -102,7 +102,7 @@ pub enum PackageError {
     Unjustified { at: String, rule: Rule },
     /// It tightens, which this tier does not allow.
     Tightens { at: String, rule: Rule },
-    /// It is dated further ahead than the ceiling allows.
+    /// It, or an `advisory_scores` entry, is dated further ahead than the ceiling allows.
     TooFarAhead {
         at: String,
         expires: String,
@@ -146,7 +146,8 @@ impl std::fmt::Display for PackageError {
 
 impl std::error::Error for PackageError {}
 
-/// Check every package entry against §5.5's requirements.
+/// Check every package entry against §5.5's requirements, and every `advisory_scores` entry
+/// against the expiry ceiling.
 ///
 /// `as_of` and the ceiling are arguments rather than a clock and a constant, so
 /// `policy check --as-of` can ask what a policy would be judged as on another day.
@@ -156,19 +157,23 @@ pub fn check(policy: &Policy, as_of: Date, ceiling_days: i64) -> Result<(), Pack
         .checked_add(jiff::Span::new().days(ceiling_days))
         .unwrap_or(Date::MAX);
 
+    let within_ceiling = |at: String, expires: Option<ExpiryDate>| match expires {
+        Some(expires) if expires.0 > latest => Err(PackageError::TooFarAhead {
+            at,
+            expires: expires.to_string(),
+            latest: latest.to_string(),
+            ceiling_days,
+        }),
+        _ => Ok(()),
+    };
+
+    for (index, score) in policy.advisory_scores.iter().enumerate() {
+        within_ceiling(AdvisoryScore::label(index), score.expires)?;
+    }
+
     for (index, entry) in policy.packages.iter().enumerate() {
         let at = label(index);
-
-        if let Some(expires) = entry.expires
-            && expires.0 > latest
-        {
-            return Err(PackageError::TooFarAhead {
-                at,
-                expires: expires.to_string(),
-                latest: latest.to_string(),
-                ceiling_days,
-            });
-        }
+        within_ceiling(at.clone(), entry.expires)?;
 
         if tightens(&findings, index) {
             let rule = findings
@@ -337,6 +342,22 @@ mod tests {
         assert!(
             text.contains("2026-12-12") && text.contains("2026-12-11") && text.contains("90"),
             "the refusal has to say what it found, what is allowed, and the ceiling: {text}"
+        );
+    }
+
+    #[test]
+    fn an_advisory_score_is_held_to_the_expiry_ceiling() {
+        let scored = |expires: &str| {
+            policy(&format!(
+                "advisory_scores:\n  - {{ advisory_id: GHSA-x, cvss: 5.0, reason: r, \
+                 expires: \"{expires}\" }}\n"
+            ))
+        };
+        assert!(check(&scored("2026-12-11"), TODAY, DEFAULT_EXPIRY_CEILING_DAYS).is_ok());
+        let error = check(&scored("2026-12-12"), TODAY, DEFAULT_EXPIRY_CEILING_DAYS).unwrap_err();
+        assert!(
+            matches!(&error, PackageError::TooFarAhead { at, .. } if at == "advisory_scores[0]"),
+            "{error}"
         );
     }
 

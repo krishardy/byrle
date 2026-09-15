@@ -182,6 +182,14 @@ packages:
     set: { kev: allow, vuln_advisory_ids: ["CVE-2024-1234"] }
     reason: "mitigated by network policy"
     expires: "2026-11-30"
+
+# Scores for advisories no stream scored. max_cvss refuses an unscored advisory until an
+# entry here names it. Per advisory.
+advisory_scores:
+  - advisory_id: "GHSA-xxxx-xxxx-xxxx"
+    cvss: 5.3
+    reason: "vendor advisory scores it 5.3"
+    expires: "2026-11-30"
 ```
 
 Every setting is global. Every exception is per package. Nothing is per ecosystem.
@@ -193,6 +201,7 @@ Every setting is global. Every exception is per package. Nothing is per ecosyste
 | `cooldown_days` | global | yes, note 3 |
 | `kev` | global | yes, note 4 only; a `vuln_advisory_ids` exception does not reach it |
 | `max_cvss` | global | yes, per advisory id, note 5 |
+| `advisory_scores` | per advisory | no. Scores an advisory `max_cvss` would otherwise refuse as unscored; needs `expires` or `permanent: true` |
 | `install_scripts` | global | yes, note 6 |
 
 `install_scripts` and `kev` take `block` or `allow`, and nothing else. `quarantine` is

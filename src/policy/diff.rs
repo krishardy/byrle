@@ -662,7 +662,7 @@ mod tests {
             advisories: vec![crate::policy::decide::Advisory {
                 id: "CVE-2024-1".to_owned(),
                 aliases: Vec::new(),
-                cvss: 5.0,
+                cvss: Some(5.0),
                 band: None,
                 kev: true,
             }],

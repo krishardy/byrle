@@ -20,7 +20,8 @@
 
 use crate::policy::decide::{self, Advisory, Check, Decision, Facts, Intel, Outcome};
 use crate::policy::enforce::Unenforceable;
-use crate::policy::{Action, Policy};
+use crate::policy::{Action, AdvisoryScore, Policy};
+use jiff::civil::Date;
 
 /// One line per check, then the verdict.
 ///
@@ -31,6 +32,7 @@ pub fn decision(
     facts: &Facts,
     decision: &Decision,
     unenforceable: &[Unenforceable],
+    as_of: Date,
 ) -> String {
     let mut out = format!(
         "pkg:{}/{}@{}\n\n",
@@ -54,14 +56,14 @@ pub fn decision(
             ),
             (None, Outcome::Failed(action)) => (
                 format!("FAIL {}", action.as_str()),
-                found(policy, facts, decision.entry, result.check, false),
+                found(policy, facts, decision.entry, result.check, false, as_of),
             ),
             (None, Outcome::Excepted { entry, action }) => (
                 "excepted".to_owned(),
                 format!(
                     "would have been {}: {}; packages[{entry}] excused it, {}",
                     action.as_str(),
-                    found(policy, facts, Some(*entry), result.check, true),
+                    found(policy, facts, Some(*entry), result.check, true, as_of),
                     lasts(policy, *entry)
                 ),
             ),
@@ -92,6 +94,7 @@ fn found(
     entry: Option<usize>,
     check: Check,
     excepted: bool,
+    as_of: Date,
 ) -> String {
     match check {
         Check::Denials => "this exact version is denied".to_owned(),
@@ -124,23 +127,36 @@ fn found(
             let named = |advisories: &[&Advisory]| {
                 advisories
                     .iter()
-                    .map(|a| match &a.band {
-                        Some(band) => format!("{} {:.1} from band {band}", a.id, a.cvss),
-                        None => format!("{} {:.1}", a.id, a.cvss),
+                    .map(|a| match (decide::score(policy, a, as_of), &a.band) {
+                        (None, _) => format!("{} unscored", a.id),
+                        (Some((cvss, Some(i))), _) => {
+                            format!("{} {cvss:.1} from {}", a.id, AdvisoryScore::label(i))
+                        }
+                        (Some((cvss, None)), Some(band)) => {
+                            format!("{} {cvss:.1} from band {band}", a.id)
+                        }
+                        (Some((cvss, None)), None) => format!("{} {cvss:.1}", a.id),
                     })
                     .collect::<Vec<_>>()
                     .join(", ")
             };
-            let (counting, excused) = decide::over_max_cvss(policy, facts, entry);
+            let (counting, excused) = decide::over_max_cvss(policy, facts, entry, as_of);
+            let unscored = counting
+                .iter()
+                .chain(&excused)
+                .any(|a| decide::score(policy, a, as_of).is_none());
+            let over = match unscored {
+                true => format!("over max_cvss {} or unscored", policy.max_cvss),
+                false => format!("over max_cvss {}", policy.max_cvss),
+            };
             match (excepted, entry) {
-                (true, _) => format!("over max_cvss {}: {}", policy.max_cvss, named(&excused)),
+                (true, _) => format!("{over}: {}", named(&excused)),
                 (false, Some(entry)) if !excused.is_empty() => format!(
-                    "over max_cvss {}: {}; packages[{entry}] excused {}",
-                    policy.max_cvss,
+                    "{over}: {}; packages[{entry}] excused {}",
                     named(&counting),
                     named(&excused)
                 ),
-                (false, _) => format!("over max_cvss {}: {}", policy.max_cvss, named(&counting)),
+                (false, _) => format!("{over}: {}", named(&counting)),
             }
         }
         Check::InstallScripts => "declares an install script".to_owned(),
@@ -174,6 +190,10 @@ pub fn policy(policy: &Policy, intel: Intel) -> String {
     out.push_str(&format!("  kev              {}\n", policy.kev.as_str()));
     out.push_str(&format!("  denials          {}\n", policy.denials.len()));
     out.push_str(&format!("  packages         {}\n", policy.packages.len()));
+    out.push_str(&format!(
+        "  advisory_scores  {}\n",
+        policy.advisory_scores.len()
+    ));
 
     out.push_str("\nchecks\n");
     for check in Check::ALL {
@@ -196,6 +216,15 @@ pub fn policy(policy: &Policy, intel: Intel) -> String {
 
     for (index, entry) in policy.packages.iter().enumerate() {
         out.push_str(&format!("\npackages[{index}]  {}\n", entry.reason));
+    }
+    for (index, score) in policy.advisory_scores.iter().enumerate() {
+        out.push_str(&format!(
+            "\n{}  {} {:.1}  {}\n",
+            AdvisoryScore::label(index),
+            score.advisory_id,
+            score.cvss,
+            score.reason
+        ));
     }
     out
 }
@@ -231,6 +260,7 @@ mod tests {
             facts,
             &decide(&policy, facts, TODAY),
             unenforceable,
+            TODAY,
         )
     }
 
@@ -355,24 +385,47 @@ mod tests {
                 Advisory {
                     id: "CVE-2024-1234".to_owned(),
                     aliases: Vec::new(),
-                    cvss: 9.8,
+                    cvss: Some(9.8),
                     band: None,
                     kev: true,
                 },
                 Advisory {
                     id: "GHSA-0000-0000-0000".to_owned(),
                     aliases: Vec::new(),
-                    cvss: 8.9,
+                    cvss: Some(8.9),
                     band: Some("HIGH".to_owned()),
+                    kev: false,
+                },
+                Advisory {
+                    id: "GHSA-1111-1111-1111".to_owned(),
+                    aliases: Vec::new(),
+                    cvss: None,
+                    band: None,
+                    kev: false,
+                },
+                Advisory {
+                    id: "GHSA-2222-2222-2222".to_owned(),
+                    aliases: Vec::new(),
+                    cvss: None,
+                    band: None,
                     kev: false,
                 },
             ],
             ..facts()
         };
-        let out = rendered("version: 1\nmax_cvss: 7.0", &facts, &[]);
+        let out = rendered(
+            "version: 1\nmax_cvss: 7.0\nadvisory_scores:\n  - { advisory_id: GHSA-2222-2222-2222, \
+             cvss: 7.5, reason: vendor, permanent: true }\n",
+            &facts,
+            &[],
+        );
 
         assert!(
-            out.contains("CVE-2024-1234 9.8, GHSA-0000-0000-0000 8.9 from band HIGH"),
+            out.contains(
+                "over max_cvss 7 or unscored: CVE-2024-1234 9.8, \
+                 GHSA-0000-0000-0000 8.9 from band HIGH, GHSA-1111-1111-1111 unscored, \
+                 GHSA-2222-2222-2222 7.5 from advisory_scores[0]"
+            ),
             "{out}"
         );
         assert!(out.contains("verdict: block"), "{out}");
@@ -412,13 +465,20 @@ mod tests {
                  denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: m\n\
                  packages:\n  - match: { ecosystem: npm, name: lodash }\n\
                  \x20   set: { install_scripts: allow }\n    reason: reviewed\n\
-                 \x20   permanent: true\n",
+                 \x20   permanent: true\n\
+                 advisory_scores:\n  - { advisory_id: GHSA-x, cvss: 7.5, reason: vendor \
+                 scored it, permanent: true }\n",
             ),
             Intel::Consulted {
                 exploitation_loaded: false,
             },
         );
 
+        assert!(out.contains("advisory_scores  1"), "{out}");
+        assert!(
+            out.contains("\nadvisory_scores[0]  GHSA-x 7.5  vendor scored it\n"),
+            "{out}"
+        );
         assert!(out.contains("max_cvss         7.5"), "{out}");
         assert!(out.contains("denials          1"), "{out}");
         assert!(out.contains("packages[0]  reviewed"), "{out}");
@@ -447,7 +507,7 @@ mod tests {
         Advisory {
             id: id.to_owned(),
             aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
-            cvss,
+            cvss: Some(cvss),
             band: None,
             kev,
         }
@@ -565,6 +625,14 @@ mod tests {
                 },
             ),
             case(
+                "over max_cvss, an entry that excuses none of it",
+                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { vuln_advisory_ids: [\"CVE-2024-9\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
+                Facts {
+                    advisories: vec![advisory("CVE-2024-1", &[], 9.8, false)],
+                    ..consulted()
+                },
+            ),
+            case(
                 "over max_cvss, excepted by id",
                 "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
                 Facts {
@@ -588,6 +656,34 @@ mod tests {
                         advisory("GHSA-aaaa-bbbb-cccc", &["CVE-2024-1"], 9.8, false),
                         advisory("GHSA-dddd-eeee-ffff", &["CVE-2024-3"], 7.5, false),
                     ],
+                    ..consulted()
+                },
+            ),
+            case(
+                "max_cvss, an unscored advisory and one scored in policy",
+                "version: 1\nmax_cvss: 7.0\nadvisory_scores:\n  - { advisory_id: CVE-2024-2, cvss: 8.0, reason: vendor, permanent: true }\n",
+                Facts {
+                    advisories: vec![
+                        Advisory {
+                            cvss: None,
+                            ..advisory("CVE-2024-1", &[], 0.0, false)
+                        },
+                        Advisory {
+                            cvss: None,
+                            ..advisory("CVE-2024-2", &[], 0.0, false)
+                        },
+                    ],
+                    ..consulted()
+                },
+            ),
+            case(
+                "max_cvss, an unscored advisory excepted by id",
+                "version: 1\nmax_cvss: 7.0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: unreachable\n    expires: \"2026-11-30\"\n",
+                Facts {
+                    advisories: vec![Advisory {
+                        cvss: None,
+                        ..advisory("CVE-2024-1", &[], 0.0, false)
+                    }],
                     ..consulted()
                 },
             ),
@@ -651,6 +747,7 @@ mod tests {
                 &c.facts,
                 &decide(&policy, &c.facts, TODAY),
                 &c.unenforceable,
+                TODAY,
             ));
             out.push('\n');
         }

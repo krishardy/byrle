@@ -99,6 +99,16 @@ pub enum PolicyError {
         at: String,
         source: selector::SelectorError,
     },
+    /// An advisory score is not a CVSS score.
+    ScoreOutOfRange { at: String, found: f64 },
+    /// An advisory score says neither when it stops nor that it does not.
+    UndatedScore { at: String },
+    /// Two advisory scores name the same id.
+    DuplicateScore {
+        at: String,
+        first: String,
+        advisory_id: String,
+    },
 }
 
 impl fmt::Display for PolicyError {
@@ -132,6 +142,24 @@ impl fmt::Display for PolicyError {
                 "{at} denies `{purl}`, which names no version. A denial is permanent and                  absolute, so it is written against one exact version: `{purl}@<version>`.                  Without one it would match nothing and read as a package that had been                  dealt with"
             ),
             Self::UnreadableDenial { at, source } => write!(f, "{at}: {source}"),
+            Self::ScoreOutOfRange { at, found } => {
+                write!(f, "{at}.cvss is {found}, and a CVSS score is 0.0 to 10.0")
+            }
+            Self::UndatedScore { at } => write!(
+                f,
+                "{at} carries neither `expires` nor `permanent: true`. A score given here \
+                 is what lets an unscored advisory past `max_cvss`, so it says when it stops \
+                 being true"
+            ),
+            Self::DuplicateScore {
+                at,
+                first,
+                advisory_id,
+            } => write!(
+                f,
+                "{at} scores `{advisory_id}`, which {first} already scores. One advisory \
+                 has one score"
+            ),
         }
     }
 }
@@ -234,6 +262,10 @@ pub struct Policy {
     pub denials: Vec<Denial>,
     #[serde(default)]
     pub packages: Vec<PackageRule>,
+    /// Scores for advisories the streams gave none. `max_cvss` refuses an unscored
+    /// advisory until an entry here names it.
+    #[serde(default)]
+    pub advisory_scores: Vec<AdvisoryScore>,
 }
 
 impl Policy {
@@ -257,6 +289,7 @@ impl Policy {
         policy.check_package_expiry_shape()?;
         policy.check_selectors()?;
         policy.check_denials()?;
+        policy.check_advisory_scores()?;
         Ok(policy)
     }
 
@@ -305,6 +338,39 @@ impl Policy {
                 return Err(PolicyError::DenialNeedsAVersion {
                     at,
                     purl: denial.purl.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Each `advisory_scores` entry gives a CVSS score, says when it stops being true, and is
+    /// the only entry for its id.
+    ///
+    /// Every entry loosens: without it the advisory is refused. So every entry carries
+    /// `expires` or `permanent: true`, which a `packages` entry needs only when it loosens.
+    fn check_advisory_scores(&self) -> Result<(), PolicyError> {
+        for (i, score) in self.advisory_scores.iter().enumerate() {
+            let at = AdvisoryScore::label(i);
+            if !crate::intel::Score::in_range(score.cvss) {
+                return Err(PolicyError::ScoreOutOfRange {
+                    at,
+                    found: score.cvss,
+                });
+            }
+            match (score.expires, score.permanent) {
+                (Some(_), true) => return Err(PolicyError::BothDatedAndPermanent { at }),
+                (None, false) => return Err(PolicyError::UndatedScore { at }),
+                _ => {}
+            }
+            if let Some(first) = self.advisory_scores[..i]
+                .iter()
+                .position(|s| s.advisory_id == score.advisory_id)
+            {
+                return Err(PolicyError::DuplicateScore {
+                    at,
+                    first: AdvisoryScore::label(first),
+                    advisory_id: score.advisory_id.clone(),
                 });
             }
         }
@@ -492,6 +558,37 @@ pub struct PackageRule {
     pub added_by: Option<String>,
 }
 
+/// A CVSS score for an advisory that has none.
+///
+/// Used only while the advisory has no stored score. Once a stream scores it, the stream's
+/// score is compared and this entry does nothing.
+#[derive(Debug, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct AdvisoryScore {
+    /// Matched against an advisory's id and each of its aliases.
+    pub advisory_id: String,
+    pub cvss: f64,
+    pub reason: String,
+    #[serde(default)]
+    pub expires: Option<ExpiryDate>,
+    #[serde(default)]
+    pub permanent: bool,
+    #[serde(default)]
+    pub added_by: Option<String>,
+}
+
+impl AdvisoryScore {
+    /// How an entry is named in messages.
+    pub fn label(index: usize) -> String {
+        format!("advisory_scores[{index}]")
+    }
+
+    /// Whether it is still in force on `as_of`.
+    pub fn in_force(&self, as_of: jiff::civil::Date) -> bool {
+        !self.expires.is_some_and(|e| e.has_passed(as_of))
+    }
+}
+
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Selector {
@@ -649,7 +746,7 @@ mod tests {
     /// belongs in `version: 2`.
     #[test]
     fn the_version_1_key_set_is_closed() {
-        let cases: [(&str, &str, &[&str]); 5] = [
+        let cases: [(&str, &str, &[&str]); 6] = [
             (
                 "top level",
                 "unknown: 1\n",
@@ -661,6 +758,19 @@ mod tests {
                     "kev",
                     "denials",
                     "packages",
+                    "advisory_scores",
+                ],
+            ),
+            (
+                "an advisory_scores entry",
+                "advisory_scores:\n  - advisory_id: x\n    unknown: 1\n",
+                &[
+                    "advisory_id",
+                    "cvss",
+                    "reason",
+                    "expires",
+                    "permanent",
+                    "added_by",
                 ],
             ),
             (
@@ -868,6 +978,92 @@ mod tests {
         ));
         assert!(parse(&format!("{base}    expires: \"2026-11-30\"\n")).is_ok());
         assert!(parse(&format!("{base}    permanent: true\n")).is_ok());
+    }
+
+    const SCORE: &str = "advisory_scores:\n  - advisory_id: GHSA-x\n    reason: r\n";
+
+    #[test]
+    fn an_advisory_score_is_a_cvss_score() {
+        let scored = |cvss: &str| parse(&format!("{SCORE}    cvss: {cvss}\n    permanent: true\n"));
+        for good in ["0.0", "6.9", "10.0"] {
+            assert!(scored(good).is_ok(), "{good}");
+        }
+        for bad in ["-0.1", "10.1"] {
+            let error = scored(bad).unwrap_err();
+            assert!(
+                matches!(error, PolicyError::ScoreOutOfRange { .. }),
+                "{bad}: {error}"
+            );
+        }
+        assert_eq!(
+            scored("10.1").unwrap_err().to_string(),
+            "advisory_scores[0].cvss is 10.1, and a CVSS score is 0.0 to 10.0"
+        );
+    }
+
+    /// Every entry lets a refused advisory past `max_cvss`, so every entry says when it
+    /// stops being true.
+    #[test]
+    fn an_advisory_score_is_dated_or_permanent_and_not_both() {
+        let base = format!("{SCORE}    cvss: 5.0\n");
+        let undated = parse(&base).unwrap_err();
+        assert!(
+            matches!(undated, PolicyError::UndatedScore { .. }),
+            "{undated}"
+        );
+        assert!(
+            undated
+                .to_string()
+                .starts_with("advisory_scores[0] carries neither `expires` nor `permanent: true`"),
+            "{undated}"
+        );
+        assert!(matches!(
+            parse(&format!(
+                "{base}    expires: \"2026-11-30\"\n    permanent: true\n"
+            ))
+            .unwrap_err(),
+            PolicyError::BothDatedAndPermanent { .. }
+        ));
+        assert!(parse(&format!("{base}    expires: \"2026-11-30\"\n")).is_ok());
+        assert!(parse(&format!("{base}    permanent: true\n")).is_ok());
+    }
+
+    #[test]
+    fn an_advisory_id_is_scored_once() {
+        let entry = |id: &str| {
+            format!("  - {{ advisory_id: {id}, cvss: 5.0, reason: r, permanent: true }}\n")
+        };
+        let error = parse(&format!(
+            "advisory_scores:\n{}{}{}",
+            entry("GHSA-a"),
+            entry("GHSA-b"),
+            entry("GHSA-a")
+        ))
+        .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                PolicyError::DuplicateScore { at, first, advisory_id }
+                    if at == "advisory_scores[2]"
+                        && first == "advisory_scores[0]"
+                        && advisory_id == "GHSA-a"
+            ),
+            "{error}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("scores `GHSA-a`, which advisory_scores[0] already scores"),
+            "{error}"
+        );
+        assert!(
+            parse(&format!(
+                "advisory_scores:\n{}{}",
+                entry("GHSA-a"),
+                entry("GHSA-b")
+            ))
+            .is_ok()
+        );
     }
 
     /// The `exceptions` block was replaced by `packages`: one syntax, one code path.

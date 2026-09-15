@@ -244,6 +244,26 @@ pkg:npm/lodash@4.17.21
 
   verdict: block
 
+=== over max_cvss, an entry that excuses none of it
+  | version: 1
+  | max_cvss: 7.0
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { vuln_advisory_ids: ["CVE-2024-9"] }
+  |     reason: unreachable
+  |     expires: "2026-11-30"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         FAIL block        over max_cvss 7: CVE-2024-1 9.8
+  install_scripts  pass
+
+  verdict: block
+
 === over max_cvss, excepted by id
   | version: 1
   | max_cvss: 7.0
@@ -303,6 +323,43 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
 
   verdict: block
+
+=== max_cvss, an unscored advisory and one scored in policy
+  | version: 1
+  | max_cvss: 7.0
+  | advisory_scores:
+  |   - { advisory_id: CVE-2024-2, cvss: 8.0, reason: vendor, permanent: true }
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         FAIL block        over max_cvss 7 or unscored: CVE-2024-1 unscored, CVE-2024-2 8.0 from advisory_scores[0]
+  install_scripts  pass
+
+  verdict: block
+
+=== max_cvss, an unscored advisory excepted by id
+  | version: 1
+  | max_cvss: 7.0
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { vuln_advisory_ids: ["CVE-2024-1"] }
+  |     reason: unreachable
+  |     expires: "2026-11-30"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         excepted          would have been block: over max_cvss 7 or unscored: CVE-2024-1 unscored; packages[0] excused it, expires 2026-11-30
+  install_scripts  pass
+
+  verdict: allow
 
 === install script
   | version: 1

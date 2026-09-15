@@ -24,7 +24,7 @@
 
 use super::packages::{self, PackageError};
 use super::selector::Canonical;
-use super::{Policy, PolicyError};
+use super::{AdvisoryScore, Policy, PolicyError};
 use jiff::civil::Date;
 use std::fmt;
 use std::path::Path;
@@ -102,6 +102,8 @@ pub struct Report {
     pub shadowed: Vec<Shadowed>,
     /// Entries marked `permanent: true`, listed so each one stays visible.
     pub permanent: Vec<usize>,
+    /// `advisory_scores` entries marked `permanent: true`, as their label, id and reason.
+    pub permanent_scores: Vec<String>,
 }
 
 impl Report {
@@ -150,6 +152,20 @@ impl Report {
             shadowed,
             permanent: (0..policy.packages.len())
                 .filter(|&i| policy.packages[i].permanent)
+                .collect(),
+            permanent_scores: policy
+                .advisory_scores
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.permanent)
+                .map(|(i, s)| {
+                    format!(
+                        "{} {}: {}",
+                        AdvisoryScore::label(i),
+                        s.advisory_id,
+                        s.reason
+                    )
+                })
                 .collect(),
         }
     }
@@ -200,7 +216,11 @@ impl Report {
             ),
             (
                 "permanent",
-                self.permanent.iter().map(|&i| with_reason(i)).collect(),
+                self.permanent
+                    .iter()
+                    .map(|&i| with_reason(i))
+                    .chain(self.permanent_scores.iter().cloned())
+                    .collect(),
             ),
         ];
 
@@ -346,6 +366,26 @@ mod tests {
         assert_eq!(
             found.strict_failure().as_deref(),
             Some("changes nothing: 1, never wins: 0")
+        );
+    }
+
+    #[test]
+    fn a_permanent_advisory_score_is_listed_with_the_permanent_entries() {
+        let policy = Policy::parse(
+            "version: 1\nadvisory_scores:\n\
+             - { advisory_id: GHSA-a, cvss: 5.0, reason: dated, expires: \"2026-10-01\" }\n\
+             - { advisory_id: GHSA-b, cvss: 7.5, reason: vendor scored it, permanent: true }\n",
+        )
+        .expect("policy should load");
+        let found = Report::of(&policy, TODAY);
+        assert_eq!(
+            found.permanent_scores,
+            ["advisory_scores[1] GHSA-b: vendor scored it"]
+        );
+        let out = found.render();
+        assert!(
+            out.contains("\npermanent\n  advisory_scores[1] GHSA-b: vendor scored it\n"),
+            "{out}"
         );
     }
 
