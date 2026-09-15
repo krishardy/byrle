@@ -1518,10 +1518,16 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Migrations as plain `.sql` under `sqlx::migrate!`. `migrations/0001_intel.sql`.
 - [x] `[!]` `cargo sqlx prepare` writes `.sqlx/`, checked in, so a contributor builds with
       no database. `make sqlx-prepare` wraps it. `env -u DATABASE_URL cargo build` succeeds.
-- [ ] `[!]` CI runs `cargo sqlx prepare --check` so the offline cache cannot drift from the
+- [x] `[!]` CI runs `cargo sqlx prepare --check` so the offline cache cannot drift from the
       migrations. A stale cache must be a CI failure, not a runtime surprise.
-      `make sqlx-prepare ARGS=--check` exists and fails on a changed query. There is no CI
-      configuration to run it from.
+      `.github/workflows/ci.yml` runs it as the `sqlx` job, beside `make lint` and `make test`.
+      Each job is one `make` target, so what CI checks is what a contributor runs.
+      `make sqlx-prepare` starts its own Postgres, so the workflow has no `services:` block.
+      `sqlx-cli`'s pin moved to `scripts/make/lib/sqlx-cli.sh`, which `dev-setup.sh` and the
+      workflow both call, rather than being written a second time in the YAML.
+      `make coverage`, `make verify`, `make test-integration`, `make mutants` and `make sast`
+      are not gated; [ci-gates](docs/engineering_decisions/ci-gates.md) says why, and says
+      what is still unproven until the first push.
 - [x] Add sqlx to `Cargo.toml` and run it through `make check-deps`. Held at 0.8, with
       RUSTSEC-2023-0071 ignored only while `rsa` is not compiled:
       `docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md`.
