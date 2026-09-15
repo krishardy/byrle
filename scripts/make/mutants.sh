@@ -29,5 +29,13 @@ if [[ ! -s "$diff" ]]; then
     exit 0
 fi
 
+# Half the cores for each build. cargo-mutants copies the tree into the system temp dir and
+# builds it there; on a tmpfs /tmp that build output is held in memory beside the compilers,
+# and a build on every core was stopped for low memory on 2026-09-15. The copy stays in
+# /tmp. CARGO_BUILD_JOBS set by the caller wins.
+cores="$(nproc)"
+export CARGO_BUILD_JOBS="${CARGO_BUILD_JOBS:-$(( cores > 1 ? cores / 2 : 1 ))}"
+
 cd "$repo_root"
+echo "building with CARGO_BUILD_JOBS=$CARGO_BUILD_JOBS in ${TMPDIR:-/tmp}"
 cargo mutants --in-diff "$diff" --output "$repo_root/target"
