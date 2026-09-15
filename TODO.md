@@ -1467,7 +1467,17 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       separate fixed versions (lodash `GHSA-xxjr-mmjv-4gpg` and `GHSA-f23m-r3pf-42rh`). One
       vulnerability never fires three rules: `decide` gives each check one result.
       [alias-matching](docs/engineering_decisions/alias-matching.md).
-- [ ] `[!]` GitHub Advisory stream (GraphQL, token auth)
+- [~] `[!]` GitHub Advisory stream (GraphQL, token auth). **Measured 2026-09-16, not built.**
+      Every npm advisory in `securityVulnerabilities(ecosystem: NPM)` against the `GHSA-`
+      records in the bundle fetched the same run: 7,056 not-withdrawn on GitHub, 7,055 in
+      OSV, 7,053 in both. GitHub has 3 OSV lacks, none published after the bundle was built.
+      A second `match` source for npm would restate 7,053 records to gain 3, and needs a
+      paginated authenticated fetch the descriptor has no variant for.
+      One finding is worth keeping: `GHSA-4j66-8f4r-3pjx` is withdrawn on GitHub and live in
+      OSV's bundle, so withdrawal does not always propagate. If this is built, it is `enrich`
+      for withdrawals and freshness, not `match`.
+      [github-advisory-stream](docs/engineering_decisions/github-advisory-stream.md).
+      Decide: drop the item, or rescope it to an `enrich` stream.
 - [x] OSSF Malicious Packages stream (licence-cleared: Apache-2.0). Loaded as `osv/npm`: OSV
       imports the repository, and all 221,217 non-withdrawn `MAL-` records in `npm/all.zip`
       (2026-09-13) give it as `affected[].database_specific.source`, such as
