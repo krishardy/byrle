@@ -201,9 +201,10 @@ self-assessment; operators can demote a stream they distrust for a given ecosyst
 Promotion is harder than demotion, especially into `malware`.
 
 **Coverage gaps become computable.** For each enabled ecosystem, check that at least one
-enabled stream provides `match`. An ecosystem adapter running with no `match`-capable
-stream is a firewall that structurally cannot block anything — startup warning plus a
-`waharoa doctor` check. This composes with the §4 adapter maturity tiers: adapter maturity
+enabled stream provides `match`, and at least one provides `malware`. An ecosystem adapter
+running with no `match`-capable stream is a firewall that structurally cannot block anything,
+and one with no `malware`-capable stream never fires `known_malware`, the check with no
+exception. Each is a startup warning plus a `waharoa doctor` check. This composes with the §4 adapter maturity tiers: adapter maturity
 and intel coverage are separate axes and both belong in `waharoa status`.
 
 **Accepted consequence:** an `enrich`-capable stream returning a higher CVSS than the

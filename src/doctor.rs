@@ -987,7 +987,8 @@ mod tests {
         assert_eq!(
             finding.detail,
             "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but `npm` is \
-             served with no stream providing match. Nothing can originate a finding for it"
+             served with no stream providing match. Nothing can originate a finding for it; \
+             `npm` is served with no stream providing malware. Nothing can report malware for it"
         );
         assert!(finding.fix.is_some());
 
