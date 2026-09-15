@@ -1,6 +1,7 @@
 # NVD role, and per-ecosystem stream capabilities
 
-- **Status:** Decided
+- **Status:** Decided. The gap check is implemented: `intel::capabilities_of`,
+  `LoadedSnapshot::gaps`.
 - **Plan reference:** decision #7
 
 ## Decision
@@ -40,3 +41,21 @@ one rule nobody can override, which is a higher trust bar than reporting a vulne
 
 The capability matrix and its YAML shape remain in plan §3 ("Stream capabilities by
 ecosystem").
+
+## Streams this build declares, 2026-09-15
+
+The frozen v1 policy schema has no `streams` block, so this build declares each stream's
+capabilities itself, keyed by the name a snapshot records the stream under
+(`intel::capabilities_of`). A stream it does not know is granted nothing.
+
+| Stream | Ecosystem | Capabilities |
+|---|---|---|
+| `osv/npm` | npm | match, malware |
+| `cisa/kev` | every served ecosystem | enrich |
+
+`LoadedSnapshot::gaps` gives each served ecosystem (`Ecosystem::ALL`: npm) that no stream in
+the snapshot provides `match` for. The proxy warns once per gap at startup, for the snapshot
+loaded then, and `waharoa doctor` reports a gap in the snapshot `/ready` returns as a warning.
+
+No refresh writes a snapshot with a gap today: `waharoa refresh` loads nothing when OSV does
+not load. The check is for an ecosystem added without a stream, such as PyPI in Stage 3.

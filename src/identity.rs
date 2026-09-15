@@ -51,6 +51,9 @@ pub enum Ecosystem {
 }
 
 impl Ecosystem {
+    /// Every ecosystem this build serves.
+    pub const ALL: [Ecosystem; 1] = [Ecosystem::Npm];
+
     /// The purl `type` component, and the string OSV keys on.
     pub fn as_str(self) -> &'static str {
         match self {
