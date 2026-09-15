@@ -31,6 +31,7 @@ code, and the file names where.
 | [Intel in decisions: one lookup per package, fail closed](intel-in-decisions.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
+| [A GitHub Advisory stream adds 3 advisories to what OSV ships](github-advisory-stream.md) | Measured, not built |
 | [The CISA KEV catalogue is a source of its own, joined at lookup](kev-stream.md) | Implemented, `waharoa refresh` |
 | [Datadog's npm manifest is a malware source of its own](datadog-stream.md) | Implemented, `waharoa refresh` |
 | [Ingestion history: a row per stream per refresh, appended](ingestion-history.md) | Implemented, `waharoa intel history` |
