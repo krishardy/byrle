@@ -58,6 +58,31 @@ value is refused only then.
 The log line `deferred (WAHAROA_DEFER_TEST)`, which `scripts/make/retry-matrix.sh` counts, is
 unchanged: it is formatted from `env::DEFER_TEST`.
 
+## Credentials
+
+A variable holding a secret is set from `~/.config/waharoa/env`, mode 600, outside the
+repository. `make trufflehog` scans the working tree with only `/target/` excluded and does
+not read `.gitignore`, so a live token in a file inside the repository fails that gate on
+every run. Measured 2026-09-16: a `ghp_`-shaped value in an untracked file at the repository
+root was reported as `Detector Type: Github, Token_type: Personal Access Token (classic)` and
+the working-tree scan exited 183.
+
+Excluding such a file in `.trufflehog-exclude` was rejected: that file is for build output,
+and excluding the file most likely to hold a credential inverts what the scanner is for.
+`.env` and `.env.*` are in `.gitignore` anyway, for a token pasted into the repository out of
+habit.
+
+Nothing loads the file. waharoa reads real environment variables and there is no dotenv
+crate, so a shell sources it:
+
+```sh
+set -a; . ~/.config/waharoa/env; set +a
+```
+
+`WAHAROA_GITHUB_TOKEN` is the GitHub Advisory stream's token. It is not in `src/env.rs` yet:
+`--help` renders from those constants and `tests/fixtures/cli/help.txt` pins the output, so
+the `Var` is added when the stream reads it.
+
 ## Rejected
 
 | Alternative | Why not |
