@@ -169,8 +169,8 @@ version:
 | `edgeone` | 9,802 | no record | every version | 233 |
 
 Loaded as a `malware` stream, whose check has no exception, an every-version entry refuses
-every version of the package. Whether to load the dataset, and which entries, is open in
-TODO.md.
+every version of the package. Every entry is loaded, as stream `datadog/npm`:
+[datadog-stream](datadog-stream.md).
 
 ### Aikido Intel is not a free public feed
 

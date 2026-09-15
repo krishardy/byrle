@@ -669,7 +669,7 @@ async fn package_intel(
 /// be fetched or read leaves the previous KEV load in place: OSV still loads, and the exit is 1.
 async fn run_refresh() -> std::process::ExitCode {
     use waharoa::intel::postgres::{PgIntel, Replacement};
-    use waharoa::intel::{kev, load, osv, refresh, snapshot_dir::SnapshotDir};
+    use waharoa::intel::{datadog, kev, load, osv, refresh, snapshot_dir::SnapshotDir};
 
     let Some(url) = or_exit(env::process().database_url()) else {
         eprintln!(
@@ -722,21 +722,32 @@ async fn run_refresh() -> std::process::ExitCode {
     let osv_streams = [bundle.stream(refresh::NPM_STREAM)];
     drop(bundle);
 
-    let catalogue = match fetch(&http, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES)
-        .await
-        .and_then(|fetched| {
-            let ids = kev::parse(&fetched.bytes).map_err(|e| e.to_string())?;
-            Ok((ids, [fetched.stream(kev::SOURCE)]))
-        }) {
-        Ok(catalogue) => Some(catalogue),
-        Err(e) => {
-            eprintln!(
-                "waharoa refresh: {} is not loaded, and its last load stays: {e}",
-                kev::SOURCE
-            );
-            None
-        }
-    };
+    /// A stream other than OSV that fails keeps its last load, and the refresh exits 1.
+    fn optional<T>(stream: &str, result: Result<T, String>) -> Option<T> {
+        result
+            .inspect_err(|e| {
+                eprintln!("waharoa refresh: {stream} is not loaded, and its last load stays: {e}")
+            })
+            .ok()
+    }
+    let catalogue = optional(
+        kev::SOURCE,
+        fetch(&http, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES)
+            .await
+            .and_then(|fetched| {
+                let ids = kev::parse(&fetched.bytes).map_err(|e| e.to_string())?;
+                Ok((ids, [fetched.stream(kev::SOURCE)]))
+            }),
+    );
+    let manifest = optional(
+        datadog::STREAM,
+        fetch(&http, datadog::MANIFEST, datadog::MAX_MANIFEST_BYTES)
+            .await
+            .and_then(|fetched| {
+                let rows = datadog::parse(&fetched.bytes).map_err(|e| e.to_string())?;
+                Ok((rows, [fetched.stream(datadog::STREAM)]))
+            }),
+    );
     let taken_at = jiff::Timestamp::now().to_string();
 
     // Written before the load, so a snapshot Postgres records never lacks its rows here. Rows
@@ -745,8 +756,11 @@ async fn run_refresh() -> std::process::ExitCode {
     let exploited = catalogue
         .as_ref()
         .map(|(ids, _)| load::encode_exploited(kev::SOURCE, ids));
+    let flagged = manifest
+        .as_ref()
+        .map(|(rows, _)| load::encode(datadog::SOURCE, rows));
     if let Some(kept) = &kept {
-        for rows in std::iter::once(&encoded).chain(&exploited) {
+        for rows in std::iter::once(&encoded).chain(&exploited).chain(&flagged) {
             if let Err(e) = kept.write_rows(rows) {
                 eprintln!("waharoa refresh: nothing loaded: {e}");
                 return std::process::ExitCode::from(1);
@@ -777,6 +791,13 @@ async fn run_refresh() -> std::process::ExitCode {
             streams,
         });
     }
+    if let (Some(encoded), Some((rows, streams))) = (&flagged, &manifest) {
+        sources.push(Replacement {
+            encoded,
+            rows,
+            streams,
+        });
+    }
     let loaded = match intel.replace(&sources, &taken_at).await {
         Ok(loaded) => loaded,
         Err(e) => {
@@ -791,6 +812,17 @@ async fn run_refresh() -> std::process::ExitCode {
     println!("{:32} {:>8}", "affected rows written", loaded.affected);
     println!("{:32} {:>8}", "ranges written", loaded.ranges);
     println!("{:32} {:>8}", "exploited CVE ids written", loaded.exploited);
+    if let Some((rows, _)) = &manifest {
+        let disagreements = datadog::disagreements(&osv_rows.rows, rows);
+        for disagreement in &disagreements {
+            println!("{disagreement}");
+        }
+        println!(
+            "{:32} {:>8}",
+            "datadog every version, osv some",
+            disagreements.len()
+        );
+    }
     println!("snapshot {}", loaded.snapshot);
     if let Some(kept) = kept {
         match kept
@@ -809,9 +841,9 @@ async fn run_refresh() -> std::process::ExitCode {
         }
     }
     println!("took {:.1}s", started.elapsed().as_secs_f64());
-    match catalogue {
-        Some(_) => std::process::ExitCode::SUCCESS,
-        None => std::process::ExitCode::from(1),
+    match (catalogue, manifest) {
+        (Some(_), Some(_)) => std::process::ExitCode::SUCCESS,
+        _ => std::process::ExitCode::from(1),
     }
 }
 

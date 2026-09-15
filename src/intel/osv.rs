@@ -271,12 +271,7 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
         if refused > 0 || (entry.versions.is_empty() && intervals.is_empty()) {
             unexpressed += 1;
         }
-        // Padded as a range's versions are, so a listed `12.0` matches the published `12.0.0`.
-        // One that does not pad is kept as written.
-        let listed = entry
-            .versions
-            .iter()
-            .map(|v| range::padded(v).unwrap_or_else(|| v.clone()));
+        let listed = entry.versions.iter().map(|v| range::stored(v));
         affected.extend(listed.map(|v| row(Some(&v))));
         ranges.extend(intervals.into_iter().map(|interval| Ranged {
             ecosystem: NPM.to_owned(),

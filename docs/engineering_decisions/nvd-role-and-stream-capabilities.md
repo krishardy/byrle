@@ -51,6 +51,7 @@ capabilities itself, keyed by the name a snapshot records the stream under
 | Stream | Ecosystem | Capabilities |
 |---|---|---|
 | `osv/npm` | npm | match, malware |
+| `datadog/npm` | npm | match, malware |
 | `cisa/kev` | every served ecosystem | enrich |
 
 `LoadedSnapshot::gaps` gives each served ecosystem (`Ecosystem::ALL`: npm) that no stream in

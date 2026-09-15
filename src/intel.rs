@@ -35,6 +35,7 @@
 //! `enrich` capability this machinery exists to constrain has no implemented producer at
 //! all. See `docs/engineering_decisions/advisory-stream-licences.md`.
 
+pub mod datadog;
 pub mod kev;
 pub mod load;
 pub mod osv;
@@ -358,7 +359,7 @@ pub fn capabilities_of(streams: &[refresh::StreamDigest]) -> Capabilities {
     streams
         .iter()
         .fold(Capabilities::new(), |caps, s| match s.stream.as_str() {
-            refresh::NPM_STREAM => caps.grant(
+            refresh::NPM_STREAM | datadog::STREAM => caps.grant(
                 &s.stream,
                 crate::identity::Ecosystem::Npm.as_str(),
                 &[Capability::Match, Capability::Malware],
@@ -478,11 +479,18 @@ mod tests {
         let caps = capabilities_of(&[
             recorded("osv/npm"),
             recorded("cisa/kev"),
+            recorded("datadog/npm"),
             recorded("osv/pypi"),
         ]);
         assert_eq!(served(), ["npm"]);
-        assert_eq!(caps.providers("npm", Capability::Match), ["osv/npm"]);
-        assert_eq!(caps.providers("npm", Capability::Malware), ["osv/npm"]);
+        assert_eq!(
+            caps.providers("npm", Capability::Match),
+            ["datadog/npm", "osv/npm"]
+        );
+        assert_eq!(
+            caps.providers("npm", Capability::Malware),
+            ["datadog/npm", "osv/npm"]
+        );
         assert_eq!(caps.providers("npm", Capability::Enrich), ["cisa/kev"]);
         assert!(!caps.has("osv/pypi", "pypi", Capability::Match));
         assert!(caps.gaps(&served()).is_empty());
