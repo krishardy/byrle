@@ -2747,7 +2747,7 @@ mod tests {
         assert_eq!(response.status(), 200);
         assert_eq!(
             response.text().await.unwrap(),
-            r#"{"ready":true,"intel":"loaded","snapshot":{"digest":"s1","taken_at":"2026-09-13T00:00:00Z","streams":[]}}"#,
+            r#"{"ready":true,"intel":"loaded","snapshot":{"digest":"s1","taken_at":"2026-09-13T00:00:00Z","sources":[],"streams":[]}}"#,
             "the body a probe and the README describe"
         );
         let paths = &seen.lock().unwrap().paths;

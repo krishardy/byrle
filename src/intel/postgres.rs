@@ -346,13 +346,15 @@ impl Intel for PgIntel {
     fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
         Box::pin(async move {
             // One row per stream of the newest snapshot, or one row with no stream when it
-            // records none.
+            // records none. A refresh writes `intel_source` and the newest snapshot in one
+            // transaction, so its sources are the newest snapshot's.
             let rows = sqlx::query!(
                 r#"
                 SELECT
                     s.digest AS "digest!",
                     to_char(s.taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
                         AS "taken_at!",
+                    ARRAY(SELECT source::text FROM intel_source ORDER BY source) AS "sources!",
                     e.key AS "stream?",
                     e.value ->> 'sha256' AS "sha256?",
                     e.value ->> 'etag' AS "etag?",
@@ -377,6 +379,7 @@ impl Intel for PgIntel {
             Ok(Some(LoadedSnapshot {
                 digest: first.digest.clone(),
                 taken_at: first.taken_at.clone(),
+                sources: first.sources.clone(),
                 // Refresh records a sha256 for every stream, so one without is not reported
                 // as if it had been verified.
                 streams: rows

@@ -174,11 +174,24 @@ pub struct LoadedSnapshot {
     pub digest: String,
     /// When the refresh that wrote it ran. RFC 3339, UTC, to the second.
     pub taken_at: String,
+    /// Each source the snapshot id is the digest of, sorted. Absent from the readiness body of a
+    /// proxy older than the field.
+    #[serde(default)]
+    pub sources: Vec<String>,
     /// Each stream the sources' rows were read from, sorted by name.
     pub streams: Vec<StreamDigest>,
 }
 
 impl LoadedSnapshot {
+    /// Whether the snapshot includes the KEV catalogue, read from its sources. A stream is not
+    /// read: a kept snapshot records none. `PgIntel::package` asks `intel_source` the same
+    /// question in its statement.
+    pub fn exploitation_loaded(&self) -> bool {
+        self.sources
+            .iter()
+            .any(|source| source == crate::intel::kev::SOURCE)
+    }
+
     /// Each served ecosystem no stream in this snapshot can originate a finding for, then
     /// each no stream can report malware for. The startup warning and `waharoa doctor` both
     /// report these.
@@ -257,6 +270,7 @@ pub mod testing {
                 Ok(self.answer()?.map(|p| LoadedSnapshot {
                     digest: p.snapshot,
                     taken_at: "2026-09-13T00:00:00Z".to_owned(),
+                    sources: Vec::new(),
                     streams: Vec::new(),
                 }))
             })
@@ -473,6 +487,7 @@ mod tests {
         LoadedSnapshot {
             digest: "s1".to_owned(),
             taken_at: "2026-09-15T00:00:00Z".to_owned(),
+            sources: Vec::new(),
             streams: streams
                 .iter()
                 .map(|stream| StreamDigest {
@@ -502,6 +517,20 @@ mod tests {
                 "{streams:?}"
             );
         }
+    }
+
+    #[test]
+    fn exploitation_is_loaded_when_a_source_is_the_catalogue_whatever_the_streams() {
+        let with_sources = |sources: &[&str]| LoadedSnapshot {
+            sources: sources.iter().map(|s| (*s).to_owned()).collect(),
+            ..recording(&["cisa/kev", "osv/npm"])
+        };
+        assert!(with_sources(&["cisa/kev", "osv"]).exploitation_loaded());
+        assert!(!with_sources(&["datadog", "osv"]).exploitation_loaded());
+        assert!(
+            !with_sources(&[]).exploitation_loaded(),
+            "a stream named cisa/kev is not the source"
+        );
     }
 
     #[test]

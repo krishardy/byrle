@@ -422,15 +422,11 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     // `cli::Explain` holds `--policy` or a purl, never both and never neither.
     let Some(argument) = target.purl else {
         // A store with no snapshot answers nothing, so the checks that need one are
-        // reported as unenforced rather than as settings that will fire. A snapshot records
-        // the stream of every source it includes.
+        // reported as unenforced rather than as settings that will fire.
         let intel = match &store {
             Some(store) => match store.snapshot().await {
                 Ok(Some(snapshot)) => decide::Intel::Consulted {
-                    exploitation_loaded: snapshot
-                        .streams
-                        .iter()
-                        .any(|s| s.stream == waharoa::intel::kev::SOURCE),
+                    exploitation_loaded: snapshot.exploitation_loaded(),
                 },
                 Ok(None) => decide::Intel::NotConsulted,
                 Err(e) => {

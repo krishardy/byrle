@@ -25,8 +25,12 @@ The 200 body reports the snapshot that decisions use:
 
 ```json
 {"ready":true,"intel":"loaded","snapshot":{"digest":"sha256:...","taken_at":"2026-09-13T01:02:03Z",
- "streams":[{"stream":"osv-npm","sha256":"...","etag":"...","last_modified":null}]}}
+ "sources":["cisa/kev","datadog","osv"],
+ "streams":[{"stream":"osv/npm","sha256":"...","etag":"...","last_modified":null}]}}
 ```
+
+`sources` was added 2026-09-15: the sources the snapshot id is the digest of, read from
+`intel_source`. `doctor` reads a body without it as no sources.
 
 The response carries `Cache-Control: no-store`, as `/-/waharoa/health` does. A store error
 is logged and not served, because a database error can carry the database's address.

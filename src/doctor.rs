@@ -963,6 +963,7 @@ mod tests {
             snapshot: (intel == IntelState::Loaded).then(|| crate::intel::store::LoadedSnapshot {
                 digest: "sha256:ab".into(),
                 taken_at: "2026-09-13T01:02:03Z".into(),
+                sources: ["cisa/kev", "osv"].map(str::to_owned).to_vec(),
                 streams: ["cisa/kev", "osv/npm"]
                     .map(|stream| crate::intel::refresh::StreamDigest {
                         stream: stream.to_owned(),
