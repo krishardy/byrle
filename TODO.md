@@ -1450,15 +1450,13 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `https://github.com/ossf/malicious-packages/blob/main/osv/malicious/npm/cxp-jquery/MAL-2021-1.json`.
       The repository's copy of `MAL-2021-1` has the same id, origins and `modified`; OSV adds
       `purl` and `source`. No separate stream. [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
-- [ ] `[?]` Datadog malicious-packages. Licence Apache-2.0 by its `LICENSE` file. Not ingested
-      by OSSF: no `MAL-` record lists it as an origin. Compared on 2026-09-15 with OSV's npm
-      bundle and the npm registry of the same day: 13 installable versions OSV has no record
-      for (vant 2.13.3 to 4.9.14, art-template 4.13.3, and 4 others), and 344 packages
-      Datadog flags at every version with 19,848 installable versions OSV lacks. Some are
-      whole packages OSV flags only in part: `@lottiefiles/lottie-player` (101,903 weekly
-      downloads) is `MAL-2024-10301` 2.0.5 to 2.0.7 in OSV and every version in Datadog.
-      Needs a decision: whether to load it, and which entries, since a `malware` entry has
-      no exception. [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
+- [x] Datadog malicious-packages (licence-cleared: Apache-2.0). Not ingested by OSSF: no
+      `MAL-` record lists it as an origin. Every npm manifest entry is loaded as one
+      `DATADOG-npm-<name>` malware record, source `datadog`, stream `datadog/npm` (`match`,
+      `malware` for npm), beside OSV's records. `waharoa refresh` prints each package Datadog
+      flags at every version and OSV's malware records only at some. A failed fetch keeps the
+      last Datadog load and exits 1. [datadog-stream](docs/engineering_decisions/datadog-stream.md),
+      [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
 - [x] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed). `enrich`-only, joined on
       exact CVE ID or an alias. Source `cisa/kev` in `exploited_cve`, loaded by `waharoa
       refresh` in the same transaction as OSV; a failed fetch keeps the last KEV load and

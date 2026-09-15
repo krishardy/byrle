@@ -12,7 +12,6 @@
 
 use sqlx::PgPool;
 use std::collections::BTreeSet;
-use waharoa::intel::kev;
 use waharoa::intel::load::{self, Fetch};
 use waharoa::intel::osv::{self, Parsed, Rows};
 use waharoa::intel::postgres::{Loaded, PgIntel, Replacement};
@@ -20,6 +19,7 @@ use waharoa::intel::refresh::StreamDigest;
 use waharoa::intel::snapshot_dir::SnapshotDir;
 use waharoa::intel::snapshot_intel::SnapshotIntel;
 use waharoa::intel::store::{Intel, IntelError, LoadedSnapshot, PackageIntel};
+use waharoa::intel::{datadog, kev};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
@@ -1154,6 +1154,13 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
     ];
     let encoded = load::encode(osv::SOURCE, &rows);
     let exploited = load::encode_exploited(kev::SOURCE, &["CVE-2099-1".to_owned()].into());
+    // A second advisory source, on packages OSV's records also affect.
+    let (every, _) = target(&rows[0]);
+    let (listed, _) = target(&rows[1]);
+    let manifest =
+        datadog::parse(format!(r#"{{"{every}": null, "{listed}": ["1.0"]}}"#).as_bytes())
+            .expect("parses");
+    let flagged = load::encode(datadog::SOURCE, &manifest);
     let s1 = fetch("s1");
     let loaded = intel
         .replace(
@@ -1168,6 +1175,11 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
                     rows: &[],
                     streams: &[],
                 },
+                Replacement {
+                    encoded: &flagged,
+                    rows: &manifest,
+                    streams: &[],
+                },
             ],
             &s1.taken_at,
         )
@@ -1177,8 +1189,9 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
     let path = std::env::temp_dir().join(format!("waharoa-it-kept-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     let dir = SnapshotDir::open(&path).expect("opens");
-    dir.write_rows(&encoded).expect("writes rows");
-    dir.write_rows(&exploited).expect("writes rows");
+    for rows in [&encoded, &exploited, &flagged] {
+        dir.write_rows(rows).expect("writes rows");
+    }
     dir.write_snapshot(&loaded.manifest)
         .expect("writes the snapshot");
     let names: std::collections::BTreeSet<&str> = rows
@@ -1197,13 +1210,18 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         .map(|name| ("npm".to_owned(), name.to_string()))
         .collect();
     let kept = SnapshotIntel::read(&dir, &loaded.snapshot, packages).expect("reads");
-    let mut exploited_records = 0;
+    let (mut exploited_records, mut datadog_records) = (0, 0);
     for name in names {
         let from_postgres = intel.package("npm", name).await.expect("query");
         exploited_records += from_postgres
             .iter()
             .flat_map(|p| &p.records)
             .filter(|(_, r)| r.exploited)
+            .count();
+        datadog_records += from_postgres
+            .iter()
+            .flat_map(|p| &p.records)
+            .filter(|(_, r)| r.source == datadog::SOURCE && r.malware)
             .count();
         let from_files = kept.package("npm", name).await.expect("answers");
         assert_eq!(from_files.map(sorted), from_postgres.map(sorted), "{name}");
@@ -1212,6 +1230,7 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         exploited_records > 0,
         "the catalogue marks GHSA-0000-0000-0000"
     );
+    assert_eq!(datadog_records, 2, "one row each for {every} and {listed}");
     assert_eq!(
         kept.snapshot().await.expect("answers").map(|s| s.digest),
         Some(loaded.snapshot)

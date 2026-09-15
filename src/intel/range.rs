@@ -44,6 +44,12 @@ pub fn padded(s: &str) -> Option<String> {
     version(&written).map(|_| written)
 }
 
+/// A listed version as it is stored: [`padded`], so a listed `12.0` matches the published
+/// `12.0.0`, or as written when it does not pad.
+pub fn stored(s: &str) -> String {
+    padded(s).unwrap_or_else(|| s.to_owned())
+}
+
 /// Where an interval stops.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum End<V> {
