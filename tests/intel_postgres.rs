@@ -12,6 +12,7 @@
 
 use sqlx::PgPool;
 use std::collections::BTreeSet;
+use waharoa::intel::history::{Ingestion, NotLoaded};
 use waharoa::intel::load::{self, Fetch};
 use waharoa::intel::osv::{self, Parsed, Rows};
 use waharoa::intel::postgres::{Loaded, PgIntel, Replacement};
@@ -986,7 +987,16 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .filter(|c| c.2 == "text")
         .map(named)
         .collect();
-    assert_eq!(text, ["advisory.summary"]);
+    // An upstream's response headers, and an error from anywhere a refresh fails.
+    assert_eq!(
+        text,
+        [
+            "advisory.summary",
+            "intel_ingestion.etag",
+            "intel_ingestion.last_modified",
+            "intel_ingestion.error"
+        ]
+    );
 
     let unsized_strings: Vec<String> = columns
         .iter()
@@ -1006,6 +1016,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "advisory_alias",
         "advisory_range",
         "exploited_cve",
+        "intel_ingestion",
         "intel_snapshot",
         "intel_source",
     ];
@@ -1035,6 +1046,88 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
     assert_eq!(
         primary,
         tables.map(|t| (t.to_owned(), "id".to_owned())).to_vec()
+    );
+}
+
+/// A load appends a row per stream it loaded and per stream that did not, with the snapshot. A
+/// load that fails appends nothing. A refresh that loaded nothing appends its streams with no
+/// snapshot. No row is replaced.
+#[tokio::test]
+async fn every_stream_a_refresh_tried_is_appended_to_the_history() {
+    let intel = skip_without_database!("t_history");
+    assert!(intel.history(10).await.expect("reads").is_empty());
+
+    let rows = [osv_fixture("MAL-2021-1")];
+    let encoded = load::encode(osv::SOURCE, &rows);
+    let s1 = fetch("s1");
+    let refused = NotLoaded {
+        source: kev::SOURCE.to_owned(),
+        stream: kev::SOURCE.to_owned(),
+        bundle: None,
+        error: "fetching: refused".to_owned(),
+    };
+    let loaded = intel
+        .replace(
+            &[Replacement {
+                encoded: &encoded,
+                rows: &rows,
+                streams: &s1.streams,
+            }],
+            std::slice::from_ref(&refused),
+            &s1.taken_at,
+        )
+        .await
+        .expect("load");
+    let first = [
+        Ingestion::not_loaded(&s1.taken_at, &refused, Some(&loaded.snapshot)),
+        Ingestion::loaded(
+            &s1.taken_at,
+            osv::SOURCE,
+            &s1.streams[0],
+            &encoded.digest,
+            &loaded.snapshot,
+        ),
+    ];
+    assert_eq!(intel.history(10).await.expect("reads"), first);
+
+    let long = Rows {
+        id: "x".repeat(129),
+        ..rows[0].clone()
+    };
+    intel
+        .replace_source(osv::SOURCE, &[long], &fetch("s2"))
+        .await
+        .expect_err("a value longer than its column");
+    assert_eq!(intel.history(10).await.expect("reads"), first);
+
+    let s3 = fetch("s3");
+    let unread = NotLoaded {
+        source: osv::SOURCE.to_owned(),
+        stream: s3.streams[0].stream.clone(),
+        bundle: Some(s3.streams[0].clone()),
+        error: "a record did not read".to_owned(),
+    };
+    intel
+        .record_not_loaded(std::slice::from_ref(&unread), &s3.taken_at)
+        .await
+        .expect("records");
+    let history = intel.history(2).await.expect("reads");
+    assert_eq!(
+        history,
+        [
+            Ingestion::not_loaded(&s3.taken_at, &unread, None),
+            first[0].clone()
+        ]
+    );
+
+    let unexplained = sqlx::raw_sql(
+        "INSERT INTO intel_ingestion (taken_at, source, stream) VALUES (now(), 'osv', 'osv/npm')",
+    )
+    .execute(intel.pool())
+    .await;
+    assert!(
+        unexplained.is_err(),
+        "a row with no error must carry its bundle, rows and snapshot"
     );
 }
 
@@ -1181,6 +1274,7 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
                     streams: &[],
                 },
             ],
+            &[],
             &s1.taken_at,
         )
         .await
@@ -1329,6 +1423,7 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
                 },
                 kev_only(&exploited)[0],
             ],
+            &[],
             &s2.taken_at,
         )
         .await
@@ -1370,7 +1465,7 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
 
     let smaller = load::encode_exploited(kev::SOURCE, &["CVE-2099-3".to_owned()].into());
     let replaced = intel
-        .replace(&kev_only(&smaller), &fetch("s4").taken_at)
+        .replace(&kev_only(&smaller), &[], &fetch("s4").taken_at)
         .await
         .expect("load");
     assert_eq!((replaced.advisories, replaced.exploited), (0, 1));

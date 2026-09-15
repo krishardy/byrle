@@ -4,6 +4,7 @@
 //! `sqlx::query_as!`. A renamed column or a changed type is a compile error rather than a
 //! runtime one. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
 
+use super::history::{Ingestion, NotLoaded};
 use super::kev;
 use super::load::{self, Encoded, Fetch, Kind};
 use super::osv::Rows;
@@ -84,6 +85,7 @@ impl PgIntel {
                 rows,
                 streams: &fetch.streams,
             }],
+            &[],
             &fetch.taken_at,
         )
         .await
@@ -108,9 +110,14 @@ impl PgIntel {
     ///
     /// A snapshot id already recorded, which is the same rows loaded again, keeps its row and
     /// takes the new `taken_at` and streams.
+    ///
+    /// Each stream in `sources` is appended to `intel_ingestion` as loaded, and each in
+    /// `not_loaded` as not, both with the snapshot, in the same transaction. A load that fails
+    /// appends nothing.
     pub async fn replace(
         &self,
         sources: &[Replacement<'_>],
+        not_loaded: &[NotLoaded],
         taken_at: &str,
     ) -> Result<Loaded, IntelError> {
         let mut tx = self.pool.begin().await.map_err(IntelError::Backend)?;
@@ -174,12 +181,12 @@ impl PgIntel {
             .await
             .map_err(IntelError::Backend)?;
         }
-        let sources = sqlx::query!("SELECT source, digest FROM intel_source")
+        let stored = sqlx::query!("SELECT source, digest FROM intel_source")
             .fetch_all(&mut *tx)
             .await
             .map_err(IntelError::Backend)?;
         let manifest = load::manifest(
-            sources
+            stored
                 .iter()
                 .map(|s| (s.source.as_str(), s.digest.as_str())),
         );
@@ -198,6 +205,26 @@ impl PgIntel {
         .await
         .map_err(IntelError::Backend)?;
 
+        for replacement in sources {
+            for bundle in replacement.streams {
+                let entry = Ingestion::loaded(
+                    taken_at,
+                    &replacement.encoded.source,
+                    bundle,
+                    &replacement.encoded.digest,
+                    &snapshot,
+                );
+                record(&mut tx, &entry).await?;
+            }
+        }
+        for stream in not_loaded {
+            record(
+                &mut tx,
+                &Ingestion::not_loaded(taken_at, stream, Some(&snapshot)),
+            )
+            .await?;
+        }
+
         tx.commit().await.map_err(IntelError::Backend)?;
         Ok(Loaded {
             advisories,
@@ -209,6 +236,75 @@ impl PgIntel {
             manifest,
         })
     }
+
+    /// Append `not_loaded` to `intel_ingestion` for a refresh that loaded nothing, in one
+    /// transaction. `taken_at` is RFC 3339 UTC.
+    pub async fn record_not_loaded(
+        &self,
+        not_loaded: &[NotLoaded],
+        taken_at: &str,
+    ) -> Result<(), IntelError> {
+        let mut tx = self.pool.begin().await.map_err(IntelError::Backend)?;
+        for stream in not_loaded {
+            record(&mut tx, &Ingestion::not_loaded(taken_at, stream, None)).await?;
+        }
+        tx.commit().await.map_err(IntelError::Backend)
+    }
+
+    /// The newest `limit` rows of `intel_ingestion`, newest first.
+    pub async fn history(&self, limit: u32) -> Result<Vec<Ingestion>, IntelError> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT
+                to_char(taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "taken_at!",
+                source, stream, sha256, etag, last_modified, rows_digest, snapshot, error
+            FROM intel_ingestion
+            ORDER BY id DESC
+            LIMIT $1
+            "#,
+            i64::from(limit)
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(IntelError::Backend)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| Ingestion {
+                taken_at: row.taken_at,
+                source: row.source,
+                stream: row.stream,
+                sha256: row.sha256,
+                etag: row.etag,
+                last_modified: row.last_modified,
+                rows: row.rows_digest,
+                snapshot: row.snapshot,
+                error: row.error,
+            })
+            .collect())
+    }
+}
+
+/// Append one row to `intel_ingestion`.
+async fn record(conn: &mut PgConnection, entry: &Ingestion) -> Result<(), IntelError> {
+    // `::text` first, so the parameter is text and sqlx needs no date type.
+    sqlx::query!(
+        "INSERT INTO intel_ingestion \
+         (taken_at, source, stream, sha256, etag, last_modified, rows_digest, snapshot, error) \
+         VALUES ($1::text::timestamptz, $2, $3, $4, $5, $6, $7, $8, $9)",
+        entry.taken_at,
+        entry.source,
+        entry.stream,
+        entry.sha256.as_deref(),
+        entry.etag.as_deref(),
+        entry.last_modified.as_deref(),
+        entry.rows.as_deref(),
+        entry.snapshot.as_deref(),
+        entry.error.as_deref()
+    )
+    .execute(conn)
+    .await
+    .map_err(IntelError::Backend)?;
+    Ok(())
 }
 
 /// Send `data` through one `COPY ... FROM STDIN`, returning the rows Postgres wrote.

@@ -28,14 +28,30 @@ pub enum Command {
     Doctor,
     /// Why a package is allowed or refused
     Explain(Explain),
+    /// Read what the intel store records
+    #[command(subcommand)]
+    Intel(IntelCommand),
     /// Work with policy files
     #[command(subcommand)]
     Policy(PolicyCommand),
     #[command(about = format!(
-        "Load OSV's npm advisories into the Postgres at {}",
+        "Load OSV, CISA KEV and Datadog intel into the Postgres at {}",
         crate::env::DATABASE_URL
     ))]
     Refresh,
+}
+
+#[derive(Debug, PartialEq, Subcommand)]
+pub enum IntelCommand {
+    /// Each stream every `waharoa refresh` loaded or did not, newest first
+    History(History),
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct History {
+    /// Most entries to print
+    #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..))]
+    pub limit: u32,
 }
 
 /// `explain --policy` or `explain <purl>`, exactly one.
@@ -188,6 +204,16 @@ mod tests {
         assert_eq!(
             parse(&["refresh"]).expect("parses").command,
             Some(Command::Refresh)
+        );
+        assert_eq!(
+            parse(&["intel", "history"]).expect("parses").command,
+            Some(Command::Intel(IntelCommand::History(History { limit: 20 })))
+        );
+        assert_eq!(
+            parse(&["intel", "history", "--limit", "1"])
+                .expect("parses")
+                .command,
+            Some(Command::Intel(IntelCommand::History(History { limit: 1 })))
         );
         assert_eq!(
             parse(&["explain", "--policy"]).expect("parses").command,
@@ -394,6 +420,15 @@ mod tests {
             (&["doctor", "extra"], ErrorKind::UnknownArgument),
             (&["policy", "check"], ErrorKind::MissingRequiredArgument),
             (&["policy", "check", "a", "b"], ErrorKind::UnknownArgument),
+            (
+                &["intel", "history", "--limit", "0"],
+                ErrorKind::ValueValidation,
+            ),
+            (
+                &["intel", "history", "--limit", "many"],
+                ErrorKind::ValueValidation,
+            ),
+            (&["intel", "histroy"], ErrorKind::InvalidSubcommand),
         ] {
             stops(args, kind);
         }
@@ -427,6 +462,7 @@ mod tests {
         for (args, name) in [
             (["--help"].as_slice(), "help.txt"),
             (&["explain", "--help"], "explain.txt"),
+            (&["intel", "history", "--help"], "intel-history.txt"),
             (&["policy", "check", "--help"], "policy-check.txt"),
             (&["policy", "diff", "--help"], "policy-diff.txt"),
         ] {

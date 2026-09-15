@@ -1591,14 +1591,13 @@ a deferral: there was no mirror to warm and nothing analysing. See
 - [ ] Log every deferral and whether the client returned inside the window — turns the
       compatibility table into evidence
 ### Observability
-- [ ] `[!]` Ingestion history log for auditing: every time a vulnerability or malware feed is
-      ingested, append an entry. Requested 2026-09-15. Today `intel_source` keeps only each
-      source's latest digest and streams, `intel_snapshot` one row per distinct snapshot
-      (a reload of the same rows overwrites its `taken_at`), and kept snapshot files are
-      pruned to `WAHAROA_SNAPSHOT_LIMIT`, so which feed was ingested when, and from which
-      bundle, cannot be read back. An entry would carry at least the source, its stream
-      digests, etag and `last-modified`, the rows digest, the resulting snapshot id, when
-      it ran, and the outcome, including a feed that failed and kept its last load.
+- [x] `[!]` Ingestion history log for auditing: every time a vulnerability or malware feed is
+      ingested, append an entry. Requested 2026-09-15. `intel_ingestion` (migration 0004)
+      gets one row per stream per refresh, never updated or pruned: source, stream, bundle
+      sha256, etag and `last-modified`, rows digest, snapshot, when, and the error for a
+      stream that did not load. Loaded streams are written in the load's transaction; a
+      refresh that loaded nothing writes its streams in their own. `waharoa intel history
+      [--limit N]` prints them newest first. [ingestion-history](docs/engineering_decisions/ingestion-history.md).
 - [x] `[!]` JSON Lines audit log: `src/audit.rs`, `WAHAROA_AUDIT_LOG`. A separate sink,
       not a tracing layer: tracing output is diagnostic and free to change shape, this is
       what `policy diff` parses.

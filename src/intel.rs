@@ -36,6 +36,7 @@
 //! all. See `docs/engineering_decisions/advisory-stream-licences.md`.
 
 pub mod datadog;
+pub mod history;
 pub mod kev;
 pub mod load;
 pub mod osv;

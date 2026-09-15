@@ -846,6 +846,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [Alias matching](engineering_decisions/alias-matching.md) | an enrichment or exception naming any alias applies; records sharing aliases are not merged |
 | n/a | [KEV stream](engineering_decisions/kev-stream.md) | CISA's CVE ids are source `cisa/kev` in `exploited_cve`, joined at lookup; a failed fetch keeps the last load and exits 1 |
 | n/a | [Datadog stream](engineering_decisions/datadog-stream.md) | every npm manifest entry is one `DATADOG-npm-<name>` malware record, source `datadog`, beside OSV's; refresh prints each package Datadog flags at every version and OSV only at some |
+| n/a | [Ingestion history](engineering_decisions/ingestion-history.md) | `intel_ingestion` appends a row per stream per refresh, loaded or not, never pruned; `waharoa intel history` prints it |
 | n/a | [OSV ranges and scores](engineering_decisions/osv-ranges-and-scores.md) | `GHSA-` records loaded; ranges stored as intervals and compared as SemVer 2.0 at lookup; v4 base score over v3; `vuln_advisory_ids` matches aliases |
 | n/a | [Environment variables](engineering_decisions/environment-variables.md) | Every name, default, help line and parser in `src/env.rs`; a value that does not parse refuses to start |
 | n/a | [Command line parser](engineering_decisions/cli-parser-clap.md) | clap 4 with default features off, 4 crates; parsing in `src/cli.rs`, help pinned by golden files |
