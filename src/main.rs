@@ -699,17 +699,19 @@ async fn package_intel(
     }
 }
 
-/// `waharoa refresh`: load OSV's npm records, CISA's KEV catalogue and Datadog's npm manifest
-/// into the intel store, and append what each stream did to the ingestion history.
+/// `waharoa refresh`: load every stream in `intel::stream::ALL` into the intel store, and
+/// append what each stream did to the ingestion history.
 ///
-/// Connect, migrate, fetch, load, exit. Nothing is written unless every record in the OSV
-/// bundle reads, so a broken bundle leaves the previous load in place. A catalogue or manifest
-/// that cannot be fetched or read leaves its previous load in place: the others still load,
-/// and the exit is 1. A refresh that stops before fetching records nothing.
+/// Connect, migrate, fetch, load, exit. A `Required` stream that cannot be fetched or read
+/// loads nothing, and the streams after it are not fetched. An `Optional` stream that cannot
+/// be fetched or read leaves its previous load in place: the others still load, and the exit
+/// is 1.
 async fn run_refresh() -> std::process::ExitCode {
     use waharoa::intel::history::NotLoaded;
     use waharoa::intel::postgres::{PgIntel, Replacement};
-    use waharoa::intel::{datadog, kev, load, osv, refresh, snapshot_dir::SnapshotDir};
+    use waharoa::intel::refresh::{StreamDigest, Tally};
+    use waharoa::intel::stream::{Payload, Requirement};
+    use waharoa::intel::{datadog, osv, snapshot_dir::SnapshotDir, stream};
 
     /// Append `not_loaded` for a refresh that loaded nothing, and exit 1.
     async fn nothing_loaded(intel: &PgIntel, not_loaded: &[NotLoaded]) -> std::process::ExitCode {
@@ -720,35 +722,12 @@ async fn run_refresh() -> std::process::ExitCode {
         std::process::ExitCode::from(1)
     }
 
-    /// A stream other than OSV that fails keeps its last load, and the refresh exits 1.
-    fn optional<T>(
-        source: &str,
-        stream: &str,
-        fetched: Result<Fetched, String>,
-        parse: impl FnOnce(&[u8]) -> Result<T, String>,
-        not_loaded: &mut Vec<NotLoaded>,
-    ) -> Option<(T, [refresh::StreamDigest; 1])> {
-        let mut skip = |bundle: Option<refresh::StreamDigest>,
-                        error: String|
-         -> Option<(T, [refresh::StreamDigest; 1])> {
-            eprintln!("waharoa refresh: {stream} is not loaded, and its last load stays: {error}");
-            not_loaded.push(NotLoaded {
-                source: source.to_owned(),
-                stream: stream.to_owned(),
-                bundle,
-                error,
-            });
-            None
-        };
-        let fetched = match fetched {
-            Ok(fetched) => fetched,
-            Err(error) => return skip(None, error),
-        };
-        let bundle = fetched.stream(stream);
-        match parse(&fetched.bytes) {
-            Ok(parsed) => Some((parsed, [bundle])),
-            Err(error) => skip(Some(bundle), error),
-        }
+    /// One stream's bundle, read and waiting to be encoded.
+    struct Loaded {
+        source: &'static str,
+        payload: Payload,
+        tally: Option<Tally>,
+        streams: [StreamDigest; 1],
     }
 
     // Connected before the fetch, so a refresh that could record nothing stops before
@@ -784,75 +763,66 @@ async fn run_refresh() -> std::process::ExitCode {
             return std::process::ExitCode::from(1);
         }
     };
-    let osv_not_loaded = |bundle: Option<refresh::StreamDigest>, error: String| {
-        [NotLoaded {
-            source: osv::SOURCE.to_owned(),
-            stream: refresh::NPM_STREAM.to_owned(),
-            bundle,
-            error,
-        }]
-    };
-    let bundle = match fetch(&http, refresh::NPM_BUNDLE, refresh::MAX_BUNDLE_BYTES).await {
-        Ok(fetched) => fetched,
-        Err(e) => {
-            eprintln!("waharoa refresh: {e}");
-            return nothing_loaded(&intel, &osv_not_loaded(None, e)).await;
-        }
-    };
-    let osv_streams = [bundle.stream(refresh::NPM_STREAM)];
-    let osv_rows = match refresh::read_bundle(&bundle.bytes) {
-        Ok(read) => read,
-        Err(e) => {
-            eprintln!("waharoa refresh: nothing loaded: {e}");
-            let not_loaded = osv_not_loaded(Some(osv_streams[0].clone()), e.to_string());
-            return nothing_loaded(&intel, &not_loaded).await;
-        }
-    };
-    drop(bundle);
 
-    let mut not_loaded = Vec::new();
-    let catalogue = optional(
-        kev::SOURCE,
-        kev::SOURCE,
-        fetch(&http, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES).await,
-        |bytes| kev::parse(bytes).map_err(|e| e.to_string()),
-        &mut not_loaded,
-    );
-    let manifest = optional(
-        datadog::SOURCE,
-        datadog::STREAM,
-        fetch(&http, datadog::MANIFEST, datadog::MAX_MANIFEST_BYTES).await,
-        |bytes| datadog::parse(bytes).map_err(|e| e.to_string()),
-        &mut not_loaded,
-    );
+    let mut loaded: Vec<Loaded> = Vec::new();
+    let mut not_loaded: Vec<NotLoaded> = Vec::new();
+    for declared in stream::ALL {
+        // `fetched` holds the whole body, and drops at the end of its arm, so one stream's
+        // bytes are freed before the next is fetched.
+        let read = match fetch(&http, declared.url, declared.ceiling).await {
+            Ok(fetched) => {
+                let bundle = fetched.stream(declared.stream);
+                match (declared.parse)(&fetched.bytes) {
+                    Ok(parsed) => Ok((parsed, bundle)),
+                    Err(error) => Err((Some(bundle), error)),
+                }
+            }
+            Err(error) => Err((None, error)),
+        };
+        let (parsed, bundle) = match read {
+            Ok(read) => read,
+            Err((bundle, error)) => {
+                not_loaded.push(NotLoaded {
+                    source: declared.source.to_owned(),
+                    stream: declared.stream.to_owned(),
+                    bundle,
+                    error: error.clone(),
+                });
+                match declared.requirement {
+                    Requirement::Required => {
+                        eprintln!("waharoa refresh: nothing loaded: {error}");
+                        return nothing_loaded(&intel, &not_loaded).await;
+                    }
+                    Requirement::Optional => {
+                        eprintln!(
+                            "waharoa refresh: {} is not loaded, and its last load stays: {error}",
+                            declared.stream
+                        );
+                        continue;
+                    }
+                }
+            }
+        };
+        loaded.push(Loaded {
+            source: declared.source,
+            payload: parsed.payload,
+            tally: parsed.tally,
+            streams: [bundle],
+        });
+    }
+
     let taken_at = jiff::Timestamp::now().to_string();
+    let encoded: Vec<_> = loaded.iter().map(|l| l.payload.encode(l.source)).collect();
+    let sources: Vec<Replacement> = loaded
+        .iter()
+        .zip(&encoded)
+        .map(|(l, encoded)| Replacement {
+            encoded,
+            rows: l.payload.rows(),
+            streams: &l.streams,
+        })
+        .collect();
 
-    let encoded = load::encode(osv::SOURCE, &osv_rows.rows);
-    let exploited = catalogue
-        .as_ref()
-        .map(|(ids, _)| load::encode_exploited(kev::SOURCE, ids));
-    let flagged = manifest
-        .as_ref()
-        .map(|(rows, _)| load::encode(datadog::SOURCE, rows));
-    let mut sources = vec![Replacement {
-        encoded: &encoded,
-        rows: &osv_rows.rows,
-        streams: &osv_streams,
-    }];
-    if let (Some(encoded), Some((_, streams))) = (&exploited, &catalogue) {
-        sources.push(Replacement {
-            encoded,
-            rows: &[],
-            streams,
-        });
-    }
-    if let (Some(encoded), Some((rows, streams))) = (&flagged, &manifest) {
-        sources.push(Replacement {
-            encoded,
-            rows,
-            streams,
-        });
-    }
     // Every stream that was to load, as not loaded for `error`, beside those that already were
     // not.
     let none_loaded = |error: String| -> Vec<NotLoaded> {
@@ -882,22 +852,33 @@ async fn run_refresh() -> std::process::ExitCode {
         }
     }
 
-    let loaded = match intel.replace(&sources, &not_loaded, &taken_at).await {
-        Ok(loaded) => loaded,
+    let written = match intel.replace(&sources, &not_loaded, &taken_at).await {
+        Ok(written) => written,
         Err(e) => {
             eprintln!("waharoa refresh: nothing loaded: {e}");
             return nothing_loaded(&intel, &none_loaded(e.to_string())).await;
         }
     };
 
-    print!("{}", osv_rows.tally);
-    println!("{:32} {:>8}", "advisories written", loaded.advisories);
-    println!("{:32} {:>8}", "aliases written", loaded.aliases);
-    println!("{:32} {:>8}", "affected rows written", loaded.affected);
-    println!("{:32} {:>8}", "ranges written", loaded.ranges);
-    println!("{:32} {:>8}", "exploited CVE ids written", loaded.exploited);
-    if let Some((rows, _)) = &manifest {
-        let disagreements = datadog::disagreements(&osv_rows.rows, rows);
+    for tally in loaded.iter().filter_map(|l| l.tally.as_ref()) {
+        print!("{tally}");
+    }
+    println!("{:32} {:>8}", "advisories written", written.advisories);
+    println!("{:32} {:>8}", "aliases written", written.aliases);
+    println!("{:32} {:>8}", "affected rows written", written.affected);
+    println!("{:32} {:>8}", "ranges written", written.ranges);
+    println!(
+        "{:32} {:>8}",
+        "exploited CVE ids written", written.exploited
+    );
+    let rows_of = |source: &str| {
+        loaded
+            .iter()
+            .find(|l| l.source == source)
+            .map(|l| l.payload.rows())
+    };
+    if let (Some(osv_rows), Some(datadog_rows)) = (rows_of(osv::SOURCE), rows_of(datadog::SOURCE)) {
+        let disagreements = datadog::disagreements(osv_rows, datadog_rows);
         for disagreement in &disagreements {
             println!("{disagreement}");
         }
@@ -907,10 +888,10 @@ async fn run_refresh() -> std::process::ExitCode {
             disagreements.len()
         );
     }
-    println!("snapshot {}", loaded.snapshot);
+    println!("snapshot {}", written.snapshot);
     if let Some(kept) = kept {
         match kept
-            .write_snapshot(&loaded.manifest)
+            .write_snapshot(&written.manifest)
             .and_then(|path| Ok((path, kept.prune(limit)?)))
         {
             Ok((path, pruned)) => {
