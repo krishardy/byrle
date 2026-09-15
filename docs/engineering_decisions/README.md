@@ -33,6 +33,7 @@ code, and the file names where.
 | [The CISA KEV catalogue is a source of its own, joined at lookup](kev-stream.md) | Implemented, `waharoa refresh` |
 | [Datadog's npm manifest is a malware source of its own](datadog-stream.md) | Implemented, `waharoa refresh` |
 | [Ingestion history: a row per stream per refresh, appended](ingestion-history.md) | Implemented, `waharoa intel history` |
+| [Every advisory stream is declared in one table](stream-descriptor-table.md) | Implemented, `waharoa refresh` |
 | [Intel schema: surrogate keys and sized types](intel-schema-keys-and-types.md) | Implemented |
 | [Policy schema version 1 is frozen](policy-schema-v1-frozen.md) | Decided |
 | [`waharoa policy check`](policy-check.md) | Implemented |

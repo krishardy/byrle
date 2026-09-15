@@ -46,6 +46,7 @@ pub mod refresh;
 pub mod snapshot_dir;
 pub mod snapshot_intel;
 pub mod store;
+pub mod stream;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -357,20 +358,20 @@ pub fn served() -> Vec<&'static str> {
 /// granted nothing. The policy schema has no `streams` block, so an operator cannot change
 /// these yet.
 pub fn capabilities_of(streams: &[refresh::StreamDigest]) -> Capabilities {
-    streams
-        .iter()
-        .fold(Capabilities::new(), |caps, s| match s.stream.as_str() {
-            refresh::NPM_STREAM | datadog::STREAM => caps.grant(
-                &s.stream,
-                crate::identity::Ecosystem::Npm.as_str(),
-                &[Capability::Match, Capability::Malware],
-            ),
-            // A catalogue entry gives no package, so it enriches in every ecosystem.
-            kev::SOURCE => served().into_iter().fold(caps, |caps, ecosystem| {
-                caps.grant(&s.stream, ecosystem, &[Capability::Enrich])
-            }),
-            _ => caps,
+    streams.iter().fold(Capabilities::new(), |caps, s| {
+        let Some(declared) = stream::by_stream(&s.stream) else {
+            return caps;
+        };
+        declared.grants.iter().fold(caps, |caps, grant| {
+            let ecosystems = match grant.scope {
+                stream::Scope::Only(ecosystem) => vec![ecosystem.as_str()],
+                stream::Scope::Served => served(),
+            };
+            ecosystems.into_iter().fold(caps, |caps, ecosystem| {
+                caps.grant(&s.stream, ecosystem, grant.capabilities)
+            })
         })
+    })
 }
 
 /// An ecosystem served with no stream able to say something about it.

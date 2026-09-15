@@ -1355,10 +1355,16 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] **13 npm CVE ids appear in KEV**, out of 6,032. The check is still worth
             having, because it is a set lookup over ids the CVE step already produced, but
             it goes last.
-- [ ] `[!]` Advisory stream interface (fetch / mirror / refresh / normalize). What a
-      stream may *say* is built (`MatchStream`, `EnrichStream`, `MalwareStream` in
-      `src/intel.rs`). The lookup side of storage is built (`src/intel/store.rs`,
-      `src/intel/postgres.rs`). Fetch, mirror and refresh are not.
+- [x] `[!]` Advisory stream interface (fetch / refresh / normalize). `src/intel/stream.rs`
+      declares one `Stream` per stream in `ALL`, holding source, stream name, URL, byte
+      ceiling, `Requirement`, `Grant`s and a `parse` shim returning `Parsed { payload, tally }`.
+      `Payload::Advisories` encodes through `load::encode` and `Payload::Exploited` through
+      `load::encode_exploited`. `waharoa refresh` loops over `ALL`, and `intel::capabilities_of`
+      reads the grants rather than matching on stream names, so neither holds a per-stream
+      branch. Fetching stays in `waharoa refresh`: a fetch is network I/O, and everything a
+      descriptor holds is decidable from the bytes.
+      Mirroring is not part of this item; it is tracked under "Local mirrors for all streams"
+      below.
 - [x] `[!]` Per-ecosystem capability matrix: `match` / `enrich` / `malware` (`src/intel.rs`,
       `Capabilities::grant` / `has` / `providers`). A grant is per stream per ecosystem, so
       NVD can hold `match` for Maven and only `enrich` for npm.
