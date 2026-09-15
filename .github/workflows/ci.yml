@@ -1,0 +1,63 @@
+# Lint, unit tests and the offline query cache check.
+#
+# Each job runs a `make` target, so what CI checks is what a contributor runs. The logic
+# lives in `scripts/make/`, per CLAUDE.md; nothing here is more than an invocation.
+#
+# `make coverage`, `make verify` and `make test-integration` are deliberately not here.
+# See docs/engineering_decisions/ci-gates.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# `stable` rather than a pinned version: the repo has no `rust-toolchain.toml` and no
+# `rust-version` in Cargo.toml, so a contributor runs whatever stable rustup gives them,
+# and CI checking an older toolchain would pass on lints they cannot see. Written out
+# rather than left to the runner's default so the choice is visible.
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: "stable"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+      # shellcheck and python3 are preinstalled on ubuntu-latest, which `make lint` requires.
+      - run: make lint
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+      - run: make test
+
+  sqlx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
+          rustup default "$RUST_TOOLCHAIN"
+      - uses: Swatinem/rust-cache@v2
+      # The pin lives in scripts/make/lib/sqlx-cli.sh, beside the one dev-setup.sh uses.
+      - name: Install sqlx-cli
+        run: |
+          . scripts/make/lib/sqlx-cli.sh
+          waharoa_install_sqlx_cli
+      # Starts its own Postgres container, so no `services:` block: the same script a
+      # contributor runs is the one that runs here.
+      - run: make sqlx-prepare ARGS=--check

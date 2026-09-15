@@ -26,6 +26,7 @@ code, and the file names where.
 | [PURL identity rules for npm](purl-identity-rules.md) | Decided |
 | [Storage: sqlx over Postgres, no ORM](storage-sqlx-postgres.md) | Implemented, lookup path only |
 | [sqlx held at 0.8, RUSTSEC-2023-0071 accepted while `rsa` is not built](sqlx-0-8-and-rsa-advisory.md) | Implemented |
+| [What CI gates, and what it does not](ci-gates.md) | Implemented, unverified until first push |
 | [Loading OSV malware records](osv-malware-load.md) | Implemented, `waharoa refresh` |
 | [Intel in decisions: one lookup per package, fail closed](intel-in-decisions.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
