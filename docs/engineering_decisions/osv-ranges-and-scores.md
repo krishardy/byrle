@@ -91,10 +91,66 @@ written is only in the range.
 | Metrics scored | base metrics only | 313 records also carry others: 309 v4 vectors with `E`, 4 v3 vectors with `E`, `RL` or `RC`. `cvss` counts `E` in a v4 score, where `E:U` lowers it, and refuses a v3 vector carrying any |
 | A v3 vector missing a base metric | unread, no score | `cvss` parses `CVSS:3.1/AV:N` and scores it 0.0, which passes every `max_cvss` |
 | A base metric given twice | unread, no score | |
-| No CVSS vector, only a `database_specific` severity band (688) | no score | a band is not a number |
+| No CVSS vector, only a `database_specific` severity band (689) | the top of the band | decided 2026-09-15, below |
+| A vector that does not parse, and a band | unread, no score | the band does not hide a vector that failed |
 
 An unscored record still counts toward `known_malware` and is left out of `advisories`, so
 `max_cvss` cannot fire for it.
+
+### Severity bands, 2026-09-15
+
+GitHub gives every `GHSA-` record a band in `database_specific.severity`. 689 of the 7,052
+non-withdrawn npm `GHSA-` records in `npm/all.zip` of 2026-09-15 carry no CVSS vector, only a
+band, and until this change `max_cvss` never fired for them. Each is scored at the top of its
+band's CVSS v3.1 range:
+
+| Band | Records | CVSS v3.1 range | Score stored |
+|---|---|---|---|
+| `LOW` | 80 | 0.1 to 3.9 | 3.9 |
+| `MODERATE` | 152 | 4.0 to 6.9 | 6.9 |
+| `HIGH` | 338 | 7.0 to 8.9 | 8.9 |
+| `CRITICAL` | 119 | 9.0 to 10.0 | 10.0 |
+
+| Asked of the user | Chosen |
+|---|---|
+| A band's score for `max_cvss` | the upper bound, so a threshold inside a band refuses what the band could be |
+
+`max_cvss` refuses a score over the threshold. Under the default 6.9, `MODERATE` passes and
+`HIGH` fails, the same as either end of the bands would give. Under 7.5, `HIGH` fails at 8.9
+and would pass at 7.0.
+
+Only `LOW`, `MODERATE`, `HIGH` and `CRITICAL` are read. Other text, a number or a
+`database_specific` that is not an object scores nothing. None of the 689 is in the KEV
+catalogue.
+
+The band is stored in `advisory.severity_band` (migration 0005) and carried to `explain`,
+which prints `GHSA-... 8.9 from band HIGH`. The rows encoding carries it as a seventh
+`advisory` column, so the format line is `waharoa intel rows 2`, and a kept rows file written
+as `rows 1` is refused. Nothing had been deployed. `waharoa refresh` counts band-scored records
+on a line of its own, `scored from a severity band`, already inside `scored`.
+
+Live, 2026-09-15, into an empty Postgres 17 with `examples/policy.yaml` (`max_cvss: 6.9`). Stored,
+by band: `LOW` 80 at 3.9, `MODERATE` 152 at 6.9, `HIGH` 338 at 8.9, `CRITICAL` 119 at 10. Then:
+
+```text
+$ waharoa explain pkg:npm/faker@6.6.6
+  max_cvss         FAIL block        over max_cvss 6.9: GHSA-5w9c-rv96-fr7g 8.9 from band HIGH
+
+$ waharoa explain pkg:npm/ws@1.1.0
+  max_cvss         FAIL block        over max_cvss 6.9: GHSA-5v72-xg48-5rpm 7.5, GHSA-6663-c963-2gqg 8.9 from band HIGH, GHSA-96hv-2xvq-fx4p 7.5
+
+$ waharoa explain pkg:npm/ws@1.1.1
+  max_cvss         FAIL block        over max_cvss 6.9: GHSA-5v72-xg48-5rpm 7.5, GHSA-96hv-2xvq-fx4p 7.5
+```
+
+`faker@6.6.6` passed `max_cvss` before this change: its one advisory had no score.
+`GHSA-6663-c963-2gqg` is fixed in 1.1.1, so it leaves `ws` there.
+
+`make mutants` over the change: 57 mutants, 44 caught, 12 unviable, 1 missed: `!` deleted from
+`!rows.malware` in `Tally::count`, which the test's one banded malware record and one banded
+vulnerability counted the same either way. A second banded vulnerability was added to
+`stored_records_are_tallied_by_kind_and_what_they_left_out`, and `cargo mutants --file
+src/intel/refresh.rs --re Tally::count` then caught it.
 
 ## `vuln_advisory_ids` exceptions and aliases
 
@@ -135,7 +191,22 @@ affected rows                      233239
 ranges                              10357
 ```
 
-Before versions were padded, the same bundle gave `scored 6340`, `unscored 688`,
+With severity bands read, over `npm/all.zip` fetched 2026-09-15:
+
+```
+stored: malware                    221237
+stored: vulnerability, scored        7052
+scored from a severity band           689
+stored: vulnerability, unscored         0
+skipped: withdrawn                    681
+skipped: other publisher                2
+records                            228972
+CVSS vectors unread                     0
+affected rows                      233274
+ranges                              10357
+```
+
+Before versions were padded, the 2026-09-13 bundle gave `scored 6340`, `unscored 688`,
 `nothing storable 24`, `stored with something left out 4` and `ranges 10326`. `affected rows`
 is unchanged: `total4`'s `12.0` became `12.0.0`, one row for one.
 

@@ -18,7 +18,7 @@ use super::refresh::{StreamDigest, sha256_hex};
 use std::collections::{BTreeSet, HashMap};
 
 pub const ADVISORY: &str = "COPY advisory (publisher_id, source, summary, cvss, modified, \
-                            malware) FROM STDIN (FORMAT csv)";
+                            malware, severity_band) FROM STDIN (FORMAT csv)";
 pub const ALIAS: &str = "COPY advisory_alias (advisory_id, alias) FROM STDIN (FORMAT csv)";
 pub const AFFECTED: &str =
     "COPY advisory_affected (advisory_id, ecosystem, name, version) FROM STDIN (FORMAT csv)";
@@ -27,7 +27,7 @@ pub const RANGE: &str = "COPY advisory_range (advisory_id, ecosystem, name, intr
 pub const EXPLOITED: &str = "COPY exploited_cve (source, cve_id) FROM STDIN (FORMAT csv)";
 
 /// The first line of an [`encode`]d source. A change to the encoding changes this line.
-pub const FORMAT: &str = "waharoa intel rows 1";
+pub const FORMAT: &str = "waharoa intel rows 2";
 
 /// The first line of an [`encode_exploited`] source.
 pub const EXPLOITED_FORMAT: &str = "waharoa intel exploited 1";
@@ -135,7 +135,7 @@ pub struct Encoded {
 /// Encode one source's rows so the same rows give the same bytes in every database.
 ///
 /// ```text
-/// waharoa intel rows 1
+/// waharoa intel rows 2
 /// source osv
 /// advisory 23771415
 /// (23,771,415 bytes of CSV)
@@ -379,7 +379,7 @@ impl<'a> Decoder<'a> {
                 Row::Exploited(given(table, id)?)
             }
             (Kind::Advisories, 0) => {
-                let [id, _source, summary, cvss, modified, malware] = width(table, fields)?;
+                let [id, _source, summary, cvss, modified, malware, band] = width(table, fields)?;
                 let cvss = match cvss {
                     Some(text) => Some(text.parse::<f64>().map_err(|_| {
                         Undecodable(format!("{table}: cvss `{text}` is not a number"))
@@ -403,6 +403,7 @@ impl<'a> Decoder<'a> {
                     modified,
                     malware,
                     cvss,
+                    band,
                     unread_vectors: 0,
                     aliases: Default::default(),
                     affected: Default::default(),
@@ -645,6 +646,7 @@ fn advisory_line(out: &mut Vec<u8>, source: &str, r: &Rows) {
             cvss.as_deref(),
             modified.as_deref(),
             Some(if r.malware { "true" } else { "false" }),
+            r.band.as_deref(),
         ],
     );
 }
@@ -742,6 +744,7 @@ mod tests {
             modified: None,
             malware: true,
             cvss: None,
+            band: None,
             unread_vectors: 0,
             aliases: ["GHSA-a".to_owned()].into(),
             affected: [
@@ -796,6 +799,7 @@ mod tests {
             modified: None,
             malware: true,
             cvss: None,
+            band: None,
             unread_vectors: 0,
             aliases: [alias.to_owned()].into(),
             affected: [Affected {
@@ -821,7 +825,7 @@ mod tests {
     fn a_quote_is_doubled_and_every_value_is_quoted() {
         assert_eq!(
             text(&advisories("osv", &[rows()])),
-            "\"MAL-1\",\"osv\",\"say \"\"hi\"\"\n\\.\nafter\",,,\"true\"\n"
+            "\"MAL-1\",\"osv\",\"say \"\"hi\"\"\n\\.\nafter\",,,\"true\",\n"
         );
     }
 
@@ -849,7 +853,7 @@ mod tests {
             }],
         );
         assert!(
-            text(&csv).ends_with(",\"6.9\",,\"true\"\n"),
+            text(&csv).ends_with(",\"6.9\",,\"true\",\n"),
             "{}",
             text(&csv)
         );
@@ -869,7 +873,7 @@ mod tests {
         };
         assert_eq!(
             written("2026-09-08T05:45:02.886710534+02:00"),
-            "\"MAL-1\",\"osv\",,,\"2026-09-08T03:45:02.886711Z\",\"true\"\n"
+            "\"MAL-1\",\"osv\",,,\"2026-09-08T03:45:02.886711Z\",\"true\",\n"
         );
         assert!(written("2026-09-08T03:45:02Z").contains(",\"2026-09-08T03:45:02Z\","));
         assert!(written("yesterday").contains(",\"yesterday\","));
@@ -904,7 +908,7 @@ mod tests {
                 ..rows()
             }],
         );
-        assert!(text(&csv).ends_with(",\"false\"\n"));
+        assert!(text(&csv).ends_with(",\"false\",\n"));
     }
 
     #[test]
@@ -922,6 +926,12 @@ mod tests {
                 cvss: Some(0.1 + 0.2),
                 modified: Some("2026-09-08T03:45:02.886711Z".to_owned()),
                 ..plain("GHSA-2", "CVE-\"q\"", "b")
+            },
+            Rows {
+                malware: false,
+                cvss: Some(8.9),
+                band: Some("HIGH".to_owned()),
+                ..plain("GHSA-3", "CVE-c", "c")
             },
         ];
         let (source, decoded) = decode(&encode("osv", &given).bytes).expect("decodes");
@@ -948,13 +958,13 @@ mod tests {
     fn bytes_that_are_not_an_encoding_are_refused_with_the_reason() {
         let good = String::from_utf8(encode("osv", &[plain("GHSA-1", "CVE-a", "a")]).bytes)
             .expect("utf-8");
-        let row = "\"GHSA-1\",\"osv\",,,,\"true\"\n";
+        let row = "\"GHSA-1\",\"osv\",,,,\"true\",\n";
         let cases: Vec<(Vec<u8>, &str)> = vec![
             (Vec::new(), "a line has no end"),
             (b"\xff\n".to_vec(), "a line is not UTF-8"),
             (
-                good.replacen("rows 1", "rows 2", 1).into_bytes(),
-                "the first line is `waharoa intel rows 2`, not `waharoa intel rows 1` or \
+                good.replacen("rows 2", "rows 1", 1).into_bytes(),
+                "the first line is `waharoa intel rows 1`, not `waharoa intel rows 2` or \
                  `waharoa intel exploited 1`",
             ),
             (
@@ -976,7 +986,7 @@ mod tests {
                 "1 bytes follow advisory_range",
             ),
             (
-                framed(["\"GHSA-1\",osv,,,,\"true\"\n", "", "", ""]),
+                framed(["\"GHSA-1\",osv,,,,\"true\",\n", "", "", ""]),
                 "advisory: a field is neither empty nor quoted at byte 9",
             ),
             (
@@ -984,26 +994,26 @@ mod tests {
                 "advisory: a quoted value does not end at byte 7",
             ),
             (
-                framed(["\"X\",\"osv\",,,,\"true\"\n", "", "", ""])
+                framed(["\"X\",\"osv\",,,,\"true\",\n", "", "", ""])
                     .into_iter()
                     .map(|b| if b == b'X' { 0xff } else { b })
                     .collect(),
                 "advisory: a value is not UTF-8",
             ),
             (
-                framed(["\"GHSA-1\",\"osv\",,,\"true\"\n", "", "", ""]),
-                "advisory: a row has 5 fields, not 6",
+                framed(["\"GHSA-1\",\"osv\",,,\"true\",\n", "", "", ""]),
+                "advisory: a row has 6 fields, not 7",
             ),
             (
-                framed(["\"GHSA-1\",\"osv\",,\"high\",,\"true\"\n", "", "", ""]),
+                framed(["\"GHSA-1\",\"osv\",,\"high\",,\"true\",\n", "", "", ""]),
                 "advisory: cvss `high` is not a number",
             ),
             (
-                framed(["\"GHSA-1\",\"osv\",,,,\"yes\"\n", "", "", ""]),
+                framed(["\"GHSA-1\",\"osv\",,,,\"yes\",\n", "", "", ""]),
                 "advisory: malware is `yes`, not true or false",
             ),
             (
-                framed([",\"osv\",,,,\"true\"\n", "", "", ""]),
+                framed([",\"osv\",,,,\"true\",\n", "", "", ""]),
                 "advisory: a required value is empty",
             ),
             (
@@ -1024,7 +1034,7 @@ mod tests {
             ),
             (
                 framed([
-                    "\"MAL-1\",\"osv\",,,,\"true\"\n\"GHSA-1\",\"osv\",,,,\"true\"\n",
+                    "\"MAL-1\",\"osv\",,,,\"true\",\n\"GHSA-1\",\"osv\",,,,\"true\",\n",
                     "",
                     "",
                     "",
@@ -1070,11 +1080,11 @@ mod tests {
                 "advisory_range: a row is out of order or repeated",
             ),
             (
-                framed(["\"GHSA-1\",\"osv\",,\"7.50\",,\"true\"\n", "", "", ""]),
+                framed(["\"GHSA-1\",\"osv\",,\"7.50\",,\"true\",\n", "", "", ""]),
                 "advisory: a row does not encode back to the same bytes",
             ),
             (
-                framed(["\"GHSA-1\",\"ghsa\",,,,\"true\"\n", "", "", ""]),
+                framed(["\"GHSA-1\",\"ghsa\",,,,\"true\",\n", "", "", ""]),
                 "advisory: a row does not encode back to the same bytes",
             ),
             (
@@ -1101,13 +1111,13 @@ mod tests {
             "osv",
             &[plain("MAL-2", "CVE-b", "b"), plain("GHSA-1", "CVE-a", "a")],
         );
-        let advisory = "\"GHSA-1\",\"osv\",,,,\"true\"\n\"MAL-2\",\"osv\",,,,\"true\"\n";
+        let advisory = "\"GHSA-1\",\"osv\",,,,\"true\",\n\"MAL-2\",\"osv\",,,,\"true\",\n";
         let alias = "\"1\",\"CVE-a\"\n\"2\",\"CVE-b\"\n";
         let affected = "\"1\",\"npm\",\"a\",\n\"2\",\"npm\",\"b\",\n";
         assert_eq!(
             text(&encoded.bytes),
             format!(
-                "waharoa intel rows 1\nsource osv\n\
+                "waharoa intel rows 2\nsource osv\n\
                  advisory {}\n{advisory}\
                  advisory_alias {}\n{alias}\
                  advisory_affected {}\n{affected}\

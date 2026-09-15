@@ -50,7 +50,7 @@ The ceiling is 16 MiB, 9.7 times the 1,722,859-byte catalogue of 2026-09-14.
 
 ## Encoding
 
-A kept `cisa/kev` rows file is its own format, so every `rows 1` file still decodes:
+A kept `cisa/kev` rows file is its own format, so the advisory format was left unchanged by it:
 
 ```text
 waharoa intel exploited 1

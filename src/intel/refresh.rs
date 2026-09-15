@@ -27,6 +27,8 @@ pub const MAX_RECORD_BYTES: u64 = 1 << 20;
 pub struct Tally {
     pub malware: u64,
     pub scored: u64,
+    /// Scored from a severity band rather than a CVSS vector. Already counted in `scored`.
+    pub banded: u64,
     pub unscored: u64,
     pub withdrawn: u64,
     pub other_publisher: u64,
@@ -44,6 +46,7 @@ impl Tally {
             Parsed::Rows(rows) => {
                 self.partly_stored += u64::from(rows.unexpressed > 0);
                 self.unread_vectors += rows.unread_vectors as u64;
+                self.banded += u64::from(!rows.malware && rows.band.is_some());
                 match (rows.malware, rows.cvss) {
                     (true, _) => &mut self.malware,
                     (false, Some(_)) => &mut self.scored,
@@ -74,6 +77,7 @@ impl std::fmt::Display for Tally {
         for (label, count) in [
             ("stored: malware", self.malware),
             ("stored: vulnerability, scored", self.scored),
+            ("scored from a severity band", self.banded),
             ("stored: vulnerability, unscored", self.unscored),
             ("skipped: withdrawn", self.withdrawn),
             ("skipped: other publisher", self.other_publisher),
@@ -155,7 +159,7 @@ pub fn read_bundle(bytes: &[u8]) -> Result<Bundle, BundleError> {
         };
         bundle.tally.count(&parsed);
         if let Parsed::Rows(rows) = parsed {
-            bundle.rows.push(rows);
+            bundle.rows.push(*rows);
         }
     }
     Ok(bundle)
@@ -296,6 +300,7 @@ mod tests {
         let tally = Tally {
             malware: 2,
             scored: 1,
+            banded: 1,
             unscored: 1,
             other_publisher: 1,
             no_npm_package: 1,
@@ -309,6 +314,7 @@ mod tests {
             text,
             "stored: malware                         2\n\
              stored: vulnerability, scored           1\n\
+             scored from a severity band             1\n\
              stored: vulnerability, unscored         1\n\
              skipped: withdrawn                      1\n\
              skipped: other publisher                1\n\
@@ -323,30 +329,35 @@ mod tests {
     #[test]
     fn stored_records_are_tallied_by_kind_and_what_they_left_out() {
         let mut tally = Tally::default();
-        let rows = |malware, cvss, unexpressed, unread_vectors| {
-            Parsed::Rows(Rows {
+        let rows = |malware, cvss, band: Option<&str>, unexpressed, unread_vectors| {
+            Parsed::Rows(Box::new(Rows {
                 id: "X".to_owned(),
                 summary: None,
                 modified: None,
                 malware,
                 cvss,
+                band: band.map(str::to_owned),
                 unread_vectors,
                 aliases: Default::default(),
                 affected: Default::default(),
                 ranges: Default::default(),
                 unexpressed,
-            })
+            }))
         };
-        tally.count(&rows(true, Some(9.8), 0, 0));
-        tally.count(&rows(false, Some(9.8), 1, 2));
-        tally.count(&rows(false, None, 2, 1));
+        // A malware record's band is not counted.
+        tally.count(&rows(true, Some(8.9), Some("HIGH"), 0, 0));
+        tally.count(&rows(false, Some(9.8), None, 1, 2));
+        tally.count(&rows(false, Some(8.9), Some("HIGH"), 0, 0));
+        tally.count(&rows(false, Some(3.9), Some("LOW"), 0, 0));
+        tally.count(&rows(false, None, None, 2, 1));
         tally.count(&Parsed::Skipped(Skipped::OtherPublisher));
         tally.count(&Parsed::Skipped(Skipped::NothingStorable));
         assert_eq!(
             tally,
             Tally {
                 malware: 1,
-                scored: 1,
+                scored: 3,
+                banded: 2,
                 unscored: 1,
                 other_publisher: 1,
                 nothing_storable: 1,

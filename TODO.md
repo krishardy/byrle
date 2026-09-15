@@ -1407,13 +1407,18 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Wire the intel store into `Facts` (`known_malware`, `Intel::Consulted`) in the
       proxy, `explain` and `policy diff`. One `Intel::package` query per package.
       `enforce::artifact` and `enforce::unenforceable` take the intel state from the caller.
-- [ ] `[?]` `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`.
-      689 `GHSA-` records carry no CVSS vector, only a `database_specific` severity band, and
-      `max_cvss` cannot fire for them (689 over `npm/all.zip` fetched 2026-09-13, after
-      padding). An unscored advisory that is exploited would also be invisible to `kev`. No
-      stream marks one exploited today. Needs a decision: whether a band maps to a score, and
-      to which. `osv-ranges-and-scores.md` records "a band is not a number" as the reason for
-      no score today.
+- [~] `[!]` `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`.
+      Decided 2026-09-15:
+      - [x] A record with no CVSS vector is scored at the top of its `database_specific`
+            severity band: LOW 3.9, MODERATE 6.9, HIGH 8.9, CRITICAL 10.0. 689 npm `GHSA-`
+            records, none in the KEV catalogue. The band is stored (`advisory.severity_band`,
+            rows format 2) and `explain` prints `8.9 from band HIGH`. A vector that does not
+            parse is not replaced by the band.
+            [osv-ranges-and-scores](docs/engineering_decisions/osv-ranges-and-scores.md).
+      - [ ] A non-malware advisory with no score at all is ingested with `cvss` NULL and
+            refused by `max_cvss` until a policy entry gives it a score. The override key is
+            added to policy `version: 1`, which the user unfroze for it since nothing is
+            deployed. 0 npm records need one today. `kev` reads exploitation whatever the score.
 - [x] `explain --policy` reported `kev` and `max_cvss` as enforced once the store answered.
       `max_cvss` now has 6,340 scored records to read. `kev` is reported
       `unenforced, no exploitation stream`, in `explain --policy` and in every decision.

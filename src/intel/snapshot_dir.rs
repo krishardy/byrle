@@ -376,6 +376,7 @@ mod tests {
             modified: None,
             malware: true,
             cvss: None,
+            band: None,
             unread_vectors: 0,
             aliases: Default::default(),
             affected: [Affected {

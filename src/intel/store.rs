@@ -34,6 +34,8 @@ pub struct Record {
     pub source: String,
     pub cvss: Option<f64>,
     pub cvss_source: Option<String>,
+    /// The severity band `cvss` was read from, when the advisory carries no CVSS vector.
+    pub band: Option<String>,
     pub exploited: bool,
     pub malware: bool,
 }
@@ -296,6 +298,7 @@ mod tests {
             aliases: Vec::new(),
             source: "osv".to_owned(),
             cvss: None,
+            band: None,
             cvss_source: None,
             exploited: false,
             malware: false,

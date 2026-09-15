@@ -323,7 +323,7 @@ fn osv_fixture(id: &str) -> Rows {
         env!("CARGO_MANIFEST_DIR")
     );
     match osv::parse(&std::fs::read(path).expect("fixture is missing")).expect("fixture parses") {
-        Parsed::Rows(rows) => rows,
+        Parsed::Rows(rows) => *rows,
         other => panic!("{id}: {other:?}"),
     }
 }
@@ -906,7 +906,7 @@ async fn a_vulnerability_record_loads_with_its_score_and_aliases() {
         panic!("should be stored");
     };
     let loaded = intel
-        .replace_source(osv::SOURCE, &[rows], &fetch("s1"))
+        .replace_source(osv::SOURCE, &[*rows], &fetch("s1"))
         .await
         .expect("load");
     assert_eq!((loaded.aliases, loaded.ranges), (2, 2));
@@ -1242,6 +1242,7 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
             id: "GHSA-0000-0000-0000".to_owned(),
             malware: false,
             cvss: Some(6.9),
+            band: Some("MODERATE".to_owned()),
             aliases: ["CVE-2099-1".to_owned()].into(),
             ..osv_fixture("MAL-2022-174")
         },
@@ -1305,9 +1306,14 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         .map(|name| ("npm".to_owned(), name.to_string()))
         .collect();
     let kept = SnapshotIntel::read(&dir, &loaded.snapshot, packages).expect("reads");
-    let (mut exploited_records, mut datadog_records) = (0, 0);
+    let (mut exploited_records, mut datadog_records, mut banded_records) = (0, 0, 0);
     for name in names {
         let from_postgres = intel.package("npm", name).await.expect("query");
+        banded_records += from_postgres
+            .iter()
+            .flat_map(|p| &p.records)
+            .filter(|(_, r)| r.band.as_deref() == Some("MODERATE"))
+            .count();
         exploited_records += from_postgres
             .iter()
             .flat_map(|p| &p.records)
@@ -1321,6 +1327,10 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         let from_files = kept.package("npm", name).await.expect("answers");
         assert_eq!(from_files.map(sorted), from_postgres.map(sorted), "{name}");
     }
+    assert!(
+        banded_records > 0,
+        "GHSA-0000-0000-0000's band is stored and read back"
+    );
     assert!(
         exploited_records > 0,
         "the catalogue marks GHSA-0000-0000-0000"
