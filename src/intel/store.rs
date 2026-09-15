@@ -178,6 +178,14 @@ pub struct LoadedSnapshot {
     pub streams: Vec<StreamDigest>,
 }
 
+impl LoadedSnapshot {
+    /// Each served ecosystem no stream in this snapshot can originate a finding for. The
+    /// startup warning and `waharoa doctor` both report these.
+    pub fn gaps(&self) -> Vec<crate::intel::Gap> {
+        crate::intel::capabilities_of(&self.streams).gaps(&crate::intel::served())
+    }
+}
+
 /// What the decision engine asks of the mirror.
 ///
 /// A failure is an error rather than an empty answer. An empty answer means a stream was
@@ -451,6 +459,34 @@ mod tests {
                 .expect("answers")
                 .is_empty()
         );
+    }
+
+    fn recording(streams: &[&str]) -> LoadedSnapshot {
+        LoadedSnapshot {
+            digest: "s1".to_owned(),
+            taken_at: "2026-09-15T00:00:00Z".to_owned(),
+            streams: streams
+                .iter()
+                .map(|stream| StreamDigest {
+                    stream: (*stream).to_owned(),
+                    sha256: "aa".to_owned(),
+                    etag: None,
+                    last_modified: None,
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_covers_npm_only_when_it_records_the_osv_npm_stream() {
+        assert_eq!(recording(&["cisa/kev", "osv/npm"]).gaps(), []);
+        let npm_unmatched = || crate::intel::Gap {
+            ecosystem: "npm".to_owned(),
+            missing: crate::intel::Capability::Match,
+        };
+        for streams in [&[][..], &["cisa/kev"], &["osv/pypi"]] {
+            assert_eq!(recording(streams).gaps(), [npm_unmatched()], "{streams:?}");
+        }
     }
 
     #[test]

@@ -342,6 +342,36 @@ impl Capabilities {
     }
 }
 
+/// The ecosystems this build serves, as streams key them.
+pub fn served() -> Vec<&'static str> {
+    crate::identity::Ecosystem::ALL
+        .iter()
+        .map(|ecosystem| ecosystem.as_str())
+        .collect()
+}
+
+/// What the streams a snapshot records may say, as this build declares it.
+///
+/// Keyed by the name a snapshot records a stream under. A stream this build does not know is
+/// granted nothing. The policy schema has no `streams` block, so an operator cannot change
+/// these yet.
+pub fn capabilities_of(streams: &[refresh::StreamDigest]) -> Capabilities {
+    streams
+        .iter()
+        .fold(Capabilities::new(), |caps, s| match s.stream.as_str() {
+            refresh::NPM_STREAM => caps.grant(
+                &s.stream,
+                crate::identity::Ecosystem::Npm.as_str(),
+                &[Capability::Match, Capability::Malware],
+            ),
+            // A catalogue entry gives no package, so it enriches in every ecosystem.
+            kev::SOURCE => served().into_iter().fold(caps, |caps, ecosystem| {
+                caps.grant(&s.stream, ecosystem, &[Capability::Enrich])
+            }),
+            _ => caps,
+        })
+}
+
 /// An ecosystem served with no stream able to say something about it.
 #[derive(Debug, PartialEq)]
 pub struct Gap {
@@ -434,6 +464,35 @@ mod proofs {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn recorded(stream: &str) -> refresh::StreamDigest {
+        refresh::StreamDigest {
+            stream: stream.to_owned(),
+            sha256: "aa".to_owned(),
+            etag: None,
+            last_modified: None,
+        }
+    }
+
+    #[test]
+    fn each_stream_this_build_loads_is_granted_what_it_may_say_and_no_other_stream_is() {
+        let caps = capabilities_of(&[
+            recorded("osv/npm"),
+            recorded("cisa/kev"),
+            recorded("osv/pypi"),
+        ]);
+        assert_eq!(served(), ["npm"]);
+        assert_eq!(caps.providers("npm", Capability::Match), ["osv/npm"]);
+        assert_eq!(caps.providers("npm", Capability::Malware), ["osv/npm"]);
+        assert_eq!(caps.providers("npm", Capability::Enrich), ["cisa/kev"]);
+        assert!(!caps.has("osv/pypi", "pypi", Capability::Match));
+        assert!(caps.gaps(&served()).is_empty());
+        assert!(caps.uncovered_by(&served(), Capability::Malware).is_empty());
+        assert_eq!(
+            "npm".parse::<crate::identity::Ecosystem>().ok(),
+            Some(crate::identity::Ecosystem::ALL[0])
+        );
+    }
 
     /// Standing in for NVD or KEV: knows advisory ids, knows nothing about packages.
     ///

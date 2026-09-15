@@ -424,6 +424,9 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
 /// The title of every finding about readiness.
 const READINESS_TITLE: &str = "proxy readiness";
 
+/// The fix for a snapshot that is missing or cannot match a served ecosystem.
+const REFRESH_FIX: &str = "run `waharoa refresh` on the proxy's database";
+
 /// Whether the proxy can decide on packages now.
 ///
 /// A proxy can answer its health request and still answer every package with 503 while its
@@ -443,19 +446,26 @@ pub fn check_readiness(readiness: Option<&Readiness>, proxy: &str) -> Finding {
         .with_fix("upgrade the proxy");
     };
     match readiness.intel {
-        IntelState::Loaded => Finding::new(
-            Severity::Ok,
-            READINESS_TITLE,
-            readiness.snapshot.as_ref().map_or_else(
-                || "ready".to_owned(),
-                |s| {
-                    format!(
-                        "ready, using intel snapshot {}, taken {}",
-                        s.digest, s.taken_at
-                    )
-                },
-            ),
-        ),
+        IntelState::Loaded => {
+            let Some(snapshot) = readiness.snapshot.as_ref() else {
+                return Finding::new(Severity::Ok, READINESS_TITLE, "ready");
+            };
+            let using = format!(
+                "ready, using intel snapshot {}, taken {}",
+                snapshot.digest, snapshot.taken_at
+            );
+            let gaps = snapshot.gaps();
+            if gaps.is_empty() {
+                return Finding::new(Severity::Ok, READINESS_TITLE, using);
+            }
+            let gaps: Vec<String> = gaps.iter().map(ToString::to_string).collect();
+            Finding::new(
+                Severity::Warn,
+                READINESS_TITLE,
+                format!("{using}, but {}", gaps.join("; ")),
+            )
+            .with_fix(REFRESH_FIX)
+        }
         IntelState::NotConsulted => Finding::new(
             Severity::Warn,
             READINESS_TITLE,
@@ -472,7 +482,7 @@ pub fn check_readiness(readiness: Option<&Readiness>, proxy: &str) -> Finding {
             "not ready: the intel store holds no snapshot, so every package request is \
              answered 503",
         )
-        .with_fix("run `waharoa refresh` against the proxy's database"),
+        .with_fix(REFRESH_FIX),
         IntelState::Unavailable => Finding::new(
             Severity::Problem,
             READINESS_TITLE,
@@ -953,9 +963,40 @@ mod tests {
             snapshot: (intel == IntelState::Loaded).then(|| crate::intel::store::LoadedSnapshot {
                 digest: "sha256:ab".into(),
                 taken_at: "2026-09-13T01:02:03Z".into(),
-                streams: vec![],
+                streams: ["cisa/kev", "osv/npm"]
+                    .map(|stream| crate::intel::refresh::StreamDigest {
+                        stream: stream.to_owned(),
+                        sha256: "aa".to_owned(),
+                        etag: None,
+                        last_modified: None,
+                    })
+                    .to_vec(),
             }),
         }
+    }
+
+    /// A snapshot with no stream able to originate a finding for npm serves every package.
+    #[test]
+    fn a_ready_proxy_whose_snapshot_cannot_match_npm_warns() {
+        let mut ready = readiness(IntelState::Loaded);
+        if let Some(snapshot) = ready.snapshot.as_mut() {
+            snapshot.streams.retain(|s| s.stream == "cisa/kev");
+        }
+        let finding = check_readiness(Some(&ready), PROXY);
+        assert_eq!(finding.severity, Severity::Warn);
+        assert_eq!(
+            finding.detail,
+            "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but `npm` is \
+             served with no stream providing match. Nothing can originate a finding for it"
+        );
+        assert!(finding.fix.is_some());
+
+        ready.snapshot = None;
+        assert_eq!(
+            check_readiness(Some(&ready), PROXY).detail,
+            "ready",
+            "a readiness answer without its snapshot"
+        );
     }
 
     /// Answering its health request is not the same as serving packages.

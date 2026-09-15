@@ -1068,12 +1068,20 @@ async fn main() -> std::process::ExitCode {
         .await
         .unwrap_or_else(|e| panic!("{}: {e}", env::DATABASE_URL));
     match (&intel, &policy) {
-        (Some(_), Some(_)) => warn!(
-            "ENFORCED: known_malware and max_cvss, from the intel store at {}, and kev once \
-             the store has loaded the KEV catalogue. A store that cannot answer, or holds no \
-             snapshot, is a 503 for every package",
-            env::DATABASE_URL
-        ),
+        (Some(store), Some(_)) => {
+            warn!(
+                "ENFORCED: known_malware and max_cvss, from the intel store at {}, and kev once \
+                 the store has loaded the KEV catalogue. A store that cannot answer, or holds no \
+                 snapshot, is a 503 for every package",
+                env::DATABASE_URL
+            );
+            // The snapshot loaded now. `waharoa doctor` reports the same for a later one.
+            if let Ok(Some(snapshot)) = store.snapshot().await {
+                for gap in snapshot.gaps() {
+                    warn!("{gap}");
+                }
+            }
+        }
         (None, Some(_)) => warn!(
             "NOT ENFORCED: known_malware, max_cvss and kev. {} is not set, so there is no \
              intel store to ask",

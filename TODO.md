@@ -1367,9 +1367,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `Match`, and `MalwareStream` is its own trait returning `bool` rather than a finding.
 - [ ] Plugin-declared capabilities, operator-overridable; promotion harder than demotion.
       Needs a config surface; deferred until one exists.
-- [ ] Startup warning + `doctor` check: ecosystem enabled with no `match`-capable stream.
-      `Capabilities::gaps` computes it and `Gap` renders the message; nothing calls it yet
-      because no stream is registered.
+- [x] Startup warning + `doctor` check: ecosystem enabled with no `match`-capable stream.
+      `intel::capabilities_of` declares `osv/npm` (match, malware) and `cisa/kev` (enrich),
+      keyed by the stream a snapshot records, and `LoadedSnapshot::gaps` checks every
+      `Ecosystem::ALL`. Warned at startup and by `doctor`. No refresh writes a snapshot with
+      a gap today. [nvd-role-and-stream-capabilities](docs/engineering_decisions/nvd-role-and-stream-capabilities.md).
 - [ ] `[?]` Decide whether an ecosystem with `match` but no `malware` stream is also a
       startup warning. `known_malware` is the one check with no exception, and it can never
       fire without a `malware`-capable stream, so a build can look covered while the
