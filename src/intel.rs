@@ -321,10 +321,9 @@ impl Capabilities {
     /// a proxy that still verifies digests and records what went past is worth more than
     /// one that refuses to run.
     ///
-    /// `malware` is deliberately not part of this check, though an ecosystem with `match`
-    /// and no `malware` stream can never fire `known_malware`, which is the one check an
-    /// operator cannot except. [`Capabilities::uncovered_by`] reports that separately;
-    /// whether it also warrants a startup warning is open.
+    /// `malware` is not part of this check. An ecosystem with `match` and no `malware` stream
+    /// can never fire `known_malware`, the one check an operator cannot except, so
+    /// `LoadedSnapshot::gaps` adds [`Capabilities::uncovered_by`] for `malware` to these.
     pub fn gaps(&self, enabled: &[&str]) -> Vec<Gap> {
         self.uncovered_by(enabled, Capability::Match)
     }

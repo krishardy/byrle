@@ -1372,11 +1372,10 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       keyed by the stream a snapshot records, and `LoadedSnapshot::gaps` checks every
       `Ecosystem::ALL`. Warned at startup and by `doctor`. No refresh writes a snapshot with
       a gap today. [nvd-role-and-stream-capabilities](docs/engineering_decisions/nvd-role-and-stream-capabilities.md).
-- [ ] `[?]` Decide whether an ecosystem with `match` but no `malware` stream is also a
-      startup warning. `known_malware` is the one check with no exception, and it can never
-      fire without a `malware`-capable stream, so a build can look covered while the
-      non-overridable check is dead. `gaps` follows §3 and asks only for `match`;
-      `Capabilities::uncovered_by(&[..], Capability::Malware)` reports the other half.
+- [x] `[?]` Decide whether an ecosystem with `match` but no `malware` stream is also a
+      startup warning. Decided 2026-09-15: yes. `LoadedSnapshot::gaps` reports `match` gaps
+      then `malware` gaps, at startup and in `doctor`. `known_malware` is the one check with
+      no exception, and it never fires without a `malware` stream.
 - [ ] `waharoa status` shows adapter maturity and intel coverage as separate axes
 - [x] Explicit severity precedence config (enrich may escalate `max_cvss`, never originate).
       Settled as a rule rather than config: an enrichment may raise a score and may set

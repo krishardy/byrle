@@ -54,8 +54,18 @@ capabilities itself, keyed by the name a snapshot records the stream under
 | `cisa/kev` | every served ecosystem | enrich |
 
 `LoadedSnapshot::gaps` gives each served ecosystem (`Ecosystem::ALL`: npm) that no stream in
-the snapshot provides `match` for. The proxy warns once per gap at startup, for the snapshot
-loaded then, and `waharoa doctor` reports a gap in the snapshot `/ready` returns as a warning.
+the snapshot provides `match` for, then each that no stream provides `malware` for. The proxy
+warns once per gap at startup, for the snapshot loaded then, and `waharoa doctor` reports a gap
+in the snapshot `/ready` returns as a warning.
+
+### Asked of the user, 2026-09-15
+
+| Question | Chosen |
+|---|---|
+| Is an ecosystem with `match` and no `malware` stream also a startup warning? | yes |
+
+`known_malware` is the one check with no exception, and it never fires without a `malware`
+stream. `osv/npm` provides both for npm, so neither gap is reported today.
 
 No refresh writes a snapshot with a gap today: `waharoa refresh` loads nothing when OSV does
 not load. The check is for an ecosystem added without a stream, such as PyPI in Stage 3.

@@ -179,10 +179,18 @@ pub struct LoadedSnapshot {
 }
 
 impl LoadedSnapshot {
-    /// Each served ecosystem no stream in this snapshot can originate a finding for. The
-    /// startup warning and `waharoa doctor` both report these.
+    /// Each served ecosystem no stream in this snapshot can originate a finding for, then
+    /// each no stream can report malware for. The startup warning and `waharoa doctor` both
+    /// report these.
+    ///
+    /// `malware` too because `known_malware` is the one check with no exception, and without a
+    /// `malware` stream it never fires. Decided 2026-09-15.
     pub fn gaps(&self) -> Vec<crate::intel::Gap> {
-        crate::intel::capabilities_of(&self.streams).gaps(&crate::intel::served())
+        let capabilities = crate::intel::capabilities_of(&self.streams);
+        let served = crate::intel::served();
+        let mut gaps = capabilities.gaps(&served);
+        gaps.extend(capabilities.uncovered_by(&served, crate::intel::Capability::Malware));
+        gaps
     }
 }
 
@@ -480,12 +488,19 @@ mod tests {
     #[test]
     fn a_snapshot_covers_npm_only_when_it_records_the_osv_npm_stream() {
         assert_eq!(recording(&["cisa/kev", "osv/npm"]).gaps(), []);
-        let npm_unmatched = || crate::intel::Gap {
+        let npm_without = |missing| crate::intel::Gap {
             ecosystem: "npm".to_owned(),
-            missing: crate::intel::Capability::Match,
+            missing,
         };
         for streams in [&[][..], &["cisa/kev"], &["osv/pypi"]] {
-            assert_eq!(recording(streams).gaps(), [npm_unmatched()], "{streams:?}");
+            assert_eq!(
+                recording(streams).gaps(),
+                [
+                    npm_without(crate::intel::Capability::Match),
+                    npm_without(crate::intel::Capability::Malware)
+                ],
+                "{streams:?}"
+            );
         }
     }
 
