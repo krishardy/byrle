@@ -1301,8 +1301,10 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       value that is not an http or https URL with a host: exit 2, and 4 for `policy diff`.
 
 ### Intel — advisory streams
-- [~] `[!]` **Verify each stream's data license before implementing it.** Done for four
-      of six. `docs/engineering_decisions/advisory-stream-licences.md`.
+- [x] `[!]` **Verify each stream's data license before implementing it.** Done for every
+      stream in the plan, and for Datadog, which is Apache-2.0. Aikido needs a commercial
+      account and is deferred to post-v1.
+      `docs/engineering_decisions/advisory-stream-licences.md`.
       - [x] **OSV's per-source licences read, 2026-09-13**, at
             <https://google.github.io/osv.dev/data/>. All 17 native sources are permissive.
             Four reach npm. OpenSSF Malicious Packages (Apache-2.0, `MAL-`) and GitHub
@@ -1385,8 +1387,15 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [~] Bridge `intel::Finding` to `policy::decide::Advisory`. `Facts::with_intel` builds
       `Advisory` from stored `Record`s, with `kev` from `exploited`. The score's source is
       not carried into `Advisory`.
-- [ ] `[!]` Common advisory record schema with alias set (CVE, GHSA, OSV, MAL IDs)
-- [~] `[!]` OSV.dev stream, lookup by PURL. npm `MAL-` and `GHSA-` records parse
+- [x] `[!]` Common advisory record schema with alias set (CVE, GHSA, OSV, MAL IDs). One
+      `advisory` row per `publisher_id` whatever the source, with its other ids in
+      `advisory_alias` (`migrations/0001_intel.sql`), read back as `store::Record`: id,
+      aliases, source, score, band, exploited, malware. OSV's `MAL-` and `GHSA-` records and
+      Datadog's records are stored in it. KEV marks a row exploited by its id or an alias
+      (`migrations/0003_exploited.sql`).
+      [osv-malware-load](docs/engineering_decisions/osv-malware-load.md),
+      [alias-matching](docs/engineering_decisions/alias-matching.md).
+- [x] `[!]` OSV.dev stream, lookup by PURL. npm `MAL-` and `GHSA-` records parse
       (`src/intel/osv.rs`) and load (`PgIntel::replace_source`): all 221,217 non-withdrawn
       `MAL-` and all 7,052 `GHSA-`, with 10,357 range rows evaluated at lookup
       (`src/intel/range.rs`). `waharoa refresh` fetches and loads them.
@@ -1590,11 +1599,18 @@ a deferral: there was no mirror to warm and nothing analysing. See
       shipped table of known clients, operator-forceable global override. Keyed on the
       user-agent the proxy sees, which for yarn 4 is
       `got (https://github.com/sindresorhus/got)` and not yarn at all.
-- [ ] `[!]` Implement 503 and 429. Carried from Stage 1, where the split was decided
+- [~] `[!]` Implement 503 and 429. Carried from Stage 1, where the split was decided
       (**502** upstream unreachable or malformed, **503** we are not ready, **429** this
       one artifact is under analysis) and only 502 could be built: there was no mirror to
       warm and nothing analysing, so implementing either of the others meant inventing
       the trigger. The mirror and the analysis queue are what give them a cause.
+      - [x] 503 when the intel store holds no snapshot or errors, on the packument and the
+            artifact path, with nothing fetched:
+            `a_store_that_cannot_answer_is_a_503_on_both_paths_and_nothing_is_fetched`. The
+            body is plain text and there is no `Retry-After`.
+            [intel-in-decisions](docs/engineering_decisions/intel-in-decisions.md).
+      - [ ] 429 has no cause until an expensive detector can hold one artifact: Stage 4's
+            analysis cost tier.
 - [ ] A bounded internal wait is not a fallback but the main mechanism for bun,
       which no code and no `Retry-After` buys any time from. Stage 2.
 - [ ] Unknown user-agent falls back to **503** — fail toward the more widely retried code
