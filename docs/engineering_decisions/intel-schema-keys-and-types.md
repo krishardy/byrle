@@ -11,7 +11,9 @@
 Every intel table is keyed by `BIGINT GENERATED ALWAYS AS IDENTITY`, and tables join on it. A
 publisher's id, such as `GHSA-2234-fmw7-43wr`, is `advisory.publisher_id`, a sized column with
 a unique constraint. A snapshot's digest is `intel_snapshot.digest`, the same, and a source's
-is `intel_source.digest`. Timestamps are `TIMESTAMPTZ`. `advisory.summary` is the only `TEXT` column, because OSV does not bound it.
+is `intel_source.digest`. Timestamps are `TIMESTAMPTZ`. `TEXT` columns are those with no bound:
+`advisory.summary`, which OSV does not bound, and `intel_ingestion.etag`, `last_modified` and
+`error` ([ingestion-history](ingestion-history.md)).
 
 Strings are sized from the longest value in OSV's npm bundle of 2026-09-13, 228,951 records,
 with headroom for other ecosystems:
@@ -87,8 +89,8 @@ Execution Time: 0.117 ms
 ## Timestamps
 
 `modified` and `taken_at` are written as RFC 3339 text and cast by Postgres:
-`$2::text::timestamptz`, and `COPY` parses the text. Nothing reads a timestamp back into Rust,
-so the codebase keeps one date library, jiff, which sqlx 0.8 has no mapping for. Postgres keeps
+`$2::text::timestamptz`, and `COPY` parses the text. A timestamp is read back as text, formatted
+by `to_char`, so the codebase keeps one date library, jiff, which sqlx 0.8 has no mapping for. Postgres keeps
 microseconds; OSV writes `modified` to the nanosecond, so it is rounded.
 
 ## Migrations rewritten, not added to
@@ -115,10 +117,10 @@ nothing is lost that a refresh does not restore.
 ## Held by
 
 - `every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_text` in
-  `tests/intel_postgres.rs` reads `information_schema`. It fails on a `TEXT` column other than
-  `advisory.summary`, a `VARCHAR` with no length, a table whose primary key is not a `BIGINT`
-  identity `id`, or an `advisory_id` that is not `BIGINT`. A new table is checked with no
-  change to the test.
+  `tests/intel_postgres.rs` reads `information_schema`. It fails on a `TEXT` column it does not
+  list, a `VARCHAR` with no length, a table whose primary key is not a `BIGINT` identity `id`,
+  or an `advisory_id` that is not `BIGINT`. It lists every table, so a new table fails it until
+  the table is added.
 - `a_value_longer_than_its_column_fails_the_load_and_names_the_column`.
 - `a_failed_refresh_leaves_the_previous_load_in_place` checks the duplicate is refused by
   `advisory_publisher_id_key`. Without that constraint the load still failed, later, on

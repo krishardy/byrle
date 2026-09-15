@@ -622,6 +622,45 @@ async fn intel_store() -> Result<Option<waharoa::intel::postgres::PgIntel>, Stri
     Ok(Some(intel))
 }
 
+/// The intel store a command cannot run without. Exit 2 when [`env::DATABASE_URL`] is unset,
+/// and 1 when the store cannot be reached or migrated.
+async fn required_intel_store(
+    command: &str,
+) -> Result<waharoa::intel::postgres::PgIntel, std::process::ExitCode> {
+    match intel_store().await {
+        Ok(Some(intel)) => Ok(intel),
+        Ok(None) => {
+            eprintln!(
+                "waharoa {command}: set {} to the intel store's Postgres",
+                env::DATABASE_URL
+            );
+            Err(std::process::ExitCode::from(2))
+        }
+        Err(e) => {
+            eprintln!("waharoa {command}: {}: {e}", env::DATABASE_URL);
+            Err(std::process::ExitCode::from(1))
+        }
+    }
+}
+
+/// `waharoa intel history`: the newest entries of the ingestion history.
+async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
+    let intel = match required_intel_store("intel history").await {
+        Ok(intel) => intel,
+        Err(code) => return code,
+    };
+    match intel.history(args.limit).await {
+        Ok(entries) => {
+            print!("{}", waharoa::intel::history::render(&entries));
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("waharoa intel history: {e}");
+            std::process::ExitCode::from(1)
+        }
+    }
+}
+
 /// The snapshot `--snapshot` names, read from the snapshot directory without its lock.
 fn kept_snapshot(
     id: &str,
@@ -662,21 +701,63 @@ async fn package_intel(
     }
 }
 
-/// `waharoa refresh`: load OSV's npm records and CISA's KEV catalogue into the intel store.
+/// `waharoa refresh`: load OSV's npm records, CISA's KEV catalogue and Datadog's npm manifest
+/// into the intel store, and append what each stream did to the ingestion history.
 ///
 /// Connect, migrate, fetch, load, exit. Nothing is written unless every record in the OSV
-/// bundle reads, so a broken bundle leaves the previous load in place. A catalogue that cannot
-/// be fetched or read leaves the previous KEV load in place: OSV still loads, and the exit is 1.
+/// bundle reads, so a broken bundle leaves the previous load in place. A catalogue or manifest
+/// that cannot be fetched or read leaves its previous load in place: the others still load,
+/// and the exit is 1. A refresh that stops before fetching records nothing.
 async fn run_refresh() -> std::process::ExitCode {
+    use waharoa::intel::history::NotLoaded;
     use waharoa::intel::postgres::{PgIntel, Replacement};
     use waharoa::intel::{datadog, kev, load, osv, refresh, snapshot_dir::SnapshotDir};
 
-    let Some(url) = or_exit(env::process().database_url()) else {
-        eprintln!(
-            "waharoa refresh: set {} to the Postgres that holds intel",
-            env::DATABASE_URL
-        );
-        return std::process::ExitCode::from(2);
+    /// Append `not_loaded` for a refresh that loaded nothing, and exit 1.
+    async fn nothing_loaded(intel: &PgIntel, not_loaded: &[NotLoaded]) -> std::process::ExitCode {
+        let taken_at = jiff::Timestamp::now().to_string();
+        if let Err(e) = intel.record_not_loaded(not_loaded, &taken_at).await {
+            eprintln!("waharoa refresh: the ingestion history is not written: {e}");
+        }
+        std::process::ExitCode::from(1)
+    }
+
+    /// A stream other than OSV that fails keeps its last load, and the refresh exits 1.
+    fn optional<T>(
+        source: &str,
+        stream: &str,
+        fetched: Result<Fetched, String>,
+        parse: impl FnOnce(&[u8]) -> Result<T, String>,
+        not_loaded: &mut Vec<NotLoaded>,
+    ) -> Option<(T, [refresh::StreamDigest; 1])> {
+        let mut skip = |bundle: Option<refresh::StreamDigest>,
+                        error: String|
+         -> Option<(T, [refresh::StreamDigest; 1])> {
+            eprintln!("waharoa refresh: {stream} is not loaded, and its last load stays: {error}");
+            not_loaded.push(NotLoaded {
+                source: source.to_owned(),
+                stream: stream.to_owned(),
+                bundle,
+                error,
+            });
+            None
+        };
+        let fetched = match fetched {
+            Ok(fetched) => fetched,
+            Err(error) => return skip(None, error),
+        };
+        let bundle = fetched.stream(stream);
+        match parse(&fetched.bytes) {
+            Ok(parsed) => Some((parsed, [bundle])),
+            Err(error) => skip(Some(bundle), error),
+        }
+    }
+
+    // Connected before the fetch, so a refresh that could record nothing stops before
+    // downloading.
+    let intel = match required_intel_store("refresh").await {
+        Ok(intel) => intel,
+        Err(code) => return code,
     };
     let started = std::time::Instant::now();
 
@@ -705,53 +786,49 @@ async fn run_refresh() -> std::process::ExitCode {
             return std::process::ExitCode::from(1);
         }
     };
+    let osv_not_loaded = |bundle: Option<refresh::StreamDigest>, error: String| {
+        [NotLoaded {
+            source: osv::SOURCE.to_owned(),
+            stream: refresh::NPM_STREAM.to_owned(),
+            bundle,
+            error,
+        }]
+    };
     let bundle = match fetch(&http, refresh::NPM_BUNDLE, refresh::MAX_BUNDLE_BYTES).await {
         Ok(fetched) => fetched,
         Err(e) => {
             eprintln!("waharoa refresh: {e}");
-            return std::process::ExitCode::from(1);
+            return nothing_loaded(&intel, &osv_not_loaded(None, e)).await;
         }
     };
+    let osv_streams = [bundle.stream(refresh::NPM_STREAM)];
     let osv_rows = match refresh::read_bundle(&bundle.bytes) {
         Ok(read) => read,
         Err(e) => {
             eprintln!("waharoa refresh: nothing loaded: {e}");
-            return std::process::ExitCode::from(1);
+            let not_loaded = osv_not_loaded(Some(osv_streams[0].clone()), e.to_string());
+            return nothing_loaded(&intel, &not_loaded).await;
         }
     };
-    let osv_streams = [bundle.stream(refresh::NPM_STREAM)];
     drop(bundle);
 
-    /// A stream other than OSV that fails keeps its last load, and the refresh exits 1.
-    fn optional<T>(stream: &str, result: Result<T, String>) -> Option<T> {
-        result
-            .inspect_err(|e| {
-                eprintln!("waharoa refresh: {stream} is not loaded, and its last load stays: {e}")
-            })
-            .ok()
-    }
+    let mut not_loaded = Vec::new();
     let catalogue = optional(
         kev::SOURCE,
-        fetch(&http, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES)
-            .await
-            .and_then(|fetched| {
-                let ids = kev::parse(&fetched.bytes).map_err(|e| e.to_string())?;
-                Ok((ids, [fetched.stream(kev::SOURCE)]))
-            }),
+        kev::SOURCE,
+        fetch(&http, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES).await,
+        |bytes| kev::parse(bytes).map_err(|e| e.to_string()),
+        &mut not_loaded,
     );
     let manifest = optional(
+        datadog::SOURCE,
         datadog::STREAM,
-        fetch(&http, datadog::MANIFEST, datadog::MAX_MANIFEST_BYTES)
-            .await
-            .and_then(|fetched| {
-                let rows = datadog::parse(&fetched.bytes).map_err(|e| e.to_string())?;
-                Ok((rows, [fetched.stream(datadog::STREAM)]))
-            }),
+        fetch(&http, datadog::MANIFEST, datadog::MAX_MANIFEST_BYTES).await,
+        |bytes| datadog::parse(bytes).map_err(|e| e.to_string()),
+        &mut not_loaded,
     );
     let taken_at = jiff::Timestamp::now().to_string();
 
-    // Written before the load, so a snapshot Postgres records never lacks its rows here. Rows
-    // left by a load that then fails are removed by the next prune.
     let encoded = load::encode(osv::SOURCE, &osv_rows.rows);
     let exploited = catalogue
         .as_ref()
@@ -759,26 +836,6 @@ async fn run_refresh() -> std::process::ExitCode {
     let flagged = manifest
         .as_ref()
         .map(|(rows, _)| load::encode(datadog::SOURCE, rows));
-    if let Some(kept) = &kept {
-        for rows in std::iter::once(&encoded).chain(&exploited).chain(&flagged) {
-            if let Err(e) = kept.write_rows(rows) {
-                eprintln!("waharoa refresh: nothing loaded: {e}");
-                return std::process::ExitCode::from(1);
-            }
-        }
-    }
-
-    let intel = match sqlx::PgPool::connect(&url).await {
-        Ok(pool) => PgIntel::new(pool),
-        Err(e) => {
-            eprintln!("waharoa refresh: connecting to {}: {e}", env::DATABASE_URL);
-            return std::process::ExitCode::from(1);
-        }
-    };
-    if let Err(e) = intel.migrate().await {
-        eprintln!("waharoa refresh: {e}");
-        return std::process::ExitCode::from(1);
-    }
     let mut sources = vec![Replacement {
         encoded: &encoded,
         rows: &osv_rows.rows,
@@ -798,11 +855,40 @@ async fn run_refresh() -> std::process::ExitCode {
             streams,
         });
     }
-    let loaded = match intel.replace(&sources, &taken_at).await {
+    // Every stream that was to load, as not loaded for `error`, beside those that already were
+    // not.
+    let none_loaded = |error: String| -> Vec<NotLoaded> {
+        let error = &error;
+        sources
+            .iter()
+            .flat_map(|s| {
+                s.streams.iter().map(move |bundle| NotLoaded {
+                    source: s.encoded.source.clone(),
+                    stream: bundle.stream.clone(),
+                    bundle: Some(bundle.clone()),
+                    error: error.clone(),
+                })
+            })
+            .chain(not_loaded.iter().cloned())
+            .collect()
+    };
+
+    // Written before the load, so a snapshot Postgres records never lacks its rows here. Rows
+    // left by a load that then fails are removed by the next prune.
+    if let Some(kept) = &kept {
+        for source in &sources {
+            if let Err(e) = kept.write_rows(source.encoded) {
+                eprintln!("waharoa refresh: nothing loaded: {e}");
+                return nothing_loaded(&intel, &none_loaded(e.to_string())).await;
+            }
+        }
+    }
+
+    let loaded = match intel.replace(&sources, &not_loaded, &taken_at).await {
         Ok(loaded) => loaded,
         Err(e) => {
             eprintln!("waharoa refresh: nothing loaded: {e}");
-            return std::process::ExitCode::from(1);
+            return nothing_loaded(&intel, &none_loaded(e.to_string())).await;
         }
     };
 
@@ -841,9 +927,10 @@ async fn run_refresh() -> std::process::ExitCode {
         }
     }
     println!("took {:.1}s", started.elapsed().as_secs_f64());
-    match (catalogue, manifest) {
-        (Some(_), Some(_)) => std::process::ExitCode::SUCCESS,
-        _ => std::process::ExitCode::from(1),
+    if not_loaded.is_empty() {
+        std::process::ExitCode::SUCCESS
+    } else {
+        std::process::ExitCode::from(1)
     }
 }
 
@@ -937,6 +1024,9 @@ async fn main() -> std::process::ExitCode {
         }
         Some(cli::Command::Policy(cli::PolicyCommand::Diff(args))) => {
             return run_policy_diff(args).await;
+        }
+        Some(cli::Command::Intel(cli::IntelCommand::History(args))) => {
+            return run_intel_history(args).await;
         }
         Some(cli::Command::Refresh) => return run_refresh().await,
     }

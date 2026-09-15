@@ -1,0 +1,70 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                to_char(taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"taken_at!\",\n                source, stream, sha256, etag, last_modified, rows_digest, snapshot, error\n            FROM intel_ingestion\n            ORDER BY id DESC\n            LIMIT $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "taken_at!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "source",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "stream",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "sha256",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "etag",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "last_modified",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "rows_digest",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 7,
+        "name": "snapshot",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 8,
+        "name": "error",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2f5cbdd91ed3d8052046a1b328b7761bb8636bcd5ba0281f17593c1e4cc5b406"
+}

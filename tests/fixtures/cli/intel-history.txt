@@ -1,0 +1,7 @@
+Each stream every `waharoa refresh` loaded or did not, newest first
+
+Usage: waharoa intel history [OPTIONS]
+
+Options:
+      --limit <LIMIT>  Most entries to print [default: 20]
+  -h, --help           Print help

@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO intel_ingestion (taken_at, source, stream, sha256, etag, last_modified, rows_digest, snapshot, error) VALUES ($1::text::timestamptz, $2, $3, $4, $5, $6, $7, $8, $9)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Text",
+        "Varchar",
+        "Varchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "b09aa859ab33bcf0066109e7ca5401f9cd7107a2dc6d03446885db82cdbf375b"
+}
