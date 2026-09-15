@@ -1171,8 +1171,9 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             excuse the other. Both are separate results in the vector.
       - [x] "None at all" and "all of them excused" stay distinct, so an exception that
             never had an exploited advisory to excuse is not recorded as having worked.
-      - [ ] The source itself: a set lookup over CVE ids the advisory stream produced,
-            reaching 13 npm CVEs today. Build it last.
+      - [x] The source itself: a set lookup over CVE ids the advisory stream produced.
+            CISA's catalogue, loaded as `cisa/kev`, marks 13 stored npm records exploited.
+            [kev-stream](docs/engineering_decisions/kev-stream.md).
 - [x] `[!]` `max_cvss`. A number, not a severity band: bands are not stable across CVSS
       versions, where the same score falls in different ones under v2 and v3. Exceptions
       are per CVE id (`cve_ids`), not per package, which is the only exception keyed by
@@ -1443,11 +1444,21 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       vulnerability never fires three rules: `decide` gives each check one result.
       [alias-matching](docs/engineering_decisions/alias-matching.md).
 - [ ] `[!]` GitHub Advisory stream (GraphQL, token auth)
-- [ ] OSSF Malicious Packages stream (licence-cleared: Apache-2.0) — publishes natively in OSV format, so it reuses
-      the OSV normalization path rather than needing its own
-- [ ] Datadog malicious-packages — **check OSSF overlap first**; Datadog contributes
-      upstream to OSSF, so this is likely already ingested. Only implement if it adds
-      real coverage. Verify data license and per-version lookup shape.
+- [x] OSSF Malicious Packages stream (licence-cleared: Apache-2.0). Loaded as `osv/npm`: OSV
+      imports the repository, and all 221,217 non-withdrawn `MAL-` records in `npm/all.zip`
+      (2026-09-13) give it as `affected[].database_specific.source`, such as
+      `https://github.com/ossf/malicious-packages/blob/main/osv/malicious/npm/cxp-jquery/MAL-2021-1.json`.
+      The repository's copy of `MAL-2021-1` has the same id, origins and `modified`; OSV adds
+      `purl` and `source`. No separate stream. [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
+- [ ] `[?]` Datadog malicious-packages. Licence Apache-2.0 by its `LICENSE` file. Not ingested
+      by OSSF: no `MAL-` record lists it as an origin. Compared on 2026-09-15 with OSV's npm
+      bundle and the npm registry of the same day: 13 installable versions OSV has no record
+      for (vant 2.13.3 to 4.9.14, art-template 4.13.3, and 4 others), and 344 packages
+      Datadog flags at every version with 19,848 installable versions OSV lacks. Some are
+      whole packages OSV flags only in part: `@lottiefiles/lottie-player` (101,903 weekly
+      downloads) is `MAL-2024-10301` 2.0.5 to 2.0.7 in OSV and every version in Datadog.
+      Needs a decision: whether to load it, and which entries, since a `malware` entry has
+      no exception. [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
 - [x] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed). `enrich`-only, joined on
       exact CVE ID or an alias. Source `cisa/kev` in `exploited_cve`, loaded by `waharoa
       refresh` in the same transaction as OSV; a failed fetch keeps the last KEV load and
@@ -1582,6 +1593,14 @@ a deferral: there was no mirror to warm and nothing analysing. See
 - [ ] Log every deferral and whether the client returned inside the window — turns the
       compatibility table into evidence
 ### Observability
+- [ ] `[!]` Ingestion history log for auditing: every time a vulnerability or malware feed is
+      ingested, append an entry. Requested 2026-09-15. Today `intel_source` keeps only each
+      source's latest digest and streams, `intel_snapshot` one row per distinct snapshot
+      (a reload of the same rows overwrites its `taken_at`), and kept snapshot files are
+      pruned to `WAHAROA_SNAPSHOT_LIMIT`, so which feed was ingested when, and from which
+      bundle, cannot be read back. An entry would carry at least the source, its stream
+      digests, etag and `last-modified`, the rows digest, the resulting snapshot id, when
+      it ran, and the outcome, including a feed that failed and kept its last load.
 - [x] `[!]` JSON Lines audit log: `src/audit.rs`, `WAHAROA_AUDIT_LOG`. A separate sink,
       not a tracing layer: tracing output is diagnostic and free to change shape, this is
       what `policy diff` parses.

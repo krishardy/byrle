@@ -17,6 +17,7 @@ stream actually contributes, which does not match the order the plan lists them 
 | OSV.dev | Apache-2.0 | **per source, all permissive** | depends on the source |
 | GitHub Advisory (GHSA) | n/a | **CC-BY-4.0** | **required** |
 | OSSF Malicious Packages | Apache-2.0 | **Apache-2.0** | notice retention |
+| Datadog malicious-software-packages-dataset | Apache-2.0 | **Apache-2.0** | notice retention |
 | CISA KEV | n/a | **CC0 1.0** | none |
 | NVD | n/a | **public domain** | none |
 | Aikido Intel | n/a | **commercial account required** | n/a, deferred |
@@ -100,6 +101,76 @@ OSSF Malicious Packages and CISA KEV were read by a person (2026-09-13). Both mo
   own, so nothing is owed. What we would take from it is CVSS scores, which are NIST's own
   analysis rather than text carried over from a source, so the compiled-from-elsewhere
   point does not reach our use of it.
+
+### OSV's `MAL-` records are the OSSF repository's, 2026-09-15
+
+osv.dev lists [OpenSSF Malicious Packages](https://github.com/ossf/malicious-packages) as a
+data source. Every non-withdrawn `MAL-` record in OSV's `npm/all.zip` of 2026-09-13, 221,217
+of 221,217, gives a file in that repository as `affected[].database_specific.source`. The
+repository's own `osv/malicious/npm/cxp-jquery/MAL-2021-1.json` has the id, origins and
+`modified` of OSV's copy; OSV adds `purl` and `source`.
+
+So `osv/npm` loads the OSSF stream for npm, and there is no second stream to build. The
+records carry the repository's `malicious-packages-origins`, by source:
+
+| Origin | Records |
+|---|---|
+| amazon-inspector | 152,682 |
+| ghsa-malware | 27,905 |
+| reversing-labs | 9,907 |
+| ossf-package-analysis | 5,253 |
+| google-open-source-security | 1,920 |
+| checkmarx | 142 |
+| no origin given | 39,776 |
+
+A record can have more than one origin. None is Datadog.
+
+### Datadog's dataset adds installable versions, and flags whole packages OSV does not, 2026-09-15
+
+Datadog's [malicious-software-packages-dataset](https://github.com/DataDog/malicious-software-packages-dataset)
+is Apache-2.0 by its `LICENSE` file. No `MAL-` record lists it as an origin. Its npm manifest,
+`samples/npm/manifest.json` at commit `8fff54014596` (2026-09-14, sha256
+`6e7101a39469139b904405b7430f8c2661bd9e119497424677c6f2a15822bb5d`), maps each of 48,313
+package names to `null`, every version, or a list of versions. Compared with OSV's npm
+`MAL-` and `GHSA-` records from `npm/all.zip` fetched the same day, a version OSV covers only
+by range asked of osv.dev's API, and the npm registry read the same day, a `0.0.1-security`
+placeholder not counted as installable:
+
+| Datadog entry | Count | Installable on npm, OSV has no record for it |
+|---|---|---|
+| package, every version, OSV every version too | 39,558 | 0 |
+| listed version, OSV lists or ranges it | 5,122 | 0 |
+| listed version OSV lacks | 76 | 13 versions |
+| package, every version, OSV not every version | 6,720 | 19,848 versions of 344 packages |
+
+The 13 are vant 2.13.3 to 2.13.5, 3.6.13, 3.6.14 and 4.9.12 to 4.9.14; art-template 4.13.3;
+`@ensdomains/address-encoder` 0.1.5; `@evolvconsulting/evolv-coder-lite` 1.2.0; and
+`@joyfill/layouts` 0.1.2-2773.beta.1 and beta.2.
+
+The 344 by weekly npm downloads, read 2026-09-15:
+
+| Weekly downloads | Packages |
+|---|---|
+| 10,000 or more | 9 |
+| 1,000 to 9,999 | 35 |
+| 100 to 999 | 82 |
+| under 100 | 218 |
+
+vant, whose 13 listed versions are above, has 86,802.
+
+The 344 include packages where OSV lists the malicious versions and Datadog flags every
+version:
+
+| Package | Weekly downloads | OSV | Datadog | Versions only Datadog flags |
+|---|---|---|---|---|
+| `@lottiefiles/lottie-player` | 101,903 | `MAL-2024-10301`: 2.0.5, 2.0.6, 2.0.7 | every version | 59 |
+| `@toptal/picasso` | 1,426 | `MAL-2025-6038`: 54.1.3 | every version | 1,915 |
+| `@qwen-code/qwen-code` | 49,639 | no record | every version | 637 |
+| `edgeone` | 9,802 | no record | every version | 233 |
+
+Loaded as a `malware` stream, whose check has no exception, an every-version entry refuses
+every version of the package. Whether to load the dataset, and which entries, is open in
+TODO.md.
 
 ### Aikido Intel is not a free public feed
 
