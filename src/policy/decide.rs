@@ -72,7 +72,9 @@ pub struct Advisory {
     pub id: String,
     /// The other ids it is known by. A GHSA advisory's CVE id is here.
     pub aliases: Vec<String>,
-    pub cvss: f64,
+    /// `None` when no stream scored it. `max_cvss` refuses it until `advisory_scores` gives
+    /// it a score.
+    pub cvss: Option<f64>,
     /// The severity band `cvss` was read from, for `explain`. `None` when a vector gave it.
     pub band: Option<String>,
     /// Whether this advisory is in a known-exploited catalogue.
@@ -254,14 +256,15 @@ pub fn cooldown_required(policy: &Policy, entry: Option<usize>) -> u32 {
         .unwrap_or(policy.cooldown_days)
 }
 
-/// The advisories over `max_cvss`, split into those that still count and those the
-/// exception names by id or alias.
+/// The advisories over `max_cvss` or with no score, split into those that still count and
+/// those the exception names by id or alias.
 ///
 /// Public so `explain` names the advisories from the same split the check decided on.
 pub fn over_max_cvss<'a>(
     policy: &Policy,
     facts: &'a Facts,
     entry: Option<usize>,
+    as_of: Date,
 ) -> (Vec<&'a Advisory>, Vec<&'a Advisory>) {
     let ignored = entry
         .map(|i| policy.packages[i].set.vuln_advisory_ids.as_slice())
@@ -269,8 +272,26 @@ pub fn over_max_cvss<'a>(
     facts
         .advisories
         .iter()
-        .filter(|a| a.cvss > policy.max_cvss)
+        .filter(|a| score(policy, a, as_of).is_none_or(|(cvss, _)| cvss > policy.max_cvss))
         .partition(|a| !ignored.iter().any(|id| a.is_named(id)))
+}
+
+/// The score `max_cvss` compares for an advisory, and the `advisory_scores` entry it came
+/// from when the advisory has none of its own.
+///
+/// A stored score is used whatever the policy says. Otherwise the highest score among the
+/// entries in force on `as_of` naming the advisory by id or alias. `None` is unscored.
+pub fn score(policy: &Policy, advisory: &Advisory, as_of: Date) -> Option<(f64, Option<usize>)> {
+    if let Some(cvss) = advisory.cvss {
+        return Some((cvss, None));
+    }
+    policy
+        .advisory_scores
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.in_force(as_of) && advisory.is_named(&s.advisory_id))
+        .max_by(|(_, a), (_, b)| a.cvss.total_cmp(&b.cvss))
+        .map(|(i, s)| (s.cvss, Some(i)))
 }
 
 /// The exception that applies, if any.
@@ -411,9 +432,10 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
 
         // Advisories the exception names are ignored; the rest are compared against the
         // threshold. Narrower than raising the threshold, which would apply to every
-        // advisory this package acquires later.
+        // advisory this package acquires later. An advisory with no score is refused, as
+        // "not known" is not "low".
         Check::MaxCvss => {
-            let (counting, excused) = over_max_cvss(policy, facts, entry);
+            let (counting, excused) = over_max_cvss(policy, facts, entry, as_of);
             match (counting.is_empty(), excused.is_empty(), entry) {
                 (false, _, _) => Outcome::Failed(Action::Block),
                 // Something was over the threshold and the exception named all of it, so
@@ -492,7 +514,7 @@ mod tests {
         Advisory {
             id: id.to_owned(),
             aliases: Vec::new(),
-            cvss,
+            cvss: Some(cvss),
             band: None,
             kev: false,
         }
@@ -772,7 +794,7 @@ mod tests {
             advisories: vec![Advisory {
                 id: "CVE-2024-1234".to_owned(),
                 aliases: Vec::new(),
-                cvss: 9.8,
+                cvss: Some(9.8),
                 band: None,
                 kev: false,
             }],
@@ -794,14 +816,14 @@ mod tests {
                 Advisory {
                     id: "CVE-2024-1234".to_owned(),
                     aliases: Vec::new(),
-                    cvss: 9.8,
+                    cvss: Some(9.8),
                     band: None,
                     kev: false,
                 },
                 Advisory {
                     id: "CVE-2025-9999".to_owned(),
                     aliases: Vec::new(),
-                    cvss: 7.5,
+                    cvss: Some(7.5),
                     band: None,
                     kev: false,
                 },
@@ -1003,6 +1025,119 @@ mod tests {
         );
     }
 
+    /// An advisory no stream scored.
+    fn unscored(id: &str, aliases: &[&str]) -> Advisory {
+        Advisory {
+            aliases: aliases.iter().map(|a| (*a).to_owned()).collect(),
+            cvss: None,
+            ..advisory(id, 0.0)
+        }
+    }
+
+    /// A stored score is compared whatever the policy says. Otherwise the highest
+    /// `advisory_scores` entry in force naming the advisory by id or alias, and with
+    /// neither the advisory counts as over.
+    #[test]
+    fn an_unscored_advisory_counts_as_over_max_cvss_until_policy_scores_it() {
+        let p = policy(
+            "max_cvss: 6.9\nadvisory_scores:\n\
+             - { advisory_id: GHSA-live, cvss: 6.9, reason: r, expires: \"2026-09-12\" }\n\
+             - { advisory_id: GHSA-lapsed, cvss: 5.0, reason: r, expires: \"2026-09-11\" }\n\
+             - { advisory_id: CVE-by-alias, cvss: 9.0, reason: r, permanent: true }\n\
+             - { advisory_id: GHSA-two, cvss: 5.0, reason: r, permanent: true }\n\
+             - { advisory_id: CVE-of-two, cvss: 8.0, reason: r, permanent: true }\n\
+             - { advisory_id: GHSA-stored, cvss: 9.0, reason: r, permanent: true }\n",
+        );
+        let facts = Facts {
+            advisories: vec![
+                unscored("GHSA-live", &[]),
+                unscored("GHSA-none", &[]),
+                unscored("GHSA-lapsed", &[]),
+                unscored("GHSA-alias", &["CVE-by-alias"]),
+                unscored("GHSA-two", &["CVE-of-two"]),
+                advisory("GHSA-stored", 5.0),
+            ],
+            ..clean()
+        };
+
+        let (counting, excused) = over_max_cvss(&p, &facts, None, TODAY);
+        let ids: Vec<&str> = counting.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["GHSA-none", "GHSA-lapsed", "GHSA-alias", "GHSA-two"]);
+        assert!(excused.is_empty());
+
+        let scores: Vec<Option<(f64, Option<usize>)>> = facts
+            .advisories
+            .iter()
+            .map(|a| score(&p, a, TODAY))
+            .collect();
+        assert_eq!(
+            scores,
+            [
+                Some((6.9, Some(0))),
+                None,
+                None,
+                Some((9.0, Some(2))),
+                Some((8.0, Some(4))),
+                Some((5.0, None)),
+            ]
+        );
+
+        let only = |a: Advisory| Facts {
+            advisories: vec![a],
+            ..clean()
+        };
+        assert_eq!(
+            *outcome(
+                &decide(&p, &only(unscored("GHSA-live", &[])), TODAY),
+                Check::MaxCvss
+            ),
+            Outcome::Passed
+        );
+        assert_eq!(
+            *outcome(
+                &decide(&p, &only(unscored("GHSA-lapsed", &[])), TODAY),
+                Check::MaxCvss
+            ),
+            Outcome::Failed(Action::Block),
+            "a lapsed score leaves the advisory unscored, and refused"
+        );
+        assert_eq!(
+            *outcome(
+                &decide(&p, &only(unscored("GHSA-live", &[])), date(2026, 9, 13)),
+                Check::MaxCvss
+            ),
+            Outcome::Failed(Action::Block),
+            "and the live one lapses the day after its expiry"
+        );
+    }
+
+    /// `vuln_advisory_ids` excuses an unscored advisory the way it excuses a scored one, and
+    /// `kev` reads exploitation whatever the score.
+    #[test]
+    fn an_unscored_advisory_is_excused_by_id_and_still_read_by_kev() {
+        let p = policy(
+            "max_cvss: 6.9\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { vuln_advisory_ids: [\"CVE-2024-1\"] }\n    reason: not reachable\n    \
+             permanent: true\n",
+        );
+        let facts = Facts {
+            advisories: vec![Advisory {
+                kev: true,
+                ..unscored("GHSA-aaaa", &["CVE-2024-1"])
+            }],
+            ..clean()
+        };
+        let d = decide(&p, &facts, TODAY);
+        assert_eq!(
+            *outcome(&d, Check::MaxCvss),
+            Outcome::Excepted {
+                entry: 0,
+                action: Action::Block
+            }
+        );
+        assert_eq!(*outcome(&d, Check::Kev), Outcome::Failed(Action::Block));
+    }
+
     /// At or below the threshold is allowed, above is not.
     #[test]
     fn the_cvss_threshold_allows_what_is_at_or_below_it() {
@@ -1012,7 +1147,7 @@ mod tests {
                 advisories: vec![Advisory {
                     id: "CVE-2024-1".to_owned(),
                     aliases: Vec::new(),
-                    cvss,
+                    cvss: Some(cvss),
                     band: None,
                     kev: false,
                 }],

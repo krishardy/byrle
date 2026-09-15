@@ -77,22 +77,22 @@ impl Facts {
     /// Add what the intel store knows about this version.
     ///
     /// Marks the facts consulted even when nothing is known against the version, because
-    /// the store was asked. An advisory with no score is left out of `advisories`, since
-    /// `Advisory::cvss` is a number and zero would be a score nobody gave. It still counts
-    /// toward `known_malware`.
+    /// the store was asked. A malware record with no score is left out of `advisories`:
+    /// `known_malware` refuses it, and `max_cvss` would refuse it a second time as unscored.
+    /// Any other record with no score is kept, with `cvss` `None`, and `max_cvss` refuses it.
     pub fn with_intel(mut self, intel: &PackageIntel) -> Self {
         let records = intel.for_version(&self.version);
         self.known_malware = records.iter().any(|r| r.malware);
         self.advisories = records
             .iter()
-            .filter_map(|r| {
-                r.score().map(|score| Advisory {
-                    id: r.advisory_id.clone(),
-                    aliases: r.aliases.clone(),
-                    cvss: score.cvss(),
-                    band: r.band.clone(),
-                    kev: r.exploited,
-                })
+            .map(|r| (r, r.score()))
+            .filter(|(r, score)| !r.malware || score.is_some())
+            .map(|(r, score)| Advisory {
+                id: r.advisory_id.clone(),
+                aliases: r.aliases.clone(),
+                cvss: score.map(|s| s.cvss()),
+                band: r.band.clone(),
+                kev: r.exploited,
             })
             .collect();
         self.intel = Intel::of(Some(intel));
@@ -282,11 +282,12 @@ cooldown_days: 0
     }
 
     #[test]
-    fn only_scored_advisories_for_this_version_become_advisories() {
+    fn advisories_for_this_version_become_advisories_except_unscored_malware() {
         let facts = Facts::from_record(&full()).with_intel(&intel(vec![
             stored(Some("4.17.20"), "GHSA-other", false, Some(9.8)),
             stored(Some("4.17.21"), "GHSA-this", false, Some(5.0)),
             stored(Some("4.17.21"), "GHSA-unscored", false, None),
+            stored(Some("4.17.20"), "MAL-other", true, None),
             {
                 let (version, record) = stored(Some("4.17.21"), "GHSA-banded", false, Some(8.9));
                 (
@@ -304,14 +305,21 @@ cooldown_days: 0
                 Advisory {
                     id: "GHSA-this".to_owned(),
                     aliases: vec!["CVE-of-GHSA-this".to_owned()],
-                    cvss: 5.0,
+                    cvss: Some(5.0),
+                    band: None,
+                    kev: false,
+                },
+                Advisory {
+                    id: "GHSA-unscored".to_owned(),
+                    aliases: vec!["CVE-of-GHSA-unscored".to_owned()],
+                    cvss: None,
                     band: None,
                     kev: false,
                 },
                 Advisory {
                     id: "GHSA-banded".to_owned(),
                     aliases: vec!["CVE-of-GHSA-banded".to_owned()],
-                    cvss: 8.9,
+                    cvss: Some(8.9),
                     band: Some("HIGH".to_owned()),
                     kev: false,
                 }

@@ -6,6 +6,7 @@ settings
   kev              block
   denials          0
   packages         0
+  advisory_scores  0
 
 checks
   denials           enforced
@@ -23,6 +24,7 @@ settings
   kev              block
   denials          0
   packages         0
+  advisory_scores  0
 
 checks
   denials           enforced
@@ -40,6 +42,7 @@ settings
   kev              block
   denials          2
   packages         3
+  advisory_scores  0
 
 checks
   denials           enforced
@@ -63,6 +66,7 @@ settings
   kev              block
   denials          2
   packages         3
+  advisory_scores  0
 
 checks
   denials           enforced

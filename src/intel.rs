@@ -111,7 +111,7 @@ impl Score {
 
     /// The CVSS range. Rejects NaN and both infinities, because no comparison against
     /// those is true and `contains` is a pair of comparisons.
-    fn in_range(cvss: f64) -> bool {
+    pub fn in_range(cvss: f64) -> bool {
         (0.0..=10.0).contains(&cvss)
     }
 

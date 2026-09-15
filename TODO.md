@@ -1407,7 +1407,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Wire the intel store into `Facts` (`known_malware`, `Intel::Consulted`) in the
       proxy, `explain` and `policy diff`. One `Intel::package` query per package.
       `enforce::artifact` and `enforce::unenforceable` take the intel state from the caller.
-- [~] `[!]` `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`.
+- [x] `[!]` `Advisory::cvss` is `f64`, so an unscored advisory is left out of `advisories`.
       Decided 2026-09-15:
       - [x] A record with no CVSS vector is scored at the top of its `database_specific`
             severity band: LOW 3.9, MODERATE 6.9, HIGH 8.9, CRITICAL 10.0. 689 npm `GHSA-`
@@ -1415,10 +1415,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             rows format 2) and `explain` prints `8.9 from band HIGH`. A vector that does not
             parse is not replaced by the band.
             [osv-ranges-and-scores](docs/engineering_decisions/osv-ranges-and-scores.md).
-      - [ ] A non-malware advisory with no score at all is ingested with `cvss` NULL and
+      - [x] A non-malware advisory with no score at all is ingested with `cvss` NULL and
             refused by `max_cvss` until a policy entry gives it a score. The override key is
             added to policy `version: 1`, which the user unfroze for it since nothing is
             deployed. 0 npm records need one today. `kev` reads exploitation whatever the score.
+            `Advisory::cvss` is `Option<f64>`. The key is `advisory_scores`, matched by id or
+            alias, used only while the advisory has no stored score, and lapsed on `expires`.
+            `explain` prints `GHSA-... unscored` and `7.5 from advisory_scores[0]`.
+            [osv-ranges-and-scores](docs/engineering_decisions/osv-ranges-and-scores.md).
 - [x] `explain --policy` reported `kev` and `max_cvss` as enforced once the store answered.
       `max_cvss` now has 6,340 scored records to read. `kev` is reported
       `unenforced, no exploitation stream`, in `explain --policy` and in every decision.

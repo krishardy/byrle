@@ -94,8 +94,8 @@ written is only in the range.
 | No CVSS vector, only a `database_specific` severity band (689) | the top of the band | decided 2026-09-15, below |
 | A vector that does not parse, and a band | unread, no score | the band does not hide a vector that failed |
 
-An unscored record still counts toward `known_malware` and is left out of `advisories`, so
-`max_cvss` cannot fire for it.
+A malware record with no score counts toward `known_malware` and is left out of
+`advisories`. Any other record with no score is refused by `max_cvss`, below.
 
 ### Severity bands, 2026-09-15
 
@@ -151,6 +151,68 @@ $ waharoa explain pkg:npm/ws@1.1.1
 vulnerability counted the same either way. A second banded vulnerability was added to
 `stored_records_are_tallied_by_kind_and_what_they_left_out`, and `cargo mutants --file
 src/intel/refresh.rs --re Tally::count` then caught it.
+
+### Advisories with no score, 2026-09-15
+
+A non-malware record with no CVSS vector and no band is stored with `cvss` NULL.
+`Facts::with_intel` keeps it in `advisories` with `Advisory::cvss` `None`, and `max_cvss`
+refuses it. 0 npm records in `npm/all.zip` of 2026-09-15 are unscored. A malware record with no
+score is left out of `advisories`, as `known_malware` refuses it.
+
+| Asked of the user | Chosen |
+|---|---|
+| An advisory with no score, before an operator scores it | refused by `max_cvss` |
+| Where a score is given | the policy file, `advisory_scores` |
+| Which advisories | every non-malware one with no vector and no band |
+| `version: 1` or `version: 2` | added to `version: 1`, as nothing was deployed |
+
+```yaml
+advisory_scores:
+  - advisory_id: GHSA-xxxx-xxxx-xxxx
+    cvss: 5.3
+    reason: vendor advisory scores it 5.3
+    expires: "2026-11-30"
+```
+
+| Rule | Held by |
+|---|---|
+| `advisory_id` is matched against the advisory's id and its aliases | `decide::score` |
+| An entry is used only while the advisory has no stored score | `decide::score` |
+| Two entries naming one advisory, by id and by alias: the higher score | `decide::score` |
+| A lapsed entry is not used, and the advisory is unscored again | `AdvisoryScore::in_force` |
+| `cvss` is 0.0 to 10.0 | `PolicyError::ScoreOutOfRange` |
+| `expires` or `permanent: true`, not both | `PolicyError::UndatedScore`, `PolicyError::BothDatedAndPermanent` |
+| One entry per `advisory_id` | `PolicyError::DuplicateScore` |
+| `expires` is within the expiry ceiling | `PackageError::TooFarAhead` |
+
+A `vuln_advisory_ids` exception excuses an unscored advisory as it excuses a scored one. `kev`
+reads an unscored advisory. Before this change an unscored advisory was left out of
+`advisories`, so `kev` never read it. `waharoa policy check` lists permanent entries under
+`permanent`, and `explain --policy` lists every entry.
+
+An entry has no selector and sets no `Rule`, so `packages::findings` does not compare it and
+`PackageError::Tightens` does not apply to it.
+
+Live, 2026-09-15: a refresh into an empty Postgres 17, then the stored score of
+`GHSA-5w9c-rv96-fr7g` cleared, so the one advisory against `faker@6.6.6` is unscored. The
+policy is `max_cvss: 6.9` and `cooldown_days: 0`.
+
+| `advisory_scores` | `max_cvss` line of `waharoa explain pkg:npm/faker@6.6.6` | verdict |
+|---|---|---|
+| none | `FAIL block over max_cvss 6.9 or unscored: GHSA-5w9c-rv96-fr7g unscored` | block |
+| cvss 5.0, expires 2026-10-01 | `pass` | allow |
+| cvss 5.0, expires 2026-09-14 | `FAIL block over max_cvss 6.9 or unscored: GHSA-5w9c-rv96-fr7g unscored` | block |
+| cvss 8.0, permanent | `FAIL block over max_cvss 6.9: GHSA-5w9c-rv96-fr7g 8.0 from advisory_scores[0]` | block |
+
+With the stored score in place, the same four policies each printed
+`GHSA-5w9c-rv96-fr7g 8.9 from band HIGH`, block.
+
+`make mutants` over the change: 53 mutants, 44 caught, 7 unviable, 2 missed.
+`!excused.is_empty()` in `explain::found` replaced with `true` survived, as no case had a
+`packages` entry that matched and excused nothing. The golden case `over max_cvss, an entry
+that excuses none of it` was added, and `cargo mutants --file src/explain.rs --re found` then
+caught it. `run_explain` in `main.rs` returning a default exit code survived, as in
+[kev-stream](kev-stream.md): no test runs the binary's `explain`.
 
 ## `vuln_advisory_ids` exceptions and aliases
 
