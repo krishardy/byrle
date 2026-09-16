@@ -1,0 +1,56 @@
+--- src/pypi.rs
++++ replace classify_path -> RequestTarget with Default::default()
+@@ -209,52 +209,17 @@
+ 
+ /// Classify a request path on a PyPI mirror.
+ ///
+ /// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the
+ /// files live; PyPI serves them from a second host under `/packages/`, and the index gives
+ /// their URLs in full. A path this cannot classify comes back as
+ /// [`RequestTarget::Other`] and is forwarded, the same as npm's.
+ pub fn classify_path(path: &str) -> RequestTarget {
+-    let path = path.split('?').next().unwrap_or(path);
+-    let path = path.trim_start_matches('/');
+-
+-    if let Some(rest) = path.strip_prefix("simple/") {
+-        let name = rest.trim_end_matches('/');
+-        // `/simple/` itself is the root index: every project PyPI serves, not one of them.
+-        if name.is_empty() || name.contains('/') {
+-            return RequestTarget::Other;
+-        }
+-        let normalised = normalise(name);
+-        if normalised.is_empty() {
+-            return RequestTarget::Other;
+-        }
+-        return match PackageKey::from_registry_name(Ecosystem::PyPI, &normalised) {
+-            Ok(key) => RequestTarget::Metadata(key),
+-            Err(_) => RequestTarget::Other,
+-        };
+-    }
+-
+-    let Some(rest) = path.strip_prefix("packages/") else {
+-        return RequestTarget::Other;
+-    };
+-    let Some(filename) = rest.rsplit('/').next().filter(|f| !f.is_empty()) else {
+-        return RequestTarget::Other;
+-    };
+-    let Some((name, version, _)) = filename_parts(filename) else {
+-        return RequestTarget::Other;
+-    };
+-    match PackageKey::from_registry_name(Ecosystem::PyPI, &name) {
+-        Ok(key) => RequestTarget::Artifact {
+-            key,
+-            claimed_version: version,
+-            filename: filename.to_owned(),
+-        },
+-        Err(_) => RequestTarget::Other,
+-    }
++    Default::default() /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ #[derive(Deserialize)]
+ struct Document {
+     #[serde(default)]
+     name: Option<String>,
+     #[serde(default)]
+     files: Vec<Entry>,

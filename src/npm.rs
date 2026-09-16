@@ -52,6 +52,7 @@ use crate::record::{
     Artifact, Maintainer, PackageRecord, PackumentDetail, Provenance, RegistrySignature,
     Repository, TrustedPublisher,
 };
+use crate::route::RequestTarget;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -69,28 +70,6 @@ pub const DEFAULT_REGISTRY: &str = "https://registry.npmjs.org";
 // ---------------------------------------------------------------------------
 // Request paths
 // ---------------------------------------------------------------------------
-
-/// What a request path on an npm registry refers to.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RequestTarget {
-    /// A packument: `/lodash`, `/@babel%2fcore`, `/@babel/core`.
-    Packument(PackageKey),
-    /// A tarball: `/lodash/-/lodash-4.17.21.tgz`.
-    Tarball {
-        key: PackageKey,
-        /// The version as the **filename** spells it, which is not always the version
-        /// the packument uses. Of 24,852 tarball URLs measured, 38 differ: every
-        /// prerelease of `express` before 3.0.0 and of `grunt` before 0.4.0 drops the
-        /// hyphen, so `express@3.0.0-rc1` is served at `express-3.0.0rc1.tgz`.
-        ///
-        /// Nothing may treat this as an identity. Resolving it means matching the
-        /// artifact against a record from the packument, which is the fetch-path work
-        /// in plan §5.
-        claimed_version: String,
-    },
-    /// Anything else the registry serves: `/-/v1/search`, `/-/whoami`, `/`.
-    Other,
-}
 
 /// Classify a request path.
 ///
@@ -123,7 +102,7 @@ pub fn classify_path(path: &str) -> RequestTarget {
     };
 
     let Some(artifact) = artifact else {
-        return RequestTarget::Packument(key);
+        return RequestTarget::Metadata(key);
     };
 
     // `<unscoped name>-<version>.tgz`, with the scope absent from the filename.
@@ -138,9 +117,10 @@ pub fn classify_path(path: &str) -> RequestTarget {
         return RequestTarget::Other;
     };
 
-    RequestTarget::Tarball {
+    RequestTarget::Artifact {
         key,
         claimed_version: version.to_owned(),
+        filename: artifact.to_owned(),
     }
 }
 
@@ -2088,7 +2068,7 @@ mod tests {
                             record.artifact.url
                         );
                         match classify_path(&url_path) {
-                            RequestTarget::Tarball { key, .. } => assert_eq!(
+                            RequestTarget::Artifact { key, .. } => assert_eq!(
                                 key, p.key,
                                 "{url_path}: classified as a different package"
                             ),
@@ -3259,9 +3239,10 @@ mod tests {
 
             assert_eq!(
                 classify_path(path),
-                RequestTarget::Tarball {
+                RequestTarget::Artifact {
                     key: PackageKey::from_registry_name(Ecosystem::Npm, "@babel/core").unwrap(),
-                    claimed_version: "7.0.0".into()
+                    claimed_version: "7.0.0".into(),
+                    filename: "core-7.0.0.tgz".into()
                 }
             );
         }
@@ -3278,25 +3259,25 @@ mod tests {
         fn packument_paths_resolve_to_a_key() {
             assert_eq!(
                 classify_path("/lodash"),
-                RequestTarget::Packument(key("lodash"))
+                RequestTarget::Metadata(key("lodash"))
             );
             assert_eq!(
                 classify_path("/@babel%2fcore"),
-                RequestTarget::Packument(key("@babel/core")),
+                RequestTarget::Metadata(key("@babel/core")),
                 "npm percent-encodes the scope separator"
             );
             assert_eq!(
                 classify_path("/@babel%2Fcore"),
-                RequestTarget::Packument(key("@babel/core"))
+                RequestTarget::Metadata(key("@babel/core"))
             );
             assert_eq!(
                 classify_path("/@babel/core"),
-                RequestTarget::Packument(key("@babel/core")),
+                RequestTarget::Metadata(key("@babel/core")),
                 "the bare form resolves too"
             );
             assert_eq!(
                 classify_path("/lodash?write=true"),
-                RequestTarget::Packument(key("lodash")),
+                RequestTarget::Metadata(key("lodash")),
                 "a query string is not part of the name"
             );
         }
@@ -3305,16 +3286,18 @@ mod tests {
         fn tarball_paths_carry_the_filename_version() {
             assert_eq!(
                 classify_path("/lodash/-/lodash-4.17.21.tgz"),
-                RequestTarget::Tarball {
+                RequestTarget::Artifact {
                     key: key("lodash"),
-                    claimed_version: "4.17.21".into()
+                    claimed_version: "4.17.21".into(),
+                    filename: "lodash-4.17.21.tgz".into()
                 }
             );
             assert_eq!(
                 classify_path("/@babel/core/-/core-7.0.0.tgz"),
-                RequestTarget::Tarball {
+                RequestTarget::Artifact {
                     key: key("@babel/core"),
-                    claimed_version: "7.0.0".into()
+                    claimed_version: "7.0.0".into(),
+                    filename: "core-7.0.0.tgz".into()
                 },
                 "the scope is absent from the filename"
             );
@@ -3326,16 +3309,18 @@ mod tests {
         fn prerelease_versions_survive_the_filename_split() {
             assert_eq!(
                 classify_path("/react/-/react-18.3.0-canary-a1b2c3.tgz"),
-                RequestTarget::Tarball {
+                RequestTarget::Artifact {
                     key: key("react"),
-                    claimed_version: "18.3.0-canary-a1b2c3".into()
+                    claimed_version: "18.3.0-canary-a1b2c3".into(),
+                    filename: "react-18.3.0-canary-a1b2c3.tgz".into()
                 }
             );
             assert_eq!(
                 classify_path("/is-odd/-/is-odd-3.0.1.tgz"),
-                RequestTarget::Tarball {
+                RequestTarget::Artifact {
                     key: key("is-odd"),
-                    claimed_version: "3.0.1".into()
+                    claimed_version: "3.0.1".into(),
+                    filename: "is-odd-3.0.1.tgz".into()
                 },
                 "hyphens in the package name are not version separators"
             );
@@ -3347,7 +3332,7 @@ mod tests {
         /// `3.0.0-rc1`.
         #[test]
         fn the_filename_version_is_what_the_filename_says() {
-            let RequestTarget::Tarball {
+            let RequestTarget::Artifact {
                 claimed_version, ..
             } = classify_path("/express/-/express-3.0.0rc1.tgz")
             else {
