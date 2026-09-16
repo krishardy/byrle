@@ -160,11 +160,15 @@ impl PackageIntel {
             .ranges
             .iter()
             .filter(|(interval, _)| parsed.as_ref().is_some_and(|v| interval.contains(v)));
+        // Keyed on the stream as well as the id: one record reached by both a listed version
+        // and a range is one answer, but two streams reporting the same advisory are two
+        // signals, and the decision vector is reviewed over the set. Before `github/npm`
+        // every stream used its own id space, so the id alone was the same key.
         let mut seen = BTreeSet::new();
         listed
             .map(|(_, record)| record)
             .chain(ranged.map(|(_, record)| record))
-            .filter(|record| seen.insert(record.advisory_id.as_str()))
+            .filter(|record| seen.insert((record.source.as_str(), record.advisory_id.as_str())))
             .collect()
     }
 }

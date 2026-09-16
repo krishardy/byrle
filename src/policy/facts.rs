@@ -83,16 +83,47 @@ impl Facts {
     pub fn with_intel(mut self, intel: &PackageIntel) -> Self {
         let records = intel.for_version(&self.version);
         self.known_malware = records.iter().any(|r| r.malware);
-        self.advisories = records
-            .iter()
-            .map(|r| (r, r.score()))
-            .filter(|(r, score)| !r.malware || score.is_some())
-            .map(|(r, score)| Advisory {
-                id: r.advisory_id.clone(),
-                aliases: r.aliases.clone(),
-                cvss: score.map(|s| s.cvss()),
-                band: r.band.clone(),
-                kev: r.exploited,
+        // One advisory per id, carrying every stream that reported it. `for_version` returns
+        // a record per stream, and two streams holding one advisory is corroboration rather
+        // than two vulnerabilities. Where they disagree the highest score stands, which is
+        // the direction `max_cvss` already reads; making that configurable is its own item.
+        let mut by_id: std::collections::BTreeMap<String, Advisory> =
+            std::collections::BTreeMap::new();
+        for record in &records {
+            let score = record.score().map(|s| s.cvss());
+            if record.malware && score.is_none() {
+                continue;
+            }
+            let advisory = by_id
+                .entry(record.advisory_id.clone())
+                .or_insert_with(|| Advisory {
+                    id: record.advisory_id.clone(),
+                    aliases: Vec::new(),
+                    cvss: None,
+                    band: None,
+                    kev: false,
+                    sources: Vec::new(),
+                });
+            for alias in &record.aliases {
+                if !advisory.aliases.contains(alias) {
+                    advisory.aliases.push(alias.clone());
+                }
+            }
+            if !advisory.sources.contains(&record.source) {
+                advisory.sources.push(record.source.clone());
+            }
+            if score > advisory.cvss {
+                advisory.cvss = score;
+                advisory.band = record.band.clone();
+            }
+            advisory.kev |= record.exploited;
+        }
+        self.advisories = by_id
+            .into_values()
+            .map(|mut a| {
+                a.aliases.sort();
+                a.sources.sort();
+                a
             })
             .collect();
         self.intel = Intel::of(Some(intel));
@@ -208,6 +239,34 @@ mod tests {
         }
     }
 
+    /// OSV and GitHub both publish `GHSA-` ids, so one advisory arrives from two streams.
+    /// That is corroboration, not two vulnerabilities: `decide` gives each check one result.
+    #[test]
+    fn two_streams_reporting_one_advisory_are_one_advisory_naming_both() {
+        let from = |source: &str, cvss: Option<f64>, exploited: bool| {
+            let (version, mut record) = stored(None, "GHSA-1", false, cvss);
+            record.source = source.to_owned();
+            record.exploited = exploited;
+            (version, record)
+        };
+        let facts = Facts::from_record(&full()).with_intel(&intel(vec![
+            from("osv", Some(5.0), false),
+            from("github", Some(8.8), true),
+        ]));
+        assert_eq!(facts.advisories.len(), 1, "one advisory, not two");
+        let advisory = &facts.advisories[0];
+        assert_eq!(advisory.sources, ["github", "osv"], "sorted, once each");
+        // The streams disagree on the score and the higher stands, the direction
+        // `max_cvss` reads. Exploitation from either stream marks the advisory.
+        assert_eq!(advisory.cvss, Some(8.8));
+        assert!(advisory.kev);
+        assert_eq!(
+            advisory.aliases,
+            ["CVE-of-GHSA-1"],
+            "the alias is not repeated"
+        );
+    }
+
     #[test]
     fn an_exploited_record_is_a_kev_advisory_and_the_facts_say_the_catalogue_was_asked() {
         let exploited = |version| {
@@ -301,13 +360,24 @@ cooldown_days: 0
         ]));
         assert_eq!(
             facts.advisories,
+            // Sorted by id: the advisories are grouped through a `BTreeMap`, so the order
+            // is the ids' and not the order the records came back in.
             vec![
+                Advisory {
+                    id: "GHSA-banded".to_owned(),
+                    aliases: vec!["CVE-of-GHSA-banded".to_owned()],
+                    cvss: Some(8.9),
+                    band: Some("HIGH".to_owned()),
+                    kev: false,
+                    sources: vec!["osv".to_owned()],
+                },
                 Advisory {
                     id: "GHSA-this".to_owned(),
                     aliases: vec!["CVE-of-GHSA-this".to_owned()],
                     cvss: Some(5.0),
                     band: None,
                     kev: false,
+                    sources: vec!["osv".to_owned()],
                 },
                 Advisory {
                     id: "GHSA-unscored".to_owned(),
@@ -315,13 +385,7 @@ cooldown_days: 0
                     cvss: None,
                     band: None,
                     kev: false,
-                },
-                Advisory {
-                    id: "GHSA-banded".to_owned(),
-                    aliases: vec!["CVE-of-GHSA-banded".to_owned()],
-                    cvss: Some(8.9),
-                    band: Some("HIGH".to_owned()),
-                    kev: false,
+                    sources: vec!["osv".to_owned()],
                 }
             ]
         );

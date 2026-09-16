@@ -1391,9 +1391,17 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       Settled as a rule rather than config: an enrichment may raise a score and may set
       `exploited`, never the reverse, so the result does not depend on the order streams
       are read in. `Score` records which stream supplied it, for `explain` only.
-- [~] Bridge `intel::Finding` to `policy::decide::Advisory`. `Facts::with_intel` builds
-      `Advisory` from stored `Record`s, with `kev` from `exploited`. The score's source is
-      not carried into `Advisory`.
+- [x] Bridge `intel::Finding` to `policy::decide::Advisory`. `Facts::with_intel` groups the
+      stored `Record`s by advisory id into one `Advisory` carrying `sources`, every stream
+      that reported it, sorted and once each. Two signal streams holding one advisory is
+      corroboration, not two vulnerabilities.
+      `PackageIntel::for_version` keyed its dedupe on the advisory id alone, which was the
+      same key while every stream used its own id space. With `github/npm` publishing the
+      `GHSA-` ids OSV imports, the second stream's record was dropped at lookup and never
+      reached the decision vector. It now keys on `(source, advisory_id)`.
+      Where streams disagree on a score the highest stands, the direction `max_cvss` reads.
+      Exploitation from either stream marks the advisory. Held by
+      `two_streams_reporting_one_advisory_are_one_advisory_naming_both`.
 - [x] `[!]` Common advisory record schema with alias set (CVE, GHSA, OSV, MAL IDs). One
       `advisory` row per `publisher_id` whatever the source, with its other ids in
       `advisory_alias` (`migrations/0001_intel.sql`), read back as `store::Record`: id,
@@ -1530,9 +1538,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [ ] NVD enrichment runs as a background job, never on the hot path
 - [ ] Revisit NVD `match` capability if/when the Maven adapter is scoped
 - [ ] Configurable severity precedence when streams disagree on CVSS
-- [~] Withdrawal propagation. A full load replaces every row a source held, so a withdrawn
+- [x] Withdrawal propagation. A full load replaces every row a source held, so a withdrawn
       or deleted record is gone after the next load (`a_refresh_replaces_what_the_source_held`).
-      An incremental refresh would have to delete withdrawn ids itself.
+      Every stream loads in full and none loads incrementally, so there is nothing further to
+      do. An incremental refresh would have to delete withdrawn ids itself, and gets this item
+      back if one is ever built.
+      Upstream propagation is a separate matter and is measured: `GHSA-4j66-8f4r-3pjx` is
+      withdrawn on GitHub and live in OSV's bundle, which the two streams now show side by
+      side.
 - [ ] Per-stream refresh scheduling, rate limits, and API key config
 - [ ] Local mirrors for all streams (no dependency-graph leakage)
 - [ ] Per-stream enable/disable in policy config
@@ -1589,8 +1602,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       Fixed: it and the two other tests that freed a port use
       `test_support::closing_server`, which keeps the port bound and closes each
       connection unanswered.
-- [ ] `src/intel/postgres.rs` counts toward the unit coverage floor at 0% (104 lines). Library
-      total is 96.58% lines with it. Decide whether it joins the exclusion for live tests.
+- [x] `src/intel/postgres.rs` joins the live-test exclusion. Decided 2026-09-16: it speaks to
+      a real database and nothing else, its tests are `tests/intel_postgres.rs` under
+      `make test-integration`, and CLAUDE.md excludes live tests from the floor. It had grown
+      to 290 lines at 0%. `scripts/make/coverage.sh` ignores it for the floor and prints its
+      figure beside `main.rs`, so it is visible rather than excluded quietly. The floor reads
+      98.30% lines without it.
 - [x] `[!]` Tests that do not need a database must not require the container. Without
       `WAHAROA_TEST_DATABASE_URL`, `tests/intel_postgres.rs` returns early from every test.
 - [x] `[!]` Bulk refresh via `COPY FROM STDIN` (`PgCopyIn`). CSV rather than binary; see
