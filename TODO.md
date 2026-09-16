@@ -257,6 +257,89 @@ Items that I've added that are not stage-bound.
     installs uv through pipx.
 20. [ ] main.rs is still NPM focused, especially in the comments. Generalize the comments and code.
 
+## Architecture Refactor
+
+Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here
+was measured rather than read off the code, and the measurement is what states the size of
+the problem. Ordered by what breaks first.
+
+- [ ] **`publish_times_for` asks npm whatever the ecosystem is, and the answer is wrong.**
+      `adapter-interface.md` names four per-ecosystem questions and calls them exhaustive.
+      This is a fifth. `proxy.rs:1748` calls `proxy.registry.publish_times(key)`
+      unconditionally, and `npm::Client::packument_url` builds `{npm registry}/{name}` from
+      the name alone.
+      Measured live with `cooldown_days: 3650` and `pip install idna`:
+
+      ```text
+      INFO publish times read from the full packument purl=pkg:pypi/idna versions=1 fetch_ms=467
+      INFO refused by policy ... claimed_purl=pkg:pypi/idna@3.19 action="quarantine"
+           reasons=["cooldown_days: published too recently"]
+      ```
+
+      `versions=1` is npm's `idna@0.0.1`, confirmed against registry.npmjs.org. A PyPI
+      cooldown decision read npm's publish time for a different package.
+      The fetch is also unnecessary: `pypi::normalize` already sets `published_at` from the
+      index's `upload-time`, so PyPI needs no second request at all.
+      Do not fix it with a fifth match arm. Four sites is a list someone maintains; the
+      mechanism has to make a sixth impossible to add in silence. `intel_for` is the shape
+      that works, keying on `key.ecosystem().as_str()` rather than on which client the
+      proxy happens to hold.
+
+- [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
+
+      | Measure | Value |
+      |---|---|
+      | lines | 653 (`proxy.rs:980-1633`) |
+      | `return` statements | 13 |
+      | `let mut` threaded through | 8 |
+
+      Concerns in one function: health, defer, classification, encoding negotiation, digest
+      lookup, policy, forwarding, ETag rewriting, 304 handling, the semaphore, decode,
+      normalise, rewrite.
+      `expected_digest`, `artifact_origin`, `unservable_origin` and `policy_refusal` are
+      each set in one branch and read roughly 300 lines later. That is what a
+      decide-then-act split replaces: the decisions get names and the acting reads them.
+
+- [ ] **`Proxy` is 19 fields and 14 builders, cloned per request.**
+      Configuration (`upstream`, `upstream_pypi`, `refuse_unservable`,
+      `max_packument_bytes`, `rewrite_artifacts`, `public_base`), transport (`client`,
+      `registry`, `index`), caches (`store`, `verified`, `publish_times`) and decision
+      (`policy`, `intel`, `audit`, `refusal`) in one struct.
+      Splitting configuration from runtime state would let most of `handle`'s helpers take
+      what they use rather than the whole proxy, which is what currently forces the test
+      shape below.
+
+- [ ] **The request pipeline is tested through sockets rather than as functions.**
+      61 of 83 tests in `proxy.rs` bind a TCP port, and 2,809 of its 4,858 lines are tests.
+      Mutation testing says what that costs. Before `uninspected()` was extracted as a pure
+      function (`b31f50a`), **12 mutants of the two `UNINSPECTED` guards survived** with the
+      HTTP tests already in place; after, 0. The same run found a dead
+      `RequestTarget::Artifact` arm in `upstream_url` that no socket test could reach.
+      A decision reachable only through a socket is a decision `cargo mutants` cannot reach
+      either. Extracting each one as a function is what made them measurable, and the same
+      move is available for the rest of the pipeline.
+
+- [ ] **The cache budgets are counted in units that no longer predict memory.**
+      `store.rs` says a record is "on the order of a few hundred bytes, so this is tens of
+      megabytes" for `DEFAULT_MAX_RECORDS = 50_000`. Measured with
+      `pip install boto3 'botocore<1.34' s3transfer`:
+
+      | | Value |
+      |---|---|
+      | RSS before | 22,804 kB |
+      | RSS after, settled | 49,396 kB |
+      | records held | 4,885 |
+      | artifacts held | 9,603 |
+
+      26.6 MB for one tenth of the budget. The store's share and retained allocator buffers
+      were not separated, so treat that as an upper bound on the store alone.
+      A PyPI record holds one artifact per file, and `botocore` alone is 2,516 records over
+      4,908 files, which is what changed the unit. `publish_times` compounds it: its
+      eviction is `held.clear()`, which drops every package at the ceiling rather than the
+      least recently used one.
+      Either bound the caches by bytes, or re-derive the record ceiling from a measurement
+      that includes PyPI.
+
 ## Stage 1 — Pass-through proxy (transport)
 
 **Status: closed.** Exit met; every item closed or moved.
