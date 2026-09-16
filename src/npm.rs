@@ -350,7 +350,11 @@ impl NormalizedPackument {
         let mut allowed = BTreeMap::new();
         let mut refused = BTreeMap::new();
         for record in &self.records {
-            match policy.disposition(&record.artifact.url) {
+            // A version the registry named no file for has no origin to be served from.
+            let Some(artifact) = record.artifact() else {
+                continue;
+            };
+            match policy.disposition(&artifact.url) {
                 Disposition::Served => {}
                 Disposition::AllowedDirect(origin) => *allowed.entry(origin).or_insert(0) += 1,
                 Disposition::Refused(origin) => *refused.entry(origin).or_insert(0) += 1,
@@ -393,7 +397,10 @@ impl NormalizedPackument {
     pub fn bypassing_origins(&self, reachable: &ReachableOrigins) -> BTreeMap<String, usize> {
         let mut origins = BTreeMap::new();
         for record in &self.records {
-            if let Some(origin) = bypassing_origin(&record.artifact.url, reachable) {
+            let Some(artifact) = record.artifact() else {
+                continue;
+            };
+            if let Some(origin) = bypassing_origin(&artifact.url, reachable) {
                 *origins.entry(origin).or_insert(0) += 1;
             }
         }
@@ -1072,16 +1079,21 @@ fn version_record(
 
     let repository = entry.repository.clone().or_else(|| wire.repository.clone());
 
+    let scripts = has_install_scripts(entry);
     Ok(PackageRecord {
         package,
         source: detail,
         published_at,
         maintainers,
         repository,
-        has_install_scripts: has_install_scripts(entry),
+        has_install_scripts: scripts,
         install_scripts: entry.scripts.as_ref().map(install_scripts),
         provenance: provenance(entry, dist),
-        artifact: Artifact {
+        // One file. An npm version resolves to one tarball, so the version-level
+        // install-scripts answer and the file's own are the same answer.
+        artifacts: vec![Artifact {
+            filename: tarball_filename(&url),
+            runs_install_scripts: scripts,
             url,
             // Absent on two versions in the measured corpus, both from 2012. A record
             // with no `integrity` has only a SHA-1 digest behind it, which the policy
@@ -1090,8 +1102,17 @@ fn version_record(
             legacy_sha1: dist.shasum.clone(),
             file_count: dist.file_count,
             unpacked_size: dist.unpacked_size,
-        },
+        }],
     })
+}
+
+/// The last path segment of a tarball URL, which is the filename a request names.
+///
+/// Query and fragment are dropped: `classify_path` reads the path alone, so a URL
+/// carrying either would otherwise never match the request that fetches it.
+fn tarball_filename(url: &str) -> String {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
 /// The three lifecycle scripts npm runs on install. `prepare` and `prepublish` are
@@ -1424,18 +1445,19 @@ mod tests {
 
         let r = p.version("4.17.21").expect("version 4.17.21");
         assert_eq!(
-            r.artifact.url,
+            r.artifact().expect("one file").url,
             "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
         );
         assert!(
-            r.artifact
+            r.artifact()
+                .expect("one file")
                 .integrity
                 .as_deref()
                 .unwrap()
                 .starts_with("sha512-")
         );
         assert_eq!(
-            r.artifact.legacy_sha1.as_deref(),
+            r.artifact().expect("one file").legacy_sha1.as_deref(),
             Some("679591c564c3bffaae8454cf0b3df370c3d6911c")
         );
         assert!(!r.has_install_scripts);
@@ -1694,7 +1716,9 @@ mod tests {
         let p = normalize_packument(body, PackumentDetail::Abbreviated).expect("should parse");
         assert_eq!(p.records.len(), 1);
         assert_eq!(
-            p.version("1.0.2").map(|r| r.artifact.url.as_str()).unwrap(),
+            p.version("1.0.2")
+                .map(|r| r.artifact().expect("one file").url.as_str())
+                .unwrap(),
             "https://registry.npmjs.org/widget/-/widget-1.0.2.tgz"
         );
         assert_eq!(
@@ -2069,7 +2093,8 @@ mod tests {
                         // Every real tarball URL has to classify, and has to classify
                         // to the same package the document names.
                         let url_path = record
-                            .artifact
+                            .artifact()
+                            .expect("one file")
                             .url
                             .split_once("://")
                             .and_then(|(_, rest)| rest.split_once('/'))
@@ -2078,10 +2103,13 @@ mod tests {
                         // Every artifact a real registry publishes has to be one the
                         // proxy will see, or verification never gets a chance.
                         assert_eq!(
-                            bypassing_origin(&record.artifact.url, &default_origins()),
+                            bypassing_origin(
+                                &record.artifact().expect("one file").url,
+                                &default_origins()
+                            ),
                             None,
                             "{}: artifact published off the registry",
-                            record.artifact.url
+                            record.artifact().expect("one file").url
                         );
                         match classify_path(&url_path) {
                             RequestTarget::Artifact { key, .. } => assert_eq!(
@@ -2100,8 +2128,11 @@ mod tests {
             // has to give the original bytes. That is the property re-serialising into a
             // JSON value could not offer.
             if let Ok(p) = normalize_packument(&body, detail) {
-                let artifacts: Vec<String> =
-                    p.records.iter().map(|r| r.artifact.url.clone()).collect();
+                let artifacts: Vec<String> = p
+                    .records
+                    .iter()
+                    .map(|r| r.artifact().expect("one file").url.clone())
+                    .collect();
                 // Rewriting to the origin the URLs already name: every artifact is
                 // found and replaced, and the result has to be the original bytes. That
                 // exercises the whole copy path and checks that nothing but a URL moves.
@@ -2150,13 +2181,13 @@ mod tests {
         assert_nothing_skipped(&p);
 
         let r = p.version("0.9.1").expect("version 0.9.1");
-        assert_eq!(r.artifact.integrity, None);
+        assert_eq!(r.artifact().expect("one file").integrity, None);
         assert_eq!(
-            r.artifact.legacy_sha1.as_deref(),
+            r.artifact().expect("one file").legacy_sha1.as_deref(),
             Some("d13bd543138154f503146878ba500c005eb9d5cb")
         );
-        assert_eq!(r.artifact.file_count, None);
-        assert_eq!(r.artifact.unpacked_size, None);
+        assert_eq!(r.artifact().expect("one file").file_count, None);
+        assert_eq!(r.artifact().expect("one file").unpacked_size, None);
     }
 
     /// `rimraf@1.0.0` is the shorthand string form in the wild, and its document also
@@ -2545,8 +2576,11 @@ mod tests {
                 (reachable(&[]), 0, 1),
                 (reachable(&["https://cdn.corp.example"]), 1, 0),
             ] {
-                let artifacts: Vec<&str> =
-                    p.records.iter().map(|r| r.artifact.url.as_str()).collect();
+                let artifacts: Vec<&str> = p
+                    .records
+                    .iter()
+                    .map(|r| r.artifact().expect("one file").url.as_str())
+                    .collect();
                 let out = rewrite_artifact_origins(body, artifacts, &set, "http://127.0.0.1:8080")
                     .expect("should rewrite");
                 assert_eq!(out.rewritten, expect_rewritten);
@@ -2697,7 +2731,11 @@ mod tests {
         fn rewrite_with(json: &[u8], reachable: &ReachableOrigins, base: &str) -> Rewritten {
             let p = normalize_packument(json, PackumentDetail::Abbreviated)
                 .expect("fixture should normalise");
-            let artifacts: Vec<String> = p.records.iter().map(|r| r.artifact.url.clone()).collect();
+            let artifacts: Vec<String> = p
+                .records
+                .iter()
+                .map(|r| r.artifact().expect("one file").url.clone())
+                .collect();
             rewrite_artifact_origins(json, artifacts.iter().map(String::as_str), reachable, base)
                 .expect("should rewrite")
         }
@@ -2822,7 +2860,12 @@ mod tests {
             let artifacts: Vec<(String, String)> = p
                 .records
                 .iter()
-                .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()))
+                .map(|r| {
+                    (
+                        r.package.version().to_owned(),
+                        r.artifact().expect("one file").url.clone(),
+                    )
+                })
                 .collect();
             filter_unservable_versions(
                 json.as_bytes(),
@@ -2915,7 +2958,12 @@ mod tests {
             let artifacts: Vec<(String, String)> = p
                 .records
                 .iter()
-                .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()))
+                .map(|r| {
+                    (
+                        r.package.version().to_owned(),
+                        r.artifact().expect("one file").url.clone(),
+                    )
+                })
                 .collect();
             let out = filter_unservable_versions(
                 MIXED.as_bytes(),
@@ -3397,6 +3445,36 @@ mod tests {
                 RequestTarget::Metadata(key("@foo/bar")),
                 "the scoped spelling is still a package"
             );
+        }
+
+        /// The artifact a request names is the last segment of the URL the packument
+        /// published, so a record can be looked up by the filename the path carries.
+        #[test]
+        fn a_record_names_its_tarball_by_the_filename_the_path_uses() {
+            let p = normalize("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
+            let record = p.version("4.17.21").expect("4.17.21");
+            let artifact = record.artifact().expect("one file");
+            assert_eq!(artifact.filename, "lodash-4.17.21.tgz");
+            assert_eq!(
+                classify_path("/lodash/-/lodash-4.17.21.tgz"),
+                RequestTarget::Artifact {
+                    key: key("lodash"),
+                    claimed_version: "4.17.21".into(),
+                    filename: artifact.filename.clone(),
+                },
+                "the path and the record name the same file"
+            );
+            assert_eq!(record.artifacts.len(), 1, "a version is one tarball");
+            assert_eq!(artifact.runs_install_scripts, record.has_install_scripts);
+        }
+
+        #[test]
+        fn a_tarball_url_with_a_query_still_names_its_file() {
+            assert_eq!(
+                tarball_filename("https://r/a/-/a-1.0.tgz?x=1#y"),
+                "a-1.0.tgz"
+            );
+            assert_eq!(tarball_filename("a-1.0.tgz"), "a-1.0.tgz");
         }
 
         /// A packument claiming an unscoped name with a `/` is refused rather than

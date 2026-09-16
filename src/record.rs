@@ -83,8 +83,12 @@ pub struct PackageRecord {
     /// Attestations and signatures. Present in both documents.
     pub provenance: Provenance,
 
-    /// The artifact this version resolves to.
-    pub artifact: Artifact,
+    /// The files this version offers, the one a resolver would take first.
+    ///
+    /// npm holds exactly one: a version resolves to a tarball. PyPI holds one per file
+    /// the index lists for the version, wheels before sdists, because `requests` 2.32.3
+    /// is a wheel and an sdist with different digests and different install behaviour.
+    pub artifacts: Vec<Artifact>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -147,9 +151,21 @@ pub struct TrustedPublisher {
     pub id: String,
 }
 
-/// The artifact a version resolves to.
+/// One file a version offers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
+    /// The filename as the registry serves it, which is what a request names. On PyPI
+    /// two files of one version differ only here.
+    pub filename: String,
+
+    /// Whether installing **this file** runs the package's own code.
+    ///
+    /// Equal to `PackageRecord::has_install_scripts` on npm, where a version is one file.
+    /// On PyPI a wheel runs nothing and an sdist runs `setup.py`, so the version-level
+    /// answer is about the file a resolver would take and this one is about the file
+    /// actually fetched.
+    pub runs_install_scripts: bool,
+
     /// Absolute URL as the registry gave it.
     ///
     /// npm rewrites this to the configured registry **only when it names the default
@@ -184,6 +200,47 @@ pub struct Artifact {
 }
 
 impl PackageRecord {
+    /// The file a resolver would take, which is the first.
+    ///
+    /// `None` when the registry named no file for this version. npm never does; the
+    /// caller treats it the same as a missing digest, which is to serve the bytes and
+    /// say they were not verified.
+    pub fn artifact(&self) -> Option<&Artifact> {
+        self.artifacts.first()
+    }
+
+    /// The file a request named.
+    pub fn artifact_named(&self, filename: &str) -> Option<&Artifact> {
+        self.artifacts.iter().find(|a| a.filename == filename)
+    }
+
+    /// Whether installing the file a request named runs the package's own code.
+    ///
+    /// Falls back to the version-level answer when the filename names no file this
+    /// record holds, which is the conservative direction: a PyPI version offering a
+    /// wheel and an sdist answers `false` there, so an unrecognised filename is checked
+    /// again at [`Self::artifact_named`] by the caller before it is served.
+    pub fn runs_install_scripts(&self, filename: Option<&str>) -> bool {
+        match filename.and_then(|f| self.artifact_named(f)) {
+            Some(artifact) => artifact.runs_install_scripts,
+            None => self.has_install_scripts,
+        }
+    }
+
+    /// This record as it applies to one file.
+    ///
+    /// `has_install_scripts` becomes that file's own answer and `artifacts` holds it
+    /// alone, so a policy decision made from the result is about the bytes the client
+    /// asked for. `None` when the record names no such file.
+    pub fn narrowed_to(&self, filename: &str) -> Option<Self> {
+        let artifact = self.artifact_named(filename)?.clone();
+        Some(Self {
+            has_install_scripts: artifact.runs_install_scripts,
+            artifacts: vec![artifact],
+            ..self.clone()
+        })
+    }
+
     /// Whether a field being `None` could be explained by not having fetched enough.
     ///
     /// Callers deciding a verdict must not read `None` as a negative when this is
@@ -215,13 +272,15 @@ mod tests {
             has_install_scripts: has_scripts,
             install_scripts: None,
             provenance: Provenance::default(),
-            artifact: Artifact {
+            artifacts: vec![Artifact {
+                filename: format!("{name}-{version}.tgz"),
+                runs_install_scripts: has_scripts,
                 url: format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"),
                 integrity: Some("sha512-AAAA".into()),
                 legacy_sha1: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".into()),
                 file_count: Some(9),
                 unpacked_size: Some(37893),
-            },
+            }],
         }
     }
 
@@ -262,8 +321,48 @@ mod tests {
     #[test]
     fn weak_and_strong_digests_are_separate_fields() {
         let record = abbreviated("lodash", "4.17.21", false);
-        assert!(record.artifact.integrity.unwrap().starts_with("sha512-"));
-        assert_eq!(record.artifact.legacy_sha1.unwrap().len(), 40);
+        let artifact = record.artifact().expect("one file");
+        assert!(
+            artifact
+                .integrity
+                .as_deref()
+                .expect("an SRI digest")
+                .starts_with("sha512-")
+        );
+        assert_eq!(artifact.legacy_sha1.as_deref().expect("a shasum").len(), 40);
+    }
+
+    /// A record holding no file answers `None` rather than panicking. The proxy treats it
+    /// the same as a missing digest: serve the bytes, say they were not verified.
+    #[test]
+    fn a_record_naming_no_file_has_no_preferred_file() {
+        let mut record = abbreviated("lodash", "4.17.21", false);
+        record.artifacts.clear();
+        assert!(record.artifact().is_none());
+        assert!(record.artifact_named("lodash-4.17.21.tgz").is_none());
+        assert!(record.narrowed_to("lodash-4.17.21.tgz").is_none());
+    }
+
+    /// An npm version is one file, so the version-level install-scripts answer and the
+    /// file's own are the same answer, and narrowing changes nothing.
+    #[test]
+    fn narrowing_an_npm_record_to_its_only_file_changes_nothing() {
+        let record = abbreviated("lodash", "4.17.21", true);
+        let narrowed = record
+            .narrowed_to("lodash-4.17.21.tgz")
+            .expect("its own file");
+        assert_eq!(narrowed, record);
+        assert!(record.runs_install_scripts(Some("lodash-4.17.21.tgz")));
+    }
+
+    /// A filename the record does not hold falls back to the version-level answer, which
+    /// is what the proxy logs and warns about.
+    #[test]
+    fn an_unknown_filename_falls_back_to_the_versions_own_answer() {
+        let record = abbreviated("lodash", "4.17.21", true);
+        assert!(record.runs_install_scripts(Some("lodash-4.17.20.tgz")));
+        assert!(record.runs_install_scripts(None));
+        assert!(!abbreviated("lodash", "4.17.21", false).runs_install_scripts(None));
     }
 
     #[test]

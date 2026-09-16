@@ -332,6 +332,22 @@ impl Project {
     }
 }
 
+/// One index entry as the common record spells it.
+fn artifact(file: &File) -> crate::record::Artifact {
+    crate::record::Artifact {
+        filename: file.filename.clone(),
+        // An sdist runs the package's own build on install; a wheel unpacks and runs
+        // nothing.
+        runs_install_scripts: file.kind == Kind::Sdist,
+        url: file.url.clone(),
+        integrity: file.sha256.as_deref().and_then(sri),
+        // PyPI's index gives sha256 and nothing weaker.
+        legacy_sha1: None,
+        file_count: None,
+        unpacked_size: None,
+    }
+}
+
 /// `hashes.sha256` as an SRI string, the shape [`crate::integrity`] verifies.
 ///
 /// PyPI writes a hex digest and npm writes SRI, so one of the two has to convert and the
@@ -375,6 +391,12 @@ pub fn records(project: &Project) -> Result<Vec<crate::record::PackageRecord>, P
         let Some(file) = project.preferred(version) else {
             continue;
         };
+        // Wheels before sdists, so the first is the file a resolver would take. Each
+        // keeps its own digest and its own install-scripts answer, because a request
+        // names a file and this record is about a version.
+        let mut files = project.files_for(version);
+        files.sort_by_key(|f| (f.kind, f.filename.as_str()));
+        let artifacts: Vec<Artifact> = files.iter().map(|f| artifact(f)).collect();
         out.push(PackageRecord {
             package,
             // The simple index is the only document under `/simple/`, and it carries
@@ -397,14 +419,7 @@ pub fn records(project: &Project) -> Result<Vec<crate::record::PackageRecord>, P
             has_install_scripts: project.only_sdist(version).unwrap_or(false),
             install_scripts: None,
             provenance: Provenance::default(),
-            artifact: Artifact {
-                url: file.url.clone(),
-                integrity: file.sha256.as_deref().and_then(sri),
-                // PyPI's index gives sha256 and nothing weaker.
-                legacy_sha1: None,
-                file_count: None,
-                unpacked_size: None,
-            },
+            artifacts,
         });
     }
     if out.is_empty() {
@@ -731,7 +746,13 @@ mod tests {
             .find(|r| r.package.version() == "2.34.2")
             .expect("2.34.2");
         assert_eq!(wheel.package.to_string(), "pkg:pypi/requests@2.34.2");
-        assert!(wheel.artifact.url.ends_with("-py3-none-any.whl"));
+        assert!(
+            wheel
+                .artifact()
+                .expect("one file")
+                .url
+                .ends_with("-py3-none-any.whl")
+        );
         assert!(
             !wheel.has_install_scripts,
             "a wheel installs without running the package's code"
@@ -741,11 +762,72 @@ mod tests {
             .iter()
             .find(|r| r.package.version() == "0.2.0")
             .expect("0.2.0");
-        assert!(sdist.artifact.url.ends_with(".tar.gz"));
+        assert!(sdist.artifact().expect("one file").url.ends_with(".tar.gz"));
         assert!(
             sdist.has_install_scripts,
             "only an sdist is on offer, so installing runs setup.py"
         );
+    }
+
+    /// One version, a wheel and an sdist. The version-level answer is about the file a
+    /// resolver would take; each artifact carries its own, because the client can ask for
+    /// either and only one of them runs `setup.py`.
+    #[test]
+    fn a_version_offering_both_keeps_each_files_own_install_answer() {
+        let document = br#"{"name":"x","files":[
+            {"filename":"x-1.0.tar.gz","url":"https://files/x-1.0.tar.gz","hashes":{}},
+            {"filename":"x-1.0-py3-none-any.whl","url":"https://files/x-1.0-py3-none-any.whl","hashes":{}}
+        ]}"#;
+        let project = parse("x", document).expect("the document reads");
+        let records = records(&project).expect("records");
+        assert_eq!(records.len(), 1, "one version");
+        let record = &records[0];
+
+        assert_eq!(
+            record
+                .artifacts
+                .iter()
+                .map(|a| a.filename.as_str())
+                .collect::<Vec<_>>(),
+            ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"],
+            "wheels first, so the first is the file a resolver would take"
+        );
+        assert!(
+            !record.has_install_scripts,
+            "a resolver that can take the wheel will"
+        );
+        assert!(!record.runs_install_scripts(Some("x-1.0-py3-none-any.whl")));
+        assert!(
+            record.runs_install_scripts(Some("x-1.0.tar.gz")),
+            "asking for the sdist is asking for the bytes that run setup.py"
+        );
+    }
+
+    /// A pinned fetch names a file. The record it is decided from has to be about that
+    /// file, or a version cleared because it offers a wheel serves its sdist unexamined.
+    #[test]
+    fn narrowing_to_the_sdist_changes_the_install_answer_the_policy_sees() {
+        let document = br#"{"name":"x","files":[
+            {"filename":"x-1.0.tar.gz","url":"https://files/x-1.0.tar.gz","hashes":{"sha256":"aa"}},
+            {"filename":"x-1.0-py3-none-any.whl","url":"https://files/x-1.0-py3-none-any.whl","hashes":{}}
+        ]}"#;
+        let project = parse("x", document).expect("the document reads");
+        let record = &records(&project).expect("records")[0];
+
+        let sdist = record.narrowed_to("x-1.0.tar.gz").expect("the sdist");
+        assert!(sdist.has_install_scripts);
+        assert_eq!(sdist.artifacts.len(), 1);
+        assert_eq!(
+            sdist.artifact().expect("one file").url,
+            "https://files/x-1.0.tar.gz"
+        );
+
+        let wheel = record
+            .narrowed_to("x-1.0-py3-none-any.whl")
+            .expect("the wheel");
+        assert!(!wheel.has_install_scripts);
+
+        assert!(record.narrowed_to("x-1.0-py2-none-any.whl").is_none());
     }
 
     /// npm withholds `time` from the abbreviated packument, so a record built from one is

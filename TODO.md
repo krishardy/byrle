@@ -1769,9 +1769,12 @@ changes to the core, that is the finding — make it now, not after five adapter
       - [x] `pypi::Client` fetches one project's index, the same shape as `npm::Client`
             and sharing no code with it: an `http`, a base, a byte ceiling. Verified live
             against nine projects, where records equal versions for every one.
-      - [ ] Serve `/simple/<name>/` on the proxy. `proxy::handle` routes through
-            `npm::classify_path` and the proxy holds one upstream, so this is where the
-            transport interface has to be extracted rather than a second branch added.
+      - [~] Serve `/simple/<name>/` on the proxy. `route::RequestTarget` is the shared
+            classification and `pypi::classify_path` produces it, so both ecosystems now say
+            what a path refers to in one vocabulary. What is left is the routing itself: the
+            proxy holds one `upstream` and one `registry: npm::Client`, and PyPI serves the
+            index from `pypi.org` and the files from `files.pythonhosted.org`. Deciding
+            whether `WAHAROA_UPSTREAM` becomes per-ecosystem is what blocks it.
       - [ ] HTML fallback for an index that does not serve PEP 691 JSON. PyPI does, and an
             index that answers HTML is refused rather than read as an empty project.
 - [ ] `[!]` Extract the adapter interface (transport + normalizer) from the two working
@@ -1784,18 +1787,21 @@ changes to the core, that is the finding — make it now, not after five adapter
       candidate core changes turned out not to be changes: the sha256 hex converts to SRI
       through `integrity::Algorithm::Sha256`, `PackumentDetail::Full` already means what a
       simple index is, and a yank is an upstream signal rather than a decision here.
-      - [ ] **The one real divergence: a record holds one artifact and a PyPI version has
-            several files.** Kept out of the core deliberately, as the input to the
-            extraction step rather than a change made before it. `pypi::records` answers the
-            version question and `Project::files` answers the per-file one.
+      - [x] **The one real divergence: a record holds one artifact and a PyPI version has
+            several files.** Closed: `PackageRecord::artifacts` is a `Vec`, `Artifact` gained
+            `filename` and `runs_install_scripts`, and `narrowed_to` gives the record for one
+            file. Nothing under `src/policy/` reads `artifact`, so the change stopped at the
+            normalisers, the store and the proxy's artifact path.
       - [ ] `PackumentDetail::Abbreviated`/`Full` is npm vocabulary, 88 uses. Renaming it
             belongs to the extraction, not here.
       - [x] `Ecosystem::PyPI` exists; `Ecosystem::ALL` still holds npm alone, because that
             is the served set `doctor` and `/-/waharoa/ready` report on.
-- [~] `[!]` sdist vs. wheel distinction for install-script semantics. `Kind` and
-      `Project::only_sdist` read it: a version offering a wheel is not an install-script
-      version, and one offering only an sdist leaves a resolver no choice. Not yet wired to
-      the `install_scripts` check, which is what closes this.
+- [x] `[!]` sdist vs. wheel distinction for install-script semantics. `Kind` and
+      `Project::only_sdist` give the version-level answer: a version offering a wheel is not
+      an install-script version, and one offering only an sdist leaves a resolver no choice.
+      Wired to the `install_scripts` check through `Artifact::runs_install_scripts` and
+      `PackageRecord::narrowed_to`, which `proxy::handle` calls before it builds `Facts`. A
+      version cleared because it offers a wheel no longer serves its sdist on that basis.
 - [ ] pip and uv both verified
 - [ ] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass).
       Moved from Stage 2's `install_scripts`, where the engine side is built:
