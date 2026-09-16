@@ -1769,12 +1769,12 @@ changes to the core, that is the finding — make it now, not after five adapter
       - [x] `pypi::Client` fetches one project's index, the same shape as `npm::Client`
             and sharing no code with it: an `http`, a base, a byte ceiling. Verified live
             against nine projects, where records equal versions for every one.
-      - [~] Serve `/simple/<name>/` on the proxy. `route::classify` picks the ecosystem
-            from the path and `upstream_url` sends each request to the right host. pip 26.1.1
-            installs `requests` through it. What is left is rewriting: the index gives each
-            file's URL in full on `files.pythonhosted.org`, pip uses it as written, and all
-            five files were fetched around the proxy. Logged `UNINSPECTED` on every index
-            request until the rewrite lands.
+      - [x] Serve `/simple/<name>/` on the proxy. `route::classify` picks the ecosystem
+            from the path, `upstream_url` sends each request to the right host, and
+            `rewrite_index` points every file at the proxy. pip 26.1.1 installs `requests`
+            through it: 5 index pages, 2,937 file URLs rewritten, 10 `/packages/` requests
+            arriving. What is left is storing the records, which is what gives an artifact
+            request a digest to check.
       - [ ] HTML fallback for an index that does not serve PEP 691 JSON. PyPI does, and an
             index that answers HTML is refused rather than read as an empty project.
 - [ ] `[!]` Extract the adapter interface (transport + normalizer) from the two working
@@ -1802,9 +1802,11 @@ changes to the core, that is the finding — make it now, not after five adapter
       Wired to the `install_scripts` check through `Artifact::runs_install_scripts` and
       `PackageRecord::narrowed_to`, which `proxy::handle` calls before it builds `Facts`. A
       version cleared because it offers a wheel no longer serves its sdist on that basis.
-- [~] pip and uv both verified. pip 26.1.1 installs through the proxy and its index
-      requests arrive; its file requests do not, because nothing rewrites the index yet. uv
-      is untried. Neither is a `make` target: `make smoke-clients` covers npm's five.
+- [~] pip and uv both verified. pip 26.1.1 installs `requests` through the proxy and every
+      request arrives, index pages and files alike. Artifacts are forwarded unverified,
+      because nothing stores PyPI records yet. uv is untried. Neither is a `make` target:
+      `make smoke-clients` covers npm's five. The run needs `PIP_CONFIG_FILE=/dev/null`, or
+      a configured `extra-index-url` serves the files instead.
 - [ ] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass).
       Moved from Stage 2's `install_scripts`, where the engine side is built:
       `merge::applies` and its Go test cover not-applicable, and the flow chart carries

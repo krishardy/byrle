@@ -159,6 +159,19 @@ pub struct Health {
     pub artifacts_verified: usize,
 }
 
+/// Which metadata document a response body is.
+///
+/// Read from the response's `Content-Type`, not the request: npm asks for both packument
+/// kinds in one `Accept` header and settles nothing, and an index may answer HTML where
+/// PEP 691 JSON was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Document {
+    /// An npm packument, abbreviated or full.
+    Packument(PackumentDetail),
+    /// A PEP 691 simple index.
+    SimpleIndex,
+}
+
 /// What reading a packument body produced.
 #[derive(Debug)]
 pub enum PackumentOutcome {
@@ -732,9 +745,6 @@ enum Uninspected {
     /// No `Host` header and no configured public base, so there is no address to point
     /// artifact URLs at.
     NoBase,
-    /// A PyPI simple index. Nothing rewrites one yet, and it gives every file's URL in
-    /// full on the index's own host.
-    SimpleIndex,
 }
 
 impl Uninspected {
@@ -744,10 +754,6 @@ impl Uninspected {
             Self::NoBase => {
                 "no Host header and no configured public base, so artifact URLs cannot be \
                  pointed at the proxy"
-            }
-            Self::SimpleIndex => {
-                "the simple index is forwarded as written, so its files are fetched from \
-                 the index's own host rather than through the proxy"
             }
         }
     }
@@ -759,13 +765,13 @@ impl Uninspected {
 /// about to rewrite. An operator who turned rewriting off is also `None`: that is a
 /// configured choice, not a case the proxy failed to handle.
 ///
-/// Measured 2026-09-16 with pip 26.1.1 installing `requests` through this proxy: five
-/// `/simple/` pages arrived and no `/packages/` request did. The simple index gives each
-/// file's URL in full on `files.pythonhosted.org` and pip uses it as written, so every
-/// file was fetched around the proxy. That is the PyPI shape of
-/// `docs/engineering_decisions/packument-tarball-url-rewriting.md`.
+/// Measured 2026-09-16 with pip 26.1.1 installing `requests` through this proxy before the
+/// index was rewritten: five `/simple/` pages arrived and no `/packages/` request did. The
+/// index gives each file's URL in full on `files.pythonhosted.org` and pip uses it as
+/// written, so every file was fetched around the proxy. That is the PyPI shape of
+/// `docs/engineering_decisions/packument-tarball-url-rewriting.md`, and it is why both
+/// document kinds reach this check.
 fn uninspected(
-    ecosystem: Ecosystem,
     target: &RequestTarget,
     method: &Method,
     encoding: RequestedEncoding,
@@ -774,9 +780,6 @@ fn uninspected(
 ) -> Option<Uninspected> {
     if method != Method::GET || !matches!(target, RequestTarget::Metadata(_)) {
         return None;
-    }
-    if ecosystem == Ecosystem::PyPI {
-        return Some(Uninspected::SimpleIndex);
     }
     if rewriting {
         return None;
@@ -788,6 +791,75 @@ fn uninspected(
         return Some(Uninspected::NoBase);
     }
     None
+}
+
+/// Which metadata document this response body is.
+///
+/// The response is authoritative and the request is not. npm asks for both packument
+/// kinds in one `Accept` header; pip asks for PEP 691 JSON and an index that does not
+/// serve it answers HTML, which is not a shape this reads. `None` forwards the body
+/// untouched.
+fn document_from_content_type(
+    ecosystem: Ecosystem,
+    content_type: Option<&str>,
+) -> Option<Document> {
+    match ecosystem {
+        Ecosystem::Npm => npm::detail_from_content_type(content_type).map(Document::Packument),
+        Ecosystem::PyPI => {
+            let media_type = content_type?.split(';').next()?.trim().to_ascii_lowercase();
+            (media_type == crate::pypi::SIMPLE_JSON).then_some(Document::SimpleIndex)
+        }
+    }
+}
+
+/// Point a simple index's files at the proxy.
+///
+/// pip uses each file's `url` as written, so without this every file is fetched from
+/// `files.pythonhosted.org` and nothing about those bytes is observed. The path is kept,
+/// which is what makes the request that comes back one `pypi::classify_path` understands
+/// and `upstream_url` sends back to the same place.
+///
+/// `None` leaves the body exactly as it arrived: the index did not parse, there is no
+/// address to point at, or the operator turned rewriting off. Each says so in the log,
+/// because a forwarded index means that project's files go around the proxy.
+fn rewrite_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> Option<Vec<u8>> {
+    // The project name is not read: only `Project::files` is. `pypi::parse` takes one as
+    // the fallback for an index that does not name itself, and every message below says
+    // `path`, which identifies the project already.
+    let project = match crate::pypi::parse("", decoded) {
+        Ok(project) => project,
+        Err(e) => {
+            warn!(path = %path, error = %e, "UNINSPECTED: simple index did not parse");
+            return None;
+        }
+    };
+    let files = project.files.len();
+    let Some(base) = base else {
+        warn!(
+            path = %path,
+            files,
+            "UNINSPECTED: the simple index is forwarded as written, so its files are \
+             fetched from the index's own host rather than through the proxy"
+        );
+        return None;
+    };
+    let urls: Vec<&str> = project.files.iter().map(|f| f.url.as_str()).collect();
+    match crate::origin::rewrite_artifact_origins(decoded, urls, proxy.origins.reachable(), base) {
+        Ok(out) => {
+            info!(
+                path = %path,
+                files,
+                rewritten = out.rewritten,
+                left_alone = out.left_alone,
+                "simple index rewritten"
+            );
+            (out.rewritten > 0).then_some(out.body)
+        }
+        Err(e) => {
+            warn!(path = %path, error = %e, "UNINSPECTED: simple index could not be rewritten");
+            None
+        }
+    }
 }
 
 /// Where a request goes upstream.
@@ -888,11 +960,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // A packument body is only read on a GET, and only when the client's encodings allow
     // asking for one this can decode.
     //
-    // npm only. A PyPI simple index is a different document with a different media type,
-    // and nothing below reads one yet, so asking for an encoding this can decode and
-    // dropping the client's conditional headers would buy nothing.
+    // Both ecosystems: a packument and a simple index are both read so their artifact
+    // URLs can be pointed at the proxy.
     let read_packument = method == Method::GET
-        && ecosystem == Ecosystem::Npm
         && matches!(target, RequestTarget::Metadata(_))
         && chosen_encoding != RequestedEncoding::Unreadable;
     let rewrite_base = public_base(req.headers(), proxy.public_base.as_deref());
@@ -903,7 +973,6 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // and pip means not through the proxy. They all carry the same marker so one grep
     // finds them.
     match uninspected(
-        ecosystem,
         &target,
         &method,
         chosen_encoding,
@@ -1191,11 +1260,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         .get(header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned);
-    let detail = npm::detail_from_content_type(
-        headers
-            .get(header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
-    );
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok());
+    let document = document_from_content_type(ecosystem, content_type);
 
     // A warm client cache sends If-None-Match, and 304 carries no body, so there is
     // nothing to normalise from this response. The client is about to resolve against a
@@ -1258,7 +1326,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     let body_stream: ByteStream = Box::pin(upstream_response.bytes_stream());
 
-    let Some(detail) = detail.filter(|_| read_packument && status.is_success()) else {
+    let Some(document) = document.filter(|_| read_packument && status.is_success()) else {
         log_proxied(upstream_len.unwrap_or(0));
         let Some(sri) = expected_digest else {
             return (forward_status, headers, Body::from_stream(body_stream)).into_response();
@@ -1336,6 +1404,34 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             warn!(path = %path_and_query, error = %e, "UNINSPECTED: packument body could not be decoded");
             None
         }
+    };
+
+    // A simple index is read and rewritten here, and returns: nothing below it applies.
+    // It carries no publish times this proxy fetches separately, no `dist-tags`, and no
+    // per-version filtering, because filtering a simple index is the enforcement step and
+    // this commit is the transport one.
+    if document == Document::SimpleIndex {
+        let forwarded = decoded.as_deref().and_then(|d| {
+            rewrite_index(
+                &proxy,
+                d,
+                rewriting.then_some(rewrite_base.as_deref()).flatten(),
+                &path_and_query,
+            )
+        });
+        return finish(
+            forwarded,
+            body,
+            headers,
+            forward_status,
+            chosen_encoding,
+            rewrite_base.as_deref(),
+            &path_and_query,
+            log_proxied,
+        );
+    }
+    let Document::Packument(detail) = document else {
+        unreachable!("the simple index returned above");
     };
 
     // Nothing to normalise when decoding failed; it was logged above.
@@ -1421,10 +1517,36 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         _ => None,
     };
 
+    finish(
+        forwarded,
+        body,
+        headers,
+        forward_status,
+        chosen_encoding,
+        rewrite_base.as_deref(),
+        &path_and_query,
+        log_proxied,
+    )
+}
+
+/// Send the document on, rewritten or not.
+///
+/// A rewritten body is this proxy's, so its length, its encoding and its entity tag all
+/// have to describe it rather than the upstream's. `None` forwards the upstream's bytes
+/// untouched, headers included.
+#[allow(clippy::too_many_arguments)]
+fn finish(
+    forwarded: Option<Vec<u8>>,
+    body: Bytes,
+    mut headers: HeaderMap,
+    forward_status: StatusCode,
+    chosen_encoding: RequestedEncoding,
+    rewrite_base: Option<&str>,
+    path_and_query: &str,
+    log_proxied: impl Fn(u64),
+) -> Response {
     let body = match forwarded {
         Some(rewritten) => {
-            // The body is ours now, so its length, its encoding and its entity tag all
-            // have to describe it rather than the upstream's.
             let encoded = match chosen_encoding {
                 RequestedEncoding::Gzip => match gzip(&rewritten) {
                     Ok(encoded) => {
@@ -1448,7 +1570,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             if let Some(etag) = headers
                 .get(header::ETAG)
                 .and_then(|v| v.to_str().ok())
-                .map(|etag| mark_etag(etag, rewrite_base.as_deref().unwrap_or_default()))
+                .map(|etag| mark_etag(etag, rewrite_base.unwrap_or_default()))
                 && let Ok(value) = HeaderValue::from_str(&etag)
             {
                 headers.insert(header::ETAG, value);
@@ -1820,7 +1942,7 @@ fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
         .records
         .iter()
         .filter_map(|record| Some(record.artifact()?.url.as_str()));
-    match npm::rewrite_artifact_origins(decoded, artifacts, policy.reachable(), base) {
+    match crate::origin::rewrite_artifact_origins(decoded, artifacts, policy.reachable(), base) {
         Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
         Err(e) => {
             warn!(path = %path, error = %e, "UNINSPECTED: packument could not be rewritten");
@@ -1921,6 +2043,20 @@ mod tests {
         (base, seen)
     }
 
+    /// The same, with the PyPI index pointed at the fake too, so a `/simple/` request
+    /// reaches it rather than pypi.org.
+    async fn pypi_proxy_serving(
+        status: StatusCode,
+        content_type: &'static str,
+        body: Vec<u8>,
+    ) -> (String, Recorder) {
+        let (upstream, seen) = upstream_serving(status, content_type, None, body).await;
+        let proxy =
+            Proxy::new(reqwest::Client::new(), upstream.clone()).with_upstream_pypi(upstream);
+        let base = serve(proxy.router()).await;
+        (base, seen)
+    }
+
     // -----------------------------------------------------------------------
     // inspect_packument, the part the handler only decides what to do with
     // -----------------------------------------------------------------------
@@ -1964,6 +2100,90 @@ mod tests {
             ),
             PackumentOutcome::Undecodable(DecodeError::TooLarge(100))
         ));
+    }
+
+    /// An error page carries a status, not a document. A registry that answers 404 with
+    /// `application/json` is saying the package is gone, and reading that body as a
+    /// packument would report it as one that did not normalise.
+    #[tokio::test]
+    async fn a_failed_response_is_forwarded_rather_than_read() {
+        let body = fixture("lodash-4.17.21.abbrev.json");
+        let (base, _) = proxy_serving(
+            StatusCode::NOT_FOUND,
+            "application/json",
+            None,
+            body.clone(),
+        )
+        .await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), body.as_slice());
+    }
+
+    /// The same for a simple index. The body below would rewrite cleanly if it were read,
+    /// so this measures the status gate rather than the parse failing anyway: a non-2xx
+    /// response is forwarded byte for byte whatever it contains.
+    #[tokio::test]
+    async fn a_failed_index_response_is_forwarded_rather_than_read() {
+        let body = br#"{"name":"x","files":[{"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0.tar.gz","hashes":{}}]}"#.to_vec();
+        let (base, _) = pypi_proxy_serving(
+            StatusCode::NOT_FOUND,
+            crate::pypi::SIMPLE_JSON,
+            body.clone(),
+        )
+        .await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{base}/simple/x/"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 404);
+        assert_eq!(response.bytes().await.unwrap().as_ref(), body.as_slice());
+    }
+
+    /// The whole path, through the router: pip asks for a project, the index comes back
+    /// with its files pointed at the proxy, and the URL it now carries is one this proxy
+    /// classifies as an artifact.
+    #[tokio::test]
+    async fn an_index_served_through_the_proxy_points_its_files_here() {
+        let index = br#"{"name":"x","files":[
+            {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl","hashes":{}}
+        ]}"#.to_vec();
+        let (base, seen) =
+            pypi_proxy_serving(StatusCode::OK, crate::pypi::SIMPLE_JSON, index).await;
+
+        let response = reqwest::Client::new()
+            .get(format!("{base}/simple/x/"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = response.bytes().await.unwrap();
+        let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let url = document["files"][0]["url"].as_str().unwrap();
+        assert_eq!(
+            url,
+            format!("{base}/packages/ab/cd/x-1.0-py3-none-any.whl"),
+            "the file now points at this proxy"
+        );
+
+        // The proxy asked its PyPI upstream without sending its own `/simple` twice.
+        assert_eq!(seen.lock().unwrap().paths, ["/x/"]);
+
+        let path = url.strip_prefix(&base).unwrap();
+        assert!(
+            matches!(
+                crate::route::classify(path),
+                (Ecosystem::PyPI, RequestTarget::Artifact { .. })
+            ),
+            "{path}"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -4217,8 +4437,8 @@ mod tests {
             base: Option<&str>,
             rewriting: bool,
         ) -> Option<Uninspected> {
-            let (ecosystem, target) = crate::route::classify(path);
-            uninspected(ecosystem, &target, &Method::GET, encoding, base, rewriting)
+            let target = crate::route::classify(path).1;
+            uninspected(&target, &Method::GET, encoding, base, rewriting)
         }
 
         /// A packument the proxy is about to rewrite is inspected, and so is one an
@@ -4259,19 +4479,33 @@ mod tests {
             );
         }
 
-        /// Every simple index, whatever the encoding and whatever the base: nothing
-        /// rewrites one yet, so pip fetches every file from the index's own host.
+        /// A simple index answers the same two reasons a packument does: both are
+        /// rewritten, and a document that cannot be points its files somewhere the proxy
+        /// will not see them.
         #[test]
-        fn every_simple_index_is_reported() {
-            for encoding in [RequestedEncoding::Gzip, RequestedEncoding::Unreadable] {
-                for base in [Some("http://p"), None] {
-                    assert_eq!(
-                        uninspected_for("/simple/requests/", encoding, base, true),
-                        Some(Uninspected::SimpleIndex),
-                        "{encoding:?} {base:?}"
-                    );
-                }
-            }
+        fn a_simple_index_answers_the_same_reasons() {
+            assert_eq!(
+                uninspected_for(
+                    "/simple/requests/",
+                    RequestedEncoding::Gzip,
+                    Some("http://p"),
+                    true
+                ),
+                None
+            );
+            assert_eq!(
+                uninspected_for(
+                    "/simple/requests/",
+                    RequestedEncoding::Unreadable,
+                    Some("http://p"),
+                    false
+                ),
+                Some(Uninspected::Unreadable)
+            );
+            assert_eq!(
+                uninspected_for("/simple/requests/", RequestedEncoding::Gzip, None, false),
+                Some(Uninspected::NoBase)
+            );
         }
 
         /// Only a metadata GET. An artifact request carries its own digest check, and a
@@ -4290,16 +4524,9 @@ mod tests {
                     "{path}"
                 );
             }
-            let (ecosystem, target) = crate::route::classify("/lodash");
+            let target = crate::route::classify("/lodash").1;
             assert_eq!(
-                uninspected(
-                    ecosystem,
-                    &target,
-                    &Method::HEAD,
-                    RequestedEncoding::Gzip,
-                    None,
-                    false
-                ),
+                uninspected(&target, &Method::HEAD, RequestedEncoding::Gzip, None, false),
                 None
             );
         }
@@ -4307,17 +4534,120 @@ mod tests {
         /// Each reason prints one line and they are different lines.
         #[test]
         fn every_reason_says_something_different() {
-            let all = [
-                Uninspected::Unreadable,
-                Uninspected::NoBase,
-                Uninspected::SimpleIndex,
-            ];
+            let all = [Uninspected::Unreadable, Uninspected::NoBase];
             for (i, a) in all.iter().enumerate() {
                 assert!(!a.reason().is_empty());
                 for b in &all[i + 1..] {
                     assert_ne!(a.reason(), b.reason());
                 }
             }
+        }
+
+        /// The response says which document arrived, and the request does not. An index
+        /// that answers HTML where PEP 691 JSON was asked for reads as nothing.
+        #[test]
+        fn the_content_type_says_which_document_arrived() {
+            use crate::record::PackumentDetail;
+            for (ecosystem, content_type, expected) in [
+                (
+                    Ecosystem::Npm,
+                    Some("application/vnd.npm.install-v1+json; charset=utf-8"),
+                    Some(Document::Packument(PackumentDetail::Abbreviated)),
+                ),
+                (
+                    Ecosystem::Npm,
+                    Some("application/json"),
+                    Some(Document::Packument(PackumentDetail::Full)),
+                ),
+                (
+                    Ecosystem::PyPI,
+                    Some("application/vnd.pypi.simple.v1+json"),
+                    Some(Document::SimpleIndex),
+                ),
+                (
+                    Ecosystem::PyPI,
+                    Some("APPLICATION/VND.PYPI.SIMPLE.V1+JSON; charset=utf-8"),
+                    Some(Document::SimpleIndex),
+                ),
+                (Ecosystem::PyPI, Some("text/html"), None),
+                (Ecosystem::PyPI, Some("application/json"), None),
+                (
+                    Ecosystem::Npm,
+                    Some("application/vnd.pypi.simple.v1+json"),
+                    None,
+                ),
+                (Ecosystem::PyPI, None, None),
+            ] {
+                assert_eq!(
+                    document_from_content_type(ecosystem, content_type),
+                    expected,
+                    "{ecosystem:?} {content_type:?}"
+                );
+            }
+        }
+
+        const INDEX: &[u8] = br#"{"name":"x","files":[
+            {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl","hashes":{}},
+            {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/x-1.0.tar.gz","hashes":{}}
+        ]}"#;
+
+        /// pip uses each file's url as written, so without this every file is fetched
+        /// from the index's own host and nothing about those bytes is observed.
+        #[test]
+        fn a_rewritten_index_points_its_files_at_the_proxy() {
+            let out = rewrite_index(&proxy(), INDEX, Some("http://127.0.0.1:8080"), "/simple/x/")
+                .expect("two files rewritten");
+            let text = String::from_utf8(out).expect("still utf-8");
+            assert!(
+                text.contains("\"http://127.0.0.1:8080/packages/ab/cd/x-1.0-py3-none-any.whl\""),
+                "{text}"
+            );
+            assert!(
+                text.contains("\"http://127.0.0.1:8080/packages/ef/01/x-1.0.tar.gz\""),
+                "{text}"
+            );
+            assert!(!text.contains("files.pythonhosted.org"), "{text}");
+        }
+
+        /// The path is kept, so the request that comes back is one `classify_path`
+        /// understands and `upstream_url` sends to the host it came from.
+        #[test]
+        fn a_rewritten_url_round_trips_to_where_it_came_from() {
+            let out = rewrite_index(&proxy(), INDEX, Some("http://127.0.0.1:8080"), "/simple/x/")
+                .expect("rewritten");
+            let document: serde_json::Value = serde_json::from_slice(&out).expect("json");
+            let url = document["files"][0]["url"].as_str().expect("a url");
+            let path = url.strip_prefix("http://127.0.0.1:8080").expect("our base");
+
+            let (ecosystem, target) = crate::route::classify(path);
+            assert_eq!(ecosystem, Ecosystem::PyPI);
+            assert!(
+                matches!(target, RequestTarget::Artifact { .. }),
+                "{target:?}"
+            );
+            assert_eq!(
+                upstream_url(&proxy(), ecosystem, path, None),
+                "https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl"
+            );
+        }
+
+        /// Nothing to point at, nothing that parses, and nothing to rewrite each leave
+        /// the body exactly as it arrived.
+        #[test]
+        fn an_index_that_cannot_be_rewritten_is_forwarded_untouched() {
+            assert_eq!(rewrite_index(&proxy(), INDEX, None, "/simple/x/"), None);
+            assert_eq!(
+                rewrite_index(&proxy(), b"not json", Some("http://p"), "/simple/x/"),
+                None
+            );
+            let offsite = br#"{"name":"x","files":[
+                {"filename":"x-1.0.tar.gz","url":"https://cdn.example/x-1.0.tar.gz","hashes":{}}
+            ]}"#;
+            assert_eq!(
+                rewrite_index(&proxy(), offsite, Some("http://p"), "/simple/x/"),
+                None,
+                "an origin the proxy does not front is left where it is"
+            );
         }
 
         /// PyPI's index and file hosts are reachable, so a file request is served rather

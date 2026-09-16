@@ -48,7 +48,9 @@
 //! than a parse detail.
 
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
-use crate::origin::{Disposition, OriginPolicy, ReachableOrigins, bypassing_origin, origin_of};
+use crate::origin::{
+    Disposition, OriginPolicy, ReachableOrigins, RewriteError, bypassing_origin, reachable_path,
+};
 use crate::record::{
     Artifact, Maintainer, PackageRecord, PackumentDetail, Provenance, RegistrySignature,
     Repository, TrustedPublisher,
@@ -56,7 +58,7 @@ use crate::record::{
 use crate::route::RequestTarget;
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
 /// npm's abbreviated packument media type, which is what `npm install` asks for.
@@ -190,170 +192,6 @@ impl NormalizedPackument {
     }
 }
 
-/// The result of pointing a packument's artifacts at the proxy.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rewritten {
-    /// The document to forward.
-    pub body: Vec<u8>,
-    /// Distinct artifact URLs now pointing at the proxy.
-    pub rewritten: usize,
-    /// How many places in the document were changed. Higher than `rewritten` when a URL
-    /// appears more than once: npm's `_resolved` repeats `dist.tarball` verbatim.
-    pub occurrences: usize,
-    /// Artifacts left as they were, because their origin is not one the proxy fronts.
-    /// These are still fetched directly; see [`bypassing_origin`].
-    pub left_alone: usize,
-}
-
-#[derive(Debug)]
-pub enum RewriteError {
-    /// The body is not UTF-8, so it is not JSON either.
-    NotUtf8(std::str::Utf8Error),
-    /// The body did not parse as JSON. Only the filtering path parses.
-    NotJson(serde_json::Error),
-    /// An artifact URL from the records was not found in the document as a complete
-    /// quoted string. The document is shaped in a way this does not understand, and a
-    /// partial rewrite would send some artifacts to the proxy and leave others pointing
-    /// at the registry.
-    Incomplete { expected: usize, found: usize },
-}
-
-impl fmt::Display for RewriteError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotUtf8(e) => write!(f, "packument is not UTF-8: {e}"),
-            Self::NotJson(e) => write!(f, "packument is not valid JSON: {e}"),
-            Self::Incomplete { expected, found } => write!(
-                f,
-                "found {found} of {expected} artifact URLs to rewrite; \
-                 the rest are not complete quoted strings"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for RewriteError {}
-
-/// Point every artifact URL the proxy can serve at the proxy itself.
-///
-/// Necessary because clients disagree about `dist.tarball`. npm rewrites it to the
-/// configured registry; pnpm 10, yarn 1, yarn 4 and bun 1.3 use it verbatim and fetch
-/// from whatever host it names, so against a real registry their artifacts never reach
-/// the proxy at all. Rewriting here makes every client in the ecosystem behave the same
-/// way.
-///
-/// Only the **origin** changes. The path is kept, so the request that comes back is the
-/// one [`classify_path`] already understands and the proxy forwards it upstream unchanged.
-///
-/// An artifact whose origin is not in `reachable` is left alone. Rewriting those would
-/// mean the proxy fetching from an arbitrary host on a client's behalf, which is a
-/// capability worth not having; they stay visible through [`bypassing_origin`] instead.
-///
-/// `dist.integrity` is untouched, and the registry signature covers
-/// `<name>@<version>:<integrity>` rather than the URL (pacote `lib/registry.js`), so a
-/// rewritten document still verifies.
-///
-/// # How, and why not a JSON value tree
-///
-/// `artifacts` are the URLs already found during normalisation, so the document is not
-/// parsed again. Each is replaced wherever it appears as a **complete quoted string**,
-/// leaving every other byte alone.
-///
-/// Parsing into a `serde_json::Value` and re-serialising was the obvious approach and
-/// costs far more: the value tree dominated memory, with 24 simultaneous large packuments
-/// reaching 1,348 MB against 27.6 MB of encoded bodies, plus 36 ms to parse and 10 ms to
-/// serialise typescript. This walks the text once and allocates one output buffer.
-///
-/// It also produces a byte-identical document apart from the URLs, which re-serialising
-/// cannot promise, and it catches `_resolved`, an npm internal field repeating
-/// `dist.tarball` that a `dist.tarball`-only rewrite leaves pointing at the registry.
-///
-/// Measured against the corpus, both document kinds: of 49,704 artifact URLs, 49,702
-/// appear exactly once as a complete quoted string and 2 appear twice, both as
-/// `_resolved`. Escaped forward slashes occur in 2 of 94 documents and only inside README
-/// prose, never in a URL.
-///
-/// If any URL is not found, the whole rewrite fails rather than half of it landing.
-pub fn rewrite_artifact_origins<'a>(
-    json: &[u8],
-    artifacts: impl IntoIterator<Item = &'a str>,
-    reachable: &ReachableOrigins,
-    public_base: &str,
-) -> Result<Rewritten, RewriteError> {
-    let text = std::str::from_utf8(json).map_err(RewriteError::NotUtf8)?;
-    let base = public_base.trim_end_matches('/');
-
-    let mut replacements: HashMap<&str, String> = HashMap::new();
-    let mut left_alone = 0;
-    for url in artifacts {
-        match reachable_path(url, reachable) {
-            Some(path) => {
-                replacements.insert(url, format!("{base}{path}"));
-            }
-            None => left_alone += 1,
-        }
-    }
-    if replacements.is_empty() {
-        return Ok(Rewritten {
-            body: json.to_vec(),
-            rewritten: 0,
-            occurrences: 0,
-            left_alone,
-        });
-    }
-
-    // Every replaceable URL begins with one of these, so a scan per origin finds every
-    // candidate. Searching for each URL separately would be thousands of passes over
-    // megabytes.
-    let prefixes: Vec<String> = reachable
-        .as_slice()
-        .iter()
-        .map(|origin| format!("\"{origin}"))
-        .collect();
-
-    let mut out = String::with_capacity(text.len() + replacements.len() * 8);
-    let mut found: HashSet<&str> = HashSet::new();
-    let mut occurrences = 0;
-    let mut cursor = 0;
-
-    while let Some(open) = next_candidate(text, cursor, &prefixes) {
-        // A URL contains no escaped quote, so the next quote ends the string.
-        let Some(offset) = text[open + 1..].find('"') else {
-            break;
-        };
-        let close = open + 1 + offset;
-        let candidate = &text[open + 1..close];
-
-        out.push_str(&text[cursor..=open]);
-        match replacements.get(candidate) {
-            Some(replacement) => {
-                out.push_str(replacement);
-                found.insert(candidate);
-                occurrences += 1;
-            }
-            // Some other string on the same origin: a repository URL, a homepage.
-            None => out.push_str(candidate),
-        }
-        out.push('"');
-        cursor = close + 1;
-    }
-    out.push_str(&text[cursor..]);
-
-    if found.len() != replacements.len() {
-        return Err(RewriteError::Incomplete {
-            expected: replacements.len(),
-            found: found.len(),
-        });
-    }
-
-    Ok(Rewritten {
-        body: out.into_bytes(),
-        rewritten: found.len(),
-        occurrences,
-        left_alone,
-    })
-}
-
 /// Remove versions the proxy will not serve, then rewrite the rest.
 ///
 /// This is the only control that works on an off-origin artifact. The client fetches
@@ -461,26 +299,6 @@ pub struct Filtered {
     /// Versions kept with their artifact left as published, because the operator allows
     /// that origin to be fetched directly.
     pub allowed: usize,
-}
-
-/// The earliest position at or after `from` where any prefix occurs.
-fn next_candidate(text: &str, from: usize, prefixes: &[String]) -> Option<usize> {
-    prefixes
-        .iter()
-        .filter_map(|prefix| text[from..].find(prefix.as_str()).map(|at| from + at))
-        .min()
-}
-
-/// The path to keep, when this URL names an origin the proxy fronts.
-fn reachable_path(url: &str, reachable: &ReachableOrigins) -> Option<String> {
-    let parsed = reqwest::Url::parse(url).ok()?;
-    if !reachable.contains(&origin_of(&parsed)) {
-        return None;
-    }
-    Some(match parsed.query() {
-        Some(query) => format!("{}?{query}", parsed.path()),
-        None => parsed.path().to_owned(),
-    })
 }
 
 /// Which document a response body is, read from its `Content-Type`.
@@ -1133,6 +951,7 @@ pub fn parse_publish_times(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::origin::{Rewritten, rewrite_artifact_origins};
 
     fn fixture(name: &str) -> Vec<u8> {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/npm/");
