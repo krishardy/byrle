@@ -6,7 +6,7 @@
 //! serves the same two kinds of thing behind those paths, so `proxy::handle` reads this
 //! and each ecosystem's `classify_path` produces it.
 
-use crate::identity::PackageKey;
+use crate::identity::{Ecosystem, PackageKey};
 
 /// What a request path refers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,4 +33,19 @@ pub enum RequestTarget {
     },
     /// Anything else the registry serves: npm's `/-/v1/search`, PyPI's `/simple/`.
     Other,
+}
+
+/// Which ecosystem answers this request path, and what the path refers to.
+///
+/// The proxy serves npm at the root, because that is where a client configured with
+/// `registry=http://proxy/` looks, and PyPI under the prefixes [`crate::pypi::PREFIXES`]
+/// reserves. A path under one of those is PyPI's whatever it turns out to be, including
+/// when it names no project: sending pip's other requests to an npm registry answers them
+/// with npm's 404 rather than PyPI's.
+pub fn classify(path: &str) -> (Ecosystem, RequestTarget) {
+    if crate::pypi::serves(path) {
+        (Ecosystem::PyPI, crate::pypi::classify_path(path))
+    } else {
+        (Ecosystem::Npm, crate::npm::classify_path(path))
+    }
 }
