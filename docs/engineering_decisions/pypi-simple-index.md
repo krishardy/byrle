@@ -81,6 +81,61 @@ PEP 592 writes `yanked` as `false` or as a string giving the reason, so it is re
 `"Yanked due to conflicts with CVE-2024-35195 mitigation"`, which a boolean read would take
 as absent. The fixture keeps that entry for the case.
 
+## What PyPI forced on the core, and what it did not
+
+The stage exists to find these. Four candidates; one is a real change and three are not.
+
+| Candidate | Outcome |
+|---|---|
+| sha256 hex against npm's SRI | **converted, no core change.** `integrity::Algorithm` already has `Sha256`, so `pypi::sri` turns the index's hex into `sha256-<base64>` and the existing verifier reads it |
+| `PackumentDetail::Abbreviated`/`Full` | **naming only.** The simple index withholds nothing it has, which is what `Full` means, so a PyPI record is `Full` and `may_be_incomplete()` is false. The names are npm's vocabulary and the extraction step should rename them; 88 uses, so not now |
+| yanked files | **no core change.** PEP 592 makes a yank an upstream signal a resolver acts on, not a decision this proxy makes, so a yanked version is still a version |
+| **one record, several files** | **a real divergence.** See below |
+
+### A record is about a version; an artifact request is about a file
+
+`PackageRecord` holds one `Artifact`, because an npm version resolves to one tarball. A PyPI
+version does not: `requests` 2.34.2 offers a wheel and an sdist, and they differ in whether
+installing runs the package's own code.
+
+Split, rather than changing the record now:
+
+| Question | Answered by | Shape |
+|---|---|---|
+| may this version be installed | `pypi::records`, one record per version | `artifact` names the file a resolver would take, the wheel where there is one |
+| are these bytes the ones claimed | `Project::files`, every file kept | a pinned fetch names a filename, and the proxy verifies what it serves |
+
+`has_install_scripts` follows from what is on offer rather than from a flag: true only when
+every file for that version is an sdist, because a resolver that can take a wheel will.
+
+Whether `PackageRecord` grows several artifacts is the extraction step's decision, and it
+should be made with npm's shape in front of it. Recording it here rather than changing the
+core now is the stage order: the interface is an output.
+
+## Verified against real bytes
+
+`requests-0.2.0.tar.gz`, 5,533 bytes, fetched from `files.pythonhosted.org` 2026-09-16:
+
+```text
+sha256 of the bytes  813202ace4d9301a3c00740c700e012fb9f3f8c73ddcfe02ab558a8df6f175fd
+the index claims     813202ace4d9301a3c00740c700e012fb9f3f8c73ddcfe02ab558a8df6f175fd
+pypi::sri gives      sha256-gTICrOTZMBo8AHQMcA4BL7nz+Mc93P4Cq1WKjfbxdf0=
+```
+
+The last line round-trips through `integrity::Sri::parse` as `Algorithm::Sha256`, so the
+conversion reaches the verifier npm's digests already use.
+
+## Identity before the proxy routes it
+
+`Ecosystem::PyPI` exists and `Ecosystem::ALL` still holds npm alone. Expressing an identity
+and serving an ecosystem are separate questions: `ALL` is what `intel::served` reports and
+what `Capabilities::gaps` warns about, so listing PyPI there before the proxy routes
+`/simple/` would have `doctor` and `/-/waharoa/ready` report coverage that does not exist.
+PyPI joins `ALL` with the commit that serves it.
+
+`pkg:pypi/requests@2.34.2` parses today, held by
+`pypi_has_an_identity_and_is_not_yet_served`.
+
 ## Not decided here
 
 The version is read from the filename, PEP 427 for a wheel and the last `-` for an sdist.

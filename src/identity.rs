@@ -43,21 +43,35 @@ use std::str::FromStr;
 
 /// Ecosystems we can express an identity for.
 ///
-/// npm only for now, deliberately. Stage 3 adds PyPI, which is where the adapter
-/// abstraction gets designed against two real implementations rather than one.
+/// Expressing an identity is not the same as serving one: see [`Ecosystem::ALL`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ecosystem {
     Npm,
+    /// PyPI. `src/pypi.rs` reads its simple index; the proxy does not route it yet, so it
+    /// is not in [`Ecosystem::ALL`].
+    PyPI,
 }
 
 impl Ecosystem {
-    /// Every ecosystem this build serves.
+    /// Every ecosystem this build **serves**, which is what `intel::served` reports and
+    /// what `Capabilities::gaps` warns about.
+    ///
+    /// Narrower than the variants above on purpose. A variant exists as soon as something
+    /// can name a package in that ecosystem; an entry here says the proxy routes it and
+    /// enforces on it, so listing one the proxy does not route would have `doctor` and
+    /// `/-/waharoa/ready` report coverage that does not exist. PyPI joins this when the
+    /// proxy serves `/simple/`.
     pub const ALL: [Ecosystem; 1] = [Ecosystem::Npm];
 
     /// The purl `type` component, and the string OSV keys on.
-    pub fn as_str(self) -> &'static str {
+    ///
+    /// `const` so a descriptor table can hold one: `intel::stream::Scope` does.
+    pub const fn as_str(self) -> &'static str {
         match self {
             Ecosystem::Npm => "npm",
+            // The purl type and OSV's ecosystem key are both lowercase, unlike PyPI's own
+            // spelling of itself.
+            Ecosystem::PyPI => "pypi",
         }
     }
 }
@@ -74,6 +88,7 @@ impl FromStr for Ecosystem {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "npm" => Ok(Ecosystem::Npm),
+            "pypi" => Ok(Ecosystem::PyPI),
             other => Err(IdentityError::UnsupportedEcosystem(other.to_string())),
         }
     }
@@ -468,8 +483,26 @@ mod tests {
         assert!(key("lodash").at_version("").is_err());
         // Ecosystems we have not implemented must fail loudly rather than be guessed at.
         assert!(matches!(
-            "pkg:pypi/requests".parse::<PackageKey>(),
+            "pkg:cargo/serde".parse::<PackageKey>(),
             Err(IdentityError::UnsupportedEcosystem(_))
         ));
+    }
+
+    /// An identity can be expressed for PyPI before the proxy routes it. The two are
+    /// separate questions and `ALL` is the second one.
+    #[test]
+    fn pypi_has_an_identity_and_is_not_yet_served() {
+        let key: PackageKey = "pkg:pypi/requests".parse().expect("pypi parses");
+        assert_eq!(key.ecosystem(), Ecosystem::PyPI);
+        assert_eq!(key.ecosystem().as_str(), "pypi");
+        assert_eq!(
+            key.at_version("2.34.2").expect("a version").to_string(),
+            "pkg:pypi/requests@2.34.2"
+        );
+        assert_eq!(
+            Ecosystem::ALL,
+            [Ecosystem::Npm],
+            "the proxy routes npm only, so doctor must not report pypi coverage"
+        );
     }
 }
