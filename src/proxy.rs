@@ -882,9 +882,7 @@ fn read_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> 
                 versions,
                 artifacts,
                 skipped,
-                // Every version in the document, not the one being installed: a version
-                // offering only an sdist runs `setup.py` on install.
-                sdist_only_versions = sdist_only,
+                sdist_only_versions_listed = sdist_only,
                 held_packages,
                 held_records,
                 "simple index normalized"
@@ -919,6 +917,24 @@ fn read_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> 
             None
         }
     }
+}
+
+/// Whether this request is the resolver looking rather than the client installing.
+///
+/// A PyPI request that is neither a project index nor a file is a PEP 658
+/// `<file>.metadata` probe, and there are two orders of magnitude more of them than
+/// installs: measured 2026-09-16, `pip install boto3 'botocore<1.34' s3transfer` made 679
+/// of them and fetched 7 artifacts. At INFO they bury the 7 lines an operator needs, so
+/// they are logged at DEBUG.
+///
+/// Nothing else changes. A probe names a file the resolver is considering, not one it is
+/// installing, so it gets no record lookup, no policy decision and no audit entry: of the
+/// 679, zero produced any of the three.
+///
+/// npm keeps INFO for its unclassified traffic. `/-/v1/search` and `/-/whoami` are a
+/// handful per install, and `scripts/make/retry-matrix.sh` counts those lines.
+fn resolver_probe(ecosystem: Ecosystem, target: &RequestTarget) -> bool {
+    ecosystem == Ecosystem::PyPI && matches!(target, RequestTarget::Other)
 }
 
 /// Where a request goes upstream.
@@ -1374,16 +1390,29 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     let forward_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
 
+    let resolver_probe = resolver_probe(ecosystem, &target);
     let log_proxied = |bytes: u64| {
-        info!(
-            %method,
-            path = %path_and_query,
-            status = status.as_u16(),
-            bytes,
-            elapsed_ms = started.elapsed().as_millis() as u64,
-            client = %client_ua,
-            "proxied"
-        );
+        if resolver_probe {
+            debug!(
+                %method,
+                path = %path_and_query,
+                status = status.as_u16(),
+                bytes,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                client = %client_ua,
+                "proxied"
+            );
+        } else {
+            info!(
+                %method,
+                path = %path_and_query,
+                status = status.as_u16(),
+                bytes,
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                client = %client_ua,
+                "proxied"
+            );
+        }
     };
 
     let body_stream: ByteStream = Box::pin(upstream_response.bytes_stream());
@@ -4795,6 +4824,25 @@ mod tests {
                 None,
                 "an origin the proxy does not front is left where it is"
             );
+        }
+
+        /// A PEP 658 probe is the resolver looking. An index page and a file are not, and
+        /// npm has no equivalent, so its own unclassified traffic keeps its level.
+        #[test]
+        fn a_pep_658_probe_is_the_resolver_looking() {
+            for (path, expected) in [
+                ("/packages/ab/cd/x-1.0-py3-none-any.whl.metadata", true),
+                ("/simple/", true),
+                ("/packages/nonsense", true),
+                ("/simple/requests/", false),
+                ("/packages/ab/cd/x-1.0-py3-none-any.whl", false),
+                ("/-/v1/search?text=lodash", false),
+                ("/lodash", false),
+                ("/lodash/-/lodash-4.17.21.tgz", false),
+            ] {
+                let (ecosystem, target) = crate::route::classify(path);
+                assert_eq!(resolver_probe(ecosystem, &target), expected, "{path}");
+            }
         }
 
         /// PyPI's index and file hosts are reachable, so a file request is served rather

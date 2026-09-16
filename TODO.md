@@ -1784,8 +1784,14 @@ changes to the core, that is the finding — make it now, not after five adapter
 - [x] `[!]` Reimplement npm and PyPI on the extracted interface, behavior unchanged. The
       extraction was the reimplementation: each piece moved out of `npm` as PyPI needed it,
       with `make smoke-npm` and `make smoke-clients` green at every step.
-- [ ] `[!]` Handle the backtracking resolver's traffic shape (metadata fetched for
-      versions never installed — do not treat as install intent)
+- [x] `[!]` Handle the backtracking resolver's traffic shape (metadata fetched for
+      versions never installed — do not treat as install intent). Measured with
+      `pip install boto3 'botocore<1.34' s3transfer`: 7 indexes, 4,885 versions held, 679
+      PEP 658 probes, 7 artifacts fetched. Nothing treated a probe as intent, and the log
+      proves it: 679 probes, 7 record lookups, 7 policy decisions. Two things read as intent
+      and no longer do: the two per-document counts are now named `..._listed`, and a probe
+      logs at DEBUG, which took that install from 731 log lines to 52 with every index and
+      artifact line kept. See `docs/engineering_decisions/adapter-interface.md`.
 - [x] `[!]` PyPI normalizer to the common record. `pypi::normalize` gives a
       `PackageMetadata`, one `PackageRecord` per version, each holding every file that
       version offers. The proxy stores it, so an artifact request finds its digest and the
@@ -1835,8 +1841,10 @@ changes to the core, that is the finding — make it now, not after five adapter
             a range today. `dist-tags.latest` is kept as a string and deliberately not
             resolved: the lodash fixture tags `4.18.1` while the document carries only
             `4.17.21`, so a tag can name a version the `versions` map omits.
-      - [ ] `versions_with_install_scripts` in the log counts every version in the
-            document, not the version being installed. It needs the tarball request
+      - [~] `versions_with_install_scripts` in the log counts every version in the
+            document, not the version being installed. Renamed
+            `install_script_versions_listed`, so the name now says what it counts; the
+            resolved version's own answer still needs the artifact request
             correlated against the packument records, the same correlation
             `dist.integrity` already does in `src/store.rs`, applied to a second field.
             It cannot answer for the installed version until a range resolves to one.
