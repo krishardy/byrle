@@ -1223,7 +1223,6 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `cve_ids`, the per-CVE exception. The only exception keyed by something other than
       the package. Narrower than raising `max_cvss`, which would apply to every advisory
       the package acquires later.
-- [ ] Range resolution in the normalizer, never in the engine
 - [x] `explain` shows the decision vector: every check, its result, and for an `excepted`
       one the entry and expiry that excused it. `explain::decision` takes the policy, and
       `max_cvss` names its advisories from `decide::over_max_cvss`, the split the check
@@ -1375,8 +1374,6 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `From<Enrichment> for Finding` makes it fail.
 - [x] `[!]` `malware` capability gated separately. `Capability::Malware` is not implied by
       `Match`, and `MalwareStream` is its own trait returning `bool` rather than a finding.
-- [ ] Plugin-declared capabilities, operator-overridable; promotion harder than demotion.
-      Needs a config surface; deferred until one exists.
 - [x] Startup warning + `doctor` check: ecosystem enabled with no `match`-capable stream.
       `intel::capabilities_of` declares `osv/npm` (match, malware) and `cisa/kev` (enrich),
       keyed by the stream a snapshot records, and `LoadedSnapshot::gaps` checks every
@@ -1386,7 +1383,6 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       startup warning. Decided 2026-09-15: yes. `LoadedSnapshot::gaps` reports `match` gaps
       then `malware` gaps, at startup and in `doctor`. `known_malware` is the one check with
       no exception, and it never fires without a `malware` stream.
-- [ ] `waharoa status` shows adapter maturity and intel coverage as separate axes
 - [x] Explicit severity precedence config (enrich may escalate `max_cvss`, never originate).
       Settled as a rule rather than config: an enrichment may raise a score and may set
       `exploited`, never the reverse, so the result does not depend on the order streams
@@ -1533,11 +1529,6 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             Sources: `LoadedSnapshot` carries them (`/-/waharoa/ready` too) and
             `exploitation_loaded` reads them for `explain --policy` and `SnapshotIntel`. A
             kept snapshot records no streams. [kev-stream](docs/engineering_decisions/kev-stream.md).
-- [ ] NVD stream (licence-cleared: public domain, nothing owed) — `enrich`-only for
-      npm/PyPI, joined on exact CVE ID
-- [ ] NVD enrichment runs as a background job, never on the hot path
-- [ ] Revisit NVD `match` capability if/when the Maven adapter is scoped
-- [ ] Configurable severity precedence when streams disagree on CVSS
 - [x] Withdrawal propagation. A full load replaces every row a source held, so a withdrawn
       or deleted record is gone after the next load (`a_refresh_replaces_what_the_source_held`).
       Every stream loads in full and none loads incrementally, so there is nothing further to
@@ -1546,12 +1537,6 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       Upstream propagation is a separate matter and is measured: `GHSA-4j66-8f4r-3pjx` is
       withdrawn on GitHub and live in OSV's bundle, which the two streams now show side by
       side.
-- [ ] Per-stream refresh scheduling, rate limits, and API key config
-- [ ] Local mirrors for all streams (no dependency-graph leakage)
-- [ ] Per-stream enable/disable in policy config
-- [~] Configurable fail-open/fail-closed on stream unavailability, default closed. Closed
-      is built; the setting is not.
-- [ ] Stream authoring guide for third-party sources
 
 ### Intel storage
 - [x] **Decided: sqlx over Postgres, no ORM.**
@@ -1575,9 +1560,6 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       what is still unproven until the first push.
 - [x] Add sqlx to `Cargo.toml` and run it through `make check-deps`. Held at 0.8, with
       RUSTSEC-2023-0071 ignored only while `rsa` is not compiled:
-      `docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md`.
-- [ ] Move to sqlx 0.9 once a kani release bundles rustc 1.94 or later. kani 0.67.0 bundles
-      1.93.0-nightly and sqlx 0.9 requires 1.94. Steps are in
       `docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md`.
 - [x] `sqlx-cli` goes in `scripts/make/dev-setup.sh`, not an ad-hoc `cargo install`.
       Pinned to 0.8. An installed CLI of another minor is replaced.
@@ -1621,34 +1603,33 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       each stream's digest. No percentage: a refresh is one transaction, so there is no
       partial load to measure. See
       [readiness-endpoint](docs/engineering_decisions/readiness-endpoint.md).
-- [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, privacy tradeoff documented
 
 ### Carried from Stage 1
 
 Findings Stage 1 recorded as notes on completed work, which name the decision layer as
 where they get resolved.
 
-- [ ] `versions_with_install_scripts` in the log counts every version in the
-      document, not the version being installed. Stage 2 needs the resolved
-      version's answer, which needs the tarball request correlated against the
-      packument records. The same correlation `dist.integrity` already does in Stage 1
-      (`src/store.rs`), applied to a second field.
-- [ ] Range resolution still lives nowhere. `dist-tags.latest` is kept as a string
-      and deliberately not resolved: the lodash fixture tags `4.18.1` while the
-      document carries only `4.17.21`, so a tag can name a version the `versions`
-      map omits. Needed by the `versions_with_install_scripts` item above, which cannot
-      answer for the installed version until a range resolves to one.
-- [ ] A document that does not normalise is no longer rewritten either, since the
+- [x] A document that does not normalise is no longer rewritten either, since the
       URLs come from the records. Without records there is nothing to gate on
       anyway, and it is logged `UNINSPECTED`, but it does mean an unmodellable
       document loses artifact visibility as well as metadata.
-- [ ] Forwarding a packument unrewritten now means every artifact for that package
+      Accepted 2026-09-16: this is the behaviour the decision layer wants. Rewriting a
+      document the engine cannot read would point artifacts at a proxy that has no records
+      to judge them by, which is visibility without enforcement. `UNINSPECTED` is the
+      report, and the item below counts how often it fires.
+- [x] Forwarding a packument unrewritten now means every artifact for that package
       is fetched wherever the document says, which for pnpm and yarn is not through
       the proxy. Every such path logs `UNINSPECTED`: unreadable client encodings, no
       `Host` and no configured base, over the size cap, undecodable, unnormalizable,
       unserializable, and per-version artifacts on another origin. Stage 1 forwards
-      in all of them. **Stage 2 has to decide whether that stays acceptable**, since
-      the fail-open default is now weaker than it was.
+      in all of them. **Stage 2 has to decide whether that stays acceptable.**
+      Decided 2026-09-16: it stays, and rewriting is not the mechanism that fixes it.
+      `enforcement-tiers.md` already records that URL rewriting is turned off once the
+      proxy terminates TLS, which is the recommended deployment, so a decision layer
+      resting on rewriting would rest on the tier nobody is told to run. Tier 4 and 5 in
+      Stage 5 are where an artifact is reached whatever the document says.
+      What this stage owes is that a forward is never silent, and it is not: every path
+      above logs `UNINSPECTED`, and `doctor` warns on each setting that reduces coverage.
 
 ### Deferral status codes
 
@@ -1656,10 +1637,12 @@ Moved from Stage 1, where the client behaviour was measured but nothing could pr
 a deferral: there was no mirror to warm and nothing analysing. See
 `docs/engineering_decisions/deferral-status-codes.md`.
 
-- [ ] Per-client code selection inferred from user-agent (already parsed for dialect);
-      shipped table of known clients, operator-forceable global override. Keyed on the
-      user-agent the proxy sees, which for yarn 4 is
-      `got (https://github.com/sindresorhus/got)` and not yarn at all.
+503 is the only one of the three this stage could give a cause, and it has one. Everything
+that shapes a **429** moved to Stage 4 with the code itself: which code each client is
+given, the bounded wait bun needs, the machine-readable reason and digest, and logging
+whether a client returned inside the window. None of them can be settled before something
+defers.
+
 - [x] `[!]` Implement 503. Carried from Stage 1, where the split was decided (**502**
       upstream unreachable or malformed, **503** we are not ready, **429** this one
       artifact is under analysis) and only 502 could be built: there was no mirror to warm
@@ -1671,13 +1654,6 @@ a deferral: there was no mirror to warm and nothing analysing. See
             `a_store_that_cannot_answer_is_a_503_on_both_paths_and_nothing_is_fetched`. The
             body is plain text and there is no `Retry-After`.
             [intel-in-decisions](docs/engineering_decisions/intel-in-decisions.md).
-- [ ] A bounded internal wait is not a fallback but the main mechanism for bun,
-      which no code and no `Retry-After` buys any time from. Stage 2.
-- [ ] Unknown user-agent falls back to **503** — fail toward the more widely retried code
-- [ ] Machine-readable reason + artifact digest in response header and body (neither
-      code distinguishes cold-start from per-artifact analysis on its own)
-- [ ] Log every deferral and whether the client returned inside the window — turns the
-      compatibility table into evidence
 ### Observability
 - [x] `[!]` Ingestion history log for auditing: every time a vulnerability or malware feed is
       ingested, append an entry. Requested 2026-09-15. `intel_ingestion` (migration 0004)
@@ -1721,8 +1697,6 @@ a deferral: there was no mirror to warm and nothing analysing. See
             `known_malware`, `kev` and `max_cvss` as `pass` while `explain --policy` said
             they were unenforced. They now report `unenforced` everywhere, the audit log
             included.
-- [ ] `waharoa status` — ecosystem maturity tiers
-- [ ] CI lockfile verification: all resolved URLs point at the proxy
 
 **Exit:** a real package blocked for a real reason, with `explain` naming the rule that
 fired; npm enforcing against OSV with a real policy file; `explain` correct across every
@@ -1734,6 +1708,29 @@ merge and loosening case in all tiers; policy schema declared frozen.
 | npm enforcing against OSV with a real policy file | done: live against the full `npm/all.zip` load |
 | `explain` correct across every merge and loosening case | done: `tests/fixtures/explain/decisions.txt`, 22 cases. "Merge" now means global settings and the narrowest matching `packages` entry: there is no per-ecosystem tier |
 | policy schema declared frozen | done: `docs/engineering_decisions/policy-schema-v1-frozen.md`, held by `the_version_1_key_set_is_closed` |
+
+**Met, 2026-09-16.** Re-verified live against the store as it stands, four streams and
+migrations 0006 and 0007, rather than on the 2026-09-13 table above:
+
+```text
+pkg:npm/lodash@4.17.21          max_cvss        FAIL block  over max_cvss 6.9: GHSA-r5fr-rjxr-66jc 8.1, GHSA-xxjr-mmjv-4gpg 7.9
+pkg:npm/--hiljson@0.0.1-security known_malware  FAIL block  reported as malware; this has no exception
+pkg:npm/vant@2.13.3             known_malware   FAIL block  reported as malware; this has no exception
+                                install_scripts FAIL block  declares an install script
+```
+
+Every item this stage held is closed or in the stage that can finish it. Nothing was
+deleted: what moved says where it went and why, and the receiving item says where it came
+from. The four the stage decided rather than built are the two `UNINSPECTED` notes, the
+`postgres.rs` coverage exclusion, and withdrawal propagation.
+
+| Moved to | What |
+|---|---|
+| Stage 3 | `waharoa status`, range resolution and the install-script count that waits on it, not-applicable reaching a proxy path |
+| Stage 4 | 429 and everything that shapes one: per-client code, bounded wait, machine-readable reason, deferral logging |
+| Stage 5 | local mirrors, query-on-clean, sqlx 0.9, CI lockfile verification, persisting the publish-time store |
+| Stage 7 | stream authoring guide |
+| Deferred | five items needing a policy surface beyond frozen v1, and NVD |
 
 ---
 
@@ -1764,6 +1761,25 @@ changes to the core, that is the finding — make it now, not after five adapter
       `merge::applies` and its Go test cover not-applicable, and the flow chart carries
       `RECORD_install_scripts_NOT_APPLICABLE` under the golang branch. What is missing is
       an ecosystem with no install step going through the proxy, which this stage adds.
+- [ ] `waharoa status`: adapter maturity and intel coverage as separate axes, per
+      ecosystem. Moved from Stage 2, which held two items for this, one under the stream
+      capabilities and one under observability. Both wanted the same command and neither
+      has anything to report with one ecosystem: maturity is a comparison. The intel axis
+      is built and read by `doctor` already (`Capabilities::gaps` and `uncovered_by` warn
+      when a served ecosystem has no stream providing a capability).
+- [ ] **Range resolution, and the install-script count that waits on it.** Three Stage 2
+      items, one piece of work, moved here because the normalizer is what this stage
+      extracts and a range resolver designed against npm alone is the thing this stage
+      exists to prevent.
+      - [ ] Range resolution lives in the normalizer, never in the engine. Nothing resolves
+            a range today. `dist-tags.latest` is kept as a string and deliberately not
+            resolved: the lodash fixture tags `4.18.1` while the document carries only
+            `4.17.21`, so a tag can name a version the `versions` map omits.
+      - [ ] `versions_with_install_scripts` in the log counts every version in the
+            document, not the version being installed. It needs the tarball request
+            correlated against the packument records, the same correlation
+            `dist.integrity` already does in `src/store.rs`, applied to a second field.
+            It cannot answer for the installed version until a range resolves to one.
 - [ ] Document every core change this stage forced
 
 **Exit:** PyPI enforcing; adapter interface extracted from two working implementations
@@ -1803,6 +1819,17 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         client is given, the bounded internal wait bun needs, the machine-readable reason
         and digest, and logging whether a client returned inside the window.
         See `docs/engineering_decisions/deferral-status-codes.md`.
+  - [ ] Per-client code selection inferred from user-agent (already parsed for dialect);
+        shipped table of known clients, operator-forceable global override. Keyed on the
+        user-agent the proxy sees, which for yarn 4 is
+        `got (https://github.com/sindresorhus/got)` and not yarn at all.
+  - [ ] Unknown user-agent falls back to **503**, the more widely retried code.
+  - [ ] A bounded internal wait is not a fallback but the main mechanism for bun, which no
+        code and no `Retry-After` buys any time from.
+  - [ ] Machine-readable reason and artifact digest in the response header and body.
+        Neither code distinguishes cold-start from per-artifact analysis on its own.
+  - [ ] Log every deferral and whether the client returned inside the window, which turns
+        the compatibility table into evidence.
 - [ ] **Registry tarball vs. git source diffing** — expensive tier (git clone, ~tens of s)
   - [ ] Resolve repo URL and matching tag from package metadata
   - [ ] Normalize for expected build artifacts and packaging noise
@@ -1930,6 +1957,24 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 - [ ] `waharoa doctor` should check that the configured public URL resolves
       and matches what lockfiles in the project record. This is the failure
       an operator will actually hit.
+- [ ] CI lockfile verification: every resolved URL in a project's lockfile points at the
+      proxy. Moved from Stage 2, where it predated any CI. The parser is built
+      (`src/lockfile.rs` reads `resolved` for npm, pnpm, yarn and bun), and this is the
+      check a team runs to catch an install that bypassed the proxy. It sits beside the
+      doctor item above, which is the same comparison from the other end.
+- [ ] **Local mirrors for every stream**, so a refresh does not tell each upstream which
+      packages this organisation asks about. Moved from Stage 2: nothing about it is
+      needed to make a decision, and it is a deployment property of a team running the
+      proxy in blocking mode. Every stream is fetched from its own origin today
+      ([intel-distribution-fetch-from-origin](docs/engineering_decisions/intel-distribution-fetch-from-origin.md)).
+  - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, is the same tradeoff
+        from the other side: asking OSV about one package leaks that package. It stays
+        opt-in and documented, and a mirror is the answer for anyone who cannot accept it.
+- [ ] Move to sqlx 0.9 once a kani release bundles rustc 1.94 or later. kani 0.67.0 bundles
+      1.93.0-nightly and sqlx 0.9 requires 1.94. Steps are in
+      `docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md`. Moved from Stage 2: it
+      waits on an upstream release, and RUSTSEC-2023-0071 is accepted meanwhile only while
+      `rsa` is not compiled.
 
 - [ ] `[!]` Analysis cache keyed by **tarball content digest** (install-script presence,
       source diff, capability analysis — permanently valid). Metadata always passes
@@ -1984,7 +2029,11 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       early enough in the stage that a rename is not competing with the announcement.
       See the plan header.
 - [ ] Migration guide from Socket Firewall Free / pkggate
-- [ ] CONTRIBUTING.md, adapter authoring guide, detector authoring guide
+- [ ] CONTRIBUTING.md, adapter authoring guide, detector authoring guide, and a stream
+      authoring guide for third-party advisory sources. The last moved from Stage 2: it
+      documents `intel::stream::Stream` and the capability grants for someone outside this
+      repository, which is a launch concern rather than a decision-layer one.
+      [stream-descriptor-table](docs/engineering_decisions/stream-descriptor-table.md)
 - [ ] OSV mirror distribution plan (plan §10.6)
 - [ ] Announce: OpenSSF slack, HN, relevant ecosystem security channels
 
@@ -1992,6 +2041,30 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 
 ## Deferred / post-v1
 
+- [ ] **Everything that needs a policy surface beyond schema v1.** Five Stage 2 items with
+      one cause: the v1 key set is closed and held by `the_version_1_key_set_is_closed`, so
+      none of them can be configured without a v2.
+      [policy-schema-v1-frozen](docs/engineering_decisions/policy-schema-v1-frozen.md).
+  - [ ] Per-stream enable/disable.
+  - [ ] Per-stream refresh scheduling, rate limits and API key config. `waharoa refresh`
+        loads every stream in `intel::stream::ALL` on each run and reads one token from the
+        environment.
+  - [ ] Plugin-declared capabilities, operator-overridable, promotion harder than demotion.
+        `intel::capabilities_of` reads the grants this build declares and an operator cannot
+        change them.
+  - [ ] Configurable severity precedence when streams disagree on CVSS. Today the highest
+        score stands, the direction `max_cvss` reads, set in `Facts::with_intel`.
+  - [ ] Configurable fail-open/fail-closed on stream unavailability. Closed is built and is
+        the default anyone would want; the setting is what is missing.
+- [ ] **NVD stream**, three Stage 2 items with one subject. Licence-cleared: public domain,
+      nothing owed. `enrich`-only for npm and PyPI, joined on exact CVE id, because NVD is
+      keyed by CPE and cannot be asked about a package.
+      [nvd-role-and-stream-capabilities](docs/engineering_decisions/nvd-role-and-stream-capabilities.md).
+  - [ ] Its enrichment runs as a background job, never on the hot path.
+  - [ ] Revisit the `match` capability if and when the Maven adapter is scoped, where CPE
+        coverage is stronger.
+  - [ ] Deferred rather than staged: `enrich` has no implemented producer, so NVD would be
+        the first, and CISA's KEV catalogue already exercises the same seam at lower cost.
 - [ ] Go adapter (`GOPROXY`) — low marginal value, checksum DB already covers tamper-evidence
 - [ ] Maven adapter (`settings.xml` mirror)
 - [ ] **AI agent profiles** — stricter policy for agent-initiated installs
