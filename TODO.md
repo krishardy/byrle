@@ -1775,7 +1775,19 @@ changes to the core, that is the finding — make it now, not after five adapter
 - [ ] `[!]` Reimplement npm and PyPI on the extracted interface, behavior unchanged
 - [ ] `[!]` Handle the backtracking resolver's traffic shape (metadata fetched for
       versions never installed — do not treat as install intent)
-- [ ] `[!]` PyPI normalizer to the common record
+- [~] `[!]` PyPI normalizer to the common record. `pypi::records` gives one
+      `PackageRecord` per version, naming the file a resolver would take. Three of the four
+      candidate core changes turned out not to be changes: the sha256 hex converts to SRI
+      through `integrity::Algorithm::Sha256`, `PackumentDetail::Full` already means what a
+      simple index is, and a yank is an upstream signal rather than a decision here.
+      - [ ] **The one real divergence: a record holds one artifact and a PyPI version has
+            several files.** Kept out of the core deliberately, as the input to the
+            extraction step rather than a change made before it. `pypi::records` answers the
+            version question and `Project::files` answers the per-file one.
+      - [ ] `PackumentDetail::Abbreviated`/`Full` is npm vocabulary, 88 uses. Renaming it
+            belongs to the extraction, not here.
+      - [x] `Ecosystem::PyPI` exists; `Ecosystem::ALL` still holds npm alone, because that
+            is the served set `doctor` and `/-/waharoa/ready` report on.
 - [~] `[!]` sdist vs. wheel distinction for install-script semantics. `Kind` and
       `Project::only_sdist` read it: a version offering a wheel is not an install-script
       version, and one offering only an sdist leaves a resolver no choice. Not yet wired to
