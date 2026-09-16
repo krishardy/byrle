@@ -229,7 +229,32 @@ Items that I've added that are not stage-bound.
     `set -e` a `grep` in a command substitution that matches nothing exits 1 and kills the
     script with no diagnosis, which is exactly the case each check exists to report. Both
     are `|| true` now.
-19. [ ] Are `make smoke-npm` and `make smoke-clients` still both needed?
+19. [x] Are `make smoke-npm` and `make smoke-clients` still both needed?
+    Yes. Neither subsumes the other, and the overlap is one row out of five.
+    `smoke-clients` is the only check covering pnpm, yarn 1, yarn 4 and bun. Four clients
+    with no coverage anywhere else, and the only live check on
+    `docs/engineering_decisions/packument-tarball-url-rewriting.md`: every one of them
+    except npm fetches `dist.tarball` from the host the packument names, so an artifact
+    count of zero for any of them means the rewrite stopped working.
+    `smoke-npm` is the only check on the purl at the version on disk, the scoped name's
+    percent-encoding, `skipped=0` on every packument, the digest being known *before* the
+    fetch, no offsite artifact against the real registry, `npm ci` verifying every artifact
+    although it requests no packuments, and policy filtering on resolution while refusing a
+    pinned fetch with the artifact never fetched.
+    The overlap is npm's own row in `smoke-clients`, which is a weaker form of `smoke-npm`
+    steps 1 and 4. It stays: it is the baseline the other four are compared against, and
+    without it the table says nothing.
+    Runtime is not a reason to merge: 11s and 8s, against 17s for `make smoke-python`.
+    What was actually wrong was the naming, once `smoke-python` existed. "clients" read as
+    all clients when it means the npm ecosystem's five, and `smoke-python` covers both
+    questions in one target because PyPI has two clients that agree. `make help` now says
+    which ecosystem each one is about. The target is not renamed: `smoke-clients` appears in
+    a dozen records of past runs in this file, plus README.md and `inspect.sh`, and
+    rewriting those to chase a name costs more than it buys.
+    Also found: `scripts/make/dev-setup.sh` knew nothing about Python. Without uv,
+    `make smoke-python` passes having checked one client instead of two, which is the
+    failure this repo already refuses to accept for shellcheck. It now reports python3 and
+    installs uv through pipx.
 20. [ ] main.rs is still NPM focused, especially in the comments. Generalize the comments and code.
 
 ## Stage 1 — Pass-through proxy (transport)
