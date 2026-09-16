@@ -688,12 +688,16 @@ implementations.
                   the fixture has no real signing key, so this narrows where npm looks
                   without settling what it does with a valid one. Source is still the
                   basis for that half.
-- [~] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
+- [x] `[!]` Status-code split: **502** upstream unreachable/malformed · **503** we are
       not ready (mirror warming, all requests) · **429** we are ready but this one
-      artifact is under analysis.
+      artifact is under analysis. The split is decided and each code now has a home.
       - [x] 502 is implemented and tested, for every request kind. The
             `WAHAROA_CA_BUNDLE_EXCLUSIVE` handshake failure exercises it against a real
             registry as well.
+      - [x] 503 landed in Stage 2, on the intel store: a store with no snapshot, or one
+            that errors, answers 503 on both paths with nothing fetched.
+      - [x] 429 is in Stage 4, under the analysis cost tier. It had no cause here:
+            nothing held an artifact long enough to defer one.
 - [x] `[!]` Never 4xx-that-reads-as-a-block for a not-ready state (same rule as cold
       start). Held by a test that enumerates the statuses the proxy produces of its own
       accord: 502 for an unreachable upstream on every request kind, 200 for health, and
@@ -1113,11 +1117,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       registry.npmjs.org: `--hiljson` filtered from its packument and its tarball refused
       403 with `known_malware: reported as malware`, `lodash` served.
       `docs/engineering_decisions/intel-in-decisions.md`.
-- [~] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
+- [x] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
       own, and is a **packument filter** rather than an artifact refusal: Stage 1's
       `npm::filter_unservable_versions` is the mechanism.
-      The check is done and tested in `decide.rs`. **What is missing is the fact**, and
-      that is the whole of the remaining work here.
+      The check is done and tested in `decide.rs`, and `npm::publish_times` supplies the
+      fact. Persisting that store across restarts moved to Stage 5, beside the packument
+      store it sits next to.
       - [x] **The publish time is not in the document the proxy fetches.** npm sends
             `time` only in the full packument. `npm install` asks for the abbreviated one
             and so does `fetch_and_store`, so `published` is `None` for every record this
@@ -1154,9 +1159,6 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             once the proxy terminates TLS, which silently stopped the filtering with it.
             Verified in both modes: 11 of ms's 32 versions survive a 10-year cooldown
             either way.
-      - [ ] The store that would hold it is per-process and dies with the proxy, so
-            without persistence every restart re-fetches every full document. See the
-            Stage 5 item.
 - [x] `[!]` `kev`. `block` or `allow`. Logic in `decide.rs`; the source is CISA's catalogue,
       loaded as `cisa/kev` ([kev-stream](docs/engineering_decisions/kev-stream.md)).
       CISA's catalogue is ecosystem-agnostic because it has no package identifier at all,
@@ -1184,16 +1186,15 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `an_advisory_over_max_cvss_is_filtered_from_the_packument_and_one_at_it_is_not` in
       `src/proxy.rs`. Live: `lodash@4.17.21` refused 403 on `max_cvss`. The unscored
       advisories are the `[?]` item under the intel streams.
-- [~] `[!]` `install_scripts`. `block` or `allow`. Global setting, asked of every
+- [x] `[!]` `install_scripts`. `block` or `allow`. Global setting, asked of every
       ecosystem, reporting not-applicable where the ecosystem has no install step.
+      Not-applicable reaching a proxy path moved to Stage 3, which is where a second
+      ecosystem exists to report it for.
       Enforced by the proxy on both paths: `an_install_script_is_refused_on_a_pinned_fetch_under_block`
       and `an_install_script_is_filtered_from_the_packument_under_block_only` in
       `src/proxy.rs`, over esbuild 0.28.2, which carries `hasInstallScript`. Measured to be
       silent in normal operation: 0 of 138 packages in a real `express + eslint` tree
       declare one.
-      - [ ] Not-applicable for an ecosystem with no install step reaches no proxy path until
-            a second ecosystem exists (Stage 3). `merge::applies` and its Go test cover the
-            engine.
 
 ### Package tier
 
@@ -1467,24 +1468,27 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       separate fixed versions (lodash `GHSA-xxjr-mmjv-4gpg` and `GHSA-f23m-r3pf-42rh`). One
       vulnerability never fires three rules: `decide` gives each check one result.
       [alias-matching](docs/engineering_decisions/alias-matching.md).
-- [~] `[!]` GitHub Advisory stream (GraphQL, token auth). OSV and GitHub are both **signal
-      streams**: each is checked independently, each records what it holds, and the full set
+- [x] `[!]` GitHub Advisory stream (GraphQL, token auth), loaded as `github/npm`. OSV and
+      GitHub are both **signal streams**: each is checked independently, each records what it holds, and the full set
       is judged once at `Evaluate_Decision_Vector`. Two streams reporting one vulnerability is
       corroboration, which is what `datadog/npm` already does beside `osv/npm`.
       Overlap measured 2026-09-16: 7,056 not-withdrawn npm advisories on GitHub, 7,055 in the
       bundle, 7,053 in both, 3 GitHub only, 2 OSV only. `GHSA-4j66-8f4r-3pjx` is withdrawn on
       GitHub and live in OSV's bundle.
+      Live: all 7,056 stored under source `github`, beside 228,330 `osv` and 48,316
+      `datadog` rows, and all three advisories OSV lacks are among them.
       [github-advisory-signal-stream](docs/engineering_decisions/github-advisory-signal-stream.md).
-      - [ ] `UNIQUE (source, publisher_id)` in place of the global unique on `publisher_id`.
-            GitHub publishes the same `GHSA-` ids OSV imports, so the second stream to load one
-            fails today. `PgIntel::replace` already reads keys back per source, so the
-            migration is the change.
-      - [ ] `Stream` gains a transport: GHSA is a POST with `Authorization: bearer` and cursor
-            pagination, where `fetch` is one unauthenticated GET. Pages concatenate into one
-            buffer so `parse: fn(&[u8])` is unchanged, and `ceiling` bounds the total.
-      - [ ] `WAHAROA_GITHUB_TOKEN` in `src/env.rs`, which changes `--help` and
-            `tests/fixtures/cli/help.txt`. Declared `Optional`: a missing token must not stop
-            a refresh.
+      - [x] `UNIQUE (source, publisher_id)` in place of the global unique on `publisher_id`,
+            migration 0006. GitHub publishes the same `GHSA-` ids OSV imports, so the second
+            stream to load one failed. `PgIntel::replace` already read keys back per source,
+            so the migration was the whole change.
+      - [x] `Stream` gains a `transport`: GHSA is a POST with `Authorization: bearer` and
+            cursor pagination, where `fetch` is one unauthenticated GET. `fetch_graphql`
+            concatenates the pages into one JSON array, so `parse: fn(&[u8])` is unchanged
+            and `ceiling` bounds the whole array.
+      - [x] The token in `src/env.rs` as `env::GITHUB_TOKEN`, with
+            `tests/fixtures/cli/help.txt` regenerated. The stream is `Optional`: without a
+            token the other three still load and the refresh exits 1.
       - [x] Severity band for the advisories with no CVSS score, through `osv::band_ceiling`,
             so both streams score one advisory alike. GitHub writes `0.0` for an advisory it
             has not scored, which is not a CVSS 0.0.
@@ -1639,18 +1643,17 @@ a deferral: there was no mirror to warm and nothing analysing. See
       shipped table of known clients, operator-forceable global override. Keyed on the
       user-agent the proxy sees, which for yarn 4 is
       `got (https://github.com/sindresorhus/got)` and not yarn at all.
-- [~] `[!]` Implement 503 and 429. Carried from Stage 1, where the split was decided
-      (**502** upstream unreachable or malformed, **503** we are not ready, **429** this
-      one artifact is under analysis) and only 502 could be built: there was no mirror to
-      warm and nothing analysing, so implementing either of the others meant inventing
-      the trigger. The mirror and the analysis queue are what give them a cause.
+- [x] `[!]` Implement 503. Carried from Stage 1, where the split was decided (**502**
+      upstream unreachable or malformed, **503** we are not ready, **429** this one
+      artifact is under analysis) and only 502 could be built: there was no mirror to warm
+      and nothing analysing, so implementing either of the others meant inventing the
+      trigger. The intel store gave 503 a cause. 429 moved to Stage 4, under the analysis
+      cost tier, which is the detector that holds an artifact long enough to defer one.
       - [x] 503 when the intel store holds no snapshot or errors, on the packument and the
             artifact path, with nothing fetched:
             `a_store_that_cannot_answer_is_a_503_on_both_paths_and_nothing_is_fetched`. The
             body is plain text and there is no `Retry-After`.
             [intel-in-decisions](docs/engineering_decisions/intel-in-decisions.md).
-      - [ ] 429 has no cause until an expensive detector can hold one artifact: Stage 4's
-            analysis cost tier.
 - [ ] A bounded internal wait is not a fallback but the main mechanism for bun,
       which no code and no `Retry-After` buys any time from. Stage 2.
 - [ ] Unknown user-agent falls back to **503** — fail toward the more widely retried code
@@ -1739,7 +1742,11 @@ changes to the core, that is the finding — make it now, not after five adapter
 - [ ] `[!]` PyPI normalizer to the common record
 - [ ] `[!]` sdist vs. wheel distinction for install-script semantics
 - [ ] pip and uv both verified
-- [ ] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass)
+- [ ] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass).
+      Moved from Stage 2's `install_scripts`, where the engine side is built:
+      `merge::applies` and its Go test cover not-applicable, and the flow chart carries
+      `RECORD_install_scripts_NOT_APPLICABLE` under the golang branch. What is missing is
+      an ecosystem with no install step going through the proxy, which this stage adds.
 - [ ] Document every core change this stage forced
 
 **Exit:** PyPI enforcing; adapter interface extracted from two working implementations
@@ -1770,6 +1777,15 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         an expensive detector runs only if the cheap decision vector has not already
         settled the answer. See `docs/engineering_decisions/policy-tier-resolution.md`,
         "Where the short circuit survives".
+  - [ ] Implement **429**, moved from Stage 2. The split was decided in Stage 1 (502
+        upstream unreachable or malformed, 503 we are not ready, 429 this one artifact is
+        under analysis) and 503 landed in Stage 2 on the intel store. 429 had no cause:
+        nothing held an artifact long enough to defer one. This tier is that cause, and
+        only an expensive detector may produce the retry.
+        The unresolved parts are in Stage 2's "Deferral status codes": which code each
+        client is given, the bounded internal wait bun needs, the machine-readable reason
+        and digest, and logging whether a client returned inside the window.
+        See `docs/engineering_decisions/deferral-status-codes.md`.
 - [ ] **Registry tarball vs. git source diffing** — expensive tier (git clone, ~tens of s)
   - [ ] Resolve repo URL and matching tag from package metadata
   - [ ] Normalize for expected build artifacts and packaging noise
@@ -1888,6 +1904,12 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       concurrency-memory item worse rather than better. Measured RSS after an
       `express + @babel/code-frame` install holding 70 packuments and 2,576
       records: 25 MB.
+- [ ] The publish-time store is per-process too, so every restart re-fetches every full
+      packument a cooldown needs. `npm::publish_times` parses only the `time` map and
+      caches per package, bounded at 1,024. Moved from Stage 2's `cooldown_days`, where
+      the check and the fetch are built and persistence is all that is left. The full
+      document is 1.7x to 3.6x the abbreviated one, measured over eight packages, so a
+      restart costs that much again on every package a cooldown is asked about.
 - [ ] `waharoa doctor` should check that the configured public URL resolves
       and matches what lockfiles in the project record. This is the failure
       an operator will actually hit.
