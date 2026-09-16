@@ -65,7 +65,7 @@ use crate::origin::{Disposition, OriginPolicy, ReachableOrigins};
 use crate::policy::{Policy, enforce, facts};
 use crate::record::{PackageMetadata, PackageRecord, PackumentDetail};
 use crate::refusal::RefusalStatus;
-use crate::route::RequestTarget;
+use crate::route::{DocumentKind, RequestTarget};
 use crate::store::{Lookup, RecordStore};
 use crate::verified::VerifiedArtifacts;
 use axum::{
@@ -157,19 +157,6 @@ pub struct Health {
     pub records_held: usize,
     /// Artifacts fetched and verified since the proxy started. See [`crate::verified`].
     pub artifacts_verified: usize,
-}
-
-/// Which metadata document a response body is.
-///
-/// Read from the response's `Content-Type`, not the request: npm asks for both packument
-/// kinds in one `Accept` header and settles nothing, and an index may answer HTML where
-/// PEP 691 JSON was asked for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Document {
-    /// An npm packument, abbreviated or full.
-    Packument(PackumentDetail),
-    /// A PEP 691 simple index.
-    SimpleIndex,
 }
 
 /// What reading a packument body produced.
@@ -822,19 +809,6 @@ fn uninspected(
 /// kinds in one `Accept` header; pip asks for PEP 691 JSON and an index that does not
 /// serve it answers HTML, which is not a shape this reads. `None` forwards the body
 /// untouched.
-fn document_from_content_type(
-    ecosystem: Ecosystem,
-    content_type: Option<&str>,
-) -> Option<Document> {
-    match ecosystem {
-        Ecosystem::Npm => npm::detail_from_content_type(content_type).map(Document::Packument),
-        Ecosystem::PyPI => {
-            let media_type = content_type?.split(';').next()?.trim().to_ascii_lowercase();
-            (media_type == crate::pypi::SIMPLE_JSON).then_some(Document::SimpleIndex)
-        }
-    }
-}
-
 /// Point a simple index's files at the proxy.
 ///
 /// pip uses each file's `url` as written, so without this every file is fetched from
@@ -969,7 +943,8 @@ fn upstream_url(
     // fall-through would quietly give it PyPI's two hosts.
     match ecosystem {
         Ecosystem::Npm => format!("{}{path_and_query}", proxy.upstream),
-        // The two prefixes and nothing else: `pypi::serves` is what sent the request here.
+        // The two prefixes and nothing else: PyPI's row of `ecosystem::TABLE` claims
+        // those, and that is what sent the request here.
         Ecosystem::PyPI => match path_and_query.strip_prefix("/simple") {
             Some(rest) => format!("{}{rest}", proxy.upstream_pypi),
             None => format!("{}{path_and_query}", crate::pypi::FILES),
@@ -1341,7 +1316,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let content_type = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok());
-    let document = document_from_content_type(ecosystem, content_type);
+    let document = crate::ecosystem::of(ecosystem).document(content_type);
 
     // A warm client cache sends If-None-Match, and 304 carries no body, so there is
     // nothing to normalise from this response. The client is about to resolve against a
@@ -1506,7 +1481,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // per-version filtering: filtering a simple index is the range-resolution work, which
     // is open.
     let detail = match document {
-        Document::SimpleIndex => {
+        DocumentKind::SimpleIndex => {
             let forwarded = decoded.as_deref().and_then(|d| {
                 read_index(
                     &proxy,
@@ -1526,7 +1501,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 log_proxied,
             );
         }
-        Document::Packument(detail) => detail,
+        DocumentKind::Packument(detail) => detail,
     };
 
     // Nothing to normalise when decoding failed; it was logged above.
@@ -4728,22 +4703,22 @@ mod tests {
                 (
                     Ecosystem::Npm,
                     Some("application/vnd.npm.install-v1+json; charset=utf-8"),
-                    Some(Document::Packument(PackumentDetail::Abbreviated)),
+                    Some(DocumentKind::Packument(PackumentDetail::Abbreviated)),
                 ),
                 (
                     Ecosystem::Npm,
                     Some("application/json"),
-                    Some(Document::Packument(PackumentDetail::Full)),
+                    Some(DocumentKind::Packument(PackumentDetail::Full)),
                 ),
                 (
                     Ecosystem::PyPI,
                     Some("application/vnd.pypi.simple.v1+json"),
-                    Some(Document::SimpleIndex),
+                    Some(DocumentKind::SimpleIndex),
                 ),
                 (
                     Ecosystem::PyPI,
                     Some("APPLICATION/VND.PYPI.SIMPLE.V1+JSON; charset=utf-8"),
-                    Some(Document::SimpleIndex),
+                    Some(DocumentKind::SimpleIndex),
                 ),
                 (Ecosystem::PyPI, Some("text/html"), None),
                 (Ecosystem::PyPI, Some("application/json"), None),
@@ -4755,7 +4730,7 @@ mod tests {
                 (Ecosystem::PyPI, None, None),
             ] {
                 assert_eq!(
-                    document_from_content_type(ecosystem, content_type),
+                    crate::ecosystem::of(ecosystem).document(content_type),
                     expected,
                     "{ecosystem:?} {content_type:?}"
                 );

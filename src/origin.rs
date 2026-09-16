@@ -6,22 +6,8 @@
 //! tarballs from one host and PyPI serves its index from `pypi.org` and its files from
 //! `files.pythonhosted.org`, so the set is per deployment and never per ecosystem.
 
-use crate::identity::Ecosystem;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-
-/// Origins an ecosystem reaches whatever the operator configured.
-///
-/// The configured upstream is added beside these, not instead of them: npm rewrites
-/// `dist.tarball` to the configured registry when it names the default host, and a PyPI
-/// index published on a mirror still gives `files.pythonhosted.org` URLs for files it does
-/// not hold itself.
-pub fn always_reachable(ecosystem: Ecosystem) -> &'static [&'static str] {
-    match ecosystem {
-        Ecosystem::Npm => &[crate::npm::DEFAULT_REGISTRY],
-        Ecosystem::PyPI => &[crate::pypi::INDEX, crate::pypi::FILES],
-    }
-}
 
 /// The origins whose artifacts the proxy serves.
 ///
@@ -31,8 +17,13 @@ pub fn always_reachable(ecosystem: Ecosystem) -> &'static [&'static str] {
 /// an artifact could be rewritten and reported as bypassing, or left alone and reported
 /// as fine.
 ///
-/// Always holds every configured upstream and every origin [`always_reachable`] names, for
-/// every ecosystem the crate can express. Additional origins are for a registry that serves
+/// Always holds every configured upstream and every origin each row of
+/// [`crate::ecosystem::TABLE`] always reaches. The configured upstream is added beside
+/// those, not instead of them: npm rewrites `dist.tarball` to the configured registry when
+/// it names the default host, and a PyPI index published on a mirror still gives
+/// `files.pythonhosted.org` URLs for files it does not hold itself.
+///
+/// Additional origins are for a registry that serves
 /// artifacts from somewhere else, a CDN in front of a private registry being the case to
 /// expect. Zero of the 24,852 artifact URLs measured on registry.npmjs.org needed one.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,13 +57,13 @@ impl std::error::Error for OriginError {}
 impl ReachableOrigins {
     /// Build from the configured upstreams plus any additional origins.
     ///
-    /// Every ecosystem's [`always_reachable`] origins are included. Anything that is not a
-    /// URL with a host is an error rather than being dropped: an operator who names an
-    /// origin and has it silently ignored would believe those artifacts are covered.
+    /// Every row of [`crate::ecosystem::TABLE`] contributes its origins. Anything that is
+    /// not a URL with a host is an error rather than being dropped: an operator who names
+    /// an origin and has it silently ignored would believe those artifacts are covered.
     ///
-    /// Every ecosystem, not only the served ones. A packument can publish an artifact on
-    /// any host, and `Ecosystem::ALL` answers which ecosystems the proxy serves, which is a
-    /// different question from which hosts it can fetch through.
+    /// Every row, whatever `Ecosystem::ALL` reports as served. A packument can publish an
+    /// artifact on any host, so which hosts the proxy can fetch through is a different
+    /// question from which ecosystems it routes.
     pub fn new<'a, 'b>(
         upstreams: impl IntoIterator<Item = &'a str>,
         additional: impl IntoIterator<Item = &'b str>,
@@ -84,8 +75,8 @@ impl ReachableOrigins {
                 origins.push(origin);
             }
         }
-        for ecosystem in Ecosystem::EXPRESSIBLE {
-            for base in always_reachable(ecosystem) {
+        for registry in crate::ecosystem::TABLE {
+            for base in registry.always_reachable {
                 let origin = normalise_origin(base)?;
                 if !origins.contains(&origin) {
                     origins.push(origin);
@@ -458,6 +449,7 @@ pub(crate) fn reachable_path(url: &str, reachable: &ReachableOrigins) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::Ecosystem;
 
     const UPSTREAM: &str = crate::npm::DEFAULT_REGISTRY;
 
@@ -494,11 +486,11 @@ mod tests {
     #[test]
     fn each_ecosystem_names_the_origins_it_always_reaches() {
         assert_eq!(
-            always_reachable(Ecosystem::Npm),
+            crate::ecosystem::of(Ecosystem::Npm).always_reachable,
             ["https://registry.npmjs.org"]
         );
         assert_eq!(
-            always_reachable(Ecosystem::PyPI),
+            crate::ecosystem::of(Ecosystem::PyPI).always_reachable,
             ["https://pypi.org/simple", "https://files.pythonhosted.org"]
         );
     }

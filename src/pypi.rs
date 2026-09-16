@@ -221,28 +221,17 @@ fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
 /// PEP 503 puts a project's index under `/simple/`. `/packages/` is where PyPI serves its
 /// files, and the proxy keeps that path so a rewritten file URL round-trips: the hash
 /// segments the index published are what locate the file upstream.
-pub const PREFIXES: [&str; 2] = ["/simple/", "/packages/"];
-
-/// Whether this proxy answers `path` as PyPI rather than npm.
+/// Which metadata document a body with this `Content-Type` is.
 ///
-/// A prefix test, not a classification: `/simple/` itself and `/packages/nonsense` are
-/// PyPI's to answer even though neither names a project. Without that they would be
-/// forwarded to the npm registry, which is not where the client is looking.
-///
-/// `/simple` and `/packages` without the slash are npm packages by those names, and
-/// `npm::key_from_name` no longer turns `/simple/requests` into `pkg:npm/simple/requests`,
-/// so nothing npm can serve lives under either prefix.
-pub fn serves(path: &str) -> bool {
-    let path = path.split('?').next().unwrap_or(path);
-    PREFIXES.iter().any(|prefix| path.starts_with(prefix))
+/// PyPI's row of [`crate::ecosystem::TABLE`] reads media types through this. Only PEP 691
+/// JSON is read; an index that answers HTML is forwarded unchanged.
+pub fn document_from_content_type(
+    content_type: Option<&str>,
+) -> Option<crate::route::DocumentKind> {
+    (crate::route::media_type(content_type)? == SIMPLE_JSON)
+        .then_some(crate::route::DocumentKind::SimpleIndex)
 }
 
-/// Classify a request path on a PyPI mirror.
-///
-/// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the
-/// files live; PyPI serves them from a second host under `/packages/`, and the index gives
-/// their URLs in full. A path this cannot classify comes back as
-/// [`RequestTarget::Other`] and is forwarded, the same as npm's.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let path = path.trim_start_matches('/');

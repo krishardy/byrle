@@ -65,9 +65,8 @@ impl Ecosystem {
 
     /// Every ecosystem a package can be named in, served or not.
     ///
-    /// `origin::ReachableOrigins` reads this: which hosts the proxy can fetch through is a
-    /// different question from which ecosystems it routes, and a packument can publish an
-    /// artifact on any host.
+    /// `ecosystem::TABLE` is checked against this: a variant with no row would make
+    /// `ecosystem::of` panic on the request path, so the count has to match.
     pub const EXPRESSIBLE: [Ecosystem; 2] = [Ecosystem::Npm, Ecosystem::PyPI];
 
     /// The purl `type` component, and the string OSV keys on.

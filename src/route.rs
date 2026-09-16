@@ -1,4 +1,5 @@
-//! What a request path refers to, in terms every ecosystem answers.
+//! What a request path refers to and what a response body is, in terms every ecosystem
+//! answers.
 //!
 //! The proxy serves more than one registry, and each spells its paths differently:
 //! npm's `/lodash` and `/lodash/-/lodash-4.17.21.tgz`, PyPI's `/simple/requests/` and
@@ -7,6 +8,7 @@
 //! and each ecosystem's `classify_path` produces it.
 
 use crate::identity::{Ecosystem, PackageKey};
+use crate::record::PackumentDetail;
 
 /// What a request path refers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,17 +37,35 @@ pub enum RequestTarget {
     Other,
 }
 
+/// Which metadata document a response body is.
+///
+/// Read from the response's `Content-Type`, not the request: npm asks for both packument
+/// kinds in one `Accept` header and settles nothing, and an index may answer HTML where
+/// PEP 691 JSON was asked for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DocumentKind {
+    /// An npm packument, abbreviated or full.
+    Packument(PackumentDetail),
+    /// A PEP 691 simple index.
+    SimpleIndex,
+}
+
+/// The media type out of a `Content-Type`, lowercased, with parameters dropped.
+///
+/// `application/json; charset=UTF-8` and `Application/JSON` both give `application/json`.
+/// Every ecosystem's reader compares against a constant, so they all start here.
+pub fn media_type(content_type: Option<&str>) -> Option<String> {
+    Some(content_type?.split(';').next()?.trim().to_ascii_lowercase())
+}
+
 /// Which ecosystem answers this request path, and what the path refers to.
 ///
 /// The proxy serves npm at the root, because that is where a client configured with
-/// `registry=http://proxy/` looks, and PyPI under the prefixes [`crate::pypi::PREFIXES`]
-/// reserves. A path under one of those is PyPI's whatever it turns out to be, including
-/// when it names no project: sending pip's other requests to an npm registry answers them
-/// with npm's 404 rather than PyPI's.
+/// `registry=http://proxy/` looks, and PyPI under the prefixes its
+/// [`crate::ecosystem::Registry`] entry reserves. A path under one of those is PyPI's
+/// whatever it turns out to be, including when it names no project: sending pip's other
+/// requests to an npm registry answers them with npm's 404 rather than PyPI's.
 pub fn classify(path: &str) -> (Ecosystem, RequestTarget) {
-    if crate::pypi::serves(path) {
-        (Ecosystem::PyPI, crate::pypi::classify_path(path))
-    } else {
-        (Ecosystem::Npm, crate::npm::classify_path(path))
-    }
+    let registry = crate::ecosystem::serving(path);
+    (registry.ecosystem, registry.classify(path))
 }
