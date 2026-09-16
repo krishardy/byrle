@@ -125,6 +125,41 @@ pypi::sri gives      sha256-gTICrOTZMBo8AHQMcA4BL7nz+Mc93P4Cq1WKjfbxdf0=
 The last line round-trips through `integrity::Sri::parse` as `Algorithm::Sha256`, so the
 conversion reaches the verifier npm's digests already use.
 
+## Transport, and what it does not share with npm
+
+`pypi::Client` is deliberately the same shape as `npm::Client`, an `http`, a base and a
+byte ceiling, and deliberately shares no code with it. Two concrete implementations side by
+side are what the extraction step reads.
+
+| | `npm::Client` | `pypi::Client` |
+|---|---|---|
+| content negotiation | `Accept` picks abbreviated or full | `Accept` picks JSON over HTML, and an index may refuse |
+| a name it does not serve as given | the registry serves it | PEP 503 301s to the normalised name, so `normalise` runs before the request |
+| a wrong content type | the body is JSON either way | HTML is an error, not an empty project |
+| encoding | asks gzip, decodes through `http::decode_for_parsing` | the same, for the same reason |
+
+The third row is the one worth keeping. An index that answers HTML would parse as zero
+files, which reads as "this project has no versions" and fails open. It is
+`FetchError::NotJson` instead.
+
+Verified live against nine projects on 2026-09-16, one record per version for every one:
+
+| Project | Versions | Records | Sdist-only versions |
+|---|---|---|---|
+| requests | 160 | 160 | 77 |
+| flask | 64 | 64 | 18 |
+| django | 435 | 435 | 52 |
+| numpy | 137 | 137 | 4 |
+| urllib3 | 105 | 105 | 18 |
+| setuptools | 626 | 626 | 47 |
+| zope-interface | 89 | 89 | 31 |
+| ruamel-yaml | 273 | 273 | 18 |
+| pip | 159 | 159 | 29 |
+
+The last column is the `install_scripts` question for this ecosystem: 48% of `requests`
+versions offer no wheel, so installing one runs `setup.py`. They are the old ones, from
+before wheels existed.
+
 ## Identity before the proxy routes it
 
 `Ecosystem::PyPI` exists and `Ecosystem::ALL` still holds npm alone. Expressing an identity
