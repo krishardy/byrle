@@ -21,7 +21,7 @@
 //!
 //! Normalising reads the decoded original, never the rewritten copy. Records built from
 //! the rewritten document would carry the proxy's own origin as the registry's claim, and
-//! would make [`crate::npm::bypassing_origin`] report every package.
+//! would make [`crate::origin::bypassing_origin`] report every package.
 //!
 //! For a packument request the proxy replaces the client's `Accept-Encoding` with gzip
 //! or identity, whichever the client accepts ([`crate::http::encoding_to_request`]).
@@ -60,9 +60,8 @@ use crate::http::{
 use crate::identity::PackageKey;
 use crate::integrity::{Sri, Verifier};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
-use crate::npm::{
-    self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
-};
+use crate::npm::{self, NormalizeError, NormalizedPackument};
+use crate::origin::{Disposition, OriginPolicy, ReachableOrigins};
 use crate::policy::{Policy, enforce, facts};
 use crate::record::{PackageRecord, PackumentDetail};
 use crate::refusal::RefusalStatus;
@@ -252,7 +251,7 @@ impl Proxy {
         let upstream = upstream.into().trim_end_matches('/').to_owned();
         // `env::Env::upstream` refuses an upstream this would refuse, so only a caller that
         // skips it reaches the panic, and nothing else would work with that upstream either.
-        let reachable = ReachableOrigins::new(&upstream, std::iter::empty())
+        let reachable = ReachableOrigins::new([upstream.as_str()], std::iter::empty())
             .unwrap_or_else(|e| panic!("upstream is not a usable origin: {e}"));
         let origins = OriginPolicy::new(reachable, std::iter::empty())
             .expect("an empty allow list is always valid");
@@ -310,8 +309,8 @@ impl Proxy {
         mut self,
         served: impl IntoIterator<Item = &'a str>,
         allowed_direct: impl IntoIterator<Item = &'a str>,
-    ) -> Result<Self, npm::OriginError> {
-        let reachable = ReachableOrigins::new(&self.upstream, served)?;
+    ) -> Result<Self, crate::origin::OriginError> {
+        let reachable = ReachableOrigins::new([self.upstream.as_str()], served)?;
         self.origins = Arc::new(OriginPolicy::new(reachable, allowed_direct)?);
         Ok(self)
     }
@@ -885,7 +884,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 // private mirror publishes those URLs and is the reason the proxy was
                 // pointed at it.
                 let artifact_url = artifact.map(|a| a.url.as_str()).unwrap_or("");
-                artifact_origin = npm::origin_of_url(artifact_url)
+                artifact_origin = crate::origin::origin_of_url(artifact_url)
                     .filter(|origin| proxy.origins.reachable().routes_directly(origin));
                 unservable_origin = match proxy.origins.disposition(artifact_url) {
                     Disposition::Refused(origin) => Some(origin),

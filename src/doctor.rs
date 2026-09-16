@@ -138,7 +138,7 @@ pub fn recorded_origins(kind: Lockfile, contents: &str) -> BTreeSet<String> {
             .chars()
             .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | ',' | '}' | '#'))
             .collect();
-        if let Some(origin) = crate::npm::origin_of_url(&url) {
+        if let Some(origin) = crate::origin::origin_of_url(&url) {
             origins.insert(origin);
         }
     }
@@ -188,7 +188,7 @@ pub fn check_lockfile(kind: Lockfile, contents: &str, proxy: &str) -> Finding {
         return Finding::new(Severity::Ok, title, detail);
     }
 
-    let proxy_origin = crate::npm::origin_of_url(proxy).unwrap_or_else(|| proxy.to_owned());
+    let proxy_origin = crate::origin::origin_of_url(proxy).unwrap_or_else(|| proxy.to_owned());
     let (ours, theirs): (Vec<&String>, Vec<&String>) =
         origins.iter().partition(|o| **o == proxy_origin);
 
@@ -244,7 +244,7 @@ pub fn check_public_url(configured: Option<&str>, recorded: &BTreeSet<String>) -
         ));
     };
 
-    let origin = crate::npm::origin_of_url(configured).unwrap_or_else(|| configured.to_owned());
+    let origin = crate::origin::origin_of_url(configured).unwrap_or_else(|| configured.to_owned());
     let stale: Vec<&String> = recorded
         .iter()
         .filter(|o| **o != origin && !looks_like_a_registry(o))
@@ -588,7 +588,10 @@ pub fn check_policy(path: &str, loaded: Result<&Report, &str>) -> Vec<Finding> {
 }
 
 fn same_origin(a: &str, b: &str) -> bool {
-    match (crate::npm::origin_of_url(a), crate::npm::origin_of_url(b)) {
+    match (
+        crate::origin::origin_of_url(a),
+        crate::origin::origin_of_url(b),
+    ) {
         (Some(a), Some(b)) => a == b,
         _ => a.trim_end_matches('/') == b.trim_end_matches('/'),
     }
