@@ -27,7 +27,7 @@ pub fn always_reachable(ecosystem: Ecosystem) -> &'static [&'static str] {
 ///
 /// One source of truth for two questions that must never disagree: which artifact URLs
 /// get pointed at the proxy ([`crate::npm::rewrite_artifact_origins`]), and which are reported as
-/// fetched directly ([`crate::npm::NormalizedPackument::bypassing_origins`]). If those sets differed,
+/// fetched directly ([`crate::npm::PackageMetadata::bypassing_origins`]). If those sets differed,
 /// an artifact could be rewritten and reported as bypassing, or left alone and reported
 /// as fine.
 ///

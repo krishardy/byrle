@@ -32,7 +32,7 @@
 //! cooldown" and fails open. Deriving that distinction belongs with the rule that
 //! consumes it, in Stage 2.
 
-use crate::identity::PackageRef;
+use crate::identity::{PackageKey, PackageRef};
 use std::collections::BTreeMap;
 
 /// Which document a record was built from. See the module docs: this is what
@@ -43,6 +43,45 @@ pub enum PackumentDetail {
     Abbreviated,
     /// The complete document, which carries publish times, maintainers and repository.
     Full,
+}
+
+/// One version that could not be normalised, and why.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SkippedVersion {
+    /// The version as the document spelled it: npm's `versions` map key, PyPI's version
+    /// read from a filename.
+    pub version: String,
+    pub reason: String,
+}
+
+/// Every version of one package, normalised.
+///
+/// What each ecosystem's normaliser produces and the record store holds: npm's packument
+/// and PyPI's simple index both reach this shape, and nothing above it sees either
+/// document.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageMetadata {
+    /// Identity taken from the document's own name, never from the request path.
+    /// A request for `/Lodash` can be answered with a document naming `lodash`, and the
+    /// document is what the client installs (see `identity`).
+    pub key: PackageKey,
+    /// The version a client takes when it names none, when the document says. npm's
+    /// `dist-tags.latest`; `None` for PyPI, whose index has no equivalent.
+    ///
+    /// Not resolved into a record here: a tag can name a version the document omits.
+    pub latest: Option<String>,
+    /// One record per usable version, in the order the document listed them.
+    pub records: Vec<PackageRecord>,
+    /// Versions present in the document that produced no record. Empty in the normal
+    /// case; never silently discarded.
+    pub skipped: Vec<SkippedVersion>,
+}
+
+impl PackageMetadata {
+    /// The record for one exact version string, if the document carried it.
+    pub fn version(&self, version: &str) -> Option<&PackageRecord> {
+        self.records.iter().find(|r| r.package.version() == version)
+    }
 }
 
 /// One version of one package, as the policy engine sees it.

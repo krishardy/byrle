@@ -1,18 +1,21 @@
-//! What the proxy remembers from packuments it has already seen.
+//! What the proxy remembers from metadata documents it has already seen.
 //!
-//! The fetch path needs the artifact digest *before* the tarball is fetched (plan §5),
-//! and the packument that published it went past on an earlier request. This holds those
-//! records so the tarball request can find them.
+//! The fetch path needs the artifact digest *before* the artifact is fetched (plan §5),
+//! and the document that published it went past on an earlier request. This holds those
+//! records so the artifact request can find them.
+//!
+//! One store for every ecosystem. `PackageKey` carries the ecosystem, so npm's packuments
+//! and PyPI's simple indexes coexist without colliding.
 //!
 //! # Why it is bounded
 //!
-//! A packument carries every version ever published, not the one being installed:
+//! A metadata document carries every version ever published, not the one being installed:
 //! measured over an `express + @babel/code-frame + typescript + eslint` install, 167
 //! packuments totalling 9,690 records, the largest being typescript at 3,822. A proxy
 //! left running accumulates these for as long as it runs, so the store evicts by total
 //! record count, least recently used first.
 //!
-//! One packument larger than the whole budget is still kept, because the tarball request
+//! One document larger than the whole budget is still kept, because the artifact request
 //! that follows it is the reason to have stored anything. The budget is a target, not a
 //! hard ceiling.
 //!
@@ -22,12 +25,11 @@
 //! proportional one.
 
 use crate::identity::PackageKey;
-use crate::npm::NormalizedPackument;
-use crate::record::PackageRecord;
+use crate::record::{PackageMetadata, PackageRecord};
 use std::collections::HashMap;
 
 struct Entry {
-    packument: NormalizedPackument,
+    metadata: PackageMetadata,
     last_used: u64,
 }
 
@@ -42,15 +44,15 @@ pub struct RecordStore {
 /// What a tarball request found when it asked for its own record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Lookup {
-    /// The packument was seen and names this version.
+    /// The document was seen and names this version.
     Found(Box<PackageRecord>),
-    /// The packument was seen and does not name this version.
+    /// The document was seen and does not name this version.
     ///
-    /// Reached when a tarball filename spells a version differently from the packument:
+    /// Reached when an artifact filename spells a version differently from the document:
     /// `express@3.0.0-rc1` is served at `express-3.0.0rc1.tgz`, 38 such cases in 24,852
     /// measured URLs.
     NoSuchVersion,
-    /// No packument for this package has gone past. A warm npm cache produces this: the
+    /// No document for this package has gone past. A warm npm cache produces this: the
     /// client sends `If-None-Match`, the registry answers 304 with no body.
     Unknown,
 }
@@ -79,20 +81,20 @@ impl RecordStore {
         self.records
     }
 
-    /// Store a packument, replacing any earlier copy of the same package.
-    pub fn insert(&mut self, packument: NormalizedPackument) {
+    /// Store a document's records, replacing any earlier copy of the same package.
+    pub fn insert(&mut self, metadata: PackageMetadata) {
         self.clock += 1;
-        let added = packument.records.len();
-        let key = packument.key.clone();
+        let added = metadata.records.len();
+        let key = metadata.key.clone();
 
         if let Some(previous) = self.entries.insert(
             key,
             Entry {
-                packument,
+                metadata,
                 last_used: self.clock,
             },
         ) {
-            self.records -= previous.packument.records.len();
+            self.records -= previous.metadata.records.len();
         }
         self.records += added;
         self.evict_to_budget();
@@ -114,7 +116,7 @@ impl RecordStore {
             return Lookup::Unknown;
         };
         entry.last_used = clock;
-        match entry.packument.version(version) {
+        match entry.metadata.version(version) {
             Some(record) => Lookup::Found(Box::new(record.clone())),
             None => Lookup::NoSuchVersion,
         }
@@ -122,7 +124,7 @@ impl RecordStore {
 
     /// Drop least recently used packages until the budget is met.
     ///
-    /// Never drops the most recently used entry, so a package whose packument alone
+    /// Never drops the most recently used entry, so a package whose document alone
     /// exceeds the budget is still there for the tarball request that follows it.
     fn evict_to_budget(&mut self) {
         if self.records <= self.max_records {
@@ -140,7 +142,7 @@ impl RecordStore {
                 break;
             }
             if let Some(entry) = self.entries.remove(&key) {
-                self.records -= entry.packument.records.len();
+                self.records -= entry.metadata.records.len();
             }
         }
     }
@@ -152,7 +154,7 @@ mod tests {
     use crate::npm::normalize_packument;
     use crate::record::PackumentDetail;
 
-    fn packument(name: &str, versions: &[&str]) -> NormalizedPackument {
+    fn packument(name: &str, versions: &[&str]) -> PackageMetadata {
         let entries: Vec<String> = versions
             .iter()
             .map(|v| {

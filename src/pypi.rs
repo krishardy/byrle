@@ -15,7 +15,7 @@
 //! | name | used as written | PEP 503 normalised, and the index 301s to the normalised form |
 //! | per-version document | the packument is the only one | none under `/simple/`; PEP 658 gives per-**file** metadata at `<url>.metadata` |
 //!
-//! The first row is the one that matters: `NormalizedPackument` is version-keyed, and a
+//! The first row is the one that matters: `PackageMetadata` is version-keyed, and a
 //! PyPI project is not. Several files carry one version, and they are not interchangeable:
 //! a wheel and an sdist for the same version differ in whether installing runs code.
 
