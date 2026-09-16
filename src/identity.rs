@@ -63,6 +63,13 @@ impl Ecosystem {
     /// proxy serves `/simple/`.
     pub const ALL: [Ecosystem; 1] = [Ecosystem::Npm];
 
+    /// Every ecosystem a package can be named in, served or not.
+    ///
+    /// `origin::ReachableOrigins` reads this: which hosts the proxy can fetch through is a
+    /// different question from which ecosystems it routes, and a packument can publish an
+    /// artifact on any host.
+    pub const EXPRESSIBLE: [Ecosystem; 2] = [Ecosystem::Npm, Ecosystem::PyPI];
+
     /// The purl `type` component, and the string OSV keys on.
     ///
     /// `const` so a descriptor table can hold one: `intel::stream::Scope` does.

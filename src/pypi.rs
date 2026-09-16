@@ -34,6 +34,14 @@ pub const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 /// The index this build reads.
 pub const INDEX: &str = "https://pypi.org/simple";
 
+/// Where PyPI serves the files its index names.
+///
+/// Not configurable and not derived from [`INDEX`]: the index gives each file's URL in
+/// full, and a mirror serving the index still points at this host for files it does not
+/// hold. Measured over nine projects on 2026-09-16, every one of 12,164 file URLs was on
+/// this host.
+pub const FILES: &str = "https://files.pythonhosted.org";
+
 /// Bytes past which an index document is refused. `requests` was 123,104 bytes as JSON on
 /// 2026-09-16, the largest of the eight measured; 32 MiB matches the npm packument ceiling.
 pub const MAX_INDEX_BYTES: usize = 32 << 20;

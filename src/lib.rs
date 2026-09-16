@@ -21,6 +21,7 @@ pub mod integrity;
 pub mod intel;
 pub mod lockfile;
 pub mod npm;
+pub mod origin;
 pub mod policy;
 pub mod proxy;
 pub mod pypi;

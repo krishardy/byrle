@@ -529,7 +529,7 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     fn upstream(&self, var: Var, default: &str) -> Result<String, EnvError> {
         let value = self.text_or(var, default)?;
-        match crate::npm::normalise_origin(&value) {
+        match crate::origin::normalise_origin(&value) {
             Ok(_) => Ok(value),
             Err(e) => Err(EnvError::new(
                 var,

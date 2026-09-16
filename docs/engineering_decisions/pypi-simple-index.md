@@ -147,6 +147,26 @@ Two consequences the extraction step has to answer, neither of them settled here
   `ReachableOrigins`, because npm packages can name a host other than the registry. PyPI's
   second host is the same question arriving as the normal case rather than the exception.
 
+### Which origins the proxy fronts
+
+`ReachableOrigins` and `OriginPolicy` were in `npm.rs` and `ReachableOrigins::new` always
+added `npm::DEFAULT_REGISTRY`. They are now `src/origin.rs`, `new` takes the set of
+configured upstreams, and each ecosystem names the origins it always reaches:
+
+| Ecosystem | Always reachable |
+|---|---|
+| npm | `https://registry.npmjs.org` |
+| PyPI | `https://pypi.org/simple`, `https://files.pythonhosted.org` |
+
+Without that, `files.pythonhosted.org` is on no reachable origin, `OriginPolicy::disposition`
+returns `Refused`, and with `WAHAROA_REFUSE_UNSERVABLE` at its default the proxy answers
+every PyPI artifact request with a refusal. Held by
+`a_pypi_file_is_served_rather_than_refused`.
+
+The set reads `Ecosystem::EXPRESSIBLE`, not `Ecosystem::ALL`. Which hosts the proxy can
+fetch through and which ecosystems it routes are different questions, and a document can
+publish an artifact on any host.
+
 ## Classifying a path
 
 `route::RequestTarget` is what `proxy::handle` reads, and each ecosystem's `classify_path`
