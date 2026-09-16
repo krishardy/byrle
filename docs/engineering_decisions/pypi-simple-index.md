@@ -220,26 +220,56 @@ The configured base already ends in `/simple`, so the proxy's own prefix comes o
 than being sent twice. A file needs no lookup: the hash segments that locate it upstream
 are in the request path, because the client followed the URL the index published.
 
-### pip installs, and every file goes around the proxy
+### Rewriting the index, and what pip does without it
 
-pip 26.1.1, `requests` into an empty venv through the proxy, 2026-09-16:
+The simple index gives each file's URL in full on `files.pythonhosted.org` and pip uses it
+as written. Forwarded unchanged, every file is fetched around the proxy: measured
+2026-09-16 with pip 26.1.1 installing `requests`, five `/simple/` pages arrived and no
+`/packages/` request did.
+
+That is the PyPI shape of `packument-tarball-url-rewriting.md`, where npm is the only one
+of five npm clients that rewrites an artifact URL to the configured registry. pip does not
+rewrite either, so the proxy does.
+
+`rewrite_index` parses the index, collects every file's `url`, and hands them to
+`origin::rewrite_artifact_origins`, the same textual rewrite npm's packument uses. Only the
+origin changes; the path is kept, which is what makes the request that comes back one
+`pypi::classify_path` reads as an artifact and `upstream_url` sends to the host it came
+from. Held by `a_rewritten_url_round_trips_to_where_it_came_from`.
+
+The same run with the rewrite in place, pip 26.1.1, `requests` into an empty venv:
 
 ```text
-WARN  UNINSPECTED: the simple index is forwarded as written, so its files are fetched
-      from the index's own host rather than through the proxy  path=/simple/requests/
-INFO  proxied method=GET path=/simple/requests/ status=200 bytes=31334
-...
+INFO simple index rewritten path=/simple/requests/            files=243  rewritten=243  left_alone=0
+INFO simple index rewritten path=/simple/charset-normalizer/  files=2289 rewritten=2289 left_alone=0
+INFO simple index rewritten path=/simple/idna/                files=73   rewritten=73   left_alone=0
+INFO simple index rewritten path=/simple/urllib3/             files=192  rewritten=192  left_alone=0
+INFO simple index rewritten path=/simple/certifi/             files=140  rewritten=140  left_alone=0
 ```
 
-Five `/simple/` pages arrived, the install succeeded, and no `/packages/` request reached
-the proxy at all. The simple index gives each file's URL in full on
-`files.pythonhosted.org` and pip uses it as written.
+2,937 file URLs rewritten, none left alone, and ten `/packages/` requests reached the
+proxy: five wheels and five PEP 658 `.metadata` files.
 
-This is the PyPI shape of `packument-tarball-url-rewriting.md`, where npm is the only one
-of five clients that rewrites an artifact URL to the configured registry. pip does not
-rewrite either, so the proxy has to, and the index is a different document from a
-packument. Rewriting it is the next commit. Until then the log says so on every index
-request rather than letting the install look inspected.
+The run needs `PIP_CONFIG_FILE=/dev/null`. A configured `extra-index-url` is queried
+alongside this proxy and serves its own file URLs, so without that the measurement counts
+what the other index answered.
+
+### What the proxy does not yet do with a PyPI file
+
+```text
+WARN artifact requested, no packument seen for it
+     path=/packages/a0/f4/c67b.../requests-2.34.2-py3-none-any.whl
+     claimed_purl=pkg:pypi/requests@2.34.2
+```
+
+The request is classified, the purl is right, and `charset_normalizer-3.5.1-...whl` reaches
+`pkg:pypi/charset-normalizer@3.5.1`, so the wheel's escaped name normalises back. Nothing
+stores PyPI records yet, so there is no digest to check and the bytes are forwarded and
+said to be unverified. That is npm's Stage 1 behaviour for a packument the proxy never saw.
+
+PEP 658's `<file>.metadata` classifies as `Other`: `filename_parts` reads no distribution
+from it, which is right, because it is not installable bytes. It forwards to the files host
+like any other path under the prefix.
 
 ## Verified against real bytes
 
