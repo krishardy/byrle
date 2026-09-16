@@ -102,24 +102,24 @@ count is a floor.
 `waharoa refresh` into an empty Postgres 17, all four streams:
 
 ```text
-waharoa refresh: fetching https://api.github.com/graphql
 waharoa refresh: 100 pages from https://api.github.com/graphql
-advisories written                 283691
-aliases written                     43731
+advisories written                 283702
+aliases written                     43741
 affected rows written              285265
-ranges written                      19508
+ranges written                      19520
 exploited CVE ids written            1710
-snapshot sha256:5d57fbc3afd850ce229596afac97a6497435a177cbf48a9f9cce88265ce45521
-took 211.9s
+snapshot sha256:e6d672371ed7757f2e7f719fc89f8a7d10bde9f79f6954afef1187a2e9920073
+took 159.3s
 ```
 
 | Source | Advisory rows |
 |---|---|
 | `osv` | 228,330 |
 | `datadog` | 48,316 |
-| `github` | 7,045 |
+| `github` | 7,056 |
 
-Two streams holding one id, which the old constraint refused:
+7,056 is the whole measured set. Two streams holding one id, which the old global unique on
+`publisher_id` refused:
 
 ```text
 github GHSA-2h44-8472-frjj 9.6
@@ -131,26 +131,32 @@ GitHub gives no vector score. `GHSA-4j66-8f4r-3pjx`, withdrawn on GitHub and liv
 bundle, is stored under `osv` and not under `github`: the flag set shows one stream retracting
 what the other still reports.
 
-## What is not stored yet: exclusive lower bounds
+## Exclusive lower bounds
 
-7,045 rows against the 7,056 advisories measured. The 11 missing ones write
-`vulnerableVersionRange` with `>`, an exclusive lower bound, and `Interval::introduced` is
-inclusive: `contains` asks `v >= from`. Storing `> 4.0.2` as `introduced: 4.0.2` would report
-4.0.2 itself as vulnerable when it is the last safe version, so `github::bounds` returns
-`Bounds::Unexpressed` and an advisory with no other range is dropped.
+The three advisories GitHub holds and OSV's bundle lacks all write `>`:
 
-All three advisories GitHub has and OSV lacks are in those 11:
+```text
+GHSA-2gvc-4f3c-2855 openclaw              2026.3.28 t 2026.4.15
+GHSA-8w7w-67mw-r5p7 generator-jhipster    6.8.0     t 6.9.0
+GHSA-m2hm-hrr2-6p2q bootstrap-3-typeahead 4.0.2     t
+```
 
-| Advisory | Range |
-|---|---|
-| `GHSA-2gvc-4f3c-2855` | `> 2026.3.28, < 2026.4.15` |
-| `GHSA-8w7w-67mw-r5p7` | `> 6.8.0, < 6.9.0` |
-| `GHSA-m2hm-hrr2-6p2q` | `> 4.0.2` |
+`> 4.0.2` says 4.0.2 is the last version not affected. `Interval` carried
+`introduced: Option<V>`, an inclusive bound, so storing it would have reported 4.0.2 itself as
+vulnerable. The first load of this stream dropped those advisories instead and wrote 7,045
+rows, which is how the gap was found: the stream's whole unique contribution was missing.
 
-So the stream delivers corroboration on 7,045 advisories today and none of the three it alone
-would add. `Interval` needs an exclusive lower bound before it does, which is a change to a
-type OSV also uses, a column on `advisory_range`, and the `contains` comparison. Tracked in
-`TODO.md` under this item.
+`Interval` now carries `start: Start<V>`, `First` / `Introduced(v)` / `After(v)`, mirroring
+`End`. An excluded bound with no version is unrepresentable rather than refused at runtime.
+Migration 0007 adds `advisory_range.introduced_excluded`, a CHECK that an excluded bound names
+a version, and puts the column in the uniqueness index, since `>= 1.0.0, < 2.0.0` and
+`> 1.0.0, < 2.0.0` are different intervals.
+
+12 stored range rows carry an excluded bound, all from `github`. OSV writes only inclusive
+lower bounds, so every `osv` and `datadog` row is `f`.
+
+`an_excluded_lower_bound_does_not_cover_its_own_version` holds the property: `> 4.0.2` excludes
+4.0.2, includes 4.0.3, and includes `4.0.3-alpha`, which sorts above 4.0.2.
 
 ## Attribution
 

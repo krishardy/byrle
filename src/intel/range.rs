@@ -73,23 +73,63 @@ impl End<String> {
 }
 
 /// One run of affected versions. `V` is `String` as stored and [`Version`] as compared.
+/// Where an interval starts.
+///
+/// OSV writes only inclusive lower bounds, so every OSV range is `First` or `Introduced`.
+/// GitHub writes `> 4.0.2`, which says 4.0.2 is the last version not affected; that is
+/// `After`, and storing it as `Introduced` would report 4.0.2 as vulnerable.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Start<V> {
+    /// From the first version. OSV's `introduced: "0"`.
+    First,
+    /// From and including this version.
+    Introduced(V),
+    /// From but excluding this version.
+    After(V),
+}
+
+impl<V> Start<V> {
+    /// OSV's `introduced`, which is always inclusive. `None` is from the first version.
+    pub fn introduced(version: Option<V>) -> Self {
+        match version {
+            Some(v) => Self::Introduced(v),
+            None => Self::First,
+        }
+    }
+}
+
+impl Start<String> {
+    /// The `introduced` and `introduced_excluded` columns this start is stored as.
+    pub fn columns(&self) -> (Option<&str>, bool) {
+        match self {
+            Self::First => (None, false),
+            Self::Introduced(v) => (Some(v), false),
+            Self::After(v) => (Some(v), true),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Interval<V> {
-    /// `None` is from the first version.
-    pub introduced: Option<V>,
+    pub start: Start<V>,
     pub end: End<V>,
 }
 
 impl<V> Interval<V> {
     /// No lower bound and no upper one.
     pub fn is_every_version(&self) -> bool {
-        self.introduced.is_none() && matches!(self.end, End::Open)
+        matches!(self.start, Start::First) && matches!(self.end, End::Open)
     }
 }
 
 impl Interval<Version> {
     pub fn contains(&self, v: &Version) -> bool {
-        self.introduced.as_ref().is_none_or(|from| v >= from)
+        let from_start = match &self.start {
+            Start::First => true,
+            Start::Introduced(from) => v >= from,
+            Start::After(from) => v > from,
+        };
+        from_start
             && match &self.end {
                 End::Open => true,
                 End::Fixed(fixed) => v < fixed,
@@ -101,12 +141,16 @@ impl Interval<Version> {
     /// not parse, neither of which the loader writes.
     pub fn from_columns(
         introduced: Option<&str>,
+        introduced_excluded: bool,
         fixed: Option<&str>,
         last_affected: Option<&str>,
     ) -> Option<Self> {
-        let introduced = match introduced {
-            Some(s) => Some(version(s)?),
-            None => None,
+        let start = match (introduced, introduced_excluded) {
+            (Some(s), false) => Start::Introduced(version(s)?),
+            (Some(s), true) => Start::After(version(s)?),
+            // An excluded bound with no version is not a bound. The loader writes neither.
+            (None, true) => return None,
+            (None, false) => Start::First,
         };
         let end = match (fixed, last_affected) {
             (None, None) => End::Open,
@@ -114,7 +158,7 @@ impl Interval<Version> {
             (None, Some(s)) => End::LastAffected(version(s)?),
             (Some(_), Some(_)) => return None,
         };
-        Some(Self { introduced, end })
+        Some(Self { start, end })
     }
 }
 
@@ -183,11 +227,11 @@ pub fn intervals(
             (Kind::Introduced, Some(from)) => open = Some(from),
             (Kind::Introduced, None) => open = Some(written),
             (Kind::Fixed, Some(from)) => out.push(Interval {
-                introduced: from,
+                start: Start::introduced(from),
                 end: End::Fixed(value.clone()),
             }),
             (Kind::LastAffected, Some(from)) => out.push(Interval {
-                introduced: from,
+                start: Start::introduced(from),
                 end: End::LastAffected(value.clone()),
             }),
             // An end with nothing open ends nothing.
@@ -196,7 +240,7 @@ pub fn intervals(
     }
     if let Some(from) = open {
         out.push(Interval {
-            introduced: from,
+            start: Start::introduced(from),
             end: End::Open,
         });
     }
@@ -218,9 +262,52 @@ mod tests {
         intervals(Some("SEMVER"), &events(pairs)).expect("storable")
     }
 
+    /// `> 4.0.2` says 4.0.2 is the last version not affected. Storing it as an inclusive
+    /// `introduced` would refuse the one version the advisory clears.
+    #[test]
+    fn an_excluded_lower_bound_does_not_cover_its_own_version() {
+        let after = parsed(&Interval {
+            start: Start::After("4.0.2".to_owned()),
+            end: End::Open,
+        });
+        assert!(!after.contains(&version("4.0.2").expect("parses")));
+        assert!(after.contains(&version("4.0.3").expect("parses")));
+        // A prerelease of the next patch sorts above 4.0.2, so it is affected.
+        assert!(after.contains(&version("4.0.3-alpha").expect("parses")));
+
+        let introduced = parsed(&Interval {
+            start: Start::Introduced("4.0.2".to_owned()),
+            end: End::Open,
+        });
+        assert!(introduced.contains(&version("4.0.2").expect("parses")));
+    }
+
+    /// The columns round-trip, so what a load writes is what a lookup reads.
+    #[test]
+    fn an_excluded_bound_survives_its_columns_and_one_with_no_version_is_refused() {
+        let start = Start::After("4.0.2".to_owned());
+        assert_eq!(start.columns(), (Some("4.0.2"), true));
+        assert_eq!(
+            Start::Introduced("4.0.2".to_owned()).columns(),
+            (Some("4.0.2"), false)
+        );
+        assert_eq!(Start::<String>::First.columns(), (None, false));
+        assert_eq!(
+            Interval::from_columns(Some("4.0.2"), true, None, None)
+                .expect("parses")
+                .start,
+            Start::After(version("4.0.2").expect("parses"))
+        );
+        assert_eq!(
+            Interval::from_columns(None, true, None, Some("1.0.0")),
+            None
+        );
+    }
+
     fn parsed(interval: &Interval<String>) -> Interval<Version> {
         let (fixed, last) = interval.end.columns();
-        Interval::from_columns(interval.introduced.as_deref(), fixed, last).expect("parses")
+        let (introduced, excluded) = interval.start.columns();
+        Interval::from_columns(introduced, excluded, fixed, last).expect("parses")
     }
 
     /// Whether any interval of `pairs` holds `v`.
@@ -320,11 +407,11 @@ mod tests {
             written,
             vec![
                 Interval {
-                    introduced: None,
+                    start: Start::First,
                     end: End::Fixed("2.0.0".to_owned()),
                 },
                 Interval {
-                    introduced: Some("3.0.0".to_owned()),
+                    start: Start::Introduced("3.0.0".to_owned()),
                     end: End::Fixed("4.0.0".to_owned()),
                 },
             ]
@@ -339,7 +426,7 @@ mod tests {
             ("fixed", "2.0.0"),
         ]);
         assert_eq!(written.len(), 1);
-        assert_eq!(written[0].introduced.as_deref(), Some("1.0.0"));
+        assert_eq!(written[0].start, Start::Introduced("1.0.0".to_owned()));
     }
 
     #[test]
@@ -381,18 +468,19 @@ mod tests {
             written,
             vec![
                 Interval {
-                    introduced: Some("13.0.0".to_owned()),
+                    start: Start::Introduced("13.0.0".to_owned()),
                     end: End::Fixed("13.1.0".to_owned()),
                 },
                 Interval {
-                    introduced: Some("2026.4.1".to_owned()),
+                    start: Start::Introduced("2026.4.1".to_owned()),
                     end: End::Open,
                 },
             ]
         );
         assert!(written.iter().all(|i| {
             let (fixed, last) = i.end.columns();
-            Interval::from_columns(i.introduced.as_deref(), fixed, last).is_some()
+            let (introduced, excluded) = i.start.columns();
+            Interval::from_columns(introduced, excluded, fixed, last).is_some()
         }));
     }
 
@@ -445,12 +533,14 @@ mod tests {
     #[test]
     fn stored_columns_that_the_loader_never_writes_do_not_parse() {
         assert_eq!(
-            Interval::from_columns(Some("1.0.0"), Some("2.0.0"), Some("2.0.0")),
+            Interval::from_columns(Some("1.0.0"), false, Some("2.0.0"), Some("2.0.0")),
             None
         );
-        assert_eq!(Interval::from_columns(Some("1.0"), None, None), None);
-        assert_eq!(Interval::from_columns(None, Some("x"), None), None);
-        assert_eq!(Interval::from_columns(None, None, Some("x")), None);
-        assert!(Interval::from_columns(None, None, None).is_some_and(|i| i.is_every_version()));
+        assert_eq!(Interval::from_columns(Some("1.0"), false, None, None), None);
+        assert_eq!(Interval::from_columns(None, false, Some("x"), None), None);
+        assert_eq!(Interval::from_columns(None, false, None, Some("x")), None);
+        assert!(
+            Interval::from_columns(None, false, None, None).is_some_and(|i| i.is_every_version())
+        );
     }
 }

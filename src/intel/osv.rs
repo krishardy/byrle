@@ -346,7 +346,7 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intel::range::End;
+    use crate::intel::range::{End, Start};
 
     fn fixture(id: &str) -> Parsed {
         let path = format!(
@@ -451,7 +451,7 @@ mod tests {
         assert_eq!(
             intervals(&rows),
             vec![&Interval {
-                introduced: Some("99.9.1".to_owned()),
+                start: Start::Introduced("99.9.1".to_owned()),
                 end: End::Open,
             }]
         );
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(
             intervals(&rows),
             vec![&Interval {
-                introduced: Some("1.2.2".to_owned()),
+                start: Start::Introduced("1.2.2".to_owned()),
                 end: End::Open,
             }]
         );
@@ -509,7 +509,7 @@ mod tests {
         assert_eq!(
             intervals(&rows),
             vec![&Interval {
-                introduced: None,
+                start: Start::First,
                 end: End::Fixed("2.0.0".to_owned()),
             }]
         );
@@ -586,7 +586,7 @@ mod tests {
         assert_eq!(
             intervals(&rows),
             vec![&Interval {
-                introduced: Some("13.0.0".to_owned()),
+                start: Start::Introduced("13.0.0".to_owned()),
                 end: End::Fixed("14.2.30".to_owned()),
             }]
         );

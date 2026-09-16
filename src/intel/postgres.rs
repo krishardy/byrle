@@ -421,6 +421,7 @@ impl Intel for PgIntel {
                     m.is_range      AS "is_range?",
                     m.version       AS "version?",
                     m.introduced    AS "introduced?",
+                    m.introduced_excluded AS "introduced_excluded?",
                     m.fixed         AS "fixed?",
                     m.last_affected AS "last_affected?",
                     a.publisher_id  AS "advisory_id?",
@@ -443,15 +444,17 @@ impl Intel for PgIntel {
                 FROM (SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s
                 LEFT JOIN (
                     SELECT advisory_id, FALSE AS is_range, version,
-                           NULL::varchar AS introduced, NULL::varchar AS fixed,
-                           NULL::varchar AS last_affected
+                           NULL::varchar AS introduced, NULL::boolean AS introduced_excluded,
+                           NULL::varchar AS fixed, NULL::varchar AS last_affected
                     FROM advisory_affected WHERE ecosystem = $1 AND name = $2
                     UNION ALL
-                    SELECT advisory_id, TRUE, NULL, introduced, fixed, last_affected
+                    SELECT advisory_id, TRUE, NULL, introduced, introduced_excluded,
+                           fixed, last_affected
                     FROM advisory_range WHERE ecosystem = $1 AND name = $2
                 ) m ON TRUE
                 LEFT JOIN advisory a ON a.id = m.advisory_id
-                ORDER BY a.publisher_id, m.is_range, m.version, m.introduced, m.fixed, m.last_affected
+                ORDER BY a.publisher_id, m.is_range, m.version, m.introduced,
+                         m.introduced_excluded, m.fixed, m.last_affected
                 "#,
                 ecosystem,
                 name,
@@ -491,6 +494,7 @@ impl Intel for PgIntel {
                 if row.is_range == Some(true) {
                     let interval = Interval::from_columns(
                         row.introduced.as_deref(),
+                        row.introduced_excluded.unwrap_or(false),
                         row.fixed.as_deref(),
                         row.last_affected.as_deref(),
                     )

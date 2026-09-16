@@ -1488,12 +1488,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       - [x] Severity band for the advisories with no CVSS score, through `osv::band_ceiling`,
             so both streams score one advisory alike. GitHub writes `0.0` for an advisory it
             has not scored, which is not a CVSS 0.0.
-      - [ ] **Exclusive lower bounds.** `Interval::introduced` is inclusive and `contains`
-            asks `v >= from`, so `> 4.0.2` cannot be stored without reporting 4.0.2 as
-            vulnerable. `github::bounds` returns `Unexpressed` and the advisory is dropped:
-            7,045 rows of 7,056, and all three advisories GitHub has that OSV lacks are among
-            the 11 missing. Needs a lower bound that can exclude its version, a column on
-            `advisory_range`, and the `contains` comparison. `Interval` is OSV's type too.
+      - [x] **Exclusive lower bounds.** `Interval.introduced: Option<V>` became
+            `start: Start<V>`, `First` / `Introduced(v)` / `After(v)`, mirroring `End`, so an
+            excluded bound with no version is unrepresentable rather than refused at runtime.
+            `contains` asks `v > from` for `After`. Migration 0007 adds
+            `advisory_range.introduced_excluded`, a CHECK that an excluded bound names a
+            version, and the column joins the uniqueness index: `>= 1.0.0, < 2.0.0` and
+            `> 1.0.0, < 2.0.0` are different intervals.
+            Held by `an_excluded_lower_bound_does_not_cover_its_own_version`.
 - [x] OSSF Malicious Packages stream (licence-cleared: Apache-2.0). Loaded as `osv/npm`: OSV
       imports the repository, and all 221,217 non-withdrawn `MAL-` records in `npm/all.zip`
       (2026-09-13) give it as `affected[].database_specific.source`, such as
