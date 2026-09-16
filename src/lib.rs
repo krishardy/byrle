@@ -11,6 +11,7 @@ pub mod cli;
 #[cfg(debug_assertions)]
 pub mod defer;
 pub mod doctor;
+pub mod ecosystem;
 pub mod env;
 pub mod explain;
 #[cfg(test)]

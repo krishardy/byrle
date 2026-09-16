@@ -55,7 +55,7 @@ use crate::record::{
     Artifact, Maintainer, PackageMetadata, PackageRecord, PackumentDetail, Provenance,
     RegistrySignature, Repository, SkippedVersion, TrustedPublisher,
 };
-use crate::route::RequestTarget;
+use crate::route::{DocumentKind, RequestTarget};
 use serde::de::{self, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::{BTreeMap, HashSet};
@@ -313,12 +313,19 @@ pub struct Filtered {
 /// or a CDN in front of one may add them. Anything else returns `None`, and the proxy
 /// forwards that response without reading it.
 pub fn detail_from_content_type(content_type: Option<&str>) -> Option<PackumentDetail> {
-    let media_type = content_type?.split(';').next()?.trim().to_ascii_lowercase();
-    match media_type.as_str() {
+    match crate::route::media_type(content_type)?.as_str() {
         ABBREVIATED_ACCEPT => Some(PackumentDetail::Abbreviated),
         FULL_ACCEPT => Some(PackumentDetail::Full),
         _ => None,
     }
+}
+
+/// npm's row of [`crate::ecosystem::TABLE`] reads media types through this.
+///
+/// Both npm packument kinds are the same document to everything outside npm, so which one
+/// arrived rides along in [`DocumentKind::Packument`].
+pub fn document_from_content_type(content_type: Option<&str>) -> Option<DocumentKind> {
+    detail_from_content_type(content_type).map(DocumentKind::Packument)
 }
 
 // ---------------------------------------------------------------------------

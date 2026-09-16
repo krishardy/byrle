@@ -315,8 +315,8 @@ That is the failure mode every item below should be brought to.
       a silent gap into a reported one, which is the right order.
 
 - [ ] **`publish_times_for` asks npm whatever the ecosystem is, and the answer is wrong.**
-      `adapter-interface.md` names four per-ecosystem questions and calls them exhaustive.
-      This is a fifth. `proxy.rs:1748` calls `proxy.registry.publish_times(key)`
+      `adapter-interface.md` lists this as the one per-ecosystem question that does not
+      dispatch at all. `proxy.rs` calls `proxy.registry.publish_times(key)`
       unconditionally, and `npm::Client::packument_url` builds `{npm registry}/{name}` from
       the name alone.
       Measured live with `cooldown_days: 3650` and `pip install idna`:
@@ -364,6 +364,26 @@ That is the failure mode every item below should be brought to.
       `origin` and `record`. Nothing gates rustdoc warnings, which is why they survived.
 
 ### Structure
+
+- [~] **Each ecosystem should be a module directory with the same file structure.**
+
+      Reached in five steps, each one gated on `smoke-npm`, `smoke-python` and
+      `smoke-clients`. The table is the interface; the directories are what fills it.
+
+      | Step | What | State |
+      |---|---|---|
+      | 1 | `ecosystem::Registry` holding the fields that already dispatch, npm and pypi filling them | `[x]` |
+      | 2 | add `publish_times` and `streams` to the descriptor | `[ ]` |
+      | 3 | point `Ecosystem::ALL` at the table | `[ ]` |
+      | 4 | fetch PyPI's OSV, Datadog and GHSA streams | `[ ]` |
+      | 5 | split `npm.rs` and `pypi.rs` into directories with matching file names | `[ ]` |
+
+      Steps 2 to 4 are what close the **Wrong answers** items above; step 1 only makes the
+      omissions visible, which is why `adapter-interface.md` now lists the four questions
+      that still match on `Ecosystem` and why each does.
+
+      Step 5 is last on purpose. Splitting the files before the table is filled moves the
+      `match` arms without removing them.
 
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 
