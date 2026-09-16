@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 
 use super::osv::{Affected, Ranged, Rows, band_ceiling};
-use super::range::{End, Interval, stored};
+use super::range::{End, Interval, Start, stored};
 
 pub const SOURCE: &str = "github";
 pub const STREAM: &str = "github/npm";
@@ -152,11 +152,14 @@ enum Bounds {
 }
 
 fn bounds(range: &str) -> Bounds {
-    let (mut introduced, mut end) = (None, End::Open);
+    let (mut start, mut end) = (Start::First, End::Open);
     for part in range.split(',') {
         let part = part.trim();
         if let Some(v) = part.strip_prefix(">=") {
-            introduced = Some(stored(v.trim()));
+            start = Start::Introduced(stored(v.trim()));
+        } else if let Some(v) = part.strip_prefix('>') {
+            // `> 4.0.2` says 4.0.2 is the last version not affected.
+            start = Start::After(stored(v.trim()));
         } else if let Some(v) = part.strip_prefix("<=") {
             end = End::LastAffected(stored(v.trim()));
         } else if let Some(v) = part.strip_prefix('<') {
@@ -164,14 +167,13 @@ fn bounds(range: &str) -> Bounds {
         } else if let Some(v) = part.strip_prefix('=') {
             return Bounds::Exact(stored(v.trim()));
         } else {
-            // `>` is an exclusive lower bound, which `Interval::introduced` cannot express.
             return Bounds::Unexpressed;
         }
     }
-    if introduced.is_none() && end == End::Open {
+    if start == Start::First && end == End::Open {
         return Bounds::Unexpressed;
     }
-    Bounds::Interval(Interval { introduced, end })
+    Bounds::Interval(Interval { start, end })
 }
 
 /// The score for an advisory: its CVSS base score, or the top of its severity band when
@@ -306,28 +308,41 @@ mod tests {
         assert_eq!(
             bounds(">= 0.0.1, < 2.1.27"),
             Bounds::Interval(Interval {
-                introduced: Some("0.0.1".to_owned()),
+                start: Start::Introduced("0.0.1".to_owned()),
                 end: End::Fixed("2.1.27".to_owned()),
             })
         );
         assert_eq!(
             bounds("< 2.1.30"),
             Bounds::Interval(Interval {
-                introduced: None,
+                start: Start::First,
                 end: End::Fixed("2.1.30".to_owned()),
             })
         );
         assert_eq!(
             bounds("<= 1.5"),
             Bounds::Interval(Interval {
-                introduced: None,
+                start: Start::First,
                 // Padded as OSV's listed versions are, so 1.5 matches the published 1.5.0.
                 end: End::LastAffected("1.5.0".to_owned()),
             })
         );
         assert_eq!(bounds("= 1.2.3"), Bounds::Exact("1.2.3".to_owned()));
-        // An exclusive lower bound is not an `Interval::introduced`.
-        assert_eq!(bounds("> 1.0.0"), Bounds::Unexpressed);
+        // `> X` says X is the last version not affected, so it excludes its own bound.
+        assert_eq!(
+            bounds("> 4.0.2"),
+            Bounds::Interval(Interval {
+                start: Start::After("4.0.2".to_owned()),
+                end: End::Open,
+            })
+        );
+        assert_eq!(
+            bounds("> 6.8.0, < 6.9.0"),
+            Bounds::Interval(Interval {
+                start: Start::After("6.8.0".to_owned()),
+                end: End::Fixed("6.9.0".to_owned()),
+            })
+        );
         assert_eq!(bounds("whatever"), Bounds::Unexpressed);
     }
 
@@ -455,10 +470,27 @@ mod tests {
         let err = parse(&pages(&[node(
             "GHSA-aaaa-bbbb-cccc",
             "p",
-            serde_json::json!("> 1.0.0"),
+            serde_json::json!("nonsense"),
             serde_json::json!({}),
         )]))
         .expect_err("no version row");
         assert!(matches!(err, GithubError::Empty), "{err}");
+    }
+
+    /// The three advisories GitHub holds that OSV's bundle lacks all write `>`, so this is
+    /// the whole of what the stream uniquely adds. See
+    /// docs/engineering_decisions/github-advisory-signal-stream.md.
+    #[test]
+    fn an_exclusive_lower_bound_is_stored_and_does_not_cover_its_own_version() {
+        let rows = parse(&pages(&[node(
+            "GHSA-m2hm-hrr2-6p2q",
+            "bootstrap-3-typeahead",
+            serde_json::json!("> 4.0.2"),
+            serde_json::json!({}),
+        )]))
+        .expect("the pages read");
+        let ranged = rows[0].ranges.iter().next().expect("one range");
+        assert_eq!(ranged.interval.start, Start::After("4.0.2".to_owned()));
+        assert_eq!(rows[0].unexpressed, 0);
     }
 }

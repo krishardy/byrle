@@ -416,7 +416,7 @@ mod tests {
         id: &str,
     ) -> (Interval<Version>, Record) {
         (
-            Interval::from_columns(introduced, fixed, None).expect("a test interval parses"),
+            Interval::from_columns(introduced, false, fixed, None).expect("a test interval parses"),
             Record {
                 advisory_id: id.to_owned(),
                 ..record()

@@ -13,7 +13,7 @@
 //! docs/engineering_decisions/snapshot-identity.md and docs/engineering_decisions/kev-stream.md.
 
 use super::osv::{Affected, Ranged, Rows};
-use super::range::{End, Interval};
+use super::range::{End, Interval, Start};
 use super::refresh::{StreamDigest, sha256_hex};
 use std::collections::{BTreeSet, HashMap};
 
@@ -22,8 +22,8 @@ pub const ADVISORY: &str = "COPY advisory (publisher_id, source, summary, cvss, 
 pub const ALIAS: &str = "COPY advisory_alias (advisory_id, alias) FROM STDIN (FORMAT csv)";
 pub const AFFECTED: &str =
     "COPY advisory_affected (advisory_id, ecosystem, name, version) FROM STDIN (FORMAT csv)";
-pub const RANGE: &str = "COPY advisory_range (advisory_id, ecosystem, name, introduced, fixed, \
-                         last_affected) FROM STDIN (FORMAT csv)";
+pub const RANGE: &str = "COPY advisory_range (advisory_id, ecosystem, name, introduced, \
+                         introduced_excluded, fixed, last_affected) FROM STDIN (FORMAT csv)";
 pub const EXPLOITED: &str = "COPY exploited_cve (source, cve_id) FROM STDIN (FORMAT csv)";
 
 /// The first line of an [`encode`]d source. A change to the encoding changes this line.
@@ -428,8 +428,25 @@ impl<'a> Decoder<'a> {
             }
             // `advisory_range`, the last table.
             (Kind::Advisories, _) => {
-                let [position, ecosystem, name, introduced, fixed, last_affected] =
-                    width(table, fields)?;
+                let [
+                    position,
+                    ecosystem,
+                    name,
+                    introduced,
+                    introduced_excluded,
+                    fixed,
+                    last_affected,
+                ] = width(table, fields)?;
+                let start = match (introduced, introduced_excluded.as_deref()) {
+                    (Some(version), Some("t")) => Start::After(version),
+                    (Some(version), _) => Start::Introduced(version),
+                    (None, Some("t")) => {
+                        return Err(Undecodable(format!(
+                            "{table}: a row excludes an introduced version it does not give"
+                        )));
+                    }
+                    (None, _) => Start::First,
+                };
                 let end = match (fixed, last_affected) {
                     (None, None) => End::Open,
                     (Some(version), None) => End::Fixed(version),
@@ -445,7 +462,7 @@ impl<'a> Decoder<'a> {
                     Ranged {
                         ecosystem: given(table, ecosystem)?,
                         name: given(table, name)?,
-                        interval: Interval { introduced, end },
+                        interval: Interval { start, end },
                     },
                 )
             }
@@ -673,13 +690,16 @@ fn affected_line(out: &mut Vec<u8>, key: &str, a: &Affected) {
 
 fn range_line(out: &mut Vec<u8>, key: &str, ranged: &Ranged) {
     let (fixed, last_affected) = ranged.interval.end.columns();
+    let (introduced, excluded) = ranged.interval.start.columns();
     line(
         out,
         &[
             Some(key),
             Some(&ranged.ecosystem),
             Some(&ranged.name),
-            ranged.interval.introduced.as_deref(),
+            introduced,
+            // Postgres reads `t` and `f` as a boolean in CSV.
+            Some(if excluded { "t" } else { "f" }),
             fixed,
             last_affected,
         ],
@@ -765,7 +785,7 @@ mod tests {
                     ecosystem: "npm".to_owned(),
                     name: "@s/p".to_owned(),
                     interval: Interval {
-                        introduced: None,
+                        start: Start::First,
                         end: End::Fixed("2.0.0".to_owned()),
                     },
                 },
@@ -773,7 +793,7 @@ mod tests {
                     ecosystem: "npm".to_owned(),
                     name: "@s/p".to_owned(),
                     interval: Interval {
-                        introduced: Some("3.0.0".to_owned()),
+                        start: Start::Introduced("3.0.0".to_owned()),
                         end: End::LastAffected("3.1.0".to_owned()),
                     },
                 },
@@ -781,7 +801,7 @@ mod tests {
                     ecosystem: "npm".to_owned(),
                     name: "@s/p".to_owned(),
                     interval: Interval {
-                        introduced: Some("4.0.0".to_owned()),
+                        start: Start::Introduced("4.0.0".to_owned()),
                         end: End::Open,
                     },
                 },
@@ -884,9 +904,9 @@ mod tests {
         let c = children(&[rows()], &keys()).expect("keyed");
         assert_eq!(
             text(&c.range),
-            "\"7\",\"npm\",\"@s/p\",,\"2.0.0\",\n\
-             \"7\",\"npm\",\"@s/p\",\"3.0.0\",,\"3.1.0\"\n\
-             \"7\",\"npm\",\"@s/p\",\"4.0.0\",,\n"
+            "\"7\",\"npm\",\"@s/p\",,\"f\",\"2.0.0\",\n\
+             \"7\",\"npm\",\"@s/p\",\"3.0.0\",\"f\",,\"3.1.0\"\n\
+             \"7\",\"npm\",\"@s/p\",\"4.0.0\",\"f\",,\n"
         );
     }
 
@@ -1029,8 +1049,17 @@ mod tests {
                 "advisory_affected: a required value is empty",
             ),
             (
-                framed([row, "", "", "\"1\",\"npm\",\"a\",,\"2.0.0\",\"1.0.0\"\n"]),
+                framed([
+                    row,
+                    "",
+                    "",
+                    "\"1\",\"npm\",\"a\",,\"f\",\"2.0.0\",\"1.0.0\"\n",
+                ]),
                 "advisory_range: a row has both fixed and last_affected",
+            ),
+            (
+                framed([row, "", "", "\"1\",\"npm\",\"a\",,\"t\",\"2.0.0\",\n"]),
+                "advisory_range: a row excludes an introduced version it does not give",
             ),
             (
                 framed([
@@ -1066,7 +1095,7 @@ mod tests {
                     row,
                     "",
                     "",
-                    "\"1\",\"npm\",\"a\",,\"1.0.0\",\n\"1\",\"npm\",\"a\",,\"1.0.0\",\n",
+                    "\"1\",\"npm\",\"a\",,\"f\",\"1.0.0\",\n\"1\",\"npm\",\"a\",,\"f\",\"1.0.0\",\n",
                 ]),
                 "advisory_range: a row is out of order or repeated",
             ),
@@ -1075,7 +1104,7 @@ mod tests {
                     row,
                     "",
                     "",
-                    "\"1\",\"npm\",\"a\",,\"2.0.0\",\n\"1\",\"npm\",\"a\",,\"1.0.0\",\n",
+                    "\"1\",\"npm\",\"a\",,\"f\",\"2.0.0\",\n\"1\",\"npm\",\"a\",,\"f\",\"1.0.0\",\n",
                 ]),
                 "advisory_range: a row is out of order or repeated",
             ),

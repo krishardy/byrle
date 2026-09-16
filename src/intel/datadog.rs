@@ -168,7 +168,7 @@ pub fn disagreements(osv: &[Rows], datadog: &[Rows]) -> Vec<Disagreement> {
 mod tests {
     use super::*;
     use crate::intel::osv::Ranged;
-    use crate::intel::range::{End, Interval};
+    use crate::intel::range::{End, Interval, Start};
 
     fn names_and_versions(rows: &Rows) -> Vec<(String, Option<String>)> {
         rows.affected
@@ -293,7 +293,7 @@ mod tests {
                     ecosystem: "npm".to_owned(),
                     name: "ranged".to_owned(),
                     interval: Interval {
-                        introduced: Some("1.0.0".to_owned()),
+                        start: Start::Introduced("1.0.0".to_owned()),
                         end: End::Open,
                     },
                 }]

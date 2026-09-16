@@ -77,15 +77,13 @@ impl SnapshotIntel {
                         let package = (ranged.ecosystem, ranged.name);
                         if packages.contains(&package) {
                             let (fixed, last_affected) = ranged.interval.end.columns();
-                            let interval = Interval::from_columns(
-                                ranged.interval.introduced.as_deref(),
-                                fixed,
-                                last_affected,
-                            )
-                            .ok_or_else(|| KeptError::Range {
-                                digest: digest.clone(),
-                                advisory_id: records[i].advisory_id.clone(),
-                            })?;
+                            let (introduced, excluded) = ranged.interval.start.columns();
+                            let interval =
+                                Interval::from_columns(introduced, excluded, fixed, last_affected)
+                                    .ok_or_else(|| KeptError::Range {
+                                        digest: digest.clone(),
+                                        advisory_id: records[i].advisory_id.clone(),
+                                    })?;
                             entry(&mut found, id, package)
                                 .ranges
                                 .push((interval, records[i].clone()));
@@ -192,7 +190,7 @@ impl Intel for SnapshotIntel {
 mod tests {
     use super::*;
     use crate::intel::osv::{Affected, Ranged, Rows};
-    use crate::intel::range::End;
+    use crate::intel::range::{End, Start};
     use crate::intel::{kev, load};
     use crate::test_support::tempdir;
 
@@ -225,7 +223,7 @@ mod tests {
             ecosystem: "npm".to_owned(),
             name: name.to_owned(),
             interval: Interval {
-                introduced: Some(introduced.to_owned()),
+                start: Start::Introduced(introduced.to_owned()),
                 end,
             },
         }
