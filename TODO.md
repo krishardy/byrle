@@ -261,7 +261,58 @@ Items that I've added that are not stage-bound.
 
 Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here
 was measured rather than read off the code, and the measurement is what states the size of
-the problem. Ordered by what breaks first.
+the problem.
+
+Two groups. The first is code that gives a wrong answer today; the second is structure that
+makes the first kind easy to write. Within each, ordered by what breaks first.
+
+The binding is not uniform, and the parts that are clean are worth naming so they are not
+disturbed: `record`, `policy`, `route`, `origin` and `lockfile` are all ecosystem-neutral.
+`policy check` accepts `match: { ecosystem: pypi, name: "requests" }`, and `lockfile.rs`
+reads npm formats only but says so and refuses:
+
+```text
+waharoa policy diff: requirements.txt: a lockfile is read only under one of these
+names: package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock
+```
+
+That is the failure mode every item below should be brought to.
+
+### Wrong answers
+
+- [ ] **Every intel stream is npm-only, so a PyPI package is evaluated against an empty
+      advisory set and the audit says it was checked.**
+
+      | Stream | npm binding |
+      |---|---|
+      | OSV | `NPM_BUNDLE = .../osv-vulnerabilities/npm/all.zip`, stream `osv/npm` |
+      | Datadog | `MANIFEST = .../samples/npm/manifest.json`, stream `datadog/npm`, plus `ecosystem: Ecosystem::Npm` at `datadog.rs:93` |
+      | GitHub | `securityVulnerabilities(ecosystem: NPM, ...)` in the query, and `ecosystem: NPM.to_owned()` at `github.rs:234,241,249` |
+      | KEV | `Scope::Served`, which follows `Ecosystem::ALL` |
+
+      The data exists upstream. Both answered 206 to a range request:
+      `https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip` and
+      `.../DataDog/malicious-software-packages-dataset/main/samples/pypi/manifest.json`.
+
+      The failure mode is worse than missing data. `postgres.rs:406` selects
+      `FROM (SELECT digest FROM intel_snapshot ...)` and `LEFT JOIN`s the advisories, so a
+      `pypi` lookup with npm intel loaded returns a snapshot with no rows. `intel_for` gets
+      `Ok(Some(empty))`, the policy reads "nothing known", and
+      `audit::Event::pinned(...).with_intel_snapshot(...)` records the decision as having
+      consulted that snapshot. A PyPI package with a known vulnerability is allowed and the
+      audit trail says it was checked.
+
+      Fixing the streams is the larger half; making an unserved ecosystem fail closed
+      rather than empty is the half that matters first.
+
+- [ ] **`Ecosystem::ALL` is still `[Npm]`, so nothing reports the gap above.**
+      `identity.rs:64`, with the comment "PyPI joins this when the proxy serves `/simple/`".
+      It does now: the proxy routes it, rewrites its index, verifies its files and enforces
+      policy on them.
+      `intel::served()` reads `ALL`, and `Capabilities::uncovered_by` would report
+      `pypi has no stream providing Match` the moment PyPI is in it. The mechanism is built
+      and correct; it is not being fed. Adding PyPI to `ALL` without the streams above turns
+      a silent gap into a reported one, which is the right order.
 
 - [ ] **`publish_times_for` asks npm whatever the ecosystem is, and the answer is wrong.**
       `adapter-interface.md` names four per-ecosystem questions and calls them exhaustive.
@@ -284,6 +335,35 @@ the problem. Ordered by what breaks first.
       mechanism has to make a sixth impossible to add in silence. `intel_for` is the shape
       that works, keying on `key.ecosystem().as_str()` rather than on which client the
       proxy happens to hold.
+
+- [ ] **`explain` asks npm about any purl and answers as if it knew.**
+
+      ```text
+      $ waharoa explain 'pkg:pypi/requests@2.34.2'
+      waharoa explain: the registry does not publish pkg:pypi/requests@2.34.2
+      ```
+
+      `main.rs:451` builds an `npm::Client` unconditionally. That package exists; npm was
+      asked. `policy diff` does the same at `main.rs:303`, but it is reached only through a
+      lockfile the reader already refused, so it is not observable there yet.
+
+- [ ] **`doctor` checks five npm clients and no Python ones.**
+      Its output covers npm, pnpm, yarn and bun registries and caches. It says nothing about
+      pip or uv. Both failure modes it exists to catch were hit by hand on 2026-09-16: a
+      configured `extra-index-url` served every file while the proxy saw no `/packages/`
+      request, and pip's wheel cache supplies an install without asking any index.
+      `scripts/make/smoke-python.sh` works around both with `PIP_CONFIG_FILE=/dev/null` and
+      `--no-cache-dir`, which is a test making up for a check that does not exist.
+
+- [ ] **Two smaller ecosystem assumptions.**
+      `doctor::looks_like_a_registry` (`doctor.rs:603`) is
+      `origin == crate::npm::DEFAULT_REGISTRY`, so a `files.pythonhosted.org` origin in a
+      lockfile reads as a stale proxy address rather than as a public registry.
+      `cargo doc` has four unresolved links to `crate::npm::rewrite_artifact_origins` and
+      `crate::npm::PackageMetadata::bypassing_origins`, left behind when those moved to
+      `origin` and `record`. Nothing gates rustdoc warnings, which is why they survived.
+
+### Structure
 
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 
