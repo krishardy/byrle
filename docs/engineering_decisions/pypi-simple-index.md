@@ -254,18 +254,56 @@ The run needs `PIP_CONFIG_FILE=/dev/null`. A configured `extra-index-url` is que
 alongside this proxy and serves its own file URLs, so without that the measurement counts
 what the other index answered.
 
-### What the proxy does not yet do with a PyPI file
+### From the index to a verified file
+
+`pypi::normalize` gives the index the same shape npm's packument reaches, and `read_index`
+stores it before the rewrite, built from the bytes that arrived rather than the ones the
+proxy is about to send. Records built from the rewritten document would name the proxy's
+own origin as every artifact's upstream, which is the wrong thing to hold as the index's
+claim.
+
+pip 26.1.1, `requests` into an empty venv:
 
 ```text
-WARN artifact requested, no packument seen for it
-     path=/packages/a0/f4/c67b.../requests-2.34.2-py3-none-any.whl
-     claimed_purl=pkg:pypi/requests@2.34.2
+INFO simple index normalized path=/simple/requests/ files=243 versions=160 artifacts=243 skipped=0 sdist_only_versions=77 held_packages=1 held_records=160
+INFO artifact requested, digest known path=/packages/.../requests-2.34.2-py3-none-any.whl integrity="sha256-Kg1gwXL4OsarMeRVSQbA87NYjTe1y5ObHAYfSQfieOA=" has_install_scripts=false
+INFO artifact cache consulted ... cache="miss"
+INFO artifact digest verified path=/packages/.../requests-2.34.2-py3-none-any.whl purl=pkg:pypi/requests@2.34.2 bytes=73075
 ```
 
-The request is classified, the purl is right, and `charset_normalizer-3.5.1-...whl` reaches
-`pkg:pypi/charset-normalizer@3.5.1`, so the wheel's escaped name normalises back. Nothing
-stores PyPI records yet, so there is no digest to check and the bytes are forwarded and
-said to be unverified. That is npm's Stage 1 behaviour for a packument the proxy never saw.
+All five wheels verified. 243 files became 160 versions with 243 artifacts and nothing
+skipped, and 77 of those versions offer only an sdist.
+
+`fetch_and_store` asks each ecosystem its own registry, chosen from `key.ecosystem()`: npm
+the abbreviated packument, PyPI the simple index. `Proxy` holds a `pypi::Client` beside its
+`npm::Client` for it.
+
+### The wheel and the sdist of one version get different answers
+
+With `install_scripts: block` and pip asked for the sdist:
+
+```text
+INFO artifact requested, digest known path=/packages/.../idna-3.19.tar.gz
+     claimed_purl=pkg:pypi/idna@3.19 has_install_scripts=true
+INFO refused by policy method=GET path=/packages/.../idna-3.19.tar.gz status=403
+     claimed_purl=pkg:pypi/idna@3.19 action="block" reasons=["install_scripts: block"]
+```
+
+```text
+ERROR: HTTP error 403 while getting .../idna-3.19.tar.gz (from .../simple/idna/)
+```
+
+The same proxy, the same policy, the same version, asked for the wheel:
+
+```text
+INFO artifact requested, digest known path=/packages/.../idna-3.19-py3-none-any.whl
+     claimed_purl=pkg:pypi/idna@3.19 has_install_scripts=false
+INFO proxied method=GET path=/packages/.../idna-3.19-py3-none-any.whl status=200 bytes=68550
+```
+
+`idna` 3.19's record says `has_install_scripts: false`, because a wheel is on offer. The
+sdist's own answer is true, and `narrowed_to` is what puts it in front of the policy. This
+is the bypass named above, refused live.
 
 PEP 658's `<file>.metadata` classifies as `Other`: `filename_parts` reads no distribution
 from it, which is right, because it is not installable bytes. It forwards to the files host

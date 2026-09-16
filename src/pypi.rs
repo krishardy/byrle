@@ -26,6 +26,7 @@ use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 
 use crate::identity::{Ecosystem, PackageKey};
+use crate::record::{PackageMetadata, SkippedVersion};
 use crate::route::RequestTarget;
 
 /// What `waharoa` sends to ask for JSON rather than HTML. PEP 691.
@@ -406,16 +407,24 @@ fn sri(hex: &str) -> Option<String> {
 /// A yanked file is kept. PEP 592 says a resolver ignores a yanked version unless it is
 /// pinned, which makes yanking an upstream signal rather than a decision this proxy makes,
 /// and dropping it here would answer "no such version" for a version that exists.
-pub fn records(project: &Project) -> Result<Vec<crate::record::PackageRecord>, PypiError> {
+pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
     use crate::identity::{Ecosystem, PackageKey};
     use crate::record::{Artifact, PackageRecord, PackumentDetail, Provenance};
 
     let key = PackageKey::from_registry_name(Ecosystem::PyPI, &project.name)
         .map_err(|_| PypiError::UnusableName(project.name.clone()))?;
     let mut out = Vec::new();
+    let mut skipped = Vec::new();
     for version in project.versions() {
-        let Ok(package) = key.at_version(version) else {
-            continue;
+        let package = match key.at_version(version) {
+            Ok(package) => package,
+            Err(e) => {
+                skipped.push(SkippedVersion {
+                    version: version.to_owned(),
+                    reason: e.to_string(),
+                });
+                continue;
+            }
         };
         let Some(file) = project.preferred(version) else {
             continue;
@@ -457,7 +466,14 @@ pub fn records(project: &Project) -> Result<Vec<crate::record::PackageRecord>, P
             files: project.files.len(),
         });
     }
-    Ok(out)
+    Ok(PackageMetadata {
+        key,
+        // The simple index has no `dist-tags`. A resolver picks from `versions` itself,
+        // and PEP 503 gives it nothing to pick by name.
+        latest: None,
+        records: out,
+        skipped,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -767,7 +783,7 @@ mod tests {
     #[test]
     fn a_version_becomes_a_record_naming_the_file_a_resolver_would_take() {
         let project = parse("requests", &fixture()).expect("the fixture reads");
-        let records = records(&project).expect("records");
+        let records = normalize(&project).expect("records").records;
         assert_eq!(records.len(), 3, "one per version, not one per file");
 
         let wheel = records
@@ -808,7 +824,7 @@ mod tests {
             {"filename":"x-1.0-py3-none-any.whl","url":"https://files/x-1.0-py3-none-any.whl","hashes":{}}
         ]}"#;
         let project = parse("x", document).expect("the document reads");
-        let records = records(&project).expect("records");
+        let records = normalize(&project).expect("records").records;
         assert_eq!(records.len(), 1, "one version");
         let record = &records[0];
 
@@ -841,7 +857,7 @@ mod tests {
             {"filename":"x-1.0-py3-none-any.whl","url":"https://files/x-1.0-py3-none-any.whl","hashes":{}}
         ]}"#;
         let project = parse("x", document).expect("the document reads");
-        let record = &records(&project).expect("records")[0];
+        let record = &normalize(&project).expect("records").records[0];
 
         let sdist = record.narrowed_to("x-1.0.tar.gz").expect("the sdist");
         assert!(sdist.has_install_scripts);
@@ -859,13 +875,60 @@ mod tests {
         assert!(record.narrowed_to("x-1.0-py2-none-any.whl").is_none());
     }
 
+    /// The simple index has no `dist-tags`, so nothing names a default version. A
+    /// resolver picks from the versions itself.
+    #[test]
+    fn a_normalised_index_names_no_latest_version() {
+        let project = parse("requests", &fixture()).expect("the fixture reads");
+        let metadata = normalize(&project).expect("records");
+        assert_eq!(metadata.key.to_string(), "pkg:pypi/requests");
+        assert_eq!(metadata.latest, None);
+        assert_eq!(metadata.records.len(), 3);
+        assert!(metadata.skipped.is_empty());
+        assert_eq!(
+            metadata.version("2.34.2").map(|r| r.package.to_string()),
+            Some("pkg:pypi/requests@2.34.2".to_owned())
+        );
+        assert_eq!(metadata.version("9.9.9"), None);
+    }
+
+    /// A version string the identity rules refuse is recorded rather than dropped in
+    /// silence, the same as npm's skipped versions.
+    #[test]
+    fn a_version_that_is_not_an_identity_is_skipped_and_named() {
+        // A filename whose version field is blank after the name gives an empty version.
+        let document = br#"{"name":"x","files":[
+            {"filename":"x-1.0.tar.gz","url":"https://e/a","hashes":{}},
+            {"filename":"x- -py3-none-any.whl","url":"https://e/b","hashes":{}}
+        ]}"#;
+        let project = parse("x", document).expect("the document reads");
+        let metadata = normalize(&project).expect("one version is readable");
+        assert_eq!(
+            metadata
+                .records
+                .iter()
+                .map(|r| r.package.version())
+                .collect::<Vec<_>>(),
+            ["1.0"]
+        );
+        assert_eq!(
+            metadata
+                .skipped
+                .iter()
+                .map(|s| s.version.as_str())
+                .collect::<Vec<_>>(),
+            [" "]
+        );
+        assert!(!metadata.skipped[0].reason.is_empty());
+    }
+
     /// npm withholds `time` from the abbreviated packument, so a record built from one is
     /// `Abbreviated` and its `None` means unfetched. The simple index withholds nothing it
     /// has, so a PyPI record is `Full` and `cooldown_days` is answerable from it.
     #[test]
     fn a_record_carries_the_publish_time_and_is_not_incomplete() {
         let project = parse("requests", &fixture()).expect("the fixture reads");
-        let records = records(&project).expect("records");
+        let records = normalize(&project).expect("records").records;
         let oldest = &records[0];
         assert_eq!(oldest.package.version(), "0.2.0");
         assert!(!oldest.may_be_incomplete());
@@ -905,7 +968,7 @@ mod tests {
     #[test]
     fn a_yanked_version_still_becomes_a_record() {
         let project = parse("requests", &fixture()).expect("the fixture reads");
-        let records = records(&project).expect("records");
+        let records = normalize(&project).expect("records").records;
         assert!(
             records.iter().any(|r| r.package.version() == "2.32.0"),
             "the yanked version is still a version"
@@ -919,7 +982,7 @@ mod tests {
             name: "x".to_owned(),
             files: Vec::new(),
         };
-        let error = records(&project).expect_err("nothing to record");
+        let error = normalize(&project).expect_err("nothing to record");
         assert!(
             matches!(error, PypiError::NothingReadable { .. }),
             "{error}"

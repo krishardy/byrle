@@ -24,7 +24,7 @@ async fn main() {
     for name in names {
         match client.project(&name).await {
             Ok(project) => {
-                let records = match waharoa::pypi::records(&project) {
+                let records = match waharoa::pypi::normalize(&project).map(|m| m.records) {
                     Ok(records) => records,
                     Err(e) => {
                         eprintln!("{name}: {e}");

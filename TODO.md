@@ -1782,8 +1782,10 @@ changes to the core, that is the finding — make it now, not after five adapter
 - [ ] `[!]` Reimplement npm and PyPI on the extracted interface, behavior unchanged
 - [ ] `[!]` Handle the backtracking resolver's traffic shape (metadata fetched for
       versions never installed — do not treat as install intent)
-- [~] `[!]` PyPI normalizer to the common record. `pypi::records` gives one
-      `PackageRecord` per version, naming the file a resolver would take. Three of the four
+- [x] `[!]` PyPI normalizer to the common record. `pypi::normalize` gives a
+      `PackageMetadata`, one `PackageRecord` per version, each holding every file that
+      version offers. The proxy stores it, so an artifact request finds its digest and the
+      policy decides about the file that was asked for. Three of the four
       candidate core changes turned out not to be changes: the sha256 hex converts to SRI
       through `integrity::Algorithm::Sha256`, `PackumentDetail::Full` already means what a
       simple index is, and a yank is an upstream signal rather than a decision here.
@@ -1793,7 +1795,8 @@ changes to the core, that is the finding — make it now, not after five adapter
             file. Nothing under `src/policy/` reads `artifact`, so the change stopped at the
             normalisers, the store and the proxy's artifact path.
       - [ ] `PackumentDetail::Abbreviated`/`Full` is npm vocabulary, 88 uses. Renaming it
-            belongs to the extraction, not here.
+            belongs to the extraction, not here. `NormalizedPackument` was the same problem
+            and is now `record::PackageMetadata`.
       - [x] `Ecosystem::PyPI` exists; `Ecosystem::ALL` still holds npm alone, because that
             is the served set `doctor` and `/-/waharoa/ready` report on.
 - [x] `[!]` sdist vs. wheel distinction for install-script semantics. `Kind` and
@@ -1802,11 +1805,13 @@ changes to the core, that is the finding — make it now, not after five adapter
       Wired to the `install_scripts` check through `Artifact::runs_install_scripts` and
       `PackageRecord::narrowed_to`, which `proxy::handle` calls before it builds `Facts`. A
       version cleared because it offers a wheel no longer serves its sdist on that basis.
-- [~] pip and uv both verified. pip 26.1.1 installs `requests` through the proxy and every
-      request arrives, index pages and files alike. Artifacts are forwarded unverified,
-      because nothing stores PyPI records yet. uv is untried. Neither is a `make` target:
-      `make smoke-clients` covers npm's five. The run needs `PIP_CONFIG_FILE=/dev/null`, or
-      a configured `extra-index-url` serves the files instead.
+- [~] pip and uv both verified. pip 26.1.1 installs `requests` through the proxy, every
+      request arrives, and all five wheels verify against the digest the index published.
+      With `install_scripts: block`, `pip install --no-binary :all: idna` is refused 403 at
+      the sdist while the wheel of the same version is served. uv is untried, and neither is
+      a `make` target yet: `make smoke-clients` covers npm's five. The run needs
+      `PIP_CONFIG_FILE=/dev/null`, or a configured `extra-index-url` serves the files
+      instead.
 - [ ] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass).
       Moved from Stage 2's `install_scripts`, where the engine side is built:
       `merge::applies` and its Go test cover not-applicable, and the flow chart carries

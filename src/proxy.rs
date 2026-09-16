@@ -215,6 +215,8 @@ pub struct Proxy {
     store: Arc<Mutex<RecordStore>>,
     /// Used to fetch a packument the client never asked for. See [`lookup_or_fetch`].
     registry: npm::Client,
+    /// The same for a PyPI simple index.
+    index: crate::pypi::Client,
     /// Artifacts already fetched and verified, keyed by content digest. The fetch path
     /// branches on this (plan §5). See [`crate::verified`].
     verified: Arc<Mutex<VerifiedArtifacts>>,
@@ -275,6 +277,7 @@ impl Proxy {
         Self {
             origins: Arc::new(origins),
             registry: npm::Client::new(client.clone(), upstream.clone()),
+            index: crate::pypi::Client::new(client.clone(), crate::pypi::INDEX),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
@@ -438,12 +441,16 @@ impl Proxy {
         // forwards, so one setting means one limit.
         self.registry =
             npm::Client::new(self.client.clone(), self.upstream.clone()).with_max_bytes(limit);
+        self.index = crate::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
+            .with_max_bytes(limit);
         self
     }
 
     /// The PyPI simple index to forward to. Defaults to [`crate::pypi::INDEX`].
     pub fn with_upstream_pypi(mut self, upstream: impl Into<String>) -> Self {
         self.upstream_pypi = upstream.into().trim_end_matches('/').to_owned();
+        self.index = crate::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
+            .with_max_bytes(self.max_packument_bytes);
         self
     }
 
@@ -702,37 +709,50 @@ async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &
         .lookup(key, version)
 }
 
-/// Fetch a packument the client did not ask for, and keep its records.
+/// Fetch the metadata document the client did not ask for, and keep its records.
+///
+/// Each ecosystem asks its own registry: npm the abbreviated packument, PyPI the simple
+/// index. `key` carries the ecosystem, so the caller does not choose.
 ///
 /// Failure is not fatal and is not propagated. The artifact is forwarded unverified and
 /// said to be unverified, which is Stage 1 behaviour; Stage 2 has to decide whether that
 /// stays allowed.
 async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     let started = Instant::now();
-    match proxy
-        .registry
-        .packument(key, PackumentDetail::Abbreviated)
-        .await
-    {
-        Ok(Ok(packument)) => {
-            let versions = packument.records.len();
+    let fetched = match key.ecosystem() {
+        Ecosystem::Npm => match proxy
+            .registry
+            .packument(key, PackumentDetail::Abbreviated)
+            .await
+        {
+            Ok(inner) => Ok(inner.map_err(|e| e.to_string())),
+            Err(e) => Err(e.to_string()),
+        },
+        Ecosystem::PyPI => match proxy.index.project(key.name()).await {
+            Ok(project) => Ok(crate::pypi::normalize(&project).map_err(|e| e.to_string())),
+            Err(e) => Err(e.to_string()),
+        },
+    };
+    match fetched {
+        Ok(Ok(metadata)) => {
+            let versions = metadata.records.len();
             proxy
                 .store
                 .lock()
                 .expect("record store lock")
-                .insert(packument);
+                .insert(metadata);
             info!(
                 path = %path,
                 purl = %key,
                 versions,
                 elapsed_ms = started.elapsed().as_millis() as u64,
-                "fetched packument on our own behalf, which the client never requested"
+                "fetched metadata on our own behalf, which the client never requested"
             );
         }
         Ok(Err(e)) => {
-            warn!(path = %path, purl = %key, error = %e, "packument fetched but did not normalize")
+            warn!(path = %path, purl = %key, error = %e, "metadata fetched but did not normalize")
         }
-        Err(e) => warn!(path = %path, purl = %key, error = %e, "could not fetch packument"),
+        Err(e) => warn!(path = %path, purl = %key, error = %e, "could not fetch metadata"),
     }
 }
 
@@ -822,10 +842,10 @@ fn document_from_content_type(
 /// `None` leaves the body exactly as it arrived: the index did not parse, there is no
 /// address to point at, or the operator turned rewriting off. Each says so in the log,
 /// because a forwarded index means that project's files go around the proxy.
-fn rewrite_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> Option<Vec<u8>> {
-    // The project name is not read: only `Project::files` is. `pypi::parse` takes one as
-    // the fallback for an index that does not name itself, and every message below says
-    // `path`, which identifies the project already.
+fn read_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> Option<Vec<u8>> {
+    // The project name is not read from here: `pypi::parse` takes one as the fallback for
+    // an index that does not name itself, and every message below says `path`, which
+    // identifies the project already.
     let project = match crate::pypi::parse("", decoded) {
         Ok(project) => project,
         Err(e) => {
@@ -834,6 +854,42 @@ fn rewrite_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) 
         }
     };
     let files = project.files.len();
+
+    // Stored before the rewrite, and built from the bytes that arrived. Records built
+    // from the rewritten document would name the proxy's own origin as every artifact's
+    // upstream, which is the wrong thing to hold as the index's claim.
+    match crate::pypi::normalize(&project) {
+        Ok(metadata) => {
+            let versions = metadata.records.len();
+            let skipped = metadata.skipped.len();
+            let artifacts: usize = metadata.records.iter().map(|r| r.artifacts.len()).sum();
+            let sdist_only = metadata
+                .records
+                .iter()
+                .filter(|r| r.has_install_scripts)
+                .count();
+            let (held_packages, held_records) = {
+                let mut store = proxy.store.lock().expect("record store lock");
+                store.insert(metadata);
+                (store.len(), store.records())
+            };
+            info!(
+                path = %path,
+                files,
+                versions,
+                artifacts,
+                skipped,
+                // Every version in the document, not the one being installed: a version
+                // offering only an sdist runs `setup.py` on install.
+                sdist_only_versions = sdist_only,
+                held_packages,
+                held_records,
+                "simple index normalized"
+            );
+        }
+        Err(e) => warn!(path = %path, error = %e, "UNINSPECTED: simple index did not normalize"),
+    }
+
     let Some(base) = base else {
         warn!(
             path = %path,
@@ -1412,7 +1468,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // this commit is the transport one.
     if document == Document::SimpleIndex {
         let forwarded = decoded.as_deref().and_then(|d| {
-            rewrite_index(
+            read_index(
                 &proxy,
                 d,
                 rewriting.then_some(rewrite_base.as_deref()).flatten(),
@@ -2184,6 +2240,61 @@ mod tests {
             ),
             "{path}"
         );
+    }
+
+    /// Reading the index is what gives the artifact request that follows it a digest.
+    /// Without the records the bytes are forwarded and said to be unverified.
+    #[test]
+    fn reading_an_index_leaves_its_records_for_the_file_request() {
+        let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org");
+        let index = br#"{"name":"x","files":[
+            {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl","hashes":{"sha256":"aa3f5e4a4b1a8b2b4e0a9a6e4e0f4d0b6a3d2c1f0e9d8c7b6a5f4e3d2c1b0a9f"}},
+            {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/x-1.0.tar.gz","hashes":{}}
+        ]}"#;
+
+        assert_eq!(proxy.store.lock().unwrap().records(), 0);
+        read_index(&proxy, index, Some("http://127.0.0.1:8080"), "/simple/x/");
+
+        let key = PackageKey::from_registry_name(Ecosystem::PyPI, "x").unwrap();
+        let mut store = proxy.store.lock().unwrap();
+        assert_eq!(store.records(), 1, "one version, two files");
+        let Lookup::Found(record) = store.lookup(&key, "1.0") else {
+            panic!("the index named 1.0");
+        };
+        assert_eq!(
+            record
+                .artifact_named("x-1.0-py3-none-any.whl")
+                .and_then(|a| a.integrity.as_deref()),
+            Some("sha256-qj9eSksaiytOCppuTg9NC2o9LB8OnYx7al9OPSwbCp8=")
+        );
+        assert!(
+            record
+                .artifact_named("x-1.0.tar.gz")
+                .expect("the sdist")
+                .integrity
+                .is_none(),
+            "the index gave no digest for it"
+        );
+        assert!(!record.has_install_scripts, "a wheel is on offer");
+        assert!(
+            record.runs_install_scripts(Some("x-1.0.tar.gz")),
+            "asking for the sdist is asking for the bytes that run setup.py"
+        );
+    }
+
+    /// An index the proxy cannot read stores nothing rather than storing a partial
+    /// record: an artifact request then says it saw no metadata, which is true.
+    #[test]
+    fn an_index_that_does_not_normalize_stores_nothing() {
+        let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org");
+        read_index(&proxy, b"not json", Some("http://p"), "/simple/x/");
+        read_index(
+            &proxy,
+            br#"{"name":"x","files":[{"filename":"notadistribution.txt","url":"https://e/a","hashes":{}}]}"#,
+            Some("http://p"),
+            "/simple/x/",
+        );
+        assert_eq!(proxy.store.lock().unwrap().records(), 0);
     }
 
     // -----------------------------------------------------------------------
@@ -4595,7 +4706,7 @@ mod tests {
         /// from the index's own host and nothing about those bytes is observed.
         #[test]
         fn a_rewritten_index_points_its_files_at_the_proxy() {
-            let out = rewrite_index(&proxy(), INDEX, Some("http://127.0.0.1:8080"), "/simple/x/")
+            let out = read_index(&proxy(), INDEX, Some("http://127.0.0.1:8080"), "/simple/x/")
                 .expect("two files rewritten");
             let text = String::from_utf8(out).expect("still utf-8");
             assert!(
@@ -4613,7 +4724,7 @@ mod tests {
         /// understands and `upstream_url` sends to the host it came from.
         #[test]
         fn a_rewritten_url_round_trips_to_where_it_came_from() {
-            let out = rewrite_index(&proxy(), INDEX, Some("http://127.0.0.1:8080"), "/simple/x/")
+            let out = read_index(&proxy(), INDEX, Some("http://127.0.0.1:8080"), "/simple/x/")
                 .expect("rewritten");
             let document: serde_json::Value = serde_json::from_slice(&out).expect("json");
             let url = document["files"][0]["url"].as_str().expect("a url");
@@ -4635,16 +4746,16 @@ mod tests {
         /// the body exactly as it arrived.
         #[test]
         fn an_index_that_cannot_be_rewritten_is_forwarded_untouched() {
-            assert_eq!(rewrite_index(&proxy(), INDEX, None, "/simple/x/"), None);
+            assert_eq!(read_index(&proxy(), INDEX, None, "/simple/x/"), None);
             assert_eq!(
-                rewrite_index(&proxy(), b"not json", Some("http://p"), "/simple/x/"),
+                read_index(&proxy(), b"not json", Some("http://p"), "/simple/x/"),
                 None
             );
             let offsite = br#"{"name":"x","files":[
                 {"filename":"x-1.0.tar.gz","url":"https://cdn.example/x-1.0.tar.gz","hashes":{}}
             ]}"#;
             assert_eq!(
-                rewrite_index(&proxy(), offsite, Some("http://p"), "/simple/x/"),
+                read_index(&proxy(), offsite, Some("http://p"), "/simple/x/"),
                 None,
                 "an origin the proxy does not front is left where it is"
             );
