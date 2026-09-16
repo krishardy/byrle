@@ -388,6 +388,7 @@ mod tests {
                     cvss: Some(9.8),
                     band: None,
                     kev: true,
+                    sources: vec!["osv".to_owned()],
                 },
                 Advisory {
                     id: "GHSA-0000-0000-0000".to_owned(),
@@ -395,6 +396,7 @@ mod tests {
                     cvss: Some(8.9),
                     band: Some("HIGH".to_owned()),
                     kev: false,
+                    sources: vec!["osv".to_owned()],
                 },
                 Advisory {
                     id: "GHSA-1111-1111-1111".to_owned(),
@@ -402,6 +404,7 @@ mod tests {
                     cvss: None,
                     band: None,
                     kev: false,
+                    sources: vec!["osv".to_owned()],
                 },
                 Advisory {
                     id: "GHSA-2222-2222-2222".to_owned(),
@@ -409,6 +412,7 @@ mod tests {
                     cvss: None,
                     band: None,
                     kev: false,
+                    sources: vec!["osv".to_owned()],
                 },
             ],
             ..facts()
@@ -510,6 +514,7 @@ mod tests {
             cvss: Some(cvss),
             band: None,
             kev,
+            sources: vec!["osv".to_owned()],
         }
     }
 

@@ -83,6 +83,13 @@ pub struct Advisory {
     /// no package identifier of any kind. See
     /// `docs/engineering_decisions/advisory-stream-licences.md`.
     pub kev: bool,
+    /// Every stream that reported this advisory, sorted and once each.
+    ///
+    /// OSV and GitHub are signal streams checked independently, and both publish `GHSA-`
+    /// ids, so one advisory is commonly reported twice. That is corroboration rather than
+    /// two vulnerabilities: `decide` gives each check one result, and this is the set the
+    /// result was reached over. Empty only for an advisory built without intel.
+    pub sources: Vec<String>,
 }
 
 impl Advisory {
@@ -517,6 +524,7 @@ mod tests {
             cvss: Some(cvss),
             band: None,
             kev: false,
+            sources: vec!["osv".to_owned()],
         }
     }
 
@@ -797,6 +805,7 @@ mod tests {
                 cvss: Some(9.8),
                 band: None,
                 kev: false,
+                sources: vec!["osv".to_owned()],
             }],
             ..clean()
         };
@@ -819,6 +828,7 @@ mod tests {
                     cvss: Some(9.8),
                     band: None,
                     kev: false,
+                    sources: vec!["osv".to_owned()],
                 },
                 Advisory {
                     id: "CVE-2025-9999".to_owned(),
@@ -826,6 +836,7 @@ mod tests {
                     cvss: Some(7.5),
                     band: None,
                     kev: false,
+                    sources: vec!["osv".to_owned()],
                 },
             ],
             ..clean()
@@ -1150,6 +1161,7 @@ mod tests {
                     cvss: Some(cvss),
                     band: None,
                     kev: false,
+                    sources: vec!["osv".to_owned()],
                 }],
                 ..clean()
             };

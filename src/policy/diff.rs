@@ -665,6 +665,7 @@ mod tests {
                 cvss: Some(5.0),
                 band: None,
                 kev: true,
+                sources: vec!["osv".to_owned()],
             }],
             ..facts()
         };
