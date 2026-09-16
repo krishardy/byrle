@@ -944,17 +944,20 @@ fn upstream_url(
     path_and_query: &str,
     artifact_origin: Option<&str>,
 ) -> String {
-    if ecosystem == Ecosystem::Npm {
-        let origin = artifact_origin.unwrap_or(&proxy.upstream);
-        return format!("{origin}{path_and_query}");
-    }
+    // An origin the operator added for artifacts wins for either ecosystem: that is what
+    // the additional-origins list is for.
     if let Some(origin) = artifact_origin {
         return format!("{origin}{path_and_query}");
     }
-    // The two prefixes and nothing else: `pypi::serves` is what sent the request here.
-    match path_and_query.strip_prefix("/simple") {
-        Some(rest) => format!("{}{rest}", proxy.upstream_pypi),
-        None => format!("{}{path_and_query}", crate::pypi::FILES),
+    // Exhaustive on purpose. A third ecosystem has to answer this question, and a
+    // fall-through would quietly give it PyPI's two hosts.
+    match ecosystem {
+        Ecosystem::Npm => format!("{}{path_and_query}", proxy.upstream),
+        // The two prefixes and nothing else: `pypi::serves` is what sent the request here.
+        Ecosystem::PyPI => match path_and_query.strip_prefix("/simple") {
+            Some(rest) => format!("{}{rest}", proxy.upstream_pypi),
+            None => format!("{}{path_and_query}", crate::pypi::FILES),
+        },
     }
 }
 
@@ -1465,32 +1468,36 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         }
     };
 
-    // A simple index is read and rewritten here, and returns: nothing below it applies.
-    // It carries no publish times this proxy fetches separately, no `dist-tags`, and no
-    // per-version filtering, because filtering a simple index is the enforcement step and
-    // this commit is the transport one.
-    if document == Document::SimpleIndex {
-        let forwarded = decoded.as_deref().and_then(|d| {
-            read_index(
-                &proxy,
-                d,
-                rewriting.then_some(rewrite_base.as_deref()).flatten(),
+    // Each document kind is read by its own normaliser, and a `match` rather than a test
+    // and a fall-through: a third kind has to answer this rather than reach whichever arm
+    // was written last.
+    //
+    // A simple index returns here, because nothing below it applies. It carries no publish
+    // times this proxy fetches separately, nothing `dist-tags` stands for, and no
+    // per-version filtering: filtering a simple index is the range-resolution work, which
+    // is open.
+    let detail = match document {
+        Document::SimpleIndex => {
+            let forwarded = decoded.as_deref().and_then(|d| {
+                read_index(
+                    &proxy,
+                    d,
+                    rewriting.then_some(rewrite_base.as_deref()).flatten(),
+                    &path_and_query,
+                )
+            });
+            return finish(
+                forwarded,
+                body,
+                headers,
+                forward_status,
+                chosen_encoding,
+                rewrite_base.as_deref(),
                 &path_and_query,
-            )
-        });
-        return finish(
-            forwarded,
-            body,
-            headers,
-            forward_status,
-            chosen_encoding,
-            rewrite_base.as_deref(),
-            &path_and_query,
-            log_proxied,
-        );
-    }
-    let Document::Packument(detail) = document else {
-        unreachable!("the simple index returned above");
+                log_proxied,
+            );
+        }
+        Document::Packument(detail) => detail,
     };
 
     // Nothing to normalise when decoding failed; it was logged above.
