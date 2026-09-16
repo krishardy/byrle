@@ -710,7 +710,7 @@ async fn run_refresh() -> std::process::ExitCode {
     use waharoa::intel::history::NotLoaded;
     use waharoa::intel::postgres::{PgIntel, Replacement};
     use waharoa::intel::refresh::{StreamDigest, Tally};
-    use waharoa::intel::stream::{Payload, Requirement};
+    use waharoa::intel::stream::{Payload, Requirement, Transport};
     use waharoa::intel::{datadog, osv, snapshot_dir::SnapshotDir, stream};
 
     /// Append `not_loaded` for a refresh that loaded nothing, and exit 1.
@@ -764,12 +764,24 @@ async fn run_refresh() -> std::process::ExitCode {
         }
     };
 
+    let github_token = or_exit(env::process().github_token());
+
     let mut loaded: Vec<Loaded> = Vec::new();
     let mut not_loaded: Vec<NotLoaded> = Vec::new();
     for declared in stream::ALL {
         // `fetched` holds the whole body, and drops at the end of its arm, so one stream's
         // bytes are freed before the next is fetched.
-        let read = match fetch(&http, declared.url, declared.ceiling).await {
+        let got = match declared.transport {
+            Transport::Get => fetch(&http, declared.url, declared.ceiling).await,
+            Transport::GithubGraphql => match github_token.as_deref() {
+                Some(token) => fetch_graphql(&http, declared.url, declared.ceiling, token).await,
+                None => Err(format!(
+                    "{} is unset, so this stream is not read",
+                    env::GITHUB_TOKEN
+                )),
+            },
+        };
+        let read = match got {
             Ok(fetched) => {
                 let bundle = fetched.stream(declared.stream);
                 match (declared.parse)(&fetched.bytes) {
@@ -973,6 +985,73 @@ async fn fetch(http: &reqwest::Client, url: &str, ceiling: usize) -> Result<Fetc
         bytes,
         etag,
         last_modified,
+    })
+}
+
+/// Every page of GitHub's advisory connection, as one JSON array of response bodies.
+///
+/// `intel::github::parse` reads that array, so paging stays here and the descriptor's
+/// `parse` keeps taking one buffer. `ceiling` bounds the whole array rather than one page.
+///
+/// A page that is not JSON, or that carries no `pageInfo`, ends the fetch: the bytes are
+/// still handed to `parse`, which reports what GitHub said.
+async fn fetch_graphql(
+    http: &reqwest::Client,
+    url: &str,
+    ceiling: usize,
+    token: &str,
+) -> Result<Fetched, String> {
+    let mut bytes = vec![b'['];
+    let mut after: Option<String> = None;
+    let mut pages = 0_usize;
+    eprintln!("waharoa refresh: fetching {url}");
+    loop {
+        let body = serde_json::json!({
+            "query": waharoa::intel::github::QUERY,
+            "variables": { "after": after },
+        });
+        let body = serde_json::to_vec(&body).map_err(|e| format!("{url}: {e}"))?;
+        let response = http
+            .post(url)
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| format!("fetching {url}: {e}"))?;
+        let page = response
+            .bytes()
+            .await
+            .map_err(|e| format!("reading {url}: {e}"))?;
+        if bytes.len() + page.len() + 1 > ceiling {
+            return Err(format!(
+                "{url} is over the {ceiling} byte ceiling after {pages} pages"
+            ));
+        }
+        if pages > 0 {
+            bytes.push(b',');
+        }
+        bytes.extend_from_slice(&page);
+        pages += 1;
+
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&page).map_err(|e| format!("reading {url}: {e}"))?;
+        let info = &parsed["data"]["securityVulnerabilities"]["pageInfo"];
+        if info["hasNextPage"].as_bool() != Some(true) {
+            break;
+        }
+        match info["endCursor"].as_str() {
+            Some(cursor) => after = Some(cursor.to_owned()),
+            None => break,
+        }
+    }
+    bytes.push(b']');
+    eprintln!("waharoa refresh: {pages} pages from {url}");
+    Ok(Fetched {
+        bytes,
+        etag: None,
+        last_modified: None,
     })
 }
 

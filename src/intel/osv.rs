@@ -165,7 +165,7 @@ fn score(severity: &[Severity], band: Option<&str>) -> (Option<f64>, Option<Stri
 /// `LOW` 0.1 to 3.9, `MODERATE` 4.0 to 6.9, `HIGH` 7.0 to 8.9, `CRITICAL` 9.0 to 10.0. The top,
 /// decided 2026-09-15, so a threshold inside a band refuses what the band could be. `None` for
 /// any other text.
-fn band_ceiling(band: &str) -> Option<f64> {
+pub(crate) fn band_ceiling(band: &str) -> Option<f64> {
     match band {
         "LOW" => Some(3.9),
         "MODERATE" => Some(6.9),
