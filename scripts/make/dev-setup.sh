@@ -215,5 +215,33 @@ else
     echo "    or review https://bun.sh/install before running it."
 fi
 
+# The Python side. `make smoke-python` runs pip, which comes with a venv, and uv, which
+# does not. Without uv the run still passes and silently checks one client instead of two,
+# which is the failure this file already avoids for shellcheck.
+echo "==> python3 (used by 'make smoke-python')"
+if need python3; then
+    echo "    found $(python3 --version 2>&1 | awk '{print $2}')"
+else
+    echo "    NOT FOUND. 'make smoke-python' cannot run without it."
+fi
+
+echo "==> uv (optional, used by 'make smoke-python')"
+if need uv; then
+    echo "    found $(uv --version 2>/dev/null | awk '{print $2}')"
+elif need pipx; then
+    pipx install uv >/dev/null 2>&1 \
+        && echo "    installed $(uv --version 2>/dev/null | awk '{print $2}')" \
+        || echo "    pipx install uv failed; 'make smoke-python' skips the uv check"
+elif need pacman; then
+    echo "    install with: sudo pacman -S uv"
+elif need brew; then
+    brew install uv
+else
+    # Upstream offers `curl ... | sh`, which this file does not run for the reason the
+    # bun entry above gives.
+    echo "    NOT INSTALLED and no package manager found. Install from your distribution,"
+    echo "    or review https://docs.astral.sh/uv/getting-started/installation/ first."
+fi
+
 echo
 echo "dev setup complete."
