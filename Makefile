@@ -1,4 +1,4 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-clients retry-matrix offsite-urls inspect spike-config duplicates
+.PHONY: help dev-setup lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients retry-matrix offsite-urls inspect spike-config duplicates
 
 help:
 	@echo "waharoa targets:"
@@ -17,6 +17,7 @@ help:
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
 	@echo "  run            run the proxy in the foreground"
 	@echo "  smoke-npm      end-to-end check of the proxy against a real npm client"
+	@echo "  smoke-python   the same against pip and uv"
 	@echo "  smoke-clients  where npm, pnpm and yarn diverge through the proxy"
 	@echo "  retry-matrix   what each client does when the proxy defers a request"
 	@echo "  offsite-urls   which packument URLs each client fetches as written"
@@ -76,6 +77,9 @@ run:
 
 smoke-npm:
 	@scripts/make/smoke-npm.sh
+
+smoke-python:
+	@scripts/make/smoke-python.sh
 
 smoke-clients:
 	@scripts/make/smoke-clients.sh

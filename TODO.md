@@ -208,6 +208,29 @@ Items that I've added that are not stage-bound.
       Rust, 6 script and 12 test-helper entries, none consolidated yet. `make duplicates`
       re-runs the scan: 30 repeated blocks of 8+ lines, 37 repeated literals of 16+
       characters touching production code.
+18. [x] Add a `make smoke-python` makefile task that runs a smoke test on the python
+    dependency managers.
+    Done: `scripts/make/smoke-python.sh`, the PyPI half of `smoke-npm.sh` and asserting the
+    same kinds of thing: pip installs through the proxy, every transitive distribution had
+    its index read, every one reached a purl at the version on disk, every file's digest was
+    known before the fetch and verified, one version's wheel and sdist get different answers
+    under `install_scripts: block`, and uv does the same with its own resolver.
+    It was marked done before the target existed; it exists now.
+    Two isolation flags are load-bearing and both were measured, not assumed.
+    `PIP_CONFIG_FILE=/dev/null`, because a configured `extra-index-url` is queried alongside
+    the proxy and serves its own file URLs: with the operator's own pip.conf in place, an
+    install through the proxy fetched every file from the other index and the proxy saw no
+    `/packages/` request at all. `UV_NO_CONFIG=1` for uv, for the same reason.
+    Two controls, both failing the way they should: with `WAHAROA_REWRITE_ARTIFACTS=0`, pip
+    takes every file from files.pythonhosted.org and step 3 reports all five distributions
+    installed but never normalized. With `install_scripts: allow`, step 5 reports the sdist
+    installed although install scripts are blocked.
+    One bug in the script itself, found by running a control rather than reading it: under
+    `set -e` a `grep` in a command substitution that matches nothing exits 1 and kills the
+    script with no diagnosis, which is exactly the case each check exists to report. Both
+    are `|| true` now.
+19. [ ] Are `make smoke-npm` and `make smoke-clients` still both needed?
+20. [ ] main.rs is still NPM focused, especially in the comments. Generalize the comments and code.
 
 ## Stage 1 — Pass-through proxy (transport)
 
@@ -1815,13 +1838,11 @@ changes to the core, that is the finding — make it now, not after five adapter
       Wired to the `install_scripts` check through `Artifact::runs_install_scripts` and
       `PackageRecord::narrowed_to`, which `proxy::handle` calls before it builds `Facts`. A
       version cleared because it offers a wheel no longer serves its sdist on that basis.
-- [~] pip and uv both verified. pip 26.1.1 installs `requests` through the proxy, every
-      request arrives, and all five wheels verify against the digest the index published.
-      With `install_scripts: block`, `pip install --no-binary :all: idna` is refused 403 at
-      the sdist while the wheel of the same version is served. uv is untried, and neither is
-      a `make` target yet: `make smoke-clients` covers npm's five. The run needs
-      `PIP_CONFIG_FILE=/dev/null`, or a configured `extra-index-url` serves the files
-      instead.
+- [x] pip and uv both verified, by `make smoke-python`. pip 26.1.1 and uv 0.12.5 each
+      install `requests` through the proxy, every request arrives, and all five files verify
+      against the digest the index published. With `install_scripts: block`,
+      `pip install --no-binary :all: idna` is refused 403 at the sdist while the wheel of the
+      same version is served. Ad-hoc #18 has the isolation flags and the controls.
 - [ ] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass).
       Moved from Stage 2's `install_scripts`, where the engine side is built:
       `merge::applies` and its Go test cover not-applicable, and the flow chart carries
