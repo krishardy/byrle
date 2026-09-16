@@ -8,7 +8,7 @@
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 30.355843020000002,
+          "duration": 30.205078201,
           "process_status": "Success",
           "argv": [
             "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
@@ -20,7 +20,7 @@
         },
         {
           "phase": "Test",
-          "duration": 2.00683376,
+          "duration": 1.96131727,
           "process_status": "Success",
           "argv": [
             "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
@@ -34,109 +34,44 @@
     {
       "scenario": {
         "Mutant": {
-          "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with None",
+          "name": "src/npm.rs:82:5: replace key_from_name -> Result<PackageKey, IdentityError> with Ok(Default::default())",
           "package": "waharoa",
-          "file": "src/pypi.rs",
+          "file": "src/npm.rs",
           "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
+            "function_name": "key_from_name",
+            "return_type": "-> Result<PackageKey, IdentityError>",
             "span": {
               "start": {
-                "line": 174,
+                "line": 74,
                 "column": 1
               },
               "end": {
-                "line": 208,
+                "line": 89,
                 "column": 2
               }
             }
           },
           "span": {
             "start": {
-              "line": 187,
+              "line": 82,
               "column": 5
             },
             "end": {
-              "line": 207,
-              "column": 9
+              "line": 88,
+              "column": 60
             }
           },
-          "replacement": "None",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__pypi.rs_line_187_col_5.log",
-      "diff_path": "diff/src__pypi.rs_line_187_col_5.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 3.808087587,
-          "process_status": "Success",
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 1.70616522,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((String::new(), String::new(), Default::default()))",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
-            "span": {
-              "start": {
-                "line": 174,
-                "column": 1
-              },
-              "end": {
-                "line": 208,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 187,
-              "column": 5
-            },
-            "end": {
-              "line": 207,
-              "column": 9
-            }
-          },
-          "replacement": "Some((String::new(), String::new(), Default::default()))",
+          "replacement": "Ok(Default::default())",
           "genre": "FnValue"
         }
       },
       "summary": "Unviable",
-      "log_path": "log/src__pypi.rs_line_187_col_5_001.log",
-      "diff_path": "diff/src__pypi.rs_line_187_col_5_001.diff",
+      "log_path": "log/src__npm.rs_line_82_col_5.log",
+      "diff_path": "diff/src__npm.rs_line_82_col_5.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 0.802230796,
+          "duration": 1.203154978,
           "process_status": {
             "Failure": 101
           },
@@ -153,520 +88,44 @@
     {
       "scenario": {
         "Mutant": {
-          "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((String::new(), \"xyzzy\".into(), Default::default()))",
+          "name": "src/npm.rs:83:30: replace && with || in key_from_name",
           "package": "waharoa",
-          "file": "src/pypi.rs",
+          "file": "src/npm.rs",
           "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
+            "function_name": "key_from_name",
+            "return_type": "-> Result<PackageKey, IdentityError>",
             "span": {
               "start": {
-                "line": 174,
+                "line": 74,
                 "column": 1
               },
               "end": {
-                "line": 208,
+                "line": 89,
                 "column": 2
               }
             }
           },
           "span": {
             "start": {
-              "line": 187,
-              "column": 5
-            },
-            "end": {
-              "line": 207,
-              "column": 9
-            }
-          },
-          "replacement": "Some((String::new(), \"xyzzy\".into(), Default::default()))",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "Unviable",
-      "log_path": "log/src__pypi.rs_line_187_col_5_002.log",
-      "diff_path": "diff/src__pypi.rs_line_187_col_5_002.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 0.80259236,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((\"xyzzy\".into(), String::new(), Default::default()))",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
-            "span": {
-              "start": {
-                "line": 174,
-                "column": 1
-              },
-              "end": {
-                "line": 208,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 187,
-              "column": 5
-            },
-            "end": {
-              "line": 207,
-              "column": 9
-            }
-          },
-          "replacement": "Some((\"xyzzy\".into(), String::new(), Default::default()))",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "Unviable",
-      "log_path": "log/src__pypi.rs_line_187_col_5_003.log",
-      "diff_path": "diff/src__pypi.rs_line_187_col_5_003.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 0.802398458,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((\"xyzzy\".into(), \"xyzzy\".into(), Default::default()))",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
-            "span": {
-              "start": {
-                "line": 174,
-                "column": 1
-              },
-              "end": {
-                "line": 208,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 187,
-              "column": 5
-            },
-            "end": {
-              "line": 207,
-              "column": 9
-            }
-          },
-          "replacement": "Some((\"xyzzy\".into(), \"xyzzy\".into(), Default::default()))",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "Unviable",
-      "log_path": "log/src__pypi.rs_line_187_col_5_004.log",
-      "diff_path": "diff/src__pypi.rs_line_187_col_5_004.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 0.80241615,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:190:25: replace < with == in filename_parts",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
-            "span": {
-              "start": {
-                "line": 174,
-                "column": 1
-              },
-              "end": {
-                "line": 208,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 190,
-              "column": 25
-            },
-            "end": {
-              "line": 190,
-              "column": 26
-            }
-          },
-          "replacement": "==",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__pypi.rs_line_190_col_25.log",
-      "diff_path": "diff/src__pypi.rs_line_190_col_25.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 3.759437393,
-          "process_status": "Success",
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 1.662152506,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:190:25: replace < with > in filename_parts",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
-            "span": {
-              "start": {
-                "line": 174,
-                "column": 1
-              },
-              "end": {
-                "line": 208,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 190,
-              "column": 25
-            },
-            "end": {
-              "line": 190,
-              "column": 26
-            }
-          },
-          "replacement": ">",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__pypi.rs_line_190_col_25_001.log",
-      "diff_path": "diff/src__pypi.rs_line_190_col_25_001.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 2.007907807,
-          "process_status": "Success",
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 1.8568511540000001,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:190:25: replace < with <= in filename_parts",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
-            "span": {
-              "start": {
-                "line": 174,
-                "column": 1
-              },
-              "end": {
-                "line": 208,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 190,
-              "column": 25
-            },
-            "end": {
-              "line": 190,
-              "column": 26
-            }
-          },
-          "replacement": "<=",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__pypi.rs_line_190_col_25_002.log",
-      "diff_path": "diff/src__pypi.rs_line_190_col_25_002.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 2.055654653,
-          "process_status": "Success",
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 1.8053643780000002,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:201:35: replace || with && in filename_parts",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "filename_parts",
-            "return_type": "-> Option<(String, String, Kind)>",
-            "span": {
-              "start": {
-                "line": 174,
-                "column": 1
-              },
-              "end": {
-                "line": 208,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 201,
-              "column": 35
-            },
-            "end": {
-              "line": 201,
-              "column": 37
-            }
-          },
-          "replacement": "&&",
-          "genre": "BinaryOperator"
-        }
-      },
-      "summary": "CaughtMutant",
-      "log_path": "log/src__pypi.rs_line_201_col_35.log",
-      "diff_path": "diff/src__pypi.rs_line_201_col_35.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 2.056054019,
-          "process_status": "Success",
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        },
-        {
-          "phase": "Test",
-          "duration": 1.855250806,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:217:5: replace classify_path -> RequestTarget with Default::default()",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "classify_path",
-            "return_type": "-> RequestTarget",
-            "span": {
-              "start": {
-                "line": 210,
-                "column": 1
-              },
-              "end": {
-                "line": 253,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 217,
-              "column": 5
-            },
-            "end": {
-              "line": 252,
-              "column": 6
-            }
-          },
-          "replacement": "Default::default()",
-          "genre": "FnValue"
-        }
-      },
-      "summary": "Unviable",
-      "log_path": "log/src__pypi.rs_line_217_col_5.log",
-      "diff_path": "diff/src__pypi.rs_line_217_col_5.diff",
-      "phase_results": [
-        {
-          "phase": "Build",
-          "duration": 1.002545147,
-          "process_status": {
-            "Failure": 101
-          },
-          "argv": [
-            "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
-            "test",
-            "--no-run",
-            "--verbose",
-            "--package=waharoa@0.1.0"
-          ]
-        }
-      ]
-    },
-    {
-      "scenario": {
-        "Mutant": {
-          "name": "src/pypi.rs:223:28: replace || with && in classify_path",
-          "package": "waharoa",
-          "file": "src/pypi.rs",
-          "function": {
-            "function_name": "classify_path",
-            "return_type": "-> RequestTarget",
-            "span": {
-              "start": {
-                "line": 210,
-                "column": 1
-              },
-              "end": {
-                "line": 253,
-                "column": 2
-              }
-            }
-          },
-          "span": {
-            "start": {
-              "line": 223,
-              "column": 28
-            },
-            "end": {
-              "line": 223,
+              "line": 83,
               "column": 30
+            },
+            "end": {
+              "line": 83,
+              "column": 32
             }
           },
-          "replacement": "&&",
+          "replacement": "||",
           "genre": "BinaryOperator"
         }
       },
       "summary": "CaughtMutant",
-      "log_path": "log/src__pypi.rs_line_223_col_28.log",
-      "diff_path": "diff/src__pypi.rs_line_223_col_28.diff",
+      "log_path": "log/src__npm.rs_line_83_col_30.log",
+      "diff_path": "diff/src__npm.rs_line_83_col_30.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 2.055334498,
+          "duration": 1.9564261859999998,
           "process_status": "Success",
           "argv": [
             "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
@@ -678,7 +137,7 @@
         },
         {
           "phase": "Test",
-          "duration": 1.7091631029999999,
+          "duration": 0.904504175,
           "process_status": {
             "Failure": 101
           },
@@ -694,31 +153,31 @@
     {
       "scenario": {
         "Mutant": {
-          "name": "src/pypi.rs:239:61: delete ! in classify_path",
+          "name": "src/npm.rs:83:33: delete ! in key_from_name",
           "package": "waharoa",
-          "file": "src/pypi.rs",
+          "file": "src/npm.rs",
           "function": {
-            "function_name": "classify_path",
-            "return_type": "-> RequestTarget",
+            "function_name": "key_from_name",
+            "return_type": "-> Result<PackageKey, IdentityError>",
             "span": {
               "start": {
-                "line": 210,
+                "line": 74,
                 "column": 1
               },
               "end": {
-                "line": 253,
+                "line": 89,
                 "column": 2
               }
             }
           },
           "span": {
             "start": {
-              "line": 239,
-              "column": 61
+              "line": 83,
+              "column": 33
             },
             "end": {
-              "line": 239,
-              "column": 62
+              "line": 83,
+              "column": 34
             }
           },
           "replacement": "",
@@ -726,12 +185,12 @@
         }
       },
       "summary": "CaughtMutant",
-      "log_path": "log/src__pypi.rs_line_239_col_61.log",
-      "diff_path": "diff/src__pypi.rs_line_239_col_61.diff",
+      "log_path": "log/src__npm.rs_line_83_col_33.log",
+      "diff_path": "diff/src__npm.rs_line_83_col_33.diff",
       "phase_results": [
         {
           "phase": "Build",
-          "duration": 2.056482676,
+          "duration": 2.012199892,
           "process_status": "Success",
           "argv": [
             "/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo",
@@ -743,7 +202,7 @@
         },
         {
           "phase": "Test",
-          "duration": 1.755076142,
+          "duration": 1.7567485569999999,
           "process_status": {
             "Failure": 101
           },
@@ -757,13 +216,13 @@
       ]
     }
   ],
-  "total_mutants": 12,
+  "total_mutants": 3,
   "missed": 0,
-  "caught": 7,
+  "caught": 2,
   "timeout": 0,
-  "unviable": 5,
+  "unviable": 1,
   "success": 0,
-  "start_time": "2026-09-16T05:40:43.881505514Z",
-  "end_time": "2026-09-16T05:41:50.795783779Z",
+  "start_time": "2026-09-16T05:44:12.53710335Z",
+  "end_time": "2026-09-16T05:44:53.128594699Z",
   "cargo_mutants_version": "27.1.0"
 }

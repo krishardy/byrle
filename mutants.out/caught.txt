@@ -1,7 +1,2 @@
-src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with None
-src/pypi.rs:190:25: replace < with == in filename_parts
-src/pypi.rs:190:25: replace < with > in filename_parts
-src/pypi.rs:190:25: replace < with <= in filename_parts
-src/pypi.rs:201:35: replace || with && in filename_parts
-src/pypi.rs:223:28: replace || with && in classify_path
-src/pypi.rs:239:61: delete ! in classify_path
+src/npm.rs:83:30: replace && with || in key_from_name
+src/npm.rs:83:33: delete ! in key_from_name

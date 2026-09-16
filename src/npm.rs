@@ -71,6 +71,23 @@ pub const DEFAULT_REGISTRY: &str = "https://registry.npmjs.org";
 // Request paths
 // ---------------------------------------------------------------------------
 
+/// Build an npm key from a registry-reported name.
+///
+/// An npm name carries a `/` only when it is scoped, and a scope always starts with `@`.
+/// `PackageKey::from_registry_name` splits on the `/` without asking, because it is shared
+/// with PyPI, so `foo/bar` would reach a purl of `pkg:npm/foo/bar`, a package npm cannot
+/// have. The proxy serves npm at the root and PyPI under `/simple/`, and a request for
+/// `/simple/requests` is the shape that made this matter.
+fn key_from_name(name: &str) -> Result<PackageKey, IdentityError> {
+    let trimmed = name.trim();
+    if trimmed.contains('/') && !trimmed.starts_with('@') {
+        return Err(IdentityError::Malformed(format!(
+            "`{name}` is not a valid npm package name: a `/` needs an `@` scope"
+        )));
+    }
+    PackageKey::from_registry_name(Ecosystem::Npm, trimmed)
+}
+
 /// Classify a request path.
 ///
 /// Paths that do not resolve to a package, including names this crate cannot turn into
@@ -97,7 +114,7 @@ pub fn classify_path(path: &str) -> RequestTarget {
     // npm percent-encodes the scope separator on packument requests and leaves it bare
     // on tarball paths. Both spell the same package.
     let name = name.replace("%2f", "/").replace("%2F", "/");
-    let Ok(key) = PackageKey::from_registry_name(Ecosystem::Npm, &name) else {
+    let Ok(key) = key_from_name(&name) else {
         return RequestTarget::Other;
     };
 
@@ -996,8 +1013,7 @@ fn normalize_wire(
     wire: WirePackument,
     detail: PackumentDetail,
 ) -> Result<NormalizedPackument, NormalizeError> {
-    let key =
-        PackageKey::from_registry_name(Ecosystem::Npm, &wire.name).map_err(NormalizeError::Name)?;
+    let key = key_from_name(&wire.name).map_err(NormalizeError::Name)?;
 
     let mut records = Vec::with_capacity(wire.versions.len());
     let mut skipped = Vec::new();
@@ -3361,6 +3377,35 @@ mod tests {
             ] {
                 assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
             }
+        }
+
+        /// An npm scope starts with `@`. `PackageKey::from_registry_name` splits on the
+        /// `/` without asking, so without the check `/foo/bar` classified as
+        /// `pkg:npm/foo/bar`, and `/simple/requests` as `pkg:npm/simple/requests`.
+        #[test]
+        fn a_slash_without_an_at_is_not_a_scoped_package() {
+            for path in [
+                "/foo/bar",
+                "/simple/requests",
+                "/packages/x",
+                "/foo/bar/-/bar-1.0.0.tgz",
+            ] {
+                assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+            }
+            assert_eq!(
+                classify_path("/@foo/bar"),
+                RequestTarget::Metadata(key("@foo/bar")),
+                "the scoped spelling is still a package"
+            );
+        }
+
+        /// A packument claiming an unscoped name with a `/` is refused rather than
+        /// normalised into a purl npm cannot have.
+        #[test]
+        fn a_packument_naming_an_unscoped_slash_does_not_normalize() {
+            let body = br#"{"name":"foo/bar","versions":{}}"#;
+            let error = normalize_packument(body, PackumentDetail::Full).expect_err("not a name");
+            assert!(matches!(error, NormalizeError::Name(_)), "{error:?}");
         }
 
         /// npm asks for both documents in one Accept header, so the response is the only
