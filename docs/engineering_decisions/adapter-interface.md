@@ -56,11 +56,37 @@ the union or the intersection, and both are wrong.
 uses. A PyPI record is `Full` and `may_be_incomplete()` is false, which is correct and
 badly named. Renaming it is open.
 
+## The resolver looking is not the client installing
+
+A backtracking resolver fetches far more metadata than it installs. Measured 2026-09-16,
+`pip install boto3 'botocore<1.34' s3transfer` through the proxy:
+
+| | Count |
+|---|---|
+| project indexes read | 7 |
+| versions held after them | 4,885 |
+| PEP 658 `<file>.metadata` probes | 679 |
+| artifacts fetched | 7 |
+| packages installed | 8 |
+
+Nothing treats a probe as install intent, and the log is the proof: 679 probes produced 7
+record lookups and 7 policy decisions, one of each per artifact actually fetched. A probe
+classifies as `RequestTarget::Other`, so it is forwarded to `pypi::FILES` with its path and
+nothing else happens to it.
+
+Two things did read as intent and no longer do:
+
+- `versions_with_install_scripts` and `sdist_only_versions` are
+  `install_script_versions_listed` and `sdist_only_versions_listed`. Both always counted
+  the document; the comments said so, which meant the names were wrong.
+- 679 INFO `proxied` lines buried the 7 an operator needs. A probe logs at DEBUG. The same
+  install went from 731 log lines to 52, with every index and artifact line kept.
+
+npm keeps INFO for its own unclassified traffic: `/-/v1/search` and `/-/whoami` are a
+handful per install, and `scripts/make/retry-matrix.sh` counts those lines.
+
 ## What this did not settle
 
-Range resolution. Nothing resolves a range in either ecosystem, and `pypi::normalize`
-returns every version the index lists. A resolver that backtracks fetches metadata for
-versions it never installs, and the proxy's per-document counts say so: measured with pip
-26.1.1 installing `requests`, 5 packages held 446 records and `requests` alone contributed
-160 versions, of which 77 offer only an sdist. None of that is install intent. See the
-Stage 3 TODO.
+Range resolution. Nothing resolves a range in either ecosystem, so `pypi::normalize`
+returns every version the index lists: `botocore` alone is 2,516 of the 4,885 above. That
+is a separate piece of work, and `versions_listed` is the number it would reduce.

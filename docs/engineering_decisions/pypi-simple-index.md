@@ -265,7 +265,7 @@ claim.
 pip 26.1.1, `requests` into an empty venv:
 
 ```text
-INFO simple index normalized path=/simple/requests/ files=243 versions=160 artifacts=243 skipped=0 sdist_only_versions=77 held_packages=1 held_records=160
+INFO simple index normalized path=/simple/requests/ files=243 versions=160 artifacts=243 skipped=0 sdist_only_versions_listed=77 held_packages=1 held_records=160
 INFO artifact requested, digest known path=/packages/.../requests-2.34.2-py3-none-any.whl integrity="sha256-Kg1gwXL4OsarMeRVSQbA87NYjTe1y5ObHAYfSQfieOA=" has_install_scripts=false
 INFO artifact cache consulted ... cache="miss"
 INFO artifact digest verified path=/packages/.../requests-2.34.2-py3-none-any.whl purl=pkg:pypi/requests@2.34.2 bytes=73075
