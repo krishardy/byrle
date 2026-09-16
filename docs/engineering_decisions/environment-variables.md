@@ -40,7 +40,7 @@ the help text wrote `(50,000)` and `(32 MiB)` by hand beside the constants.
 | `RUST_LOG` was read by tracing and not listed in `--help` | listed, default `waharoa=info` |
 | `WAHAROA_REFUSAL_STATUS` and `WAHAROA_DEFER_TEST` panicked on a bad value | exit 2 with the same reason |
 
-`WAHAROA_UPSTREAM` is checked with `npm::normalise_origin`, the check `WAHAROA_ARTIFACT_ORIGINS`
+`WAHAROA_UPSTREAM_NPM` and `WAHAROA_UPSTREAM_PYPI` are checked with `npm::normalise_origin`, the check `WAHAROA_ARTIFACT_ORIGINS`
 already had, and returned as given. Live, with `nope`, `ftp://x` and `http://`, the proxy and
 `explain` exit 2 and `policy diff` exits 4. With `https://registry.npmjs.org/some/path/` the
 proxy starts with upstream `https://registry.npmjs.org/some/path`. Each mutation below was caught:
@@ -92,4 +92,29 @@ the `Var` is added when the stream reads it.
 | Defaults stay in their modules, referenced from here | Each value defined once, but the item asked for them in the central module |
 | A config struct parsed once at startup | Every command would fail on a bad proxy-only variable. `waharoa refresh` reads one variable and should not refuse over `WAHAROA_MAX_RECORDS` |
 | Thousands separators in `--help` (`50,000`), by hand or with `num-format`, `thousands` or `icu_decimal` | Rust's `format!` has no grouping. `num-format` and `thousands` have had no release since 2022 and 2019; `icu_decimal` brings ICU4X locale data for one help line. Defaults print as `50000` |
-| `npm::DEFAULT_REGISTRY` moves too | It is npm's registry, which the origin rules in `npm` name whether or not it is the upstream. `env::DEFAULT_UPSTREAM` is defined as it |
+| `npm::DEFAULT_REGISTRY` moves too | It is npm's registry, which the origin rules in `npm` name whether or not it is the upstream. `env::DEFAULT_UPSTREAM_NPM` is defined as it, and `DEFAULT_UPSTREAM_PYPI` as `pypi::INDEX` |
+
+## One upstream per ecosystem
+
+`WAHAROA_UPSTREAM` was one variable holding one registry, which is what a proxy serving npm
+alone needs. Serving PyPI as well means two, because the two are different services: npm's
+registry answers `/lodash`, PyPI's index answers `/simple/requests/`, and pointing one
+variable at both is not expressible.
+
+| Variable | Default | Read by |
+|---|---|---|
+| `WAHAROA_UPSTREAM_NPM` | `https://registry.npmjs.org` | the proxy, `policy diff`, `explain` |
+| `WAHAROA_UPSTREAM_PYPI` | `https://pypi.org/simple` | the proxy |
+
+`WAHAROA_UPSTREAM` is gone rather than kept as an alias. Nothing has been released, and a
+variable that silently means one of two ecosystems is the thing the split exists to remove.
+An operator who still sets it gets the npm default and no warning, which is the one cost.
+
+`policy diff` and `explain` read the npm variable by name, not a set: both take npm
+lockfiles and npm package references and ask npm about them.
+
+PyPI's files come from `files.pythonhosted.org`, which is not `WAHAROA_UPSTREAM_PYPI` and is
+not a third variable. The simple index gives each file's URL in full, so the artifact host
+is read from the document the way `npm::origin_of_url` already reads `dist.tarball`.
+
+The rows above that name `WAHAROA_UPSTREAM` record measurements taken before the split.
