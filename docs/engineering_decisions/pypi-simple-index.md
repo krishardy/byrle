@@ -141,9 +141,8 @@ gives each file's URL in full.
 
 Two consequences the extraction step has to answer, neither of them settled here:
 
-- `WAHAROA_UPSTREAM` is one variable, declared in `src/env.rs` with an invariant test and a
-  `--help` fixture. Either it becomes per-ecosystem, which changes `--help`, or the
-  artifact host is read from the metadata rather than configured.
+- `WAHAROA_UPSTREAM` became `WAHAROA_UPSTREAM_NPM` and `WAHAROA_UPSTREAM_PYPI`, one per
+  ecosystem. See `environment-variables.md`.
 - The proxy already reads artifact origins from the packument, in `OriginPolicy` and
   `ReachableOrigins`, because npm packages can name a host other than the registry. PyPI's
   second host is the same question arriving as the normal case rather than the exception.

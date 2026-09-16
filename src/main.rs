@@ -300,7 +300,9 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         eprintln!("waharoa policy diff: intel snapshot {}", snapshot.digest);
     }
 
-    let upstream = or_exit_with(env::process().upstream(), diff::ERROR);
+    // npm's registry, not a per-ecosystem set: `policy diff` reads npm lockfiles and
+    // asks npm for the versions they name.
+    let upstream = or_exit_with(env::process().upstream_npm(), diff::ERROR);
     let client = npm::Client::new(reqwest::Client::new(), upstream);
     let needs_times = loaded.iter().any(Policy::uses_cooldown);
 
@@ -448,7 +450,8 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
         }
     };
 
-    let upstream = or_exit(env::process().upstream());
+    // `explain` takes an npm package reference and asks npm about it.
+    let upstream = or_exit(env::process().upstream_npm());
     let client = npm::Client::new(reqwest::Client::new(), upstream);
     let fetched = client
         .packument(reference.key(), record::PackumentDetail::Abbreviated)
@@ -1102,7 +1105,7 @@ async fn main() -> std::process::ExitCode {
         .init();
 
     let listen = or_exit(environment.listen());
-    let upstream = or_exit(environment.upstream());
+    let upstream = or_exit(environment.upstream_npm());
 
     // reqwest 0.13 defaults to rustls with rustls-platform-verifier, so the upstream leg
     // validates against the OS trust store. The inbound leg stays plain HTTP on

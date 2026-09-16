@@ -24,7 +24,7 @@ cd "$repo_root"
 waharoa_use_latest_node
 
 package="${PACKAGE:-lodash}"
-upstream="${WAHAROA_UPSTREAM:-https://registry.npmjs.org}"
+upstream="${WAHAROA_UPSTREAM_NPM:-https://registry.npmjs.org}"
 port="${WAHAROA_PORT:-8733}"
 workdir="$(mktemp -d)"
 proxy_pid=""
@@ -55,7 +55,7 @@ else
         exit 1
     fi
     log="$workdir/proxy.log"
-    WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_PUBLIC_URL="$proxy" WAHAROA_UPSTREAM="$upstream" \
+    WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_PUBLIC_URL="$proxy" WAHAROA_UPSTREAM_NPM="$upstream" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do

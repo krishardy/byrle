@@ -191,5 +191,6 @@ runs above are their evidence. Each mutation below was caught:
 | A failed request called an unreadable body | the same |
 | A read value refused | the same |
 
-`WAHAROA_UPSTREAM` is now refused unless it is an http or https URL with a host, so `nope`
+`WAHAROA_UPSTREAM_NPM`, which this command reads and which was called `WAHAROA_UPSTREAM`
+when the run below was measured, is now refused unless it is an http or https URL with a host, so `nope`
 exits 4 before any read. See [environment-variables](environment-variables.md).

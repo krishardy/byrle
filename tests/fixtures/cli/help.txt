@@ -17,7 +17,8 @@ Options:
 Proxy configuration, all through the environment:
 
   WAHAROA_LISTEN                    address to listen on (default 127.0.0.1:8080)
-  WAHAROA_UPSTREAM                  registry to forward to (default https://registry.npmjs.org)
+  WAHAROA_UPSTREAM_NPM              npm registry to forward to (default https://registry.npmjs.org)
+  WAHAROA_UPSTREAM_PYPI             PyPI simple index to forward to (default https://pypi.org/simple)
   WAHAROA_PUBLIC_URL                address written into artifact URLs, and therefore
                                     into lockfiles. Defaults to each request's own Host,
                                     which is rarely what you want.

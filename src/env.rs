@@ -59,7 +59,11 @@ enum Default {
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
 /// npm's public registry, which `npm` also names for its own origin rules.
-pub const DEFAULT_UPSTREAM: &str = crate::npm::DEFAULT_REGISTRY;
+pub const DEFAULT_UPSTREAM_NPM: &str = crate::npm::DEFAULT_REGISTRY;
+
+/// PyPI's simple index. Not the host its files come from: the index gives each file's URL
+/// in full, and `pypi::DEFAULT_FILES` names where they land.
+pub const DEFAULT_UPSTREAM_PYPI: &str = crate::pypi::INDEX;
 
 /// Default ceiling on a packument body, applied both to the bytes buffered and to the
 /// bytes decompression is allowed to produce.
@@ -115,8 +119,14 @@ pub const DEFAULT_LOG_FILTER: &str = "waharoa=info";
 
 pub const LISTEN: Var = runtime("WAHAROA_LISTEN", "", &["address to listen on"])
     .with_default(Default::Text(DEFAULT_LISTEN));
-pub const UPSTREAM: Var = runtime("WAHAROA_UPSTREAM", "", &["registry to forward to"])
-    .with_default(Default::Text(DEFAULT_UPSTREAM));
+pub const UPSTREAM_NPM: Var = runtime("WAHAROA_UPSTREAM_NPM", "", &["npm registry to forward to"])
+    .with_default(Default::Text(DEFAULT_UPSTREAM_NPM));
+pub const UPSTREAM_PYPI: Var = runtime(
+    "WAHAROA_UPSTREAM_PYPI",
+    "",
+    &["PyPI simple index to forward to"],
+)
+.with_default(Default::Text(DEFAULT_UPSTREAM_PYPI));
 pub const PUBLIC_URL: Var = runtime(
     "WAHAROA_PUBLIC_URL",
     "",
@@ -302,9 +312,10 @@ pub const BUN_INSTALL_CACHE_DIR: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 29] = [
+pub const ALL: [Var; 30] = [
     LISTEN,
-    UPSTREAM,
+    UPSTREAM_NPM,
+    UPSTREAM_PYPI,
     PUBLIC_URL,
     ARTIFACT_ORIGINS,
     ALLOW_DIRECT_ORIGINS,
@@ -503,14 +514,25 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.text_or(LISTEN, DEFAULT_LISTEN)
     }
 
+    /// The npm registry to forward to.
+    ///
     /// An http or https URL with a host. The value is returned as given, path included, so a
     /// registry served under a path keeps it.
-    pub fn upstream(&self) -> Result<String, EnvError> {
-        let value = self.text_or(UPSTREAM, DEFAULT_UPSTREAM)?;
+    pub fn upstream_npm(&self) -> Result<String, EnvError> {
+        self.upstream(UPSTREAM_NPM, DEFAULT_UPSTREAM_NPM)
+    }
+
+    /// The PyPI simple index to forward to. Checked the same way as the npm registry.
+    pub fn upstream_pypi(&self) -> Result<String, EnvError> {
+        self.upstream(UPSTREAM_PYPI, DEFAULT_UPSTREAM_PYPI)
+    }
+
+    fn upstream(&self, var: Var, default: &str) -> Result<String, EnvError> {
+        let value = self.text_or(var, default)?;
         match crate::npm::normalise_origin(&value) {
             Ok(_) => Ok(value),
             Err(e) => Err(EnvError::new(
-                UPSTREAM,
+                var,
                 value,
                 format!("is not usable: {}", e.reason),
             )),
@@ -662,7 +684,8 @@ mod tests {
     fn unset_is_the_default() {
         let env = with(&[]);
         assert_eq!(env.listen().unwrap(), DEFAULT_LISTEN);
-        assert_eq!(env.upstream().unwrap(), DEFAULT_UPSTREAM);
+        assert_eq!(env.upstream_npm().unwrap(), DEFAULT_UPSTREAM_NPM);
+        assert_eq!(env.upstream_pypi().unwrap(), DEFAULT_UPSTREAM_PYPI);
         assert_eq!(env.public_url().unwrap(), None);
         assert!(env.artifact_origins().unwrap().is_empty());
         assert!(env.allow_direct_origins().unwrap().is_empty());
@@ -718,7 +741,8 @@ mod tests {
     fn a_set_value_is_parsed_to_its_type() {
         let env = with(&[
             (LISTEN, "0.0.0.0:9000"),
-            (UPSTREAM, "https://registry.example"),
+            (UPSTREAM_NPM, "https://registry.example"),
+            (UPSTREAM_PYPI, "https://mirror.example/simple"),
             (PUBLIC_URL, "https://proxy.example"),
             (ARTIFACT_ORIGINS, " https://a.example, ,https://b.example "),
             (ALLOW_DIRECT_ORIGINS, "https://c.example"),
@@ -746,7 +770,11 @@ mod tests {
             (BUN_INSTALL_CACHE_DIR, "/cache"),
         ]);
         assert_eq!(env.listen().unwrap(), "0.0.0.0:9000");
-        assert_eq!(env.upstream().unwrap(), "https://registry.example");
+        assert_eq!(env.upstream_npm().unwrap(), "https://registry.example");
+        assert_eq!(
+            env.upstream_pypi().unwrap(),
+            "https://mirror.example/simple"
+        );
         assert_eq!(
             env.public_url().unwrap().as_deref(),
             Some("https://proxy.example")
@@ -851,28 +879,57 @@ mod tests {
 
     /// `policy diff` and `explain` used to send every request to `nope`, and the proxy
     /// panicked on it.
+    ///
+    /// Both upstreams are checked the same way, so the ecosystem the value belongs to is
+    /// the only difference and the message names the variable that carried it.
     #[test]
     fn an_upstream_is_an_http_or_https_url_with_a_host() {
-        for (value, expected) in [
-            ("nope", "WAHAROA_UPSTREAM: `nope` is not usable: not a URL"),
-            (
-                "http://",
-                "WAHAROA_UPSTREAM: `http://` is not usable: not a URL",
-            ),
-            (
-                "ftp://x",
-                "WAHAROA_UPSTREAM: `ftp://x` is not usable: scheme is not http or https",
-            ),
-            (
-                "file:///tmp",
-                "WAHAROA_UPSTREAM: `file:///tmp` is not usable: no host",
-            ),
+        for (value, reason) in [
+            ("nope", "not a URL"),
+            ("http://", "not a URL"),
+            ("ftp://x", "scheme is not http or https"),
+            ("file:///tmp", "no host"),
         ] {
-            let error = with(&[(UPSTREAM, value)]).upstream().expect_err(value);
-            assert_eq!(error.to_string(), expected);
+            let npm = with(&[(UPSTREAM_NPM, value)])
+                .upstream_npm()
+                .expect_err(value);
+            assert_eq!(
+                npm.to_string(),
+                format!("WAHAROA_UPSTREAM_NPM: `{value}` is not usable: {reason}")
+            );
+            let pypi = with(&[(UPSTREAM_PYPI, value)])
+                .upstream_pypi()
+                .expect_err(value);
+            assert_eq!(
+                pypi.to_string(),
+                format!("WAHAROA_UPSTREAM_PYPI: `{value}` is not usable: {reason}")
+            );
         }
         let mirror = "https://artifacts.example/api/npm/npm-remote/";
-        assert_eq!(with(&[(UPSTREAM, mirror)]).upstream().unwrap(), mirror);
+        assert_eq!(
+            with(&[(UPSTREAM_NPM, mirror)]).upstream_npm().unwrap(),
+            mirror
+        );
+        let index = "https://artifacts.example/api/pypi/pypi-remote/simple";
+        assert_eq!(
+            with(&[(UPSTREAM_PYPI, index)]).upstream_pypi().unwrap(),
+            index
+        );
+    }
+
+    /// One ecosystem's upstream does not move the other's.
+    #[test]
+    fn the_two_upstreams_are_set_independently() {
+        let env = with(&[(UPSTREAM_NPM, "https://registry.example")]);
+        assert_eq!(env.upstream_npm().unwrap(), "https://registry.example");
+        assert_eq!(env.upstream_pypi().unwrap(), DEFAULT_UPSTREAM_PYPI);
+
+        let env = with(&[(UPSTREAM_PYPI, "https://mirror.example/simple")]);
+        assert_eq!(env.upstream_npm().unwrap(), DEFAULT_UPSTREAM_NPM);
+        assert_eq!(
+            env.upstream_pypi().unwrap(),
+            "https://mirror.example/simple"
+        );
     }
 
     #[test]
