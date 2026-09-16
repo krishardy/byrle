@@ -1467,17 +1467,33 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       separate fixed versions (lodash `GHSA-xxjr-mmjv-4gpg` and `GHSA-f23m-r3pf-42rh`). One
       vulnerability never fires three rules: `decide` gives each check one result.
       [alias-matching](docs/engineering_decisions/alias-matching.md).
-- [~] `[!]` GitHub Advisory stream (GraphQL, token auth). **Measured 2026-09-16, not built.**
-      Every npm advisory in `securityVulnerabilities(ecosystem: NPM)` against the `GHSA-`
-      records in the bundle fetched the same run: 7,056 not-withdrawn on GitHub, 7,055 in
-      OSV, 7,053 in both. GitHub has 3 OSV lacks, none published after the bundle was built.
-      A second `match` source for npm would restate 7,053 records to gain 3, and needs a
-      paginated authenticated fetch the descriptor has no variant for.
-      One finding is worth keeping: `GHSA-4j66-8f4r-3pjx` is withdrawn on GitHub and live in
-      OSV's bundle, so withdrawal does not always propagate. If this is built, it is `enrich`
-      for withdrawals and freshness, not `match`.
-      [github-advisory-stream](docs/engineering_decisions/github-advisory-stream.md).
-      Decide: drop the item, or rescope it to an `enrich` stream.
+- [~] `[!]` GitHub Advisory stream (GraphQL, token auth). OSV and GitHub are both **signal
+      streams**: each is checked independently, each records what it holds, and the full set
+      is judged once at `Evaluate_Decision_Vector`. Two streams reporting one vulnerability is
+      corroboration, which is what `datadog/npm` already does beside `osv/npm`.
+      Overlap measured 2026-09-16: 7,056 not-withdrawn npm advisories on GitHub, 7,055 in the
+      bundle, 7,053 in both, 3 GitHub only, 2 OSV only. `GHSA-4j66-8f4r-3pjx` is withdrawn on
+      GitHub and live in OSV's bundle.
+      [github-advisory-signal-stream](docs/engineering_decisions/github-advisory-signal-stream.md).
+      - [ ] `UNIQUE (source, publisher_id)` in place of the global unique on `publisher_id`.
+            GitHub publishes the same `GHSA-` ids OSV imports, so the second stream to load one
+            fails today. `PgIntel::replace` already reads keys back per source, so the
+            migration is the change.
+      - [ ] `Stream` gains a transport: GHSA is a POST with `Authorization: bearer` and cursor
+            pagination, where `fetch` is one unauthenticated GET. Pages concatenate into one
+            buffer so `parse: fn(&[u8])` is unchanged, and `ceiling` bounds the total.
+      - [ ] `WAHAROA_GITHUB_TOKEN` in `src/env.rs`, which changes `--help` and
+            `tests/fixtures/cli/help.txt`. Declared `Optional`: a missing token must not stop
+            a refresh.
+      - [x] Severity band for the advisories with no CVSS score, through `osv::band_ceiling`,
+            so both streams score one advisory alike. GitHub writes `0.0` for an advisory it
+            has not scored, which is not a CVSS 0.0.
+      - [ ] **Exclusive lower bounds.** `Interval::introduced` is inclusive and `contains`
+            asks `v >= from`, so `> 4.0.2` cannot be stored without reporting 4.0.2 as
+            vulnerable. `github::bounds` returns `Unexpressed` and the advisory is dropped:
+            7,045 rows of 7,056, and all three advisories GitHub has that OSV lacks are among
+            the 11 missing. Needs a lower bound that can exclude its version, a column on
+            `advisory_range`, and the `contains` comparison. `Interval` is OSV's type too.
 - [x] OSSF Malicious Packages stream (licence-cleared: Apache-2.0). Loaded as `osv/npm`: OSV
       imports the repository, and all 221,217 non-withdrawn `MAL-` records in `npm/all.zip`
       (2026-09-13) give it as `affected[].database_specific.source`, such as

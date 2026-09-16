@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 use super::load::{Encoded, encode, encode_exploited};
 use super::osv::Rows;
 use super::refresh::Tally;
-use super::{Capability, datadog, kev, osv, refresh};
+use super::{Capability, datadog, github, kev, osv, refresh};
 use crate::identity::Ecosystem;
 
 /// Whether a refresh loads anything at all when this stream does not load.
@@ -37,6 +37,18 @@ pub enum Scope {
     /// Every ecosystem this build serves. A catalogue entry carries a CVE id and no package
     /// identifier, so what it says applies wherever a finding names that id.
     Served,
+}
+
+/// How a refresh gets a stream's bundle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    /// One unauthenticated GET of `url`, whose body is the bundle.
+    Get,
+    /// A POST of [`github::QUERY`] to `url` with `Authorization: bearer`, paged by cursor
+    /// until GitHub reports no next page. The response bodies are concatenated into one JSON
+    /// array, so `parse` still reads one buffer, and `ceiling` bounds that whole array.
+    /// The token comes from `crate::env::GITHUB_TOKEN`; without it the stream does not load.
+    GithubGraphql,
 }
 
 /// What one stream may say about the ecosystems in `scope`.
@@ -95,6 +107,7 @@ pub struct Stream {
     /// Bytes past which the fetch is refused.
     pub ceiling: usize,
     pub requirement: Requirement,
+    pub transport: Transport,
     /// What this stream may say, per ecosystem.
     pub grants: &'static [Grant],
     /// The bundle's bytes as rows.
@@ -117,6 +130,7 @@ const OSV_NPM: Stream = Stream {
     url: refresh::NPM_BUNDLE,
     ceiling: refresh::MAX_BUNDLE_BYTES,
     requirement: Requirement::Required,
+    transport: Transport::Get,
     grants: NPM_PACKAGES,
     parse: |bytes| {
         refresh::read_bundle(bytes)
@@ -136,6 +150,7 @@ const KEV: Stream = Stream {
     url: kev::CATALOGUE,
     ceiling: kev::MAX_CATALOGUE_BYTES,
     requirement: Requirement::Optional,
+    transport: Transport::Get,
     grants: &[Grant {
         scope: Scope::Served,
         capabilities: &[Capability::Enrich],
@@ -157,9 +172,34 @@ const DATADOG_NPM: Stream = Stream {
     url: datadog::MANIFEST,
     ceiling: datadog::MAX_MANIFEST_BYTES,
     requirement: Requirement::Optional,
+    transport: Transport::Get,
     grants: NPM_PACKAGES,
     parse: |bytes| {
         datadog::parse(bytes)
+            .map(|rows| Parsed {
+                payload: Payload::Advisories(rows),
+                tally: None,
+            })
+            .map_err(|e| e.to_string())
+    },
+};
+
+/// GitHub's Advisory Database. A signal stream beside OSV: it publishes the same `GHSA-` ids
+/// OSV imports, and `advisory` is keyed `(source, publisher_id)` so both rows exist.
+/// `Optional`, so a refresh without a token still loads the rest.
+const GITHUB_NPM: Stream = Stream {
+    source: github::SOURCE,
+    stream: github::STREAM,
+    url: github::ENDPOINT,
+    ceiling: github::MAX_BYTES,
+    requirement: Requirement::Optional,
+    transport: Transport::GithubGraphql,
+    grants: &[Grant {
+        scope: NPM,
+        capabilities: &[Capability::Match],
+    }],
+    parse: |bytes| {
+        github::parse(bytes)
             .map(|rows| Parsed {
                 payload: Payload::Advisories(rows),
                 tally: None,
@@ -172,7 +212,7 @@ const DATADOG_NPM: Stream = Stream {
 ///
 /// OSV is first because it is the one [`Requirement::Required`] stream: a refresh that
 /// cannot load it stops here rather than downloading the rest.
-pub const ALL: &[Stream] = &[OSV_NPM, KEV, DATADOG_NPM];
+pub const ALL: &[Stream] = &[OSV_NPM, KEV, DATADOG_NPM, GITHUB_NPM];
 
 /// The stream a snapshot records under `stream`, or `None` for one this build does not know.
 pub fn by_stream(stream: &str) -> Option<&'static Stream> {
@@ -206,7 +246,7 @@ mod tests {
     fn a_stream_this_build_does_not_declare_is_not_found() {
         assert_eq!(
             ALL.iter().map(|s| s.stream).collect::<Vec<_>>(),
-            ["osv/npm", "cisa/kev", "datadog/npm"]
+            ["osv/npm", "cisa/kev", "datadog/npm", "github/npm"]
         );
         assert!(by_stream("osv/pypi").is_none());
         assert!(by_stream("osv").is_none());

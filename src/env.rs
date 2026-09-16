@@ -185,6 +185,15 @@ pub const DATABASE_URL: Var = runtime(
         "store that cannot answer is a 503",
     ],
 );
+pub const GITHUB_TOKEN: Var = runtime(
+    "WAHAROA_GITHUB_TOKEN",
+    "",
+    &[
+        "token `waharoa refresh` reads GitHub's Advisory",
+        "Database with. Unset, that one stream does not load",
+        "and the others still do",
+    ],
+);
 pub const SNAPSHOT_DIR: Var = runtime(
     "WAHAROA_SNAPSHOT_DIR",
     "",
@@ -293,7 +302,7 @@ pub const BUN_INSTALL_CACHE_DIR: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 28] = [
+pub const ALL: [Var; 29] = [
     LISTEN,
     UPSTREAM,
     PUBLIC_URL,
@@ -306,6 +315,7 @@ pub const ALL: [Var; 28] = [
     MAX_RECORDS,
     MAX_VERIFIED,
     DATABASE_URL,
+    GITHUB_TOKEN,
     SNAPSHOT_DIR,
     SNAPSHOT_LIMIT,
     POLICY,
@@ -549,6 +559,11 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn database_url(&self) -> Result<Option<String>, EnvError> {
         self.text(DATABASE_URL)
+    }
+
+    /// The GitHub Advisory stream's token. `None` leaves that stream unloaded.
+    pub fn github_token(&self) -> Result<Option<String>, EnvError> {
+        self.text(GITHUB_TOKEN)
     }
 
     pub fn snapshot_dir(&self) -> Result<Option<PathBuf>, EnvError> {
