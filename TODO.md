@@ -1766,10 +1766,14 @@ changes to the core, that is the finding — make it now, not after five adapter
       - [x] Read the shape from the live index rather than the PEPs alone, 2026-09-16.
       - [x] Parse checked against nine real projects, 12,164 files, not fixtures alone:
             `examples/pypi_index.rs`.
-      - [ ] Fetch it through the proxy. The module parses bytes; nothing requests them yet.
-      - [ ] Serve `/simple/<name>/` on the proxy, with the 301 to the normalised name.
-      - [ ] HTML fallback for an index that does not serve PEP 691 JSON. PyPI does; another
-            index may not, and `Accept` negotiation is the first thing to try.
+      - [x] `pypi::Client` fetches one project's index, the same shape as `npm::Client`
+            and sharing no code with it: an `http`, a base, a byte ceiling. Verified live
+            against nine projects, where records equal versions for every one.
+      - [ ] Serve `/simple/<name>/` on the proxy. `proxy::handle` routes through
+            `npm::classify_path` and the proxy holds one upstream, so this is where the
+            transport interface has to be extracted rather than a second branch added.
+      - [ ] HTML fallback for an index that does not serve PEP 691 JSON. PyPI does, and an
+            index that answers HTML is refused rather than read as an empty project.
 - [ ] `[!]` Extract the adapter interface (transport + normalizer) from the two working
       implementations — refactor, not upfront design
 - [ ] `[!]` Reimplement npm and PyPI on the extracted interface, behavior unchanged

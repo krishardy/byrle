@@ -1,59 +1,50 @@
-//! Read a real PyPI simple index and report what this build makes of it.
+//! Fetch real PyPI indexes through `pypi::Client` and report what this build makes of them.
 //!
 //! `cargo run --example pypi_index -- requests flask ...`
-//! Live, so it is not part of the test suite. It exists to check the parser against real
-//! documents at a scale fixtures cannot reach.
-fn main() {
+//! Live, so it is not part of the test suite. It checks the transport and the parse
+//! against real documents at a scale fixtures cannot reach.
+#[tokio::main]
+async fn main() {
     let names: Vec<String> = std::env::args().skip(1).collect();
     let names = if names.is_empty() {
         vec!["requests".to_owned()]
     } else {
         names
     };
-    let client = std::process::Command::new("curl");
-    drop(client);
+    let http = reqwest::Client::builder()
+        .user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .expect("a client");
+    let client = waharoa::pypi::Client::new(http, waharoa::pypi::INDEX);
+
     println!(
-        "{:22} {:>6} {:>6} {:>7} {:>7} {:>7} {:>8}",
-        "project", "files", "vers", "skipped", "wheels", "sdists", "yanked"
+        "{:22} {:>6} {:>7} {:>7} {:>7} {:>8} {:>9}",
+        "project", "vers", "records", "wheels", "sdists", "yanked", "sdist-only"
     );
     for name in names {
-        let url = match waharoa::pypi::index_url(waharoa::pypi::INDEX, &name) {
-            Ok(url) => url,
-            Err(e) => {
-                eprintln!("{name}: {e}");
-                continue;
-            }
-        };
-        let out = std::process::Command::new("curl")
-            .args([
-                "-sSL",
-                "-H",
-                &format!("Accept: {}", waharoa::pypi::SIMPLE_JSON),
-                &url,
-            ])
-            .output()
-            .expect("curl runs");
-        let listed: usize = serde_json::from_slice::<serde_json::Value>(&out.stdout)
-            .ok()
-            .and_then(|v| Some(v.get("files")?.as_array()?.len()))
-            .unwrap_or(0);
-        match waharoa::pypi::parse(&name, &out.stdout) {
+        match client.project(&name).await {
             Ok(project) => {
+                let records = match waharoa::pypi::records(&project) {
+                    Ok(records) => records,
+                    Err(e) => {
+                        eprintln!("{name}: {e}");
+                        continue;
+                    }
+                };
                 let wheels = project
                     .files
                     .iter()
                     .filter(|f| f.kind == waharoa::pypi::Kind::Wheel)
                     .count();
-                let yanked = project.files.iter().filter(|f| f.yanked).count();
                 println!(
-                    "{:22} {:>6} {:>6} {:>7} {:>7} {:>7} {:>8}",
+                    "{:22} {:>6} {:>7} {:>7} {:>7} {:>8} {:>9}",
                     project.name,
-                    listed,
                     project.versions().len(),
-                    listed - project.files.len(),
+                    records.len(),
                     wheels,
                     project.files.len() - wheels,
-                    yanked
+                    project.files.iter().filter(|f| f.yanked).count(),
+                    records.iter().filter(|r| r.has_install_scripts).count(),
                 );
             }
             Err(e) => eprintln!("{name}: {e}"),
