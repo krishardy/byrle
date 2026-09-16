@@ -1,0 +1,305 @@
+
+*** src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some(("xyzzy".into(), "xyzzy".into(), Default::default()))
+
+*** mutation diff:
+--- src/pypi.rs
++++ replace filename_parts -> Option<(String, String, Kind)> with Some(("xyzzy".into(), "xyzzy".into(), Default::default()))
+@@ -179,37 +179,17 @@
+ /// `{name}-{version}` with an archive extension, where the name may itself contain `-`, so
+ /// the version is what follows the last `-`. `None` for anything else, including the eggs
+ /// and `.exe` installers old projects still list.
+ ///
+ /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name
+ /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell
+ /// one project.
+ fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
+-    if let Some(stem) = filename.strip_suffix(".whl") {
+-        let fields: Vec<&str> = stem.split('-').collect();
+-        // name, version, then python, abi and platform, with an optional build tag between.
+-        if fields.len() < 5 {
+-            return None;
+-        }
+-        if fields[0].is_empty() {
+-            return None;
+-        }
+-        return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));
+-    }
+-    for extension in [".tar.gz", ".zip", ".tar.bz2", ".tar.xz"] {
+-        if let Some(stem) = filename.strip_suffix(extension) {
+-            let (name, version) = stem.rsplit_once('-')?;
+-            if version.is_empty() || name.is_empty() {
+-                return None;
+-            }
+-            return Some((normalise(name), version.to_owned(), Kind::Sdist));
+-        }
+-    }
+-    None
++    Some(("xyzzy".into(), "xyzzy".into(), Default::default())) /* ~ changed by cargo-mutants ~ */
+ }
+ 
+ /// Classify a request path on a PyPI mirror.
+ ///
+ /// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the
+ /// files live; PyPI serves them from a second host under `/packages/`, and the index gives
+ /// their URLs in full. A path this cannot classify comes back as
+ /// [`RequestTarget::Other`] and is forwarded, the same as npm's.
+
+
+*** /home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/cargo test --no-run --verbose --package=waharoa@0.1.0
+       Fresh unicode-ident v1.0.24
+       Fresh proc-macro2 v1.0.107
+       Fresh cfg-if v1.0.4
+       Fresh pin-project-lite v0.2.17
+       Fresh version_check v0.9.5
+       Fresh find-msvc-tools v0.1.12
+       Fresh futures-core v0.3.34
+       Fresh scopeguard v1.2.0
+       Fresh shlex v2.0.1
+       Fresh once_cell v1.21.4
+       Fresh stable_deref_trait v1.2.1
+       Fresh bytes v1.12.1
+       Fresh subtle v2.6.1
+       Fresh itoa v1.0.18
+       Fresh litemap v0.8.3
+       Fresh writeable v0.6.4
+       Fresh zeroize v1.9.0
+       Fresh utf8_iter v1.0.4
+       Fresh quote v1.0.47
+       Fresh lock_api v0.4.14
+       Fresh rustls-pki-types v1.15.1
+       Fresh percent-encoding v2.3.2
+       Fresh memchr v2.8.3
+       Fresh autocfg v1.5.1
+       Fresh equivalent v1.0.2
+       Fresh untrusted v0.9.0
+       Fresh futures-task v0.3.34
+       Fresh fs_extra v1.3.0
+       Fresh dunce v1.0.5
+       Fresh syn v3.0.5
+       Fresh libc v0.2.189
+       Fresh syn v2.0.119
+       Fresh icu_normalizer_data v2.3.0
+       Fresh hashbrown v0.17.1
+       Fresh pkg-config v0.3.34
+       Fresh futures-io v0.3.34
+       Fresh typenum v1.20.1
+       Fresh http v1.5.0
+       Fresh cpufeatures v0.2.17
+       Fresh foldhash v0.1.5
+       Fresh serde_derive v1.0.229
+       Fresh synstructure v0.13.2
+       Fresh jobserver v0.1.35
+       Fresh getrandom v0.2.17
+       Fresh zerovec-derive v0.11.6
+       Fresh displaydoc v0.2.7
+       Fresh socket2 v0.6.5
+       Fresh mio v1.2.3
+       Fresh tracing-attributes v0.1.31
+       Fresh serde_core v1.0.229
+       Fresh errno v0.3.14
+       Fresh icu_properties_data v2.3.0
+       Fresh tokio-macros v2.7.2
+       Fresh indexmap v2.14.2
+       Fresh zerocopy v0.8.57
+       Fresh generic-array v0.14.7
+       Fresh thiserror-impl v2.0.20
+       Fresh zerofrom-derive v0.1.7
+       Fresh cc v1.4.5
+       Fresh yoke-derive v0.8.2
+       Fresh signal-hook-registry v1.4.8
+       Fresh serde v1.0.229
+       Fresh rand_core v0.6.4
+       Fresh ppv-lite86 v0.2.21
+       Fresh zmij v1.0.23
+       Fresh allocator-api2 v0.2.21
+       Fresh thiserror v2.0.20
+       Fresh block-buffer v0.10.4
+       Fresh crypto-common v0.1.7
+       Fresh crossbeam-utils v0.8.23
+       Fresh http-body v1.1.0
+       Fresh webpki-roots v1.0.9
+       Fresh tinyvec_macros v0.1.1
+       Fresh zerofrom v0.1.8
+       Fresh cmake v0.1.58
+       Fresh smallvec v1.16.1
+       Fresh rand_chacha v0.3.1
+       Fresh hashbrown v0.15.5
+       Fresh crc-catalog v2.5.0
+       Fresh parking v2.2.1
+       Fresh crossbeam-queue v0.3.14
+       Fresh digest v0.10.7
+       Fresh tinyvec v1.13.2
+       Fresh webpki-roots v0.26.11
+       Fresh tower-service v0.3.3
+       Fresh futures-sink v0.3.34
+       Fresh bitflags v2.13.2
+       Fresh yoke v0.8.3
+       Fresh crc v3.4.0
+       Fresh event-listener v5.4.2
+       Fresh parking_lot_core v0.9.12
+       Fresh rustversion v1.0.23
+       Fresh hashlink v0.10.0
+       Fresh unicode-normalization v0.1.25
+       Fresh form_urlencoded v1.2.2
+       Fresh tracing-core v0.1.36
+       Fresh try-lock v0.2.5
+       Fresh unicode-properties v0.1.4
+       Fresh unicase v2.9.0
+       Fresh unicode-bidi v0.3.18
+       Fresh hex v0.4.3
+       Fresh fnv v1.0.7
+       Fresh zerovec v0.11.8
+       Fresh zerotrie v0.2.5
+       Fresh ring v0.17.14
+       Fresh parking_lot v0.12.5
+       Fresh siphasher v1.0.3
+       Fresh slab v0.4.12
+       Fresh atomic-waker v1.1.2
+       Fresh log v0.4.34
+       Fresh want v0.3.1
+       Fresh httparse v1.10.1
+       Fresh stringprep v0.1.5
+       Fresh sync_wrapper v1.0.2
+       Fresh dotenvy v0.15.7
+       Fresh tinystr v0.8.4
+       Fresh potential_utf v0.1.6
+       Fresh tokio v1.53.1
+       Fresh aws-lc-sys v0.45.0
+       Fresh tracing v0.1.44
+       Fresh futures-util v0.3.34
+       Fresh home v0.5.12
+       Fresh whoami v1.6.1
+       Fresh httpdate v1.0.3
+       Fresh base64 v0.22.1
+       Fresh tower-layer v0.3.3
+       Fresh heck v0.5.0
+       Fresh byteorder v1.5.0
+       Fresh num-traits v0.2.19
+       Fresh multiversion-macros v0.9.0
+       Fresh icu_locale_core v2.3.0
+       Fresh icu_collections v2.3.0
+       Fresh aws-lc-rs v1.18.1
+       Fresh tokio-util v0.7.19
+       Fresh futures-channel v0.3.34
+       Fresh serde_json v1.0.151
+       Fresh hybrid-array v0.4.15
+       Fresh anstyle v1.0.14
+       Fresh ipnet v2.12.2
+       Fresh tokio-stream v0.1.19
+       Fresh multiversion v0.9.0
+       Fresh phf_generator v0.11.3
+       Fresh tower v0.5.3
+       Fresh futures-intrusive v0.5.0
+       Fresh sha2 v0.10.9
+       Fresh hmac v0.12.1
+       Fresh http-body-util v0.1.5
+       Fresh either v1.18.0
+       Fresh icu_provider v2.3.1
+       Fresh rustls-webpki v0.103.15
+       Fresh h2 v0.4.19
+       Fresh adler2 v2.0.1
+       Fresh simdutf8 v0.1.5
+       Fresh multiversion_no_op v1.0.0
+       Fresh openssl-probe v0.2.1
+       Fresh core_detect v1.0.0
+       Fresh regex-syntax v0.8.11
+       Fresh simd-adler32 v0.3.10
+       Fresh phf_macros v0.11.3
+       Fresh crypto-common v0.2.2
+       Fresh block-buffer v0.12.1
+       Fresh hkdf v0.12.4
+       Fresh atoi v2.0.0
+       Fresh phf_shared v0.11.3
+       Fresh md-5 v0.10.6
+       Fresh rand v0.8.8
+       Fresh clap_lex v1.1.0
+       Fresh arraydeque v0.5.1
+       Fresh ryu v1.0.23
+       Fresh icu_properties v2.3.0
+       Fresh icu_normalizer v2.3.0
+       Fresh rustls v0.23.45
+       Fresh hyper v1.11.1
+       Fresh rustls-native-certs v0.8.4
+       Fresh crc32fast v1.5.2
+       Fresh encoding_rs v0.8.41
+       Fresh miniz_oxide v0.9.1
+       Fresh regex-automata v0.4.18
+       Fresh lazy_static v1.5.0
+       Fresh unicode-width v0.2.2
+       Fresh const-oid v0.10.2
+       Fresh static_assertions v1.1.0
+       Fresh mime v0.3.17
+       Fresh clap_builder v4.6.6
+       Fresh granit-parser v1.2.1
+       Fresh phf v0.11.3
+       Fresh serde_urlencoded v0.7.1
+       Fresh clap_derive v4.6.4
+       Fresh serde_path_to_error v0.1.20
+       Fresh tracing-log v0.2.0
+       Fresh thread_local v1.1.10
+       Fresh idna_adapter v1.2.2
+       Fresh hyper-util v0.1.20
+       Fresh tokio-rustls v0.26.5
+       Fresh sharded-slab v0.1.7
+       Fresh digest v0.11.3
+       Fresh smartstring v1.0.1
+       Fresh rustls-platform-verifier v0.7.0
+       Fresh axum-core v0.5.6
+       Fresh annotate-snippets v0.12.16
+       Fresh encoding_rs_io v0.1.8
+       Fresh flate2 v1.1.10
+       Fresh matchers v0.2.0
+       Fresh nu-ansi-term v0.50.3
+       Fresh cpufeatures v0.3.1
+       Fresh base64 v0.23.1
+       Fresh typed-path v0.12.3
+       Fresh jiff-core v0.1.1
+       Fresh matchit v0.8.4
+       Fresh clap v4.6.6
+       Fresh cvss v2.2.0
+       Fresh semver v1.0.28
+       Fresh idna v1.1.0
+       Fresh hyper-rustls v0.27.9
+       Fresh axum v0.8.9
+       Fresh jiff v0.2.37
+       Fresh zip v8.6.0
+       Fresh tracing-subscriber v0.3.23
+       Fresh purl v0.1.6
+       Fresh sha2 v0.11.0
+       Fresh serde-saphyr v1.2.0
+       Fresh url v2.5.8
+       Fresh sqlx-core v0.8.6
+       Fresh tower-http v0.6.11
+       Fresh sqlx-postgres v0.8.6
+       Fresh reqwest v0.13.5
+       Fresh sqlx-macros-core v0.8.6
+       Fresh sqlx-macros v0.8.6
+       Fresh sqlx v0.8.6
+       Dirty waharoa v0.1.0 (/tmp/cargo-mutants-waharoa-qaIejI.tmp): couldn't read metadata for file `target/debug/deps/libwaharoa-5e982ccef6bea757.rlib`
+   Compiling waharoa v0.1.0 (/tmp/cargo-mutants-waharoa-qaIejI.tmp)
+     Running `/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name waharoa --edition=2024 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs --check-cfg 'cfg(coverage)' --check-cfg 'cfg(kani)' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ac640f41ab4871c5 -C extra-filename=-8edb3771b727172b --out-dir /tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps --extern axum=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libaxum-1c7fcc7d25e74fd3.rlib --extern base64=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libbase64-da1cb3bb3b20d1e4.rlib --extern bytes=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libbytes-1678f1a459ca6695.rlib --extern clap=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libclap-cf6444e23cccb4a0.rlib --extern cvss=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libcvss-ed7d00eac53e90c4.rlib --extern flate2=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libflate2-99d990e23d2ccd8c.rlib --extern futures_util=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libfutures_util-02bef4ca2cb09a1e.rlib --extern jiff=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libjiff-1739da3edeec3f11.rlib --extern purl=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libpurl-6486ce036ee3930d.rlib --extern reqwest=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libreqwest-a0111e8279395862.rlib --extern semver=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsemver-cecd1e6337c19648.rlib --extern serde=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde-9fa1b8dff10dd131.rlib --extern serde_saphyr=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde_saphyr-f08d456b71d8f632.rlib --extern serde_json=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde_json-67f26424ebe7cb89.rlib --extern sha2=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsha2-7065c49b5ba0ef36.rlib --extern sqlx=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsqlx-b2a16f20d2c426c1.rlib --extern tokio=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtokio-3e75739e9341c11c.rlib --extern tracing=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtracing-a9f91a8f079aff66.rlib --extern tracing_subscriber=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtracing_subscriber-b2794785a03855f6.rlib --extern zip=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libzip-d80d7af60279ae30.rlib -L native=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/build/aws-lc-sys-2bb77576226d5e63/out -L native=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/build/ring-2a3d39387190e897/out`
+     Running `/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name waharoa --edition=2024 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs --check-cfg 'cfg(coverage)' --check-cfg 'cfg(kani)' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=38c626beade5b145 -C extra-filename=-5e982ccef6bea757 --out-dir /tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps --extern axum=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libaxum-1c7fcc7d25e74fd3.rmeta --extern base64=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libbase64-da1cb3bb3b20d1e4.rmeta --extern bytes=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libbytes-1678f1a459ca6695.rmeta --extern clap=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libclap-cf6444e23cccb4a0.rmeta --extern cvss=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libcvss-ed7d00eac53e90c4.rmeta --extern flate2=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libflate2-99d990e23d2ccd8c.rmeta --extern futures_util=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libfutures_util-02bef4ca2cb09a1e.rmeta --extern jiff=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libjiff-1739da3edeec3f11.rmeta --extern purl=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libpurl-6486ce036ee3930d.rmeta --extern reqwest=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libreqwest-a0111e8279395862.rmeta --extern semver=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsemver-cecd1e6337c19648.rmeta --extern serde=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde-9fa1b8dff10dd131.rmeta --extern serde_saphyr=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde_saphyr-f08d456b71d8f632.rmeta --extern serde_json=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde_json-67f26424ebe7cb89.rmeta --extern sha2=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsha2-7065c49b5ba0ef36.rmeta --extern sqlx=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsqlx-b2a16f20d2c426c1.rmeta --extern tokio=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtokio-3e75739e9341c11c.rmeta --extern tracing=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtracing-a9f91a8f079aff66.rmeta --extern tracing_subscriber=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtracing_subscriber-b2794785a03855f6.rmeta --extern zip=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libzip-d80d7af60279ae30.rmeta -L native=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/build/aws-lc-sys-2bb77576226d5e63/out -L native=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/build/ring-2a3d39387190e897/out`
+error[E0277]: the trait bound `pypi::Kind: std::default::Default` is not satisfied
+   --> src/pypi.rs:187:43
+    |
+187 |     Some(("xyzzy".into(), "xyzzy".into(), Default::default())) /* ~ changed by cargo-mutants ~ */
+    |                                           ^^^^^^^^^^^^^^^^^^ the trait `std::default::Default` is not implemented for `pypi::Kind`
+    |
+help: consider annotating `pypi::Kind` with `#[derive(Default)]`
+    |
+ 43 + #[derive(Default)]
+ 44 | pub enum Kind {
+    |
+
+For more information about this error, try `rustc --explain E0277`.
+error: could not compile `waharoa` (lib) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name waharoa --edition=2024 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --crate-type lib --emit=dep-info,metadata,link -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs --check-cfg 'cfg(coverage)' --check-cfg 'cfg(kani)' --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=38c626beade5b145 -C extra-filename=-5e982ccef6bea757 --out-dir /tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps --extern axum=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libaxum-1c7fcc7d25e74fd3.rmeta --extern base64=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libbase64-da1cb3bb3b20d1e4.rmeta --extern bytes=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libbytes-1678f1a459ca6695.rmeta --extern clap=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libclap-cf6444e23cccb4a0.rmeta --extern cvss=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libcvss-ed7d00eac53e90c4.rmeta --extern flate2=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libflate2-99d990e23d2ccd8c.rmeta --extern futures_util=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libfutures_util-02bef4ca2cb09a1e.rmeta --extern jiff=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libjiff-1739da3edeec3f11.rmeta --extern purl=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libpurl-6486ce036ee3930d.rmeta --extern reqwest=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libreqwest-a0111e8279395862.rmeta --extern semver=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsemver-cecd1e6337c19648.rmeta --extern serde=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde-9fa1b8dff10dd131.rmeta --extern serde_saphyr=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde_saphyr-f08d456b71d8f632.rmeta --extern serde_json=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde_json-67f26424ebe7cb89.rmeta --extern sha2=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsha2-7065c49b5ba0ef36.rmeta --extern sqlx=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsqlx-b2a16f20d2c426c1.rmeta --extern tokio=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtokio-3e75739e9341c11c.rmeta --extern tracing=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtracing-a9f91a8f079aff66.rmeta --extern tracing_subscriber=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtracing_subscriber-b2794785a03855f6.rmeta --extern zip=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libzip-d80d7af60279ae30.rmeta -L native=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/build/aws-lc-sys-2bb77576226d5e63/out -L native=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/build/ring-2a3d39387190e897/out` (exit status: 1)
+warning: build failed, waiting for other jobs to finish...
+error: could not compile `waharoa` (lib test) due to 1 previous error
+
+Caused by:
+  process didn't exit successfully: `/home/krishardy/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin/rustc --crate-name waharoa --edition=2024 src/lib.rs --error-format=json --json=diagnostic-rendered-ansi,artifacts,future-incompat --emit=dep-info,link -C embed-bitcode=no -C debuginfo=2 --warn=unexpected_cfgs --check-cfg 'cfg(coverage)' --check-cfg 'cfg(kani)' --test --check-cfg 'cfg(docsrs,test)' --check-cfg 'cfg(feature, values())' -C metadata=ac640f41ab4871c5 -C extra-filename=-8edb3771b727172b --out-dir /tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps -C incremental=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/incremental -L dependency=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps --extern axum=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libaxum-1c7fcc7d25e74fd3.rlib --extern base64=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libbase64-da1cb3bb3b20d1e4.rlib --extern bytes=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libbytes-1678f1a459ca6695.rlib --extern clap=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libclap-cf6444e23cccb4a0.rlib --extern cvss=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libcvss-ed7d00eac53e90c4.rlib --extern flate2=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libflate2-99d990e23d2ccd8c.rlib --extern futures_util=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libfutures_util-02bef4ca2cb09a1e.rlib --extern jiff=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libjiff-1739da3edeec3f11.rlib --extern purl=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libpurl-6486ce036ee3930d.rlib --extern reqwest=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libreqwest-a0111e8279395862.rlib --extern semver=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsemver-cecd1e6337c19648.rlib --extern serde=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde-9fa1b8dff10dd131.rlib --extern serde_saphyr=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde_saphyr-f08d456b71d8f632.rlib --extern serde_json=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libserde_json-67f26424ebe7cb89.rlib --extern sha2=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsha2-7065c49b5ba0ef36.rlib --extern sqlx=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libsqlx-b2a16f20d2c426c1.rlib --extern tokio=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtokio-3e75739e9341c11c.rlib --extern tracing=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtracing-a9f91a8f079aff66.rlib --extern tracing_subscriber=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libtracing_subscriber-b2794785a03855f6.rlib --extern zip=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/deps/libzip-d80d7af60279ae30.rlib -L native=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/build/aws-lc-sys-2bb77576226d5e63/out -L native=/tmp/cargo-mutants-waharoa-qaIejI.tmp/target/debug/build/ring-2a3d39387190e897/out` (exit status: 1)
+
+*** result: Failure(101)

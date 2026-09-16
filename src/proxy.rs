@@ -62,11 +62,11 @@ use crate::integrity::{Sri, Verifier};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
 use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
-    RequestTarget,
 };
 use crate::policy::{Policy, enforce, facts};
 use crate::record::PackumentDetail;
 use crate::refusal::RefusalStatus;
+use crate::route::RequestTarget;
 use crate::store::{Lookup, RecordStore};
 use crate::verified::VerifiedArtifacts;
 use axum::{
@@ -767,7 +767,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // A packument body is only read on a GET, and only when the client's encodings allow
     // asking for one this can decode.
     let read_packument = method == Method::GET
-        && matches!(target, RequestTarget::Packument(_))
+        && matches!(target, RequestTarget::Metadata(_))
         && chosen_encoding != RequestedEncoding::Unreadable;
     let rewrite_base = public_base(req.headers(), proxy.public_base.as_deref());
     let rewriting = read_packument && proxy.rewrite_artifacts && rewrite_base.is_some();
@@ -775,7 +775,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // Every path that forwards a packument without rewriting it leaves this package's
     // artifacts to be fetched wherever the document says, which for pnpm and yarn means
     // not through the proxy. They all carry the same marker so one grep finds them.
-    if matches!(target, RequestTarget::Packument(_)) && method == Method::GET && !rewriting {
+    if matches!(target, RequestTarget::Metadata(_)) && method == Method::GET && !rewriting {
         if chosen_encoding == RequestedEncoding::Unreadable {
             warn!(
                 path = %path_and_query,
@@ -800,9 +800,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let mut artifact_origin: Option<String> = None;
     let mut unservable_origin: Option<String> = None;
     let mut policy_refusal: Option<enforce::Refusal> = None;
-    if let RequestTarget::Tarball {
+    if let RequestTarget::Artifact {
         key,
         claimed_version,
+        ..
     } = &target
         && method == Method::GET
     {
@@ -1052,7 +1053,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // fetched here so the metadata is in hand before the artifact requests arrive rather
     // than one lazy fetch at a time.
     if status == reqwest::StatusCode::NOT_MODIFIED
-        && let RequestTarget::Packument(key) = &target
+        && let RequestTarget::Metadata(key) = &target
     {
         let held = proxy.store.lock().expect("record store lock").holds(key);
         info!(

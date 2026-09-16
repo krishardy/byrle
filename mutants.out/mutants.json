@@ -1,0 +1,386 @@
+[
+  {
+    "diff": "--- src/pypi.rs\n+++ replace filename_parts -> Option<(String, String, Kind)> with None\n@@ -179,37 +179,17 @@\n /// `{name}-{version}` with an archive extension, where the name may itself contain `-`, so\n /// the version is what follows the last `-`. `None` for anything else, including the eggs\n /// and `.exe` installers old projects still list.\n ///\n /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name\n /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell\n /// one project.\n fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {\n-    if let Some(stem) = filename.strip_suffix(\".whl\") {\n-        let fields: Vec<&str> = stem.split('-').collect();\n-        // name, version, then python, abi and platform, with an optional build tag between.\n-        if fields.len() < 5 {\n-            return None;\n-        }\n-        if fields[0].is_empty() {\n-            return None;\n-        }\n-        return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n-    }\n-    for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n-        if let Some(stem) = filename.strip_suffix(extension) {\n-            let (name, version) = stem.rsplit_once('-')?;\n-            if version.is_empty() || name.is_empty() {\n-                return None;\n-            }\n-            return Some((normalise(name), version.to_owned(), Kind::Sdist));\n-        }\n-    }\n-    None\n+    None /* ~ changed by cargo-mutants ~ */\n }\n \n /// Classify a request path on a PyPI mirror.\n ///\n /// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the\n /// files live; PyPI serves them from a second host under `/packages/`, and the index gives\n /// their URLs in full. A path this cannot classify comes back as\n /// [`RequestTarget::Other`] and is forwarded, the same as npm's.\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with None",
+    "package": "waharoa",
+    "replacement": "None",
+    "span": {
+      "end": {
+        "column": 9,
+        "line": 207
+      },
+      "start": {
+        "column": 5,
+        "line": 187
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace filename_parts -> Option<(String, String, Kind)> with Some((String::new(), String::new(), Default::default()))\n@@ -179,37 +179,17 @@\n /// `{name}-{version}` with an archive extension, where the name may itself contain `-`, so\n /// the version is what follows the last `-`. `None` for anything else, including the eggs\n /// and `.exe` installers old projects still list.\n ///\n /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name\n /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell\n /// one project.\n fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {\n-    if let Some(stem) = filename.strip_suffix(\".whl\") {\n-        let fields: Vec<&str> = stem.split('-').collect();\n-        // name, version, then python, abi and platform, with an optional build tag between.\n-        if fields.len() < 5 {\n-            return None;\n-        }\n-        if fields[0].is_empty() {\n-            return None;\n-        }\n-        return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n-    }\n-    for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n-        if let Some(stem) = filename.strip_suffix(extension) {\n-            let (name, version) = stem.rsplit_once('-')?;\n-            if version.is_empty() || name.is_empty() {\n-                return None;\n-            }\n-            return Some((normalise(name), version.to_owned(), Kind::Sdist));\n-        }\n-    }\n-    None\n+    Some((String::new(), String::new(), Default::default())) /* ~ changed by cargo-mutants ~ */\n }\n \n /// Classify a request path on a PyPI mirror.\n ///\n /// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the\n /// files live; PyPI serves them from a second host under `/packages/`, and the index gives\n /// their URLs in full. A path this cannot classify comes back as\n /// [`RequestTarget::Other`] and is forwarded, the same as npm's.\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((String::new(), String::new(), Default::default()))",
+    "package": "waharoa",
+    "replacement": "Some((String::new(), String::new(), Default::default()))",
+    "span": {
+      "end": {
+        "column": 9,
+        "line": 207
+      },
+      "start": {
+        "column": 5,
+        "line": 187
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace filename_parts -> Option<(String, String, Kind)> with Some((String::new(), \"xyzzy\".into(), Default::default()))\n@@ -179,37 +179,17 @@\n /// `{name}-{version}` with an archive extension, where the name may itself contain `-`, so\n /// the version is what follows the last `-`. `None` for anything else, including the eggs\n /// and `.exe` installers old projects still list.\n ///\n /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name\n /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell\n /// one project.\n fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {\n-    if let Some(stem) = filename.strip_suffix(\".whl\") {\n-        let fields: Vec<&str> = stem.split('-').collect();\n-        // name, version, then python, abi and platform, with an optional build tag between.\n-        if fields.len() < 5 {\n-            return None;\n-        }\n-        if fields[0].is_empty() {\n-            return None;\n-        }\n-        return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n-    }\n-    for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n-        if let Some(stem) = filename.strip_suffix(extension) {\n-            let (name, version) = stem.rsplit_once('-')?;\n-            if version.is_empty() || name.is_empty() {\n-                return None;\n-            }\n-            return Some((normalise(name), version.to_owned(), Kind::Sdist));\n-        }\n-    }\n-    None\n+    Some((String::new(), \"xyzzy\".into(), Default::default())) /* ~ changed by cargo-mutants ~ */\n }\n \n /// Classify a request path on a PyPI mirror.\n ///\n /// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the\n /// files live; PyPI serves them from a second host under `/packages/`, and the index gives\n /// their URLs in full. A path this cannot classify comes back as\n /// [`RequestTarget::Other`] and is forwarded, the same as npm's.\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((String::new(), \"xyzzy\".into(), Default::default()))",
+    "package": "waharoa",
+    "replacement": "Some((String::new(), \"xyzzy\".into(), Default::default()))",
+    "span": {
+      "end": {
+        "column": 9,
+        "line": 207
+      },
+      "start": {
+        "column": 5,
+        "line": 187
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace filename_parts -> Option<(String, String, Kind)> with Some((\"xyzzy\".into(), String::new(), Default::default()))\n@@ -179,37 +179,17 @@\n /// `{name}-{version}` with an archive extension, where the name may itself contain `-`, so\n /// the version is what follows the last `-`. `None` for anything else, including the eggs\n /// and `.exe` installers old projects still list.\n ///\n /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name\n /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell\n /// one project.\n fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {\n-    if let Some(stem) = filename.strip_suffix(\".whl\") {\n-        let fields: Vec<&str> = stem.split('-').collect();\n-        // name, version, then python, abi and platform, with an optional build tag between.\n-        if fields.len() < 5 {\n-            return None;\n-        }\n-        if fields[0].is_empty() {\n-            return None;\n-        }\n-        return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n-    }\n-    for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n-        if let Some(stem) = filename.strip_suffix(extension) {\n-            let (name, version) = stem.rsplit_once('-')?;\n-            if version.is_empty() || name.is_empty() {\n-                return None;\n-            }\n-            return Some((normalise(name), version.to_owned(), Kind::Sdist));\n-        }\n-    }\n-    None\n+    Some((\"xyzzy\".into(), String::new(), Default::default())) /* ~ changed by cargo-mutants ~ */\n }\n \n /// Classify a request path on a PyPI mirror.\n ///\n /// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the\n /// files live; PyPI serves them from a second host under `/packages/`, and the index gives\n /// their URLs in full. A path this cannot classify comes back as\n /// [`RequestTarget::Other`] and is forwarded, the same as npm's.\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((\"xyzzy\".into(), String::new(), Default::default()))",
+    "package": "waharoa",
+    "replacement": "Some((\"xyzzy\".into(), String::new(), Default::default()))",
+    "span": {
+      "end": {
+        "column": 9,
+        "line": 207
+      },
+      "start": {
+        "column": 5,
+        "line": 187
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace filename_parts -> Option<(String, String, Kind)> with Some((\"xyzzy\".into(), \"xyzzy\".into(), Default::default()))\n@@ -179,37 +179,17 @@\n /// `{name}-{version}` with an archive extension, where the name may itself contain `-`, so\n /// the version is what follows the last `-`. `None` for anything else, including the eggs\n /// and `.exe` installers old projects still list.\n ///\n /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name\n /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell\n /// one project.\n fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {\n-    if let Some(stem) = filename.strip_suffix(\".whl\") {\n-        let fields: Vec<&str> = stem.split('-').collect();\n-        // name, version, then python, abi and platform, with an optional build tag between.\n-        if fields.len() < 5 {\n-            return None;\n-        }\n-        if fields[0].is_empty() {\n-            return None;\n-        }\n-        return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n-    }\n-    for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n-        if let Some(stem) = filename.strip_suffix(extension) {\n-            let (name, version) = stem.rsplit_once('-')?;\n-            if version.is_empty() || name.is_empty() {\n-                return None;\n-            }\n-            return Some((normalise(name), version.to_owned(), Kind::Sdist));\n-        }\n-    }\n-    None\n+    Some((\"xyzzy\".into(), \"xyzzy\".into(), Default::default())) /* ~ changed by cargo-mutants ~ */\n }\n \n /// Classify a request path on a PyPI mirror.\n ///\n /// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the\n /// files live; PyPI serves them from a second host under `/packages/`, and the index gives\n /// their URLs in full. A path this cannot classify comes back as\n /// [`RequestTarget::Other`] and is forwarded, the same as npm's.\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((\"xyzzy\".into(), \"xyzzy\".into(), Default::default()))",
+    "package": "waharoa",
+    "replacement": "Some((\"xyzzy\".into(), \"xyzzy\".into(), Default::default()))",
+    "span": {
+      "end": {
+        "column": 9,
+        "line": 207
+      },
+      "start": {
+        "column": 5,
+        "line": 187
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace < with == in filename_parts\n@@ -182,17 +182,17 @@\n ///\n /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name\n /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell\n /// one project.\n fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {\n     if let Some(stem) = filename.strip_suffix(\".whl\") {\n         let fields: Vec<&str> = stem.split('-').collect();\n         // name, version, then python, abi and platform, with an optional build tag between.\n-        if fields.len() < 5 {\n+        if fields.len() == /* ~ changed by cargo-mutants ~ */ 5 {\n             return None;\n         }\n         if fields[0].is_empty() {\n             return None;\n         }\n         return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n     }\n     for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/pypi.rs:190:25: replace < with == in filename_parts",
+    "package": "waharoa",
+    "replacement": "==",
+    "span": {
+      "end": {
+        "column": 26,
+        "line": 190
+      },
+      "start": {
+        "column": 25,
+        "line": 190
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace < with > in filename_parts\n@@ -182,17 +182,17 @@\n ///\n /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name\n /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell\n /// one project.\n fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {\n     if let Some(stem) = filename.strip_suffix(\".whl\") {\n         let fields: Vec<&str> = stem.split('-').collect();\n         // name, version, then python, abi and platform, with an optional build tag between.\n-        if fields.len() < 5 {\n+        if fields.len() > /* ~ changed by cargo-mutants ~ */ 5 {\n             return None;\n         }\n         if fields[0].is_empty() {\n             return None;\n         }\n         return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n     }\n     for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/pypi.rs:190:25: replace < with > in filename_parts",
+    "package": "waharoa",
+    "replacement": ">",
+    "span": {
+      "end": {
+        "column": 26,
+        "line": 190
+      },
+      "start": {
+        "column": 25,
+        "line": 190
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace < with <= in filename_parts\n@@ -182,17 +182,17 @@\n ///\n /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name\n /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell\n /// one project.\n fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {\n     if let Some(stem) = filename.strip_suffix(\".whl\") {\n         let fields: Vec<&str> = stem.split('-').collect();\n         // name, version, then python, abi and platform, with an optional build tag between.\n-        if fields.len() < 5 {\n+        if fields.len() <= /* ~ changed by cargo-mutants ~ */ 5 {\n             return None;\n         }\n         if fields[0].is_empty() {\n             return None;\n         }\n         return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n     }\n     for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/pypi.rs:190:25: replace < with <= in filename_parts",
+    "package": "waharoa",
+    "replacement": "<=",
+    "span": {
+      "end": {
+        "column": 26,
+        "line": 190
+      },
+      "start": {
+        "column": 25,
+        "line": 190
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace || with && in filename_parts\n@@ -193,17 +193,17 @@\n         if fields[0].is_empty() {\n             return None;\n         }\n         return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));\n     }\n     for extension in [\".tar.gz\", \".zip\", \".tar.bz2\", \".tar.xz\"] {\n         if let Some(stem) = filename.strip_suffix(extension) {\n             let (name, version) = stem.rsplit_once('-')?;\n-            if version.is_empty() || name.is_empty() {\n+            if version.is_empty() && /* ~ changed by cargo-mutants ~ */ name.is_empty() {\n                 return None;\n             }\n             return Some((normalise(name), version.to_owned(), Kind::Sdist));\n         }\n     }\n     None\n }\n \n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "filename_parts",
+      "return_type": "-> Option<(String, String, Kind)>",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 208
+        },
+        "start": {
+          "column": 1,
+          "line": 174
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/pypi.rs:201:35: replace || with && in filename_parts",
+    "package": "waharoa",
+    "replacement": "&&",
+    "span": {
+      "end": {
+        "column": 37,
+        "line": 201
+      },
+      "start": {
+        "column": 35,
+        "line": 201
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace classify_path -> RequestTarget with Default::default()\n@@ -209,52 +209,17 @@\n \n /// Classify a request path on a PyPI mirror.\n ///\n /// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the\n /// files live; PyPI serves them from a second host under `/packages/`, and the index gives\n /// their URLs in full. A path this cannot classify comes back as\n /// [`RequestTarget::Other`] and is forwarded, the same as npm's.\n pub fn classify_path(path: &str) -> RequestTarget {\n-    let path = path.split('?').next().unwrap_or(path);\n-    let path = path.trim_start_matches('/');\n-\n-    if let Some(rest) = path.strip_prefix(\"simple/\") {\n-        let name = rest.trim_end_matches('/');\n-        // `/simple/` itself is the root index: every project PyPI serves, not one of them.\n-        if name.is_empty() || name.contains('/') {\n-            return RequestTarget::Other;\n-        }\n-        let normalised = normalise(name);\n-        if normalised.is_empty() {\n-            return RequestTarget::Other;\n-        }\n-        return match PackageKey::from_registry_name(Ecosystem::PyPI, &normalised) {\n-            Ok(key) => RequestTarget::Metadata(key),\n-            Err(_) => RequestTarget::Other,\n-        };\n-    }\n-\n-    let Some(rest) = path.strip_prefix(\"packages/\") else {\n-        return RequestTarget::Other;\n-    };\n-    let Some(filename) = rest.rsplit('/').next().filter(|f| !f.is_empty()) else {\n-        return RequestTarget::Other;\n-    };\n-    let Some((name, version, _)) = filename_parts(filename) else {\n-        return RequestTarget::Other;\n-    };\n-    match PackageKey::from_registry_name(Ecosystem::PyPI, &name) {\n-        Ok(key) => RequestTarget::Artifact {\n-            key,\n-            claimed_version: version,\n-            filename: filename.to_owned(),\n-        },\n-        Err(_) => RequestTarget::Other,\n-    }\n+    Default::default() /* ~ changed by cargo-mutants ~ */\n }\n \n #[derive(Deserialize)]\n struct Document {\n     #[serde(default)]\n     name: Option<String>,\n     #[serde(default)]\n     files: Vec<Entry>,\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "classify_path",
+      "return_type": "-> RequestTarget",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 253
+        },
+        "start": {
+          "column": 1,
+          "line": 210
+        }
+      }
+    },
+    "genre": "FnValue",
+    "name": "src/pypi.rs:217:5: replace classify_path -> RequestTarget with Default::default()",
+    "package": "waharoa",
+    "replacement": "Default::default()",
+    "span": {
+      "end": {
+        "column": 6,
+        "line": 252
+      },
+      "start": {
+        "column": 5,
+        "line": 217
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ replace || with && in classify_path\n@@ -215,17 +215,17 @@\n /// [`RequestTarget::Other`] and is forwarded, the same as npm's.\n pub fn classify_path(path: &str) -> RequestTarget {\n     let path = path.split('?').next().unwrap_or(path);\n     let path = path.trim_start_matches('/');\n \n     if let Some(rest) = path.strip_prefix(\"simple/\") {\n         let name = rest.trim_end_matches('/');\n         // `/simple/` itself is the root index: every project PyPI serves, not one of them.\n-        if name.is_empty() || name.contains('/') {\n+        if name.is_empty() && /* ~ changed by cargo-mutants ~ */ name.contains('/') {\n             return RequestTarget::Other;\n         }\n         let normalised = normalise(name);\n         if normalised.is_empty() {\n             return RequestTarget::Other;\n         }\n         return match PackageKey::from_registry_name(Ecosystem::PyPI, &normalised) {\n             Ok(key) => RequestTarget::Metadata(key),\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "classify_path",
+      "return_type": "-> RequestTarget",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 253
+        },
+        "start": {
+          "column": 1,
+          "line": 210
+        }
+      }
+    },
+    "genre": "BinaryOperator",
+    "name": "src/pypi.rs:223:28: replace || with && in classify_path",
+    "package": "waharoa",
+    "replacement": "&&",
+    "span": {
+      "end": {
+        "column": 30,
+        "line": 223
+      },
+      "start": {
+        "column": 28,
+        "line": 223
+      }
+    }
+  },
+  {
+    "diff": "--- src/pypi.rs\n+++ delete ! in classify_path\n@@ -231,17 +231,17 @@\n             Ok(key) => RequestTarget::Metadata(key),\n             Err(_) => RequestTarget::Other,\n         };\n     }\n \n     let Some(rest) = path.strip_prefix(\"packages/\") else {\n         return RequestTarget::Other;\n     };\n-    let Some(filename) = rest.rsplit('/').next().filter(|f| !f.is_empty()) else {\n+    let Some(filename) = rest.rsplit('/').next().filter(|f|  /* ~ changed by cargo-mutants ~ */f.is_empty()) else {\n         return RequestTarget::Other;\n     };\n     let Some((name, version, _)) = filename_parts(filename) else {\n         return RequestTarget::Other;\n     };\n     match PackageKey::from_registry_name(Ecosystem::PyPI, &name) {\n         Ok(key) => RequestTarget::Artifact {\n             key,\n",
+    "file": "src/pypi.rs",
+    "function": {
+      "function_name": "classify_path",
+      "return_type": "-> RequestTarget",
+      "span": {
+        "end": {
+          "column": 2,
+          "line": 253
+        },
+        "start": {
+          "column": 1,
+          "line": 210
+        }
+      }
+    },
+    "genre": "UnaryOperator",
+    "name": "src/pypi.rs:239:61: delete ! in classify_path",
+    "package": "waharoa",
+    "replacement": "",
+    "span": {
+      "end": {
+        "column": 62,
+        "line": 239
+      },
+      "start": {
+        "column": 61,
+        "line": 239
+      }
+    }
+  }
+]

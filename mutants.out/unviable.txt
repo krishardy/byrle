@@ -1,0 +1,5 @@
+src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((String::new(), String::new(), Default::default()))
+src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some((String::new(), "xyzzy".into(), Default::default()))
+src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some(("xyzzy".into(), String::new(), Default::default()))
+src/pypi.rs:187:5: replace filename_parts -> Option<(String, String, Kind)> with Some(("xyzzy".into(), "xyzzy".into(), Default::default()))
+src/pypi.rs:217:5: replace classify_path -> RequestTarget with Default::default()

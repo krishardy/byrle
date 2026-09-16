@@ -1,0 +1,21 @@
+--- src/pypi.rs
++++ replace < with > in filename_parts
+@@ -182,17 +182,17 @@
+ ///
+ /// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name
+ /// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell
+ /// one project.
+ fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
+     if let Some(stem) = filename.strip_suffix(".whl") {
+         let fields: Vec<&str> = stem.split('-').collect();
+         // name, version, then python, abi and platform, with an optional build tag between.
+-        if fields.len() < 5 {
++        if fields.len() > /* ~ changed by cargo-mutants ~ */ 5 {
+             return None;
+         }
+         if fields[0].is_empty() {
+             return None;
+         }
+         return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));
+     }
+     for extension in [".tar.gz", ".zip", ".tar.bz2", ".tar.xz"] {

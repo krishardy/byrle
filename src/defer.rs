@@ -13,7 +13,7 @@
 //! whole module is `#[cfg(debug_assertions)]` and is not compiled into a release binary.
 //! The startup log says loudly when it is on.
 
-use crate::npm::RequestTarget;
+use crate::route::RequestTarget;
 use std::time::Duration;
 
 /// Which requests a deferral applies to.
@@ -33,9 +33,9 @@ impl Scope {
             (self, target),
             (
                 Self::All,
-                RequestTarget::Packument(_) | RequestTarget::Tarball { .. }
-            ) | (Self::Packument, RequestTarget::Packument(_))
-                | (Self::Tarball, RequestTarget::Tarball { .. })
+                RequestTarget::Metadata(_) | RequestTarget::Artifact { .. }
+            ) | (Self::Packument, RequestTarget::Metadata(_))
+                | (Self::Tarball, RequestTarget::Artifact { .. })
         )
     }
 }
@@ -179,7 +179,7 @@ mod proofs {
     /// A target in scope for something, so the time comparison is what decides rather
     /// than `Scope::covers` short-circuiting every case to `None`.
     fn covered_target() -> RequestTarget {
-        RequestTarget::Packument(
+        RequestTarget::Metadata(
             PackageKey::from_registry_name(crate::identity::Ecosystem::Npm, "w").unwrap(),
         )
     }
@@ -256,13 +256,14 @@ mod tests {
     }
 
     fn packument() -> RequestTarget {
-        RequestTarget::Packument(key())
+        RequestTarget::Metadata(key())
     }
 
     fn tarball() -> RequestTarget {
-        RequestTarget::Tarball {
+        RequestTarget::Artifact {
             key: key(),
             claimed_version: "4.17.21".to_owned(),
+            filename: "lodash-4.17.21.tgz".to_owned(),
         }
     }
 

@@ -83,7 +83,7 @@ as absent. The fixture keeps that entry for the case.
 
 ## What PyPI forced on the core, and what it did not
 
-The stage exists to find these. Four candidates; one is a real change and three are not.
+The stage exists to find these. Five candidates; two are real changes and three are not.
 
 | Candidate | Outcome |
 |---|---|
@@ -91,6 +91,7 @@ The stage exists to find these. Four candidates; one is a real change and three 
 | `PackumentDetail::Abbreviated`/`Full` | **naming only.** The simple index withholds nothing it has, which is what `Full` means, so a PyPI record is `Full` and `may_be_incomplete()` is false. The names are npm's vocabulary and the extraction step should rename them; 88 uses, so not now |
 | yanked files | **no core change.** PEP 592 makes a yank an upstream signal a resolver acts on, not a decision this proxy makes, so a yanked version is still a version |
 | **one record, several files** | **a real divergence.** See below |
+| **one upstream host** | **a real divergence.** See below |
 
 ### A record is about a version; an artifact request is about a file
 
@@ -111,6 +112,50 @@ every file for that version is an sdist, because a resolver that can take a whee
 Whether `PackageRecord` grows several artifacts is the extraction step's decision, and it
 should be made with npm's shape in front of it. Recording it here rather than changing the
 core now is the stage order: the interface is an output.
+
+### A registry is one host to npm and two to PyPI
+
+`Proxy` holds one `upstream: String` and one `registry: npm::Client`, because
+`registry.npmjs.org` serves both the packument and the tarball. PyPI serves the index from
+`pypi.org/simple/` and the files from `files.pythonhosted.org/packages/`, and the index
+gives each file's URL in full.
+
+| | metadata | artifacts |
+|---|---|---|
+| npm | `registry.npmjs.org/<name>` | `registry.npmjs.org/<name>/-/<file>.tgz` |
+| PyPI | `pypi.org/simple/<name>/` | `files.pythonhosted.org/packages/<hash>/<hash>/<hash>/<file>` |
+
+Two consequences the extraction step has to answer, neither of them settled here:
+
+- `WAHAROA_UPSTREAM` is one variable, declared in `src/env.rs` with an invariant test and a
+  `--help` fixture. Either it becomes per-ecosystem, which changes `--help`, or the
+  artifact host is read from the metadata rather than configured.
+- The proxy already reads artifact origins from the packument, in `OriginPolicy` and
+  `ReachableOrigins`, because npm packages can name a host other than the registry. PyPI's
+  second host is the same question arriving as the normal case rather than the exception.
+
+## Classifying a path
+
+`route::RequestTarget` is what `proxy::handle` reads, and each ecosystem's `classify_path`
+produces it. The variants are the two things every registry serves, plus everything else:
+
+| Variant | npm | PyPI |
+|---|---|---|
+| `Metadata(PackageKey)` | `/lodash`, `/@babel%2fcore` | `/simple/requests/` |
+| `Artifact { key, claimed_version, filename }` | `/lodash/-/lodash-4.17.21.tgz` | `/packages/<hash>/<hash>/<hash>/requests-2.32.3-py3-none-any.whl` |
+| `Other` | `/-/v1/search`, `/` | `/simple/`, `/pypi/requests/json` |
+
+`Artifact` carries `filename` because `claimed_version` does not reach a file on PyPI:
+`requests-2.32.3-py3-none-any.whl` and `requests-2.32.3.tar.gz` are one version and two
+digests. On npm the filename is the same fact said twice, except for the 38 measured
+tarballs whose filename spells the version differently from the packument.
+
+The names are `Metadata` and `Artifact` rather than `Packument` and `Tarball`, which are
+npm's words. `WAHAROA_DEFER_TEST` keeps its `packument` and `tarball` scope strings: they
+are a debug-only knob's parsed input, and `make retry-matrix` is written against them.
+
+`proxy::handle` still calls `npm::classify_path` alone. Routing between the two is the next
+commit; this one is the type they both produce.
 
 ## Verified against real bytes
 

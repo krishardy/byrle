@@ -25,6 +25,9 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde::Deserialize;
 
+use crate::identity::{Ecosystem, PackageKey};
+use crate::route::RequestTarget;
+
 /// What `waharoa` sends to ask for JSON rather than HTML. PEP 691.
 pub const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 
@@ -168,32 +171,85 @@ pub fn index_url(base: &str, name: &str) -> Result<String, PypiError> {
     Ok(format!("{}/{normalised}/", base.trim_end_matches('/')))
 }
 
-/// The version a distribution filename carries, and what kind it is.
+/// What a distribution filename says: the project it belongs to, its version, and what
+/// kind of file it is.
 ///
 /// A wheel is PEP 427 `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`, so the
-/// version is the second field of at least five. An sdist is `{name}-{version}` with an
-/// archive extension, where the name may itself contain `-`, so the version is what follows
-/// the last `-`. `None` for anything else, including the eggs and `.exe` installers old
-/// projects still list.
-fn filename_parts(filename: &str) -> Option<(String, Kind)> {
+/// name and version are the first two of at least five fields. An sdist is
+/// `{name}-{version}` with an archive extension, where the name may itself contain `-`, so
+/// the version is what follows the last `-`. `None` for anything else, including the eggs
+/// and `.exe` installers old projects still list.
+///
+/// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name
+/// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell
+/// one project.
+fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
     if let Some(stem) = filename.strip_suffix(".whl") {
         let fields: Vec<&str> = stem.split('-').collect();
         // name, version, then python, abi and platform, with an optional build tag between.
         if fields.len() < 5 {
             return None;
         }
-        return Some((fields[1].to_owned(), Kind::Wheel));
+        if fields[0].is_empty() {
+            return None;
+        }
+        return Some((normalise(fields[0]), fields[1].to_owned(), Kind::Wheel));
     }
     for extension in [".tar.gz", ".zip", ".tar.bz2", ".tar.xz"] {
         if let Some(stem) = filename.strip_suffix(extension) {
-            let (_, version) = stem.rsplit_once('-')?;
-            if version.is_empty() {
+            let (name, version) = stem.rsplit_once('-')?;
+            if version.is_empty() || name.is_empty() {
                 return None;
             }
-            return Some((version.to_owned(), Kind::Sdist));
+            return Some((normalise(name), version.to_owned(), Kind::Sdist));
         }
     }
     None
+}
+
+/// Classify a request path on a PyPI mirror.
+///
+/// PEP 503 puts a project's index at `/simple/<name>/` and says nothing about where the
+/// files live; PyPI serves them from a second host under `/packages/`, and the index gives
+/// their URLs in full. A path this cannot classify comes back as
+/// [`RequestTarget::Other`] and is forwarded, the same as npm's.
+pub fn classify_path(path: &str) -> RequestTarget {
+    let path = path.split('?').next().unwrap_or(path);
+    let path = path.trim_start_matches('/');
+
+    if let Some(rest) = path.strip_prefix("simple/") {
+        let name = rest.trim_end_matches('/');
+        // `/simple/` itself is the root index: every project PyPI serves, not one of them.
+        if name.is_empty() || name.contains('/') {
+            return RequestTarget::Other;
+        }
+        let normalised = normalise(name);
+        if normalised.is_empty() {
+            return RequestTarget::Other;
+        }
+        return match PackageKey::from_registry_name(Ecosystem::PyPI, &normalised) {
+            Ok(key) => RequestTarget::Metadata(key),
+            Err(_) => RequestTarget::Other,
+        };
+    }
+
+    let Some(rest) = path.strip_prefix("packages/") else {
+        return RequestTarget::Other;
+    };
+    let Some(filename) = rest.rsplit('/').next().filter(|f| !f.is_empty()) else {
+        return RequestTarget::Other;
+    };
+    let Some((name, version, _)) = filename_parts(filename) else {
+        return RequestTarget::Other;
+    };
+    match PackageKey::from_registry_name(Ecosystem::PyPI, &name) {
+        Ok(key) => RequestTarget::Artifact {
+            key,
+            claimed_version: version,
+            filename: filename.to_owned(),
+        },
+        Err(_) => RequestTarget::Other,
+    }
 }
 
 #[derive(Deserialize)]
@@ -236,7 +292,7 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
         .files
         .into_iter()
         .filter_map(|entry| {
-            let (version, kind) = filename_parts(&entry.filename)?;
+            let (_, version, kind) = filename_parts(&entry.filename)?;
             Some(File {
                 filename: entry.filename,
                 version,
@@ -614,15 +670,42 @@ mod tests {
         // PEP 427 allows a build tag between the version and the python tag.
         assert_eq!(
             filename_parts("x-1.2.3-1-py3-none-any.whl"),
-            Some(("1.2.3".to_owned(), Kind::Wheel))
+            Some(("x".to_owned(), "1.2.3".to_owned(), Kind::Wheel))
         );
         // An sdist whose project name contains a hyphen: the version is after the last one.
         assert_eq!(
             filename_parts("zope-interface-5.4.0.tar.gz"),
-            Some(("5.4.0".to_owned(), Kind::Sdist))
+            Some(("zope-interface".to_owned(), "5.4.0".to_owned(), Kind::Sdist))
         );
         assert_eq!(filename_parts("not-a-distribution.txt"), None);
         assert_eq!(filename_parts("x-py3-none-any.whl"), None, "too few fields");
+    }
+
+    /// A filename that gives a version but no project name is skipped the same as one that
+    /// gives no version. `parse` discards the name, so without this the file would become a
+    /// record under the project the index was asked about.
+    #[test]
+    fn a_file_whose_name_is_only_a_version_is_skipped() {
+        assert_eq!(filename_parts("-1.0.tar.gz"), None, "sdist, empty name");
+        assert_eq!(
+            filename_parts("-1.0-py3-none-any.whl"),
+            None,
+            "wheel, empty name"
+        );
+        let document = br#"{"name":"x","files":[
+            {"filename":"-1.0.tar.gz","url":"https://e/a","hashes":{}},
+            {"filename":"-1.0-py3-none-any.whl","url":"https://e/b","hashes":{}},
+            {"filename":"x-1.0.tar.gz","url":"https://e/c","hashes":{}}
+        ]}"#;
+        let project = parse("x", document).expect("the document reads");
+        assert_eq!(
+            project
+                .files
+                .iter()
+                .map(|f| f.filename.as_str())
+                .collect::<Vec<_>>(),
+            ["x-1.0.tar.gz"]
+        );
     }
 
     #[test]
@@ -878,5 +961,117 @@ mod tests {
         assert_eq!(MAX_INDEX_BYTES, 33_554_432);
         assert_eq!(Kind::Wheel.as_str(), "wheel");
         assert_eq!(Kind::Sdist.as_str(), "sdist");
+    }
+
+    mod paths {
+        use super::*;
+
+        fn key(name: &str) -> PackageKey {
+            PackageKey::from_registry_name(Ecosystem::PyPI, name).expect("valid name")
+        }
+
+        #[test]
+        fn a_simple_index_path_is_the_projects_metadata() {
+            assert_eq!(
+                classify_path("/simple/requests/"),
+                RequestTarget::Metadata(key("requests"))
+            );
+            assert_eq!(
+                classify_path("/simple/requests"),
+                RequestTarget::Metadata(key("requests")),
+                "pip sends the trailing slash; a client that omits it names the same page"
+            );
+        }
+
+        /// PEP 503 asks for the normalised name, and pip sends whichever spelling the
+        /// requirement used. `Zope.Interface`, `zope_interface` and `zope-interface` are
+        /// one project, so they are one key.
+        #[test]
+        fn the_index_name_is_normalised_into_the_key() {
+            for spelling in ["Zope.Interface", "zope_interface", "ZOPE--INTERFACE"] {
+                assert_eq!(
+                    classify_path(&format!("/simple/{spelling}/")),
+                    RequestTarget::Metadata(key("zope-interface")),
+                    "{spelling}"
+                );
+            }
+        }
+
+        #[test]
+        fn a_packages_path_is_the_file_it_names() {
+            assert_eq!(
+                classify_path(
+                    "/packages/f9/9b/335f9764261e915ed497fcdeb11df5dfe6f7/\
+                     requests-2.32.3-py3-none-any.whl"
+                ),
+                RequestTarget::Artifact {
+                    key: key("requests"),
+                    claimed_version: "2.32.3".into(),
+                    filename: "requests-2.32.3-py3-none-any.whl".into(),
+                }
+            );
+            assert_eq!(
+                classify_path("/packages/source/z/zope-interface/zope.interface-5.4.0.tar.gz"),
+                RequestTarget::Artifact {
+                    key: key("zope-interface"),
+                    claimed_version: "5.4.0".into(),
+                    filename: "zope.interface-5.4.0.tar.gz".into(),
+                }
+            );
+        }
+
+        /// One version lists several files, each with its own digest, so the filename is
+        /// what separates them. npm has no path that does this.
+        #[test]
+        fn two_files_of_one_version_differ_only_in_the_filename() {
+            let wheel = classify_path("/packages/a/b/c/requests-2.32.3-py3-none-any.whl");
+            let sdist = classify_path("/packages/a/b/c/requests-2.32.3.tar.gz");
+            assert_ne!(wheel, sdist);
+            let (
+                RequestTarget::Artifact {
+                    key: w,
+                    claimed_version: wv,
+                    ..
+                },
+                RequestTarget::Artifact {
+                    key: s,
+                    claimed_version: sv,
+                    ..
+                },
+            ) = (&wheel, &sdist)
+            else {
+                panic!("both are artifacts");
+            };
+            assert_eq!(w, s);
+            assert_eq!(wv, sv);
+        }
+
+        #[test]
+        fn a_query_string_is_not_part_of_the_path() {
+            assert_eq!(
+                classify_path("/simple/requests/?foo=1"),
+                RequestTarget::Metadata(key("requests"))
+            );
+        }
+
+        #[test]
+        fn anything_that_names_no_project_is_other() {
+            for path in [
+                "",
+                "/",
+                "/simple/",
+                "/simple",
+                "/simple/a/b/",
+                "/simple/./",
+                "/packages/",
+                "/packages/a/b/c/",
+                "/packages/a/b/c/notadistribution.txt",
+                "/packages/a/b/c/x-py3-none-any.whl",
+                "/packages/a/b/c/-1.0.tar.gz",
+                "/pypi/requests/json",
+            ] {
+                assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+            }
+        }
     }
 }
