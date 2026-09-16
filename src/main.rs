@@ -1106,6 +1106,7 @@ async fn main() -> std::process::ExitCode {
 
     let listen = or_exit(environment.listen());
     let upstream = or_exit(environment.upstream_npm());
+    let upstream_pypi = or_exit(environment.upstream_pypi());
 
     // reqwest 0.13 defaults to rustls with rustls-platform-verifier, so the upstream leg
     // validates against the OS trust store. The inbound leg stays plain HTTP on
@@ -1277,6 +1278,7 @@ async fn main() -> std::process::ExitCode {
     });
 
     let proxy = Proxy::new(client, upstream)
+        .with_upstream_pypi(upstream_pypi)
         .with_intel(intel)
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
@@ -1304,12 +1306,14 @@ async fn main() -> std::process::ExitCode {
 
     info!(
         listen = %listen,
-        upstream = %proxy.upstream(),
+        upstream_npm = %proxy.upstream(),
+        upstream_pypi = %proxy.upstream_pypi(),
         artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
         allowed_direct = ?proxy.origin_policy().allowed_direct(),
         "waharoa listening"
     );
     info!("point npm at it with:  npm config set registry http://{listen}/");
+    info!("point pip at it with:  pip config set global.index-url http://{listen}/simple/");
 
     axum::serve(listener, proxy.router())
         .await

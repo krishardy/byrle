@@ -57,7 +57,7 @@ use crate::http::{
     DecodeError, RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_conditional,
     is_hop_by_hop, mark_etag, unmark_if_none_match,
 };
-use crate::identity::PackageKey;
+use crate::identity::{Ecosystem, PackageKey};
 use crate::integrity::{Sri, Verifier};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
 use crate::npm::{self, NormalizeError, NormalizedPackument};
@@ -215,8 +215,12 @@ pub struct Proxy {
     refusal: Arc<RefusalStatus>,
     /// Whether to drop versions whose artifacts this proxy cannot serve.
     refuse_unservable: bool,
-    /// Upstream registry base, no trailing slash.
+    /// npm registry base, no trailing slash.
     upstream: String,
+    /// PyPI simple index base, no trailing slash. The client asks this proxy for
+    /// `/simple/<name>/` and the request goes to `{upstream_pypi}/<name>/`, because the
+    /// base already names the index.
+    upstream_pypi: String,
     /// The policy, when one is configured. `None` is Stage 1 behaviour and is a distinct
     /// state from a policy that allows everything: nothing was asked, rather than asked
     /// and answered yes.
@@ -262,6 +266,7 @@ impl Proxy {
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             upstream,
+            upstream_pypi: crate::pypi::INDEX.to_owned(),
             policy: None,
             publish_times: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
@@ -310,7 +315,10 @@ impl Proxy {
         served: impl IntoIterator<Item = &'a str>,
         allowed_direct: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, crate::origin::OriginError> {
-        let reachable = ReachableOrigins::new([self.upstream.as_str()], served)?;
+        let reachable = ReachableOrigins::new(
+            [self.upstream.as_str(), self.upstream_pypi.as_str()],
+            served,
+        )?;
         self.origins = Arc::new(OriginPolicy::new(reachable, allowed_direct)?);
         Ok(self)
     }
@@ -420,8 +428,18 @@ impl Proxy {
         self
     }
 
+    /// The PyPI simple index to forward to. Defaults to [`crate::pypi::INDEX`].
+    pub fn with_upstream_pypi(mut self, upstream: impl Into<String>) -> Self {
+        self.upstream_pypi = upstream.into().trim_end_matches('/').to_owned();
+        self
+    }
+
     pub fn upstream(&self) -> &str {
         &self.upstream
+    }
+
+    pub fn upstream_pypi(&self) -> &str {
+        &self.upstream_pypi
     }
 
     pub fn router(self) -> Router {
@@ -705,6 +723,110 @@ async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     }
 }
 
+/// Why a metadata document is forwarded without the proxy being able to see what a client
+/// does with it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Uninspected {
+    /// The client accepts no encoding this build can decode, so the body cannot be read.
+    Unreadable,
+    /// No `Host` header and no configured public base, so there is no address to point
+    /// artifact URLs at.
+    NoBase,
+    /// A PyPI simple index. Nothing rewrites one yet, and it gives every file's URL in
+    /// full on the index's own host.
+    SimpleIndex,
+}
+
+impl Uninspected {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Unreadable => "client accepts no encoding this can read",
+            Self::NoBase => {
+                "no Host header and no configured public base, so artifact URLs cannot be \
+                 pointed at the proxy"
+            }
+            Self::SimpleIndex => {
+                "the simple index is forwarded as written, so its files are fetched from \
+                 the index's own host rather than through the proxy"
+            }
+        }
+    }
+}
+
+/// Whether this request leaves a package's artifacts unexamined, and why.
+///
+/// `None` on every request that is not a metadata GET, and on a packument the proxy is
+/// about to rewrite. An operator who turned rewriting off is also `None`: that is a
+/// configured choice, not a case the proxy failed to handle.
+///
+/// Measured 2026-09-16 with pip 26.1.1 installing `requests` through this proxy: five
+/// `/simple/` pages arrived and no `/packages/` request did. The simple index gives each
+/// file's URL in full on `files.pythonhosted.org` and pip uses it as written, so every
+/// file was fetched around the proxy. That is the PyPI shape of
+/// `docs/engineering_decisions/packument-tarball-url-rewriting.md`.
+fn uninspected(
+    ecosystem: Ecosystem,
+    target: &RequestTarget,
+    method: &Method,
+    encoding: RequestedEncoding,
+    rewrite_base: Option<&str>,
+    rewriting: bool,
+) -> Option<Uninspected> {
+    if method != Method::GET || !matches!(target, RequestTarget::Metadata(_)) {
+        return None;
+    }
+    if ecosystem == Ecosystem::PyPI {
+        return Some(Uninspected::SimpleIndex);
+    }
+    if rewriting {
+        return None;
+    }
+    if encoding == RequestedEncoding::Unreadable {
+        return Some(Uninspected::Unreadable);
+    }
+    if rewrite_base.is_none() {
+        return Some(Uninspected::NoBase);
+    }
+    None
+}
+
+/// Where a request goes upstream.
+///
+/// npm's rule is unchanged: the configured registry, or an origin the operator added for
+/// artifacts the registry publishes elsewhere, with the client's path appended. A private
+/// mirror publishes `registry.npmjs.org` artifact URLs while being the whole reason the
+/// proxy was pointed at it, so the URL in the document is deliberately not what decides.
+///
+/// PyPI needs two hosts. The index answers `/simple/<name>/` and the files come from
+/// [`crate::pypi::FILES`], which the index names in full and which the proxy reaches by
+/// keeping the path: the hash segments in `/packages/ab/cd/ef.../name-1.0.whl` are what
+/// locate the file, and they arrive in the request because the client followed the URL the
+/// index published.
+///
+/// The configured PyPI base already ends in the index path, `https://pypi.org/simple`, so
+/// the proxy's own `/simple` prefix comes off before the rest is appended. A path under a
+/// PyPI prefix that names no project still goes to PyPI: `/simple/` is the root index, and
+/// answering pip with an npm registry's 404 says nothing useful.
+fn upstream_url(
+    proxy: &Proxy,
+    ecosystem: Ecosystem,
+    path_and_query: &str,
+    artifact_origin: Option<&str>,
+) -> String {
+    if ecosystem == Ecosystem::Npm {
+        let origin = artifact_origin.unwrap_or(&proxy.upstream);
+        return format!("{origin}{path_and_query}");
+    }
+    if let Some(origin) = artifact_origin {
+        return format!("{origin}{path_and_query}");
+    }
+    // The two prefixes and nothing else: `pypi::serves` is what sent the request here.
+    match path_and_query.strip_prefix("/simple") {
+        Some(rest) => format!("{}{rest}", proxy.upstream_pypi),
+        None => format!("{}{path_and_query}", crate::pypi::FILES),
+    }
+}
+
 async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let started = Instant::now();
     let method = req.method().clone();
@@ -740,7 +862,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         _ => {}
     }
 
-    let target = npm::classify_path(&path_and_query);
+    let (ecosystem, target) = crate::route::classify(&path_and_query);
 
     #[cfg(debug_assertions)]
     if let Some((deferral, since)) = &proxy.defer_test
@@ -765,29 +887,36 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     // A packument body is only read on a GET, and only when the client's encodings allow
     // asking for one this can decode.
+    //
+    // npm only. A PyPI simple index is a different document with a different media type,
+    // and nothing below reads one yet, so asking for an encoding this can decode and
+    // dropping the client's conditional headers would buy nothing.
     let read_packument = method == Method::GET
+        && ecosystem == Ecosystem::Npm
         && matches!(target, RequestTarget::Metadata(_))
         && chosen_encoding != RequestedEncoding::Unreadable;
     let rewrite_base = public_base(req.headers(), proxy.public_base.as_deref());
     let rewriting = read_packument && proxy.rewrite_artifacts && rewrite_base.is_some();
 
-    // Every path that forwards a packument without rewriting it leaves this package's
-    // artifacts to be fetched wherever the document says, which for pnpm and yarn means
-    // not through the proxy. They all carry the same marker so one grep finds them.
-    if matches!(target, RequestTarget::Metadata(_)) && method == Method::GET && !rewriting {
-        if chosen_encoding == RequestedEncoding::Unreadable {
-            warn!(
-                path = %path_and_query,
-                accept_encoding = client_accept_encoding.as_deref().unwrap_or("-"),
-                "UNINSPECTED: client accepts no encoding this can read"
-            );
-        } else if rewrite_base.is_none() {
-            warn!(
-                path = %path_and_query,
-                "UNINSPECTED: no Host header and no configured public base, so artifact \
-                 URLs cannot be pointed at the proxy"
-            );
-        }
+    // Every path that forwards a metadata document without rewriting it leaves that
+    // package's artifacts to be fetched wherever the document says, which for pnpm, yarn
+    // and pip means not through the proxy. They all carry the same marker so one grep
+    // finds them.
+    match uninspected(
+        ecosystem,
+        &target,
+        &method,
+        chosen_encoding,
+        rewrite_base.as_deref(),
+        rewriting,
+    ) {
+        Some(Uninspected::Unreadable) => warn!(
+            path = %path_and_query,
+            accept_encoding = client_accept_encoding.as_deref().unwrap_or("-"),
+            "UNINSPECTED: {}", Uninspected::Unreadable.reason()
+        ),
+        Some(reason) => warn!(path = %path_and_query, "UNINSPECTED: {}", reason.reason()),
+        None => {}
     }
 
     // The digest has to be known before the artifact is fetched, not after: that is what
@@ -988,8 +1117,12 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         }
     }
 
-    let origin = artifact_origin.as_deref().unwrap_or(&proxy.upstream);
-    let url = format!("{origin}{path_and_query}");
+    let url = upstream_url(
+        &proxy,
+        ecosystem,
+        &path_and_query,
+        artifact_origin.as_deref(),
+    );
     let mut outbound = proxy.client.request(method.clone(), &url);
     for (name, value) in req.headers() {
         if is_hop_by_hop(name.as_str()) || name == header::HOST {
@@ -3977,5 +4110,224 @@ mod tests {
     fn the_upstream_base_drops_a_trailing_slash() {
         let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org/");
         assert_eq!(proxy.upstream(), "https://registry.npmjs.org");
+        assert_eq!(proxy.upstream_pypi(), crate::pypi::INDEX);
+        let proxy = proxy.with_upstream_pypi("https://mirror.example/simple/");
+        assert_eq!(proxy.upstream_pypi(), "https://mirror.example/simple");
+    }
+
+    mod routing {
+        use super::*;
+
+        fn proxy() -> Proxy {
+            Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org")
+        }
+
+        fn upstream_of(path: &str) -> String {
+            let proxy = proxy();
+            upstream_url(&proxy, crate::route::classify(path).0, path, None)
+        }
+
+        /// npm at the root, PyPI under the two prefixes it reserves.
+        #[test]
+        fn the_path_decides_which_registry_answers() {
+            for (path, ecosystem) in [
+                ("/lodash", Ecosystem::Npm),
+                ("/@babel%2fcore", Ecosystem::Npm),
+                ("/lodash/-/lodash-4.17.21.tgz", Ecosystem::Npm),
+                ("/-/v1/search?text=lodash", Ecosystem::Npm),
+                ("/simple", Ecosystem::Npm),
+                ("/packages", Ecosystem::Npm),
+                ("/simple/", Ecosystem::PyPI),
+                ("/simple/requests/", Ecosystem::PyPI),
+                ("/packages/a/b/c/requests-2.32.3.tar.gz", Ecosystem::PyPI),
+                ("/packages/nonsense", Ecosystem::PyPI),
+            ] {
+                assert_eq!(crate::route::classify(path).0, ecosystem, "{path}");
+            }
+        }
+
+        /// npm's own paths are untouched: the configured registry with the client's path
+        /// appended, which is what every Stage 1 and Stage 2 test measures.
+        #[test]
+        fn an_npm_request_goes_where_it_always_did() {
+            assert_eq!(upstream_of("/lodash"), "https://registry.npmjs.org/lodash");
+            assert_eq!(
+                upstream_of("/lodash/-/lodash-4.17.21.tgz"),
+                "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
+            );
+            assert_eq!(
+                upstream_of("/-/v1/search?text=lodash"),
+                "https://registry.npmjs.org/-/v1/search?text=lodash"
+            );
+        }
+
+        /// The configured base already ends in `/simple`, so the proxy's own prefix comes
+        /// off rather than being sent twice.
+        #[test]
+        fn the_index_prefix_is_not_sent_twice() {
+            assert_eq!(
+                upstream_of("/simple/requests/"),
+                "https://pypi.org/simple/requests/"
+            );
+            assert_eq!(upstream_of("/simple/"), "https://pypi.org/simple/");
+            let proxy = proxy().with_upstream_pypi("https://mirror.example/pypi/simple");
+            assert_eq!(
+                upstream_url(&proxy, Ecosystem::PyPI, "/simple/requests/", None),
+                "https://mirror.example/pypi/simple/requests/"
+            );
+        }
+
+        /// A file goes to the host the index names, with the hash segments the client
+        /// followed kept: they are what locate it.
+        #[test]
+        fn a_file_goes_to_the_files_host_with_its_hash_path_kept() {
+            let path = "/packages/f9/9b/335f/requests-2.32.3-py3-none-any.whl";
+            assert_eq!(
+                upstream_of(path),
+                format!("https://files.pythonhosted.org{path}")
+            );
+            assert_eq!(
+                upstream_of("/packages/nonsense"),
+                "https://files.pythonhosted.org/packages/nonsense",
+                "a path under the prefix that names no file was still aimed here"
+            );
+        }
+
+        /// An origin the operator added for artifacts wins for either ecosystem, which is
+        /// what the additional-origins list is for.
+        #[test]
+        fn an_added_artifact_origin_wins() {
+            let proxy = proxy();
+            for path in [
+                "/lodash/-/lodash-4.17.21.tgz",
+                "/packages/a/b/c/requests-2.32.3.tar.gz",
+            ] {
+                let ecosystem = crate::route::classify(path).0;
+                assert_eq!(
+                    upstream_url(&proxy, ecosystem, path, Some("https://cdn.example")),
+                    format!("https://cdn.example{path}"),
+                    "{path}"
+                );
+            }
+        }
+
+        fn uninspected_for(
+            path: &str,
+            encoding: RequestedEncoding,
+            base: Option<&str>,
+            rewriting: bool,
+        ) -> Option<Uninspected> {
+            let (ecosystem, target) = crate::route::classify(path);
+            uninspected(ecosystem, &target, &Method::GET, encoding, base, rewriting)
+        }
+
+        /// A packument the proxy is about to rewrite is inspected, and so is one an
+        /// operator turned rewriting off for: that is a configured choice.
+        #[test]
+        fn a_rewritten_packument_is_not_reported() {
+            assert_eq!(
+                uninspected_for("/lodash", RequestedEncoding::Gzip, Some("http://p"), true),
+                None
+            );
+            assert_eq!(
+                uninspected_for("/lodash", RequestedEncoding::Gzip, Some("http://p"), false),
+                None,
+                "rewriting is off, which the operator asked for"
+            );
+        }
+
+        /// The two npm cases, in the order the proxy reports them.
+        #[test]
+        fn a_packument_that_cannot_be_rewritten_says_which_reason() {
+            assert_eq!(
+                uninspected_for(
+                    "/lodash",
+                    RequestedEncoding::Unreadable,
+                    Some("http://p"),
+                    false
+                ),
+                Some(Uninspected::Unreadable)
+            );
+            assert_eq!(
+                uninspected_for("/lodash", RequestedEncoding::Unreadable, None, false),
+                Some(Uninspected::Unreadable),
+                "an unreadable body is reported before a missing base"
+            );
+            assert_eq!(
+                uninspected_for("/lodash", RequestedEncoding::Gzip, None, false),
+                Some(Uninspected::NoBase)
+            );
+        }
+
+        /// Every simple index, whatever the encoding and whatever the base: nothing
+        /// rewrites one yet, so pip fetches every file from the index's own host.
+        #[test]
+        fn every_simple_index_is_reported() {
+            for encoding in [RequestedEncoding::Gzip, RequestedEncoding::Unreadable] {
+                for base in [Some("http://p"), None] {
+                    assert_eq!(
+                        uninspected_for("/simple/requests/", encoding, base, true),
+                        Some(Uninspected::SimpleIndex),
+                        "{encoding:?} {base:?}"
+                    );
+                }
+            }
+        }
+
+        /// Only a metadata GET. An artifact request carries its own digest check, and a
+        /// `HEAD` or `PUT` reads no document.
+        #[test]
+        fn nothing_else_is_reported() {
+            for path in [
+                "/lodash/-/lodash-4.17.21.tgz",
+                "/packages/a/b/c/requests-2.32.3.tar.gz",
+                "/-/v1/search",
+                "/simple/",
+            ] {
+                assert_eq!(
+                    uninspected_for(path, RequestedEncoding::Gzip, None, false),
+                    None,
+                    "{path}"
+                );
+            }
+            let (ecosystem, target) = crate::route::classify("/lodash");
+            assert_eq!(
+                uninspected(
+                    ecosystem,
+                    &target,
+                    &Method::HEAD,
+                    RequestedEncoding::Gzip,
+                    None,
+                    false
+                ),
+                None
+            );
+        }
+
+        /// Each reason prints one line and they are different lines.
+        #[test]
+        fn every_reason_says_something_different() {
+            let all = [
+                Uninspected::Unreadable,
+                Uninspected::NoBase,
+                Uninspected::SimpleIndex,
+            ];
+            for (i, a) in all.iter().enumerate() {
+                assert!(!a.reason().is_empty());
+                for b in &all[i + 1..] {
+                    assert_ne!(a.reason(), b.reason());
+                }
+            }
+        }
+
+        /// PyPI's index and file hosts are reachable, so a file request is served rather
+        /// than refused as published on an origin the proxy does not front.
+        #[test]
+        fn both_pypi_hosts_are_fronted_by_default() {
+            let reachable = proxy().origin_policy().reachable().as_slice().to_vec();
+            for origin in ["https://pypi.org", "https://files.pythonhosted.org"] {
+                assert!(reachable.contains(&origin.to_owned()), "{origin}");
+            }
+        }
     }
 }

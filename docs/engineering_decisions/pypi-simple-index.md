@@ -191,6 +191,56 @@ are a debug-only knob's parsed input, and `make retry-matrix` is written against
 `proxy::handle` still calls `npm::classify_path` alone. Routing between the two is the next
 commit; this one is the type they both produce.
 
+## Routing
+
+`proxy::handle` reads `route::classify`, which picks the ecosystem from the path and then
+that ecosystem's `classify_path`:
+
+| Path | Answered as |
+|---|---|
+| `/simple/...`, `/packages/...` | PyPI |
+| everything else | npm |
+
+npm keeps the root because that is where a client configured with
+`registry=http://proxy/` looks, and pip takes its index URL with the `/simple/` in it. A
+path under a PyPI prefix is PyPI's whatever it turns out to be, `/simple/` and
+`/packages/nonsense` included: answering pip with an npm registry's 404 says nothing
+useful. `/simple` and `/packages` without the trailing slash stay npm packages by those
+names.
+
+`upstream_url` sends each request where it belongs. npm's rule is unchanged. PyPI needs
+two hosts:
+
+| Request | Upstream |
+|---|---|
+| `/simple/requests/` | `{WAHAROA_UPSTREAM_PYPI}/requests/` |
+| `/packages/f9/9b/335f/requests-2.32.3-py3-none-any.whl` | `pypi::FILES` with the path kept |
+
+The configured base already ends in `/simple`, so the proxy's own prefix comes off rather
+than being sent twice. A file needs no lookup: the hash segments that locate it upstream
+are in the request path, because the client followed the URL the index published.
+
+### pip installs, and every file goes around the proxy
+
+pip 26.1.1, `requests` into an empty venv through the proxy, 2026-09-16:
+
+```text
+WARN  UNINSPECTED: the simple index is forwarded as written, so its files are fetched
+      from the index's own host rather than through the proxy  path=/simple/requests/
+INFO  proxied method=GET path=/simple/requests/ status=200 bytes=31334
+...
+```
+
+Five `/simple/` pages arrived, the install succeeded, and no `/packages/` request reached
+the proxy at all. The simple index gives each file's URL in full on
+`files.pythonhosted.org` and pip uses it as written.
+
+This is the PyPI shape of `packument-tarball-url-rewriting.md`, where npm is the only one
+of five clients that rewrites an artifact URL to the configured registry. pip does not
+rewrite either, so the proxy has to, and the index is a different document from a
+packument. Rewriting it is the next commit. Until then the log says so on every index
+request rather than letting the install look inspected.
+
 ## Verified against real bytes
 
 `requests-0.2.0.tar.gz`, 5,533 bytes, fetched from `files.pythonhosted.org` 2026-09-16:
