@@ -5,6 +5,10 @@ is met. Within a stage, `[!]` marks items that block the exit criterion.
 
 Legend: `[ ]` todo · `[~]` in progress · `[x]` done · `[!]` blocks stage exit
 
+A stage carries a **Status** line: `closed` once its exit criterion is met and every item
+in it is closed or moved, `open` for the one being worked on, and nothing for a stage not
+started.
+
 ---
 
 ## Ad-hoc
@@ -206,6 +210,8 @@ Items that I've added that are not stage-bound.
       characters touching production code.
 
 ## Stage 1 — Pass-through proxy (transport)
+
+**Status: closed.** Exit met; every item closed or moved.
 
 **Goal:** installs work through us, and every package is correctly identified. **No
 policy at all.** This stage is falsifiable on its own: if the normalizer produces a
@@ -982,6 +988,9 @@ is fetched. Leave it running for a week and trust it.
 
 ## Stage 2 — Decision layer (policy + intel)
 
+**Status: closed 2026-09-16.** Exit met and re-verified live; every item closed or moved
+to the stage that can finish it. See the exit record at the end of this stage.
+
 **Goal:** the policy engine and its semantics, on top of a transport you already trust.
 The spec gets frozen here.
 
@@ -1736,6 +1745,8 @@ from. The four the stage decided rather than built are the two `UNINSPECTED` not
 
 ## Stage 3 — Second ecosystem (PyPI)
 
+**Status: open, started 2026-09-16.**
+
 **Goal:** **extract** the adapter interface, using npm and PyPI as the two shapes to
 design against. The interface is an output of this stage, not an input. If PyPI forces
 changes to the core, that is the finding — make it now, not after five adapters exist.
@@ -1747,14 +1758,28 @@ changes to the core, that is the finding — make it now, not after five adapter
 - [ ] Provenance and attestation fetching for PyPI, which has its own metadata shape.
       Carried from Stage 1, which measured the npm side only: npm asks its own registry
       for `/-/npm/v1/keys` and never contacts the host the packument named.
-- [ ] `[!]` PEP 503 simple-index transport, written concretely first
+- [~] `[!]` PEP 503 simple-index transport, written concretely first. `src/pypi.rs` reads
+      PEP 691 JSON: name normalisation, the index URL, and one project's files with version,
+      kind, hash, upload time and yank state. Standalone on purpose, sharing nothing with
+      `src/npm.rs`: the interface is an output of this stage.
+      [pypi-simple-index](docs/engineering_decisions/pypi-simple-index.md).
+      - [x] Read the shape from the live index rather than the PEPs alone, 2026-09-16.
+      - [x] Parse checked against nine real projects, 12,164 files, not fixtures alone:
+            `examples/pypi_index.rs`.
+      - [ ] Fetch it through the proxy. The module parses bytes; nothing requests them yet.
+      - [ ] Serve `/simple/<name>/` on the proxy, with the 301 to the normalised name.
+      - [ ] HTML fallback for an index that does not serve PEP 691 JSON. PyPI does; another
+            index may not, and `Accept` negotiation is the first thing to try.
 - [ ] `[!]` Extract the adapter interface (transport + normalizer) from the two working
       implementations — refactor, not upfront design
 - [ ] `[!]` Reimplement npm and PyPI on the extracted interface, behavior unchanged
 - [ ] `[!]` Handle the backtracking resolver's traffic shape (metadata fetched for
       versions never installed — do not treat as install intent)
 - [ ] `[!]` PyPI normalizer to the common record
-- [ ] `[!]` sdist vs. wheel distinction for install-script semantics
+- [~] `[!]` sdist vs. wheel distinction for install-script semantics. `Kind` and
+      `Project::only_sdist` read it: a version offering a wheel is not an install-script
+      version, and one offering only an sdist leaves a resolver no choice. Not yet wired to
+      the `install_scripts` check, which is what closes this.
 - [ ] pip and uv both verified
 - [ ] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass).
       Moved from Stage 2's `install_scripts`, where the engine side is built:

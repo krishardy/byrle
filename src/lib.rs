@@ -23,6 +23,7 @@ pub mod lockfile;
 pub mod npm;
 pub mod policy;
 pub mod proxy;
+pub mod pypi;
 pub mod record;
 pub mod refusal;
 pub mod store;
