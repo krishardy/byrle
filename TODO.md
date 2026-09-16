@@ -1773,13 +1773,17 @@ changes to the core, that is the finding — make it now, not after five adapter
             from the path, `upstream_url` sends each request to the right host, and
             `rewrite_index` points every file at the proxy. pip 26.1.1 installs `requests`
             through it: 5 index pages, 2,937 file URLs rewritten, 10 `/packages/` requests
-            arriving. What is left is storing the records, which is what gives an artifact
-            request a digest to check.
+            arriving. Records are stored, so an artifact request finds its digest: all
+            five wheels verified.
       - [ ] HTML fallback for an index that does not serve PEP 691 JSON. PyPI does, and an
             index that answers HTML is refused rather than read as an empty project.
-- [ ] `[!]` Extract the adapter interface (transport + normalizer) from the two working
-      implementations — refactor, not upfront design
-- [ ] `[!]` Reimplement npm and PyPI on the extracted interface, behavior unchanged
+- [x] `[!]` Extract the adapter interface (transport + normalizer) from the two working
+      implementations — refactor, not upfront design. It is three shared modules (`route`,
+      `origin`, `record::PackageMetadata`) and four exhaustive matches, not a trait. See
+      `docs/engineering_decisions/adapter-interface.md`.
+- [x] `[!]` Reimplement npm and PyPI on the extracted interface, behavior unchanged. The
+      extraction was the reimplementation: each piece moved out of `npm` as PyPI needed it,
+      with `make smoke-npm` and `make smoke-clients` green at every step.
 - [ ] `[!]` Handle the backtracking resolver's traffic shape (metadata fetched for
       versions never installed — do not treat as install intent)
 - [x] `[!]` PyPI normalizer to the common record. `pypi::normalize` gives a
@@ -1836,7 +1840,10 @@ changes to the core, that is the finding — make it now, not after five adapter
             correlated against the packument records, the same correlation
             `dist.integrity` already does in `src/store.rs`, applied to a second field.
             It cannot answer for the installed version until a range resolves to one.
-- [ ] Document every core change this stage forced
+- [x] Document every core change this stage forced.
+      `docs/engineering_decisions/pypi-simple-index.md` holds the five candidates and what
+      each turned out to be; `adapter-interface.md` holds what the two implementations
+      turned out to share.
 
 **Exit:** PyPI enforcing; adapter interface extracted from two working implementations
 and documented; npm still passes every Stage 1 and Stage 2 test after the refactor.
