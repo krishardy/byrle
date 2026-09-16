@@ -90,8 +90,8 @@ The stage exists to find these. Five candidates; two are real changes and three 
 | sha256 hex against npm's SRI | **converted, no core change.** `integrity::Algorithm` already has `Sha256`, so `pypi::sri` turns the index's hex into `sha256-<base64>` and the existing verifier reads it |
 | `PackumentDetail::Abbreviated`/`Full` | **naming only.** The simple index withholds nothing it has, which is what `Full` means, so a PyPI record is `Full` and `may_be_incomplete()` is false. The names are npm's vocabulary and the extraction step should rename them; 88 uses, so not now |
 | yanked files | **no core change.** PEP 592 makes a yank an upstream signal a resolver acts on, not a decision this proxy makes, so a yanked version is still a version |
-| **one record, several files** | **a real divergence.** See below |
-| **one upstream host** | **a real divergence.** See below |
+| **one record, several files** | **a real divergence, now closed.** See below |
+| **one upstream host** | **a real divergence, still open.** See below |
 
 ### A record is about a version; an artifact request is about a file
 
@@ -99,19 +99,33 @@ The stage exists to find these. Five candidates; two are real changes and three 
 version does not: `requests` 2.34.2 offers a wheel and an sdist, and they differ in whether
 installing runs the package's own code.
 
-Split, rather than changing the record now:
+`PackageRecord::artifact` is now `artifacts: Vec<Artifact>`. npm pushes one, PyPI pushes
+every file for the version, wheels first. `Artifact` gained two fields:
 
-| Question | Answered by | Shape |
+| Field | npm | PyPI |
 |---|---|---|
-| may this version be installed | `pypi::records`, one record per version | `artifact` names the file a resolver would take, the wheel where there is one |
-| are these bytes the ones claimed | `Project::files`, every file kept | a pinned fetch names a filename, and the proxy verifies what it serves |
+| `filename` | the last segment of `dist.tarball` | the index's own `filename` |
+| `runs_install_scripts` | equal to `PackageRecord::has_install_scripts` | `kind == Sdist` |
 
-`has_install_scripts` follows from what is on offer rather than from a flag: true only when
-every file for that version is an sdist, because a resolver that can take a wheel will.
+`has_install_scripts` stays the version-level answer: true only when every file for that
+version is an sdist, because a resolver that can take a wheel will.
 
-Whether `PackageRecord` grows several artifacts is the extraction step's decision, and it
-should be made with npm's shape in front of it. Recording it here rather than changing the
-core now is the stage order: the interface is an output.
+### Why the per-file answer had to exist
+
+`requests` 2.32.3 offers a wheel and an sdist, so `has_install_scripts` is false and a
+policy with `install_scripts: block` clears the version. A client then asks for
+`/packages/.../requests-2.32.3.tar.gz`, which `pip --no-binary :all:` does, and so does any
+platform with no matching wheel. Those bytes run `setup.py`. Deciding from the version's
+record serves them.
+
+`PackageRecord::narrowed_to(filename)` is the answer: a copy holding that file alone, with
+`has_install_scripts` set from it. `proxy::handle` narrows before it builds `Facts`, writes
+the audit event or calls `enforce::artifact`, so the pinned decision is about the bytes the
+client asked for. On npm the narrowed record equals the original, held by
+`narrowing_an_npm_record_to_its_only_file_changes_nothing`.
+
+Nothing under `src/policy/` reads `artifact`. The change stops at the normalisers, the
+store and the proxy's artifact path.
 
 ### A registry is one host to npm and two to PyPI
 
@@ -145,7 +159,8 @@ produces it. The variants are the two things every registry serves, plus everyth
 | `Artifact { key, claimed_version, filename }` | `/lodash/-/lodash-4.17.21.tgz` | `/packages/<hash>/<hash>/<hash>/requests-2.32.3-py3-none-any.whl` |
 | `Other` | `/-/v1/search`, `/` | `/simple/`, `/pypi/requests/json` |
 
-`Artifact` carries `filename` because `claimed_version` does not reach a file on PyPI:
+`route::RequestTarget::Artifact` carries `filename` because `claimed_version` does not reach
+a file on PyPI:
 `requests-2.32.3-py3-none-any.whl` and `requests-2.32.3.tar.gz` are one version and two
 digests. On npm the filename is the same fact said twice, except for the 38 measured
 tarballs whose filename spells the version differently from the packument.

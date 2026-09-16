@@ -15,6 +15,11 @@
 //! One packument larger than the whole budget is still kept, because the tarball request
 //! that follows it is the reason to have stored anything. The budget is a target, not a
 //! hard ceiling.
+//!
+//! The budget counts records, and a record was one artifact when it was calibrated. A PyPI
+//! record holds one artifact per file, `requests` 2.32.3 being a wheel and an sdist, so the
+//! count tracks memory less closely than it did. It is still a bound; it is no longer a
+//! proportional one.
 
 use crate::identity::PackageKey;
 use crate::npm::NormalizedPackument;
@@ -178,7 +183,10 @@ mod tests {
         let Lookup::Found(record) = store.lookup(&key("lodash"), "4.17.21") else {
             panic!("the packument names this version");
         };
-        assert_eq!(record.artifact.integrity.as_deref(), Some("sha512-4.17.21"));
+        assert_eq!(
+            record.artifact().expect("one file").integrity.as_deref(),
+            Some("sha512-4.17.21")
+        );
     }
 
     /// Three outcomes, not two. A version the packument does not name is a different

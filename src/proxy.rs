@@ -64,7 +64,7 @@ use crate::npm::{
     self, Disposition, NormalizeError, NormalizedPackument, OriginPolicy, ReachableOrigins,
 };
 use crate::policy::{Policy, enforce, facts};
-use crate::record::PackumentDetail;
+use crate::record::{PackageRecord, PackumentDetail};
 use crate::refusal::RefusalStatus;
 use crate::route::RequestTarget;
 use crate::store::{Lookup, RecordStore};
@@ -803,7 +803,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     if let RequestTarget::Artifact {
         key,
         claimed_version,
-        ..
+        filename,
     } = &target
         && method == Method::GET
     {
@@ -813,11 +813,29 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             .unwrap_or_else(|_| format!("{key}@{claimed_version}"));
         artifact_purl = purl.clone();
         match lookup_or_fetch(&proxy, key, claimed_version, &path_and_query).await {
-            Lookup::Found(record) => {
+            Lookup::Found(found) => {
+                // The lookup is by version; the request is for a file. On npm those are
+                // the same thing. On PyPI one version offers a wheel and an sdist, with
+                // different digests and different install behaviour, so everything below
+                // decides about the file that was asked for rather than the version.
+                let narrowed = found.narrowed_to(filename);
+                if narrowed.is_none() {
+                    warn!(
+                        path = %path_and_query,
+                        claimed_purl = %purl,
+                        filename = %filename,
+                        "the record names no file by this name; deciding on the version's \
+                         first file"
+                    );
+                }
+                let record: &PackageRecord = narrowed.as_ref().unwrap_or(&found);
+                let artifact = record.artifact();
                 info!(
                     path = %path_and_query,
                     claimed_purl = %purl,
-                    integrity = record.artifact.integrity.as_deref().unwrap_or("-"),
+                    integrity = artifact
+                        .and_then(|a| a.integrity.as_deref())
+                        .unwrap_or("-"),
                     has_install_scripts = record.has_install_scripts,
                     "artifact requested, digest known"
                 );
@@ -834,7 +852,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                     // cannot answer "was this ever evaluated", which is what `policy diff`
                     // needs a package set for.
                     let mut facts = crate::policy::decide::Facts::from_record_and_times(
-                        &record,
+                        record,
                         times.as_deref(),
                     );
                     if let Some(intel) = &intel {
@@ -846,14 +864,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                             &facts.name,
                             &facts.version,
                             &crate::policy::decide::decide(policy, &facts, crate::policy::today()),
-                            &enforce::unenforceable(policy, &record, times.as_deref(), facts.intel),
+                            &enforce::unenforceable(policy, record, times.as_deref(), facts.intel),
                         )
                         .with_intel_snapshot(intel.as_ref().map(|i| i.snapshot.as_str())),
                     );
                 }
                 if let enforce::Verdict::Refuse(refusal) = enforce::artifact(
                     proxy.policy.as_deref(),
-                    &record,
+                    record,
                     times.as_deref(),
                     intel.as_ref(),
                     crate::policy::today(),
@@ -866,13 +884,17 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 // upstream, including artifacts advertised on the default registry: a
                 // private mirror publishes those URLs and is the reason the proxy was
                 // pointed at it.
-                artifact_origin = npm::origin_of_url(&record.artifact.url)
+                let artifact_url = artifact.map(|a| a.url.as_str()).unwrap_or("");
+                artifact_origin = npm::origin_of_url(artifact_url)
                     .filter(|origin| proxy.origins.reachable().routes_directly(origin));
-                unservable_origin = match proxy.origins.disposition(&record.artifact.url) {
+                unservable_origin = match proxy.origins.disposition(artifact_url) {
                     Disposition::Refused(origin) => Some(origin),
                     _ => None,
                 };
-                match record.artifact.integrity.as_deref().map(Sri::parse) {
+                match artifact
+                    .and_then(|a| a.integrity.as_deref())
+                    .map(Sri::parse)
+                {
                     Some(Ok(sri)) => {
                         // Plan §5's branch, decided before a byte is fetched. In Stage 1
                         // both arms do the same thing, because nothing analyses and
@@ -1603,7 +1625,7 @@ fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
         let artifacts = packument
             .records
             .iter()
-            .map(|r| (r.package.version().to_owned(), r.artifact.url.clone()));
+            .filter_map(|r| Some((r.package.version().to_owned(), r.artifact()?.url.clone())));
         return match npm::filter_unservable_versions(
             decoded,
             artifacts,
@@ -1665,7 +1687,7 @@ fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
     let artifacts = packument
         .records
         .iter()
-        .map(|record| record.artifact.url.as_str());
+        .filter_map(|record| Some(record.artifact()?.url.as_str()));
     match npm::rewrite_artifact_origins(decoded, artifacts, policy.reachable(), base) {
         Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
         Err(e) => {
