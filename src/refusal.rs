@@ -115,9 +115,9 @@ impl RefusalStatus {
                 entry: entry.to_owned(),
                 reason: "expected <ecosystem>/<client>",
             })?;
-            let ecosystem = match ecosystem.trim().to_ascii_lowercase().as_str() {
-                "npm" => Ecosystem::Npm,
-                _ => {
+            let ecosystem = match ecosystem.trim().to_ascii_lowercase().parse::<Ecosystem>() {
+                Ok(ecosystem) => ecosystem,
+                Err(_) => {
                     return Err(RefusalParseError {
                         entry: entry.to_owned(),
                         reason: "unknown ecosystem",
@@ -285,6 +285,29 @@ mod tests {
         assert_eq!(
             table.for_client(Ecosystem::Npm, Some("yarn/1.22.22 npm/?")),
             403
+        );
+    }
+
+    /// The key is (ecosystem, client), so one ecosystem's entry does not move the other's.
+    /// `pip` is not an npm client and npm's clients are not pip; an operator who tunes one
+    /// registry's answer has not tuned the other's.
+    #[test]
+    fn an_entry_applies_to_its_own_ecosystem_only() {
+        let table = RefusalStatus::parse("default=403, pypi/pip=451, npm/pnpm=404").unwrap();
+        assert_eq!(table.for_client(Ecosystem::PyPI, Some("pip/26.1.1")), 451);
+        assert_eq!(
+            table.for_client(Ecosystem::Npm, Some("pip/26.1.1")),
+            403,
+            "pip is not an npm client"
+        );
+        assert_eq!(
+            table.for_client(Ecosystem::PyPI, Some("pnpm/10.33.0 npm/?")),
+            403,
+            "npm's entry does not answer for PyPI"
+        );
+        assert_eq!(
+            table.for_client(Ecosystem::Npm, Some("pnpm/10.33.0 npm/?")),
+            404
         );
     }
 

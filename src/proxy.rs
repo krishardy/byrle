@@ -641,10 +641,13 @@ async fn buffer_to_limit(mut stream: ByteStream, limit: usize) -> Buffered {
 }
 
 /// The status a refusal answers with for this client.
-fn refusal_status(proxy: &Proxy, user_agent: Option<&str>) -> StatusCode {
-    let code = proxy
-        .refusal
-        .for_client(crate::identity::Ecosystem::Npm, user_agent);
+///
+/// Keyed by ecosystem as well as client, because the same client name means different
+/// things across them and an operator tunes one without moving the other. Before both
+/// ecosystems were served this passed npm unconditionally, which made a `pypi/...` entry
+/// unreachable.
+fn refusal_status(proxy: &Proxy, ecosystem: Ecosystem, user_agent: Option<&str>) -> StatusCode {
+    let code = proxy.refusal.for_client(ecosystem, user_agent);
     // Unreachable: `RefusalStatus` is only ever built by `parse`, which refuses anything
     // outside 400..=599, or by `default`, which is 403. Kept rather than unwrapped
     // because a panic here would take down a request handler, and 403 is what the
@@ -1201,7 +1204,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         }
 
         if let Some(refusal) = &policy_refusal {
-            let status = refusal_status(&proxy, Some(&client_ua));
+            let status = refusal_status(&proxy, ecosystem, Some(&client_ua));
             info!(
                 %method,
                 path = %path_and_query,
@@ -1221,7 +1224,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         if let Some(origin) = &unservable_origin
             && proxy.refuse_unservable
         {
-            let status = refusal_status(&proxy, Some(&client_ua));
+            let status = refusal_status(&proxy, ecosystem, Some(&client_ua));
             info!(
                 %method,
                 path = %path_and_query,
@@ -2279,6 +2282,32 @@ mod tests {
         assert!(
             record.runs_install_scripts(Some("x-1.0.tar.gz")),
             "asking for the sdist is asking for the bytes that run setup.py"
+        );
+    }
+
+    /// The refusal table is keyed by (ecosystem, client), and the request says which
+    /// ecosystem. Passing npm for every request made a `pypi/...` entry unreachable.
+    #[test]
+    fn a_refusal_takes_the_status_configured_for_its_own_ecosystem() {
+        let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org")
+            .with_refusal_status(
+                crate::refusal::RefusalStatus::parse("default=403,pypi/pip=451,npm/pnpm=404")
+                    .unwrap(),
+            );
+        let pip = "pip/26.1.1";
+        let pnpm = "pnpm/10.33.0 npm/?";
+
+        assert_eq!(refusal_status(&proxy, Ecosystem::PyPI, Some(pip)), 451);
+        assert_eq!(
+            refusal_status(&proxy, Ecosystem::Npm, Some(pip)),
+            403,
+            "pip is not an npm client"
+        );
+        assert_eq!(refusal_status(&proxy, Ecosystem::Npm, Some(pnpm)), 404);
+        assert_eq!(
+            refusal_status(&proxy, Ecosystem::PyPI, Some(pnpm)),
+            403,
+            "npm's entry does not answer for PyPI"
         );
     }
 
