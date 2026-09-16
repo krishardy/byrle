@@ -42,7 +42,7 @@
 //!
 //! # Skipping is visible
 //!
-//! A version that cannot be normalised lands in [`NormalizedPackument::skipped`]
+//! A version that cannot be normalised lands in [`PackageMetadata::skipped`]
 //! instead of being dropped. A package version that vanishes between the registry and
 //! the policy engine is a version nothing gates, which is the shape of a bypass rather
 //! than a parse detail.
@@ -52,8 +52,8 @@ use crate::origin::{
     Disposition, OriginPolicy, ReachableOrigins, RewriteError, bypassing_origin, reachable_path,
 };
 use crate::record::{
-    Artifact, Maintainer, PackageRecord, PackumentDetail, Provenance, RegistrySignature,
-    Repository, TrustedPublisher,
+    Artifact, Maintainer, PackageMetadata, PackageRecord, PackumentDetail, Provenance,
+    RegistrySignature, Repository, SkippedVersion, TrustedPublisher,
 };
 use crate::route::RequestTarget;
 use serde::de::{self, MapAccess, Visitor};
@@ -144,7 +144,7 @@ pub fn classify_path(path: &str) -> RequestTarget {
     }
 }
 
-impl NormalizedPackument {
+impl PackageMetadata {
     /// Artifact origins this document publishes that the proxy does not serve, split by
     /// whether the operator has allowed them.
     ///
@@ -172,7 +172,7 @@ impl NormalizedPackument {
     }
 }
 
-impl NormalizedPackument {
+impl PackageMetadata {
     /// Artifact origins in this document that the proxy does not front, with how many
     /// versions each accounts for. Empty in the normal case.
     ///
@@ -392,38 +392,6 @@ impl std::error::Error for FetchError {
 // Output
 // ---------------------------------------------------------------------------
 
-/// One version that could not be normalised, and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SkippedVersion {
-    /// The key it appeared under in the `versions` map.
-    pub version: String,
-    pub reason: String,
-}
-
-/// Every version of one package, normalised.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NormalizedPackument {
-    /// Identity taken from the document's own `name`, never from the request path.
-    /// A request for `/Lodash` can be answered with a document naming `lodash`, and the
-    /// document is what the client installs (see `identity`).
-    pub key: PackageKey,
-    /// What `dist-tags.latest` points at, when the document carries one. Not resolved
-    /// into a record here: a tag can name a version the `versions` map omits.
-    pub latest: Option<String>,
-    /// One record per usable version, ordered by the `versions` map key.
-    pub records: Vec<PackageRecord>,
-    /// Versions present in the document that produced no record. Empty in the normal
-    /// case; never silently discarded.
-    pub skipped: Vec<SkippedVersion>,
-}
-
-impl NormalizedPackument {
-    /// The record for one exact version string, if the document carried it.
-    pub fn version(&self, version: &str) -> Option<&PackageRecord> {
-        self.records.iter().find(|r| r.package.version() == version)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Wire types
 // ---------------------------------------------------------------------------
@@ -595,7 +563,7 @@ impl<'de> Deserialize<'de> for Repository {
 pub fn normalize_packument(
     body: &[u8],
     detail: PackumentDetail,
-) -> Result<NormalizedPackument, NormalizeError> {
+) -> Result<PackageMetadata, NormalizeError> {
     let wire: WirePackument = serde_json::from_slice(body).map_err(NormalizeError::Json)?;
     normalize_wire(wire, detail)
 }
@@ -603,7 +571,7 @@ pub fn normalize_packument(
 fn normalize_wire(
     wire: WirePackument,
     detail: PackumentDetail,
-) -> Result<NormalizedPackument, NormalizeError> {
+) -> Result<PackageMetadata, NormalizeError> {
     let key = key_from_name(&wire.name).map_err(NormalizeError::Name)?;
 
     let mut records = Vec::with_capacity(wire.versions.len());
@@ -619,7 +587,7 @@ fn normalize_wire(
         }
     }
 
-    Ok(NormalizedPackument {
+    Ok(PackageMetadata {
         key,
         latest: wire.dist_tags.get("latest").cloned(),
         records,
@@ -833,7 +801,7 @@ impl Client {
         &self,
         key: &PackageKey,
         detail: PackumentDetail,
-    ) -> Result<Result<NormalizedPackument, NormalizeError>, FetchError> {
+    ) -> Result<Result<PackageMetadata, NormalizeError>, FetchError> {
         let accept = match detail {
             PackumentDetail::Abbreviated => ABBREVIATED_ACCEPT,
             PackumentDetail::Full => FULL_ACCEPT,
@@ -958,7 +926,7 @@ mod tests {
         std::fs::read(format!("{path}{name}")).expect("fixture is missing")
     }
 
-    fn normalize(name: &str, detail: PackumentDetail) -> NormalizedPackument {
+    fn normalize(name: &str, detail: PackumentDetail) -> PackageMetadata {
         normalize_packument(&fixture(name), detail).expect("fixture should normalise")
     }
 
@@ -1014,7 +982,7 @@ mod tests {
 
     /// Nothing may be dropped quietly. A version the normaliser cannot read has to be
     /// visible, because a version that disappears is a version no policy gates.
-    fn assert_nothing_skipped(p: &NormalizedPackument) {
+    fn assert_nothing_skipped(p: &PackageMetadata) {
         assert!(
             p.skipped.is_empty(),
             "unexpectedly skipped: {:?}",

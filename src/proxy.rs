@@ -60,10 +60,10 @@ use crate::http::{
 use crate::identity::{Ecosystem, PackageKey};
 use crate::integrity::{Sri, Verifier};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
-use crate::npm::{self, NormalizeError, NormalizedPackument};
+use crate::npm::{self, NormalizeError};
 use crate::origin::{Disposition, OriginPolicy, ReachableOrigins};
 use crate::policy::{Policy, enforce, facts};
-use crate::record::{PackageRecord, PackumentDetail};
+use crate::record::{PackageMetadata, PackageRecord, PackumentDetail};
 use crate::refusal::RefusalStatus;
 use crate::route::RequestTarget;
 use crate::store::{Lookup, RecordStore};
@@ -175,7 +175,7 @@ enum Document {
 /// What reading a packument body produced.
 #[derive(Debug)]
 pub enum PackumentOutcome {
-    Normalized(Box<NormalizedPackument>),
+    Normalized(Box<PackageMetadata>),
     /// The body could not be decoded: an encoding we do not handle, a corrupt stream, or
     /// output past the limit.
     Undecodable(DecodeError),
@@ -1435,7 +1435,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     };
 
     // Nothing to normalise when decoding failed; it was logged above.
-    let mut normalized: Option<Box<NormalizedPackument>> = None;
+    let mut normalized: Option<Box<PackageMetadata>> = None;
     match decoded.as_deref().map(|d| inspect_decoded(d, detail)) {
         None => {}
         Some(PackumentOutcome::Normalized(p)) => {
@@ -1741,7 +1741,7 @@ async fn intel_for(
 /// way it is on the artifact path, so a configured `cooldown_days` does not empty the
 /// document on a fact the registry never sent.
 fn policy_refused_versions(
-    packument: &NormalizedPackument,
+    packument: &PackageMetadata,
     policy: Option<&Policy>,
     times: Option<&facts::PublishTimes>,
     intel: Option<&PackageIntel>,
@@ -1822,7 +1822,7 @@ fn policy_refused_versions(
 /// What the packument path needs to decide what to send back.
 struct Rewrite<'a> {
     decoded: &'a [u8],
-    packument: &'a NormalizedPackument,
+    packument: &'a PackageMetadata,
     /// Where artifact URLs are pointed, when they are pointed anywhere.
     base: Option<&'a str>,
     origins: &'a OriginPolicy,
