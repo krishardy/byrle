@@ -205,10 +205,19 @@ impl LoadedSnapshot {
     /// `malware` too because `known_malware` is the one check with no exception, and without a
     /// `malware` stream it never fires. Decided 2026-09-15.
     pub fn gaps(&self) -> Vec<crate::intel::Gap> {
+        self.gaps_in(&crate::intel::served())
+    }
+
+    /// [`Self::gaps`] for one ecosystem. Empty means a stream in this snapshot can both
+    /// originate a finding and report malware for it.
+    pub fn uncovered(&self, ecosystem: &str) -> Vec<crate::intel::Gap> {
+        self.gaps_in(&[ecosystem])
+    }
+
+    fn gaps_in(&self, ecosystems: &[&str]) -> Vec<crate::intel::Gap> {
         let capabilities = crate::intel::capabilities_of(&self.streams);
-        let served = crate::intel::served();
-        let mut gaps = capabilities.gaps(&served);
-        gaps.extend(capabilities.uncovered_by(&served, crate::intel::Capability::Malware));
+        let mut gaps = capabilities.gaps(ecosystems);
+        gaps.extend(capabilities.uncovered_by(ecosystems, crate::intel::Capability::Malware));
         gaps
     }
 }
@@ -239,13 +248,80 @@ pub trait Intel: Send + Sync {
     -> Lookup<'a, Option<PackageIntel>>;
 }
 
+/// Why a command has no intel to judge a package with.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NoIntel {
+    /// The snapshot has no stream providing `match` or `malware` for the package's
+    /// ecosystem. The other packages can still be judged.
+    Uncovered(String),
+    /// The store errored, holds no snapshot, or was replaced while it was read.
+    Failed(String),
+}
+
+impl std::fmt::Display for NoIntel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Uncovered(why) | Self::Failed(why) => f.write_str(why),
+        }
+    }
+}
+
+/// What `store` knows about one package, for `waharoa explain` and `waharoa policy diff`.
+///
+/// `Ok(None)` is no store configured. A store that errors or holds no snapshot is an error,
+/// so a command cannot print a verdict reached without intel it was told to use.
+///
+/// With `streams_recorded`, the snapshot's streams have to cover the package's ecosystem, as
+/// the proxy requires. A kept snapshot records no streams, so its coverage is not checked.
+pub async fn for_command(
+    store: Option<&dyn Intel>,
+    ecosystem: &str,
+    name: &str,
+    streams_recorded: bool,
+) -> Result<Option<PackageIntel>, NoIntel> {
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    let found = match store.package(ecosystem, name).await {
+        Ok(Some(found)) => found,
+        Ok(None) => {
+            return Err(NoIntel::Failed(
+                "the intel store holds no snapshot; run `waharoa refresh`".to_owned(),
+            ));
+        }
+        Err(e) => return Err(NoIntel::Failed(e.to_string())),
+    };
+    if !streams_recorded {
+        return Ok(Some(found));
+    }
+    match store.snapshot().await {
+        Ok(Some(snapshot)) if snapshot.digest == found.snapshot => {
+            let gaps: Vec<String> = snapshot
+                .uncovered(ecosystem)
+                .iter()
+                .map(ToString::to_string)
+                .collect();
+            if gaps.is_empty() {
+                Ok(Some(found))
+            } else {
+                Err(NoIntel::Uncovered(gaps.join("; ")))
+            }
+        }
+        Ok(_) => Err(NoIntel::Failed(
+            "the intel snapshot changed while it was read".to_owned(),
+        )),
+        Err(e) => Err(NoIntel::Failed(e.to_string())),
+    }
+}
+
 /// A store for tests above the storage seam.
 #[cfg(test)]
 pub mod testing {
     use super::*;
 
     /// Answers every question from one fixed reply. `Ok(None)` is a store with nothing
-    /// loaded, and `Err(())` is a store that cannot be reached.
+    /// loaded, and `Err(())` is a store that cannot be reached. Its snapshot records
+    /// `osv/npm`, so npm is covered and PyPI is not.
     pub struct FixedIntel(pub Result<Option<PackageIntel>, ()>);
 
     impl FixedIntel {
@@ -277,7 +353,12 @@ pub mod testing {
                     digest: p.snapshot,
                     taken_at: "2026-09-13T00:00:00Z".to_owned(),
                     sources: Vec::new(),
-                    streams: Vec::new(),
+                    streams: vec![StreamDigest {
+                        stream: crate::intel::refresh::NPM_STREAM.to_owned(),
+                        sha256: "aa".to_owned(),
+                        etag: None,
+                        last_modified: None,
+                    }],
                 }))
             })
         }
@@ -534,6 +615,122 @@ mod tests {
                 "{streams:?}"
             );
         }
+    }
+
+    fn nothing_known(snapshot: &str) -> PackageIntel {
+        PackageIntel {
+            snapshot: snapshot.to_owned(),
+            records: Vec::new(),
+            ranges: Vec::new(),
+            exploitation_loaded: false,
+        }
+    }
+
+    fn fixed(answer: Result<Option<PackageIntel>, ()>) -> testing::FixedIntel {
+        testing::FixedIntel(answer)
+    }
+
+    #[tokio::test]
+    async fn a_command_gets_intel_only_for_a_covered_ecosystem() {
+        let store = fixed(Ok(Some(nothing_known("s1"))));
+        assert_eq!(
+            for_command(None, "npm", "x", true).await,
+            Ok(None),
+            "no store"
+        );
+        assert_eq!(
+            for_command(Some(&store), "npm", "x", true).await,
+            Ok(Some(nothing_known("s1")))
+        );
+        let Err(NoIntel::Uncovered(why)) = for_command(Some(&store), "pypi", "x", true).await
+        else {
+            panic!("pypi has no stream in the test store");
+        };
+        assert!(
+            why.contains("`pypi` is served with no stream providing match"),
+            "{why}"
+        );
+        assert!(
+            why.contains("; `pypi` is served with no stream providing malware"),
+            "{why}"
+        );
+        assert_eq!(NoIntel::Uncovered(why.clone()).to_string(), why);
+    }
+
+    /// A kept snapshot records no streams, so its coverage is not asked.
+    #[tokio::test]
+    async fn a_kept_snapshot_is_not_checked_for_coverage() {
+        let store = fixed(Ok(Some(nothing_known("s1"))));
+        assert_eq!(
+            for_command(Some(&store), "pypi", "x", false).await,
+            Ok(Some(nothing_known("s1")))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_that_cannot_answer_fails_the_command() {
+        let empty = fixed(Ok(None));
+        assert_eq!(
+            for_command(Some(&empty), "npm", "x", true).await,
+            Err(NoIntel::Failed(
+                "the intel store holds no snapshot; run `waharoa refresh`".to_owned()
+            ))
+        );
+        let down = fixed(Err(()));
+        let Err(NoIntel::Failed(why)) = for_command(Some(&down), "npm", "x", true).await else {
+            panic!("a store that errors fails");
+        };
+        assert_eq!(NoIntel::Failed(why.clone()).to_string(), why);
+        assert!(why.starts_with("intel store:"), "{why}");
+    }
+
+    /// Records from one snapshot are not judged against another's streams.
+    #[tokio::test]
+    async fn records_from_a_replaced_snapshot_fail_the_command() {
+        struct Replaced;
+        impl Intel for Replaced {
+            fn lookup<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str) -> Lookup<'a, Vec<Record>> {
+                Box::pin(async move { Ok(Vec::new()) })
+            }
+            fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
+                Box::pin(async move { Ok(Some(recording(&["osv/npm"]))) })
+            }
+            fn package<'a>(&'a self, _: &'a str, _: &'a str) -> Lookup<'a, Option<PackageIntel>> {
+                Box::pin(async move { Ok(Some(nothing_known("s0"))) })
+            }
+        }
+        assert_eq!(
+            for_command(Some(&Replaced), "npm", "x", true).await,
+            Err(NoIntel::Failed(
+                "the intel snapshot changed while it was read".to_owned()
+            ))
+        );
+    }
+
+    /// One ecosystem's gaps are the served gaps for that ecosystem and no other.
+    #[test]
+    fn an_ecosystem_is_uncovered_by_what_it_lacks_and_not_by_another_ecosystem() {
+        let covered = recording(&["cisa/kev", "osv/npm"]);
+        assert_eq!(covered.uncovered("npm"), []);
+        let pypi = covered.uncovered("pypi");
+        assert_eq!(
+            pypi.iter().map(|gap| gap.missing).collect::<Vec<_>>(),
+            [
+                crate::intel::Capability::Match,
+                crate::intel::Capability::Malware
+            ]
+        );
+        assert!(pypi.iter().all(|gap| gap.ecosystem == "pypi"));
+        let github_only = recording(&["github/npm"]);
+        assert_eq!(
+            github_only
+                .uncovered("npm")
+                .iter()
+                .map(|gap| gap.missing)
+                .collect::<Vec<_>>(),
+            [crate::intel::Capability::Malware],
+            "a match stream without malware still leaves known_malware unable to fire"
+        );
     }
 
     #[test]

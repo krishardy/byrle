@@ -1103,6 +1103,17 @@ mod tests {
         assert!(findings[0].fix.is_some());
     }
 
+    const MATCH: (&str, &str) = ("match", "originate a finding for it");
+    const MALWARE: (&str, &str) = ("malware", "report malware for it");
+
+    /// How one gap reads in a finding.
+    fn gap(ecosystem: &str, (capability, effect): (&str, &str)) -> String {
+        format!(
+            "`{ecosystem}` is served with no stream providing {capability}, so a policy \
+             answers 503 for its packages. Nothing can {effect}"
+        )
+    }
+
     fn readiness(intel: IntelState) -> Readiness {
         Readiness {
             ready: matches!(intel, IntelState::Loaded | IntelState::NotConsulted),
@@ -1134,12 +1145,14 @@ mod tests {
         assert_eq!(finding.severity, Severity::Warn);
         assert_eq!(
             finding.detail,
-            "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but `npm` is \
-             served with no stream providing match. Nothing can originate a finding for it; \
-             `pypi` is served with no stream providing match. Nothing can originate a finding \
-             for it; `npm` is served with no stream providing malware. Nothing can report \
-             malware for it; `pypi` is served with no stream providing malware. Nothing can \
-             report malware for it"
+            format!(
+                "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but {}; {}; \
+                 {}; {}",
+                gap("npm", MATCH),
+                gap("pypi", MATCH),
+                gap("npm", MALWARE),
+                gap("pypi", MALWARE),
+            )
         );
         assert!(finding.fix.is_some());
 
@@ -1183,9 +1196,11 @@ mod tests {
         assert_eq!(finding.severity, Severity::Warn);
         assert_eq!(
             finding.detail,
-            "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but `pypi` is \
-             served with no stream providing match. Nothing can originate a finding for it; \
-             `pypi` is served with no stream providing malware. Nothing can report malware for it"
+            format!(
+                "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but {}; {}",
+                gap("pypi", MATCH),
+                gap("pypi", MALWARE),
+            )
         );
     }
 

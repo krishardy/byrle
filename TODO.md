@@ -305,6 +305,12 @@ That is the failure mode every item below should be brought to.
       Fixing the streams is the larger half; making an unserved ecosystem fail closed
       rather than empty is the half that matters first.
 
+      - [x] Fail closed. A package whose ecosystem has no `match` or no `malware` stream in
+            the snapshot is answered 503 and no decision is written.
+            [uncovered-ecosystem-fails-closed](docs/engineering_decisions/uncovered-ecosystem-fails-closed.md).
+      - [ ] Load PyPI's streams: step 4 below. Until then PyPI files are refused under a
+            policy with a store.
+
 - [x] **`Ecosystem::ALL` is still `[Npm]`, so nothing reports the gap above.**
       Closed by step 3 below: `Ecosystem::ALL` is gone and `intel::served` reads
       `ecosystem::TABLE`. `doctor` and the startup log now report
@@ -373,6 +379,16 @@ That is the failure mode every item below should be brought to.
       `cargo doc` has four unresolved links to `crate::npm::rewrite_artifact_origins` and
       `crate::npm::PackageMetadata::bypassing_origins`, left behind when those moved to
       `origin` and `record`. Nothing gates rustdoc warnings, which is why they survived.
+
+- [ ] **`waharoa refresh` has no timeout, so a stalled download blocks it indefinitely.**
+      The client at `main.rs` `run_refresh` is built with a user agent and nothing else.
+      On 2026-09-17 a refresh sat for 12 minutes with its TLS connection established,
+      nothing queued and `rchar` unchanged over 10 s. `curl` fetched the same
+      215,141,389-byte `npm/all.zip` in 9 s at the same time. A read timeout on each chunk,
+      rather than one on the whole body, keeps a slow 215 MB download working.
+      The attempt after it failed with `reading .../npm/all.zip: error decoding response
+      body` and loaded nothing, because `osv/npm` is `Required`. A retry of the body fetch
+      would let a transient read error pass.
 
 ### Structure
 
