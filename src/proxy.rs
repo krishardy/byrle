@@ -50,13 +50,13 @@ use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
 use crate::ecosystem::PublishTimeSource;
-use crate::ecosystem::npm::{self, NormalizeError};
+use crate::ecosystem::npm;
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_VERIFIED,
 };
 use crate::http::{
-    DecodeError, RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_conditional,
+    RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_conditional,
     is_hop_by_hop, mark_etag, unmark_if_none_match,
 };
 use crate::identity::{Ecosystem, PackageKey};
@@ -158,41 +158,6 @@ pub struct Health {
     pub records_held: usize,
     /// Artifacts fetched and verified since the proxy started. See [`crate::verified`].
     pub artifacts_verified: usize,
-}
-
-/// What reading a packument body produced.
-#[derive(Debug)]
-pub enum PackumentOutcome {
-    Normalized(Box<PackageMetadata>),
-    /// The body could not be decoded: an encoding we do not handle, a corrupt stream, or
-    /// output past the limit.
-    Undecodable(DecodeError),
-    /// The body decoded but is not a shape we model. Our gap, not an upstream outage.
-    Unreadable(NormalizeError),
-}
-
-/// Decode a packument body and normalise it.
-///
-/// Separate from the handler because it is the part worth testing directly: the handler
-/// around it only decides what to forward.
-pub fn inspect_packument(
-    body: &[u8],
-    content_encoding: Option<&str>,
-    detail: PackumentDetail,
-    limit: usize,
-) -> PackumentOutcome {
-    match decode_for_parsing(body, content_encoding, limit) {
-        Ok(decoded) => inspect_decoded(&decoded, detail),
-        Err(e) => PackumentOutcome::Undecodable(e),
-    }
-}
-
-/// Normalise an already decoded body.
-fn inspect_decoded(decoded: &[u8], detail: PackumentDetail) -> PackumentOutcome {
-    match npm::normalize_packument(decoded, detail) {
-        Ok(p) => PackumentOutcome::Normalized(Box::new(p)),
-        Err(e) => PackumentOutcome::Unreadable(e),
-    }
 }
 
 #[derive(Clone)]
@@ -1514,9 +1479,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     // Nothing to normalise when decoding failed; it was logged above.
     let mut normalized: Option<Box<PackageMetadata>> = None;
-    match decoded.as_deref().map(|d| inspect_decoded(d, detail)) {
+    match decoded.as_deref().map(|d| npm::inspect_decoded(d, detail)) {
         None => {}
-        Some(PackumentOutcome::Normalized(p)) => {
+        Some(npm::PackumentOutcome::Normalized(p)) => {
             // Reported by `rewrite_packument` below, which is where it is acted on.
             let (allowed_direct, refused) = p.unserved_origins(&proxy.origins);
             let (held_packages, held_records) = {
@@ -1544,10 +1509,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             );
             normalized = Some(p);
         }
-        Some(PackumentOutcome::Unreadable(e)) => {
+        Some(npm::PackumentOutcome::Unreadable(e)) => {
             warn!(path = %path_and_query, error = %e, "UNINSPECTED: packument did not normalize")
         }
-        Some(PackumentOutcome::Undecodable(_)) => {}
+        Some(npm::PackumentOutcome::Undecodable(_)) => {}
     }
 
     // The rewrite. Every client in the npm ecosystem has to fetch artifacts through the
@@ -2059,10 +2024,6 @@ mod tests {
         e.finish().unwrap()
     }
 
-    fn key(name: &str) -> PackageKey {
-        PackageKey::from_registry_name(Ecosystem::Npm, name).unwrap()
-    }
-
     /// Everything a fake upstream saw, so a test can assert on the request the proxy
     /// made rather than only on the response it returned.
     #[derive(Default)]
@@ -2143,51 +2104,6 @@ mod tests {
             Proxy::new(reqwest::Client::new(), upstream.clone()).with_upstream_pypi(upstream);
         let base = serve(proxy.router()).await;
         (base, seen)
-    }
-
-    // -----------------------------------------------------------------------
-    // inspect_packument, the part the handler only decides what to do with
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn inspect_normalises_identity_and_gzip_bodies_alike() {
-        let body = fixture("lodash-4.17.21.abbrev.json");
-        for (encoding, bytes) in [(None, body.clone()), (Some("gzip"), gzip(&body))] {
-            let outcome = inspect_packument(
-                &bytes,
-                encoding,
-                PackumentDetail::Abbreviated,
-                DEFAULT_MAX_PACKUMENT_BYTES,
-            );
-            let PackumentOutcome::Normalized(p) = outcome else {
-                panic!("{encoding:?} should normalise, got {outcome:?}");
-            };
-            assert_eq!(p.key, key("lodash"));
-            assert_eq!(p.records.len(), 1);
-        }
-    }
-
-    /// The three failure modes stay apart: a body we cannot decode, a body we cannot
-    /// model, and a body past the limit are different problems with different fixes.
-    #[test]
-    fn inspect_distinguishes_its_failure_modes() {
-        assert!(matches!(
-            inspect_packument(b"{}", Some("br"), PackumentDetail::Full, 1024),
-            PackumentOutcome::Undecodable(DecodeError::UnsupportedEncoding(_))
-        ));
-        assert!(matches!(
-            inspect_packument(b"<html>", None, PackumentDetail::Full, 1024),
-            PackumentOutcome::Unreadable(_)
-        ));
-        assert!(matches!(
-            inspect_packument(
-                &gzip(&vec![b'A'; 5000]),
-                Some("gzip"),
-                PackumentDetail::Full,
-                100
-            ),
-            PackumentOutcome::Undecodable(DecodeError::TooLarge(100))
-        ));
     }
 
     /// An error page carries a status, not a document. A registry that answers 404 with
