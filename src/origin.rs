@@ -6,7 +6,9 @@
 //! tarballs from one host and PyPI serves its index from `pypi.org` and its files from
 //! `files.pythonhosted.org`, so the set is per deployment and never per ecosystem.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+
+use crate::record::PackageMetadata;
 use std::fmt;
 
 /// The origins whose artifacts the proxy serves.
@@ -446,6 +448,54 @@ pub(crate) fn reachable_path(url: &str, reachable: &ReachableOrigins) -> Option<
     })
 }
 
+impl PackageMetadata {
+    /// Artifact origins this document publishes that the proxy does not serve, split by
+    /// whether the operator has allowed them.
+    ///
+    /// Both maps count versions. The allowed one has to stay visible: it is an accepted
+    /// gap, and an accepted gap that stops being reported outlives the reason it was
+    /// added.
+    pub fn unserved_origins(
+        &self,
+        policy: &OriginPolicy,
+    ) -> (BTreeMap<String, usize>, BTreeMap<String, usize>) {
+        let mut allowed = BTreeMap::new();
+        let mut refused = BTreeMap::new();
+        for record in &self.records {
+            // A version the registry named no file for has no origin to be served from.
+            let Some(artifact) = record.artifact() else {
+                continue;
+            };
+            match policy.disposition(&artifact.url) {
+                Disposition::Served => {}
+                Disposition::AllowedDirect(origin) => *allowed.entry(origin).or_insert(0) += 1,
+                Disposition::Refused(origin) => *refused.entry(origin).or_insert(0) += 1,
+            }
+        }
+        (allowed, refused)
+    }
+}
+
+impl PackageMetadata {
+    /// Artifact origins in this document that the proxy does not front, with how many
+    /// versions each accounts for. Empty in the normal case.
+    ///
+    /// A non-empty result means the client will fetch those artifacts directly, so
+    /// nothing about them is observed: not the digest check, not the policy engine.
+    pub fn bypassing_origins(&self, reachable: &ReachableOrigins) -> BTreeMap<String, usize> {
+        let mut origins = BTreeMap::new();
+        for record in &self.records {
+            let Some(artifact) = record.artifact() else {
+                continue;
+            };
+            if let Some(origin) = bypassing_origin(&artifact.url, reachable) {
+                *origins.entry(origin).or_insert(0) += 1;
+            }
+        }
+        origins
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -673,5 +723,83 @@ mod tests {
             bypassing_origin("/relative/path.tgz", &reachable(&[])),
             None
         );
+    }
+
+    /// [`PackageMetadata::unserved_origins`] and [`PackageMetadata::bypassing_origins`]
+    /// over whole documents. npm's normaliser builds the input because it is the shortest
+    /// route to a real one; nothing in the code under test names an ecosystem.
+    mod documents {
+        use super::*;
+        use crate::ecosystem::npm::{normalize_packument, normalized};
+        use crate::record::PackumentDetail;
+
+        const UPSTREAM: &str = "https://registry.npmjs.org";
+
+        fn reachable(additional: &[&str]) -> ReachableOrigins {
+            ReachableOrigins::new([UPSTREAM], additional.iter().copied()).expect("valid origins")
+        }
+
+        /// A CDN in front of a private registry is the case this exists for.
+        #[test]
+        fn an_additional_origin_makes_its_artifacts_reachable() {
+            let url = "https://cdn.corp.example/w/-/w-1.0.0.tgz";
+            assert_eq!(
+                bypassing_origin(url, &reachable(&[])),
+                Some("https://cdn.corp.example".to_owned()),
+                "not configured, so the client fetches it directly"
+            );
+            assert_eq!(
+                bypassing_origin(url, &reachable(&["https://cdn.corp.example"])),
+                None,
+                "configured, so the proxy serves it"
+            );
+        }
+
+        /// Rewriting and the offsite report read the same set, so an origin cannot be
+        /// rewritten and reported as bypassing at the same time.
+        #[test]
+        fn rewriting_and_the_offsite_report_agree() {
+            let body = br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
+                "tarball":"https://cdn.corp.example/w/-/w-1.0.0.tgz"}}}}"#;
+            let p = normalize_packument(body, PackumentDetail::Abbreviated).unwrap();
+
+            for (set, expect_rewritten, expect_offsite) in [
+                (reachable(&[]), 0, 1),
+                (reachable(&["https://cdn.corp.example"]), 1, 0),
+            ] {
+                let artifacts: Vec<&str> = p
+                    .records
+                    .iter()
+                    .map(|r| r.artifact().expect("one file").url.as_str())
+                    .collect();
+                let out = rewrite_artifact_origins(body, artifacts, &set, "http://127.0.0.1:8080")
+                    .expect("should rewrite");
+                assert_eq!(out.rewritten, expect_rewritten);
+                assert_eq!(out.left_alone, expect_offsite);
+                assert_eq!(p.bypassing_origins(&set).len(), expect_offsite);
+            }
+        }
+
+        /// The per-document view, which is what the proxy logs.
+        #[test]
+        fn a_packument_reports_its_offsite_origins_with_counts() {
+            let body = br#"{"name":"widget","versions":{
+                "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}},
+                "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://evil.example/widget-1.0.1.tgz"}},
+                "1.0.2":{"version":"1.0.2","dist":{"tarball":"https://evil.example/widget-1.0.2.tgz"}},
+                "1.0.3":{"version":"1.0.3","dist":{"tarball":"https://other.example/widget-1.0.3.tgz"}}}}"#;
+            let p = normalize_packument(body, PackumentDetail::Abbreviated).unwrap();
+
+            let origins = p.bypassing_origins(&reachable(&[]));
+            assert_eq!(origins.len(), 2);
+            assert_eq!(origins.get("https://evil.example"), Some(&2));
+            assert_eq!(origins.get("https://other.example"), Some(&1));
+        }
+
+        #[test]
+        fn an_ordinary_packument_reports_nothing() {
+            let p = normalized("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
+            assert!(p.bypassing_origins(&reachable(&[])).is_empty());
+        }
     }
 }

@@ -88,7 +88,9 @@ pub const NPM: Registry = Registry {
 
 pub const PYPI: Registry = Registry {
     ecosystem: Ecosystem::PyPI,
-    // The index and the files it points at are separate hosts, so both are claimed.
+    // PEP 503 puts a project's index under `/simple/`. `/packages/` is where PyPI serves
+    // its files, and the proxy keeps that path so a rewritten file URL round-trips: the
+    // hash segments the index published are what locate the file upstream.
     prefixes: &["/simple/", "/packages/"],
     always_reachable: &[pypi::INDEX, pypi::FILES],
     classify_path: pypi::classify_path,

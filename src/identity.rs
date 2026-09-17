@@ -47,8 +47,8 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ecosystem {
     Npm,
-    /// PyPI. `src/pypi.rs` reads its simple index; the proxy does not route it yet, so it
-    /// is not in [`Ecosystem::ALL`].
+    /// PyPI. `crate::ecosystem::pypi` reads its simple index. Not yet in
+    /// [`Ecosystem::ALL`], which TODO.md records.
     PyPI,
 }
 

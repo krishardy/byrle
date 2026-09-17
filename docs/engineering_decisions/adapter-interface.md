@@ -27,6 +27,33 @@ is answered.
 engine reads `PackageRecord` and has never seen a packument or an index: nothing under
 `src/policy/` changed in this stage.
 
+## What each ecosystem directory holds
+
+`src/ecosystem/npm/` and `src/ecosystem/pypi/` have the same files, so the same question is
+in the same place for both:
+
+| File | npm | PyPI |
+|---|---|---|
+| `paths.rs` | request paths, and which packument a response is | request paths, PEP 503 names, PEP 427 filenames |
+| `wire.rs` | the packument's serde targets | the index's serde targets, plus `Project`, the cleaned form |
+| `normalize.rs` | packument to `PackageMetadata` | `Project` to `PackageMetadata` |
+| `transport.rs` | `Client`, fetching a packument | `Client`, fetching an index |
+| `error.rs` | `NormalizeError`, `FetchError` | `PypiError`, `FetchError` |
+
+npm has a seventh, `rewrite.rs`: removing refused versions from a packument and pointing
+the rest at the proxy. PyPI has no counterpart, and no empty file standing in for one.
+`proxy::handle` returns before any filtering for a simple index, because filtering one is
+range resolution rather than a refusal a client can act on.
+
+`wire.rs` is the one file whose contents differ in kind. npm's holds serde targets only,
+because a packument is already version-keyed. PyPI's also holds `Project`, because a simple
+index is file-keyed and `PackageMetadata` is not: `requests` lists 244 files for 160
+versions, and which file stands for a version is a question npm never asks.
+
+`PackageMetadata::unserved_origins` and `bypassing_origins` were in npm's module and use
+nothing of npm's. They are now in `src/origin.rs`. Their tests came with them and build
+their input with npm's normaliser, which is a test dependency and not a production one.
+
 ## What the table answers
 
 | Field | Question | npm | PyPI |
