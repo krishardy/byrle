@@ -18,6 +18,7 @@ use waharoa::explain;
 
 use waharoa::intel::fetch;
 use waharoa::intel::postgres;
+use waharoa::intel::refresh;
 use waharoa::policy::{check, diff, today};
 use waharoa::startup;
 
@@ -33,27 +34,6 @@ fn or_exit_with<T>(result: Result<T, env::EnvError>, code: u8) -> T {
         eprintln!("waharoa: {e}");
         std::process::exit(i32::from(code))
     })
-}
-
-/// Ask the proxy about itself at `path`. `None` when nothing answers there with the JSON
-/// expected, which is itself the finding.
-///
-/// The status is not checked: readiness answers with its JSON on a 503 too, and anything
-/// that is not a waharoa does not answer with this JSON.
-///
-/// Async, not `reqwest::blocking`: doctor runs inside the same tokio runtime as
-/// everything else, and a blocking client builds a second runtime, which panics when it
-/// is dropped in an async context.
-///
-/// The timeout is short because doctor is a command someone is waiting on, and a proxy
-/// that takes seconds to say hello is not one that is working.
-async fn fetch_own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Option<T> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .build()
-        .ok()?;
-    let response = client.get(format!("{proxy}{path}")).send().await.ok()?;
-    serde_json::from_str(&response.text().await.ok()?).ok()
 }
 
 /// `waharoa policy check <path> [--as-of YYYY-MM-DD] [--strict]`.
@@ -109,104 +89,15 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
 }
 
 async fn run_doctor() -> std::process::ExitCode {
-    let environment = env::process();
-    let listen = or_exit(environment.listen());
-    let public = or_exit(environment.public_url());
-    let proxy = doctor::expected_proxy_url(public.as_deref(), &listen);
-
-    println!("waharoa doctor");
-    println!("  proxy expected at {proxy}");
-    println!(
-        "  checking from {}",
-        std::env::current_dir().unwrap_or_default().display()
-    );
-    println!();
-
-    let mut findings = Vec::new();
-
-    // Whether the thing at the other end is there at all, and what it says it does.
-    // Everything after this reads client configuration, which can be perfect while
-    // nothing is listening.
-    let health: Option<waharoa::proxy::Health> =
-        fetch_own(&proxy, waharoa::proxy::HEALTH_PATH).await;
-    findings.extend(doctor::check_proxy(health.as_ref(), &proxy));
-    // A proxy that responds to the health request can still answer every package request
-    // with 503 while its intel store is empty or down.
-    if health.is_some() {
-        let readiness: Option<waharoa::proxy::Readiness> =
-            fetch_own(&proxy, waharoa::proxy::READY_PATH).await;
-        findings.push(doctor::check_readiness(readiness.as_ref(), &proxy));
-    }
-
-    // The policy the proxy is configured with, judged as `waharoa policy check` judges it.
-    if let Some(path) = or_exit(environment.policy()) {
-        let loaded = check::load(&path, today(), or_exit(environment.expiry_ceiling_days()))
-            .map(|(_, report)| report)
-            .map_err(|e| e.to_string());
-        findings.extend(doctor::check_policy(
-            &path.display().to_string(),
-            loaded.as_ref().map_err(String::as_str),
-        ));
-    }
-
-    for client in doctor::clients() {
-        if let Some(args) = client.registry {
-            findings.push(doctor::check_registry(
-                client,
-                doctor::probe::configured_registry(client, args).as_deref(),
-                &proxy,
-            ));
+    let checked = match doctor::run(&env::process()).await {
+        Ok(checked) => checked,
+        Err(e) => {
+            eprintln!("waharoa: {e}");
+            return std::process::ExitCode::from(2);
         }
-    }
-
-    // Lockfiles in this directory are the record of what actually happened, as opposed to
-    // what is configured now.
-    let mut recorded = std::collections::BTreeSet::new();
-    for (lockfile, pins) in waharoa::lockfile::pinning() {
-        let Ok(contents) = std::fs::read_to_string(lockfile.name) else {
-            continue;
-        };
-        recorded.extend(doctor::recorded_origins(pins.key, &contents));
-        findings.push(doctor::check_lockfile(
-            lockfile.name,
-            pins,
-            &contents,
-            &proxy,
-        ));
-    }
-    findings.push(doctor::check_public_url(public.as_deref(), &recorded));
-    // Every client caches, and what a warm cache supplies never reaches the proxy. How
-    // much it supplies differs, so each is reported with what was measured for it.
-    for client in doctor::clients() {
-        if std::process::Command::new(client.name)
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            let warm = or_exit(doctor::probe::warm_cache(client, &environment));
-            findings.push(doctor::check_cache(client, warm.as_deref()));
-        }
-    }
-
-    for finding in &findings {
-        println!("{finding}");
-    }
-    println!();
-
-    match doctor::worst(&findings) {
-        doctor::Severity::Ok => {
-            println!("Everything checked is pointing at the proxy.");
-            std::process::ExitCode::SUCCESS
-        }
-        doctor::Severity::Warn => {
-            println!("Installs reach the proxy, with the caveats above.");
-            std::process::ExitCode::SUCCESS
-        }
-        doctor::Severity::Problem => {
-            println!("Some installs are not going through the proxy. See above.");
-            std::process::ExitCode::FAILURE
-        }
-    }
+    };
+    print!("{}", checked.report);
+    std::process::ExitCode::from(checked.code)
 }
 
 /// The intel store a command cannot run without. Exit 2 when [`env::DATABASE_URL`] is unset,
@@ -259,7 +150,6 @@ async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
 async fn run_refresh() -> std::process::ExitCode {
     use waharoa::intel::history::{self, NotLoaded};
     use waharoa::intel::postgres::{PgIntel, Replacement};
-    use waharoa::intel::providers::{datadog, osv};
     use waharoa::intel::{snapshot_dir::SnapshotDir, stream};
 
     /// Append `not_loaded` for a refresh that loaded nothing, and exit 1.
@@ -348,51 +238,23 @@ async fn run_refresh() -> std::process::ExitCode {
         }
     };
 
-    for tally in loaded.iter().filter_map(|l| l.tally.as_ref()) {
-        print!("{tally}");
-    }
-    println!("{:32} {:>8}", "advisories written", written.advisories);
-    println!("{:32} {:>8}", "aliases written", written.aliases);
-    println!("{:32} {:>8}", "affected rows written", written.affected);
-    println!("{:32} {:>8}", "ranges written", written.ranges);
-    println!(
-        "{:32} {:>8}",
-        "exploited CVE ids written", written.exploited
-    );
-    let rows_of = |source: &str| {
-        loaded
-            .iter()
-            .find(|l| l.source == source)
-            .map(|l| l.payload.rows())
-    };
-    if let (Some(osv_rows), Some(datadog_rows)) = (rows_of(osv::SOURCE), rows_of(datadog::SOURCE)) {
-        let disagreements = datadog::disagreements(osv_rows, datadog_rows);
-        for disagreement in &disagreements {
-            println!("{disagreement}");
-        }
-        println!(
-            "{:32} {:>8}",
-            "datadog every version, osv some",
-            disagreements.len()
-        );
-    }
-    println!("snapshot {}", written.snapshot);
-    if let Some(kept) = kept {
-        match kept
+    let kept_report = match &kept {
+        Some(kept) => match kept
             .write_snapshot(&written.manifest)
             .and_then(|path| Ok((path, kept.prune(limit)?)))
         {
-            Ok((path, pruned)) => {
-                println!("{:32} {}", "snapshot file", path.display());
-                println!("{:32} {:>8}", "snapshot files removed", pruned.snapshots);
-                println!("{:32} {:>8}", "rows files removed", pruned.rows);
-            }
+            Ok((path, pruned)) => Some(refresh::Kept { path, pruned }),
             Err(e) => {
                 eprintln!("waharoa refresh: loaded, but the snapshot file is not written: {e}");
                 return std::process::ExitCode::from(1);
             }
-        }
-    }
+        },
+        None => None,
+    };
+    print!(
+        "{}",
+        refresh::report(&loaded, &written, kept_report.as_ref())
+    );
     println!("took {:.1}s", started.elapsed().as_secs_f64());
     if not_loaded.is_empty() {
         std::process::ExitCode::SUCCESS

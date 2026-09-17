@@ -607,6 +607,124 @@ fn join(origins: &[&String]) -> String {
         .join(", ")
 }
 
+/// What `waharoa doctor` prints and exits with.
+#[derive(Debug)]
+pub struct Checked {
+    pub report: String,
+    pub code: u8,
+}
+
+/// Every check, run against this machine and the proxy the environment names.
+///
+/// Reads client configuration, runs each client, reads the lockfiles in the working
+/// directory and asks the proxy about itself. The report is built rather than printed, so
+/// `main` prints it and a test can read it.
+pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
+    use std::fmt::Write as _;
+
+    let mut report = String::new();
+    let listen = environment.listen()?;
+    let public = environment.public_url()?;
+    let proxy = expected_proxy_url(public.as_deref(), &listen);
+
+    let _ = writeln!(report, "waharoa doctor");
+    let _ = writeln!(report, "  proxy expected at {proxy}");
+    let _ = writeln!(
+        report,
+        "  checking from {}",
+        std::env::current_dir().unwrap_or_default().display()
+    );
+    report.push('\n');
+
+    let mut findings = Vec::new();
+
+    // Whether the thing at the other end is there at all, and what it says it does.
+    // Everything after this reads client configuration, which can be perfect while
+    // nothing is listening.
+    let health: Option<crate::proxy::Health> = probe::own(&proxy, crate::proxy::HEALTH_PATH).await;
+    findings.extend(check_proxy(health.as_ref(), &proxy));
+    // A proxy that responds to the health request can still answer every package request
+    // with 503 while its intel store is empty or down.
+    if health.is_some() {
+        let readiness: Option<crate::proxy::Readiness> =
+            probe::own(&proxy, crate::proxy::READY_PATH).await;
+        findings.push(check_readiness(readiness.as_ref(), &proxy));
+    }
+
+    // The policy the proxy is configured with, judged as `waharoa policy check` judges it.
+    if let Some(path) = environment.policy()? {
+        let loaded = crate::policy::check::load(
+            &path,
+            crate::policy::today(),
+            environment.expiry_ceiling_days()?,
+        )
+        .map(|(_, report)| report)
+        .map_err(|e| e.to_string());
+        findings.extend(check_policy(
+            &path.display().to_string(),
+            loaded.as_ref().map_err(String::as_str),
+        ));
+    }
+
+    for client in clients() {
+        if let Some(args) = client.registry {
+            findings.push(check_registry(
+                client,
+                probe::configured_registry(client, args).as_deref(),
+                &proxy,
+            ));
+        }
+    }
+
+    // Lockfiles in this directory are the record of what actually happened, as opposed to
+    // what is configured now.
+    let mut recorded = std::collections::BTreeSet::new();
+    for (lockfile, pins) in crate::lockfile::pinning() {
+        let Ok(contents) = std::fs::read_to_string(lockfile.name) else {
+            continue;
+        };
+        recorded.extend(recorded_origins(pins.key, &contents));
+        findings.push(check_lockfile(lockfile.name, pins, &contents, &proxy));
+    }
+    findings.push(check_public_url(public.as_deref(), &recorded));
+    // Every client caches, and what a warm cache supplies never reaches the proxy. How
+    // much it supplies differs, so each is reported with what was measured for it.
+    for client in clients() {
+        if std::process::Command::new(client.name)
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
+            let warm = probe::warm_cache(client, environment)?;
+            findings.push(check_cache(client, warm.as_deref()));
+        }
+    }
+
+    for finding in &findings {
+        let _ = writeln!(report, "{finding}");
+    }
+    report.push('\n');
+
+    let code = match worst(&findings) {
+        Severity::Ok => {
+            let _ = writeln!(report, "Everything checked is pointing at the proxy.");
+            0
+        }
+        Severity::Warn => {
+            let _ = writeln!(report, "Installs reach the proxy, with the caveats above.");
+            0
+        }
+        Severity::Problem => {
+            let _ = writeln!(
+                report,
+                "Some installs are not going through the proxy. See above."
+            );
+            1
+        }
+    };
+    Ok(Checked { report, code })
+}
+
 /// Asking an installed client about itself. The one part of `doctor` that runs programs.
 pub mod probe {
     use super::{CacheLocation, Client};
@@ -657,6 +775,27 @@ pub mod probe {
         })
     }
 
+    /// Ask the proxy about itself at `path`. `None` when nothing answers there with the JSON
+    /// expected, which is itself the finding.
+    ///
+    /// The status is not checked: readiness answers with its JSON on a 503 too, and anything
+    /// that is not a waharoa does not answer with this JSON.
+    ///
+    /// Async, not `reqwest::blocking`: doctor runs inside the same tokio runtime as
+    /// everything else, and a blocking client builds a second runtime, which panics when it
+    /// is dropped in an async context.
+    ///
+    /// The timeout is short because doctor is a command someone is waiting on, and a proxy
+    /// that takes seconds to say hello is not one that is working.
+    pub async fn own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Option<T> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .ok()?;
+        let response = client.get(format!("{proxy}{path}")).send().await.ok()?;
+        serde_json::from_str(&response.text().await.ok()?).ok()
+    }
+
     /// The client's cache when it holds something, `Ok(None)` when it is empty or absent.
     pub fn warm_cache(client: &Client, environment: &Process) -> Result<Option<PathBuf>, EnvError> {
         Ok(cache_dir(client, environment)?
@@ -678,6 +817,27 @@ pub mod probe {
                 bypass: CacheBypass::Complete,
                 clear_cache: "",
             }
+        }
+
+        /// The proxy's own JSON, or `None` when nothing there answers with it.
+        #[tokio::test]
+        async fn the_proxy_is_asked_about_itself() {
+            use crate::test_support::{Answer, closing_server, scripted};
+
+            let serving = scripted(vec![Answer::body(r#"{"ready":true}"#)]).await;
+            let answer: Option<serde_json::Value> =
+                own(&format!("http://{serving}"), "/-/waharoa/ready").await;
+            assert_eq!(answer, Some(serde_json::json!({"ready": true})));
+
+            let text = scripted(vec![Answer::body("not json")]).await;
+            let not_json: Option<serde_json::Value> =
+                own(&format!("http://{text}"), "/-/waharoa/ready").await;
+            assert_eq!(not_json, None, "anything that is not a waharoa");
+
+            let silent = closing_server().await;
+            let nothing: Option<serde_json::Value> =
+                own(&format!("http://{silent}"), "/-/waharoa/ready").await;
+            assert_eq!(nothing, None, "nothing is listening for this");
         }
 
         #[test]
