@@ -6,8 +6,10 @@
 //! Progress and retry lines go to `notice` rather than to stdout, so `waharoa refresh`
 //! keeps its own output and a test can read what would have been printed.
 
+use super::history::NotLoaded;
+use super::providers::osv::bundle::Tally;
 use super::refresh::{ATTEMPTS, FetchFailure, RETRY_WAIT, StreamDigest, retried, sha256_hex};
-use super::stream::{Stream, Transport};
+use super::stream::{Payload, Requirement, Stream, Transport};
 
 /// Where a fetch's progress lines go.
 pub type Notice<'a> = &'a dyn Fn(&str);
@@ -120,7 +122,84 @@ pub async fn bundle(
     })
 }
 
-/// A request error, as the refresh reports it: transient unless the host chose the status.
+/// One stream's bundle, read and waiting to be encoded.
+#[derive(Debug)]
+pub struct Loaded {
+    pub source: &'static str,
+    pub payload: Payload,
+    pub tally: Option<Tally>,
+    /// The bundle it was read from, as a snapshot records it.
+    pub streams: [StreamDigest; 1],
+}
+
+/// What reading every stream produced.
+#[derive(Debug, Default)]
+pub struct Read {
+    pub loaded: Vec<Loaded>,
+    pub not_loaded: Vec<NotLoaded>,
+    /// Why nothing is written: a [`Requirement::Required`] stream did not load. The streams
+    /// after it are not fetched.
+    pub stopped: Option<String>,
+}
+
+/// Fetch and parse each stream in `streams`, in order.
+///
+/// A stream that does not load is one [`NotLoaded`]; whether the rest still load is its
+/// [`Requirement`]. One stream's bytes are freed before the next is fetched.
+pub async fn read_streams(
+    http: &reqwest::Client,
+    streams: &'static [Stream],
+    github_token: Option<&str>,
+    notice: Notice<'_>,
+) -> Read {
+    let mut read = Read::default();
+    for declared in streams {
+        let got = stream_bundle(http, declared, github_token, notice).await;
+        let parsed = match got {
+            Ok(fetched) => {
+                let bundle = fetched.stream(declared.stream);
+                match (declared.parse)(&fetched.bytes) {
+                    Ok(parsed) => Ok((parsed, bundle)),
+                    Err(error) => Err((Some(bundle), error)),
+                }
+            }
+            Err(error) => Err((None, error)),
+        };
+        let (parsed, bundle) = match parsed {
+            Ok(parsed) => parsed,
+            Err((bundle, error)) => {
+                read.not_loaded.push(NotLoaded {
+                    source: declared.source.to_owned(),
+                    stream: declared.stream.to_owned(),
+                    bundle,
+                    error: error.clone(),
+                });
+                match declared.requirement {
+                    Requirement::Required => {
+                        read.stopped = Some(error);
+                        return read;
+                    }
+                    Requirement::Optional => {
+                        notice(&format!(
+                            "{} is not loaded, and its last load stays: {error}",
+                            declared.stream
+                        ));
+                        continue;
+                    }
+                }
+            }
+        };
+        read.loaded.push(Loaded {
+            source: declared.source,
+            payload: parsed.payload,
+            tally: parsed.tally,
+            streams: [bundle],
+        });
+    }
+    read
+}
+
+/// A request error, as the refresh reports it/// A request error, as the refresh reports it: transient unless the host chose the status.
 ///
 /// A 404 or a 403 is the same on every attempt. A refused connection, a read that timed out
 /// and a body that stopped mid-stream are what another attempt can get past.
@@ -347,7 +426,133 @@ mod tests {
         assert!(lines[1].ends_with("again in 2s"), "{lines:?}");
     }
 
-    /// GitHub's stream is not read without a token, and that is not retried.
+    /// A table of two streams served by one scripted server, the first `Required`.
+    fn two_streams(required_parses: bool) -> &'static [Stream] {
+        fn ok(_: &[u8]) -> Result<crate::intel::stream::Parsed, String> {
+            Ok(crate::intel::stream::Parsed {
+                payload: crate::intel::stream::Payload::Exploited(Default::default()),
+                tally: None,
+            })
+        }
+        fn unreadable(_: &[u8]) -> Result<crate::intel::stream::Parsed, String> {
+            Err("not a bundle".to_owned())
+        }
+        Box::leak(Box::new([
+            Stream {
+                source: "first",
+                stream: "first/one",
+                requirement: Requirement::Required,
+                parse: if required_parses { ok } else { unreadable },
+                ..crate::intel::stream::ALL[0]
+            },
+            Stream {
+                source: "second",
+                stream: "second/one",
+                requirement: Requirement::Optional,
+                parse: ok,
+                ..crate::intel::stream::ALL[0]
+            },
+        ]))
+    }
+
+    /// Both streams read, in order.
+    #[tokio::test]
+    async fn every_stream_that_reads_is_loaded() {
+        let addr = scripted(vec![Answer::body("{}")]).await;
+        let url: &'static str = Box::leak(format!("http://{addr}/b").into_boxed_str());
+        let streams: Vec<Stream> = two_streams(true)
+            .iter()
+            .map(|declared| Stream { url, ..*declared })
+            .collect();
+        let printed = Printed::default();
+        let read = read_streams(
+            &client(),
+            Box::leak(streams.into_boxed_slice()),
+            None,
+            &printed.notice(),
+        )
+        .await;
+        assert_eq!(
+            read.loaded
+                .iter()
+                .map(|l| (l.source, l.streams[0].stream.as_str()))
+                .collect::<Vec<_>>(),
+            [("first", "first/one"), ("second", "second/one")]
+        );
+        assert!(read.not_loaded.is_empty() && read.stopped.is_none());
+    }
+
+    /// A required stream that does not parse stops the read, and the streams after it are
+    /// not fetched. Its bundle is recorded, because it was fetched.
+    #[tokio::test]
+    async fn a_required_stream_that_does_not_read_stops_everything() {
+        let addr = scripted(vec![Answer::body("{}")]).await;
+        let url: &'static str = Box::leak(format!("http://{addr}/b").into_boxed_str());
+        let streams: Vec<Stream> = two_streams(false)
+            .iter()
+            .map(|declared| Stream { url, ..*declared })
+            .collect();
+        let printed = Printed::default();
+        let read = read_streams(
+            &client(),
+            Box::leak(streams.into_boxed_slice()),
+            None,
+            &printed.notice(),
+        )
+        .await;
+        assert_eq!(read.stopped.as_deref(), Some("not a bundle"));
+        assert!(read.loaded.is_empty());
+        assert_eq!(read.not_loaded.len(), 1);
+        assert_eq!(read.not_loaded[0].stream, "first/one");
+        assert!(
+            read.not_loaded[0].bundle.is_some(),
+            "the bundle was fetched, so it is recorded"
+        );
+        assert_eq!(
+            printed.lines(),
+            [format!("fetching {url}")],
+            "the second stream was not fetched"
+        );
+    }
+
+    /// An optional stream that cannot be fetched leaves the others loading, and says so.
+    #[tokio::test]
+    async fn an_optional_stream_that_cannot_be_fetched_is_skipped() {
+        let (good, bad) = (
+            scripted(vec![Answer::body("{}")]).await,
+            scripted(vec![Answer::Status(500)]).await,
+        );
+        let streams: Vec<Stream> = two_streams(true)
+            .iter()
+            .zip([good, bad])
+            .map(|(declared, addr)| Stream {
+                url: Box::leak(format!("http://{addr}/b").into_boxed_str()),
+                ..*declared
+            })
+            .collect();
+        let printed = Printed::default();
+        let read = read_streams(
+            &client(),
+            Box::leak(streams.into_boxed_slice()),
+            None,
+            &printed.notice(),
+        )
+        .await;
+        assert!(read.stopped.is_none());
+        assert_eq!(read.loaded.len(), 1);
+        assert_eq!(read.not_loaded.len(), 1);
+        assert!(read.not_loaded[0].bundle.is_none(), "nothing was fetched");
+        assert!(
+            printed
+                .lines()
+                .iter()
+                .any(|line| line.starts_with("second/one is not loaded, and its last load stays")),
+            "{:?}",
+            printed.lines()
+        );
+    }
+
+    /// GitHub's stream is not read without a token, and that is not retried.    /// GitHub's stream is not read without a token, and that is not retried.
     #[tokio::test]
     async fn the_github_stream_without_a_token_is_not_fetched() {
         let printed = Printed::default();

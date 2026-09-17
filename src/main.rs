@@ -633,12 +633,9 @@ async fn package_intel(
 /// be fetched or read leaves its previous load in place: the others still load, and the exit
 /// is 1.
 async fn run_refresh() -> std::process::ExitCode {
-    use waharoa::intel::history::NotLoaded;
+    use waharoa::intel::history::{self, NotLoaded};
     use waharoa::intel::postgres::{PgIntel, Replacement};
-    use waharoa::intel::providers::osv::bundle::Tally;
     use waharoa::intel::providers::{datadog, osv};
-    use waharoa::intel::refresh::StreamDigest;
-    use waharoa::intel::stream::{Payload, Requirement};
     use waharoa::intel::{snapshot_dir::SnapshotDir, stream};
 
     /// Append `not_loaded` for a refresh that loaded nothing, and exit 1.
@@ -648,14 +645,6 @@ async fn run_refresh() -> std::process::ExitCode {
             eprintln!("waharoa refresh: the ingestion history is not written: {e}");
         }
         std::process::ExitCode::from(1)
-    }
-
-    /// One stream's bundle, read and waiting to be encoded.
-    struct Loaded {
-        source: &'static str,
-        payload: Payload,
-        tally: Option<Tally>,
-        streams: [StreamDigest; 1],
     }
 
     // Connected before the fetch, so a refresh that could record nothing stops before
@@ -695,52 +684,11 @@ async fn run_refresh() -> std::process::ExitCode {
 
     let github_token = or_exit(env::process().github_token());
 
-    let mut loaded: Vec<Loaded> = Vec::new();
-    let mut not_loaded: Vec<NotLoaded> = Vec::new();
-    for declared in stream::ALL {
-        // `fetched` holds the whole body, and drops at the end of its arm, so one stream's
-        // bytes are freed before the next is fetched.
-        let got = fetch::stream_bundle(&http, declared, github_token.as_deref(), &notice).await;
-        let read = match got {
-            Ok(fetched) => {
-                let bundle = fetched.stream(declared.stream);
-                match (declared.parse)(&fetched.bytes) {
-                    Ok(parsed) => Ok((parsed, bundle)),
-                    Err(error) => Err((Some(bundle), error)),
-                }
-            }
-            Err(error) => Err((None, error)),
-        };
-        let (parsed, bundle) = match read {
-            Ok(read) => read,
-            Err((bundle, error)) => {
-                not_loaded.push(NotLoaded {
-                    source: declared.source.to_owned(),
-                    stream: declared.stream.to_owned(),
-                    bundle,
-                    error: error.clone(),
-                });
-                match declared.requirement {
-                    Requirement::Required => {
-                        eprintln!("waharoa refresh: nothing loaded: {error}");
-                        return nothing_loaded(&intel, &not_loaded).await;
-                    }
-                    Requirement::Optional => {
-                        eprintln!(
-                            "waharoa refresh: {} is not loaded, and its last load stays: {error}",
-                            declared.stream
-                        );
-                        continue;
-                    }
-                }
-            }
-        };
-        loaded.push(Loaded {
-            source: declared.source,
-            payload: parsed.payload,
-            tally: parsed.tally,
-            streams: [bundle],
-        });
+    let read = fetch::read_streams(&http, stream::ALL, github_token.as_deref(), &notice).await;
+    let (loaded, not_loaded) = (read.loaded, read.not_loaded);
+    if let Some(error) = read.stopped {
+        eprintln!("waharoa refresh: nothing loaded: {error}");
+        return nothing_loaded(&intel, &not_loaded).await;
     }
 
     let taken_at = jiff::Timestamp::now().to_string();
@@ -755,23 +703,7 @@ async fn run_refresh() -> std::process::ExitCode {
         })
         .collect();
 
-    // Every stream that was to load, as not loaded for `error`, beside those that already were
-    // not.
-    let none_loaded = |error: String| -> Vec<NotLoaded> {
-        let error = &error;
-        sources
-            .iter()
-            .flat_map(|s| {
-                s.streams.iter().map(move |bundle| NotLoaded {
-                    source: s.encoded.source.clone(),
-                    stream: bundle.stream.clone(),
-                    bundle: Some(bundle.clone()),
-                    error: error.clone(),
-                })
-            })
-            .chain(not_loaded.iter().cloned())
-            .collect()
-    };
+    let none_loaded = |error: String| history::none_loaded(&sources, &not_loaded, &error);
 
     // Written before the load, so a snapshot Postgres records never lacks its rows here. Rows
     // left by a load that then fails are removed by the next prune.

@@ -17,7 +17,31 @@ pub struct NotLoaded {
     pub error: String,
 }
 
-/// One row of `intel_ingestion`.
+/// Every stream a write was to load, as not loaded for `error`, beside those that already
+/// were not.
+///
+/// For a load that failed after the streams were read: the rows are in hand and none of
+/// them reached the store, so the history has to say that about each.
+pub fn none_loaded(
+    sources: &[crate::intel::postgres::Replacement<'_>],
+    already: &[NotLoaded],
+    error: &str,
+) -> Vec<NotLoaded> {
+    sources
+        .iter()
+        .flat_map(|source| {
+            source.streams.iter().map(move |bundle| NotLoaded {
+                source: source.encoded.source.clone(),
+                stream: bundle.stream.clone(),
+                bundle: Some(bundle.clone()),
+                error: error.to_owned(),
+            })
+        })
+        .chain(already.iter().cloned())
+        .collect()
+}
+
+/// One row of `intel_ingestion`./// One row of `intel_ingestion`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Ingestion {
     /// RFC 3339 UTC.
@@ -113,6 +137,53 @@ fn block(entry: &Ingestion) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::intel::load::Encoded;
+    use crate::intel::refresh::StreamDigest;
+
+    fn bundle(stream: &str) -> StreamDigest {
+        StreamDigest {
+            stream: stream.to_owned(),
+            sha256: "aa".to_owned(),
+            etag: None,
+            last_modified: None,
+        }
+    }
+
+    /// A load that failed after the streams were read says so for every stream it held,
+    /// beside the ones that were already not loaded.
+    #[test]
+    fn none_loaded_covers_every_stream_that_was_to_load() {
+        let encoded = Encoded {
+            source: "osv".to_owned(),
+            kind: crate::intel::load::Kind::Advisories,
+            first_table: Vec::new(),
+            bytes: Vec::new(),
+            digest: "sha256:aa".to_owned(),
+        };
+        let streams = [bundle("osv/npm")];
+        let sources = [crate::intel::postgres::Replacement {
+            encoded: &encoded,
+            rows: &[],
+            streams: &streams,
+        }];
+        let already = [NotLoaded {
+            source: "github".to_owned(),
+            stream: "github/npm".to_owned(),
+            bundle: None,
+            error: "no token".to_owned(),
+        }];
+        let all = none_loaded(&sources, &already, "the transaction failed");
+        assert_eq!(
+            all.iter()
+                .map(|n| (n.stream.as_str(), n.error.as_str(), n.bundle.is_some()))
+                .collect::<Vec<_>>(),
+            [
+                ("osv/npm", "the transaction failed", true),
+                ("github/npm", "no token", false)
+            ]
+        );
+    }
 
     #[test]
     fn each_entry_prints_what_it_records_and_whether_it_loaded() {
