@@ -28,7 +28,10 @@
 //! GHSA text is CC-BY-4.0, which owes attribution wherever it is shown. `summary` is stored
 //! and nothing displays it. See `docs/engineering_decisions/advisory-stream-licences.md`.
 
-use super::range::{self, Interval};
+pub mod bundle;
+
+use crate::intel::range;
+use crate::intel::rows::{Affected, Ranged, Rows, band_ceiling};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,47 +39,6 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const SOURCE: &str = "osv";
 
 const NPM: &str = "npm";
-
-/// One OSV record, as the store holds it.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Rows {
-    pub id: String,
-    pub summary: Option<String>,
-    /// RFC 3339, as OSV wrote it.
-    pub modified: Option<String>,
-    pub malware: bool,
-    /// The CVSS base score. From a vector when one parses; otherwise, when the record carries
-    /// no CVSS vector at all, the top of its severity band. `None` when neither gives one.
-    pub cvss: Option<f64>,
-    /// The `database_specific.severity` band `cvss` was read from: `LOW`, `MODERATE`, `HIGH`
-    /// or `CRITICAL`. `None` when a vector gave the score, or nothing did.
-    pub band: Option<String>,
-    /// CVSS vectors in the record that did not parse.
-    pub unread_vectors: usize,
-    pub aliases: BTreeSet<String>,
-    pub affected: BTreeSet<Affected>,
-    pub ranges: BTreeSet<Ranged>,
-    /// npm entries in the record with a range or a whole entry that could not be stored, so
-    /// a record can be partly stored without that reading as fully stored.
-    pub unexpressed: usize,
-}
-
-/// A package version an advisory is against. `version` `None` is every version.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Affected {
-    pub ecosystem: String,
-    pub name: String,
-    pub version: Option<String>,
-}
-
-/// An interval of package versions an advisory is against. Never every version, which is
-/// an [`Affected`] with no version.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Ranged {
-    pub ecosystem: String,
-    pub name: String,
-    pub interval: Interval<String>,
-}
 
 /// Why a record produced no rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,20 +120,6 @@ fn score(severity: &[Severity], band: Option<&str>) -> (Option<f64>, Option<Stri
     match (cvss, band.and_then(|b| Some((b, band_ceiling(b)?)))) {
         (None, Some((band, ceiling))) if unread == 0 => (Some(ceiling), Some(band.to_owned()), 0),
         _ => (cvss, None, unread),
-    }
-}
-
-/// The highest CVSS score a GitHub severity band covers, the qualitative ranges of CVSS v3.1:
-/// `LOW` 0.1 to 3.9, `MODERATE` 4.0 to 6.9, `HIGH` 7.0 to 8.9, `CRITICAL` 9.0 to 10.0. The top,
-/// decided 2026-09-15, so a threshold inside a band refuses what the band could be. `None` for
-/// any other text.
-pub(crate) fn band_ceiling(band: &str) -> Option<f64> {
-    match band {
-        "LOW" => Some(3.9),
-        "MODERATE" => Some(6.9),
-        "HIGH" => Some(8.9),
-        "CRITICAL" => Some(10.0),
-        _ => None,
     }
 }
 
@@ -346,7 +294,7 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intel::range::{End, Start};
+    use crate::intel::range::{End, Interval, Start};
 
     fn fixture(id: &str) -> Parsed {
         let path = format!(

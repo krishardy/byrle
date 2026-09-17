@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
-use super::osv::{Affected, Ranged, Rows, band_ceiling};
-use super::range::{End, Interval, Start, stored};
+use crate::intel::range::{End, Interval, Start, stored};
+use crate::intel::rows::{Affected, Ranged, Rows, band_ceiling};
 
 pub const SOURCE: &str = "github";
 pub const STREAM: &str = "github/npm";

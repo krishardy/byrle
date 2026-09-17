@@ -1,7 +1,7 @@
 # OSV version ranges and CVSS scores
 
-- **Status:** Implemented. `src/intel/range.rs` (intervals), `src/intel/osv.rs` (GHSA records,
-  scores), `migrations/0002_ranges.sql`, `PackageIntel::for_version` in `src/intel/store.rs`,
+- **Status:** Implemented. `src/intel/range.rs` (intervals), `src/intel/providers/osv/mod.rs` (GHSA
+  records, scores), `src/intel/rows.rs` (the row types), `migrations/0002_ranges.sql`, `PackageIntel::for_version` in `src/intel/store.rs`,
   `Advisory::is_named` in `src/policy/decide.rs`.
 - **Related:** [osv-malware-load](osv-malware-load.md),
   [intel-in-decisions](intel-in-decisions.md),

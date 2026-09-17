@@ -14,13 +14,14 @@ use sqlx::PgPool;
 use std::collections::BTreeSet;
 use waharoa::intel::history::{Ingestion, NotLoaded};
 use waharoa::intel::load::{self, Fetch};
-use waharoa::intel::osv::{self, Parsed, Rows};
 use waharoa::intel::postgres::{Loaded, PgIntel, Replacement};
+use waharoa::intel::providers::osv::{self, Parsed};
+use waharoa::intel::providers::{datadog, kev};
 use waharoa::intel::refresh::StreamDigest;
+use waharoa::intel::rows::{self, Rows};
 use waharoa::intel::snapshot_dir::SnapshotDir;
 use waharoa::intel::snapshot_intel::SnapshotIntel;
 use waharoa::intel::store::{Intel, IntelError, LoadedSnapshot, PackageIntel};
-use waharoa::intel::{datadog, kev};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
@@ -708,7 +709,7 @@ async fn a_load_larger_than_one_copy_chunk_arrives_whole() {
             id: format!("MAL-bulk-{i}"),
             summary: Some("x".repeat(1000)),
             aliases: Default::default(),
-            affected: [osv::Affected {
+            affected: [rows::Affected {
                 ecosystem: "npm".to_owned(),
                 name: format!("bulk-{i}"),
                 version: None,
@@ -1143,7 +1144,7 @@ async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
         .expect("first load");
 
     let long = Rows {
-        affected: [osv::Affected {
+        affected: [rows::Affected {
             ecosystem: "npm".to_owned(),
             name: "x".repeat(513),
             version: None,
