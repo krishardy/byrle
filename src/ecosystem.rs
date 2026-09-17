@@ -22,7 +22,7 @@ pub mod npm;
 pub mod pypi;
 
 use crate::doctor::Client;
-use crate::env::{EnvError, Process};
+use crate::env::{Env, EnvError};
 use crate::identity::{Ecosystem, PackageKey};
 use crate::intel::stream::{self, Stream};
 use crate::lockfile::{Lockfile, Unread};
@@ -61,7 +61,9 @@ impl Clients {
     }
 
     /// Clients for the upstreams and body limit the environment configures.
-    pub fn from_env(environment: &Process) -> Result<Self, EnvError> {
+    pub fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
+        environment: &Env<L>,
+    ) -> Result<Self, EnvError> {
         Ok(Self::new(
             reqwest::Client::new(),
             &environment.upstream_npm()?,

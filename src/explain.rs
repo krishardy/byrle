@@ -18,6 +18,12 @@
 //! `n/a` and `unenforced` both mean the check did not decide, for different reasons, and
 //! neither is `pass`. Reporting either as a pass would claim a check ran that never could.
 
+use std::ffi::OsString;
+
+use crate::ecosystem::Clients;
+use crate::env::Env;
+use crate::identity::PackageRef;
+use crate::intel::store::Intel as IntelStore;
 use crate::policy::decide::{self, Advisory, Check, Decision, Facts, Intel, Outcome};
 use crate::policy::enforce::Unenforceable;
 use crate::policy::{Action, AdvisoryScore, Policy};
@@ -179,7 +185,7 @@ fn lasts(policy: &Policy, entry: usize) -> String {
 ///
 /// Separate from the settings themselves because a configured check with no fact source is
 /// not the same as one that is off, and reading the file cannot tell them apart.
-pub fn policy(policy: &Policy, intel: Intel) -> String {
+pub fn policy_report(policy: &Policy, intel: Intel) -> String {
     let mut out = String::from("settings\n");
     out.push_str(&format!("  cooldown_days    {}\n", policy.cooldown_days));
     out.push_str(&format!("  max_cvss         {}\n", policy.max_cvss));
@@ -227,6 +233,273 @@ pub fn policy(policy: &Policy, intel: Intel) -> String {
         ));
     }
     out
+}
+
+/// What `waharoa explain` prints and exits with.
+///
+/// `notes` are stderr lines without the command's prefix, `answer` is stdout.
+#[derive(Debug, Default)]
+pub struct Answered {
+    pub notes: Vec<String>,
+    pub answer: String,
+    pub code: u8,
+}
+
+impl Answered {
+    /// Nothing is answered: what stopped it is the last note.
+    fn stop(mut self, code: u8) -> Self {
+        self.code = code;
+        self
+    }
+}
+
+/// Answer `target` against the policy the environment names.
+///
+/// The same policy the proxy reads and the same engine, so an answer here and a refusal in
+/// the proxy cannot disagree. Metadata is fetched from the package's own registry rather
+/// than through a running proxy: explain is a question about the policy, and requiring the
+/// proxy to be up to ask it would be the wrong dependency.
+pub async fn run<L: Fn(&str) -> Option<OsString>>(
+    target: &crate::cli::Explain,
+    environment: &Env<L>,
+) -> Answered {
+    let mut out = Answered::default();
+    let path = match environment.policy() {
+        Ok(path) => path,
+        Err(e) => {
+            out.notes.push(e.to_string());
+            return out.stop(2);
+        }
+    };
+    let Some(path) = path else {
+        out.notes.push(format!(
+            "set {} to the policy file to explain",
+            crate::env::POLICY
+        ));
+        return out.stop(2);
+    };
+    let policy = match crate::policy::Policy::load(&path) {
+        Ok(policy) => policy,
+        Err(e) => {
+            out.notes.push(e.to_string());
+            return out.stop(2);
+        }
+    };
+
+    let store = match crate::intel::postgres::from_env(environment).await {
+        Ok(store) => store,
+        Err(e) => {
+            out.notes.push(format!("{}: {e}", crate::env::DATABASE_URL));
+            return out.stop(1);
+        }
+    };
+
+    // `cli::Explain` holds `--policy` or a purl, never both and never neither.
+    let Some(argument) = target.purl.as_deref() else {
+        // A store with no snapshot answers nothing, so the checks that need one are
+        // reported as unenforced rather than as settings that will fire.
+        let intel = match &store {
+            Some(store) => match store.snapshot().await {
+                Ok(Some(snapshot)) => crate::policy::decide::Intel::Consulted {
+                    exploitation_loaded: snapshot.exploitation_loaded(),
+                },
+                Ok(None) => crate::policy::decide::Intel::NotConsulted,
+                Err(e) => {
+                    out.notes.push(e.to_string());
+                    return out.stop(1);
+                }
+            },
+            None => crate::policy::decide::Intel::NotConsulted,
+        };
+        out.answer = policy_report(&policy, intel);
+        return out;
+    };
+
+    let reference = match argument.parse::<PackageRef>() {
+        Ok(reference) => reference,
+        Err(e) => {
+            out.notes
+                .push(format!("`{argument}` is not a package reference: {e}"));
+            return out.stop(2);
+        }
+    };
+
+    // The package is asked of its own ecosystem's registry.
+    let clients = match Clients::from_env(environment) {
+        Ok(clients) => clients,
+        Err(e) => {
+            out.notes.push(e.to_string());
+            return out.stop(2);
+        }
+    };
+    let metadata = match crate::ecosystem::fetched(clients.metadata(reference.key()).await) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            out.notes.push(e.to_string());
+            return out.stop(1);
+        }
+    };
+    let Some(package) = metadata.version(reference.version()) else {
+        out.notes
+            .push(format!("the registry does not publish {argument}"));
+        return out.stop(1);
+    };
+
+    // Only when the policy asks for it, the same gate the proxy uses.
+    // A cooldown that cannot be judged is an answer `explain` cannot give.
+    let times = if policy.uses_cooldown() {
+        match clients.publish_times(reference.key()).await {
+            Ok(times) => times,
+            Err(e) => {
+                out.notes.push(e.to_string());
+                return out.stop(1);
+            }
+        }
+    } else {
+        None
+    };
+
+    let store = store.as_ref().map(|store| store as &dyn IntelStore);
+    let (ecosystem, name) = crate::intel::snapshot_intel::key_of(reference.key());
+    let intel = match crate::intel::store::for_command(store, &ecosystem, &name, true).await {
+        Ok(intel) => intel,
+        Err(e) => {
+            out.notes.push(e.to_string());
+            return out.stop(1);
+        }
+    };
+    let mut facts = crate::policy::decide::Facts::from_record_and_times(package, times.as_ref());
+    if let Some(intel) = &intel {
+        facts = facts.with_intel(intel);
+    }
+    let as_of = crate::policy::today();
+    out.answer = decision(
+        &policy,
+        &facts,
+        &crate::policy::decide::decide(&policy, &facts, as_of),
+        &crate::policy::enforce::unenforceable(&policy, package, times.as_ref(), facts.intel),
+        as_of,
+    );
+    out
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    use crate::env::testing::with;
+    use crate::test_support::{Answer, scripted, tempdir};
+
+    fn written(label: &str, yaml: &str) -> std::path::PathBuf {
+        let dir = tempdir(label);
+        let path = dir.join("policy.yaml");
+        std::fs::write(&path, yaml).expect("writes");
+        path
+    }
+
+    fn asked(purl: Option<&str>) -> crate::cli::Explain {
+        crate::cli::Explain {
+            purl: purl.map(str::to_owned),
+            policy: purl.is_none(),
+        }
+    }
+
+    /// No policy configured: exit 2 and a line saying which variable to set.
+    #[tokio::test]
+    async fn without_a_policy_there_is_nothing_to_explain() {
+        let answered = run(&asked(None), &with(&[])).await;
+        assert_eq!(answered.code, 2);
+        assert!(answered.answer.is_empty());
+        assert_eq!(
+            answered.notes,
+            [format!(
+                "set {} to the policy file to explain",
+                crate::env::POLICY
+            )]
+        );
+    }
+
+    /// `--policy` prints what every check is set to, with no registry asked.
+    #[tokio::test]
+    async fn the_policy_is_explained_without_asking_a_registry() {
+        let path = written("explain-policy", "version: 1\ncooldown_days: 7\n");
+        let answered = run(
+            &asked(None),
+            &with(&[(crate::env::POLICY, &path.display().to_string())]),
+        )
+        .await;
+        assert_eq!(answered.code, 0, "{:?}", answered.notes);
+        assert!(
+            answered.answer.contains("cooldown_days"),
+            "{}",
+            answered.answer
+        );
+        assert!(answered.notes.is_empty());
+    }
+
+    /// A purl that does not parse is exit 2, before anything is fetched.
+    #[tokio::test]
+    async fn a_purl_that_does_not_parse_is_refused() {
+        let path = written("explain-purl", "version: 1\ncooldown_days: 0\n");
+        let answered = run(
+            &asked(Some("lodash")),
+            &with(&[(crate::env::POLICY, &path.display().to_string())]),
+        )
+        .await;
+        assert_eq!(answered.code, 2);
+        assert!(
+            answered.notes[0].starts_with("`lodash` is not a package reference"),
+            "{:?}",
+            answered.notes
+        );
+    }
+
+    /// One package, judged against the registry the environment names.
+    #[tokio::test]
+    async fn a_version_the_registry_publishes_is_judged() {
+        let packument = crate::ecosystem::npm::fixture("lodash-4.17.21.abbrev.json");
+        let addr = scripted(vec![Answer::body(packument)]).await;
+        let path = written("explain-version", "version: 1\ncooldown_days: 0\n");
+        let answered = run(
+            &asked(Some("pkg:npm/lodash@4.17.21")),
+            &with(&[
+                (crate::env::POLICY, &path.display().to_string()),
+                (crate::env::UPSTREAM_NPM, &format!("http://{addr}")),
+            ]),
+        )
+        .await;
+        assert_eq!(answered.code, 0, "{:?}", answered.notes);
+        assert!(
+            answered.answer.contains("pkg:npm/lodash@4.17.21"),
+            "{}",
+            answered.answer
+        );
+        assert!(
+            answered.answer.contains("verdict: allow"),
+            "{}",
+            answered.answer
+        );
+    }
+
+    /// A version the registry does not publish is exit 1, and says so.
+    #[tokio::test]
+    async fn a_version_the_registry_does_not_publish_is_reported() {
+        let packument = crate::ecosystem::npm::fixture("lodash-4.17.21.abbrev.json");
+        let addr = scripted(vec![Answer::body(packument)]).await;
+        let path = written("explain-absent", "version: 1\ncooldown_days: 0\n");
+        let answered = run(
+            &asked(Some("pkg:npm/lodash@9.9.9")),
+            &with(&[
+                (crate::env::POLICY, &path.display().to_string()),
+                (crate::env::UPSTREAM_NPM, &format!("http://{addr}")),
+            ]),
+        )
+        .await;
+        assert_eq!(answered.code, 1);
+        assert_eq!(
+            answered.notes,
+            ["the registry does not publish pkg:npm/lodash@9.9.9"]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -444,7 +717,7 @@ mod tests {
 
     #[test]
     fn the_policy_view_separates_a_check_that_is_off_from_one_with_no_source() {
-        let out = policy(&loaded("version: 1\ncooldown_days: 0"), Intel::NotConsulted);
+        let out = policy_report(&loaded("version: 1\ncooldown_days: 0"), Intel::NotConsulted);
 
         assert!(out.contains("cooldown_days     off"), "{out}");
         assert!(out.contains("unenforced, no advisory stream"), "{out}");
@@ -453,7 +726,7 @@ mod tests {
 
     #[test]
     fn the_policy_view_reports_a_cooldown_as_enforced_once_it_is_set() {
-        let out = policy(
+        let out = policy_report(
             &loaded("version: 1\ncooldown_days: 30"),
             Intel::NotConsulted,
         );
@@ -463,7 +736,7 @@ mod tests {
 
     #[test]
     fn the_policy_view_lists_settings_and_entries() {
-        let out = policy(
+        let out = policy_report(
             &loaded(
                 "version: 1\nmax_cvss: 7.5\n\
                  denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: m\n\
@@ -797,7 +1070,7 @@ mod tests {
     }
 
     fn policy_view(p: &Policy, intel: Intel) -> String {
-        policy(p, intel)
+        policy_report(p, intel)
     }
 
     #[test]

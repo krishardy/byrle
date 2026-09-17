@@ -15,14 +15,10 @@ use waharoa::cli;
 use waharoa::doctor;
 use waharoa::env;
 use waharoa::explain;
-use waharoa::identity::PackageRef;
 
-use waharoa::audit;
-use waharoa::ecosystem::{self, Clients};
 use waharoa::intel::fetch;
 use waharoa::intel::postgres;
-use waharoa::intel::store::{Intel, NoIntel};
-use waharoa::policy::{Policy, check, decide, diff, enforce, today};
+use waharoa::policy::{check, diff, today};
 use waharoa::startup;
 
 /// A variable that does not parse ends the process with exit 2, as a malformed command line
@@ -91,299 +87,25 @@ fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
 /// been asked about, and each lockfile's. The exit code is the OR of `diff::LOOSENED` and
 /// `diff::TIGHTENED`, or `diff::ERROR` alone.
 async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
-    let now = today();
-    let from_date = args.from_date.map_or(now, |when| when.date(now));
-    let to_date = args.to_date.map_or(now, |when| when.date(now));
-    if from_date != to_date {
-        eprintln!("waharoa policy diff: <FROM> as of {from_date}, <TO> as of {to_date}");
+    let outcome = diff::run(&args, &env::process()).await;
+    for note in &outcome.notes {
+        eprintln!("waharoa policy diff: {note}");
     }
-
-    let mut loaded = Vec::new();
-    for path in [&args.from, &args.to] {
-        match Policy::load(path) {
-            Ok(policy) => loaded.push(policy),
-            Err(e) => {
-                eprintln!("waharoa policy diff: {}: {e}", path.display());
-                return std::process::ExitCode::from(diff::ERROR);
-            }
-        }
+    print!("{}", outcome.report);
+    for note in &outcome.summary {
+        eprintln!("waharoa policy diff: {note}");
     }
-
-    let log_path = or_exit_with(env::process().audit_log(), diff::ERROR);
-    if log_path.is_none() && args.lockfile.is_empty() {
-        eprintln!(
-            "waharoa policy diff: set {} or pass --lockfile, for the packages to compare over",
-            env::AUDIT_LOG
-        );
-        return std::process::ExitCode::from(diff::ERROR);
-    }
-    let mut listed = Vec::new();
-    if let Some(log_path) = log_path {
-        match std::fs::read_to_string(&log_path) {
-            Ok(log) => listed.extend(audit::packages(&log)),
-            Err(e) => {
-                eprintln!("waharoa policy diff: {}: {e}", log_path.display());
-                return std::process::ExitCode::from(diff::ERROR);
-            }
-        }
-    }
-    for path in &args.lockfile {
-        match waharoa::lockfile::read(path) {
-            Ok(locked) => listed.extend(locked),
-            Err(e) => {
-                eprintln!("waharoa policy diff: {e}");
-                return std::process::ExitCode::from(diff::ERROR);
-            }
-        }
-    }
-
-    // The package versions the log and the lockfiles list, each once, with its purl.
-    let mut seen = std::collections::HashSet::new();
-    let versions: Vec<(String, PackageRef, String)> = listed
-        .into_iter()
-        .filter(|package| seen.insert(package.clone()))
-        .filter_map(|(ecosystem, name, version)| {
-            let purl = format!("pkg:{ecosystem}/{name}@{version}");
-            let reference = purl.parse::<PackageRef>().ok()?;
-            Some((purl, reference, version))
-        })
-        .collect();
-
-    // A kept snapshot when one is named, so a changed result is the policy's and not an
-    // advisory published since. It is read for the packages above only.
-    let store: Option<Box<dyn Intel>> = match &args.snapshot {
-        Some(id) => {
-            let packages = versions
-                .iter()
-                .map(|(_, reference, _)| intel_key(reference.key()))
-                .collect();
-            match kept_snapshot(id, packages) {
-                Ok(kept) => Some(Box::new(kept)),
-                Err(e) => {
-                    eprintln!("waharoa policy diff: --snapshot {id}: {e}");
-                    return std::process::ExitCode::from(diff::ERROR);
-                }
-            }
-        }
-        None => match postgres::from_env(&env::process()).await {
-            Ok(store) => store.map(|store| Box::new(store) as Box<dyn Intel>),
-            Err(e) => {
-                eprintln!("waharoa policy diff: {}: {e}", env::DATABASE_URL);
-                return std::process::ExitCode::from(diff::ERROR);
-            }
-        },
-    };
-    if let Some(store) = &store
-        && let Ok(Some(snapshot)) = store.snapshot().await
-    {
-        eprintln!("waharoa policy diff: intel snapshot {}", snapshot.digest);
-    }
-
-    // Each package is asked of its own ecosystem's registry.
-    let clients = or_exit_with(Clients::from_env(&env::process()), diff::ERROR);
-    let needs_times = loaded.iter().any(Policy::uses_cooldown);
-
-    let mut report = diff::Report {
-        listed: versions.len(),
-        ..diff::Report::default()
-    };
-    for (purl, reference, version) in &versions {
-        // Metadata that cannot be read is reported and counted, and the run goes on, so
-        // one bad package does not hide the rest. The count sets the exit's error bit.
-        let metadata = match ecosystem::fetched(clients.metadata(reference.key()).await) {
-            Ok(metadata) => metadata,
-            Err(e) => {
-                eprintln!("waharoa policy diff: {purl}: {e}");
-                report.unread += 1;
-                continue;
-            }
-        };
-        let Some(package) = metadata.version(version) else {
-            // The registry no longer publishes it. That is a real answer for a lockfile
-            // and is not a diff between two policies, so it is reported and skipped.
-            eprintln!("waharoa policy diff: {purl}: no longer published");
-            continue;
-        };
-
-        let times = if needs_times {
-            match clients.publish_times(reference.key()).await {
-                Ok(times) => times,
-                Err(e) => {
-                    eprintln!("waharoa policy diff: {purl}: {e}");
-                    report.unread += 1;
-                    continue;
-                }
-            }
-        } else {
-            None
-        };
-        let intel =
-            match package_intel(store.as_deref(), reference.key(), args.snapshot.is_none()).await {
-                Ok(intel) => intel,
-                // Counted with the packages that could not be read, so the others are still
-                // compared and the exit's error bit is set.
-                Err(NoIntel::Uncovered(e)) => {
-                    eprintln!("waharoa policy diff: {purl}: {e}");
-                    report.unread += 1;
-                    continue;
-                }
-                Err(NoIntel::Failed(e)) => {
-                    eprintln!("waharoa policy diff: {purl}: {e}");
-                    return std::process::ExitCode::from(diff::ERROR);
-                }
-            };
-        let decided: Vec<(decide::Decision, Vec<enforce::Unenforceable>)> = loaded
-            .iter()
-            .zip([from_date, to_date])
-            .map(|(policy, as_of)| {
-                let mut facts = decide::Facts::from_record_and_times(package, times.as_ref());
-                if let Some(intel) = &intel {
-                    facts = facts.with_intel(intel);
-                }
-                (
-                    decide::decide(policy, &facts, as_of),
-                    enforce::unenforceable(policy, package, times.as_ref(), facts.intel),
-                )
-            })
-            .collect();
-        report.push(diff::package(
-            purl,
-            (&decided[0].0, &decided[0].1),
-            (&decided[1].0, &decided[1].1),
-        ));
-    }
-
-    print!("{}", report.render());
-    let bits = report.exit_bits();
-    if bits != 0 {
-        eprintln!(
-            "\nwaharoa policy diff: {} loosened, {} incomparable, {} tightened, {} could not be read",
-            report.loosened().len(),
-            report.incomparable().len(),
-            report.tightened().len(),
-            report.unread
-        );
-    }
-    if report.judged_none() {
-        eprintln!(
-            "waharoa policy diff: none of the {} package versions listed was judged",
-            report.listed
-        );
-    }
-    std::process::ExitCode::from(bits)
+    std::process::ExitCode::from(outcome.code)
 }
 
-/// `waharoa explain`.
-///
-/// Reads the same policy the proxy does and asks the same engine, so an answer here and a
-/// refusal in the proxy cannot disagree. The packument is fetched directly from the
-/// upstream registry rather than through a running proxy: explain is a question about the
-/// policy, and requiring the proxy to be up to ask it would be the wrong dependency.
+/// `waharoa explain`: what the policy says, or what it says about one package.
 async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
-    let Some(path) = or_exit(env::process().policy()) else {
-        eprintln!(
-            "waharoa explain: set {} to the policy file to explain",
-            env::POLICY
-        );
-        return std::process::ExitCode::from(2);
-    };
-    let policy = match Policy::load(&path) {
-        Ok(policy) => policy,
-        Err(e) => {
-            eprintln!("waharoa explain: {e}");
-            return std::process::ExitCode::from(2);
-        }
-    };
-
-    let store = match postgres::from_env(&env::process()).await {
-        Ok(store) => store,
-        Err(e) => {
-            eprintln!("waharoa explain: {}: {e}", env::DATABASE_URL);
-            return std::process::ExitCode::from(1);
-        }
-    };
-
-    // `cli::Explain` holds `--policy` or a purl, never both and never neither.
-    let Some(argument) = target.purl else {
-        // A store with no snapshot answers nothing, so the checks that need one are
-        // reported as unenforced rather than as settings that will fire.
-        let intel = match &store {
-            Some(store) => match store.snapshot().await {
-                Ok(Some(snapshot)) => decide::Intel::Consulted {
-                    exploitation_loaded: snapshot.exploitation_loaded(),
-                },
-                Ok(None) => decide::Intel::NotConsulted,
-                Err(e) => {
-                    eprintln!("waharoa explain: {e}");
-                    return std::process::ExitCode::from(1);
-                }
-            },
-            None => decide::Intel::NotConsulted,
-        };
-        print!("{}", explain::policy(&policy, intel));
-        return std::process::ExitCode::SUCCESS;
-    };
-
-    let reference = match argument.parse::<PackageRef>() {
-        Ok(reference) => reference,
-        Err(e) => {
-            eprintln!("waharoa explain: `{argument}` is not a package reference: {e}");
-            return std::process::ExitCode::from(2);
-        }
-    };
-
-    // The package is asked of its own ecosystem's registry.
-    let clients = or_exit(Clients::from_env(&env::process()));
-    let metadata = match ecosystem::fetched(clients.metadata(reference.key()).await) {
-        Ok(metadata) => metadata,
-        Err(e) => {
-            eprintln!("waharoa explain: {e}");
-            return std::process::ExitCode::from(1);
-        }
-    };
-    let Some(package) = metadata.version(reference.version()) else {
-        eprintln!("waharoa explain: the registry does not publish {argument}");
-        return std::process::ExitCode::from(1);
-    };
-
-    // Only when the policy asks for it, the same gate the proxy uses.
-    // A cooldown that cannot be judged is an answer `explain` cannot give.
-    let times = if policy.uses_cooldown() {
-        match clients.publish_times(reference.key()).await {
-            Ok(times) => times,
-            Err(e) => {
-                eprintln!("waharoa explain: {e}");
-                return std::process::ExitCode::from(1);
-            }
-        }
-    } else {
-        None
-    };
-
-    let store = store.as_ref().map(|store| store as &dyn Intel);
-    let intel = match package_intel(store, reference.key(), true).await {
-        Ok(intel) => intel,
-        Err(e) => {
-            eprintln!("waharoa explain: {e}");
-            return std::process::ExitCode::from(1);
-        }
-    };
-    let mut facts = decide::Facts::from_record_and_times(package, times.as_ref());
-    if let Some(intel) = &intel {
-        facts = facts.with_intel(intel);
+    let answered = explain::run(&target, &env::process()).await;
+    for note in &answered.notes {
+        eprintln!("waharoa explain: {note}");
     }
-    let as_of = today();
-    print!(
-        "{}",
-        explain::decision(
-            &policy,
-            &facts,
-            &decide::decide(&policy, &facts, as_of),
-            &enforce::unenforceable(&policy, package, times.as_ref(), facts.intel),
-            as_of,
-        )
-    );
-    std::process::ExitCode::SUCCESS
+    print!("{}", answered.answer);
+    std::process::ExitCode::from(answered.code)
 }
 
 async fn run_doctor() -> std::process::ExitCode {
@@ -527,37 +249,6 @@ async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
 }
 
 /// The snapshot `--snapshot` names, read from the snapshot directory without its lock.
-fn kept_snapshot(
-    id: &str,
-    packages: std::collections::HashSet<waharoa::intel::snapshot_intel::Package>,
-) -> Result<waharoa::intel::snapshot_intel::SnapshotIntel, String> {
-    let Some(path) = or_exit(env::process().snapshot_dir()) else {
-        return Err(format!(
-            "{} is not set, so there is no kept snapshot to read",
-            env::SNAPSHOT_DIR
-        ));
-    };
-    let dir = waharoa::intel::snapshot_dir::SnapshotDir::open_to_read(&path);
-    waharoa::intel::snapshot_intel::SnapshotIntel::read(&dir, id, packages)
-        .map_err(|e| e.to_string())
-}
-
-/// The ecosystem and name an intel store keys a package by.
-fn intel_key(key: &waharoa::identity::PackageKey) -> waharoa::intel::snapshot_intel::Package {
-    (key.ecosystem().as_str().to_owned(), key.registry_name())
-}
-
-/// What the store knows about one package, for a command that has to answer with it.
-/// See [`waharoa::intel::store::for_command`].
-async fn package_intel(
-    store: Option<&dyn Intel>,
-    key: &waharoa::identity::PackageKey,
-    streams_recorded: bool,
-) -> Result<Option<waharoa::intel::store::PackageIntel>, NoIntel> {
-    let (ecosystem, name) = intel_key(key);
-    waharoa::intel::store::for_command(store, &ecosystem, &name, streams_recorded).await
-}
-
 /// `waharoa refresh`: load every stream in `intel::stream::ALL` into the intel store, and
 /// append what each stream did to the ingestion history.
 ///
