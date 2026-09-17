@@ -56,12 +56,14 @@
 //! | `normalize.rs` | wire types to [`crate::record::PackageMetadata`] |
 //! | `inspect.rs` | decoding and normalising a packument body the proxy forwarded |
 //! | `lockfile.rs` | the lockfiles npm, yarn 1, pnpm and bun write |
+//! | `clients.rs` | npm, pnpm, yarn and bun, as `waharoa doctor` checks them |
 //! | `rewrite.rs` | removing versions from a packument and repointing the rest |
 //! | `transport.rs` | fetching a packument on the proxy's own behalf |
 //! | `error.rs` | what can go wrong reading one, and fetching one |
 //!
-//! `crate::ecosystem::pypi` has the same files, minus `rewrite.rs`, `inspect.rs` and `lockfile.rs`.
+//! `crate::ecosystem::pypi` has the same files, minus `rewrite.rs`, `inspect.rs`, `lockfile.rs` and `clients.rs`.
 
+pub mod clients;
 pub mod error;
 pub mod inspect;
 pub mod lockfile;

@@ -48,6 +48,7 @@ either:
 |---|---|---|
 | `rewrite.rs` | removing refused versions from a packument and pointing the rest at the proxy | `proxy::handle` returns before any filtering for a simple index, because filtering one is range resolution rather than a refusal a client can act on |
 | `inspect.rs` | decoding a forwarded packument body and normalising it | PyPI's equivalent is still `proxy::read_index`, which reads `Proxy` |
+| `clients.rs` | npm, pnpm, yarn and bun as `doctor` checks them | pip and uv are not checked yet |
 | `lockfile.rs` | reading `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml` and `bun.lock` | `requirements.txt`, `uv.lock` and `poetry.lock` are not read yet, and `lockfile::read` refuses them by name |
 
 `wire.rs` is the one file whose contents differ in kind. npm's holds serde targets only,
@@ -71,6 +72,7 @@ their input with npm's normaliser, which is a test dependency and not a producti
 | `streams` | which package-keyed advisory streams cover it | `osv/npm`, `datadog/npm`, `github/npm` | none yet |
 | `lockfiles` | which lockfile names `policy diff` reads, and with which reader | `npm::lockfile::LOCKFILES` | none yet |
 | `unread_lockfiles` | which lockfile names are refused with a specific reason | `bun.lockb` | none |
+| `clients` | which package managers `waharoa doctor` checks, how to ask each for its registry and cache, and how to fix each | npm, pnpm, yarn, bun | none yet |
 
 npm's empty `prefixes` is the root fallback, and `ecosystem::ROOT` names it. Before the
 table, `route::classify` was `if pypi::serves(path) { PyPI } else { Npm }`: a third

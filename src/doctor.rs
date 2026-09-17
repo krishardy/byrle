@@ -6,10 +6,11 @@
 //! client side: what each package manager is configured to talk to, what the lockfiles in
 //! this directory record, and what would silently skip the proxy.
 //!
-//! The checks are pure. Reading files and running package managers happens in the binary,
-//! so what is decided here can be tested against fixed inputs.
+//! The checks are pure, so what is decided here can be tested against fixed inputs.
+//! [`probe`] runs the package managers. Reading files happens in the binary.
 
 use crate::env;
+use crate::lockfile::Pins;
 use crate::policy::check::Report;
 use crate::policy::packages;
 use crate::proxy::{IntelState, READY_PATH, Readiness};
@@ -81,35 +82,44 @@ impl fmt::Display for Finding {
     }
 }
 
-/// The lockfile formats this understands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Lockfile {
-    NpmPackageLock,
-    YarnLock,
-    PnpmLock,
+/// A package manager `doctor` checks, as its ecosystem's row in
+/// [`crate::ecosystem::TABLE`] lists it.
+pub struct Client {
+    /// The program, and the name findings use.
+    pub name: &'static str,
+    /// Arguments that make the client print the registry it resolves to. `None` for a client
+    /// whose registry is not checked.
+    pub registry: Option<&'static [&'static str]>,
+    /// The command that points the client at a registry, before the address.
+    pub set_registry: &'static str,
+    pub cache: CacheLocation,
+    pub bypass: CacheBypass,
+    /// The command that empties the cache.
+    pub clear_cache: &'static str,
 }
 
-impl Lockfile {
-    pub const ALL: [Self; 3] = [Self::NpmPackageLock, Self::YarnLock, Self::PnpmLock];
-
-    pub fn filename(self) -> &'static str {
-        match self {
-            Self::NpmPackageLock => "package-lock.json",
-            Self::YarnLock => "yarn.lock",
-            Self::PnpmLock => "pnpm-lock.yaml",
-        }
-    }
-
-    pub fn client(self) -> &'static str {
-        match self {
-            Self::NpmPackageLock => "npm",
-            Self::YarnLock => "yarn",
-            Self::PnpmLock => "pnpm",
-        }
-    }
+/// Where a client keeps its cache.
+pub enum CacheLocation {
+    /// The client prints a directory when run with `args`. The cache is `under` it.
+    Asked {
+        args: &'static [&'static str],
+        under: Option<&'static str>,
+    },
+    /// A variable names the directory, else it is `under_home` in the home directory.
+    Configured {
+        configured: fn(&env::Process) -> Result<Option<std::path::PathBuf>, env::EnvError>,
+        under_home: &'static str,
+    },
 }
 
-/// Artifact origins a lockfile records.
+/// Every client any ecosystem lists, in table order.
+pub fn clients() -> impl Iterator<Item = &'static Client> {
+    crate::ecosystem::TABLE
+        .iter()
+        .flat_map(|registry| registry.clients)
+}
+
+/// Artifact origins a lockfile records, read from each line holding `key`.
 ///
 /// Empty means the file pins no absolute artifact URL. For pnpm that is the normal case
 /// and not a fault: it omits `resolution.tarball` when the URL matches the configured
@@ -117,14 +127,9 @@ impl Lockfile {
 /// why they cannot evidence which registry produced them.
 ///
 /// Deliberately textual rather than a real parse of each format. What is wanted is every
-/// absolute artifact URL the file pins, and all three write those as `<key>: <url>` or
-/// `<key> "<url>"` on one line.
-pub fn recorded_origins(kind: Lockfile, contents: &str) -> BTreeSet<String> {
-    let key = match kind {
-        Lockfile::NpmPackageLock | Lockfile::YarnLock => "resolved",
-        Lockfile::PnpmLock => "tarball",
-    };
-
+/// absolute artifact URL the file pins, and every format checked writes those as
+/// `<key>: <url>` or `<key> "<url>"` on one line.
+pub fn recorded_origins(key: &str, contents: &str) -> BTreeSet<String> {
     let mut origins = BTreeSet::new();
     for line in contents.lines() {
         let Some(after) = line.split(key).nth(1) else {
@@ -146,8 +151,8 @@ pub fn recorded_origins(kind: Lockfile, contents: &str) -> BTreeSet<String> {
 }
 
 /// Whether a package manager is pointed at the proxy.
-pub fn check_registry(client: &str, configured: Option<&str>, proxy: &str) -> Finding {
-    let title = format!("{client} registry");
+pub fn check_registry(client: &Client, configured: Option<&str>, proxy: &str) -> Finding {
+    let title = format!("{} registry", client.name);
     let Some(configured) = configured.map(str::trim).filter(|s| !s.is_empty()) else {
         return Finding::new(
             Severity::Warn,
@@ -164,28 +169,20 @@ pub fn check_registry(client: &str, configured: Option<&str>, proxy: &str) -> Fi
         title,
         format!("points at {configured}, not the proxy at {proxy}"),
     )
-    .with_fix(format!("{client} config set registry {proxy}"))
+    .with_fix(format!("{} {proxy}", client.set_registry))
 }
 
 /// Whether a lockfile is evidence that the proxy produced it.
 ///
 /// npm and yarn record the absolute artifact URL, so a lockfile written through the proxy
-/// names it and CI can check that. pnpm omits the URL when it matches the configured
+/// contains it and CI can check that. pnpm omits the URL when it matches the configured
 /// registry, so its lockfiles are portable and prove nothing either way.
-pub fn check_lockfile(kind: Lockfile, contents: &str, proxy: &str) -> Finding {
-    let title = kind.filename().to_owned();
-    let origins = recorded_origins(kind, contents);
+pub fn check_lockfile(name: &str, pins: &Pins, contents: &str, proxy: &str) -> Finding {
+    let title = name.to_owned();
+    let origins = recorded_origins(pins.key, contents);
 
     if origins.is_empty() {
-        let detail = match kind {
-            Lockfile::PnpmLock => {
-                "records no artifact URLs, which is normal: pnpm derives them from the \
-                 configured registry, so the lockfile is portable and is not evidence \
-                 either way"
-            }
-            _ => "records no artifact URLs",
-        };
-        return Finding::new(Severity::Ok, title, detail);
+        return Finding::new(Severity::Ok, title, pins.when_absent);
     }
 
     let proxy_origin = crate::origin::origin_of_url(proxy).unwrap_or_else(|| proxy.to_owned());
@@ -208,7 +205,7 @@ pub fn check_lockfile(kind: Lockfile, contents: &str, proxy: &str) -> Finding {
                 join(&theirs)
             ),
         )
-        .with_fix("delete the lockfile and node_modules, then install again through the proxy"),
+        .with_fix(pins.reinstall),
         // A lockfile that names two places installs from both, and only one is examined.
         (false, false) => Finding::new(
             Severity::Problem,
@@ -219,7 +216,7 @@ pub fn check_lockfile(kind: Lockfile, contents: &str, proxy: &str) -> Finding {
                 join(&theirs)
             ),
         )
-        .with_fix("delete the lockfile and node_modules, then install again through the proxy"),
+        .with_fix(pins.reinstall),
         (true, true) => unreachable!("origins is not empty"),
     }
 }
@@ -266,15 +263,8 @@ pub fn check_public_url(configured: Option<&str>, recorded: &BTreeSet<String>) -
     .with_fix("serve the proxy at the recorded address, or reinstall to rewrite the lockfiles")
 }
 
-/// How much of an install a warm cache supplies without asking the registry.
-///
-/// Measured by installing the same package twice through the proxy with one cache, and
-/// counting what the proxy saw the second time:
-///
-/// | Client | Second install |
-/// |---|---|
-/// | npm 11, pnpm 10, bun 1.3 | nothing reached the proxy |
-/// | yarn 1, yarn 4 | the packument did, the artifact did not |
+/// How much of an install a warm cache supplies without asking the registry. Measured per
+/// client; `crate::ecosystem::npm::clients` has the measurements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheBypass {
     /// The whole install is served locally.
@@ -294,8 +284,8 @@ pub enum CacheBypass {
 /// Reports presence and location rather than a count. Every client lays its cache out
 /// differently, so one number would mean packages for one and files for another: the same
 /// yarn cache is 12,983 entries or 749,073 files depending on which you count.
-pub fn check_cache(client: &str, cache: Option<&std::path::Path>, bypass: CacheBypass) -> Finding {
-    let title = format!("{client} cache");
+pub fn check_cache(client: &Client, cache: Option<&std::path::Path>) -> Finding {
+    let title = format!("{} cache", client.name);
     let Some(cache) = cache else {
         return Finding::new(
             Severity::Ok,
@@ -304,7 +294,7 @@ pub fn check_cache(client: &str, cache: Option<&std::path::Path>, bypass: CacheB
         );
     };
 
-    let effect = match bypass {
+    let effect = match client.bypass {
         CacheBypass::Complete => {
             "A warm cache supplies the whole install, so those packages never reach the proxy"
         }
@@ -313,17 +303,12 @@ pub fn check_cache(client: &str, cache: Option<&std::path::Path>, bypass: CacheB
              artifacts are never examined"
         }
     };
-    let fix = match client {
-        "bun" => "bun pm cache rm".to_owned(),
-        "pnpm" => "pnpm store prune, or delete the store directory".to_owned(),
-        other => format!("{other} cache clean --force"),
-    };
     Finding::new(
         Severity::Warn,
         title,
         format!("{} holds cached packages. {effect}", cache.display()),
     )
-    .with_fix(fix)
+    .with_fix(client.clear_cache)
 }
 
 /// Whether the proxy is there, and whether it is configured the way this check expects.
@@ -605,9 +590,13 @@ fn same_origin(a: &str, b: &str) -> bool {
 }
 
 /// A public registry in a lockfile is a different problem from a stale proxy address, and
-/// saying "this is not your proxy" about registry.npmjs.org would be noise.
+/// saying "this is not your proxy" about registry.npmjs.org would be noise. Every origin a
+/// row of [`crate::ecosystem::TABLE`] always reaches is one.
 fn looks_like_a_registry(origin: &str) -> bool {
-    origin == crate::ecosystem::npm::DEFAULT_REGISTRY
+    crate::ecosystem::TABLE
+        .iter()
+        .flat_map(|registry| registry.always_reachable)
+        .any(|reachable| crate::origin::origin_of_url(reachable).as_deref() == Some(origin))
 }
 
 fn join(origins: &[&String]) -> String {
@@ -618,9 +607,167 @@ fn join(origins: &[&String]) -> String {
         .join(", ")
 }
 
+/// Asking an installed client about itself. The one part of `doctor` that runs programs.
+pub mod probe {
+    use super::{CacheLocation, Client};
+    use crate::env::{EnvError, Process};
+    use std::path::PathBuf;
+
+    /// Run `program` with `args` and return what it printed, trimmed. `None` when it could
+    /// not run, failed, or printed nothing.
+    pub fn ask(program: &str, args: &[&str]) -> Option<String> {
+        let output = std::process::Command::new(program)
+            .args(args)
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let printed = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+        (!printed.is_empty()).then_some(printed)
+    }
+
+    /// The registry a client is configured to use, asked with `args`.
+    ///
+    /// Its own resolved configuration, not a file this could read: the effective value
+    /// comes from a project `.npmrc`, then the user's, then the global one, and only the
+    /// client knows which won. npm prints `undefined` for a key with no value.
+    pub fn configured_registry(client: &Client, args: &[&str]) -> Option<String> {
+        ask(client.name, args).filter(|value| value != "undefined")
+    }
+
+    /// Where a client keeps its cache. `Ok(None)` when the client does not say, or no home
+    /// directory is set.
+    pub fn cache_dir(client: &Client, environment: &Process) -> Result<Option<PathBuf>, EnvError> {
+        Ok(match client.cache {
+            CacheLocation::Asked { args, under } => ask(client.name, args).map(|printed| {
+                let dir = PathBuf::from(printed);
+                match under {
+                    Some(under) => dir.join(under),
+                    None => dir,
+                }
+            }),
+            CacheLocation::Configured {
+                configured,
+                under_home,
+            } => match configured(environment)? {
+                Some(dir) => Some(dir),
+                None => environment.home()?.map(|home| home.join(under_home)),
+            },
+        })
+    }
+
+    /// The client's cache when it holds something, `Ok(None)` when it is empty or absent.
+    pub fn warm_cache(client: &Client, environment: &Process) -> Result<Option<PathBuf>, EnvError> {
+        Ok(cache_dir(client, environment)?
+            .filter(|dir| dir.is_dir() && super::count_files(dir) > 0))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::super::CacheBypass;
+        use super::*;
+        use crate::env::testing;
+
+        fn echoing(cache: CacheLocation) -> Client {
+            Client {
+                name: "echo",
+                registry: None,
+                set_registry: "",
+                cache,
+                bypass: CacheBypass::Complete,
+                clear_cache: "",
+            }
+        }
+
+        #[test]
+        fn a_program_is_asked_for_what_it_prints() {
+            assert_eq!(ask("echo", &["  printed  "]).as_deref(), Some("printed"));
+            assert_eq!(ask("echo", &[""]), None, "printed nothing");
+            assert_eq!(ask("false", &[]), None, "failed");
+            assert_eq!(ask("waharoa-no-such-program", &[]), None, "not installed");
+        }
+
+        #[test]
+        fn an_undefined_registry_is_no_registry() {
+            let client = echoing(CacheLocation::Asked {
+                args: &[],
+                under: None,
+            });
+            assert_eq!(configured_registry(&client, &["undefined"]), None);
+            assert_eq!(
+                configured_registry(&client, &["http://proxy/"]).as_deref(),
+                Some("http://proxy/")
+            );
+        }
+
+        #[test]
+        fn an_asked_cache_is_what_the_client_prints_joined_with_under() {
+            let under = echoing(CacheLocation::Asked {
+                args: &["/c"],
+                under: Some("_cacache"),
+            });
+            assert_eq!(
+                cache_dir(&under, &testing::empty()).unwrap(),
+                Some(PathBuf::from("/c/_cacache"))
+            );
+            let bare = echoing(CacheLocation::Asked {
+                args: &["/c"],
+                under: None,
+            });
+            assert_eq!(
+                cache_dir(&bare, &testing::empty()).unwrap(),
+                Some(PathBuf::from("/c"))
+            );
+        }
+
+        #[test]
+        fn a_cache_is_warm_only_when_it_holds_a_file() {
+            let dir = crate::test_support::tempdir("doctor-warm-cache");
+            let path: &'static str = Box::leak(dir.display().to_string().into_boxed_str());
+            let args: &'static [&'static str] = Box::leak(Box::new([path]));
+            let client = echoing(CacheLocation::Asked { args, under: None });
+            assert_eq!(warm_cache(&client, &testing::empty()).unwrap(), None);
+            std::fs::write(dir.join("entry"), b"x").expect("writes");
+            assert_eq!(
+                warm_cache(&client, &testing::empty()).unwrap(),
+                Some(dir.clone())
+            );
+            let absent = echoing(CacheLocation::Asked {
+                args: &["/nonexistent/waharoa-cache"],
+                under: None,
+            });
+            assert_eq!(warm_cache(&absent, &testing::empty()).unwrap(), None);
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+
+        /// bun's cache is its variable when set, else under the home directory.
+        #[test]
+        fn a_configured_cache_is_the_variable_then_the_home_directory() {
+            let bun = crate::ecosystem::npm::clients::named("bun");
+            let set = testing::bun_cache_and_home();
+            assert_eq!(cache_dir(bun, &set).unwrap(), Some(PathBuf::from("/bun")));
+            let home = testing::home_only();
+            assert_eq!(
+                cache_dir(bun, &home).unwrap(),
+                Some(PathBuf::from("/home/u/.bun/install/cache"))
+            );
+            assert_eq!(cache_dir(bun, &testing::empty()).unwrap(), None);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ecosystem::npm::clients::named;
+
+    fn pins(name: &str) -> &'static Pins {
+        crate::lockfile::pinning()
+            .find(|(lockfile, _)| lockfile.name == name)
+            .map(|(_, pins)| pins)
+            .expect("this lockfile records artifact URLs")
+    }
     use std::path::Path;
 
     const PROXY: &str = "http://127.0.0.1:8080";
@@ -677,11 +824,11 @@ mod tests {
     #[test]
     fn a_client_pointed_at_the_proxy_is_ok() {
         assert_eq!(
-            check_registry("npm", Some(PROXY), PROXY).severity,
+            check_registry(named("npm"), Some(PROXY), PROXY).severity,
             Severity::Ok
         );
         assert_eq!(
-            check_registry("npm", Some("http://127.0.0.1:8080/"), PROXY).severity,
+            check_registry(named("npm"), Some("http://127.0.0.1:8080/"), PROXY).severity,
             Severity::Ok,
             "a trailing slash is the same registry"
         );
@@ -690,7 +837,7 @@ mod tests {
     /// The bypass the README calls advisory: a developer who resets the registry URL.
     #[test]
     fn a_client_pointed_elsewhere_is_a_problem_with_a_fix() {
-        let finding = check_registry("npm", Some("https://registry.npmjs.org"), PROXY);
+        let finding = check_registry(named("npm"), Some("https://registry.npmjs.org"), PROXY);
         assert_eq!(finding.severity, Severity::Problem);
         assert!(finding.detail.contains("registry.npmjs.org"));
         assert_eq!(
@@ -701,7 +848,7 @@ mod tests {
 
     #[test]
     fn a_client_that_is_not_installed_is_not_a_problem() {
-        let finding = check_registry("yarn", None, PROXY);
+        let finding = check_registry(named("yarn"), None, PROXY);
         assert_eq!(finding.severity, Severity::Warn);
         assert!(finding.detail.contains("not installed"));
     }
@@ -712,7 +859,7 @@ mod tests {
         let npm = r#"{"packages":{"node_modules/lodash":{
             "resolved":"http://127.0.0.1:8080/lodash/-/lodash-4.17.21.tgz"}}}"#;
         assert_eq!(
-            recorded_origins(Lockfile::NpmPackageLock, npm),
+            recorded_origins(pins("package-lock.json").key, npm),
             origins(&["http://127.0.0.1:8080"])
         );
 
@@ -721,7 +868,7 @@ mod tests {
   resolved "http://127.0.0.1:8080/lodash/-/lodash-4.17.21.tgz#abc123"
   integrity sha512-AAAA"#;
         assert_eq!(
-            recorded_origins(Lockfile::YarnLock, yarn),
+            recorded_origins(pins("yarn.lock").key, yarn),
             origins(&["http://127.0.0.1:8080"])
         );
     }
@@ -731,9 +878,9 @@ mod tests {
     #[test]
     fn a_pnpm_lockfile_without_tarball_urls_is_not_a_fault() {
         let pnpm = "  lodash@4.17.21:\n    resolution: {integrity: sha512-AAAA}\n";
-        assert!(recorded_origins(Lockfile::PnpmLock, pnpm).is_empty());
+        assert!(recorded_origins(pins("pnpm-lock.yaml").key, pnpm).is_empty());
 
-        let finding = check_lockfile(Lockfile::PnpmLock, pnpm, PROXY);
+        let finding = check_lockfile("pnpm-lock.yaml", pins("pnpm-lock.yaml"), pnpm, PROXY);
         assert_eq!(finding.severity, Severity::Ok);
         assert!(
             finding.detail.contains("portable"),
@@ -746,7 +893,7 @@ mod tests {
     fn a_pnpm_lockfile_with_tarball_urls_is_read() {
         let pnpm = "    resolution: {integrity: sha512-AAAA, tarball: https://registry.npmjs.org/a/-/a-1.0.0.tgz}\n";
         assert_eq!(
-            recorded_origins(Lockfile::PnpmLock, pnpm),
+            recorded_origins(pins("pnpm-lock.yaml").key, pnpm),
             origins(&["https://registry.npmjs.org"])
         );
     }
@@ -754,7 +901,7 @@ mod tests {
     #[test]
     fn a_lockfile_pinned_to_the_proxy_is_evidence_it_was_used() {
         let npm = r#"{"packages":{"a":{"resolved":"http://127.0.0.1:8080/a/-/a-1.0.0.tgz"}}}"#;
-        let finding = check_lockfile(Lockfile::NpmPackageLock, npm, PROXY);
+        let finding = check_lockfile("package-lock.json", pins("package-lock.json"), npm, PROXY);
         assert_eq!(finding.severity, Severity::Ok);
         assert!(finding.detail.contains("through the proxy"));
     }
@@ -762,7 +909,7 @@ mod tests {
     #[test]
     fn a_lockfile_pinned_elsewhere_says_so() {
         let npm = r#"{"packages":{"a":{"resolved":"https://registry.npmjs.org/a/-/a-1.0.0.tgz"}}}"#;
-        let finding = check_lockfile(Lockfile::NpmPackageLock, npm, PROXY);
+        let finding = check_lockfile("package-lock.json", pins("package-lock.json"), npm, PROXY);
         assert_eq!(finding.severity, Severity::Warn);
         assert!(finding.fix.is_some());
     }
@@ -774,7 +921,7 @@ mod tests {
         let npm = r#"{"packages":{
             "a":{"resolved":"http://127.0.0.1:8080/a/-/a-1.0.0.tgz"},
             "b":{"resolved":"https://registry.npmjs.org/b/-/b-1.0.0.tgz"}}}"#;
-        let finding = check_lockfile(Lockfile::NpmPackageLock, npm, PROXY);
+        let finding = check_lockfile("package-lock.json", pins("package-lock.json"), npm, PROXY);
         assert_eq!(finding.severity, Severity::Problem);
         assert!(finding.detail.contains("part of this install"));
     }
@@ -815,13 +962,10 @@ mod tests {
     /// to work like npm's.
     #[test]
     fn a_warm_cache_is_reported_as_skipping_the_proxy() {
-        assert_eq!(
-            check_cache("npm", None, CacheBypass::Complete).severity,
-            Severity::Ok
-        );
+        assert_eq!(check_cache(named("npm"), None).severity, Severity::Ok);
 
         let path = Path::new("/home/someone/.npm/_cacache");
-        let finding = check_cache("npm", Some(path), CacheBypass::Complete);
+        let finding = check_cache(named("npm"), Some(path));
         assert_eq!(finding.severity, Severity::Warn);
         assert!(
             finding.detail.contains("never reach the proxy"),
@@ -840,11 +984,7 @@ mod tests {
     /// different exposure from npm's and is described as such.
     #[test]
     fn a_partial_bypass_says_what_it_still_fetches() {
-        let finding = check_cache(
-            "yarn",
-            Some(Path::new("/tmp/yarn")),
-            CacheBypass::ArtifactsOnly,
-        );
+        let finding = check_cache(named("yarn"), Some(Path::new("/tmp/yarn")));
         assert_eq!(finding.severity, Severity::Warn);
         assert!(
             finding.detail.contains("still fetches metadata"),
@@ -862,25 +1002,21 @@ mod tests {
     #[test]
     fn each_client_gets_its_own_way_to_clear_the_cache() {
         assert_eq!(
-            check_cache("bun", Some(Path::new("/tmp/b")), CacheBypass::Complete)
+            check_cache(named("bun"), Some(Path::new("/tmp/b")))
                 .fix
                 .as_deref(),
             Some("bun pm cache rm")
         );
         assert!(
-            check_cache("pnpm", Some(Path::new("/tmp/p")), CacheBypass::Complete)
+            check_cache(named("pnpm"), Some(Path::new("/tmp/p")))
                 .fix
                 .as_deref()
                 .is_some_and(|f| f.contains("pnpm store prune"))
         );
         assert_eq!(
-            check_cache(
-                "yarn",
-                Some(Path::new("/tmp/y")),
-                CacheBypass::ArtifactsOnly
-            )
-            .fix
-            .as_deref(),
+            check_cache(named("yarn"), Some(Path::new("/tmp/y")))
+                .fix
+                .as_deref(),
             Some("yarn cache clean --force")
         );
     }
@@ -929,12 +1065,13 @@ mod tests {
     /// Junk must not produce phantom findings.
     #[test]
     fn unreadable_lockfiles_yield_nothing() {
-        for kind in Lockfile::ALL {
-            assert!(recorded_origins(kind, "").is_empty());
-            assert!(recorded_origins(kind, "not a lockfile at all").is_empty());
+        for (lockfile, pins) in crate::lockfile::pinning() {
+            assert!(recorded_origins(pins.key, "").is_empty());
+            assert!(recorded_origins(pins.key, "not a lockfile at all").is_empty());
             assert!(
-                recorded_origins(kind, "resolved tarball not-a-url").is_empty(),
-                "{kind:?}"
+                recorded_origins(pins.key, "resolved tarball not-a-url").is_empty(),
+                "{}",
+                lockfile.name
             );
         }
     }
@@ -1153,10 +1290,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// The lockfiles checked before the table, plus `npm-shrinkwrap.json`, which records
+    /// `resolved` the same way `package-lock.json` does.
     #[test]
-    fn lockfiles_name_their_client() {
-        assert_eq!(Lockfile::NpmPackageLock.client(), "npm");
-        assert_eq!(Lockfile::YarnLock.filename(), "yarn.lock");
-        assert_eq!(Lockfile::PnpmLock.filename(), "pnpm-lock.yaml");
+    fn the_checked_lockfiles_are_those_that_record_artifact_urls() {
+        let checked: Vec<(&str, &str)> = crate::lockfile::pinning()
+            .map(|(lockfile, pins)| (lockfile.name, pins.key))
+            .collect();
+        assert_eq!(
+            checked,
+            [
+                ("package-lock.json", "resolved"),
+                ("npm-shrinkwrap.json", "resolved"),
+                ("yarn.lock", "resolved"),
+                ("pnpm-lock.yaml", "tarball"),
+            ]
+        );
+    }
+
+    /// Registry checks run for npm, pnpm and yarn; bun's registry is not asked.
+    #[test]
+    fn each_client_is_listed_once_and_bun_is_not_asked_its_registry() {
+        let names: Vec<(&str, bool)> = clients()
+            .map(|client| (client.name, client.registry.is_some()))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("npm", true),
+                ("pnpm", true),
+                ("yarn", true),
+                ("bun", false)
+            ]
+        );
+    }
+
+    /// The fix names the client's own command.
+    #[test]
+    fn a_misdirected_client_is_told_its_own_command() {
+        let finding = check_registry(named("pnpm"), Some("https://registry.npmjs.org"), PROXY);
+        assert_eq!(
+            finding.fix.as_deref(),
+            Some("pnpm config set registry http://127.0.0.1:8080")
+        );
+    }
+
+    /// Every origin a row always reaches is a registry, whichever ecosystem it serves.
+    #[test]
+    fn every_always_reachable_origin_is_a_registry() {
+        assert!(looks_like_a_registry("https://registry.npmjs.org"));
+        assert!(looks_like_a_registry("https://pypi.org"));
+        assert!(looks_like_a_registry("https://files.pythonhosted.org"));
+        assert!(!looks_like_a_registry("http://127.0.0.1:8080"));
     }
 }

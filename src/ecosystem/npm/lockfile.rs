@@ -23,29 +23,56 @@ use serde::de::IgnoredAny;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::identity::Ecosystem;
-use crate::lockfile::{Locked, Lockfile, Unread};
+use crate::lockfile::{Locked, Lockfile, Pins, Unread};
 
-/// Each lockfile name and the reader it chooses.
+const REINSTALL: &str =
+    "delete the lockfile and node_modules, then install again through the proxy";
+
+/// npm and yarn record the absolute artifact URL, so a lockfile written through the proxy
+/// contains its address.
+const RESOLVED: Pins = Pins {
+    key: "resolved",
+    when_absent: "records no artifact URLs",
+    reinstall: REINSTALL,
+};
+
+/// Each lockfile name, the reader it chooses, and how it records artifact URLs.
+///
+/// bun's `bun.lock` is not checked by `doctor`: it records an empty string for an artifact
+/// from the configured registry.
 pub const LOCKFILES: &[Lockfile] = &[
     Lockfile {
         name: "package-lock.json",
         read: npm,
+        pins: Some(RESOLVED),
     },
     Lockfile {
         name: "npm-shrinkwrap.json",
         read: npm,
+        pins: Some(RESOLVED),
     },
     Lockfile {
         name: "yarn.lock",
         read: yarn,
+        pins: Some(RESOLVED),
     },
     Lockfile {
         name: "pnpm-lock.yaml",
         read: pnpm,
+        // pnpm omits `resolution.tarball` when the URL matches the configured registry and
+        // derives it at install time.
+        pins: Some(Pins {
+            key: "tarball",
+            when_absent: "records no artifact URLs, which is normal: pnpm derives them from \
+                          the configured registry, so the lockfile is portable and is not \
+                          evidence either way",
+            reinstall: REINSTALL,
+        }),
     },
     Lockfile {
         name: "bun.lock",
         read: bun,
+        pins: None,
     },
 ];
 
