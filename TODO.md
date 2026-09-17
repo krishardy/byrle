@@ -376,14 +376,26 @@ That is the failure mode every item below should be brought to.
       | 2 | add `publish_times` and `streams` to the descriptor | `[ ]` |
       | 3 | point `Ecosystem::ALL` at the table | `[ ]` |
       | 4 | fetch PyPI's OSV, Datadog and GHSA streams | `[ ]` |
-      | 5 | split `npm.rs` and `pypi.rs` into directories with matching file names | `[ ]` |
+      | 5 | split `npm.rs` and `pypi.rs` into directories with matching file names | `[x]` |
 
       Steps 2 to 4 are what close the **Wrong answers** items above; step 1 only makes the
       omissions visible, which is why `adapter-interface.md` now lists the four questions
       that still match on `Ecosystem` and why each does.
 
-      Step 5 is last on purpose. Splitting the files before the table is filled moves the
-      `match` arms without removing them.
+      Step 5 landed out of order, at the operator's request. It moved no `match` arm, so
+      steps 2 to 4 are unchanged by it.
+
+      Each directory is `mod.rs`, `paths.rs`, `wire.rs`, `normalize.rs`, `transport.rs` and
+      `error.rs`. npm has a seventh, `rewrite.rs`; PyPI gets no counterpart because
+      `proxy::handle` returns before any filtering for a simple index.
+
+      Three kinds of npm-specific logic are still outside the directories:
+
+      | Where | What | Why it stayed |
+      |---|---|---|
+      | `proxy.rs` | `read_index`, `handle`'s npm arm, `upstream_url`, `fetch_and_store`, `publish_times_for` | each reads `Proxy`; the `handle` decomposition item below is what frees them |
+      | `intel/osv.rs`, `datadog.rs`, `github.rs`, `kev.rs` | npm-only stream bindings | the directory is per **source**, and step 4 makes each source per-ecosystem rather than moving the file |
+      | `main.rs`, `doctor.rs`, `explain.rs`, `lockfile.rs` | npm-only clients and commands | ad-hoc items 18 to 20, and the Wrong answers list above |
 
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 
@@ -571,7 +583,7 @@ implementations.
             `Repository` also gained a `directory` field, which monorepo packages set
             (`@babel/traverse` reports `packages/babel-traverse`) and source diffing
             needs to compare the right tree.
-- [x] npm transport + normalizer, written concretely. `src/npm.rs`: private wire types
+- [x] npm transport + normalizer, written concretely. `src/ecosystem/npm/`: private wire types
       mirroring npm's JSON, `normalize_packument()` into `Vec<PackageRecord>`, and a
       `Client` that fetches either document from a registry. No adapter abstraction, per
       the note below.
@@ -1989,10 +2001,10 @@ changes to the core, that is the finding — make it now, not after five adapter
 - [ ] Provenance and attestation fetching for PyPI, which has its own metadata shape.
       Carried from Stage 1, which measured the npm side only: npm asks its own registry
       for `/-/npm/v1/keys` and never contacts the host the packument named.
-- [~] `[!]` PEP 503 simple-index transport, written concretely first. `src/pypi.rs` reads
+- [~] `[!]` PEP 503 simple-index transport, written concretely first. `src/ecosystem/pypi/` reads
       PEP 691 JSON: name normalisation, the index URL, and one project's files with version,
       kind, hash, upload time and yank state. Standalone on purpose, sharing nothing with
-      `src/npm.rs`: the interface is an output of this stage.
+      `src/ecosystem/npm/`: the interface is an output of this stage.
       [pypi-simple-index](docs/engineering_decisions/pypi-simple-index.md).
       - [x] Read the shape from the live index rather than the PEPs alone, 2026-09-16.
       - [x] Parse checked against nine real projects, 12,164 files, not fixtures alone:

@@ -1,6 +1,6 @@
 # PyPI's simple index is file-keyed, and a packument is not
 
-- **Status:** Implemented, parse only. `src/pypi.rs`. Nothing fetches it yet.
+- **Status:** Implemented and served. `src/ecosystem/pypi/`.
 - **Related:** [stage-structure](stage-structure.md),
   [purl-identity-rules](purl-identity-rules.md),
   [enforcement-tiers](enforcement-tiers.md),
@@ -8,11 +8,11 @@
 
 ## Decision
 
-`src/pypi.rs` reads PyPI's simple index as PEP 691 JSON and shares nothing with
-`src/npm.rs`. Stage 3's goal says the adapter interface is an **output** of this stage,
-extracted from two working implementations. An interface written before PyPI works would be
-npm's shape with PyPI bent into it, which is the thing the stage exists to prevent.
-`src/npm.rs` is 3,422 lines and is not touched.
+`src/ecosystem/pypi/` reads PyPI's simple index as PEP 691 JSON. What it shares with
+`src/ecosystem/npm/` is what `ecosystem::Registry` names and nothing else. Stage 3's goal
+says the adapter interface is an **output** of this stage, extracted from two working
+implementations. An interface written before PyPI works would be npm's shape with PyPI bent
+into it, which is the thing the stage exists to prevent.
 
 ## What the index really is, measured 2026-09-16
 
@@ -149,8 +149,8 @@ Two consequences the extraction step has to answer, neither of them settled here
 
 ### Which origins the proxy fronts
 
-`ReachableOrigins` and `OriginPolicy` were in `npm.rs` and `ReachableOrigins::new` always
-added `npm::DEFAULT_REGISTRY`. They are now `src/origin.rs`, `new` takes the set of
+`ReachableOrigins` and `OriginPolicy` were in npm's module and `ReachableOrigins::new`
+always added `npm::DEFAULT_REGISTRY`. They are now `src/origin.rs`, `new` takes the set of
 configured upstreams, and each ecosystem names the origins it always reaches:
 
 | Ecosystem | Always reachable |
