@@ -1,7 +1,7 @@
 # `policy diff`: a date per policy, and exit bits
 
 - **Status:** Implemented. `When` and `exit_code` in `src/cli.rs`; `exit_bits` and the bits
-  in `src/policy/diff.rs`; `run_policy_diff` in `src/main.rs`.
+  and `run` in `src/policy/diff.rs`; the runner in `src/main.rs`.
 - **Plan reference:** §3, policy impact analysis: an unchanged policy compared with itself
   30 days on "shows exactly which packages break when entries lapse", the renewal workflow's
   scheduled job; and "Nonzero exit on any loosening transition".
