@@ -197,7 +197,7 @@ fn reason(result: &super::decide::Result) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::npm::normalize_packument;
+    use crate::ecosystem::npm::normalize_packument;
     use crate::record::PackumentDetail;
 
     const TODAY: Date = jiff::civil::date(2026, 9, 13);

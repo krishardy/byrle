@@ -17,6 +17,9 @@
 //! A field added here without an entry in every row of [`TABLE`] does not compile, which
 //! is the property the table exists for.
 
+pub mod npm;
+pub mod pypi;
+
 use crate::identity::Ecosystem;
 use crate::route::{DocumentKind, RequestTarget};
 
@@ -78,18 +81,18 @@ pub const ROOT: Ecosystem = Ecosystem::Npm;
 pub const NPM: Registry = Registry {
     ecosystem: Ecosystem::Npm,
     prefixes: &[],
-    always_reachable: &[crate::npm::DEFAULT_REGISTRY],
-    classify_path: crate::npm::classify_path,
-    read_media_type: crate::npm::document_from_content_type,
+    always_reachable: &[npm::DEFAULT_REGISTRY],
+    classify_path: npm::classify_path,
+    read_media_type: npm::document_from_content_type,
 };
 
 pub const PYPI: Registry = Registry {
     ecosystem: Ecosystem::PyPI,
     // The index and the files it points at are separate hosts, so both are claimed.
     prefixes: &["/simple/", "/packages/"],
-    always_reachable: &[crate::pypi::INDEX, crate::pypi::FILES],
-    classify_path: crate::pypi::classify_path,
-    read_media_type: crate::pypi::document_from_content_type,
+    always_reachable: &[pypi::INDEX, pypi::FILES],
+    classify_path: pypi::classify_path,
+    read_media_type: pypi::document_from_content_type,
 };
 
 /// Every ecosystem the proxy routes, one row each.
@@ -197,19 +200,16 @@ mod table {
     #[test]
     fn each_row_reads_only_its_own_media_types() {
         assert_eq!(
-            of(Ecosystem::Npm).document(Some(crate::npm::ABBREVIATED_ACCEPT)),
+            of(Ecosystem::Npm).document(Some(npm::ABBREVIATED_ACCEPT)),
             Some(DocumentKind::Packument(PackumentDetail::Abbreviated)),
         );
+        assert_eq!(of(Ecosystem::Npm).document(Some(pypi::SIMPLE_JSON)), None);
         assert_eq!(
-            of(Ecosystem::Npm).document(Some(crate::pypi::SIMPLE_JSON)),
-            None
-        );
-        assert_eq!(
-            of(Ecosystem::PyPI).document(Some(crate::pypi::SIMPLE_JSON)),
+            of(Ecosystem::PyPI).document(Some(pypi::SIMPLE_JSON)),
             Some(DocumentKind::SimpleIndex),
         );
         assert_eq!(
-            of(Ecosystem::PyPI).document(Some(crate::npm::ABBREVIATED_ACCEPT)),
+            of(Ecosystem::PyPI).document(Some(npm::ABBREVIATED_ACCEPT)),
             None,
         );
     }

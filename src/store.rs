@@ -151,7 +151,7 @@ impl RecordStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::npm::normalize_packument;
+    use crate::ecosystem::npm::normalize_packument;
     use crate::record::PackumentDetail;
 
     fn packument(name: &str, versions: &[&str]) -> PackageMetadata {

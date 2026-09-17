@@ -11,7 +11,7 @@
 //!
 //! The rewrite replaces URLs in the text rather than rebuilding the document, so what the
 //! client receives is byte-identical to the upstream's apart from those URLs. See
-//! [`crate::npm::rewrite_artifact_origins`] for why, and what it costs.
+//! [`crate::ecosystem::npm::rewrite_artifact_origins`] for why, and what it costs.
 //!
 //! The rewrite exists because clients disagree about `dist.tarball`. npm rewrites it to
 //! the configured registry; pnpm 10, yarn 1, yarn 4 and bun 1.3 use it verbatim and
@@ -49,6 +49,7 @@
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
+use crate::ecosystem::npm::{self, NormalizeError};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_VERIFIED,
@@ -60,7 +61,6 @@ use crate::http::{
 use crate::identity::{Ecosystem, PackageKey};
 use crate::integrity::{Sri, Verifier};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
-use crate::npm::{self, NormalizeError};
 use crate::origin::{Disposition, OriginPolicy, ReachableOrigins};
 use crate::policy::{Policy, enforce, facts};
 use crate::record::{PackageMetadata, PackageRecord, PackumentDetail};
@@ -203,7 +203,7 @@ pub struct Proxy {
     /// Used to fetch a packument the client never asked for. See [`lookup_or_fetch`].
     registry: npm::Client,
     /// The same for a PyPI simple index.
-    index: crate::pypi::Client,
+    index: crate::ecosystem::pypi::Client,
     /// Artifacts already fetched and verified, keyed by content digest. The fetch path
     /// branches on this (plan §5). See [`crate::verified`].
     verified: Arc<Mutex<VerifiedArtifacts>>,
@@ -264,12 +264,15 @@ impl Proxy {
         Self {
             origins: Arc::new(origins),
             registry: npm::Client::new(client.clone(), upstream.clone()),
-            index: crate::pypi::Client::new(client.clone(), crate::pypi::INDEX),
+            index: crate::ecosystem::pypi::Client::new(
+                client.clone(),
+                crate::ecosystem::pypi::INDEX,
+            ),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             upstream,
-            upstream_pypi: crate::pypi::INDEX.to_owned(),
+            upstream_pypi: crate::ecosystem::pypi::INDEX.to_owned(),
             policy: None,
             publish_times: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
@@ -300,7 +303,7 @@ impl Proxy {
     }
 
     /// Whether versions whose artifacts this proxy cannot serve are removed from the
-    /// packument. On by default; see [`crate::npm::filter_unservable_versions`].
+    /// packument. On by default; see [`crate::ecosystem::npm::filter_unservable_versions`].
     pub fn with_refuse_unservable(mut self, refuse: bool) -> Self {
         self.refuse_unservable = refuse;
         self
@@ -428,16 +431,18 @@ impl Proxy {
         // forwards, so one setting means one limit.
         self.registry =
             npm::Client::new(self.client.clone(), self.upstream.clone()).with_max_bytes(limit);
-        self.index = crate::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
-            .with_max_bytes(limit);
+        self.index =
+            crate::ecosystem::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
+                .with_max_bytes(limit);
         self
     }
 
-    /// The PyPI simple index to forward to. Defaults to [`crate::pypi::INDEX`].
+    /// The PyPI simple index to forward to. Defaults to [`crate::ecosystem::pypi::INDEX`].
     pub fn with_upstream_pypi(mut self, upstream: impl Into<String>) -> Self {
         self.upstream_pypi = upstream.into().trim_end_matches('/').to_owned();
-        self.index = crate::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
-            .with_max_bytes(self.max_packument_bytes);
+        self.index =
+            crate::ecosystem::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
+                .with_max_bytes(self.max_packument_bytes);
         self
     }
 
@@ -719,7 +724,9 @@ async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
             Err(e) => Err(e.to_string()),
         },
         Ecosystem::PyPI => match proxy.index.project(key.name()).await {
-            Ok(project) => Ok(crate::pypi::normalize(&project).map_err(|e| e.to_string())),
+            Ok(project) => {
+                Ok(crate::ecosystem::pypi::normalize(&project).map_err(|e| e.to_string()))
+            }
             Err(e) => Err(e.to_string()),
         },
     };
@@ -823,7 +830,7 @@ fn read_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> 
     // The project name is not read from here: `pypi::parse` takes one as the fallback for
     // an index that does not name itself, and every message below says `path`, which
     // identifies the project already.
-    let project = match crate::pypi::parse("", decoded) {
+    let project = match crate::ecosystem::pypi::parse("", decoded) {
         Ok(project) => project,
         Err(e) => {
             warn!(path = %path, error = %e, "UNINSPECTED: simple index did not parse");
@@ -835,7 +842,7 @@ fn read_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> 
     // Stored before the rewrite, and built from the bytes that arrived. Records built
     // from the rewritten document would name the proxy's own origin as every artifact's
     // upstream, which is the wrong thing to hold as the index's claim.
-    match crate::pypi::normalize(&project) {
+    match crate::ecosystem::pypi::normalize(&project) {
         Ok(metadata) => {
             let versions = metadata.records.len();
             let skipped = metadata.skipped.len();
@@ -919,7 +926,7 @@ fn resolver_probe(ecosystem: Ecosystem, target: &RequestTarget) -> bool {
 /// proxy was pointed at it, so the URL in the document is deliberately not what decides.
 ///
 /// PyPI needs two hosts. The index answers `/simple/<name>/` and the files come from
-/// [`crate::pypi::FILES`], which the index names in full and which the proxy reaches by
+/// [`crate::ecosystem::pypi::FILES`], which the index names in full and which the proxy reaches by
 /// keeping the path: the hash segments in `/packages/ab/cd/ef.../name-1.0.whl` are what
 /// locate the file, and they arrive in the request because the client followed the URL the
 /// index published.
@@ -947,7 +954,7 @@ fn upstream_url(
         // those, and that is what sent the request here.
         Ecosystem::PyPI => match path_and_query.strip_prefix("/simple") {
             Some(rest) => format!("{}{rest}", proxy.upstream_pypi),
-            None => format!("{}{path_and_query}", crate::pypi::FILES),
+            None => format!("{}{path_and_query}", crate::ecosystem::pypi::FILES),
         },
     }
 }
@@ -2203,7 +2210,7 @@ mod tests {
         let body = br#"{"name":"x","files":[{"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0.tar.gz","hashes":{}}]}"#.to_vec();
         let (base, _) = pypi_proxy_serving(
             StatusCode::NOT_FOUND,
-            crate::pypi::SIMPLE_JSON,
+            crate::ecosystem::pypi::SIMPLE_JSON,
             body.clone(),
         )
         .await;
@@ -2226,7 +2233,7 @@ mod tests {
             {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl","hashes":{}}
         ]}"#.to_vec();
         let (base, seen) =
-            pypi_proxy_serving(StatusCode::OK, crate::pypi::SIMPLE_JSON, index).await;
+            pypi_proxy_serving(StatusCode::OK, crate::ecosystem::pypi::SIMPLE_JSON, index).await;
 
         let response = reqwest::Client::new()
             .get(format!("{base}/simple/x/"))
@@ -4481,7 +4488,7 @@ mod tests {
     fn the_upstream_base_drops_a_trailing_slash() {
         let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org/");
         assert_eq!(proxy.upstream(), "https://registry.npmjs.org");
-        assert_eq!(proxy.upstream_pypi(), crate::pypi::INDEX);
+        assert_eq!(proxy.upstream_pypi(), crate::ecosystem::pypi::INDEX);
         let proxy = proxy.with_upstream_pypi("https://mirror.example/simple/");
         assert_eq!(proxy.upstream_pypi(), "https://mirror.example/simple");
     }

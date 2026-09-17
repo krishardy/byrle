@@ -18,8 +18,8 @@ use waharoa::explain;
 use waharoa::identity::PackageRef;
 
 use waharoa::audit;
+use waharoa::ecosystem::npm;
 use waharoa::intel::store::Intel;
-use waharoa::npm;
 use waharoa::policy::{Policy, check, decide, diff, enforce, packages, today};
 use waharoa::proxy::Proxy;
 use waharoa::record;

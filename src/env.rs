@@ -59,11 +59,11 @@ enum Default {
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
 /// npm's public registry, which `npm` also names for its own origin rules.
-pub const DEFAULT_UPSTREAM_NPM: &str = crate::npm::DEFAULT_REGISTRY;
+pub const DEFAULT_UPSTREAM_NPM: &str = crate::ecosystem::npm::DEFAULT_REGISTRY;
 
 /// PyPI's simple index. Not the host its files come from: the index gives each file's URL
 /// in full, and `pypi::DEFAULT_FILES` names where they land.
-pub const DEFAULT_UPSTREAM_PYPI: &str = crate::pypi::INDEX;
+pub const DEFAULT_UPSTREAM_PYPI: &str = crate::ecosystem::pypi::INDEX;
 
 /// Default ceiling on a packument body, applied both to the bytes buffered and to the
 /// bytes decompression is allowed to produce.
