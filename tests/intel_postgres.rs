@@ -491,7 +491,10 @@ async fn a_failed_refresh_leaves_the_previous_load_in_place() {
         .await
         .expect_err("a duplicate advisory id should fail the load")
         .to_string();
-    assert!(error.contains("advisory_publisher_id_key"), "{error}");
+    assert!(
+        error.contains("advisory_source_publisher_id_key"),
+        "{error}"
+    );
 
     let (first_name, _) = target(&first);
     let (second_name, second_version) = target(&second);
