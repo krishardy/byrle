@@ -1,8 +1,9 @@
-.PHONY: help dev-setup lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients retry-matrix offsite-urls inspect spike-config duplicates
+.PHONY: help dev-setup build lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients retry-matrix offsite-urls inspect spike-config duplicates
 
 help:
 	@echo "waharoa targets:"
 	@echo "  dev-setup      install development dependencies"
+	@echo "  build          build the waharoa binary (release profile)"
 	@echo "  lint           rustfmt, clippy and shellcheck, warnings as errors"
 	@echo "  semgrep        pattern-based static analysis"
 	@echo "  trufflehog     credential scanning (working tree and git history)"
@@ -34,6 +35,9 @@ TRUFFLEHOG_REPO_ROOT ?= $(CURDIR)
 # Recipes stay one-line wrappers; the logic lives in scripts/make/<target>.sh
 dev-setup:
 	@scripts/make/dev-setup.sh
+
+build:
+	@scripts/make/build.sh
 
 lint:
 	@scripts/make/lint.sh
