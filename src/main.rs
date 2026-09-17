@@ -1105,7 +1105,7 @@ async fn main() -> std::process::ExitCode {
         .init();
 
     let listen = or_exit(environment.listen());
-    let upstream = or_exit(environment.upstream_npm());
+    let upstream_npm = or_exit(environment.upstream_npm());
     let upstream_pypi = or_exit(environment.upstream_pypi());
 
     // reqwest 0.13 defaults to rustls with rustls-platform-verifier, so the upstream leg
@@ -1277,7 +1277,7 @@ async fn main() -> std::process::ExitCode {
         std::sync::Arc::new(store) as std::sync::Arc<dyn waharoa::intel::store::Intel>
     });
 
-    let proxy = Proxy::new(client, upstream)
+    let proxy = Proxy::new(client, upstream_npm)
         .with_upstream_pypi(upstream_pypi)
         .with_intel(intel)
         .with_refusal_status(refusal)
@@ -1306,7 +1306,7 @@ async fn main() -> std::process::ExitCode {
 
     info!(
         listen = %listen,
-        upstream_npm = %proxy.upstream(),
+        upstream_npm = %proxy.upstream_npm(),
         upstream_pypi = %proxy.upstream_pypi(),
         artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
         allowed_direct = ?proxy.origin_policy().allowed_direct(),

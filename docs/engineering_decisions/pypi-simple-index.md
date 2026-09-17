@@ -129,7 +129,7 @@ store and the proxy's artifact path.
 
 ### A registry is one host to npm and two to PyPI
 
-`Proxy` holds one `upstream: String` and one `registry: npm::Client`, because
+`Proxy` held one `upstream: String` and one `registry: npm::Client`, because
 `registry.npmjs.org` serves both the packument and the tarball. PyPI serves the index from
 `pypi.org/simple/` and the files from `files.pythonhosted.org/packages/`, and the index
 gives each file's URL in full.
