@@ -54,13 +54,15 @@
 //! | `paths.rs` | what a request path refers to, and which document a response is |
 //! | `wire.rs` | the packument as npm serves it |
 //! | `normalize.rs` | wire types to [`crate::record::PackageMetadata`] |
+//! | `inspect.rs` | decoding and normalising a packument body the proxy forwarded |
 //! | `rewrite.rs` | removing versions from a packument and repointing the rest |
 //! | `transport.rs` | fetching a packument on the proxy's own behalf |
 //! | `error.rs` | what can go wrong reading one, and fetching one |
 //!
-//! `crate::ecosystem::pypi` has the same files, minus `rewrite.rs`.
+//! `crate::ecosystem::pypi` has the same files, minus `rewrite.rs` and `inspect.rs`.
 
 pub mod error;
+pub mod inspect;
 pub mod normalize;
 pub mod paths;
 pub mod rewrite;
@@ -68,6 +70,7 @@ pub mod transport;
 pub mod wire;
 
 pub use error::{FetchError, NormalizeError};
+pub use inspect::{PackumentOutcome, inspect_decoded, inspect_packument};
 pub use normalize::{normalize_packument, parse_publish_times};
 pub use paths::{classify_path, detail_from_content_type, document_from_content_type};
 

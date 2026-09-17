@@ -41,10 +41,13 @@ in the same place for both:
 | `transport.rs` | `Client`, fetching a packument | `Client`, fetching an index |
 | `error.rs` | `NormalizeError`, `FetchError` | `PypiError`, `FetchError` |
 
-npm has a seventh, `rewrite.rs`: removing refused versions from a packument and pointing
-the rest at the proxy. PyPI has no counterpart, and no empty file standing in for one.
-`proxy::handle` returns before any filtering for a simple index, because filtering one is
-range resolution rather than a refusal a client can act on.
+npm has two more files, and PyPI has no counterpart and no empty file standing in for
+either:
+
+| File | npm | Why PyPI has none |
+|---|---|---|
+| `rewrite.rs` | removing refused versions from a packument and pointing the rest at the proxy | `proxy::handle` returns before any filtering for a simple index, because filtering one is range resolution rather than a refusal a client can act on |
+| `inspect.rs` | decoding a forwarded packument body and normalising it | PyPI's equivalent is still `proxy::read_index`, which reads `Proxy` |
 
 `wire.rs` is the one file whose contents differ in kind. npm's holds serde targets only,
 because a packument is already version-keyed. PyPI's also holds `Project`, because a simple
