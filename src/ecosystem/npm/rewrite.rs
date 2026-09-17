@@ -6,7 +6,12 @@
 
 use std::collections::HashSet;
 
-use crate::origin::{Disposition, OriginPolicy, RewriteError, reachable_path};
+use tracing::warn;
+
+use crate::origin::{
+    Disposition, OriginPolicy, RewriteError, reachable_path, rewrite_artifact_origins,
+};
+use crate::record::PackageMetadata;
 
 ///
 /// This is the only control that works on an off-origin artifact. The client fetches
@@ -114,6 +119,125 @@ pub struct Filtered {
     /// Versions kept with their artifact left as published, because the operator allows
     /// that origin to be fetched directly.
     pub allowed: usize,
+}
+
+/// What the packument path needs to decide what to send back.
+pub struct Rewrite<'a> {
+    pub decoded: &'a [u8],
+    pub packument: &'a PackageMetadata,
+    /// Where artifact URLs are pointed, when they are pointed anywhere.
+    pub base: Option<&'a str>,
+    pub origins: &'a OriginPolicy,
+    /// Versions the policy refuses, which are removed.
+    pub refused_by_policy: &'a HashSet<String>,
+    pub refuse_unservable: bool,
+    pub path: &'a str,
+}
+
+/// Point a packument's artifacts at the proxy, or explain why it was left alone.
+///
+/// Returns `None` when the document is forwarded as it came, which always means some
+/// artifacts for this package will be fetched without the proxy seeing them.
+pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
+    let Rewrite {
+        decoded,
+        packument,
+        base,
+        origins: policy,
+        refused_by_policy,
+        refuse_unservable,
+        path,
+    } = r;
+    let (allowed_direct, refused) = packument.unserved_origins(policy);
+
+    // An accepted gap has to stay visible. One that stops being reported outlives the
+    // reason it was added.
+    if !allowed_direct.is_empty() {
+        warn!(
+            path = %path,
+            versions = allowed_direct.values().sum::<usize>(),
+            origins = ?allowed_direct.keys().collect::<Vec<_>>(),
+            "UNINSPECTED: artifacts fetched directly by the client, allowed by configuration"
+        );
+    }
+
+    // Either reason to drop a version puts this on the structural path. The byte
+    // rewrite below cannot remove anything, only repoint URLs.
+    if !refused_by_policy.is_empty() || (refuse_unservable && !refused.is_empty()) {
+        let origins: Vec<&String> = refused.keys().collect();
+        let artifacts = packument
+            .records
+            .iter()
+            .filter_map(|r| Some((r.package.version().to_owned(), r.artifact()?.url.clone())));
+        return match filter_unservable_versions(
+            decoded,
+            artifacts,
+            policy,
+            refused_by_policy,
+            refuse_unservable,
+            base.unwrap_or(""),
+        ) {
+            Ok(filtered) => {
+                warn!(
+                    path = %path,
+                    removed = filtered.removed.len(),
+                    by_policy = refused_by_policy.len(),
+                    kept = filtered.rewritten,
+                    allowed = filtered.allowed,
+                    origins = ?origins,
+                    "REFUSED versions removed from the document so the resolver picks \
+                     another"
+                );
+                // Always the filtered body, even when nothing survived. Returning None
+                // here forwards the original, which would put every refused version
+                // straight back into the document.
+                Some(filtered.body)
+            }
+            Err(e) => {
+                warn!(path = %path, error = %e, "UNINSPECTED: packument could not be filtered");
+                None
+            }
+        };
+    }
+
+    if !refused.is_empty() {
+        let versions: usize = refused.values().sum();
+        let origins: Vec<&String> = refused.keys().collect();
+
+        // Every artifact being off-origin is not the same exposure as some of them being
+        // off-origin, and it is the shape someone would construct.
+        if versions == packument.records.len() {
+            warn!(
+                path = %path,
+                versions,
+                origins = ?origins,
+                "UNINSPECTED: every artifact in this packument is on an origin the proxy \
+                 does not front"
+            );
+        } else {
+            warn!(
+                path = %path,
+                versions,
+                origins = ?origins,
+                "UNINSPECTED: some artifacts left on an origin the proxy does not front"
+            );
+        }
+    }
+
+    // Nothing left to do when artifact URLs are not being repointed. Reached when the
+    // operator turned rewriting off and the policy refused nothing.
+    let base = base?;
+    let artifacts = packument
+        .records
+        .iter()
+        .filter_map(|record| Some(record.artifact()?.url.as_str()));
+    match rewrite_artifact_origins(decoded, artifacts, policy.reachable(), base) {
+        Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
+        Err(e) => {
+            warn!(path = %path, error = %e, "UNINSPECTED: packument could not be rewritten");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -295,6 +419,81 @@ mod tests {
 
     fn refusing(versions: &[&str]) -> HashSet<String> {
         versions.iter().map(|v| (*v).to_string()).collect()
+    }
+
+    /// `rewrite_packument` over `json`, the way the proxy calls it.
+    fn rewrite_document(
+        json: &str,
+        origins: &OriginPolicy,
+        base: Option<&str>,
+        refused_by_policy: &HashSet<String>,
+        refuse_unservable: bool,
+    ) -> Option<serde_json::Value> {
+        let packument = normalize_packument(json.as_bytes(), PackumentDetail::Abbreviated)
+            .expect("should normalise");
+        rewrite_packument(Rewrite {
+            decoded: json.as_bytes(),
+            packument: &packument,
+            base,
+            origins,
+            refused_by_policy,
+            refuse_unservable,
+            path: "/w",
+        })
+        .map(|body| serde_json::from_slice(&body).expect("json"))
+    }
+
+    const ON_REGISTRY: &str = r#"{"name":"w","versions":{
+        "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}}}}"#;
+
+    const OFFSITE: &str = r#"{"name":"w","versions":{
+        "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://elsewhere.example/w-1.0.0.tgz"}}}}"#;
+
+    #[test]
+    fn a_packument_on_the_registry_is_pointed_at_the_proxy() {
+        let out = rewrite_document(
+            ON_REGISTRY,
+            &policy(&[], &[]),
+            Some(PROXY),
+            &HashSet::new(),
+            true,
+        )
+        .expect("rewritten");
+        assert_eq!(
+            out["versions"]["1.0.0"]["dist"]["tarball"],
+            "http://127.0.0.1:8080/w/-/w-1.0.0.tgz"
+        );
+    }
+
+    /// Nothing rewritten is nothing sent: the upstream's bytes go through as they came.
+    #[test]
+    fn a_packument_with_nothing_to_repoint_is_forwarded_as_it_came() {
+        let origins = policy(&[], &[]);
+        assert_eq!(
+            rewrite_document(OFFSITE, &origins, Some(PROXY), &HashSet::new(), false),
+            None,
+            "the only artifact is on an origin the proxy does not front"
+        );
+        assert_eq!(
+            rewrite_document(ON_REGISTRY, &origins, None, &HashSet::new(), true),
+            None,
+            "rewriting is off and nothing is refused"
+        );
+    }
+
+    /// Either reason to drop a version sends the filtered body, even with rewriting off.
+    #[test]
+    fn a_refused_version_is_removed_whether_or_not_urls_are_repointed() {
+        let origins = policy(&[], &[]);
+        let by_policy = rewrite_document(ON_REGISTRY, &origins, None, &refusing(&["1.0.0"]), true)
+            .expect("filtered");
+        assert!(by_policy["versions"].get("1.0.0").is_none(), "{by_policy}");
+        let unservable = rewrite_document(OFFSITE, &origins, Some(PROXY), &HashSet::new(), true)
+            .expect("filtered");
+        assert!(
+            unservable["versions"].get("1.0.0").is_none(),
+            "{unservable}"
+        );
     }
 
     /// Decision #4's resolution half: the version is gone, so the client's own

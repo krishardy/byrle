@@ -35,10 +35,11 @@ in the same place for both:
 
 | File | npm | PyPI |
 |---|---|---|
-| `paths.rs` | request paths, and which packument a response is | request paths, PEP 503 names, PEP 427 filenames |
+| `paths.rs` | request paths, which packument a response is, and `upstream_url` | request paths, PEP 503 names, PEP 427 filenames, and `upstream_url` |
 | `wire.rs` | the packument's serde targets | the index's serde targets, plus `Project`, the cleaned form |
 | `normalize.rs` | packument to `PackageMetadata` | `Project` to `PackageMetadata` |
-| `transport.rs` | `Client`, fetching a packument | `Client`, fetching an index |
+| `transport.rs` | `Client`, fetching a packument; `metadata` for the proxy's own fetch | `Client`, fetching an index; `metadata` for the proxy's own fetch |
+| `inspect.rs` | `read_packument`: normalising a forwarded packument and keeping its records | `read_index`: the same for an index, and pointing its files at the proxy |
 | `error.rs` | `NormalizeError`, `FetchError` | `PypiError`, `FetchError` |
 
 npm has two more files, and PyPI has no counterpart and no empty file standing in for
@@ -46,8 +47,7 @@ either:
 
 | File | npm | Why PyPI has none |
 |---|---|---|
-| `rewrite.rs` | removing refused versions from a packument and pointing the rest at the proxy | `proxy::handle` returns before any filtering for a simple index, because filtering one is range resolution rather than a refusal a client can act on |
-| `inspect.rs` | decoding a forwarded packument body and normalising it | PyPI's equivalent is still `proxy::read_index`, which reads `Proxy` |
+| `rewrite.rs` | `rewrite_packument`: removing refused versions from a packument and pointing the rest at the proxy | `proxy::handle` returns before any filtering for a simple index, because filtering one is range resolution rather than a refusal a client can act on |
 | `clients.rs` | npm, pnpm, yarn and bun as `doctor` checks them | pip and uv are not checked yet |
 | `lockfile.rs` | reading `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml` and `bun.lock` | `requirements.txt`, `uv.lock` and `poetry.lock` are not read yet, and `lockfile::read` refuses them by name |
 
@@ -69,6 +69,7 @@ their input with npm's normaliser, which is a test dependency and not a producti
 | `classify_path` | what does this path refer to | `npm::classify_path` | `pypi::classify_path` |
 | `read_media_type` | which document is this response | `npm::detail_from_content_type` | `pypi::SIMPLE_JSON` |
 | `publish_times` | where a version's publish time comes from | `FullPackument`, fetched separately | `Record`, from each file's `upload-time` |
+| `other_is_probe` | whether an unclassified request is a resolver probe, logged at DEBUG | no | yes: PEP 658 `.metadata` requests |
 | `streams` | which package-keyed advisory streams cover it | `osv/npm`, `datadog/npm`, `github/npm` | none yet |
 | `lockfiles` | which lockfile names `policy diff` reads, and with which reader | `npm::lockfile::LOCKFILES` | none yet |
 | `unread_lockfiles` | which lockfile names are refused with a specific reason | `bun.lockb` | none |
@@ -117,9 +118,9 @@ of the ecosystem table.
 
 | Question | Where | Why not a field |
 |---|---|---|
-| where does this request go upstream | `proxy::upstream_url` | reads `Proxy`'s per-ecosystem upstream fields |
-| what does the proxy fetch on its own behalf | `proxy::fetch_and_store` | `async`, and reads `Proxy`'s clients |
-| how is that document read | `proxy::handle`'s `match document` | npm's arm is written inline in `handle`, not as a function |
+| where does this request go upstream | `proxy::upstream_url` | picks `Proxy`'s per-ecosystem upstream field; each arm is one call to `<ecosystem>::upstream_url` |
+| what does the proxy fetch on its own behalf | `proxy::fetch_and_store` | picks `Proxy`'s per-ecosystem client; each arm is one call to `Client::metadata`, which is `async` |
+| how is that document read | `proxy::handle`'s `match document` | the arms need different things: PyPI's calls `pypi::read_index` and returns, npm's calls `npm::read_packument` and goes on to publish times, intel and `npm::rewrite_packument` |
 
 All three are `match` expressions, not tests with a fall-through, so a third ecosystem is a
 compile error at each. Two of them were not, and a third ecosystem would have been given

@@ -1,7 +1,14 @@
 //! Reading a packument body the proxy forwarded: decode it, then normalise it.
 
+use std::sync::Mutex;
+use std::time::Instant;
+
+use tracing::{info, warn};
+
 use crate::http::{DecodeError, decode_for_parsing};
+use crate::origin::OriginPolicy;
 use crate::record::{PackageMetadata, PackumentDetail};
+use crate::store::RecordStore;
 
 use super::error::NormalizeError;
 use super::normalize::normalize_packument;
@@ -30,6 +37,58 @@ pub fn inspect_packument(
     match decode_for_parsing(body, content_encoding, limit) {
         Ok(decoded) => inspect_decoded(&decoded, detail),
         Err(e) => PackumentOutcome::Undecodable(e),
+    }
+}
+
+/// Read a packument the proxy forwarded: normalise it, keep its records, and say what it
+/// holds. `None` when it did not normalise, which is logged as UNINSPECTED.
+///
+/// The records are built from the bytes that arrived, not the rewritten document, which
+/// would name the proxy's own origin as every artifact's upstream.
+pub fn read_packument(
+    decoded: &[u8],
+    detail: PackumentDetail,
+    store: &Mutex<RecordStore>,
+    origins: &OriginPolicy,
+    encoded_bytes: usize,
+    parse_started: Instant,
+    path: &str,
+) -> Option<Box<PackageMetadata>> {
+    match inspect_decoded(decoded, detail) {
+        PackumentOutcome::Normalized(p) => {
+            // Reported by `rewrite_packument`, which is where it is acted on.
+            let (allowed_direct, refused) = p.unserved_origins(origins);
+            let (held_packages, held_records) = {
+                let mut store = store.lock().expect("record store lock");
+                store.insert((*p).clone());
+                (store.len(), store.records())
+            };
+            info!(
+                path = %path,
+                purl = %p.key,
+                detail = ?detail,
+                versions = p.records.len(),
+                skipped = p.skipped.len(),
+                // Every version in the document, not the one being installed.
+                versions_with_install_scripts =
+                    p.records.iter().filter(|r| r.has_install_scripts).count(),
+                latest = %p.latest.as_deref().unwrap_or("-"),
+                encoded_bytes,
+                parse_ms = parse_started.elapsed().as_millis() as u64,
+                offsite_versions =
+                    refused.values().sum::<usize>() + allowed_direct.values().sum::<usize>(),
+                held_packages,
+                held_records,
+                "packument normalized"
+            );
+            Some(p)
+        }
+        PackumentOutcome::Unreadable(e) => {
+            warn!(path = %path, error = %e, "UNINSPECTED: packument did not normalize");
+            None
+        }
+        // `inspect_decoded` never decodes, so it never reports this.
+        PackumentOutcome::Undecodable(_) => None,
     }
 }
 

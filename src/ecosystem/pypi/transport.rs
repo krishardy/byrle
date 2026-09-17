@@ -1,9 +1,12 @@
 //! Fetching a project index on the proxy's own behalf.
 
 use super::error::PypiError;
+use super::normalize::normalize;
 use super::paths::index_url;
 use super::wire::{Project, parse};
 use super::{MAX_INDEX_BYTES, SIMPLE_JSON};
+use crate::ecosystem::Fetched;
+use crate::identity::PackageKey;
 
 /// Fetches project indexes from one simple index.
 ///
@@ -74,6 +77,14 @@ impl Client {
     pub fn with_max_bytes(mut self, max_bytes: usize) -> Self {
         self.max_bytes = max_bytes;
         self
+    }
+
+    /// One project's index as records, for a request the client did not make.
+    pub async fn metadata(&self, key: &PackageKey) -> Fetched {
+        match self.project(key.name()).await {
+            Ok(project) => Ok(normalize(&project).map_err(|e| e.to_string())),
+            Err(e) => Err(e.to_string()),
+        }
     }
 
     /// Fetch one project's index and read it.
