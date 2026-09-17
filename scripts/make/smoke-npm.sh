@@ -135,7 +135,7 @@ if grep -q 'MISMATCH' "$clean_log"; then
     fail "a tarball did not match the digest its packument published:
 $(grep 'MISMATCH' "$clean_log")"
 fi
-grep -q 'no packument seen' "$clean_log" \
+grep -q 'no metadata seen' "$clean_log" \
     && fail "a tarball was fetched with no packument observed for its package"
 
 # No false positives on the real registry: every artifact it publishes has to look like

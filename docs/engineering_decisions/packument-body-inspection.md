@@ -46,7 +46,7 @@ set to describe what is actually sent.
 
 **Why the response decides which document it is.** npm asks with
 `application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*`, which names
-both documents. `PackumentDetail` qualifies every absent field on a record, so a wrong
+both documents. `DocumentDetail` qualifies every absent field on a record, so a wrong
 label turns "nobody asked for a publish time" into "npm publishes no publish time".
 
 **Why cap decompression.** gzip reaches about 5x on a packument (typescript: 2.0 MB

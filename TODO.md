@@ -575,7 +575,7 @@ implementations.
             so **cooldown cannot be enforced from what npm requests**. At Stage 1 those
             fields are `None` on every record. Closing that is fetch-path work, not a
             schema gap.
-      - [x] Every such field is `Option`, qualified by a `source: PackumentDetail` on the
+      - [x] Every such field is `Option`, qualified by a `detail: DocumentDetail` on the
             record. `None` + `Abbreviated` means not fetched; `None` + `Full` means the
             registry does not publish it. A cooldown rule that cannot tell those apart
             reads a missing timestamp as "old enough" and fails open. Deriving that
@@ -635,7 +635,7 @@ implementations.
                   Narrowing means one decompressor instead of three, and the client still
                   gets an encoding it asked for. A client accepting neither keeps its own
                   header and its body is not read.
-            - [x] `PackumentDetail` comes from the response `Content-Type`, not the
+            - [x] `DocumentDetail` comes from the response `Content-Type`, not the
                   request. npm asks with `application/vnd.npm.install-v1+json; q=1.0,
                   application/json; q=0.8, */*`, which names both and settles nothing.
                   Measured across 18 responses (6 packages, scoped and unscoped, three
@@ -2053,16 +2053,17 @@ changes to the core, that is the finding — make it now, not after five adapter
       version offers. The proxy stores it, so an artifact request finds its digest and the
       policy decides about the file that was asked for. Three of the four
       candidate core changes turned out not to be changes: the sha256 hex converts to SRI
-      through `integrity::Algorithm::Sha256`, `PackumentDetail::Full` already means what a
+      through `integrity::Algorithm::Sha256`, `DocumentDetail::Full` already means what a
       simple index is, and a yank is an upstream signal rather than a decision here.
       - [x] **The one real divergence: a record holds one artifact and a PyPI version has
             several files.** Closed: `PackageRecord::artifacts` is a `Vec`, `Artifact` gained
             `filename` and `runs_install_scripts`, and `narrowed_to` gives the record for one
             file. Nothing under `src/policy/` reads `artifact`, so the change stopped at the
             normalisers, the store and the proxy's artifact path.
-      - [ ] `PackumentDetail::Abbreviated`/`Full` is npm vocabulary, 88 uses. Renaming it
-            belongs to the extraction, not here. `NormalizedPackument` was the same problem
-            and is now `record::PackageMetadata`.
+      - [x] `PackumentDetail::Abbreviated`/`Full` was npm vocabulary, 88 uses. It is now
+            `record::DocumentDetail`, and the record's field is `detail`.
+            `NormalizedPackument` was the same problem and is now
+            `record::PackageMetadata`.
       - [x] `Ecosystem::PyPI` exists. `Ecosystem::ALL` held npm alone as the served set
             `doctor` and `/-/waharoa/ready` report on, until the architecture refactor
             replaced it with `ecosystem::TABLE`.

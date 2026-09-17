@@ -81,7 +81,7 @@ pub use paths::{
 };
 
 #[cfg(test)]
-use crate::record::PackumentDetail;
+use crate::record::DocumentDetail;
 pub use rewrite::{Filtered, Rewrite, filter_unservable_versions, rewrite_packument};
 pub use transport::{Client, fetched};
 
@@ -103,6 +103,6 @@ pub(crate) fn fixture(name: &str) -> Vec<u8> {
 
 /// That packument, normalised. Every caller wants the records, not the bytes.
 #[cfg(test)]
-pub(crate) fn normalized(name: &str, detail: PackumentDetail) -> crate::record::PackageMetadata {
+pub(crate) fn normalized(name: &str, detail: DocumentDetail) -> crate::record::PackageMetadata {
     normalize_packument(&fixture(name), detail).expect("fixture should normalise")
 }

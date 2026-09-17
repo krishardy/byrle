@@ -153,8 +153,11 @@ pub struct Health {
     pub served_origins: Vec<String>,
     /// Origins it does not serve and permits a client to fetch directly.
     pub allowed_direct_origins: Vec<String>,
-    /// Packuments currently held, and the records in them.
-    pub packuments_held: usize,
+    /// Packages whose metadata is held, and the records in them.
+    ///
+    /// Serialised under its earlier name, which a `doctor` from another build reads.
+    #[serde(rename = "packuments_held")]
+    pub packages_held: usize,
     pub records_held: usize,
     /// Artifacts fetched and verified since the proxy started. See [`crate::verified`].
     pub artifacts_verified: usize,
@@ -175,7 +178,7 @@ pub struct Proxy {
     verified: Arc<Mutex<VerifiedArtifacts>>,
     /// Bounds how many packuments are decoded and rewritten at once. See
     /// [`DEFAULT_MAX_CONCURRENT_PACKUMENTS`].
-    packument_slots: Arc<Semaphore>,
+    metadata_slots: Arc<Semaphore>,
     /// Which origins this proxy serves, and which it permits a client to fetch directly.
     /// One source of truth for rewriting, for the report, and for the refusal.
     origins: Arc<OriginPolicy>,
@@ -203,7 +206,7 @@ pub struct Proxy {
     /// The intel store, when one is configured. With a policy, every decision consults it,
     /// and a store that cannot answer is a 503 rather than a serve. See [`intel_for`].
     intel: Option<Arc<dyn Intel>>,
-    max_packument_bytes: usize,
+    max_metadata_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`rewrite_packument`].
     rewrite_artifacts: bool,
@@ -240,10 +243,10 @@ impl Proxy {
             publish_times: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
             intel: None,
-            max_packument_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
+            max_metadata_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
             rewrite_artifacts: true,
             public_base: None,
-            packument_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_PACKUMENTS)),
+            metadata_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_PACKUMENTS)),
             refusal: Arc::new(RefusalStatus::default()),
             refuse_unservable: true,
             #[cfg(debug_assertions)]
@@ -272,8 +275,8 @@ impl Proxy {
         self
     }
 
-    pub fn with_max_concurrent_packuments(mut self, limit: usize) -> Self {
-        self.packument_slots = Arc::new(Semaphore::new(limit.max(1)));
+    pub fn with_max_concurrent_documents(mut self, limit: usize) -> Self {
+        self.metadata_slots = Arc::new(Semaphore::new(limit.max(1)));
         self
     }
 
@@ -298,7 +301,7 @@ impl Proxy {
 
     /// What this proxy is and how it is configured. Served at [`HEALTH_PATH`].
     pub fn health(&self) -> Health {
-        let (packuments_held, records_held) = {
+        let (packages_held, records_held) = {
             let store = self.store.lock().expect("record store lock");
             (store.len(), store.records())
         };
@@ -311,7 +314,7 @@ impl Proxy {
             refuse_unservable: self.refuse_unservable,
             served_origins: self.origins.reachable().as_slice().to_vec(),
             allowed_direct_origins: self.origins.allowed_direct().to_vec(),
-            packuments_held,
+            packages_held,
             records_held,
             artifacts_verified: self.verified.lock().expect("verified artifacts lock").len(),
         }
@@ -388,8 +391,8 @@ impl Proxy {
         self
     }
 
-    pub fn with_max_packument_bytes(mut self, limit: usize) -> Self {
-        self.max_packument_bytes = limit;
+    pub fn with_max_metadata_bytes(mut self, limit: usize) -> Self {
+        self.max_metadata_bytes = limit;
         // The proxy's own fetches decode under the same ceiling as the bodies it
         // forwards, so one setting means one limit.
         self.registry =
@@ -403,7 +406,7 @@ impl Proxy {
     pub fn with_upstream_pypi(mut self, upstream: impl Into<String>) -> Self {
         self.upstream_pypi = upstream.into().trim_end_matches('/').to_owned();
         self.index = pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
-            .with_max_bytes(self.max_packument_bytes);
+            .with_max_bytes(self.max_metadata_bytes);
         self
     }
 
@@ -861,11 +864,11 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     //
     // Both ecosystems: a packument and a simple index are both read so their artifact
     // URLs can be pointed at the proxy.
-    let read_packument = method == Method::GET
+    let read_metadata = method == Method::GET
         && matches!(target, RequestTarget::Metadata(_))
         && chosen_encoding != RequestedEncoding::Unreadable;
     let rewrite_base = public_base(req.headers(), proxy.public_base.as_deref());
-    let rewriting = read_packument && proxy.rewrite_artifacts && rewrite_base.is_some();
+    let rewriting = read_metadata && proxy.rewrite_artifacts && rewrite_base.is_some();
 
     // Every path that forwards a metadata document without rewriting it leaves that
     // package's artifacts to be fetched wherever the document says, which for pnpm, yarn
@@ -1015,14 +1018,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                         path = %path_and_query,
                         claimed_purl = %purl,
                         error = %e,
-                        "packument integrity string is unusable; not verifying"
+                        "metadata integrity string is unusable; not verifying"
                     ),
                     // Two versions in 24,852 offer only SHA-1, which is
                     // collision-broken and not verified here.
                     None => warn!(
                         path = %path_and_query,
                         claimed_purl = %purl,
-                        "packument publishes no strong digest; not verifying"
+                        "metadata publishes no strong digest; not verifying"
                     ),
                 }
             }
@@ -1032,14 +1035,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             Lookup::NoSuchVersion => warn!(
                 path = %path_and_query,
                 claimed_purl = %purl,
-                "artifact requested, but its packument does not name this version"
+                "artifact requested, but its metadata does not list this version"
             ),
             // Nothing was observed for this package, and fetching its packument did not
             // help either.
             Lookup::Unknown => warn!(
                 path = %path_and_query,
                 claimed_purl = %purl,
-                "artifact requested, no packument seen for it"
+                "artifact requested, no metadata seen for it"
             ),
         }
 
@@ -1096,7 +1099,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         if is_hop_by_hop(name.as_str()) || name == header::HOST {
             continue;
         }
-        if read_packument && name == header::ACCEPT_ENCODING {
+        if read_metadata && name == header::ACCEPT_ENCODING {
             continue;
         }
         if rewriting && is_conditional(name.as_str()) {
@@ -1104,7 +1107,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         }
         outbound = outbound.header(name, value);
     }
-    if read_packument && let Some(value) = chosen_encoding.header_value() {
+    if read_metadata && let Some(value) = chosen_encoding.header_value() {
         outbound = outbound.header(header::ACCEPT_ENCODING, value);
     }
     // An `If-None-Match` the client got from us names our rewritten body, not the
@@ -1182,7 +1185,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             purl = %key,
             etag = headers.get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("-"),
             held,
-            "packument not modified, nothing to normalize"
+            "metadata not modified, nothing to normalize"
         );
         if !held {
             fetch_and_store(&proxy, key, &path_and_query).await;
@@ -1238,7 +1241,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     let body_stream: ByteStream = Box::pin(upstream_response.bytes_stream());
 
-    let Some(document) = document.filter(|_| read_packument && status.is_success()) else {
+    let Some(document) = document.filter(|_| read_metadata && status.is_success()) else {
         log_proxied(upstream_len.unwrap_or(0));
         let Some(sri) = expected_digest else {
             return (forward_status, headers, Body::from_stream(body_stream)).into_response();
@@ -1253,13 +1256,13 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         return (forward_status, headers, Body::from_stream(verified)).into_response();
     };
 
-    let body = match buffer_to_limit(body_stream, proxy.max_packument_bytes).await {
+    let body = match buffer_to_limit(body_stream, proxy.max_metadata_bytes).await {
         Buffered::Complete(body) => body,
         Buffered::Oversized { prefix, rest } => {
             warn!(
                 path = %path_and_query,
-                limit = proxy.max_packument_bytes,
-                "UNINSPECTED: packument exceeds the size limit, forwarded without rewriting"
+                limit = proxy.max_metadata_bytes,
+                "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
             );
             log_proxied(upstream_len.unwrap_or(0));
             let spliced = stream::iter(std::iter::once(Ok(prefix))).chain(rest);
@@ -1287,7 +1290,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // 27.6 MB.
     let queued = Instant::now();
     let _slot = proxy
-        .packument_slots
+        .metadata_slots
         .clone()
         .acquire_owned()
         .await
@@ -1297,7 +1300,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         debug!(
             path = %path_and_query,
             waited_ms = waited.as_millis() as u64,
-            "waited for a packument slot"
+            "waited for a metadata slot"
         );
     }
 
@@ -1309,11 +1312,11 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let decoded = match decode_for_parsing(
         &body,
         content_encoding.as_deref(),
-        proxy.max_packument_bytes,
+        proxy.max_metadata_bytes,
     ) {
         Ok(decoded) => Some(decoded),
         Err(e) => {
-            warn!(path = %path_and_query, error = %e, "UNINSPECTED: packument body could not be decoded");
+            warn!(path = %path_and_query, error = %e, "UNINSPECTED: metadata body could not be decoded");
             None
         }
     };
@@ -1645,14 +1648,14 @@ async fn intel_for(
     Err(IntelUnavailable)
 }
 
-/// The versions in this packument the policy refuses.
+/// The versions in this metadata document the policy refuses.
 ///
 /// Every version is asked, not just the one a client might resolve to: which one it picks
 /// is what the filtering decides. A check the record cannot answer is dropped, the same
 /// way it is on the artifact path, so a configured `cooldown_days` does not empty the
 /// document on a fact the registry never sent.
 fn policy_refused_versions(
-    packument: &PackageMetadata,
+    metadata: &PackageMetadata,
     policy: Option<&Policy>,
     times: Option<&facts::PublishTimes>,
     intel: Option<&PackageIntel>,
@@ -1667,7 +1670,7 @@ fn policy_refused_versions(
     let mut order = Vec::new();
     let mut checks: BTreeSet<String> = BTreeSet::new();
     let mut strongest = crate::policy::Action::Allow;
-    for record in &packument.records {
+    for record in &metadata.records {
         let enforce::Verdict::Refuse(refusal) =
             enforce::artifact(Some(policy), record, times, intel, today)
         else {
@@ -1692,7 +1695,7 @@ fn policy_refused_versions(
     if let Some(audit) = audit
         && !order.is_empty()
     {
-        let unenforceable = packument
+        let unenforceable = metadata
             .records
             .first()
             .map(|record| {
@@ -1706,8 +1709,8 @@ fn policy_refused_versions(
             .unwrap_or_default();
         audit.write(
             &audit::Event::resolution(
-                packument.key.ecosystem().as_str(),
-                &packument.key.registry_name(),
+                metadata.key.ecosystem().as_str(),
+                &metadata.key.registry_name(),
                 strongest.as_str(),
                 order,
                 checks.into_iter().collect(),
@@ -1717,7 +1720,7 @@ fn policy_refused_versions(
         );
     }
 
-    if refused.len() == packument.records.len() && !refused.is_empty() {
+    if refused.len() == metadata.records.len() && !refused.is_empty() {
         // Every version gone leaves the resolver nothing to pick, so the install fails
         // with the registry's own "no matching version" rather than anything this proxy
         // said. Worth saying out loud, because it reads as a broken registry.
@@ -2482,7 +2485,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new(), upstream)
-                .with_max_packument_bytes(16)
+                .with_max_metadata_bytes(16)
                 .router(),
         )
         .await;
@@ -4024,7 +4027,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new(), upstream)
-                .with_max_concurrent_packuments(1)
+                .with_max_concurrent_documents(1)
                 .router(),
         )
         .await;
@@ -4061,7 +4064,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new(), upstream)
-                .with_max_concurrent_packuments(0)
+                .with_max_concurrent_documents(0)
                 .router(),
         )
         .await;
@@ -4356,17 +4359,17 @@ mod tests {
         /// that answers HTML where PEP 691 JSON was asked for reads as nothing.
         #[test]
         fn the_content_type_says_which_document_arrived() {
-            use crate::record::PackumentDetail;
+            use crate::record::DocumentDetail;
             for (ecosystem, content_type, expected) in [
                 (
                     Ecosystem::Npm,
                     Some("application/vnd.npm.install-v1+json; charset=utf-8"),
-                    Some(DocumentKind::Packument(PackumentDetail::Abbreviated)),
+                    Some(DocumentKind::Packument(DocumentDetail::Abbreviated)),
                 ),
                 (
                     Ecosystem::Npm,
                     Some("application/json"),
-                    Some(DocumentKind::Packument(PackumentDetail::Full)),
+                    Some(DocumentKind::Packument(DocumentDetail::Full)),
                 ),
                 (
                     Ecosystem::PyPI,

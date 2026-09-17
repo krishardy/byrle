@@ -1086,7 +1086,7 @@ mod tests {
             refuse_unservable: true,
             served_origins: vec!["https://registry.npmjs.org".into()],
             allowed_direct_origins: vec![],
-            packuments_held: 0,
+            packages_held: 0,
             records_held: 0,
             artifacts_verified: 0,
         }

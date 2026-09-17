@@ -248,7 +248,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         // A packument that cannot be read is reported and counted, and the run goes on, so
         // one bad package does not hide the rest. The count sets the exit's error bit.
         let fetched = client
-            .packument(reference.key(), record::PackumentDetail::Abbreviated)
+            .packument(reference.key(), record::DocumentDetail::Abbreviated)
             .await;
         let packument = match npm::fetched(fetched, "packument") {
             Ok(packument) => packument,
@@ -388,7 +388,7 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     let upstream = or_exit(env::process().upstream_npm());
     let client = npm::Client::new(reqwest::Client::new(), upstream);
     let fetched = client
-        .packument(reference.key(), record::PackumentDetail::Abbreviated)
+        .packument(reference.key(), record::DocumentDetail::Abbreviated)
         .await;
     let packument = match npm::fetched(fetched, "packument") {
         Ok(packument) => packument,
@@ -1222,10 +1222,10 @@ async fn main() -> std::process::ExitCode {
         // Refusing to start is right: an origin the operator named and that was quietly
         // dropped would leave them believing those artifacts are covered.
         .unwrap_or_else(|e| panic!("origin configuration: {e}"))
-        .with_max_concurrent_packuments(max_concurrent)
+        .with_max_concurrent_documents(max_concurrent)
         .with_policy(policy)
         .with_audit_log(audit)
-        .with_max_packument_bytes(max_packument_bytes)
+        .with_max_metadata_bytes(max_packument_bytes)
         .with_max_records(max_records)
         .with_max_verified(max_verified)
         .with_artifact_rewriting(rewrite_artifacts)

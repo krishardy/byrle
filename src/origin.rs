@@ -294,8 +294,8 @@ pub enum RewriteError {
 impl fmt::Display for RewriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::NotUtf8(e) => write!(f, "packument is not UTF-8: {e}"),
-            Self::NotJson(e) => write!(f, "packument is not valid JSON: {e}"),
+            Self::NotUtf8(e) => write!(f, "document is not UTF-8: {e}"),
+            Self::NotJson(e) => write!(f, "document is not valid JSON: {e}"),
             Self::Incomplete { expected, found } => write!(
                 f,
                 "found {found} of {expected} artifact URLs to rewrite; \
@@ -730,7 +730,7 @@ mod tests {
     mod documents {
         use super::*;
         use crate::ecosystem::npm::{normalize_packument, normalized};
-        use crate::record::PackumentDetail;
+        use crate::record::DocumentDetail;
 
         const UPSTREAM: &str = "https://registry.npmjs.org";
 
@@ -760,7 +760,7 @@ mod tests {
         fn rewriting_and_the_offsite_report_agree() {
             let body = br#"{"name":"w","versions":{"1.0.0":{"version":"1.0.0","dist":{
                 "tarball":"https://cdn.corp.example/w/-/w-1.0.0.tgz"}}}}"#;
-            let p = normalize_packument(body, PackumentDetail::Abbreviated).unwrap();
+            let p = normalize_packument(body, DocumentDetail::Abbreviated).unwrap();
 
             for (set, expect_rewritten, expect_offsite) in [
                 (reachable(&[]), 0, 1),
@@ -787,7 +787,7 @@ mod tests {
                 "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://evil.example/widget-1.0.1.tgz"}},
                 "1.0.2":{"version":"1.0.2","dist":{"tarball":"https://evil.example/widget-1.0.2.tgz"}},
                 "1.0.3":{"version":"1.0.3","dist":{"tarball":"https://other.example/widget-1.0.3.tgz"}}}}"#;
-            let p = normalize_packument(body, PackumentDetail::Abbreviated).unwrap();
+            let p = normalize_packument(body, DocumentDetail::Abbreviated).unwrap();
 
             let origins = p.bypassing_origins(&reachable(&[]));
             assert_eq!(origins.len(), 2);
@@ -797,7 +797,7 @@ mod tests {
 
         #[test]
         fn an_ordinary_packument_reports_nothing() {
-            let p = normalized("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
+            let p = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
             assert!(p.bypassing_origins(&reachable(&[])).is_empty());
         }
     }

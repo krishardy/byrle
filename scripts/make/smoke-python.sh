@@ -151,9 +151,9 @@ if grep -q 'MISMATCH' "$clean_log"; then
     fail "a file did not match the digest its index published:
 $(grep 'MISMATCH' "$clean_log")"
 fi
-if grep -q 'no packument seen' "$clean_log"; then
+if grep -q 'no metadata seen' "$clean_log"; then
     fail "a file was fetched with no index observed for its project:
-$(grep 'no packument seen' "$clean_log")"
+$(grep 'no metadata seen' "$clean_log")"
 fi
 # A rewritten index is what makes the above possible. Nothing may be left pointing away.
 if grep -qE 'simple index rewritten.*left_alone=[1-9]' "$clean_log"; then

@@ -217,7 +217,7 @@ impl fmt::Display for Mismatch {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "artifact digest mismatch over {} bytes: packument claimed {}, received {}",
+            "artifact digest mismatch over {} bytes: metadata claimed {}, received {}",
             self.bytes, self.expected, self.actual
         )
     }
