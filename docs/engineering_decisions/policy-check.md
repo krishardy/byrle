@@ -1,6 +1,7 @@
 # `waharoa policy check`
 
-- **Status:** Implemented. `src/policy/check.rs`; the command in `src/main.rs`.
+- **Status:** Implemented. `src/policy/check.rs`; the command in `src/main.rs`, and
+  `startup::report_policy` for the proxy.
 - **Plan reference:** §5.5, "`policy check` flags selectors that can never win" and
   "`permanent: true` ... reported separately by `policy check`"; §6, `policy check --strict`.
 

@@ -30,6 +30,7 @@ code, and the file names where.
 | [Loading OSV malware records](osv-malware-load.md) | Implemented, `waharoa refresh` |
 | [Intel in decisions: one lookup per package, fail closed](intel-in-decisions.md) | Implemented |
 | [An ecosystem no stream covers fails closed](uncovered-ecosystem-fails-closed.md) | Implemented |
+| [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
 | [GitHub Advisory is a signal stream beside OSV](github-advisory-signal-stream.md) | Decided, being built |

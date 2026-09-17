@@ -2,7 +2,7 @@
 
 - **Status:** Implemented. `intel_for` in `src/proxy.rs`, `PackageIntel` and `Intel::package`
   in `src/intel/store.rs`, `Facts::with_intel` in `src/policy/facts.rs`,
-  `WAHAROA_DATABASE_URL` in `src/main.rs`.
+  `intel::postgres::from_env` and `src/startup.rs`.
 - **Related:** [osv-malware-load](osv-malware-load.md),
   [deferral-status-codes](deferral-status-codes.md),
   [storage-sqlx-postgres](storage-sqlx-postgres.md)
