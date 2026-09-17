@@ -56,6 +56,71 @@ impl std::fmt::Display for FetchFailure {
     }
 }
 
+/// The snapshot file a refresh wrote, and what pruning removed.
+#[derive(Debug)]
+pub struct Kept {
+    pub path: std::path::PathBuf,
+    pub pruned: super::snapshot_dir::Pruned,
+}
+
+/// What a refresh loaded, as it prints it.
+///
+/// Each stream's own tally first, then the rows written, then what Datadog lists that OSV
+/// lists by version, then the snapshot. Built rather than printed so the shape is tested.
+pub fn report(
+    loaded: &[super::fetch::Loaded],
+    written: &super::postgres::Loaded,
+    kept: Option<&Kept>,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::new();
+    for tally in loaded.iter().filter_map(|l| l.tally.as_ref()) {
+        let _ = write!(out, "{tally}");
+    }
+    let mut count = |label: &str, value: u64| {
+        let _ = writeln!(out, "{label:32} {value:>8}");
+    };
+    count("advisories written", written.advisories);
+    count("aliases written", written.aliases);
+    count("affected rows written", written.affected);
+    count("ranges written", written.ranges);
+    count("exploited CVE ids written", written.exploited);
+
+    let rows_of = |source: &str| {
+        loaded
+            .iter()
+            .find(|l| l.source == source)
+            .map(|l| l.payload.rows())
+    };
+    if let (Some(osv_rows), Some(datadog_rows)) = (
+        rows_of(super::providers::osv::SOURCE),
+        rows_of(super::providers::datadog::SOURCE),
+    ) {
+        let disagreements = super::providers::datadog::disagreements(osv_rows, datadog_rows);
+        for disagreement in &disagreements {
+            let _ = writeln!(out, "{disagreement}");
+        }
+        let _ = writeln!(
+            out,
+            "{:32} {:>8}",
+            "datadog every version, osv some",
+            disagreements.len()
+        );
+    }
+    let _ = writeln!(out, "snapshot {}", written.snapshot);
+    if let Some(kept) = kept {
+        let _ = writeln!(out, "{:32} {}", "snapshot file", kept.path.display());
+        let _ = writeln!(
+            out,
+            "{:32} {:>8}",
+            "snapshot files removed", kept.pruned.snapshots
+        );
+        let _ = writeln!(out, "{:32} {:>8}", "rows files removed", kept.pruned.rows);
+    }
+    out
+}
+
 /// The client a refresh fetches every stream with.
 ///
 /// `read_timeout` is [`READ_TIMEOUT`] in the binary; a test passes a short one. There is no
@@ -110,6 +175,125 @@ mod tests {
         assert!(!retried(&settled, 1));
         assert_eq!(transient.to_string(), transient.why);
         assert!(transient.again && !settled.again);
+    }
+
+    /// Every count a refresh prints, in order, and the snapshot last.
+    #[test]
+    fn the_report_counts_what_was_written_and_names_the_snapshot() {
+        let written = crate::intel::postgres::Loaded {
+            advisories: 3,
+            aliases: 2,
+            affected: 7,
+            ranges: 1,
+            exploited: 4,
+            snapshot: "sha256:ab".to_owned(),
+            manifest: "osv sha256:cd\n".to_owned(),
+        };
+        let kept = Kept {
+            path: std::path::PathBuf::from("/snapshots/ab.snapshot"),
+            pruned: crate::intel::snapshot_dir::Pruned {
+                snapshots: 2,
+                rows: 5,
+            },
+        };
+        let printed = report(&[], &written, Some(&kept));
+        assert_eq!(
+            printed.lines().collect::<Vec<_>>(),
+            [
+                "advisories written                      3",
+                "aliases written                         2",
+                "affected rows written                   7",
+                "ranges written                          1",
+                "exploited CVE ids written               4",
+                "snapshot sha256:ab",
+                "snapshot file                    /snapshots/ab.snapshot",
+                "snapshot files removed                  2",
+                "rows files removed                      5",
+            ]
+        );
+    }
+
+    /// A package Datadog lists at every version and OSV lists by version is printed and
+    /// counted. Which stream is which is read from `source`.
+    #[test]
+    fn the_report_names_what_datadog_lists_and_osv_lists_by_version() {
+        use crate::intel::providers::{datadog, osv};
+        use crate::intel::rows::{Affected, Rows};
+        use crate::intel::stream::{Parsed as _Parsed, Payload};
+
+        let _ = std::mem::size_of::<_Parsed>();
+        let rows = |id: &str, version: Option<&str>, malware: bool| Rows {
+            id: id.to_owned(),
+            summary: None,
+            modified: None,
+            malware,
+            cvss: None,
+            band: None,
+            unread_vectors: 0,
+            aliases: Default::default(),
+            affected: [Affected {
+                ecosystem: "npm".to_owned(),
+                name: "left-pad".to_owned(),
+                version: version.map(str::to_owned),
+            }]
+            .into(),
+            ranges: Default::default(),
+            unexpressed: 0,
+        };
+        let loaded = |source: &'static str, row: Rows| super::super::fetch::Loaded {
+            source,
+            payload: Payload::Advisories(vec![row]),
+            tally: None,
+            streams: [StreamDigest {
+                stream: source.to_owned(),
+                sha256: "aa".to_owned(),
+                etag: None,
+                last_modified: None,
+            }],
+        };
+        let written = crate::intel::postgres::Loaded {
+            advisories: 1,
+            aliases: 0,
+            affected: 1,
+            ranges: 0,
+            exploited: 0,
+            snapshot: "sha256:ab".to_owned(),
+            manifest: String::new(),
+        };
+        let printed = report(
+            &[
+                loaded(osv::SOURCE, rows("MAL-1", Some("1.0.0"), true)),
+                loaded(datadog::SOURCE, rows("DATADOG-npm-left-pad", None, true)),
+            ],
+            &written,
+            None,
+        );
+        assert!(
+            printed.contains("left-pad: datadog/npm every version, osv/npm some: MAL-1"),
+            "{printed}"
+        );
+        let counted = printed
+            .lines()
+            .find_map(|line| line.strip_prefix("datadog every version, osv some"))
+            .expect("the count is printed");
+        assert_eq!(counted.trim(), "1", "{printed}");
+    }
+
+    /// Without a snapshot directory the last line is the snapshot id.
+    #[test]
+    fn a_refresh_that_keeps_no_snapshot_prints_no_file() {
+        let written = crate::intel::postgres::Loaded {
+            advisories: 0,
+            aliases: 0,
+            affected: 0,
+            ranges: 0,
+            exploited: 0,
+            snapshot: "sha256:ab".to_owned(),
+            manifest: String::new(),
+        };
+        let printed = report(&[], &written, None);
+        assert!(printed.ends_with("snapshot sha256:ab\n"), "{printed}");
+        assert!(!printed.contains("snapshot file"), "{printed}");
     }
 
     /// A body that is declared and never sent ends the read, rather than holding the
