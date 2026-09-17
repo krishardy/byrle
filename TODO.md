@@ -363,9 +363,10 @@ That is the failure mode every item below should be brought to.
       `--no-cache-dir`, which is a test making up for a check that does not exist.
 
 - [ ] **Two smaller ecosystem assumptions.**
-      `doctor::looks_like_a_registry` (`doctor.rs:603`) is
+      Fixed: `doctor::looks_like_a_registry` was
       `origin == crate::npm::DEFAULT_REGISTRY`, so a `files.pythonhosted.org` origin in a
-      lockfile reads as a stale proxy address rather than as a public registry.
+      lockfile read as a stale proxy address rather than as a public registry. It now reads
+      every row's `always_reachable`.
       `cargo doc` has four unresolved links to `crate::npm::rewrite_artifact_origins` and
       `crate::npm::PackageMetadata::bypassing_origins`, left behind when those moved to
       `origin` and `record`. Nothing gates rustdoc warnings, which is why they survived.

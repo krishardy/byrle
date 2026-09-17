@@ -21,6 +21,7 @@
 pub mod npm;
 pub mod pypi;
 
+use crate::doctor::Client;
 use crate::identity::Ecosystem;
 use crate::intel::stream::{self, Stream};
 use crate::lockfile::{Lockfile, Unread};
@@ -79,6 +80,9 @@ pub struct Registry {
 
     /// File names a client writes that no reader takes, and what to write instead.
     pub unread_lockfiles: &'static [Unread],
+
+    /// The package managers `waharoa doctor` checks for this ecosystem.
+    pub clients: &'static [Client],
 }
 
 impl Registry {
@@ -121,6 +125,7 @@ pub const NPM: Registry = Registry {
     streams: &[&stream::OSV_NPM, &stream::DATADOG_NPM, &stream::GITHUB_NPM],
     lockfiles: npm::lockfile::LOCKFILES,
     unread_lockfiles: npm::lockfile::UNREAD,
+    clients: npm::clients::CLIENTS,
 };
 
 pub const PYPI: Registry = Registry {
@@ -140,6 +145,8 @@ pub const PYPI: Registry = Registry {
     // requirements.txt, uv.lock and poetry.lock are not read yet.
     lockfiles: &[],
     unread_lockfiles: &[],
+    // pip and uv are not checked yet: TODO.md, "`doctor` checks five npm clients".
+    clients: &[],
 };
 
 /// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row

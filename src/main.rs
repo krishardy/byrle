@@ -93,72 +93,6 @@ fn or_exit_with<T>(result: Result<T, env::EnvError>, code: u8) -> T {
     })
 }
 
-/// Ask a package manager what registry it is actually configured to use.
-///
-/// Its own resolved configuration, not a file this could read: the effective value comes
-/// from a project `.npmrc`, then the user's, then the global one, and only the client
-/// knows which won.
-fn configured_registry(client: &str) -> Option<String> {
-    let args: &[&str] = match client {
-        "yarn" => &["config", "get", "registry"],
-        _ => &["config", "get", "registry"],
-    };
-    let output = std::process::Command::new(client)
-        .args(args)
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let value = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    (!value.is_empty() && value != "undefined").then_some(value)
-}
-
-/// Where a client keeps its cache, asked of the client itself where it will say.
-///
-/// bun is the exception: `bun pm cache` needs a package.json in the working directory,
-/// which doctor cannot assume, so its documented default is used.
-fn cache_dir(client: &str) -> Option<std::path::PathBuf> {
-    let ask = |program: &str, args: &[&str]| -> Option<std::path::PathBuf> {
-        let output = std::process::Command::new(program)
-            .args(args)
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let path = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-        (!path.is_empty()).then(|| std::path::PathBuf::from(path))
-    };
-
-    match client {
-        // npm's cache directory holds _cacache, and every cached response is one file
-        // under its index.
-        "npm" => Some(ask("npm", &["config", "get", "cache"])?.join("_cacache/index-v5")),
-        "pnpm" => ask("pnpm", &["store", "path"]),
-        "yarn" => ask("yarn", &["cache", "dir"]),
-        "bun" => {
-            let environment = env::process();
-            match or_exit(environment.bun_install_cache_dir()) {
-                Some(dir) => Some(dir),
-                None => Some(or_exit(environment.home())?.join(".bun/install/cache")),
-            }
-        }
-        _ => None,
-    }
-}
-
-/// The client's cache when it holds something, `None` when it is empty, absent, or the
-/// client is not installed.
-fn warm_cache(client: &str) -> Option<std::path::PathBuf> {
-    std::process::Command::new(client)
-        .arg("--version")
-        .output()
-        .ok()?;
-    let dir = cache_dir(client)?;
-    (dir.is_dir() && doctor::count_files(&dir) > 0).then_some(dir)
-}
-
 /// Ask the proxy about itself at `path`. `None` when nothing answers there with the JSON
 /// expected, which is itself the finding.
 ///
@@ -549,43 +483,42 @@ async fn run_doctor() -> std::process::ExitCode {
         ));
     }
 
-    for client in ["npm", "pnpm", "yarn"] {
-        findings.push(doctor::check_registry(
-            client,
-            configured_registry(client).as_deref(),
-            &proxy,
-        ));
+    for client in doctor::clients() {
+        if let Some(args) = client.registry {
+            findings.push(doctor::check_registry(
+                client,
+                doctor::probe::configured_registry(client, args).as_deref(),
+                &proxy,
+            ));
+        }
     }
 
     // Lockfiles in this directory are the record of what actually happened, as opposed to
     // what is configured now.
     let mut recorded = std::collections::BTreeSet::new();
-    for kind in doctor::Lockfile::ALL {
-        let Ok(contents) = std::fs::read_to_string(kind.filename()) else {
+    for (lockfile, pins) in waharoa::lockfile::pinning() {
+        let Ok(contents) = std::fs::read_to_string(lockfile.name) else {
             continue;
         };
-        recorded.extend(doctor::recorded_origins(kind, &contents));
-        findings.push(doctor::check_lockfile(kind, &contents, &proxy));
+        recorded.extend(doctor::recorded_origins(pins.key, &contents));
+        findings.push(doctor::check_lockfile(
+            lockfile.name,
+            pins,
+            &contents,
+            &proxy,
+        ));
     }
     findings.push(doctor::check_public_url(public.as_deref(), &recorded));
     // Every client caches, and what a warm cache supplies never reaches the proxy. How
     // much it supplies differs, so each is reported with what was measured for it.
-    for (client, bypass) in [
-        ("npm", doctor::CacheBypass::Complete),
-        ("pnpm", doctor::CacheBypass::Complete),
-        ("bun", doctor::CacheBypass::Complete),
-        ("yarn", doctor::CacheBypass::ArtifactsOnly),
-    ] {
-        if std::process::Command::new(client)
+    for client in doctor::clients() {
+        if std::process::Command::new(client.name)
             .arg("--version")
             .output()
             .is_ok()
         {
-            findings.push(doctor::check_cache(
-                client,
-                warm_cache(client).as_deref(),
-                bypass,
-            ));
+            let warm = or_exit(doctor::probe::warm_cache(client, &environment));
+            findings.push(doctor::check_cache(client, warm.as_deref()));
         }
     }
 

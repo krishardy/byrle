@@ -22,6 +22,19 @@ pub type Reader = fn(&str) -> Result<BTreeSet<Locked>, String>;
 pub struct Lockfile {
     pub name: &'static str,
     pub read: Reader,
+    /// How the file records artifact URLs, for `waharoa doctor`. `None` for a file doctor
+    /// does not check.
+    pub pins: Option<Pins>,
+}
+
+/// How a lockfile records the absolute artifact URLs it pins.
+pub struct Pins {
+    /// The key written before each URL on its line, as `<key>: <url>` or `<key> "<url>"`.
+    pub key: &'static str,
+    /// What `doctor` reports for a file that records no URL.
+    pub when_absent: &'static str,
+    /// How to write the file again through the proxy.
+    pub reinstall: &'static str,
 }
 
 /// A file name no reader takes, with why and what to write instead.
@@ -71,6 +84,11 @@ impl std::error::Error for LockfileError {}
 /// Every lockfile any ecosystem reads, in table order.
 fn lockfiles() -> impl Iterator<Item = &'static Lockfile> {
     TABLE.iter().flat_map(|registry| registry.lockfiles)
+}
+
+/// Every lockfile that records artifact URLs, with how it records them.
+pub fn pinning() -> impl Iterator<Item = (&'static Lockfile, &'static Pins)> {
+    lockfiles().filter_map(|lockfile| Some((lockfile, lockfile.pins.as_ref()?)))
 }
 
 /// What a row says about a file name it does not read, if any row does.

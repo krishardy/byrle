@@ -438,8 +438,11 @@ pub struct Env<L> {
     lookup: L,
 }
 
+/// The environment the process was started with.
+pub type Process = Env<fn(&str) -> Option<OsString>>;
+
 /// The process environment.
-pub fn process() -> Env<fn(&str) -> Option<OsString>> {
+pub fn process() -> Process {
     Env {
         lookup: |name: &str| std::env::var_os(name),
     }
@@ -664,6 +667,35 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn bun_install_cache_dir(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(BUN_INSTALL_CACHE_DIR)
+    }
+}
+
+/// Environments other modules' tests read, built here so no variable name is written there.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::{BUN_INSTALL_CACHE_DIR, Env, HOME, Process};
+
+    /// bun's cache variable at `/bun`, and the home directory at `/home/u`.
+    pub fn bun_cache_and_home() -> Process {
+        Env::from_lookup(|name| {
+            if name == BUN_INSTALL_CACHE_DIR.name {
+                Some("/bun".into())
+            } else if name == HOME.name {
+                Some("/home/u".into())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Only the home directory, at `/home/u`.
+    pub fn home_only() -> Process {
+        Env::from_lookup(|name| (name == HOME.name).then(|| "/home/u".into()))
+    }
+
+    /// Nothing set.
+    pub fn empty() -> Process {
+        Env::from_lookup(|_| None)
     }
 }
 
