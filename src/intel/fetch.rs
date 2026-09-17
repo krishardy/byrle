@@ -1,0 +1,365 @@
+//! Fetching a stream's bundle: one GET, or GitHub's paged POST.
+//!
+//! The requests, the byte ceilings and the retries. What each stream's bytes mean is
+//! `crate::intel::providers`; which stream to fetch is `crate::intel::stream`.
+//!
+//! Progress and retry lines go to `notice` rather than to stdout, so `waharoa refresh`
+//! keeps its own output and a test can read what would have been printed.
+
+use super::refresh::{ATTEMPTS, FetchFailure, RETRY_WAIT, StreamDigest, retried, sha256_hex};
+use super::stream::{Stream, Transport};
+
+/// Where a fetch's progress lines go.
+pub type Notice<'a> = &'a dyn Fn(&str);
+
+/// A body a refresh fetched, with the headers a snapshot records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Fetched {
+    pub bytes: Vec<u8>,
+    pub etag: Option<String>,
+    pub last_modified: Option<String>,
+}
+
+impl Fetched {
+    /// The body as a snapshot records it under `stream`.
+    pub fn stream(&self, stream: &str) -> StreamDigest {
+        StreamDigest {
+            stream: stream.to_owned(),
+            sha256: sha256_hex(&self.bytes),
+            etag: self.etag.clone(),
+            last_modified: self.last_modified.clone(),
+        }
+    }
+}
+
+/// One stream's bundle, fetched with [`ATTEMPTS`] attempts.
+///
+/// A transient failure is fetched again after [`RETRY_WAIT`], because `osv/npm` is
+/// `Required` and a refresh that gives up on it loads nothing. Each attempt starts the
+/// request over: the bundle is one GET with no range request, so there is nothing to resume.
+pub async fn stream_bundle(
+    http: &reqwest::Client,
+    declared: &Stream,
+    github_token: Option<&str>,
+    notice: Notice<'_>,
+) -> Result<Fetched, String> {
+    for attempt in 1..=ATTEMPTS {
+        let got = match declared.transport {
+            Transport::Get => bundle(http, declared.url, declared.ceiling, notice).await,
+            Transport::GithubGraphql => match github_token {
+                Some(token) => graphql(http, declared.url, declared.ceiling, token, notice).await,
+                None => Err(FetchFailure::settled(format!(
+                    "{} is unset, so this stream is not read",
+                    crate::env::GITHUB_TOKEN
+                ))),
+            },
+        };
+        match got {
+            Ok(fetched) => return Ok(fetched),
+            Err(failure) if retried(&failure, attempt) => {
+                notice(&format!(
+                    "attempt {attempt} of {ATTEMPTS}: {failure}; again in {}s",
+                    RETRY_WAIT.as_secs()
+                ));
+                tokio::time::sleep(RETRY_WAIT).await;
+            }
+            Err(failure) => return Err(failure.why),
+        }
+    }
+    unreachable!("the last attempt returns rather than looping");
+}
+
+/// The body at `url`, refused past `ceiling` bytes.
+pub async fn bundle(
+    http: &reqwest::Client,
+    url: &str,
+    ceiling: usize,
+    notice: Notice<'_>,
+) -> Result<Fetched, FetchFailure> {
+    use futures_util::StreamExt;
+
+    notice(&format!("fetching {url}"));
+    let response = http
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|e| failed(&format!("fetching {url}"), e))?;
+    let header = |name: reqwest::header::HeaderName| {
+        response
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let (etag, last_modified) = (
+        header(reqwest::header::ETAG),
+        header(reqwest::header::LAST_MODIFIED),
+    );
+    if let Some(declared) = response.content_length().filter(|&n| n > ceiling as u64) {
+        return Err(FetchFailure::settled(format!(
+            "{url} declares {declared} bytes, over the {ceiling} byte ceiling"
+        )));
+    }
+
+    let mut bytes = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| failed(&format!("reading {url}"), e))?;
+        if bytes.len() + chunk.len() > ceiling {
+            return Err(FetchFailure::settled(format!(
+                "{url} is over the {ceiling} byte ceiling"
+            )));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(Fetched {
+        bytes,
+        etag,
+        last_modified,
+    })
+}
+
+/// A request error, as the refresh reports it: transient unless the host chose the status.
+///
+/// A 404 or a 403 is the same on every attempt. A refused connection, a read that timed out
+/// and a body that stopped mid-stream are what another attempt can get past.
+fn failed(doing: &str, e: reqwest::Error) -> FetchFailure {
+    let why = format!("{doing}: {e}");
+    if e.is_status() {
+        FetchFailure::settled(why)
+    } else {
+        FetchFailure::transient(why)
+    }
+}
+
+/// Every page of GitHub's advisory connection, as one JSON array of response bodies.
+///
+/// [`crate::intel::providers::github::parse`] reads that array, so paging stays here and the descriptor's
+/// `parse` keeps taking one buffer. `ceiling` bounds the whole array rather than one page.
+///
+/// A page that is not JSON, or that carries no `pageInfo`, ends the fetch: the bytes are
+/// still handed to `parse`, which reports what GitHub said.
+pub async fn graphql(
+    http: &reqwest::Client,
+    url: &str,
+    ceiling: usize,
+    token: &str,
+    notice: Notice<'_>,
+) -> Result<Fetched, FetchFailure> {
+    let mut bytes = vec![b'['];
+    let mut after: Option<String> = None;
+    let mut pages = 0_usize;
+    notice(&format!("fetching {url}"));
+    loop {
+        let body = serde_json::json!({
+            "query": crate::intel::providers::github::QUERY,
+            "variables": { "after": after },
+        });
+        let body =
+            serde_json::to_vec(&body).map_err(|e| FetchFailure::settled(format!("{url}: {e}")))?;
+        let response = http
+            .post(url)
+            .bearer_auth(token)
+            .header(reqwest::header::CONTENT_TYPE, "application/json")
+            .body(body)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+            .map_err(|e| failed(&format!("fetching {url}"), e))?;
+        let page = response
+            .bytes()
+            .await
+            .map_err(|e| failed(&format!("reading {url}"), e))?;
+        if bytes.len() + page.len() + 1 > ceiling {
+            return Err(FetchFailure::settled(format!(
+                "{url} is over the {ceiling} byte ceiling after {pages} pages"
+            )));
+        }
+        if pages > 0 {
+            bytes.push(b',');
+        }
+        bytes.extend_from_slice(&page);
+        pages += 1;
+
+        let parsed: serde_json::Value = serde_json::from_slice(&page)
+            .map_err(|e| FetchFailure::settled(format!("reading {url}: {e}")))?;
+        let info = &parsed["data"]["securityVulnerabilities"]["pageInfo"];
+        if info["hasNextPage"].as_bool() != Some(true) {
+            break;
+        }
+        match info["endCursor"].as_str() {
+            Some(cursor) => after = Some(cursor.to_owned()),
+            None => break,
+        }
+    }
+    bytes.push(b']');
+    notice(&format!("{pages} pages from {url}"));
+    Ok(Fetched {
+        bytes,
+        etag: None,
+        last_modified: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    use super::*;
+    use crate::intel::refresh::http_client;
+    use crate::test_support::{Answer, scripted};
+
+    /// A client with a short read timeout, so a stalled test server ends quickly.
+    fn client() -> reqwest::Client {
+        http_client(Duration::from_millis(200)).expect("a client")
+    }
+
+    /// Collects what would have been printed.
+    #[derive(Default)]
+    struct Printed(Mutex<Vec<String>>);
+
+    impl Printed {
+        fn notice(&self) -> impl Fn(&str) + '_ {
+            |line: &str| self.0.lock().expect("notice lock").push(line.to_owned())
+        }
+
+        fn lines(&self) -> Vec<String> {
+            self.0.lock().expect("notice lock").clone()
+        }
+    }
+
+    async fn fetch_from(answers: Vec<Answer>, ceiling: usize) -> Result<Fetched, FetchFailure> {
+        let addr = scripted(answers).await;
+        let printed = Printed::default();
+        let got = bundle(
+            &client(),
+            &format!("http://{addr}/all.zip"),
+            ceiling,
+            &printed.notice(),
+        )
+        .await;
+        assert_eq!(
+            printed.lines(),
+            [format!("fetching http://{addr}/all.zip")],
+            "one line per fetch, whatever it answered"
+        );
+        got
+    }
+
+    /// The body, and the headers a snapshot records with it.
+    #[tokio::test]
+    async fn a_body_under_the_ceiling_is_read_with_its_headers() {
+        let fetched = fetch_from(vec![Answer::body("one two three")], 13)
+            .await
+            .expect("13 bytes under a 13 byte ceiling");
+        assert_eq!(fetched.bytes, b"one two three");
+        assert_eq!(fetched.etag.as_deref(), Some("\"tag\""));
+        assert_eq!(
+            fetched.last_modified.as_deref(),
+            Some("Wed, 17 Sep 2026 00:00:00 GMT")
+        );
+        let digest = fetched.stream("osv/npm");
+        assert_eq!(digest.stream, "osv/npm");
+        assert_eq!(digest.sha256, sha256_hex(b"one two three"));
+        assert_eq!(digest.etag, fetched.etag);
+    }
+
+    /// A declared length over the ceiling is refused before the body is read, and a body
+    /// that passes it while arriving is refused as it arrives. `Content-Length` is the
+    /// host's claim, so both checks are needed.
+    #[tokio::test]
+    async fn a_bundle_over_the_ceiling_is_refused_by_either_check() {
+        let declared = fetch_from(
+            vec![Answer::Body {
+                bytes: b"aaaa".to_vec(),
+                declared: Some(5_000),
+            }],
+            100,
+        )
+        .await
+        .expect_err("5,000 declared over a 100 byte ceiling");
+        assert!(
+            declared
+                .why
+                .ends_with("declares 5000 bytes, over the 100 byte ceiling"),
+            "{}",
+            declared.why
+        );
+        assert!(!declared.again, "the same on every attempt");
+
+        // Chunked, so nothing declares a length and only the bytes arriving say it.
+        let streamed = fetch_from(vec![Answer::Chunked(vec![b'a'; 200])], 100)
+            .await
+            .expect_err("200 bytes over a 100 byte ceiling");
+        assert!(
+            streamed.why.ends_with("is over the 100 byte ceiling"),
+            "{}",
+            streamed.why
+        );
+        assert!(!streamed.again);
+    }
+
+    /// A body exactly at the ceiling is read. The ceilings are measured from real bundles,
+    /// so an off-by-one here refuses a bundle that fits.
+    #[tokio::test]
+    async fn a_bundle_at_the_ceiling_is_read() {
+        let fetched = fetch_from(vec![Answer::body(vec![b'a'; 100])], 100)
+            .await
+            .expect("100 bytes at a 100 byte ceiling");
+        assert_eq!(fetched.bytes.len(), 100);
+    }
+
+    /// A status the host chose is not retried: every attempt gets it again.
+    #[tokio::test]
+    async fn a_status_is_settled_and_a_stall_is_not() {
+        let status = fetch_from(vec![Answer::Status(404)], 100)
+            .await
+            .expect_err("404");
+        assert!(status.why.contains("404"), "{}", status.why);
+        assert!(!status.again);
+
+        let closed = fetch_from(vec![Answer::Close], 100)
+            .await
+            .expect_err("nothing was sent");
+        assert!(closed.again, "{}", closed.why);
+    }
+
+    /// The stream is fetched again after a transient failure, and the notice says so.
+    /// This waits `RETRY_WAIT` for real: under `start_paused` the auto-advanced clock
+    /// fires `CONNECT_TIMEOUT` before a local connection completes.
+    #[tokio::test]
+    async fn a_transient_failure_is_fetched_again() {
+        let addr = scripted(vec![Answer::Close, Answer::body("{}")]).await;
+        let printed = Printed::default();
+        let declared = Stream {
+            url: Box::leak(format!("http://{addr}/all.zip").into_boxed_str()),
+            ..crate::intel::stream::ALL[0]
+        };
+        let fetched = stream_bundle(&client(), &declared, None, &printed.notice())
+            .await
+            .expect("the second attempt answers");
+        assert_eq!(fetched.bytes, b"{}");
+        let lines = printed.lines();
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[1].starts_with("attempt 1 of 3:"), "{lines:?}");
+        assert!(lines[1].ends_with("again in 2s"), "{lines:?}");
+    }
+
+    /// GitHub's stream is not read without a token, and that is not retried.
+    #[tokio::test]
+    async fn the_github_stream_without_a_token_is_not_fetched() {
+        let printed = Printed::default();
+        let github = crate::intel::stream::by_stream(crate::intel::providers::github::STREAM)
+            .expect("this build declares it");
+        let why = stream_bundle(&client(), github, None, &printed.notice())
+            .await
+            .expect_err("no token");
+        assert!(
+            why.ends_with("is unset, so this stream is not read"),
+            "{why}"
+        );
+        assert!(printed.lines().is_empty(), "nothing was fetched");
+    }
+}

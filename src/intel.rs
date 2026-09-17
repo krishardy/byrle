@@ -35,6 +35,7 @@
 //! `enrich` capability this machinery exists to constrain has no implemented producer at
 //! all. See `docs/engineering_decisions/advisory-stream-licences.md`.
 
+pub mod fetch;
 pub mod history;
 pub mod load;
 pub mod postgres;

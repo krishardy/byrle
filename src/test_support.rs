@@ -57,3 +57,91 @@ pub async fn stalling_server() -> std::net::SocketAddr {
     });
     addr
 }
+
+/// One answer a [`scripted`] server gives.
+#[derive(Debug, Clone)]
+pub enum Answer {
+    /// Accept the connection and close it without a response.
+    Close,
+    /// A status with an empty body.
+    Status(u16),
+    /// 200 with this body, and a `Content-Length` of `declared` rather than its length.
+    Body {
+        bytes: Vec<u8>,
+        declared: Option<usize>,
+    },
+    /// 200 with this body in one chunk, and no `Content-Length` at all: the length is
+    /// known only as the body arrives.
+    Chunked(Vec<u8>),
+}
+
+impl Answer {
+    pub fn body(bytes: impl Into<Vec<u8>>) -> Self {
+        Self::Body {
+            bytes: bytes.into(),
+            declared: None,
+        }
+    }
+}
+
+/// The address of a server that answers requests with `answers` in order, repeating the
+/// last one once they run out.
+///
+/// For tests of a fetch: a status it must not retry, a body over a ceiling, a connection
+/// that closes before the second attempt succeeds.
+pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port should bind");
+    let addr = listener
+        .local_addr()
+        .expect("a bound listener has an address");
+    tokio::spawn(async move {
+        let mut request = 0_usize;
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let answer = answers[request.min(answers.len() - 1)].clone();
+            request += 1;
+            tokio::spawn(async move {
+                // The request is read and dropped: what it asked for does not change the
+                // answer, and a client that gets a response before it finished writing
+                // sees a broken pipe instead.
+                let mut buffer = [0_u8; 4096];
+                let _ = stream.read(&mut buffer).await;
+                let response = match answer {
+                    Answer::Close => return,
+                    Answer::Status(code) => format!(
+                        "HTTP/1.1 {code} Status\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .into_bytes(),
+                    Answer::Chunked(bytes) => {
+                        let mut out = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: \
+                             chunked\r\nConnection: close\r\n\r\n{:x}\r\n",
+                            bytes.len()
+                        )
+                        .into_bytes();
+                        out.extend_from_slice(&bytes);
+                        out.extend_from_slice(b"\r\n0\r\n\r\n");
+                        out
+                    }
+                    Answer::Body { bytes, declared } => {
+                        let length = declared.unwrap_or(bytes.len());
+                        let mut out = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \
+                             \"tag\"\r\nLast-Modified: Wed, 17 Sep 2026 00:00:00 \
+                             GMT\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+                        )
+                        .into_bytes();
+                        out.extend_from_slice(&bytes);
+                        out
+                    }
+                };
+                let _ = stream.write_all(&response).await;
+                let _ = stream.flush().await;
+            });
+        }
+    });
+    addr
+}

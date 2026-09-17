@@ -19,9 +19,8 @@ use waharoa::identity::PackageRef;
 
 use waharoa::audit;
 use waharoa::ecosystem::{self, Clients};
-use waharoa::intel::refresh::{self, FetchFailure};
+use waharoa::intel::fetch;
 use waharoa::intel::store::{Intel, NoIntel};
-use waharoa::intel::stream::Transport;
 use waharoa::policy::{Policy, check, decide, diff, enforce, packages, today};
 use waharoa::proxy::Proxy;
 use waharoa::tls::{self, TrustMode};
@@ -684,7 +683,9 @@ async fn run_refresh() -> std::process::ExitCode {
 
     // Without its timeouts a stalled connection blocks the refresh for as long as the host
     // keeps it open: measured 2026-09-17, one sat for 12 minutes with nothing arriving.
-    let http = match refresh::http_client(refresh::READ_TIMEOUT) {
+    // Every progress line a fetch produces, prefixed like the rest of this command's.
+    let notice = |line: &str| eprintln!("waharoa refresh: {line}");
+    let http = match waharoa::intel::refresh::http_client(waharoa::intel::refresh::READ_TIMEOUT) {
         Ok(http) => http,
         Err(e) => {
             eprintln!("waharoa refresh: {e}");
@@ -699,7 +700,7 @@ async fn run_refresh() -> std::process::ExitCode {
     for declared in stream::ALL {
         // `fetched` holds the whole body, and drops at the end of its arm, so one stream's
         // bytes are freed before the next is fetched.
-        let got = fetch_stream(&http, declared, github_token.as_deref()).await;
+        let got = fetch::stream_bundle(&http, declared, github_token.as_deref(), &notice).await;
         let read = match got {
             Ok(fetched) => {
                 let bundle = fetched.stream(declared.stream);
@@ -842,189 +843,6 @@ async fn run_refresh() -> std::process::ExitCode {
     } else {
         std::process::ExitCode::from(1)
     }
-}
-
-/// A body `waharoa refresh` fetched, with the headers a snapshot records.
-struct Fetched {
-    bytes: Vec<u8>,
-    etag: Option<String>,
-    last_modified: Option<String>,
-}
-
-impl Fetched {
-    /// The body as a snapshot records it under `stream`.
-    fn stream(&self, stream: &str) -> waharoa::intel::refresh::StreamDigest {
-        waharoa::intel::refresh::StreamDigest {
-            stream: stream.to_owned(),
-            sha256: waharoa::intel::refresh::sha256_hex(&self.bytes),
-            etag: self.etag.clone(),
-            last_modified: self.last_modified.clone(),
-        }
-    }
-}
-
-/// One stream's bundle, fetched with [`refresh::ATTEMPTS`] attempts.
-///
-/// A transient failure is fetched again after [`refresh::RETRY_WAIT`], because `osv/npm` is
-/// `Required` and a refresh that gives up on it loads nothing. Each attempt starts the
-/// request over: the bundle is one GET with no range request, so there is nothing to resume.
-async fn fetch_stream(
-    http: &reqwest::Client,
-    declared: &waharoa::intel::stream::Stream,
-    github_token: Option<&str>,
-) -> Result<Fetched, String> {
-    for attempt in 1..=refresh::ATTEMPTS {
-        let got = match declared.transport {
-            Transport::Get => fetch(http, declared.url, declared.ceiling).await,
-            Transport::GithubGraphql => match github_token {
-                Some(token) => fetch_graphql(http, declared.url, declared.ceiling, token).await,
-                None => Err(FetchFailure::settled(format!(
-                    "{} is unset, so this stream is not read",
-                    env::GITHUB_TOKEN
-                ))),
-            },
-        };
-        match got {
-            Ok(fetched) => return Ok(fetched),
-            Err(failure) if refresh::retried(&failure, attempt) => {
-                eprintln!(
-                    "waharoa refresh: attempt {attempt} of {}: {failure}; again in {}s",
-                    refresh::ATTEMPTS,
-                    refresh::RETRY_WAIT.as_secs()
-                );
-                tokio::time::sleep(refresh::RETRY_WAIT).await;
-            }
-            Err(failure) => return Err(failure.why),
-        }
-    }
-    unreachable!("the last attempt returns rather than looping");
-}
-
-/// The body at `url`, refused past `ceiling` bytes.
-async fn fetch(http: &reqwest::Client, url: &str, ceiling: usize) -> Result<Fetched, FetchFailure> {
-    use futures_util::StreamExt;
-
-    eprintln!("waharoa refresh: fetching {url}");
-    let response = http
-        .get(url)
-        .send()
-        .await
-        .and_then(reqwest::Response::error_for_status)
-        .map_err(|e| failed(&format!("fetching {url}"), e))?;
-    let header = |name: reqwest::header::HeaderName| {
-        response
-            .headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned)
-    };
-    let (etag, last_modified) = (
-        header(reqwest::header::ETAG),
-        header(reqwest::header::LAST_MODIFIED),
-    );
-    if let Some(declared) = response.content_length().filter(|&n| n > ceiling as u64) {
-        return Err(FetchFailure::settled(format!(
-            "{url} declares {declared} bytes, over the {ceiling} byte ceiling"
-        )));
-    }
-
-    let mut bytes = Vec::new();
-    let mut stream = response.bytes_stream();
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk.map_err(|e| failed(&format!("reading {url}"), e))?;
-        if bytes.len() + chunk.len() > ceiling {
-            return Err(FetchFailure::settled(format!(
-                "{url} is over the {ceiling} byte ceiling"
-            )));
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    Ok(Fetched {
-        bytes,
-        etag,
-        last_modified,
-    })
-}
-
-/// A request error, as the refresh reports it: transient unless the host chose the status.
-///
-/// A 404 or a 403 is the same on every attempt. A refused connection, a read that timed out
-/// and a body that stopped mid-stream are what another attempt can get past.
-fn failed(doing: &str, e: reqwest::Error) -> FetchFailure {
-    let why = format!("{doing}: {e}");
-    if e.is_status() {
-        FetchFailure::settled(why)
-    } else {
-        FetchFailure::transient(why)
-    }
-}
-
-/// Every page of GitHub's advisory connection, as one JSON array of response bodies.
-///
-/// `intel::providers::github::parse` reads that array, so paging stays here and the descriptor's
-/// `parse` keeps taking one buffer. `ceiling` bounds the whole array rather than one page.
-///
-/// A page that is not JSON, or that carries no `pageInfo`, ends the fetch: the bytes are
-/// still handed to `parse`, which reports what GitHub said.
-async fn fetch_graphql(
-    http: &reqwest::Client,
-    url: &str,
-    ceiling: usize,
-    token: &str,
-) -> Result<Fetched, FetchFailure> {
-    let mut bytes = vec![b'['];
-    let mut after: Option<String> = None;
-    let mut pages = 0_usize;
-    eprintln!("waharoa refresh: fetching {url}");
-    loop {
-        let body = serde_json::json!({
-            "query": waharoa::intel::providers::github::QUERY,
-            "variables": { "after": after },
-        });
-        let body =
-            serde_json::to_vec(&body).map_err(|e| FetchFailure::settled(format!("{url}: {e}")))?;
-        let response = http
-            .post(url)
-            .bearer_auth(token)
-            .header(reqwest::header::CONTENT_TYPE, "application/json")
-            .body(body)
-            .send()
-            .await
-            .and_then(reqwest::Response::error_for_status)
-            .map_err(|e| failed(&format!("fetching {url}"), e))?;
-        let page = response
-            .bytes()
-            .await
-            .map_err(|e| failed(&format!("reading {url}"), e))?;
-        if bytes.len() + page.len() + 1 > ceiling {
-            return Err(FetchFailure::settled(format!(
-                "{url} is over the {ceiling} byte ceiling after {pages} pages"
-            )));
-        }
-        if pages > 0 {
-            bytes.push(b',');
-        }
-        bytes.extend_from_slice(&page);
-        pages += 1;
-
-        let parsed: serde_json::Value = serde_json::from_slice(&page)
-            .map_err(|e| FetchFailure::settled(format!("reading {url}: {e}")))?;
-        let info = &parsed["data"]["securityVulnerabilities"]["pageInfo"];
-        if info["hasNextPage"].as_bool() != Some(true) {
-            break;
-        }
-        match info["endCursor"].as_str() {
-            Some(cursor) => after = Some(cursor.to_owned()),
-            None => break,
-        }
-    }
-    bytes.push(b']');
-    eprintln!("waharoa refresh: {pages} pages from {url}");
-    Ok(Fetched {
-        bytes,
-        etag: None,
-        last_modified: None,
-    })
 }
 
 #[tokio::main]
