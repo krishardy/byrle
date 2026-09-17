@@ -320,8 +320,8 @@ That is the failure mode every item below should be brought to.
 
 - [x] **`publish_times_for` asks npm whatever the ecosystem is, and the answer is wrong.**
       Closed by step 2 below: the row's `publish_times` is `Record` for PyPI and
-      `FullPackument` for npm, and `proxy::fetches_publish_times` fetches only for the
-      second.
+      `FullPackument` for npm, and `ecosystem::Clients::publish_times` fetches only for
+      the second.
       `adapter-interface.md` lists this as the one per-ecosystem question that does not
       dispatch at all. `proxy.rs` calls `proxy.registry.publish_times(key)`
       unconditionally, and `npm::Client::packument_url` builds `{npm registry}/{name}` from
@@ -343,7 +343,10 @@ That is the failure mode every item below should be brought to.
       that works, keying on `key.ecosystem().as_str()` rather than on which client the
       proxy happens to hold.
 
-- [ ] **`explain` asks npm about any purl and answers as if it knew.**
+- [x] **`explain` asks npm about any purl and answers as if it knew.**
+      Fixed: `explain` and `policy diff` fetch through `ecosystem::Clients`, which asks the
+      key's own registry. `explain 'pkg:pypi/idna@3.10'` under `cooldown_days: 36500`
+      reports `published 2024-09-15`, PyPI's upload time.
 
       ```text
       $ waharoa explain 'pkg:pypi/requests@2.34.2'
@@ -402,13 +405,16 @@ That is the failure mode every item below should be brought to.
       `error.rs`. npm has a seventh, `rewrite.rs`; PyPI gets no counterpart because
       `proxy::handle` returns before any filtering for a simple index.
 
-      Three kinds of npm-specific logic are still outside the directories:
+      What still names npm or PyPI outside `src/ecosystem/`, after the moves on
+      2026-09-17:
 
       | Where | What | Why it stayed |
       |---|---|---|
-      | `proxy.rs` | the `match` arms in `upstream_url`, `fetch_and_store` and `handle`, each now one call into the ecosystem module, and the npm client `publish_times_for` calls for a `FullPackument` row | each picks a `Proxy` field per ecosystem |
+      | `proxy.rs` | the `match` arms in `upstream_url` and `handle`'s `match document`, each one call into the ecosystem module | each picks a `Proxy` field per ecosystem, or returns early |
       | `intel/osv.rs`, `datadog.rs`, `github.rs`, `kev.rs` | npm-only stream bindings | the directory is per **source**, and step 4 makes each source per-ecosystem rather than moving the file |
-      | `main.rs`, `doctor.rs`, `explain.rs` | npm-only clients and commands | ad-hoc items 18 to 20, and the Wrong answers list above |
+      | `doctor.rs` | finding text naming `npm ci` and "every client except npm" | measured npm behaviour, reported as such |
+      | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_PACKUMENT_BYTES` and the other variable names | configuration an operator already sets |
+      | `identity.rs`, `route.rs` | `Ecosystem::Npm`, `Ecosystem::PyPI`, `DocumentKind::Packument`, `DocumentKind::SimpleIndex` | the enums that name each ecosystem and its document |
 
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 

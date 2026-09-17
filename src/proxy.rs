@@ -49,7 +49,7 @@
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
-use crate::ecosystem::PublishTimeSource;
+use crate::ecosystem::Clients;
 use crate::ecosystem::{npm, pypi};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
@@ -169,10 +169,8 @@ pub struct Proxy {
     /// Records from packuments already seen, so a tarball request can find the digest
     /// its packument published. Bounded; see [`crate::store`].
     store: Arc<Mutex<RecordStore>>,
-    /// Used to fetch a packument the client never asked for. See [`lookup_or_fetch`].
-    registry: npm::Client,
-    /// The same for a PyPI simple index.
-    index: pypi::Client,
+    /// Fetches the metadata a client never asked for. See [`lookup_or_fetch`].
+    clients: Clients,
     /// Artifacts already fetched and verified, keyed by content digest. The fetch path
     /// branches on this (plan §5). See [`crate::verified`].
     verified: Arc<Mutex<VerifiedArtifacts>>,
@@ -232,8 +230,12 @@ impl Proxy {
             .expect("an empty allow list is always valid");
         Self {
             origins: Arc::new(origins),
-            registry: npm::Client::new(client.clone(), upstream.clone()),
-            index: pypi::Client::new(client.clone(), pypi::INDEX),
+            clients: Clients::new(
+                client.clone(),
+                &upstream,
+                pypi::INDEX,
+                DEFAULT_MAX_PACKUMENT_BYTES,
+            ),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
@@ -395,19 +397,25 @@ impl Proxy {
         self.max_metadata_bytes = limit;
         // The proxy's own fetches decode under the same ceiling as the bodies it
         // forwards, so one setting means one limit.
-        self.registry =
-            npm::Client::new(self.client.clone(), self.upstream_npm.clone()).with_max_bytes(limit);
-        self.index = pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
-            .with_max_bytes(limit);
+        self.clients = self.clients();
         self
     }
 
     /// The PyPI simple index to forward to. Defaults to [`pypi::INDEX`].
     pub fn with_upstream_pypi(mut self, upstream: impl Into<String>) -> Self {
         self.upstream_pypi = upstream.into().trim_end_matches('/').to_owned();
-        self.index = pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
-            .with_max_bytes(self.max_metadata_bytes);
+        self.clients = self.clients();
         self
+    }
+
+    /// Clients for the configured upstreams and body limit.
+    fn clients(&self) -> Clients {
+        Clients::new(
+            self.client.clone(),
+            &self.upstream_npm,
+            &self.upstream_pypi,
+            self.max_metadata_bytes,
+        )
     }
 
     pub fn upstream_npm(&self) -> &str {
@@ -671,18 +679,14 @@ async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &
 /// Fetch the metadata document the client did not ask for, and keep its records.
 ///
 /// Each ecosystem asks its own registry: npm the abbreviated packument, PyPI the simple
-/// index. `key` carries the ecosystem, so the caller does not choose.
+/// index. `key` carries the ecosystem, and [`Clients::metadata`] chooses by it.
 ///
 /// Failure is not fatal and is not propagated. The artifact is forwarded unverified and
 /// said to be unverified, which is Stage 1 behaviour; Stage 2 has to decide whether that
 /// stays allowed.
 async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     let started = Instant::now();
-    let fetched = match key.ecosystem() {
-        Ecosystem::Npm => proxy.registry.metadata(key).await,
-        Ecosystem::PyPI => proxy.index.metadata(key).await,
-    };
-    match fetched {
+    match proxy.clients.metadata(key).await {
         Ok(Ok(metadata)) => {
             let versions = metadata.records.len();
             proxy
@@ -1534,24 +1538,15 @@ fn defer_response(
 /// needs, and a proxy that never lets go is the failure worth avoiding.
 const MAX_PUBLISH_TIME_PACKAGES: usize = 1024;
 
-/// Whether answering the policy for a package in `ecosystem` needs its publish times
-/// fetched separately.
-///
-/// No when the policy uses no cooldown, which is the common case. No when the ecosystem's
-/// records already carry `published_at`, which `facts::published_date` reads before the
-/// fetched times.
-fn fetches_publish_times(policy: Option<&Policy>, ecosystem: Ecosystem) -> bool {
-    policy.is_some_and(Policy::uses_cooldown)
-        && crate::ecosystem::of(ecosystem).publish_times == PublishTimeSource::FullPackument
-}
-
 /// Publish times for this package, fetched once and kept.
 ///
-/// `None` when [`fetches_publish_times`] says no: no request is made and nothing is held.
-/// A fetch that fails is not fatal and is not retried within the process, because the
-/// check it feeds reports itself as unenforceable rather than refusing the package.
+/// `None` when the policy uses no cooldown, which is the common case: no request is made
+/// and nothing is held. `None` too for an ecosystem whose records carry `published_at`,
+/// which [`Clients::publish_times`] answers without a request. A fetch that fails is not
+/// fatal and is not retried within the process, because the check it feeds reports itself
+/// as unenforceable rather than refusing the package.
 async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<Arc<facts::PublishTimes>> {
-    if !fetches_publish_times(proxy.policy.as_deref(), key.ecosystem()) {
+    if !proxy.policy.as_deref().is_some_and(Policy::uses_cooldown) {
         return None;
     }
     if let Some(held) = proxy
@@ -1564,14 +1559,11 @@ async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<Arc<facts:
     }
 
     let started = Instant::now();
-    let times = match proxy.registry.publish_times(key).await {
-        Ok(Ok(times)) => times,
-        Ok(Err(e)) => {
-            warn!(purl = %key, error = %e, "full packument could not be read for publish times");
-            return None;
-        }
+    let times = match proxy.clients.publish_times(key).await {
+        Ok(Some(times)) => times,
+        Ok(None) => return None,
         Err(e) => {
-            warn!(purl = %key, error = %e, "full packument could not be fetched for publish times");
+            warn!(purl = %key, error = %e, "no publish times for this package");
             return None;
         }
     };
@@ -2538,28 +2530,6 @@ mod tests {
 
     fn policy(yaml: &str) -> std::sync::Arc<Policy> {
         std::sync::Arc::new(Policy::parse(yaml).expect("policy should load"))
-    }
-
-    /// A PyPI record carries its own `published_at`, so a cooldown asks npm nothing about
-    /// it. Before this, `pip install idna` was dated from npm's `idna@0.0.1`.
-    #[test]
-    fn only_a_cooldown_on_npm_fetches_publish_times() {
-        let cooldown = policy("version: 1\ncooldown_days: 3\n");
-        let none = policy("version: 1\ncooldown_days: 0\n");
-        for (policy, ecosystem, fetches) in [
-            (Some(&*cooldown), Ecosystem::Npm, true),
-            (Some(&*cooldown), Ecosystem::PyPI, false),
-            (Some(&*none), Ecosystem::Npm, false),
-            (Some(&*none), Ecosystem::PyPI, false),
-            (None, Ecosystem::Npm, false),
-            (None, Ecosystem::PyPI, false),
-        ] {
-            assert_eq!(
-                fetches_publish_times(policy, ecosystem),
-                fetches,
-                "{ecosystem} with {policy:?}"
-            );
-        }
     }
 
     /// Decision #4's pinned half, end to end. `npm ci` fetches an artifact by name

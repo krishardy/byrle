@@ -91,10 +91,19 @@ makes `ecosystem::of` safe to call on the request path.
 
 ### Publish times
 
-`proxy::publish_times_for` fetches only when the policy uses a cooldown and the row says
-`FullPackument`. npm's abbreviated packument has no `time` map, so its times come from a
-second request for the full one. A PyPI record already carries `published_at`, which
-`facts::published_date` reads before any fetched times, so PyPI makes no second request.
+`ecosystem::Clients::publish_times` fetches only when the row says `FullPackument`, and
+answers `Ok(None)` without a request when it says `Record`. The proxy asks it only when the
+policy uses a cooldown. npm's abbreviated packument has no `time` map, so its times come
+from a second request for the full one. A PyPI record already carries `published_at`,
+which `facts::published_date` reads before any fetched times.
+
+### Fetching without a document
+
+`ecosystem::Clients` holds npm's and PyPI's clients, and `metadata` and `publish_times`
+choose between them by the key's ecosystem. The proxy uses it for an artifact whose
+metadata it has not seen. `waharoa explain` and `waharoa policy diff` use it for every
+package they judge, so `explain pkg:pypi/requests@2.32.3` asks PyPI. Before, both commands
+built an `npm::Client` whatever the purl said.
 
 Before the field, `publish_times_for` called `npm::Client::publish_times` for every key.
 Measured with `cooldown_days: 3650`, `pip install idna` logged
@@ -119,7 +128,7 @@ of the ecosystem table.
 | Question | Where | Why not a field |
 |---|---|---|
 | where does this request go upstream | `proxy::upstream_url` | picks `Proxy`'s per-ecosystem upstream field; each arm is one call to `<ecosystem>::upstream_url` |
-| what does the proxy fetch on its own behalf | `proxy::fetch_and_store` | picks `Proxy`'s per-ecosystem client; each arm is one call to `Client::metadata`, which is `async` |
+| what is fetched without a document | `ecosystem::Clients::metadata` | picks the ecosystem's client; each arm is one call to `Client::metadata`, which is `async` |
 | how is that document read | `proxy::handle`'s `match document` | the arms need different things: PyPI's calls `pypi::read_index` and returns, npm's calls `npm::read_packument` and goes on to publish times, intel and `npm::rewrite_packument` |
 
 All three are `match` expressions, not tests with a fall-through, so a third ecosystem is a
