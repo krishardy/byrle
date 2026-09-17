@@ -426,6 +426,63 @@ mod tests {
         assert!(lines[1].ends_with("again in 2s"), "{lines:?}");
     }
 
+    /// One GitHub page whose `pageInfo` says there is no next one: the array holds that
+    /// page and nothing else.
+    #[tokio::test]
+    async fn a_single_graphql_page_is_the_whole_array() {
+        let page = br#"{"data":{"securityVulnerabilities":{"nodes":[],"pageInfo":{"hasNextPage":false}}}}"#;
+        let addr = scripted(vec![Answer::body(page.to_vec())]).await;
+        let printed = Printed::default();
+        let url = format!("http://{addr}/graphql");
+        let fetched = graphql(&client(), &url, 4096, "token", &printed.notice())
+            .await
+            .expect("one page");
+        let array: serde_json::Value = serde_json::from_slice(&fetched.bytes).expect("an array");
+        assert_eq!(array.as_array().map(Vec::len), Some(1));
+        assert_eq!(fetched.etag, None, "a page carries no bundle headers");
+        assert_eq!(
+            printed.lines(),
+            [format!("fetching {url}"), format!("1 pages from {url}")]
+        );
+    }
+
+    /// Paging stops at the ceiling rather than following the cursor forever. The server
+    /// answers every page with `hasNextPage`, so the ceiling is what ends it.
+    #[tokio::test]
+    async fn graphql_paging_stops_at_the_ceiling() {
+        let page = br#"{"data":{"securityVulnerabilities":{"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":"next"}}}}"#;
+        let addr = scripted(vec![Answer::body(page.to_vec())]).await;
+        let printed = Printed::default();
+        let url = format!("http://{addr}/graphql");
+        let failure = graphql(&client(), &url, page.len() + 8, "token", &printed.notice())
+            .await
+            .expect_err("the second page is over the ceiling");
+        assert!(
+            failure.why.ends_with("byte ceiling after 1 pages"),
+            "{}",
+            failure.why
+        );
+        assert!(!failure.again, "the same on every attempt");
+    }
+
+    /// A page that is not JSON ends the fetch rather than being followed.
+    #[tokio::test]
+    async fn a_graphql_page_that_is_not_json_ends_the_fetch() {
+        let addr = scripted(vec![Answer::body("not json")]).await;
+        let printed = Printed::default();
+        let failure = graphql(
+            &client(),
+            &format!("http://{addr}/graphql"),
+            4096,
+            "token",
+            &printed.notice(),
+        )
+        .await
+        .expect_err("not JSON");
+        assert!(failure.why.starts_with("reading http"), "{}", failure.why);
+        assert!(!failure.again);
+    }
+
     /// A table of two streams served by one scripted server, the first `Required`.
     fn two_streams(required_parses: bool) -> &'static [Stream] {
         fn ok(_: &[u8]) -> Result<crate::intel::stream::Parsed, String> {

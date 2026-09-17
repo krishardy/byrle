@@ -128,6 +128,34 @@ async fn a_store_is_built_from_the_environment_or_is_absent() {
     assert!(intel.snapshot().await.is_ok());
 }
 
+/// A command that cannot run without the store says which variable to set, and exits 2 as
+/// any other missing configuration does.
+#[tokio::test]
+async fn a_command_without_a_store_is_refused_with_the_variable_to_set() {
+    use waharoa::env::{DATABASE_URL, Env};
+
+    let unset = Env::from_lookup(|_| None);
+    let refused = match waharoa::intel::postgres::required(&unset).await {
+        Err(refused) => refused,
+        // `PgIntel` is not `Debug`, so `expect_err` cannot print the store it built.
+        Ok(_) => panic!("an unset variable is no store"),
+    };
+    assert_eq!(refused.code, 2);
+    assert_eq!(
+        refused.to_string(),
+        format!("set {} to the intel store's Postgres", DATABASE_URL)
+    );
+
+    let Some(url) = url() else { return };
+    let set = Env::from_lookup(move |name| {
+        (name == DATABASE_URL.name).then(|| std::ffi::OsString::from(url.clone()))
+    });
+    assert!(
+        waharoa::intel::postgres::required(&set).await.is_ok(),
+        "the database is there"
+    );
+}
+
 macro_rules! skip_without_database {
     ($name:expr) => {
         match fresh($name).await {

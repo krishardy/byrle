@@ -21,12 +21,17 @@ if ! cargo llvm-cov --version >/dev/null 2>&1; then
     exit 1
 fi
 
-# `src/intel/postgres.rs` speaks to a real database and nothing else. Its tests are
+# Two files need a real database and nothing else can reach them. Their tests are
 # `tests/intel_postgres.rs`, which `make test-integration` runs against a container and
-# which return early without one, so this pass compiles them out and the file reads 0%.
+# which return early without one, so this pass compiles them out and both read 0%.
 # CLAUDE.md excludes live tests from the floor, and a file only those tests reach is the
-# same case. Decided 2026-09-16; its figure is printed below rather than excluded quietly.
-live_only='src/intel/postgres\.rs'
+# same case. Decided 2026-09-16; their figures are printed below rather than excluded
+# quietly.
+#
+# `src/intel/postgres.rs` is the queries. `src/intel/refresh/run.rs` is the refresh that
+# sends them: connect, fetch, write, replace. Everything a refresh decides without a
+# database is elsewhere in `src/intel/`, inside the floor.
+live_only='src/intel/(postgres|refresh/run)\.rs'
 
 printf '\n\033[1m==> library coverage (floor %s%%, lines and functions and regions)\033[0m\n' "$floor"
 cargo llvm-cov --lib \
@@ -41,4 +46,5 @@ cargo llvm-cov --summary-only 2>/dev/null | awk '/^Filename/ || /^main\.rs/'
 cargo llvm-cov --lib --summary-only 2>/dev/null | awk '/^intel\/postgres\.rs/'
 echo "    main.rs is startup wiring. 'make smoke-npm' and 'make smoke-clients' run real"
 echo "    clients through the binary."
-echo "    intel/postgres.rs needs a real database. 'make test-integration' runs its tests."
+echo "    intel/postgres.rs and intel/refresh/run.rs need a real database.
+    'make test-integration' runs their tests."

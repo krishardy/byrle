@@ -16,9 +16,9 @@ the exit code. Everything a command decides is in the library.
 | `main`, the six runners | `startup::proxy`, `doctor::run`, `explain::run`, `diff::run`, `fetch::read_streams` |
 | `tracing_subscriber` setup, `TcpListener`, `axum::serve` | the `Proxy` the environment describes |
 | printing and exit codes | what to print, as a `String` and a list of lines |
-| the Postgres transaction a refresh runs | the requests, the parses and the report |
+| — | `refresh::run`, including the Postgres transaction |
 
-It went from 1,292 lines to 344.
+It went from 1,292 lines to 211: `main`, the six runners and `or_exit`.
 
 ## Why
 
@@ -43,7 +43,7 @@ Not a printed side effect. Each returns what to print, so a test reads it:
 | `explain` | `Answered { notes, answer, code }` |
 | `policy diff` | `diff::Run { notes, report, summary, code }` |
 | `doctor` | `Checked { report, code }` |
-| `refresh` | `fetch::Read`, then `refresh::report(...) -> String` |
+| `refresh` | `refresh::Run { report, code }`, with `refresh::report` rendering it |
 
 `notes` and `summary` are stderr lines without the command's prefix, which `main` adds.
 Ordering is preserved: notes, then the report, then the summary.
@@ -55,8 +55,11 @@ variable that does not parse is 2, as [environment-variables](environment-variab
 requires, and something the operator asked for that is not there refuses to start.
 `startup::StartupError` carries which of the two it is.
 
-The Postgres transaction in `run_refresh`, because `PgIntel` needs a database and
-`coverage.sh` excludes the one file that speaks to it.
+Nothing that needs a database. `refresh::run` holds the connect, the fetch, the row
+writing and the replace, in `src/intel/refresh/run.rs`, and `coverage.sh` excludes that
+file for the reason it excludes `src/intel/postgres.rs`: only `make test-integration`
+reaches it. Everything a refresh decides without a database is elsewhere in `src/intel/`,
+inside the floor.
 
 ## What this cost
 

@@ -65,6 +65,41 @@ pub async fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
     Ok(Some(intel))
 }
 
+/// Why a command that cannot run without the store did not get one.
+#[derive(Debug)]
+pub struct Refused {
+    pub why: String,
+    /// 2 when the variable is unset, as for any other missing configuration, and 1 when
+    /// the store is there and cannot be reached or migrated.
+    pub code: u8,
+}
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.why)
+    }
+}
+
+/// The store a command cannot run without.
+pub async fn required<L: Fn(&str) -> Option<std::ffi::OsString>>(
+    environment: &crate::env::Env<L>,
+) -> Result<PgIntel, Refused> {
+    match from_env(environment).await {
+        Ok(Some(intel)) => Ok(intel),
+        Ok(None) => Err(Refused {
+            why: format!(
+                "set {} to the intel store's Postgres",
+                crate::env::DATABASE_URL
+            ),
+            code: 2,
+        }),
+        Err(e) => Err(Refused {
+            why: format!("{}: {e}", crate::env::DATABASE_URL),
+            code: 1,
+        }),
+    }
+}
+
 impl PgIntel {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }

@@ -16,7 +16,6 @@ use waharoa::doctor;
 use waharoa::env;
 use waharoa::explain;
 
-use waharoa::intel::fetch;
 use waharoa::intel::postgres;
 use waharoa::intel::refresh;
 use waharoa::policy::{check, diff, today};
@@ -100,32 +99,14 @@ async fn run_doctor() -> std::process::ExitCode {
     std::process::ExitCode::from(checked.code)
 }
 
-/// The intel store a command cannot run without. Exit 2 when [`env::DATABASE_URL`] is unset,
-/// and 1 when the store cannot be reached or migrated.
-async fn required_intel_store(
-    command: &str,
-) -> Result<waharoa::intel::postgres::PgIntel, std::process::ExitCode> {
-    match postgres::from_env(&env::process()).await {
-        Ok(Some(intel)) => Ok(intel),
-        Ok(None) => {
-            eprintln!(
-                "waharoa {command}: set {} to the intel store's Postgres",
-                env::DATABASE_URL
-            );
-            Err(std::process::ExitCode::from(2))
-        }
-        Err(e) => {
-            eprintln!("waharoa {command}: {}: {e}", env::DATABASE_URL);
-            Err(std::process::ExitCode::from(1))
-        }
-    }
-}
-
 /// `waharoa intel history`: the newest entries of the ingestion history.
 async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
-    let intel = match required_intel_store("intel history").await {
+    let intel = match postgres::required(&env::process()).await {
         Ok(intel) => intel,
-        Err(code) => return code,
+        Err(refused) => {
+            eprintln!("waharoa intel history: {refused}");
+            return std::process::ExitCode::from(refused.code);
+        }
     };
     match intel.history(args.limit).await {
         Ok(entries) => {
@@ -140,127 +121,13 @@ async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
 }
 
 /// The snapshot `--snapshot` names, read from the snapshot directory without its lock.
-/// `waharoa refresh`: load every stream in `intel::stream::ALL` into the intel store, and
-/// append what each stream did to the ingestion history.
-///
-/// Connect, migrate, fetch, load, exit. A `Required` stream that cannot be fetched or read
-/// loads nothing, and the streams after it are not fetched. An `Optional` stream that cannot
-/// be fetched or read leaves its previous load in place: the others still load, and the exit
-/// is 1.
+/// `waharoa refresh`: load every stream into the intel store, and append what each stream
+/// did to the ingestion history.
 async fn run_refresh() -> std::process::ExitCode {
-    use waharoa::intel::history::{self, NotLoaded};
-    use waharoa::intel::postgres::{PgIntel, Replacement};
-    use waharoa::intel::{snapshot_dir::SnapshotDir, stream};
-
-    /// Append `not_loaded` for a refresh that loaded nothing, and exit 1.
-    async fn nothing_loaded(intel: &PgIntel, not_loaded: &[NotLoaded]) -> std::process::ExitCode {
-        let taken_at = jiff::Timestamp::now().to_string();
-        if let Err(e) = intel.record_not_loaded(not_loaded, &taken_at).await {
-            eprintln!("waharoa refresh: the ingestion history is not written: {e}");
-        }
-        std::process::ExitCode::from(1)
-    }
-
-    // Connected before the fetch, so a refresh that could record nothing stops before
-    // downloading.
-    let intel = match required_intel_store("refresh").await {
-        Ok(intel) => intel,
-        Err(code) => return code,
-    };
-    let started = std::time::Instant::now();
-
-    // Opened before the fetch, so a second refresh into the same directory waits here rather
-    // than after downloading.
-    let limit = or_exit(env::process().snapshot_limit());
-    let kept = match or_exit(env::process().snapshot_dir())
-        .as_deref()
-        .map(SnapshotDir::open)
-        .transpose()
-    {
-        Ok(kept) => kept,
-        Err(e) => {
-            eprintln!("waharoa refresh: {}: {e}", env::SNAPSHOT_DIR);
-            return std::process::ExitCode::from(1);
-        }
-    };
-
-    // Without its timeouts a stalled connection blocks the refresh for as long as the host
-    // keeps it open: measured 2026-09-17, one sat for 12 minutes with nothing arriving.
-    // Every progress line a fetch produces, prefixed like the rest of this command's.
     let notice = |line: &str| eprintln!("waharoa refresh: {line}");
-    let http = match waharoa::intel::refresh::http_client(waharoa::intel::refresh::READ_TIMEOUT) {
-        Ok(http) => http,
-        Err(e) => {
-            eprintln!("waharoa refresh: {e}");
-            return std::process::ExitCode::from(1);
-        }
-    };
-
-    let github_token = or_exit(env::process().github_token());
-
-    let read = fetch::read_streams(&http, stream::ALL, github_token.as_deref(), &notice).await;
-    let (loaded, not_loaded) = (read.loaded, read.not_loaded);
-    if let Some(error) = read.stopped {
-        eprintln!("waharoa refresh: nothing loaded: {error}");
-        return nothing_loaded(&intel, &not_loaded).await;
-    }
-
-    let taken_at = jiff::Timestamp::now().to_string();
-    let encoded: Vec<_> = loaded.iter().map(|l| l.payload.encode(l.source)).collect();
-    let sources: Vec<Replacement> = loaded
-        .iter()
-        .zip(&encoded)
-        .map(|(l, encoded)| Replacement {
-            encoded,
-            rows: l.payload.rows(),
-            streams: &l.streams,
-        })
-        .collect();
-
-    let none_loaded = |error: String| history::none_loaded(&sources, &not_loaded, &error);
-
-    // Written before the load, so a snapshot Postgres records never lacks its rows here. Rows
-    // left by a load that then fails are removed by the next prune.
-    if let Some(kept) = &kept {
-        for source in &sources {
-            if let Err(e) = kept.write_rows(source.encoded) {
-                eprintln!("waharoa refresh: nothing loaded: {e}");
-                return nothing_loaded(&intel, &none_loaded(e.to_string())).await;
-            }
-        }
-    }
-
-    let written = match intel.replace(&sources, &not_loaded, &taken_at).await {
-        Ok(written) => written,
-        Err(e) => {
-            eprintln!("waharoa refresh: nothing loaded: {e}");
-            return nothing_loaded(&intel, &none_loaded(e.to_string())).await;
-        }
-    };
-
-    let kept_report = match &kept {
-        Some(kept) => match kept
-            .write_snapshot(&written.manifest)
-            .and_then(|path| Ok((path, kept.prune(limit)?)))
-        {
-            Ok((path, pruned)) => Some(refresh::Kept { path, pruned }),
-            Err(e) => {
-                eprintln!("waharoa refresh: loaded, but the snapshot file is not written: {e}");
-                return std::process::ExitCode::from(1);
-            }
-        },
-        None => None,
-    };
-    print!(
-        "{}",
-        refresh::report(&loaded, &written, kept_report.as_ref())
-    );
-    println!("took {:.1}s", started.elapsed().as_secs_f64());
-    if not_loaded.is_empty() {
-        std::process::ExitCode::SUCCESS
-    } else {
-        std::process::ExitCode::from(1)
-    }
+    let run = refresh::run(&env::process(), &notice).await;
+    print!("{}", run.report);
+    std::process::ExitCode::from(run.code)
 }
 
 #[tokio::main]
