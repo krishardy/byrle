@@ -380,15 +380,16 @@ That is the failure mode every item below should be brought to.
       `crate::npm::PackageMetadata::bypassing_origins`, left behind when those moved to
       `origin` and `record`. Nothing gates rustdoc warnings, which is why they survived.
 
-- [ ] **`waharoa refresh` has no timeout, so a stalled download blocks it indefinitely.**
-      The client at `main.rs` `run_refresh` is built with a user agent and nothing else.
+- [x] **`waharoa refresh` had no timeout, so a stalled download blocked it indefinitely.**
       On 2026-09-17 a refresh sat for 12 minutes with its TLS connection established,
-      nothing queued and `rchar` unchanged over 10 s. `curl` fetched the same
-      215,141,389-byte `npm/all.zip` in 9 s at the same time. A read timeout on each chunk,
-      rather than one on the whole body, keeps a slow 215 MB download working.
-      The attempt after it failed with `reading .../npm/all.zip: error decoding response
-      body` and loaded nothing, because `osv/npm` is `Required`. A retry of the body fetch
-      would let a transient read error pass.
+      nothing queued and `rchar` unchanged over 10 s, while `curl` fetched the same
+      215,141,389-byte `npm/all.zip` in 9 s. The attempt after it failed with
+      `reading .../npm/all.zip: error decoding response body` and loaded nothing, because
+      `osv/npm` is `Required`.
+      Fixed: `refresh::http_client` sets a 10 s connect timeout and a 30 s read timeout,
+      and `fetch_stream` fetches a stream three times, 2 s apart, when the failure is one
+      another attempt could get past. `stream-descriptor-table.md` holds the values and
+      why each is what it is.
 
 ### Structure
 

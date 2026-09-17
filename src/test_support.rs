@@ -30,3 +30,30 @@ pub async fn closing_server() -> std::net::SocketAddr {
     });
     addr
 }
+
+/// The address of a server that sends response headers and then nothing, holding the
+/// connection open. For a test that a read timeout ends a stalled body.
+pub async fn stalling_server() -> std::net::SocketAddr {
+    use tokio::io::AsyncWriteExt;
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port should bind");
+    let addr = listener
+        .local_addr()
+        .expect("a bound listener has an address");
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                // A body that is declared and never sent. The connection stays open, which
+                // is what a stalled download looks like.
+                let _ = stream
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n")
+                    .await;
+                let _ = stream.flush().await;
+                std::future::pending::<()>().await;
+            });
+        }
+    });
+    addr
+}
