@@ -1201,8 +1201,8 @@ async fn main() -> std::process::ExitCode {
         std::sync::Arc::new(store) as std::sync::Arc<dyn waharoa::intel::store::Intel>
     });
 
-    // TODO: Proxy.with_upstream(upstream_npm | upstream_pypi | etc...)
-    let proxy = Proxy::new(client, upstream_npm)
+    let proxy = Proxy::new(client)
+        .with_upstream_npm(upstream_npm)
         .with_upstream_pypi(upstream_pypi)
         .with_intel(intel)
         .with_refusal_status(refusal)
