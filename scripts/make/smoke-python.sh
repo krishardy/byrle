@@ -164,10 +164,14 @@ echo "    ok ($files files, all with a known digest, all verified, none left off
 stop_proxy
 
 echo "==> 5/6  one version's wheel and sdist get different answers"
-# A PyPI version is several files. `idna` 3.19 ships a wheel and an sdist; installing the
+# A PyPI version is several files. `idna` 3.20 ships a wheel and an sdist; installing the
 # wheel runs nothing and installing the sdist runs setup.py, so a policy that blocks
 # install scripts has to answer them differently. The version-level record says false,
 # because a resolver that can take the wheel will.
+#
+# Pinned, because the assertions below name the files. Without the pin this check read
+# `idna-3.19.tar.gz` and pip installed 3.20 the day it was published.
+idna="3.20"
 cat >"$workdir/scripts.yaml" <<'YAML'
 version: 1
 cooldown_days: 0
@@ -177,7 +181,7 @@ start_proxy "$workdir/scripts.yaml"
 
 make_venv "$workdir/sdist"
 set +e
-pip_install "$workdir/sdist" --no-binary :all: idna >"$workdir/sdist.out" 2>&1
+pip_install "$workdir/sdist" --no-binary :all: "idna==$idna" >"$workdir/sdist.out" 2>&1
 sdist_status=$?
 set -e
 [[ "$sdist_status" -ne 0 ]] || fail "the sdist installed although install scripts are blocked"
@@ -186,17 +190,17 @@ grep -q '403' "$workdir/sdist.out" \
 $(cat "$workdir/sdist.out")"
 
 make_venv "$workdir/wheel"
-pip_install "$workdir/wheel" idna \
+pip_install "$workdir/wheel" "idna==$idna" \
     || fail "the wheel of the same version was refused too"
 
 clean
-grep -qE 'refused by policy.*idna-3\.19\.tar\.gz' "$clean_log" \
+grep -qE "refused by policy.*idna-$idna\.tar\.gz" "$clean_log" \
     || fail "the refusal does not name the sdist it refused"
-grep -qE 'refused by policy.*idna-3\.19-py3-none-any\.whl' "$clean_log" \
+grep -qE "refused by policy.*idna-$idna-py3-none-any\.whl" "$clean_log" \
     && fail "the wheel was refused; only the sdist runs the package's own code"
-grep -qE 'proxied.*idna-3\.19-py3-none-any\.whl status=200' "$clean_log" \
+grep -qE "proxied.*idna-$idna-py3-none-any\.whl status=200" "$clean_log" \
     || fail "the wheel was not served"
-if grep -qE 'proxied.*idna-3\.19\.tar\.gz status=200' "$clean_log"; then
+if grep -qE "proxied.*idna-$idna\.tar\.gz status=200" "$clean_log"; then
     fail "the refused sdist was fetched upstream; the refusal came too late"
 fi
 echo "    ok (sdist refused 403, wheel of the same version served, sdist never fetched)"
