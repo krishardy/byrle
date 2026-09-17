@@ -407,7 +407,7 @@ That is the failure mode every item below should be brought to.
       |---|---|---|
       | `proxy.rs` | `read_index`, `handle`'s npm arm, `upstream_url`, `fetch_and_store`, and the npm client `publish_times_for` calls for a `FullPackument` row | each reads `Proxy`; the `handle` decomposition item below is what frees them |
       | `intel/osv.rs`, `datadog.rs`, `github.rs`, `kev.rs` | npm-only stream bindings | the directory is per **source**, and step 4 makes each source per-ecosystem rather than moving the file |
-      | `main.rs`, `doctor.rs`, `explain.rs`, `lockfile.rs` | npm-only clients and commands | ad-hoc items 18 to 20, and the Wrong answers list above |
+      | `main.rs`, `doctor.rs`, `explain.rs` | npm-only clients and commands | ad-hoc items 18 to 20, and the Wrong answers list above |
 
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 

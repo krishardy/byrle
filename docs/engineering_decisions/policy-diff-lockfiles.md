@@ -1,6 +1,6 @@
 # `policy diff` reads lockfiles
 
-- **Status:** Implemented. `src/lockfile.rs`; the option in `src/cli.rs`; the package set in
+- **Status:** Implemented. `src/lockfile.rs` and `src/ecosystem/npm/lockfile.rs`; the option in `src/cli.rs`; the package set in
   `run_policy_diff`, `src/main.rs`.
 - **Plan reference:** §3, policy impact analysis: "Package set from lockfiles or the audit
   log. Lockfiles give the full resolved graph including transitives; the audit log gives
