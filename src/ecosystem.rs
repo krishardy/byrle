@@ -23,6 +23,7 @@ pub mod pypi;
 
 use crate::identity::Ecosystem;
 use crate::intel::stream::{self, Stream};
+use crate::lockfile::{Lockfile, Unread};
 use crate::route::{DocumentKind, RequestTarget};
 
 /// Where the policy reads a version's publish time from, for `cooldown_days`.
@@ -72,6 +73,12 @@ pub struct Registry {
     /// Empty means `waharoa doctor` and the startup log report the ecosystem as served with
     /// no stream providing `match` or `malware`.
     pub streams: &'static [&'static Stream],
+
+    /// Lockfiles this ecosystem's clients write, by file name, and how each is read.
+    pub lockfiles: &'static [Lockfile],
+
+    /// File names a client writes that no reader takes, and what to write instead.
+    pub unread_lockfiles: &'static [Unread],
 }
 
 impl Registry {
@@ -112,6 +119,8 @@ pub const NPM: Registry = Registry {
     read_media_type: npm::document_from_content_type,
     publish_times: PublishTimeSource::FullPackument,
     streams: &[&stream::OSV_NPM, &stream::DATADOG_NPM, &stream::GITHUB_NPM],
+    lockfiles: npm::lockfile::LOCKFILES,
+    unread_lockfiles: npm::lockfile::UNREAD,
 };
 
 pub const PYPI: Registry = Registry {
@@ -128,6 +137,9 @@ pub const PYPI: Registry = Registry {
     // OSV, Datadog and GitHub all publish PyPI advisories. None is fetched yet: TODO.md,
     // step 4 of the module directory item.
     streams: &[],
+    // requirements.txt, uv.lock and poetry.lock are not read yet.
+    lockfiles: &[],
+    unread_lockfiles: &[],
 };
 
 /// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row
