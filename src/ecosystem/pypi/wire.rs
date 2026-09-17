@@ -153,10 +153,12 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
     Ok(Project { name, files })
 }
 
-/// The file a resolver would take for a version, and what installing it runs.
+/// The file a resolver would take for a version.
 ///
-/// A wheel is preferred because a resolver that can take one will: it installs without
-/// running the package's own code. `None` when the index lists no file for that version.
+/// A wheel wins because a resolver that can take one will. `normalize` reads this for the
+/// version's publish time, so a version offering both kinds is dated by its wheel; the
+/// install-scripts answer comes from [`Project::only_sdist`] rather than from here.
+/// `None` when the index lists no file for that version.
 impl Project {
     pub(super) fn preferred(&self, version: &str) -> Option<&File> {
         let files = self.files_for(version);
@@ -173,6 +175,34 @@ mod tests {
     use super::*;
 
     use super::super::{MAX_INDEX_BYTES, fixture};
+
+    /// A version offering both is dated by its wheel, so the two upload times differ here.
+    /// Taking the sdist's would date the version from the file a resolver will not fetch.
+    #[test]
+    fn a_version_offering_both_kinds_prefers_its_wheel() {
+        let document = br#"{"name":"x","files":[
+            {"filename":"x-1.0.tar.gz","url":"https://files/x-1.0.tar.gz","hashes":{},
+             "upload-time":"2020-01-01T00:00:00Z"},
+            {"filename":"x-1.0-py3-none-any.whl","url":"https://files/x-1.0-py3-none-any.whl",
+             "hashes":{},"upload-time":"2021-06-02T03:04:05Z"}
+        ]}"#;
+        let project = parse("x", document).expect("the document reads");
+
+        let file = project.preferred("1.0").expect("one of the two");
+        assert_eq!(file.filename, "x-1.0-py3-none-any.whl");
+        assert_eq!(file.upload_time.as_deref(), Some("2021-06-02T03:04:05Z"));
+    }
+
+    /// With only an sdist there is nothing to prefer, and the version still has a file.
+    #[test]
+    fn a_version_offering_only_an_sdist_prefers_it() {
+        let project = parse("requests", &fixture()).expect("the fixture reads");
+        assert_eq!(
+            project.preferred("0.2.0").map(|f| f.filename.as_str()),
+            Some("requests-0.2.0.tar.gz")
+        );
+        assert_eq!(project.preferred("9.9.9").map(|f| &f.filename), None);
+    }
 
     /// npm sends `time` only in the full packument, so `published` is `None` for every
     /// record the proxy holds. PyPI writes it per file in the document a resolver fetches.
