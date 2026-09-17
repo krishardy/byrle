@@ -19,7 +19,7 @@ needs to know before it fetches, and how to read the bundle once it has one:
 | `url` | where the bundle is fetched from |
 | `ceiling` | bytes past which the fetch is refused |
 | `requirement` | `Required` or `Optional` |
-| `grants` | what the stream may say, per ecosystem |
+| `grants` | what the stream may say, and for which ecosystems: `Listed` (the rows of `ecosystem::TABLE` whose `streams` list it) or `Served` (every row) |
 | `parse` | the bundle's bytes as `Parsed { payload, tally }` |
 
 `waharoa refresh` loops over `ALL` in order. `intel::capabilities_of` reads `grants`. Neither

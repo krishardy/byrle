@@ -345,11 +345,21 @@ impl Capabilities {
     }
 }
 
-/// The ecosystems this build serves, as streams key them.
+/// The ecosystems this build serves, as streams key them: one per row of
+/// [`crate::ecosystem::TABLE`].
 pub fn served() -> Vec<&'static str> {
-    crate::identity::Ecosystem::ALL
+    crate::ecosystem::TABLE
         .iter()
-        .map(|ecosystem| ecosystem.as_str())
+        .map(|registry| registry.ecosystem.as_str())
+        .collect()
+}
+
+/// The ecosystems whose row lists the stream recorded as `stream`.
+fn listing(stream: &str) -> Vec<&'static str> {
+    crate::ecosystem::TABLE
+        .iter()
+        .filter(|registry| registry.streams.iter().any(|s| s.stream == stream))
+        .map(|registry| registry.ecosystem.as_str())
         .collect()
 }
 
@@ -365,7 +375,7 @@ pub fn capabilities_of(streams: &[refresh::StreamDigest]) -> Capabilities {
         };
         declared.grants.iter().fold(caps, |caps, grant| {
             let ecosystems = match grant.scope {
-                stream::Scope::Only(ecosystem) => vec![ecosystem.as_str()],
+                stream::Scope::Listed => listing(&s.stream),
                 stream::Scope::Served => served(),
             };
             ecosystems.into_iter().fold(caps, |caps, ecosystem| {
@@ -485,7 +495,7 @@ mod tests {
             recorded("datadog/npm"),
             recorded("osv/pypi"),
         ]);
-        assert_eq!(served(), ["npm"]);
+        assert_eq!(served(), ["npm", "pypi"]);
         assert_eq!(
             caps.providers("npm", Capability::Match),
             ["datadog/npm", "osv/npm"]
@@ -496,11 +506,37 @@ mod tests {
         );
         assert_eq!(caps.providers("npm", Capability::Enrich), ["cisa/kev"]);
         assert!(!caps.has("osv/pypi", "pypi", Capability::Match));
-        assert!(caps.gaps(&served()).is_empty());
-        assert!(caps.uncovered_by(&served(), Capability::Malware).is_empty());
+        assert!(caps.gaps(&["npm"]).is_empty());
+        assert!(caps.uncovered_by(&["npm"], Capability::Malware).is_empty());
+        assert_eq!(caps.providers("pypi", Capability::Enrich), ["cisa/kev"]);
+    }
+
+    /// A row lists a stream by the name a snapshot records, and a catalogue is listed by
+    /// no row.
+    #[test]
+    fn listing_is_the_rows_whose_streams_include_it() {
+        assert_eq!(listing("osv/npm"), ["npm"]);
+        assert!(listing("cisa/kev").is_empty());
+        assert!(listing("osv/pypi").is_empty());
+    }
+
+    /// PyPI is served and no stream lists it, so both gaps are reported rather than
+    /// PyPI reading as covered.
+    #[test]
+    fn a_served_ecosystem_no_stream_lists_is_reported_as_a_gap() {
+        let caps = capabilities_of(&[
+            recorded("osv/npm"),
+            recorded("cisa/kev"),
+            recorded("datadog/npm"),
+        ]);
+        let pypi_without = |missing| Gap {
+            ecosystem: "pypi".to_owned(),
+            missing,
+        };
+        assert_eq!(caps.gaps(&served()), [pypi_without(Capability::Match)]);
         assert_eq!(
-            "npm".parse::<crate::identity::Ecosystem>().ok(),
-            Some(crate::identity::Ecosystem::ALL[0])
+            caps.uncovered_by(&served(), Capability::Malware),
+            [pypi_without(Capability::Malware)]
         );
     }
 

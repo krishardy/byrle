@@ -4,15 +4,16 @@
 //! them, so adding a third ecosystem is a new entry rather than a new arm in each of the
 //! places that used to `match` on [`Ecosystem`].
 //!
-//! Only the answers that are a plain function of a path or a header live here. Four
-//! dispatch points still match on [`Ecosystem`] directly, and each has a reason:
+//! The answers here are a plain function of a path or a header, or a declaration: where a
+//! version's publish time comes from, and which advisory streams list the ecosystem's
+//! packages. Three dispatch points still match on [`Ecosystem`] directly, and each has a
+//! reason:
 //!
 //! | Dispatch point | Why it is not a field yet |
 //! |---|---|
 //! | `proxy::upstream_url` | reads `Proxy`'s per-ecosystem upstream fields |
 //! | `proxy::fetch_and_store` | `async`, and reads `Proxy`'s clients |
 //! | `proxy::handle`'s `match document` | npm's arm is written inline in `handle`, not as a function |
-//! | `proxy::publish_times_for` | does not match at all: it asks npm for every ecosystem, which TODO.md records |
 //!
 //! A field added here without an entry in every row of [`TABLE`] does not compile, which
 //! is the property the table exists for.
@@ -21,7 +22,20 @@ pub mod npm;
 pub mod pypi;
 
 use crate::identity::Ecosystem;
+use crate::intel::stream::{self, Stream};
 use crate::route::{DocumentKind, RequestTarget};
+
+/// Where the policy reads a version's publish time from, for `cooldown_days`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishTimeSource {
+    /// The normaliser sets `published_at` on every record from the metadata document the
+    /// client asked for. Nothing is fetched.
+    Record,
+    /// npm's full packument, fetched with `npm::Client::publish_times` because the
+    /// abbreviated document clients ask for carries no `time` map. Only npm's row declares
+    /// this: the fetch uses npm's client.
+    FullPackument,
+}
 
 /// What one ecosystem answers.
 pub struct Registry {
@@ -46,6 +60,18 @@ pub struct Registry {
 
     /// Which metadata document a response body is, read from its `Content-Type`.
     pub read_media_type: fn(Option<&str>) -> Option<DocumentKind>,
+
+    /// Where a version's publish time comes from.
+    pub publish_times: PublishTimeSource,
+
+    /// The package-keyed advisory streams for this ecosystem. A grant scoped
+    /// [`stream::Scope::Listed`] applies to the ecosystems whose row lists its stream.
+    /// Catalogue streams such as KEV are keyed by CVE id, apply to every served ecosystem,
+    /// and are not listed.
+    ///
+    /// Empty means `waharoa doctor` and the startup log report the ecosystem as served with
+    /// no stream providing `match` or `malware`.
+    pub streams: &'static [&'static Stream],
 }
 
 impl Registry {
@@ -84,6 +110,8 @@ pub const NPM: Registry = Registry {
     always_reachable: &[npm::DEFAULT_REGISTRY],
     classify_path: npm::classify_path,
     read_media_type: npm::document_from_content_type,
+    publish_times: PublishTimeSource::FullPackument,
+    streams: &[&stream::OSV_NPM, &stream::DATADOG_NPM, &stream::GITHUB_NPM],
 };
 
 pub const PYPI: Registry = Registry {
@@ -95,9 +123,15 @@ pub const PYPI: Registry = Registry {
     always_reachable: &[pypi::INDEX, pypi::FILES],
     classify_path: pypi::classify_path,
     read_media_type: pypi::document_from_content_type,
+    // `pypi::normalize` reads each file's `upload-time`.
+    publish_times: PublishTimeSource::Record,
+    // OSV, Datadog and GitHub all publish PyPI advisories. None is fetched yet: TODO.md,
+    // step 4 of the module directory item.
+    streams: &[],
 };
 
-/// Every ecosystem the proxy routes, one row each.
+/// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row
+/// here is an ecosystem `waharoa doctor` reports advisory coverage for.
 pub const TABLE: &[Registry] = &[NPM, PYPI];
 
 /// The row for `ecosystem`.
@@ -214,6 +248,61 @@ mod table {
             of(Ecosystem::PyPI).document(Some(npm::ABBREVIATED_ACCEPT)),
             None,
         );
+    }
+
+    /// A listed stream that the refresh does not load would grant coverage nothing fetches.
+    #[test]
+    fn every_listed_stream_is_one_the_refresh_loads() {
+        for registry in TABLE {
+            for listed in registry.streams {
+                assert!(
+                    stream::by_stream(listed.stream).is_some(),
+                    "{} lists {}, which stream::ALL does not hold",
+                    registry.ecosystem,
+                    listed.stream
+                );
+            }
+        }
+    }
+
+    /// A stream is listed exactly when one of its grants is scoped to the listing. Listed
+    /// with no such grant, it would say nothing; granted and listed nowhere, it would say
+    /// nothing either, and no test would notice.
+    #[test]
+    fn a_stream_is_listed_by_one_row_exactly_when_a_grant_is_scoped_to_its_listing() {
+        for declared in stream::ALL {
+            let listed_by = TABLE
+                .iter()
+                .filter(|registry| {
+                    registry
+                        .streams
+                        .iter()
+                        .any(|listed| listed.stream == declared.stream)
+                })
+                .count();
+            let scoped = declared
+                .grants
+                .iter()
+                .any(|grant| grant.scope == stream::Scope::Listed);
+            assert_eq!(
+                listed_by,
+                usize::from(scoped),
+                "{} is listed by {listed_by} rows",
+                declared.stream
+            );
+        }
+    }
+
+    /// npm's client is what fetches a full packument, so another row declaring it would
+    /// have npm asked about a package in a different registry.
+    #[test]
+    fn only_npm_reads_publish_times_from_a_full_packument() {
+        let fetching: Vec<_> = TABLE
+            .iter()
+            .filter(|registry| registry.publish_times == PublishTimeSource::FullPackument)
+            .map(|registry| registry.ecosystem)
+            .collect();
+        assert_eq!(fetching, [Ecosystem::Npm]);
     }
 
     /// `ReachableOrigins` normalises each of these, and a row with none would leave that

@@ -427,6 +427,23 @@ const READINESS_TITLE: &str = "proxy readiness";
 /// The fix for a snapshot that is missing or cannot match a served ecosystem.
 const REFRESH_FIX: &str = "run `waharoa refresh` on the proxy's database";
 
+/// A loaded snapshot's finding: `Ok` with no gaps, else a warning listing each.
+///
+/// Separate from [`check_readiness`] because every served ecosystem needs a stream that
+/// lists it before a snapshot has no gaps, and PyPI has none yet.
+fn ready_using(using: String, gaps: &[crate::intel::Gap]) -> Finding {
+    if gaps.is_empty() {
+        return Finding::new(Severity::Ok, READINESS_TITLE, using);
+    }
+    let gaps: Vec<String> = gaps.iter().map(ToString::to_string).collect();
+    Finding::new(
+        Severity::Warn,
+        READINESS_TITLE,
+        format!("{using}, but {}", gaps.join("; ")),
+    )
+    .with_fix(REFRESH_FIX)
+}
+
 /// Whether the proxy can decide on packages now.
 ///
 /// A proxy can answer its health request and still answer every package with 503 while its
@@ -454,17 +471,7 @@ pub fn check_readiness(readiness: Option<&Readiness>, proxy: &str) -> Finding {
                 "ready, using intel snapshot {}, taken {}",
                 snapshot.digest, snapshot.taken_at
             );
-            let gaps = snapshot.gaps();
-            if gaps.is_empty() {
-                return Finding::new(Severity::Ok, READINESS_TITLE, using);
-            }
-            let gaps: Vec<String> = gaps.iter().map(ToString::to_string).collect();
-            Finding::new(
-                Severity::Warn,
-                READINESS_TITLE,
-                format!("{using}, but {}", gaps.join("; ")),
-            )
-            .with_fix(REFRESH_FIX)
+            ready_using(using, &snapshot.gaps())
         }
         IntelState::NotConsulted => Finding::new(
             Severity::Warn,
@@ -992,7 +999,10 @@ mod tests {
             finding.detail,
             "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but `npm` is \
              served with no stream providing match. Nothing can originate a finding for it; \
-             `npm` is served with no stream providing malware. Nothing can report malware for it"
+             `pypi` is served with no stream providing match. Nothing can originate a finding \
+             for it; `npm` is served with no stream providing malware. Nothing can report \
+             malware for it; `pypi` is served with no stream providing malware. Nothing can \
+             report malware for it"
         );
         assert!(finding.fix.is_some());
 
@@ -1022,12 +1032,23 @@ mod tests {
     }
 
     #[test]
-    fn a_ready_proxy_reports_the_snapshot_it_uses() {
-        let finding = check_readiness(Some(&readiness(IntelState::Loaded)), PROXY);
+    fn a_snapshot_with_no_gaps_is_ok() {
+        let finding = ready_using("ready, using intel snapshot s1".to_owned(), &[]);
         assert_eq!(finding.severity, Severity::Ok);
+        assert_eq!(finding.detail, "ready, using intel snapshot s1");
+        assert!(finding.fix.is_none());
+    }
+
+    /// No stream lists PyPI yet, so a snapshot covering npm still warns about PyPI.
+    #[test]
+    fn a_ready_proxy_reports_the_snapshot_it_uses_and_that_pypi_is_uncovered() {
+        let finding = check_readiness(Some(&readiness(IntelState::Loaded)), PROXY);
+        assert_eq!(finding.severity, Severity::Warn);
         assert_eq!(
             finding.detail,
-            "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z"
+            "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but `pypi` is \
+             served with no stream providing match. Nothing can originate a finding for it; \
+             `pypi` is served with no stream providing malware. Nothing can report malware for it"
         );
     }
 

@@ -49,6 +49,7 @@
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
+use crate::ecosystem::PublishTimeSource;
 use crate::ecosystem::npm::{self, NormalizeError};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
@@ -1707,14 +1708,24 @@ fn defer_response(
 /// needs, and a proxy that never lets go is the failure worth avoiding.
 const MAX_PUBLISH_TIME_PACKAGES: usize = 1024;
 
+/// Whether answering the policy for a package in `ecosystem` needs its publish times
+/// fetched separately.
+///
+/// No when the policy uses no cooldown, which is the common case. No when the ecosystem's
+/// records already carry `published_at`, which `facts::published_date` reads before the
+/// fetched times.
+fn fetches_publish_times(policy: Option<&Policy>, ecosystem: Ecosystem) -> bool {
+    policy.is_some_and(Policy::uses_cooldown)
+        && crate::ecosystem::of(ecosystem).publish_times == PublishTimeSource::FullPackument
+}
+
 /// Publish times for this package, fetched once and kept.
 ///
-/// `None` when the policy uses no cooldown, which is the common case and the one that
-/// costs nothing: no request is made and nothing is held. A fetch that fails is not fatal
-/// and is not retried within the process, because the check it feeds reports itself as
-/// unenforceable rather than refusing the package.
+/// `None` when [`fetches_publish_times`] says no: no request is made and nothing is held.
+/// A fetch that fails is not fatal and is not retried within the process, because the
+/// check it feeds reports itself as unenforceable rather than refusing the package.
 async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<Arc<facts::PublishTimes>> {
-    if !proxy.policy.as_deref().is_some_and(Policy::uses_cooldown) {
+    if !fetches_publish_times(proxy.policy.as_deref(), key.ecosystem()) {
         return None;
     }
     if let Some(held) = proxy
@@ -2944,6 +2955,28 @@ mod tests {
         std::sync::Arc::new(Policy::parse(yaml).expect("policy should load"))
     }
 
+    /// A PyPI record carries its own `published_at`, so a cooldown asks npm nothing about
+    /// it. Before this, `pip install idna` was dated from npm's `idna@0.0.1`.
+    #[test]
+    fn only_a_cooldown_on_npm_fetches_publish_times() {
+        let cooldown = policy("version: 1\ncooldown_days: 3\n");
+        let none = policy("version: 1\ncooldown_days: 0\n");
+        for (policy, ecosystem, fetches) in [
+            (Some(&*cooldown), Ecosystem::Npm, true),
+            (Some(&*cooldown), Ecosystem::PyPI, false),
+            (Some(&*none), Ecosystem::Npm, false),
+            (Some(&*none), Ecosystem::PyPI, false),
+            (None, Ecosystem::Npm, false),
+            (None, Ecosystem::PyPI, false),
+        ] {
+            assert_eq!(
+                fetches_publish_times(policy, ecosystem),
+                fetches,
+                "{ecosystem} with {policy:?}"
+            );
+        }
+    }
+
     /// Decision #4's pinned half, end to end. `npm ci` fetches an artifact by name
     /// without asking for a packument, which is the case this covers.
     #[tokio::test]
@@ -3190,6 +3223,42 @@ mod tests {
             let (base, _) = proxy_for(packument, None, Some(&allowing)).await;
             assert!(offered(&base, name, version).await, "{}", check.as_str());
         }
+    }
+
+    /// A client asks for the abbreviated packument, which has no `time` map, so a
+    /// cooldown on npm is answered only by the full packument the proxy fetches itself.
+    #[tokio::test]
+    async fn a_cooldown_on_npm_reads_the_full_packument_the_client_did_not_ask_for() {
+        let seen: Recorder = Arc::default();
+        let recorder = seen.clone();
+        let router = Router::new().fallback(any(move |req: Request| {
+            let seen = recorder.clone();
+            async move {
+                seen.lock().unwrap().paths.push(req.uri().to_string());
+                let full = req
+                    .headers()
+                    .get(header::ACCEPT)
+                    .is_some_and(|accept| accept == npm::FULL_ACCEPT);
+                let (content_type, name) = if full {
+                    (npm::FULL_ACCEPT, LODASH_FULL)
+                } else {
+                    (npm::ABBREVIATED_ACCEPT, LODASH)
+                };
+                Response::builder()
+                    .header(header::CONTENT_TYPE, content_type)
+                    .body(Body::from(fixture(name)))
+                    .unwrap()
+            }
+        }));
+        let upstream = serve(router).await;
+        let proxy = Proxy::new(reqwest::Client::new(), upstream)
+            .with_refuse_unservable(false)
+            .with_policy(Some(policy("version: 1\ncooldown_days: 36500\n")));
+        let base = serve(proxy.router()).await;
+
+        let tarball = "/lodash/-/lodash-4.17.21.tgz";
+        assert_refused_pinned(&base, &seen, tarball, "cooldown_days").await;
+        assert!(!offered(&base, "lodash", "4.17.21").await);
     }
 
     /// A store that cannot answer is not a store that found nothing.

@@ -163,9 +163,9 @@ returns `Refused`, and with `WAHAROA_REFUSE_UNSERVABLE` at its default the proxy
 every PyPI artifact request with a refusal. Held by
 `a_pypi_file_is_served_rather_than_refused`.
 
-The set reads `Ecosystem::EXPRESSIBLE`, not `Ecosystem::ALL`. Which hosts the proxy can
-fetch through and which ecosystems it routes are different questions, and a document can
-publish an artifact on any host.
+The set reads every row of `ecosystem::TABLE`, whatever advisory streams cover it. Which
+hosts the proxy can fetch through and which ecosystems it routes are different questions,
+and a document can publish an artifact on any host.
 
 ## Classifying a path
 
@@ -359,14 +359,13 @@ before wheels existed.
 
 ## Identity before the proxy routes it
 
-`Ecosystem::PyPI` exists and `Ecosystem::ALL` still holds npm alone. Expressing an identity
-and serving an ecosystem are separate questions: `ALL` is what `intel::served` reports and
-what `Capabilities::gaps` warns about, so listing PyPI there before the proxy routes
-`/simple/` would have `doctor` and `/-/waharoa/ready` report coverage that does not exist.
-PyPI joins `ALL` with the commit that serves it.
+Expressing an identity and serving an ecosystem are separate questions.
+`Ecosystem::EXPRESSIBLE` is the first. The second was `Ecosystem::ALL`, which held npm alone
+until after the proxy served `/simple/`. It is now the rows of `ecosystem::TABLE`, which
+`intel::served` reads, so `doctor` and the startup log report PyPI as served with no stream
+providing `match` or `malware`.
 
-`pkg:pypi/requests@2.34.2` parses today, held by
-`pypi_has_an_identity_and_is_not_yet_served`.
+`pkg:pypi/requests@2.34.2` parses, held by `a_pypi_identity_is_a_pypi_purl`.
 
 ## Not decided here
 

@@ -16,7 +16,6 @@ use super::load::{Encoded, encode, encode_exploited};
 use super::osv::Rows;
 use super::refresh::Tally;
 use super::{Capability, datadog, github, kev, osv, refresh};
-use crate::identity::Ecosystem;
 
 /// Whether a refresh loads anything at all when this stream does not load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,8 +31,9 @@ pub enum Requirement {
 /// The ecosystems one grant covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// One ecosystem.
-    Only(Ecosystem),
+    /// The ecosystems whose [`crate::ecosystem::Registry::streams`] lists this stream. A
+    /// package-keyed stream is listed by the ecosystem its packages are in.
+    Listed,
     /// Every ecosystem this build serves. A catalogue entry carries a CVE id and no package
     /// identifier, so what it says applies wherever a finding names that id.
     Served,
@@ -114,24 +114,22 @@ pub struct Stream {
     pub parse: fn(&[u8]) -> Result<Parsed, String>,
 }
 
-const NPM: Scope = Scope::Only(Ecosystem::Npm);
-
-/// Match and malware for npm, which both package-keyed npm streams hold.
-const NPM_PACKAGES: &[Grant] = &[Grant {
-    scope: NPM,
+/// Match and malware, which OSV and Datadog both hold for the packages they list.
+const MATCH_AND_MALWARE: &[Grant] = &[Grant {
+    scope: Scope::Listed,
     capabilities: &[Capability::Match, Capability::Malware],
 }];
 
 /// OSV's npm bundle. Required: it carries every vulnerability and malware record the proxy
 /// matches on, so a refresh without it would replace the store with the catalogues alone.
-const OSV_NPM: Stream = Stream {
+pub const OSV_NPM: Stream = Stream {
     source: osv::SOURCE,
     stream: refresh::NPM_STREAM,
     url: refresh::NPM_BUNDLE,
     ceiling: refresh::MAX_BUNDLE_BYTES,
     requirement: Requirement::Required,
     transport: Transport::Get,
-    grants: NPM_PACKAGES,
+    grants: MATCH_AND_MALWARE,
     parse: |bytes| {
         refresh::read_bundle(bytes)
             .map(|bundle| Parsed {
@@ -166,14 +164,14 @@ const KEV: Stream = Stream {
 };
 
 /// Datadog's npm manifest.
-const DATADOG_NPM: Stream = Stream {
+pub const DATADOG_NPM: Stream = Stream {
     source: datadog::SOURCE,
     stream: datadog::STREAM,
     url: datadog::MANIFEST,
     ceiling: datadog::MAX_MANIFEST_BYTES,
     requirement: Requirement::Optional,
     transport: Transport::Get,
-    grants: NPM_PACKAGES,
+    grants: MATCH_AND_MALWARE,
     parse: |bytes| {
         datadog::parse(bytes)
             .map(|rows| Parsed {
@@ -187,7 +185,7 @@ const DATADOG_NPM: Stream = Stream {
 /// GitHub's Advisory Database. A signal stream beside OSV: it publishes the same `GHSA-` ids
 /// OSV imports, and `advisory` is keyed `(source, publisher_id)` so both rows exist.
 /// `Optional`, so a refresh without a token still loads the rest.
-const GITHUB_NPM: Stream = Stream {
+pub const GITHUB_NPM: Stream = Stream {
     source: github::SOURCE,
     stream: github::STREAM,
     url: github::ENDPOINT,
@@ -195,7 +193,7 @@ const GITHUB_NPM: Stream = Stream {
     requirement: Requirement::Optional,
     transport: Transport::GithubGraphql,
     grants: &[Grant {
-        scope: NPM,
+        scope: Scope::Listed,
         capabilities: &[Capability::Match],
     }],
     parse: |bytes| {

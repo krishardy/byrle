@@ -63,9 +63,8 @@ impl ReachableOrigins {
     /// not a URL with a host is an error rather than being dropped: an operator who names
     /// an origin and has it silently ignored would believe those artifacts are covered.
     ///
-    /// Every row, whatever `Ecosystem::ALL` reports as served. A packument can publish an
-    /// artifact on any host, so which hosts the proxy can fetch through is a different
-    /// question from which ecosystems it routes.
+    /// A packument can publish an artifact on any host, so which hosts the proxy can fetch
+    /// through is a different question from which ecosystems it routes.
     pub fn new<'a, 'b>(
         upstreams: impl IntoIterator<Item = &'a str>,
         additional: impl IntoIterator<Item = &'b str>,
