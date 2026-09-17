@@ -28,10 +28,17 @@
 //! judged nothing cannot pass. An error before the report, such as a policy that does not load,
 //! exits [`ERROR`] alone. See docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
 
-use super::Action;
+use std::ffi::OsString;
+
 use super::decide::{Check, Decision, Outcome};
 use super::enforce::Unenforceable;
 use super::strictness::Strictness;
+use super::{Action, Policy, today};
+use crate::ecosystem::Clients;
+use crate::env::Env;
+use crate::identity::PackageRef;
+use crate::intel::snapshot_intel;
+use crate::intel::store::{self, Intel};
 
 /// Exit bit: a check got looser, or cannot be compared.
 pub const LOOSENED: u8 = 1;
@@ -286,6 +293,403 @@ fn strictness(s: Strictness) -> &'static str {
         Strictness::Incomparable => "INCOMPARABLE",
         Strictness::NotApplicable => "n/a",
         Strictness::Unset => "unset",
+    }
+}
+
+/// What a `waharoa policy diff` run prints and exits with.
+///
+/// `notes` and `summary` are stderr lines, before and after the report, without the
+/// command's prefix. The binary prints them and exits with `code`.
+#[derive(Debug, Default)]
+pub struct Run {
+    pub notes: Vec<String>,
+    pub report: String,
+    pub summary: Vec<String>,
+    pub code: u8,
+}
+
+impl Run {
+    /// Nothing was compared: what stopped it is the last note.
+    fn stop(mut self) -> Self {
+        self.code = ERROR;
+        self
+    }
+}
+
+/// Compare two policies over the packages the audit log and the lockfiles list.
+///
+/// Every package is asked of its own ecosystem's registry, and of the intel store or the
+/// kept snapshot `--snapshot` names. One package that cannot be read is counted and the
+/// rest are still compared, because the exit bit says a package was missed.
+pub async fn run<L: Fn(&str) -> Option<OsString>>(
+    args: &crate::cli::Diff,
+    environment: &Env<L>,
+) -> Run {
+    let mut out = Run::default();
+    let now = today();
+    let from_date = args.from_date.map_or(now, |when| when.date(now));
+    let to_date = args.to_date.map_or(now, |when| when.date(now));
+    if from_date != to_date {
+        out.notes
+            .push(format!("<FROM> as of {from_date}, <TO> as of {to_date}"));
+    }
+
+    let mut loaded = Vec::new();
+    for path in [&args.from, &args.to] {
+        match Policy::load(path) {
+            Ok(policy) => loaded.push(policy),
+            Err(e) => {
+                out.notes.push(format!("{}: {e}", path.display()));
+                return out.stop();
+            }
+        }
+    }
+
+    let log_path = match environment.audit_log() {
+        Ok(path) => path,
+        Err(e) => {
+            out.notes.push(e.to_string());
+            return out.stop();
+        }
+    };
+    if log_path.is_none() && args.lockfile.is_empty() {
+        out.notes.push(format!(
+            "set {} or pass --lockfile, for the packages to compare over",
+            crate::env::AUDIT_LOG
+        ));
+        return out.stop();
+    }
+    let mut listed = Vec::new();
+    if let Some(log_path) = log_path {
+        match std::fs::read_to_string(&log_path) {
+            Ok(log) => listed.extend(crate::audit::packages(&log)),
+            Err(e) => {
+                out.notes.push(format!("{}: {e}", log_path.display()));
+                return out.stop();
+            }
+        }
+    }
+    for path in &args.lockfile {
+        match crate::lockfile::read(path) {
+            Ok(locked) => listed.extend(locked),
+            Err(e) => {
+                out.notes.push(e.to_string());
+                return out.stop();
+            }
+        }
+    }
+
+    // The package versions the log and the lockfiles list, each once, with its purl.
+    let mut seen = std::collections::HashSet::new();
+    let versions: Vec<(String, PackageRef, String)> = listed
+        .into_iter()
+        .filter(|package| seen.insert(package.clone()))
+        .filter_map(|(ecosystem, name, version)| {
+            let purl = format!("pkg:{ecosystem}/{name}@{version}");
+            let reference = purl.parse::<PackageRef>().ok()?;
+            Some((purl, reference, version))
+        })
+        .collect();
+
+    // A kept snapshot when one is named, so a changed result is the policy's and not an
+    // advisory published since. It is read for the packages above only.
+    let store: Option<Box<dyn Intel>> = match &args.snapshot {
+        Some(id) => {
+            let packages = versions
+                .iter()
+                .map(|(_, reference, _)| snapshot_intel::key_of(reference.key()))
+                .collect();
+            match snapshot_intel::kept(environment, id, packages) {
+                Ok(kept) => Some(Box::new(kept)),
+                Err(e) => {
+                    out.notes.push(format!("--snapshot {id}: {e}"));
+                    return out.stop();
+                }
+            }
+        }
+        None => match crate::intel::postgres::from_env(environment).await {
+            Ok(store) => store.map(|store| Box::new(store) as Box<dyn Intel>),
+            Err(e) => {
+                out.notes.push(format!("{}: {e}", crate::env::DATABASE_URL));
+                return out.stop();
+            }
+        },
+    };
+    if let Some(store) = &store
+        && let Ok(Some(snapshot)) = store.snapshot().await
+    {
+        out.notes
+            .push(format!("intel snapshot {}", snapshot.digest));
+    }
+
+    // Each package is asked of its own ecosystem's registry.
+    let clients = match Clients::from_env(environment) {
+        Ok(clients) => clients,
+        Err(e) => {
+            out.notes.push(e.to_string());
+            return out.stop();
+        }
+    };
+    let needs_times = loaded.iter().any(Policy::uses_cooldown);
+
+    let mut report = Report {
+        listed: versions.len(),
+        ..Report::default()
+    };
+    for (purl, reference, version) in &versions {
+        // Metadata that cannot be read is reported and counted, and the run goes on, so
+        // one bad package does not hide the rest. The count sets the exit's error bit.
+        let metadata = match crate::ecosystem::fetched(clients.metadata(reference.key()).await) {
+            Ok(metadata) => metadata,
+            Err(e) => {
+                out.notes.push(format!("{purl}: {e}"));
+                report.unread += 1;
+                continue;
+            }
+        };
+        let Some(record) = metadata.version(version) else {
+            // The registry no longer publishes it. That is a real answer for a lockfile
+            // and is not a diff between two policies, so it is reported and skipped.
+            out.notes.push(format!("{purl}: no longer published"));
+            continue;
+        };
+
+        let times = if needs_times {
+            match clients.publish_times(reference.key()).await {
+                Ok(times) => times,
+                Err(e) => {
+                    out.notes.push(format!("{purl}: {e}"));
+                    report.unread += 1;
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+        let (ecosystem, name) = snapshot_intel::key_of(reference.key());
+        let intel =
+            match store::for_command(store.as_deref(), &ecosystem, &name, args.snapshot.is_none())
+                .await
+            {
+                Ok(intel) => intel,
+                // Counted with the packages that could not be read, so the others are still
+                // compared and the exit's error bit is set.
+                Err(store::NoIntel::Uncovered(e)) => {
+                    out.notes.push(format!("{purl}: {e}"));
+                    report.unread += 1;
+                    continue;
+                }
+                Err(store::NoIntel::Failed(e)) => {
+                    out.notes.push(format!("{purl}: {e}"));
+                    return out.stop();
+                }
+            };
+        let decided: Vec<(super::decide::Decision, Vec<super::enforce::Unenforceable>)> = loaded
+            .iter()
+            .zip([from_date, to_date])
+            .map(|(policy, as_of)| {
+                let mut facts = super::decide::Facts::from_record_and_times(record, times.as_ref());
+                if let Some(intel) = &intel {
+                    facts = facts.with_intel(intel);
+                }
+                (
+                    super::decide::decide(policy, &facts, as_of),
+                    super::enforce::unenforceable(policy, record, times.as_ref(), facts.intel),
+                )
+            })
+            .collect();
+        report.push(package(
+            purl,
+            (&decided[0].0, &decided[0].1),
+            (&decided[1].0, &decided[1].1),
+        ));
+    }
+
+    out.report = report.render();
+    let bits = report.exit_bits();
+    if bits != 0 {
+        out.summary.push(format!(
+            "{} loosened, {} incomparable, {} tightened, {} could not be read",
+            report.loosened().len(),
+            report.incomparable().len(),
+            report.tightened().len(),
+            report.unread
+        ));
+    }
+    if report.judged_none() {
+        out.summary.push(format!(
+            "none of the {} package versions listed was judged",
+            report.listed
+        ));
+    }
+    out.code = bits;
+    out
+}
+
+#[cfg(test)]
+mod run_tests {
+    use super::*;
+    use crate::env::testing::with;
+    use crate::test_support::{Answer, scripted, tempdir};
+
+    /// Two policies on disk, and a lockfile naming one package the scripted registry
+    /// publishes.
+    fn written(label: &str, from: &str, to: &str) -> (std::path::PathBuf, crate::cli::Diff) {
+        let dir = tempdir(label);
+        let (from_path, to_path) = (dir.join("from.yaml"), dir.join("to.yaml"));
+        std::fs::write(&from_path, from).expect("writes");
+        std::fs::write(&to_path, to).expect("writes");
+        let lockfile = dir.join("package-lock.json");
+        std::fs::write(
+            &lockfile,
+            r#"{"lockfileVersion":3,"packages":{"node_modules/lodash":{"version":"4.17.21",
+               "resolved":"https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"}}}"#,
+        )
+        .expect("writes");
+        (
+            dir,
+            crate::cli::Diff {
+                from: from_path,
+                to: to_path,
+                from_date: None,
+                to_date: None,
+                snapshot: None,
+                lockfile: vec![lockfile],
+            },
+        )
+    }
+
+    /// A policy that does not load stops the run before any package is asked about.
+    #[tokio::test]
+    async fn a_policy_that_does_not_load_stops_the_run() {
+        let (dir, args) = written("diff-unloadable", "version: 9\n", "version: 1\n");
+        let run = run(&args, &with(&[])).await;
+        assert_eq!(run.code, ERROR);
+        assert!(run.report.is_empty());
+        assert_eq!(run.notes.len(), 1, "{:?}", run.notes);
+        assert!(run.notes[0].contains("from.yaml"), "{:?}", run.notes);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No audit log and no lockfile is nothing to compare over.
+    #[tokio::test]
+    async fn with_no_packages_to_compare_over_it_says_so() {
+        let (dir, mut args) = written(
+            "diff-no-packages",
+            "version: 1\ncooldown_days: 0\n",
+            "version: 1\ncooldown_days: 0\n",
+        );
+        args.lockfile.clear();
+        let run = run(&args, &with(&[])).await;
+        assert_eq!(run.code, ERROR);
+        assert!(
+            run.notes[0].starts_with(&format!("set {} or pass --lockfile", crate::env::AUDIT_LOG)),
+            "{:?}",
+            run.notes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A check that starts firing is a tightening, and the report names it.
+    #[tokio::test]
+    async fn a_stricter_policy_is_reported_as_tightened() {
+        let (dir, args) = written(
+            "diff-tightened",
+            "version: 1\ncooldown_days: 0\n",
+            "version: 1\ncooldown_days: 36500\n",
+        );
+        let addr = scripted(vec![Answer::body(crate::ecosystem::npm::fixture(
+            "lodash-4.17.21.full.json",
+        ))])
+        .await;
+        let run = run(
+            &args,
+            &with(&[(crate::env::UPSTREAM_NPM, &format!("http://{addr}"))]),
+        )
+        .await;
+        assert_eq!(run.code, TIGHTENED, "{:?} {:?}", run.notes, run.summary);
+        assert!(
+            run.report.contains("pkg:npm/lodash@4.17.21"),
+            "{}",
+            run.report
+        );
+        assert!(run.report.contains("cooldown_days"), "{}", run.report);
+        assert_eq!(
+            run.summary,
+            ["0 loosened, 0 incomparable, 1 tightened, 0 could not be read"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A cooldown needs publish times, and a package whose times cannot be read is
+    /// counted rather than judged without them.
+    #[tokio::test]
+    async fn a_package_whose_publish_times_cannot_be_read_is_counted() {
+        let (dir, args) = written(
+            "diff-times",
+            "version: 1\ncooldown_days: 1\n",
+            "version: 1\ncooldown_days: 2\n",
+        );
+        // The abbreviated packument answers first, then the full one is refused, which is
+        // the request a cooldown adds.
+        let addr = scripted(vec![
+            Answer::body(crate::ecosystem::npm::fixture("lodash-4.17.21.abbrev.json")),
+            Answer::Status(500),
+        ])
+        .await;
+        let run = run(
+            &args,
+            &with(&[(crate::env::UPSTREAM_NPM, &format!("http://{addr}"))]),
+        )
+        .await;
+        assert_eq!(run.code, ERROR, "{:?} {:?}", run.notes, run.summary);
+        assert!(
+            run.notes
+                .iter()
+                .any(|note| note.contains("publish times could not be fetched")),
+            "{:?}",
+            run.notes
+        );
+        assert_eq!(
+            run.summary,
+            [
+                "0 loosened, 0 incomparable, 0 tightened, 1 could not be read".to_owned(),
+                "none of the 1 package versions listed was judged".to_owned()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A package the registry cannot be asked about is counted and the run goes on.
+    #[tokio::test]
+    async fn a_package_that_cannot_be_read_is_counted() {
+        let (dir, args) = written(
+            "diff-unread",
+            "version: 1\ncooldown_days: 0\n",
+            "version: 1\ncooldown_days: 0\n",
+        );
+        let addr = scripted(vec![Answer::Status(404)]).await;
+        let run = run(
+            &args,
+            &with(&[(crate::env::UPSTREAM_NPM, &format!("http://{addr}"))]),
+        )
+        .await;
+        assert_eq!(run.code, ERROR);
+        assert!(
+            run.notes
+                .iter()
+                .any(|note| note.starts_with("pkg:npm/lodash@4.17.21: metadata could not be")),
+            "{:?}",
+            run.notes
+        );
+        assert_eq!(
+            run.summary,
+            [
+                "0 loosened, 0 incomparable, 0 tightened, 1 could not be read".to_owned(),
+                "none of the 1 package versions listed was judged".to_owned()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

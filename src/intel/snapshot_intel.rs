@@ -154,6 +154,27 @@ fn nothing_against(id: &str) -> PackageIntel {
     }
 }
 
+/// The ecosystem and name a store keys a package by.
+pub fn key_of(key: &crate::identity::PackageKey) -> Package {
+    (key.ecosystem().as_str().to_owned(), key.registry_name())
+}
+
+/// The kept snapshot `id`, read for `packages`, from the directory the environment names.
+pub fn kept<L: Fn(&str) -> Option<std::ffi::OsString>>(
+    environment: &crate::env::Env<L>,
+    id: &str,
+    packages: std::collections::HashSet<Package>,
+) -> Result<SnapshotIntel, String> {
+    let Some(path) = environment.snapshot_dir().map_err(|e| e.to_string())? else {
+        return Err(format!(
+            "{} is not set, so there is no kept snapshot to read",
+            crate::env::SNAPSHOT_DIR
+        ));
+    };
+    let dir = super::snapshot_dir::SnapshotDir::open_to_read(&path);
+    SnapshotIntel::read(&dir, id, packages).map_err(|e| e.to_string())
+}
+
 impl Intel for SnapshotIntel {
     fn lookup<'a>(
         &'a self,
@@ -188,6 +209,16 @@ impl Intel for SnapshotIntel {
 
 #[cfg(test)]
 mod tests {
+
+    /// A store keys a package by its ecosystem as a purl spells it and its registry name,
+    /// casing preserved.
+    #[test]
+    fn a_package_is_keyed_by_ecosystem_and_registry_name() {
+        let key: crate::identity::PackageKey = "pkg:npm/%40Scope/Name".parse().expect("a purl");
+        assert_eq!(key_of(&key), ("npm".to_owned(), "@Scope/Name".to_owned()));
+        let pypi: crate::identity::PackageKey = "pkg:pypi/requests".parse().expect("a purl");
+        assert_eq!(key_of(&pypi), ("pypi".to_owned(), "requests".to_owned()));
+    }
     use super::*;
     use crate::intel::load;
     use crate::intel::providers::kev;
