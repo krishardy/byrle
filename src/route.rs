@@ -8,7 +8,7 @@
 //! and each ecosystem's `classify_path` produces it.
 
 use crate::identity::{Ecosystem, PackageKey};
-use crate::record::PackumentDetail;
+use crate::record::DocumentDetail;
 
 /// What a request path refers to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +45,7 @@ pub enum RequestTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DocumentKind {
     /// An npm packument, abbreviated or full.
-    Packument(PackumentDetail),
+    Packument(DocumentDetail),
     /// A PEP 691 simple index.
     SimpleIndex,
 }

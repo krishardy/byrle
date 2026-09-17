@@ -55,7 +55,7 @@ fn sri(hex: &str) -> Option<String> {
 /// and dropping it here would answer "no such version" for a version that exists.
 pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
     use crate::identity::{Ecosystem, PackageKey};
-    use crate::record::{Artifact, PackageRecord, PackumentDetail, Provenance};
+    use crate::record::{Artifact, DocumentDetail, PackageRecord, Provenance};
 
     let key = PackageKey::from_registry_name(Ecosystem::PyPI, &project.name)
         .map_err(|_| PypiError::UnusableName(project.name.clone()))?;
@@ -87,7 +87,7 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
             // everything the index has, publish time included. Nothing is withheld the way
             // npm withholds `time` from the abbreviated packument, so a `None` below means
             // the index does not publish it rather than that it was not fetched.
-            source: PackumentDetail::Full,
+            detail: DocumentDetail::Full,
             published_at: file
                 .upload_time
                 .as_deref()

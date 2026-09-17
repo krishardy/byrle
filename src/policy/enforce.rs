@@ -198,7 +198,7 @@ fn reason(result: &super::decide::Result) -> String {
 mod tests {
     use super::*;
     use crate::ecosystem::npm::normalize_packument;
-    use crate::record::PackumentDetail;
+    use crate::record::DocumentDetail;
 
     const TODAY: Date = jiff::civil::date(2026, 9, 13);
 
@@ -209,7 +209,7 @@ mod tests {
         );
         normalize_packument(
             &std::fs::read(path).expect("fixture is missing"),
-            PackumentDetail::Full,
+            DocumentDetail::Full,
         )
         .expect("fixture should normalise")
         .version("4.17.21")
@@ -487,7 +487,7 @@ mod tests {
         );
         normalize_packument(
             &std::fs::read(path).expect("fixture is missing"),
-            PackumentDetail::Abbreviated,
+            DocumentDetail::Abbreviated,
         )
         .expect("fixture should normalise")
         .version("4.17.21")
@@ -571,7 +571,7 @@ mod tests {
         );
         let r = normalize_packument(
             &std::fs::read(path).expect("fixture is missing"),
-            PackumentDetail::Full,
+            DocumentDetail::Full,
         )
         .expect("fixture should normalise")
         .version("8.0.5")

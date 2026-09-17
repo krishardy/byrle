@@ -26,7 +26,7 @@
 
 use super::decide::{Advisory, Facts, Intel};
 use crate::intel::store::PackageIntel;
-use crate::record::{PackageRecord, PackumentDetail};
+use crate::record::{DocumentDetail, PackageRecord};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
@@ -136,11 +136,9 @@ impl Facts {
             None if times.is_some() => {
                 Answerable::Missing("the registry published no time for this version")
             }
-            None => Answerable::Missing(match record.source {
-                PackumentDetail::Abbreviated => {
-                    "the abbreviated packument carries no publish times"
-                }
-                PackumentDetail::Full => "the registry published no time for this version",
+            None => Answerable::Missing(match record.detail {
+                DocumentDetail::Abbreviated => "the abbreviated packument carries no publish times",
+                DocumentDetail::Full => "the registry published no time for this version",
             }),
         }
     }
@@ -185,7 +183,7 @@ mod tests {
         std::fs::read(format!("{path}{name}")).expect("fixture is missing")
     }
 
-    fn record(name: &str, detail: PackumentDetail, version: &str) -> PackageRecord {
+    fn record(name: &str, detail: DocumentDetail, version: &str) -> PackageRecord {
         normalize_packument(&fixture(name), detail)
             .expect("fixture should normalise")
             .version(version)
@@ -196,13 +194,13 @@ mod tests {
     fn abbreviated() -> PackageRecord {
         record(
             "lodash-4.17.21.abbrev.json",
-            PackumentDetail::Abbreviated,
+            DocumentDetail::Abbreviated,
             "4.17.21",
         )
     }
 
     fn full() -> PackageRecord {
-        record("lodash-4.17.21.full.json", PackumentDetail::Full, "4.17.21")
+        record("lodash-4.17.21.full.json", DocumentDetail::Full, "4.17.21")
     }
 
     fn policy(yaml: &str) -> Policy {
@@ -407,7 +405,7 @@ cooldown_days: 0
     fn a_scoped_package_keeps_the_name_the_registry_uses() {
         let r = record(
             "@babel_traverse-8.0.5.abbrev.json",
-            PackumentDetail::Abbreviated,
+            DocumentDetail::Abbreviated,
             "8.0.5",
         );
 

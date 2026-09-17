@@ -7,7 +7,7 @@ use tracing::{info, warn};
 
 use crate::http::{DecodeError, decode_for_parsing};
 use crate::origin::OriginPolicy;
-use crate::record::{PackageMetadata, PackumentDetail};
+use crate::record::{DocumentDetail, PackageMetadata};
 use crate::store::RecordStore;
 
 use super::error::NormalizeError;
@@ -31,7 +31,7 @@ pub enum PackumentOutcome {
 pub fn inspect_packument(
     body: &[u8],
     content_encoding: Option<&str>,
-    detail: PackumentDetail,
+    detail: DocumentDetail,
     limit: usize,
 ) -> PackumentOutcome {
     match decode_for_parsing(body, content_encoding, limit) {
@@ -47,7 +47,7 @@ pub fn inspect_packument(
 /// would name the proxy's own origin as every artifact's upstream.
 pub fn read_packument(
     decoded: &[u8],
-    detail: PackumentDetail,
+    detail: DocumentDetail,
     store: &Mutex<RecordStore>,
     origins: &OriginPolicy,
     encoded_bytes: usize,
@@ -93,7 +93,7 @@ pub fn read_packument(
 }
 
 /// Normalise an already decoded body.
-pub fn inspect_decoded(decoded: &[u8], detail: PackumentDetail) -> PackumentOutcome {
+pub fn inspect_decoded(decoded: &[u8], detail: DocumentDetail) -> PackumentOutcome {
     match normalize_packument(decoded, detail) {
         Ok(p) => PackumentOutcome::Normalized(Box::new(p)),
         Err(e) => PackumentOutcome::Unreadable(e),
@@ -118,7 +118,7 @@ mod tests {
             let outcome = inspect_packument(
                 &bytes,
                 encoding,
-                PackumentDetail::Abbreviated,
+                DocumentDetail::Abbreviated,
                 DEFAULT_MAX_PACKUMENT_BYTES,
             );
             let PackumentOutcome::Normalized(p) = outcome else {
@@ -134,18 +134,18 @@ mod tests {
     #[test]
     fn the_failure_modes_stay_apart() {
         assert!(matches!(
-            inspect_packument(b"{}", Some("br"), PackumentDetail::Full, 1024),
+            inspect_packument(b"{}", Some("br"), DocumentDetail::Full, 1024),
             PackumentOutcome::Undecodable(DecodeError::UnsupportedEncoding(_))
         ));
         assert!(matches!(
-            inspect_packument(b"<html>", None, PackumentDetail::Full, 1024),
+            inspect_packument(b"<html>", None, DocumentDetail::Full, 1024),
             PackumentOutcome::Unreadable(_)
         ));
         assert!(matches!(
             inspect_packument(
                 &gzipped(&vec![b'A'; 5000]),
                 Some("gzip"),
-                PackumentDetail::Full,
+                DocumentDetail::Full,
                 100
             ),
             PackumentOutcome::Undecodable(DecodeError::TooLarge(100))

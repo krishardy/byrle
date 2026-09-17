@@ -247,7 +247,7 @@ mod tests {
     use crate::ecosystem::npm::{fixture, normalize_packument};
     use crate::identity::{Ecosystem, PackageKey};
     use crate::origin::{ReachableOrigins, Rewritten, rewrite_artifact_origins};
-    use crate::record::PackumentDetail;
+    use crate::record::DocumentDetail;
     use crate::route::RequestTarget;
 
     use super::super::classify_path;
@@ -262,7 +262,7 @@ mod tests {
     /// Normalise, then rewrite with the artifact URLs that came out of it. This is
     /// the real sequence: the rewrite never parses the document itself.
     fn rewrite_with(json: &[u8], reachable: &ReachableOrigins, base: &str) -> Rewritten {
-        let p = normalize_packument(json, PackumentDetail::Abbreviated)
+        let p = normalize_packument(json, DocumentDetail::Abbreviated)
             .expect("fixture should normalise");
         let artifacts: Vec<String> = p
             .records
@@ -388,7 +388,7 @@ mod tests {
         policy: &OriginPolicy,
         refused_by_policy: &HashSet<String>,
     ) -> Filtered {
-        let p = normalize_packument(json.as_bytes(), PackumentDetail::Abbreviated)
+        let p = normalize_packument(json.as_bytes(), DocumentDetail::Abbreviated)
             .expect("should normalise");
         let artifacts: Vec<(String, String)> = p
             .records
@@ -429,7 +429,7 @@ mod tests {
         refused_by_policy: &HashSet<String>,
         refuse_unservable: bool,
     ) -> Option<serde_json::Value> {
-        let packument = normalize_packument(json.as_bytes(), PackumentDetail::Abbreviated)
+        let packument = normalize_packument(json.as_bytes(), DocumentDetail::Abbreviated)
             .expect("should normalise");
         rewrite_packument(Rewrite {
             decoded: json.as_bytes(),
@@ -561,7 +561,7 @@ mod tests {
     /// published, and only the policy removes anything.
     #[test]
     fn keeping_off_origin_versions_still_lets_policy_remove_one() {
-        let p = normalize_packument(MIXED.as_bytes(), PackumentDetail::Abbreviated)
+        let p = normalize_packument(MIXED.as_bytes(), DocumentDetail::Abbreviated)
             .expect("should normalise");
         let artifacts: Vec<(String, String)> = p
             .records
@@ -663,7 +663,7 @@ mod tests {
     /// the reason it was added.
     #[test]
     fn allowed_and_refused_origins_are_counted_separately() {
-        let doc = normalize_packument(MIXED.as_bytes(), PackumentDetail::Abbreviated).unwrap();
+        let doc = normalize_packument(MIXED.as_bytes(), DocumentDetail::Abbreviated).unwrap();
 
         let (allowed, refused) = doc.unserved_origins(&policy(&[], &[]));
         assert!(allowed.is_empty());

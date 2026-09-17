@@ -152,7 +152,7 @@ impl RecordStore {
 mod tests {
     use super::*;
     use crate::ecosystem::npm::normalize_packument;
-    use crate::record::PackumentDetail;
+    use crate::record::DocumentDetail;
 
     fn packument(name: &str, versions: &[&str]) -> PackageMetadata {
         let entries: Vec<String> = versions
@@ -167,7 +167,7 @@ mod tests {
             r#"{{"name":"{name}","versions":{{{}}}}}"#,
             entries.join(",")
         );
-        normalize_packument(body.as_bytes(), PackumentDetail::Abbreviated).expect("valid fixture")
+        normalize_packument(body.as_bytes(), DocumentDetail::Abbreviated).expect("valid fixture")
     }
 
     fn key(name: &str) -> PackageKey {

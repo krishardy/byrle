@@ -75,7 +75,7 @@ mod tests {
     use super::*;
 
     use crate::ecosystem::npm::normalize_packument;
-    use crate::record::PackumentDetail;
+    use crate::record::DocumentDetail;
 
     /// Errors are read by operators, so their text is part of the interface. `source()`
     /// keeps the underlying cause reachable rather than flattened into a string.
@@ -83,13 +83,13 @@ mod tests {
     fn error_messages_name_the_problem_and_keep_their_cause() {
         use std::error::Error as _;
 
-        let Err(json) = normalize_packument(b"not json", PackumentDetail::Abbreviated) else {
+        let Err(json) = normalize_packument(b"not json", DocumentDetail::Abbreviated) else {
             panic!("should not parse");
         };
         assert!(json.to_string().contains("not valid JSON"), "got: {json}");
         assert!(json.source().is_some());
 
-        let Err(name) = normalize_packument(br#"{"name":"","versions":{}}"#, PackumentDetail::Full)
+        let Err(name) = normalize_packument(br#"{"name":"","versions":{}}"#, DocumentDetail::Full)
         else {
             panic!("an empty name is not a package identity");
         };

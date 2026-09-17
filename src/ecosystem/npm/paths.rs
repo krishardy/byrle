@@ -4,7 +4,7 @@
 //! path alone answers both questions this module is asked.
 
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
-use crate::record::PackumentDetail;
+use crate::record::DocumentDetail;
 use crate::route::{DocumentKind, RequestTarget};
 
 use super::{ABBREVIATED_ACCEPT, FULL_ACCEPT};
@@ -90,10 +90,10 @@ pub fn classify_path(path: &str) -> RequestTarget {
 /// with no `charset` parameter. Parameters and casing are handled anyway, since a mirror
 /// or a CDN in front of one may add them. Anything else returns `None`, and the proxy
 /// forwards that response without reading it.
-pub fn detail_from_content_type(content_type: Option<&str>) -> Option<PackumentDetail> {
+pub fn detail_from_content_type(content_type: Option<&str>) -> Option<DocumentDetail> {
     match crate::route::media_type(content_type)?.as_str() {
-        ABBREVIATED_ACCEPT => Some(PackumentDetail::Abbreviated),
-        FULL_ACCEPT => Some(PackumentDetail::Full),
+        ABBREVIATED_ACCEPT => Some(DocumentDetail::Abbreviated),
+        FULL_ACCEPT => Some(DocumentDetail::Full),
         _ => None,
     }
 }
@@ -266,7 +266,7 @@ mod tests {
     /// published, so a record can be looked up by the filename the path carries.
     #[test]
     fn a_record_names_its_tarball_by_the_filename_the_path_uses() {
-        let p = normalized("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
+        let p = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
         let record = p.version("4.17.21").expect("4.17.21");
         let artifact = record.artifact().expect("one file");
         assert_eq!(artifact.filename, "lodash-4.17.21.tgz");
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn a_packument_naming_an_unscoped_slash_does_not_normalize() {
         let body = br#"{"name":"foo/bar","versions":{}}"#;
-        let error = normalize_packument(body, PackumentDetail::Full).expect_err("not a name");
+        let error = normalize_packument(body, DocumentDetail::Full).expect_err("not a name");
         assert!(matches!(error, NormalizeError::Name(_)), "{error:?}");
     }
 
@@ -307,15 +307,15 @@ mod tests {
     fn detail_comes_from_the_response_content_type() {
         assert_eq!(
             detail_from_content_type(Some("application/vnd.npm.install-v1+json; charset=utf-8")),
-            Some(PackumentDetail::Abbreviated)
+            Some(DocumentDetail::Abbreviated)
         );
         assert_eq!(
             detail_from_content_type(Some("application/json")),
-            Some(PackumentDetail::Full)
+            Some(DocumentDetail::Full)
         );
         assert_eq!(
             detail_from_content_type(Some("Application/JSON; charset=UTF-8")),
-            Some(PackumentDetail::Full)
+            Some(DocumentDetail::Full)
         );
         assert_eq!(
             detail_from_content_type(Some("application/octet-stream")),

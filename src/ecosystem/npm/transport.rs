@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::ecosystem::Fetched;
 use crate::identity::PackageKey;
-use crate::record::{PackageMetadata, PackumentDetail};
+use crate::record::{DocumentDetail, PackageMetadata};
 
 use super::error::{FetchError, NormalizeError};
 use super::normalize::{normalize_packument, parse_publish_times};
@@ -56,7 +56,7 @@ impl Client {
 
     /// The abbreviated packument as records, for a request the client did not make.
     pub async fn metadata(&self, key: &PackageKey) -> Fetched {
-        match self.packument(key, PackumentDetail::Abbreviated).await {
+        match self.packument(key, DocumentDetail::Abbreviated).await {
             Ok(inner) => Ok(inner.map_err(|e| e.to_string())),
             Err(e) => Err(e.to_string()),
         }
@@ -73,11 +73,11 @@ impl Client {
     pub async fn packument(
         &self,
         key: &PackageKey,
-        detail: PackumentDetail,
+        detail: DocumentDetail,
     ) -> Result<Result<PackageMetadata, NormalizeError>, FetchError> {
         let accept = match detail {
-            PackumentDetail::Abbreviated => ABBREVIATED_ACCEPT,
-            PackumentDetail::Full => FULL_ACCEPT,
+            DocumentDetail::Abbreviated => ABBREVIATED_ACCEPT,
+            DocumentDetail::Full => FULL_ACCEPT,
         };
 
         let response = self
@@ -195,7 +195,7 @@ mod tests {
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "@babel/traverse").unwrap();
 
         let abbrev = client
-            .packument(&key, PackumentDetail::Abbreviated)
+            .packument(&key, DocumentDetail::Abbreviated)
             .await
             .expect("registry should answer")
             .expect("abbreviated packument should normalise");
@@ -208,7 +208,7 @@ mod tests {
         );
 
         let full = client
-            .packument(&key, PackumentDetail::Full)
+            .packument(&key, DocumentDetail::Full)
             .await
             .expect("registry should answer")
             .expect("full packument should normalise");
@@ -266,7 +266,7 @@ mod tests {
         let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         let packument = client
-            .packument(&key, PackumentDetail::Abbreviated)
+            .packument(&key, DocumentDetail::Abbreviated)
             .await
             .expect("server answered")
             .expect("gzipped body should normalise");
@@ -305,7 +305,7 @@ mod tests {
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         assert!(
             client
-                .packument(&key, PackumentDetail::Abbreviated)
+                .packument(&key, DocumentDetail::Abbreviated)
                 .await
                 .expect("server answered")
                 .is_ok()
@@ -342,7 +342,7 @@ mod tests {
         let client =
             Client::new(reqwest::Client::new(), format!("http://{addr}")).with_max_bytes(16);
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
-        let result = client.packument(&key, PackumentDetail::Abbreviated).await;
+        let result = client.packument(&key, DocumentDetail::Abbreviated).await;
         assert!(
             matches!(result, Err(FetchError::Undecodable(_))),
             "{result:?}"
@@ -366,7 +366,7 @@ mod tests {
         )
         .unwrap();
 
-        match client.packument(&key, PackumentDetail::Abbreviated).await {
+        match client.packument(&key, DocumentDetail::Abbreviated).await {
             Err(FetchError::Status(s)) => assert_eq!(s.as_u16(), 404),
             other => panic!("expected a 404 status error, got {other:?}"),
         }
@@ -443,7 +443,7 @@ mod tests {
 
         let client = Client::new(reqwest::Client::new(), base);
         let p = client
-            .packument(&key("lodash"), PackumentDetail::Abbreviated)
+            .packument(&key("lodash"), DocumentDetail::Abbreviated)
             .await
             .expect("server answered")
             .expect("body normalised");
@@ -514,7 +514,7 @@ mod tests {
 
         let client = Client::new(reqwest::Client::new(), base);
         let p = client
-            .packument(&key("@babel/traverse"), PackumentDetail::Full)
+            .packument(&key("@babel/traverse"), DocumentDetail::Full)
             .await
             .expect("server answered")
             .expect("body normalised");
@@ -539,7 +539,7 @@ mod tests {
 
         let client = Client::new(reqwest::Client::new(), base);
         let p = client
-            .packument(&key("lodash"), PackumentDetail::Full)
+            .packument(&key("lodash"), DocumentDetail::Full)
             .await
             .expect("server answered")
             .expect("body normalised");
@@ -554,7 +554,7 @@ mod tests {
         let client = Client::new(reqwest::Client::new(), base);
 
         match client
-            .packument(&key("nonexistent"), PackumentDetail::Abbreviated)
+            .packument(&key("nonexistent"), DocumentDetail::Abbreviated)
             .await
         {
             Err(FetchError::Status(s)) => assert_eq!(s, StatusCode::NOT_FOUND),
@@ -573,7 +573,7 @@ mod tests {
         let client = Client::new(reqwest::Client::new(), base);
 
         match client
-            .packument(&key("lodash"), PackumentDetail::Abbreviated)
+            .packument(&key("lodash"), DocumentDetail::Abbreviated)
             .await
         {
             Err(FetchError::Status(s)) => assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE),
@@ -590,7 +590,7 @@ mod tests {
 
         let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
         match client
-            .packument(&key("lodash"), PackumentDetail::Abbreviated)
+            .packument(&key("lodash"), DocumentDetail::Abbreviated)
             .await
         {
             Err(e @ FetchError::Transport(_)) => {
@@ -615,7 +615,7 @@ mod tests {
         let client = Client::new(reqwest::Client::new(), base);
 
         let fetched = client
-            .packument(&key("lodash"), PackumentDetail::Abbreviated)
+            .packument(&key("lodash"), DocumentDetail::Abbreviated)
             .await
             .expect("the fetch itself succeeded");
         assert!(matches!(fetched, Err(NormalizeError::Json(_))));

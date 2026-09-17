@@ -138,15 +138,30 @@ pointers for per-source behaviour, which is the same shape reached for the same 
 
 The transport is the clearest case. `npm::Client::packument(key, detail)` and
 `pypi::Client::project(name)` take different arguments because the documents differ:
-`PackumentDetail` distinguishes npm's abbreviated document from its full one and has no
+`DocumentDetail` distinguishes npm's abbreviated document from its full one and has no
 PyPI meaning, because a simple index withholds nothing it has. A trait would have to take
 the union or the intersection, and both are wrong.
 
-## What npm's vocabulary still spells
+## Names outside the ecosystem directories
 
-`PackumentDetail::Abbreviated`/`Full` is npm's word for a document PyPI also produces, 88
-uses. A PyPI record is `Full` and `may_be_incomplete()` is false, which is correct and
-badly named. Renaming it is open.
+`record::DocumentDetail` was `PackumentDetail`, npm's word for a document PyPI also
+produces. A PyPI record is `Full` and `may_be_incomplete()` is false. The record field is
+`detail`, not `source`, which also names an advisory's source.
+
+Code that serves both ecosystems says "metadata" where it said "packument": `Proxy`'s
+`max_metadata_bytes` and `metadata_slots`, and the log lines on the shared request path,
+such as `artifact requested, no metadata seen for it`. "Packument" stays where only npm is
+meant: `DocumentKind::Packument`, the npm arm of `handle`, and `publish_times_for`'s
+full-packument fetch.
+
+Three external names keep the old word, because changing them breaks a configuration or a
+reader from another build:
+
+| Name | Kind |
+|---|---|
+| `WAHAROA_MAX_PACKUMENT_BYTES` | environment variable |
+| `WAHAROA_MAX_CONCURRENT_PACKUMENTS` | environment variable |
+| `packuments_held` | `/-/waharoa/health` JSON field, `Health::packages_held` in Rust |
 
 ## The resolver looking is not the client installing
 

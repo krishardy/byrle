@@ -88,7 +88,7 @@ The stage exists to find these. Five candidates; two are real changes and three 
 | Candidate | Outcome |
 |---|---|
 | sha256 hex against npm's SRI | **converted, no core change.** `integrity::Algorithm` already has `Sha256`, so `pypi::sri` turns the index's hex into `sha256-<base64>` and the existing verifier reads it |
-| `PackumentDetail::Abbreviated`/`Full` | **naming only.** The simple index withholds nothing it has, which is what `Full` means, so a PyPI record is `Full` and `may_be_incomplete()` is false. The names are npm's vocabulary and the extraction step should rename them; 88 uses, so not now |
+| `DocumentDetail::Abbreviated`/`Full` | **naming only.** The simple index withholds nothing it has, which is what `Full` means, so a PyPI record is `Full` and `may_be_incomplete()` is false. The type was `PackumentDetail`, npm's vocabulary, and is now `DocumentDetail` |
 | yanked files | **no core change.** PEP 592 makes a yank an upstream signal a resolver acts on, not a decision this proxy makes, so a yanked version is still a version |
 | **one record, several files** | **a real divergence, now closed.** See below |
 | **one upstream host** | **a real divergence, still open.** See below |

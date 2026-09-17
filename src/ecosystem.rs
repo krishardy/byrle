@@ -189,7 +189,7 @@ pub fn serving(path: &str) -> &'static Registry {
 #[cfg(test)]
 mod table {
     use super::*;
-    use crate::record::PackumentDetail;
+    use crate::record::DocumentDetail;
 
     /// The property the table exists for. A variant with no row makes `of` panic, and
     /// `of` is on the request path.
@@ -270,7 +270,7 @@ mod table {
     fn each_row_reads_only_its_own_media_types() {
         assert_eq!(
             of(Ecosystem::Npm).document(Some(npm::ABBREVIATED_ACCEPT)),
-            Some(DocumentKind::Packument(PackumentDetail::Abbreviated)),
+            Some(DocumentKind::Packument(DocumentDetail::Abbreviated)),
         );
         assert_eq!(of(Ecosystem::Npm).document(Some(pypi::SIMPLE_JSON)), None);
         assert_eq!(

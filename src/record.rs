@@ -25,9 +25,9 @@
 //! rather than a gap: fetching the full document is fetch-path work that has not
 //! started.
 //!
-//! [`PackumentDetail`] is what makes `None` readable. `published_at == None` with
-//! [`PackumentDetail::Abbreviated`] means "not fetched"; with
-//! [`PackumentDetail::Full`] it means "the registry does not publish it". A policy
+//! [`DocumentDetail`] is what makes `None` readable. `published_at == None` with
+//! [`DocumentDetail::Abbreviated`] means "not fetched"; with
+//! [`DocumentDetail::Full`] it means "the registry does not publish it". A policy
 //! engine has to tell those apart, or a missing timestamp silently reads as "not in
 //! cooldown" and fails open. Deriving that distinction belongs with the rule that
 //! consumes it, in Stage 2.
@@ -38,7 +38,7 @@ use std::collections::BTreeMap;
 /// Which document a record was built from. See the module docs: this is what
 /// distinguishes "we did not fetch it" from "the registry does not have it".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PackumentDetail {
+pub enum DocumentDetail {
     /// npm's `application/vnd.npm.install-v1+json`, which is what installs request.
     Abbreviated,
     /// The complete document, which carries publish times, maintainers and repository.
@@ -90,7 +90,7 @@ pub struct PackageRecord {
     /// Ecosystem, name and version. Casing is preserved exactly; see `identity`.
     pub package: PackageRef,
     /// Which document this came from, which qualifies every `None` below.
-    pub source: PackumentDetail,
+    pub detail: DocumentDetail,
 
     /// When this version was published. Drives cooldown (plan §3, Tier 1).
     ///
@@ -285,7 +285,7 @@ impl PackageRecord {
     /// Callers deciding a verdict must not read `None` as a negative when this is
     /// true: an unknown publish time is not the same as a package being old enough.
     pub fn may_be_incomplete(&self) -> bool {
-        self.source == PackumentDetail::Abbreviated
+        self.detail == DocumentDetail::Abbreviated
     }
 }
 
@@ -304,7 +304,7 @@ mod tests {
     fn abbreviated(name: &str, version: &str, has_scripts: bool) -> PackageRecord {
         PackageRecord {
             package: reference(name, version),
-            source: PackumentDetail::Abbreviated,
+            detail: DocumentDetail::Abbreviated,
             published_at: None,
             maintainers: None,
             repository: None,
@@ -334,7 +334,7 @@ mod tests {
         );
 
         let full = PackageRecord {
-            source: PackumentDetail::Full,
+            detail: DocumentDetail::Full,
             ..abbreviated("lodash", "4.17.21", false)
         };
         assert!(

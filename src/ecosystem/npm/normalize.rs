@@ -6,7 +6,7 @@ use serde::Deserialize;
 
 use crate::identity::PackageKey;
 use crate::record::{
-    Artifact, Maintainer, PackageMetadata, PackageRecord, PackumentDetail, Provenance,
+    Artifact, DocumentDetail, Maintainer, PackageMetadata, PackageRecord, Provenance,
     RegistrySignature, SkippedVersion, TrustedPublisher,
 };
 
@@ -24,7 +24,7 @@ use super::wire::{WireDist, WireMaintainer, WirePackument, WireVersion};
 /// `source` field exists to keep those apart.
 pub fn normalize_packument(
     body: &[u8],
-    detail: PackumentDetail,
+    detail: DocumentDetail,
 ) -> Result<PackageMetadata, NormalizeError> {
     let wire: WirePackument = serde_json::from_slice(body).map_err(NormalizeError::Json)?;
     normalize_wire(wire, detail)
@@ -32,7 +32,7 @@ pub fn normalize_packument(
 
 fn normalize_wire(
     wire: WirePackument,
-    detail: PackumentDetail,
+    detail: DocumentDetail,
 ) -> Result<PackageMetadata, NormalizeError> {
     let key = key_from_name(&wire.name).map_err(NormalizeError::Name)?;
 
@@ -64,7 +64,7 @@ fn version_record(
     version: &str,
     entry: &WireVersion,
     wire: &WirePackument,
-    detail: PackumentDetail,
+    detail: DocumentDetail,
 ) -> Result<PackageRecord, String> {
     let package = key.at_version(version).map_err(|e| format!("{e}"))?;
 
@@ -96,7 +96,7 @@ fn version_record(
     let scripts = has_install_scripts(entry);
     Ok(PackageRecord {
         package,
-        source: detail,
+        detail,
         published_at,
         maintainers,
         repository,
@@ -303,7 +303,7 @@ mod tests {
 
     #[test]
     fn abbreviated_carries_artifact_and_provenance_but_no_publish_time() {
-        let p = normalized("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
+        let p = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
         assert_nothing_skipped(&p);
         assert_eq!(p.key.registry_name(), "lodash");
 
@@ -335,7 +335,7 @@ mod tests {
     /// The fields the full document adds, and the reason the proxy would ever fetch it.
     #[test]
     fn full_adds_publish_time_maintainers_and_repository() {
-        let p = normalized("lodash-4.17.21.full.json", PackumentDetail::Full);
+        let p = normalized("lodash-4.17.21.full.json", DocumentDetail::Full);
         assert_nothing_skipped(&p);
 
         let r = p.version("4.17.21").expect("version 4.17.21");
@@ -357,7 +357,7 @@ mod tests {
     /// version would panic or invent one.
     #[test]
     fn dist_tag_latest_may_name_a_version_the_document_does_not_carry() {
-        let p = normalized("lodash-4.17.21.abbrev.json", PackumentDetail::Abbreviated);
+        let p = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
         assert_eq!(p.latest.as_deref(), Some("4.18.1"));
         assert!(p.version("4.18.1").is_none());
         assert_eq!(p.records.len(), 1);
@@ -368,7 +368,7 @@ mod tests {
     /// instant.
     #[test]
     fn time_map_metadata_keys_do_not_become_versions() {
-        let p = normalized("lodash-4.17.21.full.json", PackumentDetail::Full);
+        let p = normalized("lodash-4.17.21.full.json", DocumentDetail::Full);
         assert_eq!(p.records.len(), 1);
         assert!(p.version("created").is_none());
         assert!(p.version("modified").is_none());
@@ -401,8 +401,8 @@ mod tests {
                 false,
             ),
         ] {
-            let a = normalized(abbrev, PackumentDetail::Abbreviated);
-            let f = normalized(full, PackumentDetail::Full);
+            let a = normalized(abbrev, DocumentDetail::Abbreviated);
+            let f = normalized(full, DocumentDetail::Full);
             for (x, name) in [(&a, abbrev), (&f, full)] {
                 let r = x.records.first().expect("one version per fixture");
                 assert_eq!(
@@ -416,12 +416,12 @@ mod tests {
     /// The flag is answerable from either document; the bodies are full-only.
     #[test]
     fn script_bodies_are_full_only_and_limited_to_install_hooks() {
-        let abbrev = normalized("esbuild-0.28.2.abbrev.json", PackumentDetail::Abbreviated);
+        let abbrev = normalized("esbuild-0.28.2.abbrev.json", DocumentDetail::Abbreviated);
         let r = abbrev.version("0.28.2").unwrap();
         assert!(r.has_install_scripts);
         assert!(r.install_scripts.is_none());
 
-        let full = normalized("esbuild-0.28.2.full.json", PackumentDetail::Full);
+        let full = normalized("esbuild-0.28.2.full.json", DocumentDetail::Full);
         let r = full.version("0.28.2").unwrap();
         let scripts = r.install_scripts.as_ref().expect("full carries bodies");
         assert_eq!(
@@ -441,7 +441,7 @@ mod tests {
     fn scoped_name_round_trips_from_document_to_purl() {
         let p = normalized(
             "@babel_traverse-8.0.5.abbrev.json",
-            PackumentDetail::Abbreviated,
+            DocumentDetail::Abbreviated,
         );
         assert_eq!(p.key.registry_name(), "@babel/traverse");
         assert_eq!(p.key.namespace(), Some("@babel"));
@@ -456,8 +456,8 @@ mod tests {
     #[test]
     fn provenance_is_present_in_both_documents() {
         for (name, detail) in [
-            ("sigstore-5.0.0.abbrev.json", PackumentDetail::Abbreviated),
-            ("sigstore-5.0.0.full.json", PackumentDetail::Full),
+            ("sigstore-5.0.0.abbrev.json", DocumentDetail::Abbreviated),
+            ("sigstore-5.0.0.full.json", DocumentDetail::Full),
         ] {
             let p = normalized(name, detail);
             let r = p.version("5.0.0").expect("version 5.0.0");
@@ -485,7 +485,7 @@ mod tests {
     /// long-lived user token. It is in `_npmUser`, which the abbreviated document omits.
     #[test]
     fn trusted_publisher_is_full_only() {
-        let abbrev = normalized("sigstore-5.0.0.abbrev.json", PackumentDetail::Abbreviated);
+        let abbrev = normalized("sigstore-5.0.0.abbrev.json", DocumentDetail::Abbreviated);
         assert!(
             abbrev
                 .version("5.0.0")
@@ -495,7 +495,7 @@ mod tests {
                 .is_none()
         );
 
-        let full = normalized("sigstore-5.0.0.full.json", PackumentDetail::Full);
+        let full = normalized("sigstore-5.0.0.full.json", DocumentDetail::Full);
         let publisher = full
             .version("5.0.0")
             .unwrap()
@@ -510,7 +510,7 @@ mod tests {
     /// diffing compares the wrong tree.
     #[test]
     fn repository_directory_is_kept_for_monorepo_packages() {
-        let p = normalized("@babel_traverse-8.0.5.full.json", PackumentDetail::Full);
+        let p = normalized("@babel_traverse-8.0.5.full.json", DocumentDetail::Full);
         let repo = p.version("8.0.5").unwrap().repository.clone().unwrap();
         assert_eq!(repo.url, "https://github.com/babel/babel.git");
         assert_eq!(repo.directory.as_deref(), Some("packages/babel-traverse"));
@@ -558,7 +558,7 @@ mod tests {
                 }
             }
         }"#;
-        let p = normalize_packument(body, PackumentDetail::Abbreviated).expect("should parse");
+        let p = normalize_packument(body, DocumentDetail::Abbreviated).expect("should parse");
         assert_nothing_skipped(&p);
         assert_eq!(p.records.len(), 1);
     }
@@ -577,7 +577,7 @@ mod tests {
                 }}
             }
         }"#;
-        let p = normalize_packument(body, PackumentDetail::Abbreviated).expect("should parse");
+        let p = normalize_packument(body, DocumentDetail::Abbreviated).expect("should parse");
         assert_eq!(p.records.len(), 1);
         assert_eq!(
             p.version("1.0.2")
@@ -606,11 +606,11 @@ mod tests {
     #[test]
     fn malformed_bodies_are_a_normalize_error_not_a_fetch_error() {
         assert!(matches!(
-            normalize_packument(b"not json", PackumentDetail::Abbreviated),
+            normalize_packument(b"not json", DocumentDetail::Abbreviated),
             Err(NormalizeError::Json(_))
         ));
         assert!(matches!(
-            normalize_packument(br#"{"versions":{}}"#, PackumentDetail::Abbreviated),
+            normalize_packument(br#"{"versions":{}}"#, DocumentDetail::Abbreviated),
             Err(NormalizeError::Json(_)),
         ));
     }
@@ -643,9 +643,9 @@ mod tests {
     fn real_packuments_normalise_without_skipping_anything() {
         use crate::env;
         let environment = env::process();
-        let corpora: Vec<(String, PackumentDetail)> = [
-            (environment.npm_corpus(), PackumentDetail::Abbreviated),
-            (environment.npm_corpus_full(), PackumentDetail::Full),
+        let corpora: Vec<(String, DocumentDetail)> = [
+            (environment.npm_corpus(), DocumentDetail::Abbreviated),
+            (environment.npm_corpus_full(), DocumentDetail::Full),
         ]
         .into_iter()
         .filter_map(|(dir, detail)| {
@@ -689,8 +689,8 @@ mod tests {
                 continue;
             }
             let (Some(a), Some(f)) = (
-                load(abbrev_dir, file, PackumentDetail::Abbreviated),
-                load(full_dir, file, PackumentDetail::Full),
+                load(abbrev_dir, file, DocumentDetail::Abbreviated),
+                load(full_dir, file, DocumentDetail::Full),
             ) else {
                 continue;
             };
@@ -715,7 +715,7 @@ mod tests {
     }
 
     #[cfg(not(coverage))]
-    fn check_corpus(dir: &str, detail: PackumentDetail) {
+    fn check_corpus(dir: &str, detail: DocumentDetail) {
         let mut packages = 0usize;
         let mut versions = 0usize;
         let mut rewrote = 0usize;
@@ -833,7 +833,7 @@ mod tests {
     fn a_pre_sri_version_has_a_sha1_and_no_integrity() {
         let p = normalized(
             "event-stream-0.9.1.abbrev.json",
-            PackumentDetail::Abbreviated,
+            DocumentDetail::Abbreviated,
         );
         assert_nothing_skipped(&p);
 
@@ -852,7 +852,7 @@ mod tests {
     /// what was true at publish time, so it has to win.
     #[test]
     fn version_repository_overrides_the_package_level_one() {
-        let p = normalized("rimraf-1.0.0.full.json", PackumentDetail::Full);
+        let p = normalized("rimraf-1.0.0.full.json", DocumentDetail::Full);
         let repo = p
             .version("1.0.0")
             .expect("version 1.0.0")
@@ -873,7 +873,7 @@ mod tests {
     /// publishing, not when installing a registry tarball.
     #[test]
     fn non_install_lifecycle_scripts_do_not_set_the_flag() {
-        let p = normalized("rimraf-1.0.0.full.json", PackumentDetail::Full);
+        let p = normalized("rimraf-1.0.0.full.json", DocumentDetail::Full);
         let r = p.version("1.0.0").expect("version 1.0.0");
         assert!(!r.has_install_scripts);
         assert_eq!(
@@ -885,7 +885,7 @@ mod tests {
         let body = br#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0",
             "scripts":{"prepare":"tsc","prepublish":"tsc","test":"jest"},
             "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}}"#;
-        let p = normalize_packument(body, PackumentDetail::Full).unwrap();
+        let p = normalize_packument(body, DocumentDetail::Full).unwrap();
         assert!(!p.version("1.0.0").unwrap().has_install_scripts);
     }
     /// The origins a default deployment fronts.
@@ -901,7 +901,7 @@ mod tests {
     fn document_name_casing_is_preserved() {
         let body = br#"{"name":"AdultJS","versions":{"1.0.0":{"version":"1.0.0","dist":{
             "tarball":"https://registry.npmjs.org/AdultJS/-/AdultJS-1.0.0.tgz"}}}}"#;
-        let p = normalize_packument(body, PackumentDetail::Abbreviated).unwrap();
+        let p = normalize_packument(body, DocumentDetail::Abbreviated).unwrap();
         assert_eq!(p.key.registry_name(), "AdultJS");
         assert_eq!(
             p.version("1.0.0").unwrap().package.to_string(),
