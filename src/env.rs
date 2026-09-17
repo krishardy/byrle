@@ -673,7 +673,20 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 /// Environments other modules' tests read, built here so no variable name is written there.
 #[cfg(test)]
 pub(crate) mod testing {
-    use super::{BUN_INSTALL_CACHE_DIR, Env, HOME, Process};
+    use std::collections::HashMap;
+    use std::ffi::OsString;
+
+    use super::{BUN_INSTALL_CACHE_DIR, Env, HOME, Process, Var};
+
+    /// An environment holding exactly `pairs`. Each variable is named by its `Var`, so no
+    /// name is written outside this module.
+    pub fn with(pairs: &[(Var, &str)]) -> Env<impl Fn(&str) -> Option<OsString>> {
+        let map: HashMap<&'static str, OsString> = pairs
+            .iter()
+            .map(|(var, value)| (var.name, OsString::from(value)))
+            .collect();
+        Env::from_lookup(move |name: &str| map.get(name).cloned())
+    }
 
     /// bun's cache variable at `/bun`, and the home directory at `/home/u`.
     pub fn bun_cache_and_home() -> Process {
@@ -702,15 +715,8 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
-    fn with(pairs: &[(Var, &str)]) -> Env<impl Fn(&str) -> Option<OsString>> {
-        let map: HashMap<&'static str, OsString> = pairs
-            .iter()
-            .map(|(var, value)| (var.name, OsString::from(value)))
-            .collect();
-        Env::from_lookup(move |name: &str| map.get(name).cloned())
-    }
+    use super::testing::with;
 
     #[test]
     fn unset_is_the_default() {

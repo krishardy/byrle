@@ -102,6 +102,32 @@ async fn insert(intel: &PgIntel, sql: &'static str) {
         .expect("fixture should insert");
 }
 
+/// `postgres::from_env` reads the variable, connects and migrates. Its `Ok(None)` is a
+/// proxy with no store, which is a different state from a store that cannot answer.
+#[tokio::test]
+async fn a_store_is_built_from_the_environment_or_is_absent() {
+    use waharoa::env::{DATABASE_URL, Env};
+
+    let unset = Env::from_lookup(|_| None);
+    assert!(
+        waharoa::intel::postgres::from_env(&unset)
+            .await
+            .expect("an unset variable is not an error")
+            .is_none()
+    );
+
+    let Some(url) = url() else { return };
+    let set = Env::from_lookup(move |name| {
+        (name == DATABASE_URL.name).then(|| std::ffi::OsString::from(url.clone()))
+    });
+    let intel = waharoa::intel::postgres::from_env(&set)
+        .await
+        .expect("the database is there")
+        .expect("the variable is set");
+    // Migrated, so a query against the schema answers.
+    assert!(intel.snapshot().await.is_ok());
+}
+
 macro_rules! skip_without_database {
     ($name:expr) => {
         match fresh($name).await {
