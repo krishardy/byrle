@@ -27,6 +27,7 @@ pub mod proxy;
 pub mod record;
 pub mod refusal;
 pub mod route;
+pub mod startup;
 pub mod store;
 #[cfg(test)]
 mod test_support;

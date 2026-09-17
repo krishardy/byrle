@@ -49,6 +49,22 @@ pub struct PgIntel {
     pool: PgPool,
 }
 
+/// The store at [`crate::env::DATABASE_URL`], connected and migrated. `Ok(None)` when the
+/// variable is unset, which is a proxy that enforces no advisory check.
+pub async fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
+    environment: &crate::env::Env<L>,
+) -> Result<Option<PgIntel>, String> {
+    let Some(url) = environment.database_url().map_err(|e| e.to_string())? else {
+        return Ok(None);
+    };
+    let pool = PgPool::connect(&url)
+        .await
+        .map_err(|e| format!("connecting: {e}"))?;
+    let intel = PgIntel::new(pool);
+    intel.migrate().await.map_err(|e| e.to_string())?;
+    Ok(Some(intel))
+}
+
 impl PgIntel {
     pub fn new(pool: PgPool) -> Self {
         Self { pool }

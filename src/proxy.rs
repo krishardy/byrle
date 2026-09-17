@@ -320,6 +320,11 @@ impl Proxy {
         Ok(self)
     }
 
+    /// The policy every decision reads, when one is configured.
+    pub fn policy(&self) -> Option<&Policy> {
+        self.policy.as_deref()
+    }
+
     pub fn origin_policy(&self) -> &OriginPolicy {
         &self.origins
     }

@@ -10,7 +10,7 @@
 //! is load-bearing rather than decoration.
 
 use clap::Parser as _;
-use tracing::{info, warn};
+use tracing::info;
 use waharoa::cli;
 use waharoa::doctor;
 use waharoa::env;
@@ -20,64 +20,10 @@ use waharoa::identity::PackageRef;
 use waharoa::audit;
 use waharoa::ecosystem::{self, Clients};
 use waharoa::intel::fetch;
+use waharoa::intel::postgres;
 use waharoa::intel::store::{Intel, NoIntel};
-use waharoa::policy::{Policy, check, decide, diff, enforce, packages, today};
-use waharoa::proxy::Proxy;
-use waharoa::tls::{self, TrustMode};
-
-/// Load a policy, refuse to start if it is unusable, and report what it says.
-///
-/// Every failure here stops the process. An operator who pointed at a policy and got a
-/// running proxy would reasonably believe it was in force.
-fn report_policy(path: &std::path::Path, ceiling: i64) -> std::sync::Arc<Policy> {
-    let (policy, report) =
-        check::load(path, today(), ceiling).unwrap_or_else(|e| panic!("{}: {e}", env::POLICY));
-
-    info!(
-        path = %path.display(),
-        cooldown_days = policy.cooldown_days,
-        max_cvss = policy.max_cvss,
-        install_scripts = %policy.install_scripts,
-        kev = %policy.kev,
-        denials = policy.denials.len(),
-        exceptions = policy.packages.len(),
-        "policy loaded and validated"
-    );
-
-    // What is configured and what can actually fire are different things, and the gap
-    // has to be said out loud rather than discovered by a package getting through.
-    warn!(
-        "ENFORCED: denials, install_scripts, cooldown_days. A refused version is removed \
-         from the packument so the resolver picks another, and a pinned fetch of one is \
-         refused"
-    );
-    if policy.uses_cooldown() {
-        warn!(
-            cooldown_days = policy.cooldown_days,
-            "cooldown_days is enforced, and costs a full-packument fetch per package that \
-             the client never asked for. npm publishes version timestamps only in the full \
-             document, measured at 1.7x to 3.6x the abbreviated one"
-        );
-    }
-    // An entry that does nothing is valid and worth saying out loud. `waharoa policy check`
-    // and `doctor` report the same entries.
-    for &index in &report.unchanged {
-        warn!(
-            at = packages::label(index),
-            reason = %policy.packages[index].reason,
-            "policy exception changes nothing, so nothing it matches is affected by it"
-        );
-    }
-    for shadowed in report.never_wins() {
-        warn!(
-            at = packages::label(shadowed.index),
-            "policy exception never wins: {}",
-            shadowed.cover()
-        );
-    }
-
-    std::sync::Arc::new(policy)
-}
+use waharoa::policy::{Policy, check, decide, diff, enforce, today};
+use waharoa::startup;
 
 /// A variable that does not parse ends the process with exit 2, as a malformed command line
 /// does: the operator asked for something, and continuing without it would hide that.
@@ -219,7 +165,7 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
                 }
             }
         }
-        None => match intel_store().await {
+        None => match postgres::from_env(&env::process()).await {
             Ok(store) => store.map(|store| Box::new(store) as Box<dyn Intel>),
             Err(e) => {
                 eprintln!("waharoa policy diff: {}: {e}", env::DATABASE_URL);
@@ -349,7 +295,7 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
         }
     };
 
-    let store = match intel_store().await {
+    let store = match postgres::from_env(&env::process()).await {
         Ok(store) => store,
         Err(e) => {
             eprintln!("waharoa explain: {}: {e}", env::DATABASE_URL);
@@ -541,25 +487,12 @@ async fn run_doctor() -> std::process::ExitCode {
     }
 }
 
-/// The intel store at [`env::DATABASE_URL`], migrated. `None` when the variable is unset.
-async fn intel_store() -> Result<Option<waharoa::intel::postgres::PgIntel>, String> {
-    let Some(url) = or_exit(env::process().database_url()) else {
-        return Ok(None);
-    };
-    let pool = sqlx::PgPool::connect(&url)
-        .await
-        .map_err(|e| format!("connecting: {e}"))?;
-    let intel = waharoa::intel::postgres::PgIntel::new(pool);
-    intel.migrate().await.map_err(|e| e.to_string())?;
-    Ok(Some(intel))
-}
-
 /// The intel store a command cannot run without. Exit 2 when [`env::DATABASE_URL`] is unset,
 /// and 1 when the store cannot be reached or migrated.
 async fn required_intel_store(
     command: &str,
 ) -> Result<waharoa::intel::postgres::PgIntel, std::process::ExitCode> {
-    match intel_store().await {
+    match postgres::from_env(&env::process()).await {
         Ok(Some(intel)) => Ok(intel),
         Ok(None) => {
             eprintln!(
@@ -823,202 +756,18 @@ async fn main() -> std::process::ExitCode {
         .with_target(false)
         .init();
 
-    let listen = or_exit(environment.listen());
-    let upstream_npm = or_exit(environment.upstream_npm());
-    let upstream_pypi = or_exit(environment.upstream_pypi());
-
-    // reqwest 0.13 defaults to rustls with rustls-platform-verifier, so the upstream leg
-    // validates against the OS trust store. The inbound leg stays plain HTTP on
-    // loopback: decision #3 is reverse proxy first, CA-terminating forward proxy later.
-    //
-    // The `gzip` feature is off, so reqwest never decompresses behind our back and
-    // bodies can be forwarded with their `Content-Encoding` intact.
-    let mut builder =
-        reqwest::Client::builder().user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")));
-    let mut bundle_path: Option<std::path::PathBuf> = None;
-
-    // A private registry with an internal CA, or a corporate TLS-inspecting middlebox,
-    // needs roots the OS store may not carry. `env::CA_BUNDLE_EXCLUSIVE` set to 1 drops the
-    // public roots entirely, which pins the upstream to whoever issued the bundle.
-    if let Some(path) = or_exit(environment.ca_bundle()) {
-        let exclusive = or_exit(environment.ca_bundle_exclusive());
-        let mode = if exclusive {
-            TrustMode::Exclusive
-        } else {
-            TrustMode::Merge
-        };
-        // Refusing to start is right: the operator asked for a trust anchor and it is not
-        // there, and continuing would fall back to the platform roots without saying so.
-        let certificates = tls::load_bundle(&path).unwrap_or_else(|e| panic!("{e}"));
-        info!(
-            bundle = %path.display(),
-            certificates = certificates.len(),
-            mode = ?mode,
-            "upstream CA bundle loaded"
-        );
-        if exclusive {
-            info!("public roots are NOT trusted for the upstream connection");
+    let started = match startup::proxy(&environment).await {
+        Ok(started) => started,
+        // A value that does not parse exits 2, as a malformed command line does.
+        Err(startup::StartupError::Env(e)) => {
+            eprintln!("waharoa: {e}");
+            return std::process::ExitCode::from(2);
         }
-        builder = tls::apply(builder, certificates, mode);
-        bundle_path = Some(path);
-    }
-
-    let client = match bundle_path.as_deref() {
-        Some(path) => tls::build(builder, path).unwrap_or_else(|e| panic!("{e}")),
-        None => builder
-            .build()
-            .expect("failed to build upstream HTTP client"),
+        // Something the operator asked for and that is not there or not usable. Refusing
+        // to start is right: a running proxy would read as that thing being in force.
+        Err(startup::StartupError::Unusable(why)) => panic!("{why}"),
     };
-
-    let max_packument_bytes = or_exit(environment.max_packument_bytes());
-    let max_records = or_exit(environment.max_records());
-    let max_verified = or_exit(environment.max_verified());
-
-    // Artifact URLs are pointed at the proxy so every client in the ecosystem fetches
-    // through it. Setting `env::PUBLIC_URL` pins the address written into them, which is
-    // what lockfiles record; without it the request's own Host is used.
-    let public_base = or_exit(environment.public_url());
-    let rewrite_artifacts = or_exit(environment.rewrite_artifacts());
-    if !rewrite_artifacts {
-        warn!(
-            "artifact URL rewriting is OFF; every client except npm will fetch artifacts \
-             directly and nothing about them is observed"
-        );
-    } else if public_base.is_none() {
-        // Measured: with a lockfile whose `resolved` names a proxy address that is no
-        // longer reachable, `npm ci` fails outright. It does not fall back to the
-        // registry it was given on the command line.
-        warn!(
-            "{} is not set, so {}. `npm ci` fails if that address later becomes unreachable. \
-             Set it to a stable name.",
-            env::PUBLIC_URL,
-            doctor::WITHOUT_PUBLIC_URL
-        );
-    }
-
-    let max_concurrent = or_exit(environment.max_concurrent_packuments());
-
-    // Additional origins whose artifacts this proxy serves, for a registry that publishes
-    // them somewhere else. The upstream and the default registry are always included.
-    let served_origins = or_exit(environment.artifact_origins());
-
-    // Origins the proxy does not serve and permits anyway, so the client fetches those
-    // artifacts directly and unexamined. Without this the only escape from a refusal is
-    // setting `env::REFUSE_UNSERVABLE` to 0, which trades one origin's exemption for every
-    // origin's.
-    let allowed_direct = or_exit(environment.allow_direct_origins());
-
-    // What a policy refusal answers with: `env::DEFAULT_REFUSAL_STATUS` unless an operator
-    // finds a client that mishandles it.
-    let refusal = or_exit(environment.refusal_status());
-    for status in refusal.misleading() {
-        warn!(
-            status,
-            "a refusal configured to answer {status} will read as the proxy being broken \
-             rather than as policy denying the request (plan §5 reserves 5xx for not-ready)"
-        );
-    }
-
-    // Versions whose artifacts are published where this proxy cannot see them are removed
-    // from the packument, so a resolver picks one that can be examined. Setting this to 0
-    // forwards them instead, and the client then fetches those artifacts directly.
-    let refuse_unservable = or_exit(environment.refuse_unservable());
-    if !refuse_unservable {
-        warn!(
-            "{}=0: artifacts published off this registry are forwarded, and the client \
-             fetches them without the proxy seeing them",
-            env::REFUSE_UNSERVABLE
-        );
-    }
-
-    // Debug builds only, and the module is not compiled into a release binary at all: an
-    // env var that makes a proxy turn traffic away is a denial-of-service switch. The
-    // warning is loud because a proxy answering 429 to everything looks like a bug.
-    #[cfg(debug_assertions)]
-    let defer_test = or_exit(environment.defer_test()).inspect(|deferral| {
-        warn!(
-            %deferral,
-            "{} is set: matching requests are answered with a deferral and never fetched. \
-             This is a measurement harness, not a feature.",
-            env::DEFER_TEST
-        );
-    });
-
-    // Loaded, validated and reported. Not consulted for any decision: the engine is
-    // Stage 2 work in progress, and a policy that silently did nothing would be worse
-    // than no policy at all, so the log says so every time.
-    let policy = or_exit(environment.policy())
-        .map(|path| report_policy(&path, or_exit(environment.expiry_ceiling_days())));
-
-    let audit = or_exit(environment.audit_log()).map(|path| {
-        let log = waharoa::audit::AuditLog::open(&path)
-            // Refusing to start is right. An operator who asked for an audit log and
-            // silently did not get one would believe decisions were being recorded.
-            .unwrap_or_else(|e| panic!("{} {}: {e}", env::AUDIT_LOG, path.display()));
-        info!(path = %path.display(), "audit log open");
-        std::sync::Arc::new(log)
-    });
-    if audit.is_none() && policy.is_some() {
-        warn!(
-            "no audit log configured; set {} to record policy decisions",
-            env::AUDIT_LOG
-        );
-    }
-
-    // Refusing to start is right, as for the audit log: an operator who configured a store
-    // and silently did not get one would believe known_malware was being enforced.
-    let intel = intel_store()
-        .await
-        .unwrap_or_else(|e| panic!("{}: {e}", env::DATABASE_URL));
-    match (&intel, &policy) {
-        (Some(store), Some(_)) => {
-            warn!(
-                "ENFORCED: known_malware and max_cvss, from the intel store at {}, and kev once \
-                 the store has loaded the KEV catalogue. A store that cannot answer, or holds no \
-                 snapshot, is a 503 for every package",
-                env::DATABASE_URL
-            );
-            // The snapshot loaded now. `waharoa doctor` reports the same for a later one.
-            if let Ok(Some(snapshot)) = store.snapshot().await {
-                for gap in snapshot.gaps() {
-                    warn!("{gap}");
-                }
-            }
-        }
-        (None, Some(_)) => warn!(
-            "NOT ENFORCED: known_malware, max_cvss and kev. {} is not set, so there is no \
-             intel store to ask",
-            env::DATABASE_URL
-        ),
-        _ => {}
-    }
-    let intel = intel.map(|store| {
-        std::sync::Arc::new(store) as std::sync::Arc<dyn waharoa::intel::store::Intel>
-    });
-
-    let proxy = Proxy::new(client)
-        .with_upstream_npm(upstream_npm)
-        .with_upstream_pypi(upstream_pypi)
-        .with_intel(intel)
-        .with_refusal_status(refusal)
-        .with_refuse_unservable(refuse_unservable)
-        .with_origin_policy(
-            served_origins.iter().map(String::as_str),
-            allowed_direct.iter().map(String::as_str),
-        )
-        // Refusing to start is right: an origin the operator named and that was quietly
-        // dropped would leave them believing those artifacts are covered.
-        .unwrap_or_else(|e| panic!("origin configuration: {e}"))
-        .with_max_concurrent_documents(max_concurrent)
-        .with_policy(policy)
-        .with_audit_log(audit)
-        .with_max_metadata_bytes(max_packument_bytes)
-        .with_max_records(max_records)
-        .with_max_verified(max_verified)
-        .with_artifact_rewriting(rewrite_artifacts)
-        .with_public_base(public_base);
-    #[cfg(debug_assertions)]
-    let proxy = proxy.with_defer_test(defer_test);
+    let (proxy, listen) = (started.proxy, started.listen);
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
