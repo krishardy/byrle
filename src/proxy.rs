@@ -219,7 +219,7 @@ pub struct Proxy {
     /// Whether to drop versions whose artifacts this proxy cannot serve.
     refuse_unservable: bool,
     /// npm registry base, no trailing slash.
-    upstream: String,
+    upstream_npm: String,
     /// PyPI simple index base, no trailing slash. The client asks this proxy for
     /// `/simple/<name>/` and the request goes to `{upstream_pypi}/<name>/`, because the
     /// base already names the index.
@@ -272,7 +272,7 @@ impl Proxy {
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
-            upstream,
+            upstream_npm: upstream,
             upstream_pypi: crate::ecosystem::pypi::INDEX.to_owned(),
             policy: None,
             publish_times: Arc::new(Mutex::new(HashMap::new())),
@@ -323,7 +323,7 @@ impl Proxy {
         allowed_direct: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, crate::origin::OriginError> {
         let reachable = ReachableOrigins::new(
-            [self.upstream.as_str(), self.upstream_pypi.as_str()],
+            [self.upstream_npm.as_str(), self.upstream_pypi.as_str()],
             served,
         )?;
         self.origins = Arc::new(OriginPolicy::new(reachable, allowed_direct)?);
@@ -343,7 +343,7 @@ impl Proxy {
         Health {
             service: "waharoa".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            upstream: self.upstream.clone(),
+            upstream: self.upstream_npm.clone(),
             public_base: self.public_base.clone(),
             rewrite_artifacts: self.rewrite_artifacts,
             refuse_unservable: self.refuse_unservable,
@@ -431,7 +431,7 @@ impl Proxy {
         // The proxy's own fetches decode under the same ceiling as the bodies it
         // forwards, so one setting means one limit.
         self.registry =
-            npm::Client::new(self.client.clone(), self.upstream.clone()).with_max_bytes(limit);
+            npm::Client::new(self.client.clone(), self.upstream_npm.clone()).with_max_bytes(limit);
         self.index =
             crate::ecosystem::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
                 .with_max_bytes(limit);
@@ -447,8 +447,8 @@ impl Proxy {
         self
     }
 
-    pub fn upstream(&self) -> &str {
-        &self.upstream
+    pub fn upstream_npm(&self) -> &str {
+        &self.upstream_npm
     }
 
     pub fn upstream_pypi(&self) -> &str {
@@ -950,7 +950,7 @@ fn upstream_url(
     // Exhaustive on purpose. A third ecosystem has to answer this question, and a
     // fall-through would quietly give it PyPI's two hosts.
     match ecosystem {
-        Ecosystem::Npm => format!("{}{path_and_query}", proxy.upstream),
+        Ecosystem::Npm => format!("{}{path_and_query}", proxy.upstream_npm),
         // The two prefixes and nothing else: PyPI's row of `ecosystem::TABLE` claims
         // those, and that is what sent the request here.
         Ecosystem::PyPI => match path_and_query.strip_prefix("/simple") {
@@ -2440,7 +2440,7 @@ mod tests {
     /// The deferral knob answers instead of fetching, which is what `make retry-matrix`
     /// measures the clients against. Debug builds only.
     #[tokio::test]
-    async fn a_deferred_request_is_answered_without_fetching_upstream() {
+    async fn a_deferred_request_is_answered_without_fetching_upstream_npm() {
         let (upstream, seen) = upstream_serving(
             StatusCode::OK,
             "application/vnd.npm.install-v1+json",
@@ -4556,7 +4556,7 @@ mod tests {
     #[test]
     fn the_upstream_base_drops_a_trailing_slash() {
         let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org/");
-        assert_eq!(proxy.upstream(), "https://registry.npmjs.org");
+        assert_eq!(proxy.upstream_npm(), "https://registry.npmjs.org");
         assert_eq!(proxy.upstream_pypi(), crate::ecosystem::pypi::INDEX);
         let proxy = proxy.with_upstream_pypi("https://mirror.example/simple/");
         assert_eq!(proxy.upstream_pypi(), "https://mirror.example/simple");
