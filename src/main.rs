@@ -18,11 +18,10 @@ use waharoa::explain;
 use waharoa::identity::PackageRef;
 
 use waharoa::audit;
-use waharoa::ecosystem::npm;
+use waharoa::ecosystem::{self, Clients};
 use waharoa::intel::store::Intel;
 use waharoa::policy::{Policy, check, decide, diff, enforce, packages, today};
 use waharoa::proxy::Proxy;
-use waharoa::record;
 use waharoa::tls::{self, TrustMode};
 
 /// Load a policy, refuse to start if it is unusable, and report what it says.
@@ -191,11 +190,10 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         }
     }
 
-    // The npm package versions the log and the lockfiles list, each once, with its purl.
+    // The package versions the log and the lockfiles list, each once, with its purl.
     let mut seen = std::collections::HashSet::new();
     let versions: Vec<(String, PackageRef, String)> = listed
         .into_iter()
-        .filter(|(ecosystem, _, _)| ecosystem == "npm")
         .filter(|package| seen.insert(package.clone()))
         .filter_map(|(ecosystem, name, version)| {
             let purl = format!("pkg:{ecosystem}/{name}@{version}");
@@ -234,10 +232,8 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         eprintln!("waharoa policy diff: intel snapshot {}", snapshot.digest);
     }
 
-    // npm's registry, not a per-ecosystem set: `policy diff` reads npm lockfiles and
-    // asks npm for the versions they name.
-    let upstream = or_exit_with(env::process().upstream_npm(), diff::ERROR);
-    let client = npm::Client::new(reqwest::Client::new(), upstream);
+    // Each package is asked of its own ecosystem's registry.
+    let clients = or_exit_with(Clients::from_env(&env::process()), diff::ERROR);
     let needs_times = loaded.iter().any(Policy::uses_cooldown);
 
     let mut report = diff::Report {
@@ -245,20 +241,17 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         ..diff::Report::default()
     };
     for (purl, reference, version) in &versions {
-        // A packument that cannot be read is reported and counted, and the run goes on, so
+        // Metadata that cannot be read is reported and counted, and the run goes on, so
         // one bad package does not hide the rest. The count sets the exit's error bit.
-        let fetched = client
-            .packument(reference.key(), record::DocumentDetail::Abbreviated)
-            .await;
-        let packument = match npm::fetched(fetched, "packument") {
-            Ok(packument) => packument,
+        let metadata = match ecosystem::fetched(clients.metadata(reference.key()).await) {
+            Ok(metadata) => metadata,
             Err(e) => {
                 eprintln!("waharoa policy diff: {purl}: {e}");
                 report.unread += 1;
                 continue;
             }
         };
-        let Some(package) = packument.version(version) else {
+        let Some(package) = metadata.version(version) else {
             // The registry no longer publishes it. That is a real answer for a lockfile
             // and is not a diff between two policies, so it is reported and skipped.
             eprintln!("waharoa policy diff: {purl}: no longer published");
@@ -266,8 +259,8 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         };
 
         let times = if needs_times {
-            match npm::fetched(client.publish_times(reference.key()).await, "publish times") {
-                Ok(times) => Some(times),
+            match clients.publish_times(reference.key()).await {
+                Ok(times) => times,
                 Err(e) => {
                     eprintln!("waharoa policy diff: {purl}: {e}");
                     report.unread += 1;
@@ -384,20 +377,16 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
         }
     };
 
-    // `explain` takes an npm package reference and asks npm about it.
-    let upstream = or_exit(env::process().upstream_npm());
-    let client = npm::Client::new(reqwest::Client::new(), upstream);
-    let fetched = client
-        .packument(reference.key(), record::DocumentDetail::Abbreviated)
-        .await;
-    let packument = match npm::fetched(fetched, "packument") {
-        Ok(packument) => packument,
+    // The package is asked of its own ecosystem's registry.
+    let clients = or_exit(Clients::from_env(&env::process()));
+    let metadata = match ecosystem::fetched(clients.metadata(reference.key()).await) {
+        Ok(metadata) => metadata,
         Err(e) => {
             eprintln!("waharoa explain: {e}");
             return std::process::ExitCode::from(1);
         }
     };
-    let Some(package) = packument.version(reference.version()) else {
+    let Some(package) = metadata.version(reference.version()) else {
         eprintln!("waharoa explain: the registry does not publish {argument}");
         return std::process::ExitCode::from(1);
     };
@@ -405,8 +394,8 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     // Only when the policy asks for it, the same gate the proxy uses.
     // A cooldown that cannot be judged is an answer `explain` cannot give.
     let times = if policy.uses_cooldown() {
-        match npm::fetched(client.publish_times(reference.key()).await, "publish times") {
-            Ok(times) => Some(times),
+        match clients.publish_times(reference.key()).await {
+            Ok(times) => times,
             Err(e) => {
                 eprintln!("waharoa explain: {e}");
                 return std::process::ExitCode::from(1);

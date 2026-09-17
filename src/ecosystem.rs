@@ -12,7 +12,7 @@
 //! | Dispatch point | Why it is not a field yet |
 //! |---|---|
 //! | `proxy::upstream_url` | picks `Proxy`'s per-ecosystem upstream field |
-//! | `proxy::fetch_and_store` | picks `Proxy`'s per-ecosystem client, and is `async` |
+//! | [`Clients::metadata`] | picks the ecosystem's client, and is `async` |
 //! | `proxy::handle`'s `match document` | npm's arm goes on to publish times, intel and the rewrite; PyPI's returns |
 //!
 //! A field added here without an entry in every row of [`TABLE`] does not compile, which
@@ -22,15 +22,83 @@ pub mod npm;
 pub mod pypi;
 
 use crate::doctor::Client;
-use crate::identity::Ecosystem;
+use crate::env::{EnvError, Process};
+use crate::identity::{Ecosystem, PackageKey};
 use crate::intel::stream::{self, Stream};
 use crate::lockfile::{Lockfile, Unread};
+use crate::policy::facts::PublishTimes;
 use crate::record::PackageMetadata;
 use crate::route::{DocumentKind, RequestTarget};
 
 /// Metadata the proxy fetched on its own behalf, as records. The outer error is the fetch,
 /// the inner one the document; both are said in the log and neither is propagated.
 pub type Fetched = Result<Result<PackageMetadata, String>, String>;
+
+/// Each ecosystem's registry client, for a caller that has a package key and no document.
+///
+/// The proxy fetches through this when a client asks for an artifact whose metadata it has
+/// not seen, and `waharoa explain` and `waharoa policy diff` fetch through it for every
+/// package they judge. The ecosystem comes from the key, so no caller chooses a client.
+#[derive(Debug, Clone)]
+pub struct Clients {
+    npm: npm::Client,
+    pypi: pypi::Client,
+}
+
+impl Clients {
+    /// `npm_registry` and `pypi_index` are base URLs; a trailing slash is accepted.
+    /// `max_bytes` bounds each decoded body.
+    pub fn new(
+        http: reqwest::Client,
+        npm_registry: &str,
+        pypi_index: &str,
+        max_bytes: usize,
+    ) -> Self {
+        Self {
+            npm: npm::Client::new(http.clone(), npm_registry).with_max_bytes(max_bytes),
+            pypi: pypi::Client::new(http, pypi_index).with_max_bytes(max_bytes),
+        }
+    }
+
+    /// Clients for the upstreams and body limit the environment configures.
+    pub fn from_env(environment: &Process) -> Result<Self, EnvError> {
+        Ok(Self::new(
+            reqwest::Client::new(),
+            &environment.upstream_npm()?,
+            &environment.upstream_pypi()?,
+            environment.max_packument_bytes()?,
+        ))
+    }
+
+    /// The package's metadata as records.
+    pub async fn metadata(&self, key: &PackageKey) -> Fetched {
+        match key.ecosystem() {
+            Ecosystem::Npm => self.npm.metadata(key).await,
+            Ecosystem::PyPI => self.pypi.metadata(key).await,
+        }
+    }
+
+    /// Publish times fetched separately from the records. `Ok(None)` for an ecosystem
+    /// whose records carry `published_at`, which asks nothing.
+    pub async fn publish_times(&self, key: &PackageKey) -> Result<Option<PublishTimes>, String> {
+        match of(key.ecosystem()).publish_times {
+            PublishTimeSource::Record => Ok(None),
+            PublishTimeSource::FullPackument => {
+                npm::fetched(self.npm.publish_times(key).await, "publish times").map(Some)
+            }
+        }
+    }
+}
+
+/// The metadata, or what went wrong: `metadata could not be fetched: ...` when the request
+/// failed, and `metadata could not be read: ...` when the document did not normalise.
+pub fn fetched(result: Fetched) -> Result<PackageMetadata, String> {
+    match result {
+        Ok(Ok(metadata)) => Ok(metadata),
+        Ok(Err(e)) => Err(format!("metadata could not be read: {e}")),
+        Err(e) => Err(format!("metadata could not be fetched: {e}")),
+    }
+}
 
 /// Where the policy reads a version's publish time from, for `cooldown_days`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,6 +392,50 @@ mod table {
                 declared.stream
             );
         }
+    }
+
+    /// A PyPI record carries its own `published_at`, so a cooldown asks no registry about
+    /// it. Before the table, `pip install idna` was dated from npm's `idna@0.0.1`. The
+    /// client points at an address nothing listens on, so any request would fail.
+    #[tokio::test]
+    async fn publish_times_for_pypi_ask_nothing() {
+        let clients = Clients::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:9",
+            "http://127.0.0.1:9",
+            1024,
+        );
+        let idna = "pkg:pypi/idna".parse().expect("a purl");
+        assert_eq!(clients.publish_times(&idna).await, Ok(None));
+        let lodash = "pkg:npm/lodash".parse().expect("a purl");
+        assert!(
+            clients
+                .publish_times(&lodash)
+                .await
+                .is_err_and(|e| e.starts_with("publish times could not be fetched")),
+            "npm is asked, and nothing answers"
+        );
+    }
+
+    #[test]
+    fn a_fetch_failure_and_a_read_failure_say_which() {
+        assert_eq!(
+            fetched(Err("refused".to_owned())),
+            Err("metadata could not be fetched: refused".to_owned())
+        );
+        assert_eq!(
+            fetched(Ok(Err("not json".to_owned()))),
+            Err("metadata could not be read: not json".to_owned())
+        );
+    }
+
+    /// With nothing set, the clients use each ecosystem's default registry.
+    #[test]
+    fn clients_from_an_empty_environment_use_the_defaults() {
+        let clients = Clients::from_env(&crate::env::testing::empty()).expect("defaults");
+        let debug = format!("{clients:?}");
+        assert!(debug.contains(npm::DEFAULT_REGISTRY), "{debug}");
+        assert!(debug.contains(pypi::INDEX), "{debug}");
     }
 
     /// npm's client is what fetches a full packument, so another row declaring it would
