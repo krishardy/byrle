@@ -396,7 +396,8 @@ impl std::fmt::Display for Gap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "`{}` is served with no stream providing {}. Nothing can {}",
+            "`{}` is served with no stream providing {}, so a policy answers 503 for its \
+             packages. Nothing can {}",
             self.ecosystem,
             self.missing.as_str(),
             match self.missing {
@@ -748,8 +749,8 @@ mod tests {
         assert_eq!(gaps[0].ecosystem, "pypi");
         assert_eq!(
             gaps[0].to_string(),
-            "`pypi` is served with no stream providing match. \
-             Nothing can originate a finding for it"
+            "`pypi` is served with no stream providing match, so a policy answers 503 for its \
+             packages. Nothing can originate a finding for it"
         );
     }
 

@@ -17,6 +17,7 @@ the intel store:
 | not configured | as before | dropped as unenforceable, and reported so |
 | answers | decides with what the store knows | `known_malware` and `max_cvss` enforced. `kev` enforced once the snapshot includes `cisa/kev`, and dropped as unenforceable before: see [kev-stream](kev-stream.md) |
 | holds no snapshot | 503 | not reached |
+| holds a snapshot with no stream for the package's ecosystem | 503 | not reached: see [uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md) |
 | errors | 503 | not reached |
 
 With no policy nothing is enforced and the store is not asked.

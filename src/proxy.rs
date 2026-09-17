@@ -204,6 +204,8 @@ pub struct Proxy {
     /// The intel store, when one is configured. With a policy, every decision consults it,
     /// and a store that cannot answer is a 503 rather than a serve. See [`intel_for`].
     intel: Option<Arc<dyn Intel>>,
+    /// The intel snapshot [`intel_for`] last read coverage from. See [`snapshot_named`].
+    coverage: Arc<Mutex<Option<LoadedSnapshot>>>,
     max_metadata_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`rewrite_packument`].
@@ -245,6 +247,7 @@ impl Proxy {
             publish_times: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
             intel: None,
+            coverage: Arc::new(Mutex::new(None)),
             max_metadata_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
             rewrite_artifacts: true,
             public_base: None,
@@ -1595,26 +1598,73 @@ fn uncached_json(status: StatusCode, body: impl Serialize) -> Response {
         .into_response()
 }
 
-/// The intel store could not answer. Already logged; [`IntelUnavailable::response`] is what
+/// Why a package is not decided on. Already logged; [`IntelUnavailable::response`] is what
 /// the client is sent.
-struct IntelUnavailable;
+enum IntelUnavailable {
+    /// The store errored, or holds no snapshot.
+    Unanswered,
+    /// The snapshot has no stream that can report a finding or malware for this ecosystem,
+    /// so an empty answer would read as "nothing known" about a package nothing was asked
+    /// about.
+    Uncovered(Ecosystem),
+}
 
 impl IntelUnavailable {
     fn response(self) -> Response {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "waharoa: the intel store cannot answer, so nothing is served unchecked\n",
-        )
-            .into_response()
+        let body = match self {
+            Self::Unanswered => {
+                "waharoa: the intel store cannot answer, so nothing is served unchecked\n"
+                    .to_owned()
+            }
+            Self::Uncovered(ecosystem) => format!(
+                "waharoa: the intel snapshot has no advisory stream for {ecosystem}, so no \
+                 {ecosystem} package is served unchecked\n"
+            ),
+        };
+        (StatusCode::SERVICE_UNAVAILABLE, body).into_response()
     }
+}
+
+/// The snapshot whose digest is `digest`, from the cache or the store. `Ok(None)` when the
+/// store's newest snapshot is a different one, which a refresh between the two reads
+/// causes.
+///
+/// Keyed by the digest the records came from, so coverage is read from the same load as
+/// the records, and the store is asked once per refresh rather than once per request.
+async fn snapshot_named(
+    proxy: &Proxy,
+    store: &dyn Intel,
+    digest: &str,
+) -> Result<Option<LoadedSnapshot>, crate::intel::store::IntelError> {
+    if let Some(held) = proxy
+        .coverage
+        .lock()
+        .expect("coverage lock")
+        .as_ref()
+        .filter(|held| held.digest == digest)
+    {
+        return Ok(Some(held.clone()));
+    }
+    let Some(snapshot) = store.snapshot().await?.filter(|s| s.digest == digest) else {
+        return Ok(None);
+    };
+    *proxy.coverage.lock().expect("coverage lock") = Some(snapshot.clone());
+    Ok(Some(snapshot))
 }
 
 /// What the intel store knows about a package, when a policy and a store are both configured.
 ///
 /// `Ok(None)` is no store, or no policy: the checks that read advisories are dropped as
-/// unenforceable, as they were before a store existed. A store that errors, or holds no
-/// snapshot yet, is `Err`, answered with a 503. Never a serve: `known_malware` has no
-/// exception, and serving while it cannot be asked would pass malware through unseen.
+/// unenforceable, as they were before a store existed. Each of these is `Err`, answered
+/// with a 503:
+///
+/// - the store errors, or holds no snapshot yet;
+/// - the snapshot has no stream providing `match` or `malware` for the package's ecosystem;
+/// - a refresh replaced the snapshot between reading the records and reading its streams.
+///
+/// Never a serve: `known_malware` has no exception, and serving while it cannot be asked
+/// would pass malware through unseen. An allowed decision is not written either, so the
+/// audit log never records a snapshot as used for a package it could say nothing about.
 async fn intel_for(
     proxy: &Proxy,
     key: &PackageKey,
@@ -1623,11 +1673,25 @@ async fn intel_for(
     let Some(store) = proxy.consulted_intel() else {
         return Ok(None);
     };
+    let ecosystem = key.ecosystem();
     let why = match store
-        .package(key.ecosystem().as_str(), &key.registry_name())
+        .package(ecosystem.as_str(), &key.registry_name())
         .await
     {
-        Ok(Some(found)) => return Ok(Some(found)),
+        Ok(Some(found)) => match snapshot_named(proxy, store, &found.snapshot).await {
+            Ok(Some(snapshot)) => {
+                let gaps = snapshot.uncovered(ecosystem.as_str());
+                if gaps.is_empty() {
+                    return Ok(Some(found));
+                }
+                for gap in &gaps {
+                    error!(path = %path, snapshot = %snapshot.digest, "{gap}; answering 503");
+                }
+                return Err(IntelUnavailable::Uncovered(ecosystem));
+            }
+            Ok(None) => "the intel snapshot changed while it was read".to_owned(),
+            Err(e) => e.to_string(),
+        },
         Ok(None) => "no intel has been loaded".to_owned(),
         Err(e) => e.to_string(),
     };
@@ -1637,7 +1701,7 @@ async fn intel_for(
         why = %why,
         "intel store cannot answer; answering 503 rather than serving unchecked"
     );
-    Err(IntelUnavailable)
+    Err(IntelUnavailable::Unanswered)
 }
 
 /// The versions in this metadata document the policy refuses.
@@ -2846,6 +2910,147 @@ mod tests {
         }
     }
 
+    const PYPI_INDEX: &[u8] = br#"{"name":"x","files":[
+        {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0.tar.gz","hashes":{}}
+    ]}"#;
+
+    /// No stream in the snapshot covers PyPI, so a file is not served: an empty answer
+    /// would read as "nothing known" about a package nothing was asked about. The index is
+    /// served, because a PyPI decision is made on the file and the index is not filtered.
+    #[tokio::test]
+    async fn a_file_in_an_ecosystem_no_stream_covers_is_a_503() {
+        let (upstream, seen) =
+            upstream_serving(StatusCode::OK, pypi::SIMPLE_JSON, None, PYPI_INDEX.to_vec()).await;
+        let proxy = Proxy::new(reqwest::Client::new(), upstream.clone())
+            .with_upstream_pypi(upstream)
+            .with_refuse_unservable(false)
+            .with_intel(Some(malware_everywhere()))
+            .with_policy(Some(policy("version: 1\ncooldown_days: 0\n")));
+        let base = serve(proxy.router()).await;
+
+        let index = reqwest::get(format!("{base}/simple/x/")).await.unwrap();
+        assert_eq!(index.status(), 200);
+        let file = reqwest::get(format!("{base}/packages/ef/01/23/x-1.0.tar.gz"))
+            .await
+            .unwrap();
+        assert_eq!(file.status(), 503);
+        assert!(
+            file.text()
+                .await
+                .unwrap()
+                .contains("no advisory stream for pypi"),
+            "the body says which ecosystem"
+        );
+        let fetched_files = seen
+            .lock()
+            .unwrap()
+            .paths
+            .iter()
+            .filter(|p| p.starts_with("/packages/"))
+            .count();
+        assert_eq!(fetched_files, 0);
+
+        // npm is covered by the same snapshot and is served.
+        let (base, _) = proxy_with_intel(malware_everywhere(), true).await;
+        let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(packument.status(), 200);
+    }
+
+    /// A store whose records name one snapshot and whose newest snapshot is another, as
+    /// a refresh between the two reads leaves it. Counts how often it is asked for the
+    /// snapshot.
+    struct Refreshed {
+        records_from: &'static str,
+        newest: &'static str,
+        asked: std::sync::atomic::AtomicUsize,
+    }
+
+    impl Intel for Refreshed {
+        fn lookup<'a>(
+            &'a self,
+            _ecosystem: &'a str,
+            _name: &'a str,
+            _version: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Vec<crate::intel::store::Record>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn snapshot(&self) -> crate::intel::store::Lookup<'_, Option<LoadedSnapshot>> {
+            self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async move {
+                Ok(Some(LoadedSnapshot {
+                    digest: self.newest.to_owned(),
+                    taken_at: "2026-09-17T00:00:00Z".to_owned(),
+                    sources: Vec::new(),
+                    streams: vec![crate::intel::refresh::StreamDigest {
+                        stream: crate::intel::refresh::NPM_STREAM.to_owned(),
+                        sha256: "aa".to_owned(),
+                        etag: None,
+                        last_modified: None,
+                    }],
+                }))
+            })
+        }
+
+        fn package<'a>(
+            &'a self,
+            _ecosystem: &'a str,
+            _name: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Option<PackageIntel>> {
+            Box::pin(async move {
+                Ok(Some(PackageIntel {
+                    snapshot: self.records_from.to_owned(),
+                    records: Vec::new(),
+                    ranges: Vec::new(),
+                    exploitation_loaded: false,
+                }))
+            })
+        }
+    }
+
+    fn refreshed(records_from: &'static str, newest: &'static str) -> Arc<Refreshed> {
+        Arc::new(Refreshed {
+            records_from,
+            newest,
+            asked: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    /// Coverage is read from the snapshot the records came from. When the newest is a
+    /// different one, nothing is decided.
+    #[tokio::test]
+    async fn records_from_a_replaced_snapshot_are_not_decided_on() {
+        let store = refreshed("s1", "s2");
+        let (base, _) = proxy_with_intel(store, true).await;
+        let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(packument.status(), 503);
+        assert!(
+            packument
+                .text()
+                .await
+                .unwrap()
+                .contains("intel store cannot answer"),
+            "this is the store's answer changing, not a coverage gap"
+        );
+    }
+
+    /// The store is asked for its snapshot once per snapshot, not once per request.
+    #[tokio::test]
+    async fn a_snapshot_is_read_once_for_its_digest() {
+        let store = refreshed("s1", "s1");
+        let proxy = Proxy::new(reqwest::Client::new(), "http://127.0.0.1:9")
+            .with_intel(Some(store.clone()))
+            .with_policy(Some(policy("version: 1\n")));
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
+        for _ in 0..3 {
+            assert!(matches!(
+                intel_for(&proxy, &key, "/lodash").await,
+                Ok(Some(_))
+            ));
+        }
+        assert_eq!(store.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     /// Ready exactly when a package request would not get the intel 503.
     #[tokio::test]
     async fn readiness_depends_on_the_store_only_when_a_policy_is_set() {
@@ -2906,7 +3111,7 @@ mod tests {
         assert_eq!(response.status(), 200);
         assert_eq!(
             response.text().await.unwrap(),
-            r#"{"ready":true,"intel":"loaded","snapshot":{"digest":"s1","taken_at":"2026-09-13T00:00:00Z","sources":[],"streams":[]}}"#,
+            r#"{"ready":true,"intel":"loaded","snapshot":{"digest":"s1","taken_at":"2026-09-13T00:00:00Z","sources":[],"streams":[{"stream":"osv/npm","sha256":"aa","etag":null,"last_modified":null}]}}"#,
             "the body a probe and the README describe"
         );
         let paths = &seen.lock().unwrap().paths;

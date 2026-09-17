@@ -19,7 +19,7 @@ use waharoa::identity::PackageRef;
 
 use waharoa::audit;
 use waharoa::ecosystem::{self, Clients};
-use waharoa::intel::store::Intel;
+use waharoa::intel::store::{Intel, NoIntel};
 use waharoa::policy::{Policy, check, decide, diff, enforce, packages, today};
 use waharoa::proxy::Proxy;
 use waharoa::tls::{self, TrustMode};
@@ -270,13 +270,21 @@ async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
         } else {
             None
         };
-        let intel = match package_intel(store.as_deref(), reference.key()).await {
-            Ok(intel) => intel,
-            Err(e) => {
-                eprintln!("waharoa policy diff: {purl}: {e}");
-                return std::process::ExitCode::from(diff::ERROR);
-            }
-        };
+        let intel =
+            match package_intel(store.as_deref(), reference.key(), args.snapshot.is_none()).await {
+                Ok(intel) => intel,
+                // Counted with the packages that could not be read, so the others are still
+                // compared and the exit's error bit is set.
+                Err(NoIntel::Uncovered(e)) => {
+                    eprintln!("waharoa policy diff: {purl}: {e}");
+                    report.unread += 1;
+                    continue;
+                }
+                Err(NoIntel::Failed(e)) => {
+                    eprintln!("waharoa policy diff: {purl}: {e}");
+                    return std::process::ExitCode::from(diff::ERROR);
+                }
+            };
         let decided: Vec<(decide::Decision, Vec<enforce::Unenforceable>)> = loaded
             .iter()
             .zip([from_date, to_date])
@@ -406,7 +414,7 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     };
 
     let store = store.as_ref().map(|store| store as &dyn Intel);
-    let intel = match package_intel(store, reference.key()).await {
+    let intel = match package_intel(store, reference.key(), true).await {
         Ok(intel) => intel,
         Err(e) => {
             eprintln!("waharoa explain: {e}");
@@ -606,22 +614,14 @@ fn intel_key(key: &waharoa::identity::PackageKey) -> waharoa::intel::snapshot_in
 }
 
 /// What the store knows about one package, for a command that has to answer with it.
-///
-/// `Ok(None)` is no store configured. A store that errors or holds no snapshot is an error,
-/// so a command cannot print a verdict reached without intel it was told to use.
+/// See [`waharoa::intel::store::for_command`].
 async fn package_intel(
     store: Option<&dyn Intel>,
     key: &waharoa::identity::PackageKey,
-) -> Result<Option<waharoa::intel::store::PackageIntel>, String> {
-    let Some(store) = store else {
-        return Ok(None);
-    };
+    streams_recorded: bool,
+) -> Result<Option<waharoa::intel::store::PackageIntel>, NoIntel> {
     let (ecosystem, name) = intel_key(key);
-    match store.package(&ecosystem, &name).await {
-        Ok(Some(found)) => Ok(Some(found)),
-        Ok(None) => Err("the intel store holds no snapshot; run `waharoa refresh`".to_owned()),
-        Err(e) => Err(e.to_string()),
-    }
+    waharoa::intel::store::for_command(store, &ecosystem, &name, streams_recorded).await
 }
 
 /// `waharoa refresh`: load every stream in `intel::stream::ALL` into the intel store, and
