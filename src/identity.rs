@@ -43,26 +43,15 @@ use std::str::FromStr;
 
 /// Ecosystems we can express an identity for.
 ///
-/// Expressing an identity is not the same as serving one: see [`Ecosystem::ALL`].
+/// Which of them the proxy serves is `crate::ecosystem::TABLE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ecosystem {
     Npm,
-    /// PyPI. `crate::ecosystem::pypi` reads its simple index. Not yet in
-    /// [`Ecosystem::ALL`], which TODO.md records.
+    /// PyPI. `crate::ecosystem::pypi` reads its simple index.
     PyPI,
 }
 
 impl Ecosystem {
-    /// Every ecosystem this build **serves**, which is what `intel::served` reports and
-    /// what `Capabilities::gaps` warns about.
-    ///
-    /// Narrower than the variants above on purpose. A variant exists as soon as something
-    /// can name a package in that ecosystem; an entry here says the proxy routes it and
-    /// enforces on it, so listing one the proxy does not route would have `doctor` and
-    /// `/-/waharoa/ready` report coverage that does not exist. PyPI joins this when the
-    /// proxy serves `/simple/`.
-    pub const ALL: [Ecosystem; 1] = [Ecosystem::Npm];
-
     /// Every ecosystem a package can be named in, served or not.
     ///
     /// `ecosystem::TABLE` is checked against this: a variant with no row would make
@@ -70,8 +59,6 @@ impl Ecosystem {
     pub const EXPRESSIBLE: [Ecosystem; 2] = [Ecosystem::Npm, Ecosystem::PyPI];
 
     /// The purl `type` component, and the string OSV keys on.
-    ///
-    /// `const` so a descriptor table can hold one: `intel::stream::Scope` does.
     pub const fn as_str(self) -> &'static str {
         match self {
             Ecosystem::Npm => "npm",
@@ -494,21 +481,14 @@ mod tests {
         ));
     }
 
-    /// An identity can be expressed for PyPI before the proxy routes it. The two are
-    /// separate questions and `ALL` is the second one.
     #[test]
-    fn pypi_has_an_identity_and_is_not_yet_served() {
+    fn a_pypi_identity_is_a_pypi_purl() {
         let key: PackageKey = "pkg:pypi/requests".parse().expect("pypi parses");
         assert_eq!(key.ecosystem(), Ecosystem::PyPI);
         assert_eq!(key.ecosystem().as_str(), "pypi");
         assert_eq!(
             key.at_version("2.34.2").expect("a version").to_string(),
             "pkg:pypi/requests@2.34.2"
-        );
-        assert_eq!(
-            Ecosystem::ALL,
-            [Ecosystem::Npm],
-            "the proxy routes npm only, so doctor must not report pypi coverage"
         );
     }
 }

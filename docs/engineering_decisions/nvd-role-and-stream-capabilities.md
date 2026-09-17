@@ -54,7 +54,8 @@ capabilities itself, keyed by the name a snapshot records the stream under
 | `datadog/npm` | npm | match, malware |
 | `cisa/kev` | every served ecosystem | enrich |
 
-`LoadedSnapshot::gaps` gives each served ecosystem (`Ecosystem::ALL`: npm) that no stream in
+`LoadedSnapshot::gaps` gives each served ecosystem (each row of `ecosystem::TABLE`: npm and
+PyPI) that no stream in
 the snapshot provides `match` for, then each that no stream provides `malware` for. The proxy
 warns once per gap at startup, for the snapshot loaded then, and `waharoa doctor` reports a gap
 in the snapshot `/ready` returns as a warning.

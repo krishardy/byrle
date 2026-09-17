@@ -288,7 +288,7 @@ That is the failure mode every item below should be brought to.
       | OSV | `NPM_BUNDLE = .../osv-vulnerabilities/npm/all.zip`, stream `osv/npm` |
       | Datadog | `MANIFEST = .../samples/npm/manifest.json`, stream `datadog/npm`, plus `ecosystem: Ecosystem::Npm` at `datadog.rs:93` |
       | GitHub | `securityVulnerabilities(ecosystem: NPM, ...)` in the query, and `ecosystem: NPM.to_owned()` at `github.rs:234,241,249` |
-      | KEV | `Scope::Served`, which follows `Ecosystem::ALL` |
+      | KEV | `Scope::Served`, which follows `ecosystem::TABLE` |
 
       The data exists upstream. Both answered 206 to a range request:
       `https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip` and
@@ -305,7 +305,11 @@ That is the failure mode every item below should be brought to.
       Fixing the streams is the larger half; making an unserved ecosystem fail closed
       rather than empty is the half that matters first.
 
-- [ ] **`Ecosystem::ALL` is still `[Npm]`, so nothing reports the gap above.**
+- [x] **`Ecosystem::ALL` is still `[Npm]`, so nothing reports the gap above.**
+      Closed by step 3 below: `Ecosystem::ALL` is gone and `intel::served` reads
+      `ecosystem::TABLE`. `doctor` and the startup log now report
+      `` `pypi` is served with no stream providing match `` and the same for malware. The
+      audit-trail defect in the item above is not changed by this.
       `identity.rs:64`, with the comment "PyPI joins this when the proxy serves `/simple/`".
       It does now: the proxy routes it, rewrites its index, verifies its files and enforces
       policy on them.
@@ -314,7 +318,10 @@ That is the failure mode every item below should be brought to.
       and correct; it is not being fed. Adding PyPI to `ALL` without the streams above turns
       a silent gap into a reported one, which is the right order.
 
-- [ ] **`publish_times_for` asks npm whatever the ecosystem is, and the answer is wrong.**
+- [x] **`publish_times_for` asks npm whatever the ecosystem is, and the answer is wrong.**
+      Closed by step 2 below: the row's `publish_times` is `Record` for PyPI and
+      `FullPackument` for npm, and `proxy::fetches_publish_times` fetches only for the
+      second.
       `adapter-interface.md` lists this as the one per-ecosystem question that does not
       dispatch at all. `proxy.rs` calls `proxy.registry.publish_times(key)`
       unconditionally, and `npm::Client::packument_url` builds `{npm registry}/{name}` from
@@ -373,17 +380,22 @@ That is the failure mode every item below should be brought to.
       | Step | What | State |
       |---|---|---|
       | 1 | `ecosystem::Registry` holding the fields that already dispatch, npm and pypi filling them | `[x]` |
-      | 2 | add `publish_times` and `streams` to the descriptor | `[ ]` |
-      | 3 | point `Ecosystem::ALL` at the table | `[ ]` |
+      | 2 | add `publish_times` and `streams` to the descriptor | `[x]` |
+      | 3 | point `Ecosystem::ALL` at the table | `[x]` |
       | 4 | fetch PyPI's OSV, Datadog and GHSA streams | `[ ]` |
       | 5 | split `npm.rs` and `pypi.rs` into directories with matching file names | `[x]` |
 
       Steps 2 to 4 are what close the **Wrong answers** items above; step 1 only makes the
-      omissions visible, which is why `adapter-interface.md` now lists the four questions
-      that still match on `Ecosystem` and why each does.
+      omissions visible, which is why `adapter-interface.md` lists the questions that still
+      match on `Ecosystem` and why each does. Three remain after step 2.
 
       Step 5 landed out of order, at the operator's request. It moved no `match` arm, so
       steps 2 to 4 are unchanged by it.
+
+      Step 3 removed `Ecosystem::ALL` rather than deriving it: `intel::served` was its only
+      reader. PyPI's row has `streams: &[]`, so every snapshot now reports two PyPI gaps and
+      the `Ok` branch of `doctor::check_readiness` is reachable only once step 4 lists a
+      PyPI stream.
 
       Each directory is `mod.rs`, `paths.rs`, `wire.rs`, `normalize.rs`, `transport.rs` and
       `error.rs`. npm has a seventh, `rewrite.rs`; PyPI gets no counterpart because
@@ -393,7 +405,7 @@ That is the failure mode every item below should be brought to.
 
       | Where | What | Why it stayed |
       |---|---|---|
-      | `proxy.rs` | `read_index`, `handle`'s npm arm, `upstream_url`, `fetch_and_store`, `publish_times_for` | each reads `Proxy`; the `handle` decomposition item below is what frees them |
+      | `proxy.rs` | `read_index`, `handle`'s npm arm, `upstream_url`, `fetch_and_store`, and the npm client `publish_times_for` calls for a `FullPackument` row | each reads `Proxy`; the `handle` decomposition item below is what frees them |
       | `intel/osv.rs`, `datadog.rs`, `github.rs`, `kev.rs` | npm-only stream bindings | the directory is per **source**, and step 4 makes each source per-ecosystem rather than moving the file |
       | `main.rs`, `doctor.rs`, `explain.rs`, `lockfile.rs` | npm-only clients and commands | ad-hoc items 18 to 20, and the Wrong answers list above |
 
@@ -1629,7 +1641,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] Startup warning + `doctor` check: ecosystem enabled with no `match`-capable stream.
       `intel::capabilities_of` declares `osv/npm` (match, malware) and `cisa/kev` (enrich),
       keyed by the stream a snapshot records, and `LoadedSnapshot::gaps` checks every
-      `Ecosystem::ALL`. Warned at startup and by `doctor`. No refresh writes a snapshot with
+      served ecosystem (now each row of `ecosystem::TABLE`). Warned at startup and by `doctor`. No refresh writes a snapshot with
       a gap today. [nvd-role-and-stream-capabilities](docs/engineering_decisions/nvd-role-and-stream-capabilities.md).
 - [x] `[?]` Decide whether an ecosystem with `match` but no `malware` stream is also a
       startup warning. Decided 2026-09-15: yes. `LoadedSnapshot::gaps` reports `match` gaps
@@ -2050,8 +2062,9 @@ changes to the core, that is the finding — make it now, not after five adapter
       - [ ] `PackumentDetail::Abbreviated`/`Full` is npm vocabulary, 88 uses. Renaming it
             belongs to the extraction, not here. `NormalizedPackument` was the same problem
             and is now `record::PackageMetadata`.
-      - [x] `Ecosystem::PyPI` exists; `Ecosystem::ALL` still holds npm alone, because that
-            is the served set `doctor` and `/-/waharoa/ready` report on.
+      - [x] `Ecosystem::PyPI` exists. `Ecosystem::ALL` held npm alone as the served set
+            `doctor` and `/-/waharoa/ready` report on, until the architecture refactor
+            replaced it with `ecosystem::TABLE`.
 - [x] `[!]` sdist vs. wheel distinction for install-script semantics. `Kind` and
       `Project::only_sdist` give the version-level answer: a version offering a wheel is not
       an install-script version, and one offering only an sdist leaves a resolver no choice.

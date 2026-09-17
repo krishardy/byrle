@@ -8,8 +8,9 @@ out to share is smaller and more concrete than a trait.
 
 No `trait Adapter`. Four modules hold what both ecosystems answer the same way. Of those,
 `ecosystem` holds a descriptor table: one `Registry` per ecosystem, with a field for each
-question that is a plain function of a path or a header. Four questions that are not stay
-as `match` expressions on `Ecosystem`, listed below with the reason each is still one.
+question that is a plain function of a path or a header, or a declaration. Three questions
+that are neither stay as `match` expressions on `Ecosystem`, listed below with the reason
+each is still one.
 
 Adding an ecosystem is a new row plus a compile error at each remaining `match` until it
 is answered.
@@ -21,7 +22,7 @@ is answered.
 | `route` | what a request path refers to: `Metadata`, `Artifact`, `Other`, and which ecosystem answers it | npm's `classify_path`, then PyPI's |
 | `origin` | which hosts the proxy fronts, what happens to an artifact published elsewhere, and how to point a document's artifact URLs at the proxy | npm's `ReachableOrigins`, `OriginPolicy` and `rewrite_artifact_origins`, all three of which were npm's only by where they sat |
 | `record` | `PackageMetadata` and `PackageRecord`: what a normaliser produces and the store holds | npm's `NormalizedPackument`, renamed once PyPI produced one |
-| `ecosystem` | which registry answers a path, and the per-ecosystem answers that are a function of a path or a header | the `match` arms that had accumulated in `route`, `proxy` and `origin` |
+| `ecosystem` | which registry answers a path, which ecosystems are served, and the per-ecosystem answers that are a function of a path or a header, or a declaration | the `match` arms that had accumulated in `route`, `proxy` and `origin` |
 
 `RecordStore` holds both, keyed by `PackageKey`, which carries the ecosystem. The policy
 engine reads `PackageRecord` and has never seen a packument or an index: nothing under
@@ -62,6 +63,8 @@ their input with npm's normaliser, which is a test dependency and not a producti
 | `always_reachable` | which origins may the proxy fetch from whatever the operator configured | `registry.npmjs.org` | `pypi.org/simple` and `files.pythonhosted.org` |
 | `classify_path` | what does this path refer to | `npm::classify_path` | `pypi::classify_path` |
 | `read_media_type` | which document is this response | `npm::detail_from_content_type` | `pypi::SIMPLE_JSON` |
+| `publish_times` | where a version's publish time comes from | `FullPackument`, fetched separately | `Record`, from each file's `upload-time` |
+| `streams` | which package-keyed advisory streams cover it | `osv/npm`, `datadog/npm`, `github/npm` | none yet |
 
 npm's empty `prefixes` is the root fallback, and `ecosystem::ROOT` names it. Before the
 table, `route::classify` was `if pypi::serves(path) { PyPI } else { Npm }`: a third
@@ -72,6 +75,36 @@ Three tests hold the table's shape: every `Ecosystem::EXPRESSIBLE` variant has e
 row, exactly one row claims no prefix, and no prefix is claimed twice. The first is what
 makes `ecosystem::of` safe to call on the request path.
 
+`TABLE` is also the served set. `intel::served` reads it, so every row is an ecosystem
+`LoadedSnapshot::gaps` checks, and a row with no `streams` is reported at startup and by
+`waharoa doctor` as served with no stream providing `match` or `malware`. This replaced
+`Ecosystem::ALL`, a hand-written list that held npm alone after the proxy served PyPI.
+
+### Publish times
+
+`proxy::publish_times_for` fetches only when the policy uses a cooldown and the row says
+`FullPackument`. npm's abbreviated packument has no `time` map, so its times come from a
+second request for the full one. A PyPI record already carries `published_at`, which
+`facts::published_date` reads before any fetched times, so PyPI makes no second request.
+
+Before the field, `publish_times_for` called `npm::Client::publish_times` for every key.
+Measured with `cooldown_days: 3650`, `pip install idna` logged
+`purl=pkg:pypi/idna versions=1`: npm's `idna@0.0.1`. `FullPackument` is fetched with npm's
+client, so `only_npm_reads_publish_times_from_a_full_packument` holds that no other row
+declares it.
+
+### Streams
+
+A package-keyed stream's grant is `Scope::Listed`, which replaced `Scope::Only(ecosystem)`.
+`capabilities_of` applies it to the rows whose `streams` list it.
+`Scope::Served`, KEV's, still applies to every row. Two tests hold the two tables together:
+every listed stream is in `intel::stream::ALL`, and a stream is listed by one row exactly
+when a grant of its is `Listed`.
+
+`intel::stream::ALL` stays hand-written. The refresh loads it in order and stops at the
+first `Required` stream it cannot read, so its order is a property of that list rather than
+of the ecosystem table.
+
 ## What still matches on `Ecosystem`, and why
 
 | Question | Where | Why not a field |
@@ -79,18 +112,11 @@ makes `ecosystem::of` safe to call on the request path.
 | where does this request go upstream | `proxy::upstream_url` | reads `Proxy`'s per-ecosystem upstream fields |
 | what does the proxy fetch on its own behalf | `proxy::fetch_and_store` | `async`, and reads `Proxy`'s clients |
 | how is that document read | `proxy::handle`'s `match document` | npm's arm is written inline in `handle`, not as a function |
-| when was each version published | `proxy::publish_times_for` | does not match at all: it asks npm for every ecosystem |
 
-The first three are `match` expressions, not tests with a fall-through, so a third
-ecosystem is a compile error at each. Two of them were not, and a third ecosystem would
-have been given PyPI's two hosts by `upstream_url` and would have panicked in `handle` on
-an `unreachable!`.
-
-The fourth is a defect, recorded in TODO.md. `publish_times_for` calls
-`proxy.registry.publish_times(key)` for every key, so a PyPI package's publish times are
-read from npm. Confirmed live: `purl=pkg:pypi/idna versions=1`, which is npm's
-`idna@0.0.1`. Moving it into the table is what fixes it, and the table is what makes the
-omission visible.
+All three are `match` expressions, not tests with a fall-through, so a third ecosystem is a
+compile error at each. Two of them were not, and a third ecosystem would have been given
+PyPI's two hosts by `upstream_url` and would have panicked in `handle` on an
+`unreachable!`.
 
 ## Why not a trait
 
