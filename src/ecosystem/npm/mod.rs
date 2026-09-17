@@ -74,13 +74,15 @@ pub mod transport;
 pub mod wire;
 
 pub use error::{FetchError, NormalizeError};
-pub use inspect::{PackumentOutcome, inspect_decoded, inspect_packument};
+pub use inspect::{PackumentOutcome, inspect_decoded, inspect_packument, read_packument};
 pub use normalize::{normalize_packument, parse_publish_times};
-pub use paths::{classify_path, detail_from_content_type, document_from_content_type};
+pub use paths::{
+    classify_path, detail_from_content_type, document_from_content_type, upstream_url,
+};
 
 #[cfg(test)]
 use crate::record::PackumentDetail;
-pub use rewrite::{Filtered, filter_unservable_versions};
+pub use rewrite::{Filtered, Rewrite, filter_unservable_versions, rewrite_packument};
 pub use transport::{Client, fetched};
 
 /// npm's abbreviated packument media type, which is what `npm install` asks for.

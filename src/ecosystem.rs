@@ -11,9 +11,9 @@
 //!
 //! | Dispatch point | Why it is not a field yet |
 //! |---|---|
-//! | `proxy::upstream_url` | reads `Proxy`'s per-ecosystem upstream fields |
-//! | `proxy::fetch_and_store` | `async`, and reads `Proxy`'s clients |
-//! | `proxy::handle`'s `match document` | npm's arm is written inline in `handle`, not as a function |
+//! | `proxy::upstream_url` | picks `Proxy`'s per-ecosystem upstream field |
+//! | `proxy::fetch_and_store` | picks `Proxy`'s per-ecosystem client, and is `async` |
+//! | `proxy::handle`'s `match document` | npm's arm goes on to publish times, intel and the rewrite; PyPI's returns |
 //!
 //! A field added here without an entry in every row of [`TABLE`] does not compile, which
 //! is the property the table exists for.
@@ -25,7 +25,12 @@ use crate::doctor::Client;
 use crate::identity::Ecosystem;
 use crate::intel::stream::{self, Stream};
 use crate::lockfile::{Lockfile, Unread};
+use crate::record::PackageMetadata;
 use crate::route::{DocumentKind, RequestTarget};
+
+/// Metadata the proxy fetched on its own behalf, as records. The outer error is the fetch,
+/// the inner one the document; both are said in the log and neither is propagated.
+pub type Fetched = Result<Result<PackageMetadata, String>, String>;
 
 /// Where the policy reads a version's publish time from, for `cooldown_days`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +67,10 @@ pub struct Registry {
 
     /// Which metadata document a response body is, read from its `Content-Type`.
     pub read_media_type: fn(Option<&str>) -> Option<DocumentKind>,
+
+    /// Whether a request that is neither metadata nor an artifact is a resolver probing
+    /// rather than a client installing, and is logged at DEBUG.
+    pub other_is_probe: bool,
 
     /// Where a version's publish time comes from.
     pub publish_times: PublishTimeSource,
@@ -121,6 +130,9 @@ pub const NPM: Registry = Registry {
     always_reachable: &[npm::DEFAULT_REGISTRY],
     classify_path: npm::classify_path,
     read_media_type: npm::document_from_content_type,
+    // `/-/v1/search` and `/-/whoami` are a handful per install, and
+    // `scripts/make/retry-matrix.sh` counts their INFO lines.
+    other_is_probe: false,
     publish_times: PublishTimeSource::FullPackument,
     streams: &[&stream::OSV_NPM, &stream::DATADOG_NPM, &stream::GITHUB_NPM],
     lockfiles: npm::lockfile::LOCKFILES,
@@ -137,6 +149,8 @@ pub const PYPI: Registry = Registry {
     always_reachable: &[pypi::INDEX, pypi::FILES],
     classify_path: pypi::classify_path,
     read_media_type: pypi::document_from_content_type,
+    // PEP 658 `<file>.metadata` requests.
+    other_is_probe: true,
     // `pypi::normalize` reads each file's `upload-time`.
     publish_times: PublishTimeSource::Record,
     // OSV, Datadog and GitHub all publish PyPI advisories. None is fetched yet: TODO.md,

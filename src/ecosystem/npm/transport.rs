@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use crate::ecosystem::Fetched;
 use crate::identity::PackageKey;
 use crate::record::{PackageMetadata, PackumentDetail};
 
@@ -50,6 +51,14 @@ impl Client {
         match name.split_once('/') {
             Some((scope, rest)) => format!("{}/{scope}%2F{rest}", self.registry),
             None => format!("{}/{name}", self.registry),
+        }
+    }
+
+    /// The abbreviated packument as records, for a request the client did not make.
+    pub async fn metadata(&self, key: &PackageKey) -> Fetched {
+        match self.packument(key, PackumentDetail::Abbreviated).await {
+            Ok(inner) => Ok(inner.map_err(|e| e.to_string())),
+            Err(e) => Err(e.to_string()),
         }
     }
 

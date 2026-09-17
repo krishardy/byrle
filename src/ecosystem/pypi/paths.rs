@@ -7,9 +7,9 @@
 use crate::identity::{Ecosystem, PackageKey};
 use crate::route::{DocumentKind, RequestTarget};
 
-use super::SIMPLE_JSON;
 use super::error::PypiError;
 use super::wire::Kind;
+use super::{FILES, SIMPLE_JSON};
 
 /// A project name as PEP 503 normalises it: lowercased, with every run of `-`, `_` and `.`
 /// replaced by a single `-`.
@@ -78,6 +78,24 @@ pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
         }
     }
     None
+}
+
+/// Where a request under PyPI's prefixes goes upstream.
+///
+/// The index answers `/simple/<name>/` and the files come from [`FILES`], which the index
+/// gives in full and which the proxy reaches by keeping the path: the hash segments in
+/// `/packages/ab/cd/ef.../name-1.0.whl` are what locate the file, and they arrive in the
+/// request because the client followed the URL the index published.
+///
+/// `index` already ends in the index path, `https://pypi.org/simple`, so the proxy's own
+/// `/simple` prefix comes off before the rest is appended. A path under a PyPI prefix that
+/// names no project still goes to PyPI: `/simple/` is the root index, and answering pip
+/// with an npm registry's 404 says nothing useful.
+pub fn upstream_url(index: &str, path_and_query: &str) -> String {
+    match path_and_query.strip_prefix("/simple") {
+        Some(rest) => format!("{index}{rest}"),
+        None => format!("{FILES}{path_and_query}"),
+    }
 }
 
 /// Which metadata document a body with this `Content-Type` is.

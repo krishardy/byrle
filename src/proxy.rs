@@ -50,7 +50,7 @@ use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
 use crate::ecosystem::PublishTimeSource;
-use crate::ecosystem::npm;
+use crate::ecosystem::{npm, pypi};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_VERIFIED,
@@ -64,7 +64,7 @@ use crate::integrity::{Sri, Verifier};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
 use crate::origin::{Disposition, OriginPolicy, ReachableOrigins};
 use crate::policy::{Policy, enforce, facts};
-use crate::record::{PackageMetadata, PackageRecord, PackumentDetail};
+use crate::record::{PackageMetadata, PackageRecord};
 use crate::refusal::RefusalStatus;
 use crate::route::{DocumentKind, RequestTarget};
 use crate::store::{Lookup, RecordStore};
@@ -169,7 +169,7 @@ pub struct Proxy {
     /// Used to fetch a packument the client never asked for. See [`lookup_or_fetch`].
     registry: npm::Client,
     /// The same for a PyPI simple index.
-    index: crate::ecosystem::pypi::Client,
+    index: pypi::Client,
     /// Artifacts already fetched and verified, keyed by content digest. The fetch path
     /// branches on this (plan §5). See [`crate::verified`].
     verified: Arc<Mutex<VerifiedArtifacts>>,
@@ -230,15 +230,12 @@ impl Proxy {
         Self {
             origins: Arc::new(origins),
             registry: npm::Client::new(client.clone(), upstream.clone()),
-            index: crate::ecosystem::pypi::Client::new(
-                client.clone(),
-                crate::ecosystem::pypi::INDEX,
-            ),
+            index: pypi::Client::new(client.clone(), pypi::INDEX),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             upstream_npm: upstream,
-            upstream_pypi: crate::ecosystem::pypi::INDEX.to_owned(),
+            upstream_pypi: pypi::INDEX.to_owned(),
             policy: None,
             publish_times: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
@@ -397,18 +394,16 @@ impl Proxy {
         // forwards, so one setting means one limit.
         self.registry =
             npm::Client::new(self.client.clone(), self.upstream_npm.clone()).with_max_bytes(limit);
-        self.index =
-            crate::ecosystem::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
-                .with_max_bytes(limit);
+        self.index = pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
+            .with_max_bytes(limit);
         self
     }
 
-    /// The PyPI simple index to forward to. Defaults to [`crate::ecosystem::pypi::INDEX`].
+    /// The PyPI simple index to forward to. Defaults to [`pypi::INDEX`].
     pub fn with_upstream_pypi(mut self, upstream: impl Into<String>) -> Self {
         self.upstream_pypi = upstream.into().trim_end_matches('/').to_owned();
-        self.index =
-            crate::ecosystem::pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
-                .with_max_bytes(self.max_packument_bytes);
+        self.index = pypi::Client::new(self.client.clone(), self.upstream_pypi.clone())
+            .with_max_bytes(self.max_packument_bytes);
         self
     }
 
@@ -681,20 +676,8 @@ async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &
 async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     let started = Instant::now();
     let fetched = match key.ecosystem() {
-        Ecosystem::Npm => match proxy
-            .registry
-            .packument(key, PackumentDetail::Abbreviated)
-            .await
-        {
-            Ok(inner) => Ok(inner.map_err(|e| e.to_string())),
-            Err(e) => Err(e.to_string()),
-        },
-        Ecosystem::PyPI => match proxy.index.project(key.name()).await {
-            Ok(project) => {
-                Ok(crate::ecosystem::pypi::normalize(&project).map_err(|e| e.to_string()))
-            }
-            Err(e) => Err(e.to_string()),
-        },
+        Ecosystem::Npm => proxy.registry.metadata(key).await,
+        Ecosystem::PyPI => proxy.index.metadata(key).await,
     };
     match fetched {
         Ok(Ok(metadata)) => {
@@ -776,96 +759,6 @@ fn uninspected(
     None
 }
 
-/// Which metadata document this response body is.
-///
-/// The response is authoritative and the request is not. npm asks for both packument
-/// kinds in one `Accept` header; pip asks for PEP 691 JSON and an index that does not
-/// serve it answers HTML, which is not a shape this reads. `None` forwards the body
-/// untouched.
-/// Point a simple index's files at the proxy.
-///
-/// pip uses each file's `url` as written, so without this every file is fetched from
-/// `files.pythonhosted.org` and nothing about those bytes is observed. The path is kept,
-/// which is what makes the request that comes back one `pypi::classify_path` understands
-/// and `upstream_url` sends back to the same place.
-///
-/// `None` leaves the body exactly as it arrived: the index did not parse, there is no
-/// address to point at, or the operator turned rewriting off. Each says so in the log,
-/// because a forwarded index means that project's files go around the proxy.
-fn read_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> Option<Vec<u8>> {
-    // The project name is not read from here: `pypi::parse` takes one as the fallback for
-    // an index that does not name itself, and every message below says `path`, which
-    // identifies the project already.
-    let project = match crate::ecosystem::pypi::parse("", decoded) {
-        Ok(project) => project,
-        Err(e) => {
-            warn!(path = %path, error = %e, "UNINSPECTED: simple index did not parse");
-            return None;
-        }
-    };
-    let files = project.files.len();
-
-    // Stored before the rewrite, and built from the bytes that arrived. Records built
-    // from the rewritten document would name the proxy's own origin as every artifact's
-    // upstream, which is the wrong thing to hold as the index's claim.
-    match crate::ecosystem::pypi::normalize(&project) {
-        Ok(metadata) => {
-            let versions = metadata.records.len();
-            let skipped = metadata.skipped.len();
-            let artifacts: usize = metadata.records.iter().map(|r| r.artifacts.len()).sum();
-            let sdist_only = metadata
-                .records
-                .iter()
-                .filter(|r| r.has_install_scripts)
-                .count();
-            let (held_packages, held_records) = {
-                let mut store = proxy.store.lock().expect("record store lock");
-                store.insert(metadata);
-                (store.len(), store.records())
-            };
-            info!(
-                path = %path,
-                files,
-                versions,
-                artifacts,
-                skipped,
-                sdist_only_versions_listed = sdist_only,
-                held_packages,
-                held_records,
-                "simple index normalized"
-            );
-        }
-        Err(e) => warn!(path = %path, error = %e, "UNINSPECTED: simple index did not normalize"),
-    }
-
-    let Some(base) = base else {
-        warn!(
-            path = %path,
-            files,
-            "UNINSPECTED: the simple index is forwarded as written, so its files are \
-             fetched from the index's own host rather than through the proxy"
-        );
-        return None;
-    };
-    let urls: Vec<&str> = project.files.iter().map(|f| f.url.as_str()).collect();
-    match crate::origin::rewrite_artifact_origins(decoded, urls, proxy.origins.reachable(), base) {
-        Ok(out) => {
-            info!(
-                path = %path,
-                files,
-                rewritten = out.rewritten,
-                left_alone = out.left_alone,
-                "simple index rewritten"
-            );
-            (out.rewritten > 0).then_some(out.body)
-        }
-        Err(e) => {
-            warn!(path = %path, error = %e, "UNINSPECTED: simple index could not be rewritten");
-            None
-        }
-    }
-}
-
 /// Whether this request is the resolver looking rather than the client installing.
 ///
 /// A PyPI request that is neither a project index nor a file is a PEP 658
@@ -878,29 +771,14 @@ fn read_index(proxy: &Proxy, decoded: &[u8], base: Option<&str>, path: &str) -> 
 /// installing, so it gets no record lookup, no policy decision and no audit entry: of the
 /// 679, zero produced any of the three.
 ///
-/// npm keeps INFO for its unclassified traffic. `/-/v1/search` and `/-/whoami` are a
-/// handful per install, and `scripts/make/retry-matrix.sh` counts those lines.
+/// Which ecosystem's unclassified requests are probes is its row's `other_is_probe`.
 fn resolver_probe(ecosystem: Ecosystem, target: &RequestTarget) -> bool {
-    ecosystem == Ecosystem::PyPI && matches!(target, RequestTarget::Other)
+    crate::ecosystem::of(ecosystem).other_is_probe && matches!(target, RequestTarget::Other)
 }
 
-/// Where a request goes upstream.
-///
-/// npm's rule is unchanged: the configured registry, or an origin the operator added for
-/// artifacts the registry publishes elsewhere, with the client's path appended. A private
-/// mirror publishes `registry.npmjs.org` artifact URLs while being the whole reason the
-/// proxy was pointed at it, so the URL in the document is deliberately not what decides.
-///
-/// PyPI needs two hosts. The index answers `/simple/<name>/` and the files come from
-/// [`crate::ecosystem::pypi::FILES`], which the index names in full and which the proxy reaches by
-/// keeping the path: the hash segments in `/packages/ab/cd/ef.../name-1.0.whl` are what
-/// locate the file, and they arrive in the request because the client followed the URL the
-/// index published.
-///
-/// The configured PyPI base already ends in the index path, `https://pypi.org/simple`, so
-/// the proxy's own `/simple` prefix comes off before the rest is appended. A path under a
-/// PyPI prefix that names no project still goes to PyPI: `/simple/` is the root index, and
-/// answering pip with an npm registry's 404 says nothing useful.
+/// Where a request goes upstream: an origin the operator added for artifacts, else the
+/// ecosystem's own rule applied to its configured base. `npm::upstream_url` and
+/// `pypi::upstream_url` say what each rule is.
 fn upstream_url(
     proxy: &Proxy,
     ecosystem: Ecosystem,
@@ -915,13 +793,8 @@ fn upstream_url(
     // Exhaustive on purpose. A third ecosystem has to answer this question, and a
     // fall-through would quietly give it PyPI's two hosts.
     match ecosystem {
-        Ecosystem::Npm => format!("{}{path_and_query}", proxy.upstream_npm),
-        // The two prefixes and nothing else: PyPI's row of `ecosystem::TABLE` claims
-        // those, and that is what sent the request here.
-        Ecosystem::PyPI => match path_and_query.strip_prefix("/simple") {
-            Some(rest) => format!("{}{rest}", proxy.upstream_pypi),
-            None => format!("{}{path_and_query}", crate::ecosystem::pypi::FILES),
-        },
+        Ecosystem::Npm => npm::upstream_url(&proxy.upstream_npm, path_and_query),
+        Ecosystem::PyPI => pypi::upstream_url(&proxy.upstream_pypi, path_and_query),
     }
 }
 
@@ -1456,9 +1329,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let detail = match document {
         DocumentKind::SimpleIndex => {
             let forwarded = decoded.as_deref().and_then(|d| {
-                read_index(
-                    &proxy,
+                pypi::read_index(
                     d,
+                    &proxy.store,
+                    proxy.origins.reachable(),
                     rewriting.then_some(rewrite_base.as_deref()).flatten(),
                     &path_and_query,
                 )
@@ -1478,42 +1352,17 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     };
 
     // Nothing to normalise when decoding failed; it was logged above.
-    let mut normalized: Option<Box<PackageMetadata>> = None;
-    match decoded.as_deref().map(|d| npm::inspect_decoded(d, detail)) {
-        None => {}
-        Some(npm::PackumentOutcome::Normalized(p)) => {
-            // Reported by `rewrite_packument` below, which is where it is acted on.
-            let (allowed_direct, refused) = p.unserved_origins(&proxy.origins);
-            let (held_packages, held_records) = {
-                let mut store = proxy.store.lock().expect("record store lock");
-                store.insert((*p).clone());
-                (store.len(), store.records())
-            };
-            info!(
-            path = %path_and_query,
-            purl = %p.key,
-            detail = ?detail,
-            versions = p.records.len(),
-            skipped = p.skipped.len(),
-            // Every version in the document, not the one being installed. Stage 2
-            // needs the resolved version's answer, which needs the tarball request
-            // correlated against these records.
-            versions_with_install_scripts = p.records.iter().filter(|r| r.has_install_scripts).count(),
-            latest = %p.latest.as_deref().unwrap_or("-"),
-            encoded_bytes = body.len(),
-            parse_ms = parse_started.elapsed().as_millis() as u64,
-            offsite_versions = refused.values().sum::<usize>() + allowed_direct.values().sum::<usize>(),
-            held_packages,
-            held_records,
-            "packument normalized"
-            );
-            normalized = Some(p);
-        }
-        Some(npm::PackumentOutcome::Unreadable(e)) => {
-            warn!(path = %path_and_query, error = %e, "UNINSPECTED: packument did not normalize")
-        }
-        Some(npm::PackumentOutcome::Undecodable(_)) => {}
-    }
+    let normalized = decoded.as_deref().and_then(|d| {
+        npm::read_packument(
+            d,
+            detail,
+            &proxy.store,
+            &proxy.origins,
+            body.len(),
+            parse_started,
+            &path_and_query,
+        )
+    });
 
     // The rewrite. Every client in the npm ecosystem has to fetch artifacts through the
     // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
@@ -1544,18 +1393,27 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // turning rewriting off, which `docs/engineering_decisions/enforcement-tiers.md` says
     // is correct once the proxy terminates TLS, silently stopped the policy filtering
     // with it.
+    //
+    // Decision #4's resolution half. A version the policy refuses is dropped from the
+    // document, so the client's own resolver picks one that is allowed and the install
+    // succeeds without anyone being told no. The pinned half, where there is no resolution
+    // left to influence, refuses at the artifact request.
     let forwarded = match (decoded.as_deref(), normalized.as_deref()) {
-        (Some(decoded), Some(packument)) => rewrite_packument(Rewrite {
+        (Some(decoded), Some(packument)) => npm::rewrite_packument(npm::Rewrite {
             decoded,
             packument,
             base: rewriting.then_some(rewrite_base.as_deref()).flatten(),
             origins: &proxy.origins,
-            package_policy: proxy.policy.as_deref(),
-            times: times.as_deref(),
-            intel: intel.as_ref(),
+            refused_by_policy: &policy_refused_versions(
+                packument,
+                proxy.policy.as_deref(),
+                times.as_deref(),
+                intel.as_ref(),
+                &path_and_query,
+                proxy.audit.as_deref(),
+            ),
             refuse_unservable: proxy.refuse_unservable,
             path: &path_and_query,
-            audit: proxy.audit.as_deref(),
         }),
         _ => None,
     };
@@ -1872,138 +1730,6 @@ fn policy_refused_versions(
     refused
 }
 
-/// What the packument path needs to decide what to send back.
-struct Rewrite<'a> {
-    decoded: &'a [u8],
-    packument: &'a PackageMetadata,
-    /// Where artifact URLs are pointed, when they are pointed anywhere.
-    base: Option<&'a str>,
-    origins: &'a OriginPolicy,
-    package_policy: Option<&'a Policy>,
-    times: Option<&'a facts::PublishTimes>,
-    /// What the intel store knows about this package. `None` when no store is configured.
-    intel: Option<&'a PackageIntel>,
-    refuse_unservable: bool,
-    path: &'a str,
-    audit: Option<&'a AuditLog>,
-}
-
-/// Point a packument's artifacts at the proxy, or explain why it was left alone.
-///
-/// Returns `None` when the document is forwarded as it came, which always means some
-/// artifacts for this package will be fetched without the proxy seeing them.
-fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
-    let Rewrite {
-        decoded,
-        packument,
-        base,
-        origins: policy,
-        package_policy,
-        times,
-        intel,
-        refuse_unservable,
-        path,
-        audit,
-    } = r;
-    let (allowed_direct, refused) = packument.unserved_origins(policy);
-
-    // Decision #4's resolution half. A version the policy refuses is dropped from the
-    // document, so the client's own resolver picks one that is allowed and the install
-    // succeeds without anyone being told no. The pinned half, where there is no
-    // resolution left to influence, refuses at the artifact request.
-    let refused_by_policy =
-        policy_refused_versions(packument, package_policy, times, intel, path, audit);
-
-    // An accepted gap has to stay visible. One that stops being reported outlives the
-    // reason it was added.
-    if !allowed_direct.is_empty() {
-        warn!(
-            path = %path,
-            versions = allowed_direct.values().sum::<usize>(),
-            origins = ?allowed_direct.keys().collect::<Vec<_>>(),
-            "UNINSPECTED: artifacts fetched directly by the client, allowed by configuration"
-        );
-    }
-
-    // Either reason to drop a version puts this on the structural path. The byte
-    // rewrite below cannot remove anything, only repoint URLs.
-    if !refused_by_policy.is_empty() || (refuse_unservable && !refused.is_empty()) {
-        let origins: Vec<&String> = refused.keys().collect();
-        let artifacts = packument
-            .records
-            .iter()
-            .filter_map(|r| Some((r.package.version().to_owned(), r.artifact()?.url.clone())));
-        return match npm::filter_unservable_versions(
-            decoded,
-            artifacts,
-            policy,
-            &refused_by_policy,
-            refuse_unservable,
-            base.unwrap_or(""),
-        ) {
-            Ok(filtered) => {
-                warn!(
-                    path = %path,
-                    removed = filtered.removed.len(),
-                    by_policy = refused_by_policy.len(),
-                    kept = filtered.rewritten,
-                    allowed = filtered.allowed,
-                    origins = ?origins,
-                    "REFUSED versions removed from the document so the resolver picks \
-                     another"
-                );
-                // Always the filtered body, even when nothing survived. Returning None
-                // here forwards the original, which would put every refused version
-                // straight back into the document.
-                Some(filtered.body)
-            }
-            Err(e) => {
-                warn!(path = %path, error = %e, "UNINSPECTED: packument could not be filtered");
-                None
-            }
-        };
-    }
-
-    if !refused.is_empty() {
-        let versions: usize = refused.values().sum();
-        let origins: Vec<&String> = refused.keys().collect();
-
-        // Every artifact being off-origin is not the same exposure as some of them being
-        // off-origin, and it is the shape someone would construct.
-        if versions == packument.records.len() {
-            warn!(
-                path = %path,
-                versions,
-                origins = ?origins,
-                "UNINSPECTED: every artifact in this packument is on an origin the proxy \
-                 does not front"
-            );
-        } else {
-            warn!(
-                path = %path,
-                versions,
-                origins = ?origins,
-                "UNINSPECTED: some artifacts left on an origin the proxy does not front"
-            );
-        }
-    }
-
-    // Nothing left to do when artifact URLs are not being repointed. Reached when the
-    // operator turned rewriting off and the policy refused nothing.
-    let base = base?;
-    let artifacts = packument
-        .records
-        .iter()
-        .filter_map(|record| Some(record.artifact()?.url.as_str()));
-    match crate::origin::rewrite_artifact_origins(decoded, artifacts, policy.reachable(), base) {
-        Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
-        Err(e) => {
-            warn!(path = %path, error = %e, "UNINSPECTED: packument could not be rewritten");
-            None
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2135,12 +1861,8 @@ mod tests {
     #[tokio::test]
     async fn a_failed_index_response_is_forwarded_rather_than_read() {
         let body = br#"{"name":"x","files":[{"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0.tar.gz","hashes":{}}]}"#.to_vec();
-        let (base, _) = pypi_proxy_serving(
-            StatusCode::NOT_FOUND,
-            crate::ecosystem::pypi::SIMPLE_JSON,
-            body.clone(),
-        )
-        .await;
+        let (base, _) =
+            pypi_proxy_serving(StatusCode::NOT_FOUND, pypi::SIMPLE_JSON, body.clone()).await;
 
         let response = reqwest::Client::new()
             .get(format!("{base}/simple/x/"))
@@ -2159,8 +1881,7 @@ mod tests {
         let index = br#"{"name":"x","files":[
             {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl","hashes":{}}
         ]}"#.to_vec();
-        let (base, seen) =
-            pypi_proxy_serving(StatusCode::OK, crate::ecosystem::pypi::SIMPLE_JSON, index).await;
+        let (base, seen) = pypi_proxy_serving(StatusCode::OK, pypi::SIMPLE_JSON, index).await;
 
         let response = reqwest::Client::new()
             .get(format!("{base}/simple/x/"))
@@ -2190,46 +1911,6 @@ mod tests {
         );
     }
 
-    /// Reading the index is what gives the artifact request that follows it a digest.
-    /// Without the records the bytes are forwarded and said to be unverified.
-    #[test]
-    fn reading_an_index_leaves_its_records_for_the_file_request() {
-        let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org");
-        let index = br#"{"name":"x","files":[
-            {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl","hashes":{"sha256":"aa3f5e4a4b1a8b2b4e0a9a6e4e0f4d0b6a3d2c1f0e9d8c7b6a5f4e3d2c1b0a9f"}},
-            {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/x-1.0.tar.gz","hashes":{}}
-        ]}"#;
-
-        assert_eq!(proxy.store.lock().unwrap().records(), 0);
-        read_index(&proxy, index, Some("http://127.0.0.1:8080"), "/simple/x/");
-
-        let key = PackageKey::from_registry_name(Ecosystem::PyPI, "x").unwrap();
-        let mut store = proxy.store.lock().unwrap();
-        assert_eq!(store.records(), 1, "one version, two files");
-        let Lookup::Found(record) = store.lookup(&key, "1.0") else {
-            panic!("the index named 1.0");
-        };
-        assert_eq!(
-            record
-                .artifact_named("x-1.0-py3-none-any.whl")
-                .and_then(|a| a.integrity.as_deref()),
-            Some("sha256-qj9eSksaiytOCppuTg9NC2o9LB8OnYx7al9OPSwbCp8=")
-        );
-        assert!(
-            record
-                .artifact_named("x-1.0.tar.gz")
-                .expect("the sdist")
-                .integrity
-                .is_none(),
-            "the index gave no digest for it"
-        );
-        assert!(!record.has_install_scripts, "a wheel is on offer");
-        assert!(
-            record.runs_install_scripts(Some("x-1.0.tar.gz")),
-            "asking for the sdist is asking for the bytes that run setup.py"
-        );
-    }
-
     /// The refusal table is keyed by (ecosystem, client), and the request says which
     /// ecosystem. Passing npm for every request made a `pypi/...` entry unreachable.
     #[test]
@@ -2254,21 +1935,6 @@ mod tests {
             403,
             "npm's entry does not answer for PyPI"
         );
-    }
-
-    /// An index the proxy cannot read stores nothing rather than storing a partial
-    /// record: an artifact request then says it saw no metadata, which is true.
-    #[test]
-    fn an_index_that_does_not_normalize_stores_nothing() {
-        let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org");
-        read_index(&proxy, b"not json", Some("http://p"), "/simple/x/");
-        read_index(
-            &proxy,
-            br#"{"name":"x","files":[{"filename":"notadistribution.txt","url":"https://e/a","hashes":{}}]}"#,
-            Some("http://p"),
-            "/simple/x/",
-        );
-        assert_eq!(proxy.store.lock().unwrap().records(), 0);
     }
 
     // -----------------------------------------------------------------------
@@ -4473,7 +4139,7 @@ mod tests {
     fn the_upstream_base_drops_a_trailing_slash() {
         let proxy = Proxy::new(reqwest::Client::new(), "https://registry.npmjs.org/");
         assert_eq!(proxy.upstream_npm(), "https://registry.npmjs.org");
-        assert_eq!(proxy.upstream_pypi(), crate::ecosystem::pypi::INDEX);
+        assert_eq!(proxy.upstream_pypi(), pypi::INDEX);
         let proxy = proxy.with_upstream_pypi("https://mirror.example/simple/");
         assert_eq!(proxy.upstream_pypi(), "https://mirror.example/simple");
     }
@@ -4727,70 +4393,6 @@ mod tests {
                     "{ecosystem:?} {content_type:?}"
                 );
             }
-        }
-
-        const INDEX: &[u8] = br#"{"name":"x","files":[
-            {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl","hashes":{}},
-            {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/x-1.0.tar.gz","hashes":{}}
-        ]}"#;
-
-        /// pip uses each file's url as written, so without this every file is fetched
-        /// from the index's own host and nothing about those bytes is observed.
-        #[test]
-        fn a_rewritten_index_points_its_files_at_the_proxy() {
-            let out = read_index(&proxy(), INDEX, Some("http://127.0.0.1:8080"), "/simple/x/")
-                .expect("two files rewritten");
-            let text = String::from_utf8(out).expect("still utf-8");
-            assert!(
-                text.contains("\"http://127.0.0.1:8080/packages/ab/cd/x-1.0-py3-none-any.whl\""),
-                "{text}"
-            );
-            assert!(
-                text.contains("\"http://127.0.0.1:8080/packages/ef/01/x-1.0.tar.gz\""),
-                "{text}"
-            );
-            assert!(!text.contains("files.pythonhosted.org"), "{text}");
-        }
-
-        /// The path is kept, so the request that comes back is one `classify_path`
-        /// understands and `upstream_url` sends to the host it came from.
-        #[test]
-        fn a_rewritten_url_round_trips_to_where_it_came_from() {
-            let out = read_index(&proxy(), INDEX, Some("http://127.0.0.1:8080"), "/simple/x/")
-                .expect("rewritten");
-            let document: serde_json::Value = serde_json::from_slice(&out).expect("json");
-            let url = document["files"][0]["url"].as_str().expect("a url");
-            let path = url.strip_prefix("http://127.0.0.1:8080").expect("our base");
-
-            let (ecosystem, target) = crate::route::classify(path);
-            assert_eq!(ecosystem, Ecosystem::PyPI);
-            assert!(
-                matches!(target, RequestTarget::Artifact { .. }),
-                "{target:?}"
-            );
-            assert_eq!(
-                upstream_url(&proxy(), ecosystem, path, None),
-                "https://files.pythonhosted.org/packages/ab/cd/x-1.0-py3-none-any.whl"
-            );
-        }
-
-        /// Nothing to point at, nothing that parses, and nothing to rewrite each leave
-        /// the body exactly as it arrived.
-        #[test]
-        fn an_index_that_cannot_be_rewritten_is_forwarded_untouched() {
-            assert_eq!(read_index(&proxy(), INDEX, None, "/simple/x/"), None);
-            assert_eq!(
-                read_index(&proxy(), b"not json", Some("http://p"), "/simple/x/"),
-                None
-            );
-            let offsite = br#"{"name":"x","files":[
-                {"filename":"x-1.0.tar.gz","url":"https://cdn.example/x-1.0.tar.gz","hashes":{}}
-            ]}"#;
-            assert_eq!(
-                read_index(&proxy(), offsite, Some("http://p"), "/simple/x/"),
-                None,
-                "an origin the proxy does not front is left where it is"
-            );
         }
 
         /// A PEP 658 probe is the resolver looking. An index page and a file are not, and

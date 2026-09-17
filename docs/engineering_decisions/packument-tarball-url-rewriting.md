@@ -2,7 +2,7 @@
 
 - **Status:** Decided Sept 2026, implemented Stage 1
 - **Supersedes:** plan §4, "npm needs no packument rewriting"
-- **Code:** `npm::rewrite_artifact_origins`, `proxy::rewrite_packument`
+- **Code:** `npm::rewrite_artifact_origins`, `npm::rewrite_packument`
 - **Reproduce:** `make smoke-clients`
 
 ## Decision

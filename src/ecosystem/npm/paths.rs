@@ -98,6 +98,15 @@ pub fn detail_from_content_type(content_type: Option<&str>) -> Option<PackumentD
     }
 }
 
+/// Where a request goes upstream: the configured registry with the client's path appended.
+///
+/// A private mirror publishes `registry.npmjs.org` artifact URLs while being the whole
+/// reason the proxy was pointed at it, so the URL in the document is deliberately not what
+/// decides.
+pub fn upstream_url(registry: &str, path_and_query: &str) -> String {
+    format!("{registry}{path_and_query}")
+}
+
 /// npm's row of [`crate::ecosystem::TABLE`] reads media types through this.
 ///
 /// Both npm packument kinds are the same document to everything outside npm, so which one
