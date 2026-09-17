@@ -1,6 +1,10 @@
 //! Naming what a refresh read: each stream's bundle by its digest, and what it does with a
 //! fetch that did not finish.
 
+pub mod run;
+
+pub use run::{Run, run};
+
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
