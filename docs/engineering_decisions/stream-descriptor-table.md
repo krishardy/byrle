@@ -51,8 +51,27 @@ a catalogue.
 
 A fetch is network I/O. Everything a descriptor holds is decidable from the bytes, so the
 library is unit-testable with no network and `src/intel/stream.rs` is at 100% lines. The
-binary keeps the parts that need a socket, a database and a clock: the HTTP client, the
+binary keeps the parts that need a socket, a database and a clock: the requests, the
 byte-ceiling enforcement, the transaction and the printing.
+
+What a fetch does about a connection that stops is `src/intel/refresh.rs`, so it is tested
+without the network:
+
+| | Value | Why |
+|---|---|---|
+| `CONNECT_TIMEOUT` | 10 s | past this the host is not answering |
+| `READ_TIMEOUT` | 30 s | per read, reset by each one. OSV's 215 MB npm bundle took 9 s on 2026-09-17 and would take 36 minutes at 100 kB/s, neither with a 30 s gap. A total timeout would have to exceed that 36 minutes to allow it, and would then let a stall run as long |
+| `ATTEMPTS` | 3 | `osv/npm` is `Required`, so a refresh that gives up on it loads nothing |
+| `RETRY_WAIT` | 2 s | between attempts |
+
+`refresh::retried` decides whether a failure gets another attempt: a status the host chose
+and a bundle over its ceiling do not, a refused connection, a timed-out read and a body
+that stopped mid-stream do. Each attempt starts the request over, because the bundle is one
+GET with no range request.
+
+Before this, a refresh with a stalled connection ran until the host closed it. Measured
+2026-09-17: 12 minutes with the connection established, nothing queued and no bytes read,
+while `curl` fetched the same bundle in 9 s.
 
 `waharoa refresh` also keeps the reporting that no single stream can produce.
 `datadog::disagreements` compares OSV's rows to Datadog's, so it belongs to neither
