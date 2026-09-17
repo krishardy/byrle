@@ -600,7 +600,7 @@ fn same_origin(a: &str, b: &str) -> bool {
 /// A public registry in a lockfile is a different problem from a stale proxy address, and
 /// saying "this is not your proxy" about registry.npmjs.org would be noise.
 fn looks_like_a_registry(origin: &str) -> bool {
-    origin == crate::npm::DEFAULT_REGISTRY
+    origin == crate::ecosystem::npm::DEFAULT_REGISTRY
 }
 
 fn join(origins: &[&String]) -> String {

@@ -44,7 +44,7 @@ pub enum Answerable {
 /// When each version of a package was published, read from the full packument.
 ///
 /// Separate from the record because the record comes from the abbreviated document, which
-/// carries no `time` map. See [`crate::npm::parse_publish_times`].
+/// carries no `time` map. See [`crate::ecosystem::npm::parse_publish_times`].
 pub type PublishTimes = std::collections::BTreeMap<String, jiff::Timestamp>;
 
 impl Facts {
@@ -176,7 +176,7 @@ fn published_date(record: &PackageRecord, times: Option<&PublishTimes>) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::npm::normalize_packument;
+    use crate::ecosystem::npm::normalize_packument;
     use crate::policy::decide::{Check, Outcome, decide};
     use crate::policy::{Action, Policy};
 

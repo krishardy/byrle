@@ -12,8 +12,8 @@ use std::fmt;
 /// The origins whose artifacts the proxy serves.
 ///
 /// One source of truth for two questions that must never disagree: which artifact URLs
-/// get pointed at the proxy ([`crate::npm::rewrite_artifact_origins`]), and which are reported as
-/// fetched directly ([`crate::npm::PackageMetadata::bypassing_origins`]). If those sets differed,
+/// get pointed at the proxy ([`crate::ecosystem::npm::rewrite_artifact_origins`]), and which are reported as
+/// fetched directly ([`crate::ecosystem::npm::PackageMetadata::bypassing_origins`]). If those sets differed,
 /// an artifact could be rewritten and reported as bypassing, or left alone and reported
 /// as fine.
 ///
@@ -451,7 +451,7 @@ mod tests {
     use super::*;
     use crate::identity::Ecosystem;
 
-    const UPSTREAM: &str = crate::npm::DEFAULT_REGISTRY;
+    const UPSTREAM: &str = crate::ecosystem::npm::DEFAULT_REGISTRY;
 
     fn reachable(additional: &[&str]) -> ReachableOrigins {
         ReachableOrigins::new([UPSTREAM], additional.iter().copied()).expect("valid origins")
