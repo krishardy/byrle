@@ -1,6 +1,6 @@
 # Datadog's npm manifest is a malware source of its own
 
-- **Status:** Implemented. `src/intel/datadog.rs`, `range::stored`, `intel::capabilities_of`,
+- **Status:** Implemented. `src/intel/providers/datadog.rs`, `range::stored`, `intel::capabilities_of`,
   `waharoa refresh`.
 - **Related:** [advisory-stream-licences](advisory-stream-licences.md),
   [kev-stream](kev-stream.md),

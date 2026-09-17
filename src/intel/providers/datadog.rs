@@ -6,8 +6,8 @@
 //! package is one record, `DATADOG-npm-<name>`, stored as a malware report the way an OSV `MAL-`
 //! record is. See docs/engineering_decisions/datadog-stream.md.
 
-use super::osv::{Affected, Rows};
-use super::range;
+use crate::intel::range;
+use crate::intel::rows::{Affected, Rows};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const MANIFEST: &str = "https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json";
@@ -124,7 +124,7 @@ impl std::fmt::Display for Disagreement {
             f,
             "{}: {STREAM} every version, {} some: {}",
             self.name,
-            super::refresh::NPM_STREAM,
+            super::osv::bundle::NPM_STREAM,
             self.osv.join(", ")
         )
     }
@@ -167,8 +167,8 @@ pub fn disagreements(osv: &[Rows], datadog: &[Rows]) -> Vec<Disagreement> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intel::osv::Ranged;
     use crate::intel::range::{End, Interval, Start};
+    use crate::intel::rows::Ranged;
 
     fn names_and_versions(rows: &Rows) -> Vec<(String, Option<String>)> {
         rows.affected

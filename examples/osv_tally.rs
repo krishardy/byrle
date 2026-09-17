@@ -6,7 +6,7 @@
 //!   curl -sO https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip
 //!
 //! Run: cargo run --example osv_tally -- all.zip
-use waharoa::intel::refresh;
+use waharoa::intel::providers::osv::bundle;
 
 fn main() {
     // The rule below guards against trusting argv for security decisions. This is a
@@ -15,7 +15,7 @@ fn main() {
     let path = std::env::args().nth(1).expect("usage: osv_tally <all.zip>");
     let bytes = std::fs::read(&path).expect("cannot read bundle");
 
-    match refresh::read_bundle(&bytes) {
+    match bundle::read_bundle(&bytes) {
         Ok(bundle) => {
             print!("{}", bundle.tally);
             let affected: usize = bundle.rows.iter().map(|r| r.affected.len()).sum();

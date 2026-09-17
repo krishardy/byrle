@@ -634,9 +634,11 @@ async fn package_intel(
 async fn run_refresh() -> std::process::ExitCode {
     use waharoa::intel::history::NotLoaded;
     use waharoa::intel::postgres::{PgIntel, Replacement};
-    use waharoa::intel::refresh::{StreamDigest, Tally};
+    use waharoa::intel::providers::osv::bundle::Tally;
+    use waharoa::intel::providers::{datadog, osv};
+    use waharoa::intel::refresh::StreamDigest;
     use waharoa::intel::stream::{Payload, Requirement, Transport};
-    use waharoa::intel::{datadog, osv, snapshot_dir::SnapshotDir, stream};
+    use waharoa::intel::{snapshot_dir::SnapshotDir, stream};
 
     /// Append `not_loaded` for a refresh that loaded nothing, and exit 1.
     async fn nothing_loaded(intel: &PgIntel, not_loaded: &[NotLoaded]) -> std::process::ExitCode {
@@ -915,7 +917,7 @@ async fn fetch(http: &reqwest::Client, url: &str, ceiling: usize) -> Result<Fetc
 
 /// Every page of GitHub's advisory connection, as one JSON array of response bodies.
 ///
-/// `intel::github::parse` reads that array, so paging stays here and the descriptor's
+/// `intel::providers::github::parse` reads that array, so paging stays here and the descriptor's
 /// `parse` keeps taking one buffer. `ceiling` bounds the whole array rather than one page.
 ///
 /// A page that is not JSON, or that carries no `pageInfo`, ends the fetch: the bytes are
@@ -932,7 +934,7 @@ async fn fetch_graphql(
     eprintln!("waharoa refresh: fetching {url}");
     loop {
         let body = serde_json::json!({
-            "query": waharoa::intel::github::QUERY,
+            "query": waharoa::intel::providers::github::QUERY,
             "variables": { "after": after },
         });
         let body = serde_json::to_vec(&body).map_err(|e| format!("{url}: {e}"))?;
@@ -1199,6 +1201,7 @@ async fn main() -> std::process::ExitCode {
         std::sync::Arc::new(store) as std::sync::Arc<dyn waharoa::intel::store::Intel>
     });
 
+    // TODO: Proxy.with_upstream(upstream_npm | upstream_pypi | etc...)
     let proxy = Proxy::new(client, upstream_npm)
         .with_upstream_pypi(upstream_pypi)
         .with_intel(intel)

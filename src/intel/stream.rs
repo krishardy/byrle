@@ -12,10 +12,11 @@
 
 use std::collections::BTreeSet;
 
+use super::Capability;
 use super::load::{Encoded, encode, encode_exploited};
-use super::osv::Rows;
-use super::refresh::Tally;
-use super::{Capability, datadog, github, kev, osv, refresh};
+use super::providers::osv::bundle::{self, Tally};
+use super::providers::{datadog, github, kev, osv};
+use super::rows::Rows;
 
 /// Whether a refresh loads anything at all when this stream does not load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,14 +125,14 @@ const MATCH_AND_MALWARE: &[Grant] = &[Grant {
 /// matches on, so a refresh without it would replace the store with the catalogues alone.
 pub const OSV_NPM: Stream = Stream {
     source: osv::SOURCE,
-    stream: refresh::NPM_STREAM,
-    url: refresh::NPM_BUNDLE,
-    ceiling: refresh::MAX_BUNDLE_BYTES,
+    stream: bundle::NPM_STREAM,
+    url: bundle::NPM_BUNDLE,
+    ceiling: bundle::MAX_BUNDLE_BYTES,
     requirement: Requirement::Required,
     transport: Transport::Get,
     grants: MATCH_AND_MALWARE,
     parse: |bytes| {
-        refresh::read_bundle(bytes)
+        bundle::read_bundle(bytes)
             .map(|bundle| Parsed {
                 payload: Payload::Advisories(bundle.rows),
                 tally: Some(bundle.tally),
@@ -236,8 +237,8 @@ mod tests {
             .filter(|s| s.requirement == Requirement::Required)
             .map(|s| s.stream)
             .collect();
-        assert_eq!(required, [refresh::NPM_STREAM]);
-        assert_eq!(ALL[0].stream, refresh::NPM_STREAM);
+        assert_eq!(required, [bundle::NPM_STREAM]);
+        assert_eq!(ALL[0].stream, bundle::NPM_STREAM);
     }
 
     #[test]
@@ -263,9 +264,9 @@ mod tests {
     fn each_stream_declares_the_url_and_ceiling_its_module_gives() {
         for (stream, url, ceiling) in [
             (
-                refresh::NPM_STREAM,
-                refresh::NPM_BUNDLE,
-                refresh::MAX_BUNDLE_BYTES,
+                bundle::NPM_STREAM,
+                bundle::NPM_BUNDLE,
+                bundle::MAX_BUNDLE_BYTES,
             ),
             (kev::SOURCE, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES),
             (
@@ -319,7 +320,7 @@ mod tests {
             env!("CARGO_MANIFEST_DIR")
         );
         let bytes = std::fs::read(path).expect("the fixture is present");
-        let parsed = (declared(refresh::NPM_STREAM).parse)(&bytes).expect("the bundle reads");
+        let parsed = (declared(bundle::NPM_STREAM).parse)(&bytes).expect("the bundle reads");
         let tally = parsed.tally.expect("the bundle counts its records");
         // Seven records, of which the withdrawn one is counted and not stored.
         assert_eq!(tally.records(), 7);
@@ -333,7 +334,7 @@ mod tests {
     #[test]
     fn a_bundle_that_does_not_read_gives_the_error_as_a_string() {
         for (stream, bytes) in [
-            (refresh::NPM_STREAM, &b"not a zip"[..]),
+            (bundle::NPM_STREAM, &b"not a zip"[..]),
             (kev::SOURCE, &b"not json"[..]),
             (datadog::STREAM, &b"not json"[..]),
         ] {

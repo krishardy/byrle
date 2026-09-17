@@ -12,9 +12,9 @@
 //! A source contains advisories or exploited CVE ids, never both. See
 //! docs/engineering_decisions/snapshot-identity.md and docs/engineering_decisions/kev-stream.md.
 
-use super::osv::{Affected, Ranged, Rows};
 use super::range::{End, Interval, Start};
 use super::refresh::{StreamDigest, sha256_hex};
+use super::rows::{Affected, Ranged, Rows};
 use std::collections::{BTreeSet, HashMap};
 
 pub const ADVISORY: &str = "COPY advisory (publisher_id, source, summary, cvss, modified, \
@@ -754,8 +754,8 @@ fn line(out: &mut Vec<u8>, fields: &[Option<&str>]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intel::osv::{Affected, Ranged};
     use crate::intel::range::{End, Interval};
+    use crate::intel::rows::{Affected, Ranged};
 
     fn rows() -> Rows {
         Rows {

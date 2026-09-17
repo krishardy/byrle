@@ -35,15 +35,13 @@
 //! `enrich` capability this machinery exists to constrain has no implemented producer at
 //! all. See `docs/engineering_decisions/advisory-stream-licences.md`.
 
-pub mod datadog;
-pub mod github;
 pub mod history;
-pub mod kev;
 pub mod load;
-pub mod osv;
 pub mod postgres;
+pub mod providers;
 pub mod range;
 pub mod refresh;
+pub mod rows;
 pub mod snapshot_dir;
 pub mod snapshot_intel;
 pub mod store;

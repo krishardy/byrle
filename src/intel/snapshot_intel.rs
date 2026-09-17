@@ -189,9 +189,10 @@ impl Intel for SnapshotIntel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intel::osv::{Affected, Ranged, Rows};
+    use crate::intel::load;
+    use crate::intel::providers::kev;
     use crate::intel::range::{End, Start};
-    use crate::intel::{kev, load};
+    use crate::intel::rows::{Affected, Ranged, Rows};
     use crate::test_support::tempdir;
 
     fn advisory(id: &str) -> Rows {

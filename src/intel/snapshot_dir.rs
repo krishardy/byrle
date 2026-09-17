@@ -365,7 +365,7 @@ fn lines<'a>(path: &Path, manifest: &'a str) -> Result<Vec<(&'a str, &'a str)>, 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::intel::osv::{Affected, Rows};
+    use crate::intel::rows::{Affected, Rows};
     use crate::test_support::tempdir;
     use std::time::{Duration, SystemTime};
 

@@ -2983,7 +2983,7 @@ mod tests {
                     taken_at: "2026-09-17T00:00:00Z".to_owned(),
                     sources: Vec::new(),
                     streams: vec![crate::intel::refresh::StreamDigest {
-                        stream: crate::intel::refresh::NPM_STREAM.to_owned(),
+                        stream: crate::intel::providers::osv::bundle::NPM_STREAM.to_owned(),
                         sha256: "aa".to_owned(),
                         etag: None,
                         last_modified: None,

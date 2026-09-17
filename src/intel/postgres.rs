@@ -5,11 +5,11 @@
 //! runtime one. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
 
 use super::history::{Ingestion, NotLoaded};
-use super::kev;
 use super::load::{self, Encoded, Fetch, Kind};
-use super::osv::Rows;
+use super::providers::kev;
 use super::range::Interval;
 use super::refresh::StreamDigest;
+use super::rows::Rows;
 use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
 use sqlx::{PgConnection, PgPool};
 use std::collections::HashMap;

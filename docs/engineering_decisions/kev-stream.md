@@ -1,6 +1,6 @@
 # The CISA KEV catalogue is a source of its own, joined at lookup
 
-- **Status:** Implemented. `src/intel/kev.rs`, `migrations/0003_exploited.sql`,
+- **Status:** Implemented. `src/intel/providers/kev.rs`, `migrations/0003_exploited.sql`,
   `load::encode_exploited`, `PgIntel::replace`, `SnapshotIntel::read`,
   `enforce::unenforceable`, `waharoa refresh`.
 - **Related:** [alias-matching](alias-matching.md), [snapshot-identity](snapshot-identity.md),

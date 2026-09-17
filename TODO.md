@@ -286,8 +286,8 @@ That is the failure mode every item below should be brought to.
       | Stream | npm binding |
       |---|---|
       | OSV | `NPM_BUNDLE = .../osv-vulnerabilities/npm/all.zip`, stream `osv/npm` |
-      | Datadog | `MANIFEST = .../samples/npm/manifest.json`, stream `datadog/npm`, plus `ecosystem: Ecosystem::Npm` at `datadog.rs:93` |
-      | GitHub | `securityVulnerabilities(ecosystem: NPM, ...)` in the query, and `ecosystem: NPM.to_owned()` at `github.rs:234,241,249` |
+      | Datadog | `MANIFEST = .../samples/npm/manifest.json`, stream `datadog/npm`, plus `ecosystem: Ecosystem::Npm` in `providers/datadog.rs` |
+      | GitHub | `securityVulnerabilities(ecosystem: NPM, ...)` in the query, and `ecosystem: NPM.to_owned()` three times in `providers/github.rs` |
       | KEV | `Scope::Served`, which follows `ecosystem::TABLE` |
 
       The data exists upstream. Both answered 206 to a range request:
@@ -427,7 +427,7 @@ That is the failure mode every item below should be brought to.
       | Where | What | Why it stayed |
       |---|---|---|
       | `proxy.rs` | the `match` arms in `upstream_url` and `handle`'s `match document`, each one call into the ecosystem module | each picks a `Proxy` field per ecosystem, or returns early |
-      | `intel/osv.rs`, `datadog.rs`, `github.rs`, `kev.rs` | npm-only stream bindings | the directory is per **source**, and step 4 makes each source per-ecosystem rather than moving the file |
+      | `intel/providers/` | npm-only stream bindings | the directory is per **provider**, and step 4 makes each provider read more than npm rather than moving the file |
       | `doctor.rs` | finding text naming `npm ci` and "every client except npm" | measured npm behaviour, reported as such |
       | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_PACKUMENT_BYTES` and the other variable names | configuration an operator already sets |
       | `identity.rs`, `route.rs` | `Ecosystem::Npm`, `Ecosystem::PyPI`, `DocumentKind::Packument`, `DocumentKind::SimpleIndex` | the enums that name each ecosystem and its document |
