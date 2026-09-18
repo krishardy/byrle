@@ -24,6 +24,7 @@ pub mod pypi;
 use crate::doctor::Client;
 use crate::env::{Env, EnvError};
 use crate::identity::{Ecosystem, PackageKey};
+use crate::intel::range::VersionOrder;
 use crate::intel::stream::{self, Stream};
 use crate::lockfile::{Lockfile, Unread};
 use crate::policy::facts::PublishTimes;
@@ -196,6 +197,9 @@ pub struct Registry {
 
     /// What a metadata request answers when no intel stream covers this ecosystem.
     pub uncovered_metadata: UncoveredMetadata,
+
+    /// How this ecosystem's versions order, which advisory ranges are read by.
+    pub versions: VersionOrder,
 }
 
 impl Registry {
@@ -248,6 +252,7 @@ pub const NPM: Registry = Registry {
         path: "/",
     },
     uncovered_metadata: UncoveredMetadata::Refuse,
+    versions: VersionOrder::SemVer,
 };
 
 pub const PYPI: Registry = Registry {
@@ -280,6 +285,7 @@ pub const PYPI: Registry = Registry {
     // the message it gives for a 404. It reports a file 503 as `too many 503 error
     // responses`. Measured with pip 26.1.1 on 2026-09-18: pypi-index-filtering.md.
     uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
+    versions: VersionOrder::Pep440,
 };
 
 /// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row

@@ -40,6 +40,9 @@ pub const SOURCE: &str = "osv";
 
 const NPM: &str = crate::identity::Ecosystem::Npm.as_str();
 
+/// How npm's versions order, which every range here is read by.
+const ORDER: range::VersionOrder = crate::ecosystem::NPM.versions;
+
 /// Why a record produced no rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skipped {
@@ -231,7 +234,7 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
 
         let (mut intervals, mut every, mut refused) = (BTreeSet::new(), false, 0);
         for r in &entry.ranges {
-            match range::intervals(r.kind.as_deref(), &r.events) {
+            match range::intervals(ORDER, r.kind.as_deref(), &r.events) {
                 Ok(found) => {
                     for interval in found {
                         every |= interval.is_every_version();
@@ -255,7 +258,7 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
         if refused > 0 || (entry.versions.is_empty() && intervals.is_empty()) {
             unexpressed += 1;
         }
-        let listed = entry.versions.iter().map(|v| range::stored(v));
+        let listed = entry.versions.iter().map(|v| range::stored(ORDER, v));
         affected.extend(listed.map(|v| row(Some(&v))));
         ranges.extend(intervals.into_iter().map(|interval| Ranged {
             ecosystem: NPM.to_owned(),

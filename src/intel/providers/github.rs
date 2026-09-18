@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
-use crate::intel::range::{End, Interval, Start, stored};
+use crate::intel::range::{End, Interval, Start, VersionOrder, stored};
 use crate::intel::rows::{Affected, Ranged, Rows, band_ceiling};
 
 pub const SOURCE: &str = "github";
@@ -29,6 +29,9 @@ pub const MAX_BYTES: usize = 64 << 20;
 pub const PAGE: usize = 100;
 
 const NPM: &str = crate::identity::Ecosystem::Npm.as_str();
+
+/// How npm's versions order, which every bound here is read by.
+const ORDER: VersionOrder = crate::ecosystem::NPM.versions;
 
 /// The query `waharoa refresh` sends, once per page.
 ///
@@ -156,16 +159,16 @@ fn bounds(range: &str) -> Bounds {
     for part in range.split(',') {
         let part = part.trim();
         if let Some(v) = part.strip_prefix(">=") {
-            start = Start::Introduced(stored(v.trim()));
+            start = Start::Introduced(stored(ORDER, v.trim()));
         } else if let Some(v) = part.strip_prefix('>') {
             // `> 4.0.2` says 4.0.2 is the last version not affected.
-            start = Start::After(stored(v.trim()));
+            start = Start::After(stored(ORDER, v.trim()));
         } else if let Some(v) = part.strip_prefix("<=") {
-            end = End::LastAffected(stored(v.trim()));
+            end = End::LastAffected(stored(ORDER, v.trim()));
         } else if let Some(v) = part.strip_prefix('<') {
-            end = End::Fixed(stored(v.trim()));
+            end = End::Fixed(stored(ORDER, v.trim()));
         } else if let Some(v) = part.strip_prefix('=') {
-            return Bounds::Exact(stored(v.trim()));
+            return Bounds::Exact(stored(ORDER, v.trim()));
         } else {
             return Bounds::Unexpressed;
         }

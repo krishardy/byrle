@@ -28,6 +28,7 @@
 //! | `wire.rs` | the index as PyPI serves it, and the cleaned form |
 //! | `normalize.rs` | the cleaned form to [`crate::record::PackageMetadata`] |
 //! | `inspect.rs` | reading a forwarded index and keeping its records |
+//! | `version.rs` | PEP 440 versions and their order |
 //! | `rewrite.rs` | removing refused versions from an index and pointing its files at the proxy |
 //! | `transport.rs` | fetching an index on the proxy's own behalf |
 //! | `error.rs` | what can go wrong reading one, and fetching one |
@@ -40,6 +41,7 @@ pub mod normalize;
 pub mod paths;
 pub mod rewrite;
 pub mod transport;
+pub mod version;
 pub mod wire;
 
 pub use error::PypiError;
