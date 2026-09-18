@@ -250,18 +250,28 @@ impl Upstreams {
     pub fn bases(&self) -> impl Iterator<Item = &str> {
         self.0.values().map(String::as_str)
     }
+
+    /// Each ecosystem and its upstream base, in ecosystem order.
+    pub fn iter(&self) -> impl Iterator<Item = (Ecosystem, &str)> {
+        self.0
+            .iter()
+            .map(|(ecosystem, base)| (*ecosystem, base.as_str()))
+    }
 }
 
 /// `npm=https://registry.npmjs.org pypi=https://pypi.org/simple`.
 impl std::fmt::Display for Upstreams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let written: Vec<String> = self
-            .0
-            .iter()
-            .map(|(ecosystem, base)| format!("{ecosystem}={base}"))
-            .collect();
-        f.write_str(&written.join(" "))
+        f.write_str(&written(self.iter()))
     }
+}
+
+/// `npm=<base> pypi=<base>`, the form the startup log and `doctor` print upstreams in.
+pub fn written<'a>(upstreams: impl Iterator<Item = (impl std::fmt::Display, &'a str)>) -> String {
+    let written: Vec<String> = upstreams
+        .map(|(ecosystem, base)| format!("{ecosystem}={base}"))
+        .collect();
+    written.join(" ")
 }
 
 fn trimmed(base: &str) -> String {

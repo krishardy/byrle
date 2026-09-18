@@ -368,6 +368,10 @@ mod tests {
         let health = started.proxy.health();
         assert_eq!(health.upstream, "https://npm.mirror.example");
         assert_eq!(
+            health.upstreams.get("pypi").map(String::as_str),
+            Some("https://pypi.mirror.example/simple")
+        );
+        assert_eq!(
             started.proxy.upstreams().get(Ecosystem::PyPI),
             "https://pypi.mirror.example/simple"
         );
