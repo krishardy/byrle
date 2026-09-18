@@ -163,15 +163,13 @@ such as `artifact requested, no metadata seen for it`. "Packument" stays where o
 meant: `DocumentKind::Packument`, the npm arm of `handle`, and `publish_times_for`'s
 full-packument fetch.
 
-Three external names keep the old word, and a fourth its npm-only meaning, because changing
-them breaks a configuration or a reader from another build:
+Two external names keep the old word, because changing them breaks an operator's
+configuration:
 
 | Name | Kind |
 |---|---|
 | `WAHAROA_MAX_PACKUMENT_BYTES` | environment variable |
 | `WAHAROA_MAX_CONCURRENT_PACKUMENTS` | environment variable |
-| `packuments_held` | `/-/waharoa/health` JSON field, `Health::packages_held` in Rust |
-| `upstream` | `/-/waharoa/health` JSON field, npm's upstream. `upstreams` beside it has every ecosystem's since 2026-09-19 |
 
 ## The resolver looking is not the client installing
 
