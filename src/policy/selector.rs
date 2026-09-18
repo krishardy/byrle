@@ -695,6 +695,21 @@ mod tests {
                 "`{version}` is one version"
             );
         }
+        // PEP 440 specifiers each carry one of the operators, and a PEP 440 version,
+        // epoch and post-release included, carries none.
+        for version in ["~=1.4", "!=1.4", "===1.4", "==1.4.*", ">=1.4,<2"] {
+            let error = Canonical::of(&sel("pypi", Some("x"), Some(version), None)).unwrap_err();
+            assert!(
+                matches!(error, SelectorError::VersionRange(_)),
+                "`{version}`: {error}"
+            );
+        }
+        for version in ["1!2.0", "1.0-1", "1.0.post1", "1.0rc1", "1.0+ubuntu.1"] {
+            assert!(
+                Canonical::of(&sel("pypi", Some("pkg"), Some(version), None)).is_ok(),
+                "`{version}` is one version"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------
