@@ -39,7 +39,8 @@ in the same place for both:
 | `wire.rs` | the packument's serde targets | the index's serde targets, plus `Project`, the cleaned form |
 | `normalize.rs` | packument to `PackageMetadata` | `Project` to `PackageMetadata` |
 | `transport.rs` | `Client`, fetching a packument; `metadata` for the proxy's own fetch | `Client`, fetching an index; `metadata` for the proxy's own fetch |
-| `inspect.rs` | `read_packument`: normalising a forwarded packument and keeping its records | `read_index`: the same for an index, and pointing its files at the proxy |
+| `inspect.rs` | `read_packument`: normalising a forwarded packument and keeping its records | `read_index`: the same for an index |
+| `rewrite.rs` | `rewrite_packument`: removing refused versions from a packument and pointing the rest at the proxy | `rewrite_index`: the same for an index. See [pypi-index-filtering](pypi-index-filtering.md) |
 | `error.rs` | `NormalizeError`, `FetchError` | `PypiError`, `FetchError` |
 
 npm has two more files, and PyPI has no counterpart and no empty file standing in for
@@ -47,7 +48,6 @@ either:
 
 | File | npm | Why PyPI has none |
 |---|---|---|
-| `rewrite.rs` | `rewrite_packument`: removing refused versions from a packument and pointing the rest at the proxy | `proxy::handle` returns before any filtering for a simple index, because filtering one is range resolution rather than a refusal a client can act on |
 | `clients.rs` | npm, pnpm, yarn and bun as `doctor` checks them | pip and uv are not checked yet |
 | `lockfile.rs` | reading `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml` and `bun.lock` | `requirements.txt`, `uv.lock` and `poetry.lock` are not read yet, and `lockfile::read` refuses them by name |
 

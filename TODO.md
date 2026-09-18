@@ -419,15 +419,14 @@ That is the failure mode every item below should be brought to.
       PyPI stream.
 
       Each directory is `mod.rs`, `paths.rs`, `wire.rs`, `normalize.rs`, `transport.rs` and
-      `error.rs`. npm has a seventh, `rewrite.rs`; PyPI gets no counterpart because
-      `proxy::handle` returns before any filtering for a simple index.
+      `error.rs`, and both have `rewrite.rs`.
 
       What still names npm or PyPI outside `src/ecosystem/`, after the moves on
       2026-09-17:
 
       | Where | What | Why it stayed |
       |---|---|---|
-      | `proxy.rs` | the `match` arms in `upstream_url` and `handle`'s `match document`, each one call into the ecosystem module | each picks a `Proxy` field per ecosystem, or returns early |
+      | `proxy.rs` | the `match` arms in `upstream_url` and `handle`'s `match document`, each one call into the ecosystem module | each picks a `Proxy` field or a reader per ecosystem |
       | `intel/providers/` | npm-only stream bindings | the directory is per **provider**, and step 4 makes each provider read more than npm rather than moving the file |
       | `doctor.rs` | finding text naming `npm ci` and "every client except npm" | measured npm behaviour, reported as such |
       | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_PACKUMENT_BYTES` and the other variable names | configuration an operator already sets |
@@ -438,7 +437,6 @@ That is the failure mode every item below should be brought to.
 
       | Where | What is ecosystem-specific |
       |---|---|
-      | `proxy.rs` `handle`, `match document` | the `SimpleIndex` arm calls `pypi::read_index` and returns; only a packument reaches intel and `policy_refused_versions`, so a PyPI index is not filtered |
       | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher` |
       | `intel/range.rs`, `intel/store.rs` `PackageIntel::for_version` | every version and range is read as SemVer; a PEP 440 version matches no range |
       | `identity.rs` `PackageKey::from_registry_name` | npm's `@scope/name` split runs for every ecosystem, with the error "not a valid npm package name"; `npm/paths.rs::key_from_name` holds the other half of the rule |
@@ -454,7 +452,10 @@ That is the failure mode every item below should be brought to.
       | `record.rs` | `DocumentDetail::{Abbreviated, Full}` and `Provenance`'s fields are npm packument concepts in the shared record |
       | `defer.rs` | `Scope::{Packument, Tarball}` names generic targets in npm's words |
 
-      Fixed 2026-09-18: the startup log's setup lines come from `Registry::setup`;
+      Fixed 2026-09-18: a simple index goes through `intel_for` and
+      `policy_refused_versions`, and `pypi::rewrite::rewrite_index` removes refused versions
+      ([pypi-index-filtering](docs/engineering_decisions/pypi-index-filtering.md));
+      the startup log's setup lines come from `Registry::setup`;
       `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
       constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.
 

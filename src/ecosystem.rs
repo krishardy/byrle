@@ -114,6 +114,17 @@ pub enum PublishTimeSource {
     FullPackument,
 }
 
+/// What a metadata request answers when the intel snapshot has no stream for the ecosystem.
+///
+/// An artifact request answers 503 either way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UncoveredMetadata {
+    /// 503.
+    Refuse,
+    /// The document, with the versions removed that the checks needing no intel refuse.
+    FilterWithoutIntel,
+}
+
 /// How an operator points this ecosystem's main client at the proxy.
 pub struct Setup {
     /// The client.
@@ -182,6 +193,9 @@ pub struct Registry {
 
     /// What the startup log tells an operator to run.
     pub setup: Setup,
+
+    /// What a metadata request answers when no intel stream covers this ecosystem.
+    pub uncovered_metadata: UncoveredMetadata,
 }
 
 impl Registry {
@@ -233,6 +247,7 @@ pub const NPM: Registry = Registry {
         command: npm::clients::NPM.set_registry,
         path: "/",
     },
+    uncovered_metadata: UncoveredMetadata::Refuse,
 };
 
 pub const PYPI: Registry = Registry {
@@ -261,6 +276,10 @@ pub const PYPI: Registry = Registry {
         command: "pip config set global.index-url",
         path: pypi::SIMPLE,
     },
+    // pip retries an index 503 six times and then reports `No matching distribution found`,
+    // the message it gives for a 404. It reports a file 503 as `too many 503 error
+    // responses`. Measured with pip 26.1.1 on 2026-09-18: pypi-index-filtering.md.
+    uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
 };
 
 /// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row

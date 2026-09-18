@@ -39,9 +39,10 @@ ERROR `pypi` is served with no stream providing match, so a policy answers 503 f
 
 ## What is refused
 
-A PyPI decision is made when a file is fetched, so a file request gets the 503. The simple
-index is still served: nothing is decided on it and it is not filtered. `pip install`
-therefore resolves and then fails on the first file.
+A PyPI file request gets the 503. The simple index is served, filtered by the checks that
+need no intel, because pip reports an index 503 as `No matching distribution found`.
+`pip install` therefore resolves and then fails on the first file. See
+[pypi-index-filtering](pypi-index-filtering.md).
 
 An npm packument is decided on, so under a gap it gets the 503 too. A refresh that cannot
 load `osv/npm` loads nothing, so a snapshot without an npm `match` and `malware` stream is
