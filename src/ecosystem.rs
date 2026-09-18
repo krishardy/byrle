@@ -209,6 +209,15 @@ pub struct Registry {
     pub canonical_name: fn(&str) -> String,
 }
 
+/// `name` as `ecosystem`, a purl type, compares it: a PyPI name PEP 503 normalised, an npm
+/// name as written. As written for an ecosystem with no row, which nothing here serves.
+pub fn canonical_name(ecosystem: &str, name: &str) -> String {
+    match ecosystem.parse::<Ecosystem>() {
+        Ok(known) => (of(known).canonical_name)(name),
+        Err(_) => name.to_owned(),
+    }
+}
+
 /// See [`Registry::split_name`].
 pub type SplitName = fn(&str) -> Result<(Option<String>, String), IdentityError>;
 

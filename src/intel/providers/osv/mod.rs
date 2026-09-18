@@ -245,11 +245,7 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
             }
         }
 
-        let row = |version: Option<&String>| Affected {
-            ecosystem: NPM.to_owned(),
-            name: package.name.clone(),
-            version: version.cloned(),
-        };
+        let row = |version: Option<&String>| Affected::new(NPM, &package.name, version.cloned());
         // Every version subsumes everything else the entry says, a refused range included.
         if every {
             affected.insert(row(None));
@@ -260,11 +256,11 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
         }
         let listed = entry.versions.iter().map(|v| range::stored(ORDER, v));
         affected.extend(listed.map(|v| row(Some(&v))));
-        ranges.extend(intervals.into_iter().map(|interval| Ranged {
-            ecosystem: NPM.to_owned(),
-            name: package.name.clone(),
-            interval,
-        }));
+        ranges.extend(
+            intervals
+                .into_iter()
+                .map(|interval| Ranged::new(NPM, &package.name, interval)),
+        );
     }
 
     if npm_entries == 0 {
