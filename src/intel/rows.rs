@@ -35,6 +35,19 @@ pub struct Affected {
     pub version: Option<String>,
 }
 
+impl Affected {
+    /// A row for `name` as its source wrote it, stored as the ecosystem compares names, so
+    /// a lookup by a package key finds it: Datadog writes `SentinelOne` and GitHub
+    /// `jupyter_server`, and their PyPI keys are `sentinelone` and `jupyter-server`.
+    pub fn new(ecosystem: &str, name: &str, version: Option<String>) -> Self {
+        Self {
+            ecosystem: ecosystem.to_owned(),
+            name: crate::ecosystem::canonical_name(ecosystem, name),
+            version,
+        }
+    }
+}
+
 /// An interval of package versions an advisory is against. Never every version, which is
 /// an [`Affected`] with no version.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -42,6 +55,17 @@ pub struct Ranged {
     pub ecosystem: String,
     pub name: String,
     pub interval: Interval<String>,
+}
+
+impl Ranged {
+    /// A row for `name` as its source wrote it, stored as [`Affected::new`] stores one.
+    pub fn new(ecosystem: &str, name: &str, interval: Interval<String>) -> Self {
+        Self {
+            ecosystem: ecosystem.to_owned(),
+            name: crate::ecosystem::canonical_name(ecosystem, name),
+            interval,
+        }
+    }
 }
 
 /// The highest CVSS score a GitHub severity band covers, the qualitative ranges of CVSS v3.1:
@@ -55,5 +79,42 @@ pub fn band_ceiling(band: &str) -> Option<f64> {
         "HIGH" => Some(8.9),
         "CRITICAL" => Some(10.0),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::{Ecosystem, PackageKey};
+    use crate::intel::range::{End, Start};
+
+    /// A row is found by the key a request builds, however its source spelled the name.
+    /// The PyPI names are ones Datadog's and GitHub's PyPI data held on 2026-09-19.
+    #[test]
+    fn a_row_is_stored_under_the_name_its_package_key_looks_up() {
+        for (ecosystem, written) in [
+            (Ecosystem::PyPI, "SentinelOne"),
+            (Ecosystem::PyPI, "Roblox.-com"),
+            (Ecosystem::PyPI, "jupyter_server"),
+            (Ecosystem::PyPI, "GitPython"),
+            (Ecosystem::Npm, "JSONStream"),
+            (Ecosystem::Npm, "@babel/core"),
+        ] {
+            let key = PackageKey::from_registry_name(ecosystem, written).expect("a name");
+            let affected = Affected::new(ecosystem.as_str(), written, None);
+            let ranged = Ranged::new(
+                ecosystem.as_str(),
+                written,
+                Interval {
+                    start: Start::First,
+                    end: End::Fixed("2.0.0".to_owned()),
+                },
+            );
+            assert_eq!(affected.name, key.registry_name(), "{written}");
+            assert_eq!(ranged.name, key.registry_name(), "{written}");
+        }
+        assert_eq!(Affected::new("pypi", "GitPython", None).name, "gitpython");
+        assert_eq!(Affected::new("npm", "JSONStream", None).name, "JSONStream");
+        assert_eq!(Affected::new("cargo", "Serde", None).name, "Serde");
     }
 }

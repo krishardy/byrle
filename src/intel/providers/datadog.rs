@@ -92,11 +92,7 @@ fn record(name: String, versions: Option<Vec<String>>) -> Result<Rows, DatadogEr
     };
     let affected: BTreeSet<Affected> = versions
         .into_iter()
-        .map(|version| Affected {
-            ecosystem: crate::identity::Ecosystem::Npm.as_str().to_owned(),
-            name: name.clone(),
-            version,
-        })
+        .map(|version| Affected::new(crate::identity::Ecosystem::Npm.as_str(), &name, version))
         .collect();
     Ok(Rows {
         id,

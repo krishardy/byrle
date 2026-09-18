@@ -233,26 +233,15 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Rows>, GithubError> {
             let name = node.package.name;
             match node.range.as_deref().map(bounds) {
                 Some(Bounds::Exact(version)) => {
-                    rows.affected.insert(Affected {
-                        ecosystem: NPM.to_owned(),
-                        name,
-                        version: Some(version),
-                    });
+                    rows.affected
+                        .insert(Affected::new(NPM, &name, Some(version)));
                 }
                 Some(Bounds::Interval(interval)) => {
-                    rows.ranges.insert(Ranged {
-                        ecosystem: NPM.to_owned(),
-                        name,
-                        interval,
-                    });
+                    rows.ranges.insert(Ranged::new(NPM, &name, interval));
                 }
                 // No range given is every version, as OSV's `introduced: "0"` is.
                 None => {
-                    rows.affected.insert(Affected {
-                        ecosystem: NPM.to_owned(),
-                        name,
-                        version: None,
-                    });
+                    rows.affected.insert(Affected::new(NPM, &name, None));
                 }
                 Some(Bounds::Unexpressed) => rows.unexpressed += 1,
             }

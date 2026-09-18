@@ -36,6 +36,7 @@
 
 use super::Selector;
 use super::vers::{VersError, Versions};
+use crate::ecosystem::canonical_name;
 use crate::intel::range::VersionOrder;
 use std::fmt;
 
@@ -386,15 +387,6 @@ fn intersects<T>(value: Option<&T>, other: Option<&T>, share: fn(&T, &T) -> bool
 
 /// How a VERS string starts.
 const VERS: &str = "vers:";
-
-/// A name as `ecosystem` compares it, or as written for an ecosystem this build does not
-/// serve.
-fn canonical_name(ecosystem: &str, name: &str) -> String {
-    match ecosystem.parse::<crate::identity::Ecosystem>() {
-        Ok(known) => (crate::ecosystem::of(known).canonical_name)(name),
-        Err(_) => name.to_owned(),
-    }
-}
 
 /// The order `ecosystem`'s versions are read by.
 fn order_of(ecosystem: &str) -> Result<VersionOrder, SelectorError> {
