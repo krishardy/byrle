@@ -120,27 +120,19 @@ pub struct PackageKey {
 impl PackageKey {
     /// Build a key from a registry-reported package name.
     ///
-    /// Takes the npm-style name as the registry spells it, scope included
-    /// (`@babel/core`), and splits the scope into the purl namespace. Case is
-    /// preserved exactly; see the module docs for why that is not an oversight.
+    /// Takes the name as the registry spells it. How it splits into a purl namespace and a
+    /// name is the ecosystem's rule, the `split_name` of its row in
+    /// [`crate::ecosystem::TABLE`]: npm's `@babel/core` is the namespace `@babel` and the
+    /// name `core`, and a PyPI project has no namespace. Case is preserved exactly; see the
+    /// module docs for why that is not an oversight.
     pub fn from_registry_name(ecosystem: Ecosystem, name: &str) -> Result<Self, IdentityError> {
         let name = name.trim();
         if name.is_empty() {
             return Err(IdentityError::Malformed("empty package name".into()));
         }
-        let (namespace, bare) = match name.split_once('/') {
-            Some((scope, rest)) => {
-                if rest.is_empty() || rest.contains('/') {
-                    return Err(IdentityError::Malformed(format!(
-                        "`{name}` is not a valid npm package name"
-                    )));
-                }
-                (Some(scope.to_string()), rest.to_string())
-            }
-            None => (None, name.to_string()),
-        };
-        // Not a `return Err`: with the empty check above and the empty-`rest` check in
-        // the scoped arm, there is no input that reaches here with an empty `bare`. An
+        let (namespace, bare) = (crate::ecosystem::of(ecosystem).split_name)(name)?;
+        // Not a `return Err`: with the empty check above and each rule refusing an empty
+        // name after a namespace, there is no input that reaches here with an empty `bare`. An
         // unreachable error arm is a branch no test can ever cover, which makes it look
         // like a gap in the test suite instead of what it is.
         debug_assert!(!bare.is_empty(), "`{name}` produced an empty package name");
@@ -331,6 +323,16 @@ mod tests {
             malformed.to_string(),
             "malformed package identity: empty package name"
         );
+
+        let Err(unscoped) = PackageKey::from_registry_name(Ecosystem::Npm, "foo/bar") else {
+            panic!("an npm `/` needs an `@` scope");
+        };
+        assert!(unscoped.to_string().contains("a `/` needs an `@` scope"));
+
+        let Err(pypi) = PackageKey::from_registry_name(Ecosystem::PyPI, "a/b") else {
+            panic!("a PyPI project has no namespace");
+        };
+        assert!(pypi.to_string().contains("not a valid PyPI project name"));
 
         let Err(nested) = PackageKey::from_registry_name(Ecosystem::Npm, "@a/b/c") else {
             panic!("a second slash is not a scope");

@@ -23,7 +23,7 @@ pub mod pypi;
 
 use crate::doctor::Client;
 use crate::env::{Env, EnvError};
-use crate::identity::{Ecosystem, PackageKey};
+use crate::identity::{Ecosystem, IdentityError, PackageKey};
 use crate::intel::range::VersionOrder;
 use crate::intel::stream::{self, Stream};
 use crate::lockfile::{Lockfile, Unread};
@@ -200,14 +200,21 @@ pub struct Registry {
 
     /// How this ecosystem's versions order, which advisory ranges are read by.
     pub versions: VersionOrder,
+
+    /// A registry name as a purl namespace and name. [`PackageKey::from_registry_name`]
+    /// calls it after refusing an empty name.
+    pub split_name: SplitName,
 }
+
+/// See [`Registry::split_name`].
+pub type SplitName = fn(&str) -> Result<(Option<String>, String), IdentityError>;
 
 impl Registry {
     /// Whether this registry claims `path`.
     ///
     /// The query is dropped first, so `/simple/requests/?foo=1` is claimed. `/simple` and
     /// `/packages` without the trailing slash are npm packages by those names, and
-    /// `npm::key_from_name` no longer turns `/simple/requests` into
+    /// `npm::paths::split_name` no longer turns `/simple/requests` into
     /// `pkg:npm/simple/requests`, so nothing npm can serve lives under either prefix.
     pub fn serves(&self, path: &str) -> bool {
         let path = path.split('?').next().unwrap_or(path);
@@ -253,6 +260,7 @@ pub const NPM: Registry = Registry {
     },
     uncovered_metadata: UncoveredMetadata::Refuse,
     versions: VersionOrder::SemVer,
+    split_name: npm::paths::split_name,
 };
 
 pub const PYPI: Registry = Registry {
@@ -286,6 +294,7 @@ pub const PYPI: Registry = Registry {
     // responses`. Measured with pip 26.1.1 on 2026-09-18: pypi-index-filtering.md.
     uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
     versions: VersionOrder::Pep440,
+    split_name: pypi::paths::split_name,
 };
 
 /// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row

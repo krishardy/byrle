@@ -4,14 +4,14 @@ use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
-use crate::identity::PackageKey;
+use crate::identity::{Ecosystem, PackageKey};
 use crate::record::{
     Artifact, DocumentDetail, Maintainer, PackageMetadata, PackageRecord, Provenance,
     RegistrySignature, SkippedVersion, TrustedPublisher,
 };
 
 use super::error::NormalizeError;
-use super::paths::{key_from_name, tarball_filename};
+use super::paths::tarball_filename;
 use super::wire::{WireDist, WireMaintainer, WirePackument, WireVersion};
 
 /// Turn a packument body into records.
@@ -34,7 +34,8 @@ fn normalize_wire(
     wire: WirePackument,
     detail: DocumentDetail,
 ) -> Result<PackageMetadata, NormalizeError> {
-    let key = key_from_name(&wire.name).map_err(NormalizeError::Name)?;
+    let key =
+        PackageKey::from_registry_name(Ecosystem::Npm, &wire.name).map_err(NormalizeError::Name)?;
 
     let mut records = Vec::with_capacity(wire.versions.len());
     let mut skipped = Vec::new();
