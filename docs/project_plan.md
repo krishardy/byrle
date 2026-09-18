@@ -564,7 +564,7 @@ Specificity is a **strict subset relation**, not a heuristic score. A is more sp
 than B if the set of packages A matches is a strict subset of B's:
 
 - `@mycompany/foo` ⊂ `@mycompany/*` ⊂ `*`
-- exact version ⊂ any version
+- exact version ⊂ a VERS range holding it ⊂ any version
 - selector + predicate (`has_install_scripts: true`) ⊂ same selector without it
 
 Decidable because the predicate vocabulary is closed, a direct payoff of the hand-rolled
@@ -599,9 +599,8 @@ whose direction cannot be proven is not one to admit.
 
 #### Version ranges
 
-Resolved by the **normalizer** into a concrete match set before the policy engine sees
-them, keeping semver / PEP 440 / cargo range syntax in the adapter layer. Validate against
-the PyPI adapter before freezing the interface.
+Written as VERS in every ecosystem and ordered by each ecosystem's own version rules. See
+[policy-version-ranges](engineering_decisions/policy-version-ranges.md).
 
 ### Policy impact analysis
 

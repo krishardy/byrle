@@ -11,15 +11,27 @@ use super::error::PypiError;
 use super::wire::Kind;
 use super::{FILES, SIMPLE_JSON};
 
-/// Split a project name for its purl. A PyPI project has no namespace, so a name with a `/`
-/// is not one.
+/// Split a project name for its purl: no namespace, and the name [`normalise`]d, so one
+/// project is one key however it is spelled. A PyPI project has no namespace, so a name with
+/// a `/` is not one, and neither is one with nothing but separators.
 pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError> {
-    if name.contains('/') {
+    let normalised = normalise(name);
+    if name.contains('/') || normalised.is_empty() {
         return Err(IdentityError::Malformed(format!(
             "`{name}` is not a valid PyPI project name"
         )));
     }
-    Ok((None, name.to_owned()))
+    Ok((None, normalised))
+}
+
+/// A name in a policy selector, [`normalise`]d. A trailing separator is kept as `-`, so the
+/// prefix `zope.` in `zope.*` covers `zope-interface` and not `zopefoo`.
+pub fn canonical_name(name: &str) -> String {
+    let mut normalised = normalise(name);
+    if name.ends_with(['-', '_', '.']) {
+        normalised.push('-');
+    }
+    normalised
 }
 
 /// A project name as PEP 503 normalises it: lowercased, with every run of `-`, `_` and `.`

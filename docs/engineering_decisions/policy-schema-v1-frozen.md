@@ -18,7 +18,7 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 | Level | Keys |
 |---|---|
 | top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `denials`, `packages`, `advisory_scores` |
-| a `denials` entry | `purl`, `reason` |
+| a `denials` entry | `purl`, `version`, `reason` |
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
@@ -30,7 +30,8 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 | `cooldown_days` | whole days, 0 or more | 7 |
 | `max_cvss` | a number. At or below is allowed | 6.9 |
 | `install_scripts`, `kev` | `block` or `allow` | `block` |
-| `denials[].purl` | a purl with an exact version | required |
+| `denials[].purl` | a purl, with `@version` unless `version` is set | required |
+| `denials[].version` | a VERS range, when the purl has no `@version` | none |
 | `reason` | text | required |
 | `expires` | a date, `YYYY-MM-DD`, within the expiry ceiling | none |
 | `permanent` | `true` or `false` | `false` |
@@ -38,7 +39,7 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 | `match.ecosystem` | an ecosystem name | required |
 | `match.name` | `*`, `prefix*` or a literal | none |
 | `match.purl` | a purl | none |
-| `match.version` | an exact version | none |
+| `match.version` | an exact version, or a VERS range whose type is `match.ecosystem` | none |
 | `match.has_install_scripts` | `true` or `false` | none |
 | `set.vuln_advisory_ids` | advisory ids, each matched against an advisory's id and its aliases | empty |
 | `advisory_scores[].advisory_id` | an advisory id, matched against an advisory's id and its aliases | required |
@@ -69,6 +70,10 @@ four defaults. `the_shipped_example_parses` loads `examples/policy.yaml`.
 alias, `GHSA-` and `MAL-` ids included, so version 1 never carried a name that says CVE.
 
 ## Added after the freeze, before deployment
+
+`denials[].version` was added to `version: 1` on 2026-09-19, and `match.version` took a VERS
+range as well as an exact version. No version 1 policy had been deployed. See
+[policy-version-ranges](policy-version-ranges.md).
 
 `advisory_scores` was added to `version: 1` on 2026-09-15. The user chose this over opening
 `version: 2`, as no version 1 policy had been deployed. `max_cvss` refuses a non-malware

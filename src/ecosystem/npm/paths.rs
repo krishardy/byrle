@@ -9,6 +9,12 @@ use crate::route::{DocumentKind, RequestTarget};
 
 use super::{ABBREVIATED_ACCEPT, FULL_ACCEPT};
 
+/// A name in a policy selector, as written. npm does not fold case: names with capitals,
+/// such as `JSONStream`, were published before new names had to be lowercase.
+pub fn canonical_name(name: &str) -> String {
+    name.to_owned()
+}
+
 /// Split an npm name into its scope and its name: `@babel/core` is `@babel` and `core`.
 ///
 /// An npm name carries a `/` only when it is scoped, and a scope always starts with `@`.
