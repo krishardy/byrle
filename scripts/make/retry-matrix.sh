@@ -54,7 +54,7 @@ fi
 start_proxy() {
     local log="$1" spec="$2"
     WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_DEFER_TEST="$spec" \
-        cargo run --quiet --manifest-path "$repo_root/Cargo.toml" >"$log" 2>&1 &
+        cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
         grep -q "waharoa listening" "$log" && return 0

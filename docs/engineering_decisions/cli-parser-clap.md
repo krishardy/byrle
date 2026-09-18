@@ -30,6 +30,9 @@ Since 2026-09-14 `policy diff` has `--from-date` and `--to-date` in place of `--
 refused `policy diff` command line exits 4, because 2 is its tightening bit. See
 [policy-diff-dates-and-exit-bits](policy-diff-dates-and-exit-bits.md).
 
+Since 2026-09-18 the proxy runs only under `waharoa daemon`. A command line with no command
+prints the help and exits 2, where before it started the proxy.
+
 No test exercised the dispatch. `cli::tests` now covers each row.
 
 ## Candidates

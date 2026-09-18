@@ -14,16 +14,18 @@ use std::path::PathBuf;
 #[command(
     name = "waharoa",
     version,
-    about = "Dependency firewall. With no command, runs the proxy.",
+    about = "Dependency firewall",
     after_help = crate::env::help()
 )]
 pub struct Cli {
     #[command(subcommand)]
-    pub command: Option<Command>,
+    pub command: Command,
 }
 
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum Command {
+    /// Run the proxy in the foreground
+    Daemon,
     /// Check whether this machine installs through the proxy
     Doctor,
     /// Why a package is allowed or refused
@@ -169,7 +171,7 @@ mod tests {
 
     fn diff(args: &[&str]) -> Result<Diff, clap::Error> {
         match parse(args)?.command {
-            Some(Command::Policy(PolicyCommand::Diff(diff))) => Ok(diff),
+            Command::Policy(PolicyCommand::Diff(diff)) => Ok(diff),
             other => panic!("{args:?} parsed as {other:?}"),
         }
     }
@@ -191,45 +193,44 @@ mod tests {
     }
 
     #[test]
-    fn no_command_runs_the_proxy() {
-        assert_eq!(parse(&[]).expect("parses"), Cli { command: None });
+    fn no_command_prints_the_help_and_exits_2() {
+        let refused = stops(&[], ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand);
+        assert_eq!(refused.exit_code(), 2);
     }
 
     #[test]
     fn each_command_parses_to_its_arguments() {
-        assert_eq!(
-            parse(&["doctor"]).expect("parses").command,
-            Some(Command::Doctor)
-        );
+        assert_eq!(parse(&["daemon"]).expect("parses").command, Command::Daemon);
+        assert_eq!(parse(&["doctor"]).expect("parses").command, Command::Doctor);
         assert_eq!(
             parse(&["refresh"]).expect("parses").command,
-            Some(Command::Refresh)
+            Command::Refresh
         );
         assert_eq!(
             parse(&["intel", "history"]).expect("parses").command,
-            Some(Command::Intel(IntelCommand::History(History { limit: 20 })))
+            Command::Intel(IntelCommand::History(History { limit: 20 }))
         );
         assert_eq!(
             parse(&["intel", "history", "--limit", "1"])
                 .expect("parses")
                 .command,
-            Some(Command::Intel(IntelCommand::History(History { limit: 1 })))
+            Command::Intel(IntelCommand::History(History { limit: 1 }))
         );
         assert_eq!(
             parse(&["explain", "--policy"]).expect("parses").command,
-            Some(Command::Explain(Explain {
+            Command::Explain(Explain {
                 policy: true,
                 purl: None
-            }))
+            })
         );
         assert_eq!(
             parse(&["explain", "pkg:npm/lodash@4.17.21"])
                 .expect("parses")
                 .command,
-            Some(Command::Explain(Explain {
+            Command::Explain(Explain {
                 policy: false,
                 purl: Some("pkg:npm/lodash@4.17.21".to_owned())
-            }))
+            })
         );
         assert_eq!(
             diff(&["policy", "diff", "a.yaml", "b.yaml"]).expect("parses"),
@@ -253,11 +254,11 @@ mod tests {
             ])
             .expect("parses")
             .command,
-            Some(Command::Policy(PolicyCommand::Check(Check {
+            Command::Policy(PolicyCommand::Check(Check {
                 path: "p.yaml".into(),
                 as_of: Some(jiff::civil::date(2026, 1, 1)),
                 strict: true,
-            })))
+            }))
         );
     }
 
