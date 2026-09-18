@@ -58,13 +58,6 @@ enum Default {
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
-/// npm's public registry, which `npm` also names for its own origin rules.
-pub const DEFAULT_UPSTREAM_NPM: &str = crate::ecosystem::npm::DEFAULT_REGISTRY;
-
-/// PyPI's simple index. Not the host its files come from: the index gives each file's URL
-/// in full, and `pypi::DEFAULT_FILES` names where they land.
-pub const DEFAULT_UPSTREAM_PYPI: &str = crate::ecosystem::pypi::INDEX;
-
 /// Default ceiling on a packument body, applied both to the bytes buffered and to the
 /// bytes decompression is allowed to produce.
 ///
@@ -119,14 +112,15 @@ pub const DEFAULT_LOG_FILTER: &str = "waharoa=info";
 
 pub const LISTEN: Var = runtime("WAHAROA_LISTEN", "", &["address to listen on"])
     .with_default(Default::Text(DEFAULT_LISTEN));
+/// Defaults to npm's public registry.
 pub const UPSTREAM_NPM: Var = runtime("WAHAROA_UPSTREAM_NPM", "", &["npm registry to forward to"])
-    .with_default(Default::Text(DEFAULT_UPSTREAM_NPM));
+    .with_default(Default::Text(crate::ecosystem::npm::DEFAULT_REGISTRY));
 pub const UPSTREAM_PYPI: Var = runtime(
     "WAHAROA_UPSTREAM_PYPI",
     "",
     &["PyPI simple index to forward to"],
 )
-.with_default(Default::Text(DEFAULT_UPSTREAM_PYPI));
+.with_default(Default::Text(crate::ecosystem::pypi::INDEX));
 pub const PUBLIC_URL: Var = runtime(
     "WAHAROA_PUBLIC_URL",
     "",
@@ -367,6 +361,14 @@ impl Var {
         Var { default, ..self }
     }
 
+    /// The default, when it is text.
+    pub fn default_text(&self) -> Option<&'static str> {
+        match self.default {
+            Default::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
     /// Whether `--help` lists it: what this build of the binary reads.
     fn listed(&self) -> bool {
         match self.kind {
@@ -517,29 +519,20 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.text_or(LISTEN, DEFAULT_LISTEN)
     }
 
-    /// The npm registry to forward to.
+    /// Where each ecosystem's requests are forwarded: the row's `upstream` variable, or its
+    /// default.
     ///
-    /// An http or https URL with a host. The value is returned as given, path included, so a
-    /// registry served under a path keeps it.
-    pub fn upstream_npm(&self) -> Result<String, EnvError> {
-        self.upstream(UPSTREAM_NPM, DEFAULT_UPSTREAM_NPM)
-    }
-
-    /// The PyPI simple index to forward to. Checked the same way as the npm registry.
-    pub fn upstream_pypi(&self) -> Result<String, EnvError> {
-        self.upstream(UPSTREAM_PYPI, DEFAULT_UPSTREAM_PYPI)
-    }
-
-    fn upstream(&self, var: Var, default: &str) -> Result<String, EnvError> {
-        let value = self.text_or(var, default)?;
-        match crate::origin::normalise_origin(&value) {
-            Ok(_) => Ok(value),
-            Err(e) => Err(EnvError::new(
-                var,
-                value,
-                format!("is not usable: {}", e.reason),
-            )),
+    /// Each is an http or https URL with a host. The value is kept as given, path included,
+    /// so a registry served under a path keeps it.
+    pub fn upstreams(&self) -> Result<crate::ecosystem::Upstreams, EnvError> {
+        let mut upstreams = crate::ecosystem::Upstreams::defaults();
+        for registry in crate::ecosystem::TABLE {
+            if let Some(value) = self.text(registry.upstream)? {
+                upstreams =
+                    upstreams.with(registry.ecosystem, &upstream(registry.upstream, value)?);
+            }
         }
+        Ok(upstreams)
     }
 
     pub fn public_url(&self) -> Result<Option<String>, EnvError> {
@@ -670,6 +663,18 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     }
 }
 
+/// `value` for `var`, refused unless it is an http or https URL with a host.
+fn upstream(var: Var, value: String) -> Result<String, EnvError> {
+    match crate::origin::normalise_origin(&value) {
+        Ok(_) => Ok(value),
+        Err(e) => Err(EnvError::new(
+            var,
+            value,
+            format!("is not usable: {}", e.reason),
+        )),
+    }
+}
+
 /// Environments other modules' tests read, built here so no variable name is written there.
 #[cfg(test)]
 pub(crate) mod testing {
@@ -715,6 +720,7 @@ pub(crate) mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::identity::Ecosystem;
 
     use super::testing::with;
 
@@ -722,8 +728,14 @@ mod tests {
     fn unset_is_the_default() {
         let env = with(&[]);
         assert_eq!(env.listen().unwrap(), DEFAULT_LISTEN);
-        assert_eq!(env.upstream_npm().unwrap(), DEFAULT_UPSTREAM_NPM);
-        assert_eq!(env.upstream_pypi().unwrap(), DEFAULT_UPSTREAM_PYPI);
+        assert_eq!(
+            env.upstreams().unwrap().get(Ecosystem::Npm),
+            crate::ecosystem::npm::DEFAULT_REGISTRY
+        );
+        assert_eq!(
+            env.upstreams().unwrap().get(Ecosystem::PyPI),
+            crate::ecosystem::pypi::INDEX
+        );
         assert_eq!(env.public_url().unwrap(), None);
         assert!(env.artifact_origins().unwrap().is_empty());
         assert!(env.allow_direct_origins().unwrap().is_empty());
@@ -808,9 +820,12 @@ mod tests {
             (BUN_INSTALL_CACHE_DIR, "/cache"),
         ]);
         assert_eq!(env.listen().unwrap(), "0.0.0.0:9000");
-        assert_eq!(env.upstream_npm().unwrap(), "https://registry.example");
         assert_eq!(
-            env.upstream_pypi().unwrap(),
+            env.upstreams().unwrap().get(Ecosystem::Npm),
+            "https://registry.example"
+        );
+        assert_eq!(
+            env.upstreams().unwrap().get(Ecosystem::PyPI),
             "https://mirror.example/simple"
         );
         assert_eq!(
@@ -928,15 +943,13 @@ mod tests {
             ("ftp://x", "scheme is not http or https"),
             ("file:///tmp", "no host"),
         ] {
-            let npm = with(&[(UPSTREAM_NPM, value)])
-                .upstream_npm()
-                .expect_err(value);
+            let npm = with(&[(UPSTREAM_NPM, value)]).upstreams().expect_err(value);
             assert_eq!(
                 npm.to_string(),
                 format!("WAHAROA_UPSTREAM_NPM: `{value}` is not usable: {reason}")
             );
             let pypi = with(&[(UPSTREAM_PYPI, value)])
-                .upstream_pypi()
+                .upstreams()
                 .expect_err(value);
             assert_eq!(
                 pypi.to_string(),
@@ -945,12 +958,19 @@ mod tests {
         }
         let mirror = "https://artifacts.example/api/npm/npm-remote/";
         assert_eq!(
-            with(&[(UPSTREAM_NPM, mirror)]).upstream_npm().unwrap(),
-            mirror
+            with(&[(UPSTREAM_NPM, mirror)])
+                .upstreams()
+                .unwrap()
+                .get(Ecosystem::Npm),
+            mirror.trim_end_matches('/'),
+            "the path is kept, and the trailing slash dropped as the proxy drops it"
         );
         let index = "https://artifacts.example/api/pypi/pypi-remote/simple";
         assert_eq!(
-            with(&[(UPSTREAM_PYPI, index)]).upstream_pypi().unwrap(),
+            with(&[(UPSTREAM_PYPI, index)])
+                .upstreams()
+                .unwrap()
+                .get(Ecosystem::PyPI),
             index
         );
     }
@@ -959,13 +979,22 @@ mod tests {
     #[test]
     fn the_two_upstreams_are_set_independently() {
         let env = with(&[(UPSTREAM_NPM, "https://registry.example")]);
-        assert_eq!(env.upstream_npm().unwrap(), "https://registry.example");
-        assert_eq!(env.upstream_pypi().unwrap(), DEFAULT_UPSTREAM_PYPI);
+        assert_eq!(
+            env.upstreams().unwrap().get(Ecosystem::Npm),
+            "https://registry.example"
+        );
+        assert_eq!(
+            env.upstreams().unwrap().get(Ecosystem::PyPI),
+            crate::ecosystem::pypi::INDEX
+        );
 
         let env = with(&[(UPSTREAM_PYPI, "https://mirror.example/simple")]);
-        assert_eq!(env.upstream_npm().unwrap(), DEFAULT_UPSTREAM_NPM);
         assert_eq!(
-            env.upstream_pypi().unwrap(),
+            env.upstreams().unwrap().get(Ecosystem::Npm),
+            crate::ecosystem::npm::DEFAULT_REGISTRY
+        );
+        assert_eq!(
+            env.upstreams().unwrap().get(Ecosystem::PyPI),
             "https://mirror.example/simple"
         );
     }

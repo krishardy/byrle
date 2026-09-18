@@ -92,7 +92,7 @@ the `Var` is added when the stream reads it.
 | Defaults stay in their modules, referenced from here | Each value defined once, but the item asked for them in the central module |
 | A config struct parsed once at startup | Every command would fail on a bad proxy-only variable. `waharoa refresh` reads one variable and should not refuse over `WAHAROA_MAX_RECORDS` |
 | Thousands separators in `--help` (`50,000`), by hand or with `num-format`, `thousands` or `icu_decimal` | Rust's `format!` has no grouping. `num-format` and `thousands` have had no release since 2022 and 2019; `icu_decimal` brings ICU4X locale data for one help line. Defaults print as `50000` |
-| `npm::DEFAULT_REGISTRY` moves too | It is npm's registry, which the origin rules in `npm` name whether or not it is the upstream. `env::DEFAULT_UPSTREAM_NPM` is defined as it, and `DEFAULT_UPSTREAM_PYPI` as `pypi::INDEX` |
+| `npm::DEFAULT_REGISTRY` moves too | It is npm's registry, which the origin rules in `npm` name whether or not it is the upstream. `env::UPSTREAM_NPM`'s default is it, and `UPSTREAM_PYPI`'s is `pypi::INDEX`. Each `ecosystem::TABLE` row names its variable, and `Upstreams::defaults` reads the default from it |
 
 ## One upstream per ecosystem
 

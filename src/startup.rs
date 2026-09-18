@@ -56,8 +56,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
 ) -> Result<Started, StartupError> {
     let listen = environment.listen()?;
-    let upstream_npm = environment.upstream_npm()?;
-    let upstream_pypi = environment.upstream_pypi()?;
+    let upstreams = environment.upstreams()?;
 
     // reqwest 0.13 defaults to rustls with rustls-platform-verifier, so the upstream leg
     // validates against the OS trust store. The inbound leg stays plain HTTP on
@@ -236,8 +235,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let intel = intel.map(|store| Arc::new(store) as Arc<dyn Intel>);
 
     let proxy = Proxy::new(client)
-        .with_upstream_npm(upstream_npm)
-        .with_upstream_pypi(upstream_pypi)
+        .with_upstreams(upstreams)
         .with_intel(intel)
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
@@ -321,6 +319,7 @@ mod tests {
     use super::*;
     use crate::ecosystem::{npm, pypi};
     use crate::env::testing::with;
+    use crate::identity::Ecosystem;
 
     /// The failure `pairs` starts with. `Proxy` is not `Debug`, so `expect_err` cannot
     /// print the proxy it did build.
@@ -337,8 +336,11 @@ mod tests {
     async fn an_empty_environment_starts_the_default_proxy() {
         let started = proxy(&with(&[])).await.expect("the defaults are usable");
         assert_eq!(started.listen, env::DEFAULT_LISTEN);
-        assert_eq!(started.proxy.upstream_npm(), npm::DEFAULT_REGISTRY);
-        assert_eq!(started.proxy.upstream_pypi(), pypi::INDEX);
+        assert_eq!(
+            started.proxy.upstreams().get(Ecosystem::Npm),
+            npm::DEFAULT_REGISTRY
+        );
+        assert_eq!(started.proxy.upstreams().get(Ecosystem::PyPI), pypi::INDEX);
         let health = started.proxy.health();
         assert_eq!(health.upstream, npm::DEFAULT_REGISTRY);
         assert!(health.rewrite_artifacts);
@@ -366,7 +368,7 @@ mod tests {
         let health = started.proxy.health();
         assert_eq!(health.upstream, "https://npm.mirror.example");
         assert_eq!(
-            started.proxy.upstream_pypi(),
+            started.proxy.upstreams().get(Ecosystem::PyPI),
             "https://pypi.mirror.example/simple"
         );
         assert_eq!(
