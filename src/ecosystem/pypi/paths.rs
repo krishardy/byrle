@@ -4,12 +4,23 @@
 //! what the proxy asks the index for, and PEP 427 filename parsing, which is the only
 //! place a file's version is written.
 
-use crate::identity::{Ecosystem, PackageKey};
+use crate::identity::{Ecosystem, IdentityError, PackageKey};
 use crate::route::{DocumentKind, RequestTarget};
 
 use super::error::PypiError;
 use super::wire::Kind;
 use super::{FILES, SIMPLE_JSON};
+
+/// Split a project name for its purl. A PyPI project has no namespace, so a name with a `/`
+/// is not one.
+pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError> {
+    if name.contains('/') {
+        return Err(IdentityError::Malformed(format!(
+            "`{name}` is not a valid PyPI project name"
+        )));
+    }
+    Ok((None, name.to_owned()))
+}
 
 /// A project name as PEP 503 normalises it: lowercased, with every run of `-`, `_` and `.`
 /// replaced by a single `-`.

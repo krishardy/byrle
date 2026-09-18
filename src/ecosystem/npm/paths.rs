@@ -9,21 +9,27 @@ use crate::route::{DocumentKind, RequestTarget};
 
 use super::{ABBREVIATED_ACCEPT, FULL_ACCEPT};
 
-/// Build an npm key from a registry-reported name.
+/// Split an npm name into its scope and its name: `@babel/core` is `@babel` and `core`.
 ///
 /// An npm name carries a `/` only when it is scoped, and a scope always starts with `@`.
-/// `PackageKey::from_registry_name` splits on the `/` without asking, because it is shared
-/// with PyPI, so `foo/bar` would reach a purl of `pkg:npm/foo/bar`, a package npm cannot
-/// have. The proxy serves npm at the root and PyPI under `/simple/`, and a request for
-/// `/simple/requests` is the shape that made this matter.
-pub(super) fn key_from_name(name: &str) -> Result<PackageKey, IdentityError> {
-    let trimmed = name.trim();
-    if trimmed.contains('/') && !trimmed.starts_with('@') {
+/// Without that check `foo/bar` would reach a purl of `pkg:npm/foo/bar`, a package npm
+/// cannot have. The proxy serves npm at the root and PyPI under `/simple/`, and a request
+/// for `/simple/requests` is the shape that made this matter.
+pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError> {
+    let Some((scope, rest)) = name.split_once('/') else {
+        return Ok((None, name.to_owned()));
+    };
+    if !scope.starts_with('@') {
         return Err(IdentityError::Malformed(format!(
             "`{name}` is not a valid npm package name: a `/` needs an `@` scope"
         )));
     }
-    PackageKey::from_registry_name(Ecosystem::Npm, trimmed)
+    if rest.is_empty() || rest.contains('/') {
+        return Err(IdentityError::Malformed(format!(
+            "`{name}` is not a valid npm package name"
+        )));
+    }
+    Ok((Some(scope.to_owned()), rest.to_owned()))
 }
 
 /// Classify a request path.
@@ -52,7 +58,7 @@ pub fn classify_path(path: &str) -> RequestTarget {
     // npm percent-encodes the scope separator on packument requests and leaves it bare
     // on tarball paths. Both spell the same package.
     let name = name.replace("%2f", "/").replace("%2F", "/");
-    let Ok(key) = key_from_name(&name) else {
+    let Ok(key) = PackageKey::from_registry_name(Ecosystem::Npm, &name) else {
         return RequestTarget::Other;
     };
 
@@ -242,9 +248,8 @@ mod tests {
         }
     }
 
-    /// An npm scope starts with `@`. `PackageKey::from_registry_name` splits on the
-    /// `/` without asking, so without the check `/foo/bar` classified as
-    /// `pkg:npm/foo/bar`, and `/simple/requests` as `pkg:npm/simple/requests`.
+    /// An npm scope starts with `@`. Without the check in `split_name`, `/foo/bar`
+    /// classified as `pkg:npm/foo/bar`, and `/simple/requests` as `pkg:npm/simple/requests`.
     #[test]
     fn a_slash_without_an_at_is_not_a_scoped_package() {
         for path in [
