@@ -139,12 +139,7 @@ pub struct Health {
     /// Always "waharoa", so a response from something else is recognisable as such.
     pub service: String,
     pub version: String,
-    /// npm's upstream. Kept under this name for a `doctor` from an earlier build, which
-    /// reads it; `upstreams` has every ecosystem's.
-    pub upstream: String,
-    /// Each ecosystem's upstream, by purl type. Absent from a proxy built before
-    /// 2026-09-19, which reported npm's alone, in `upstream`.
-    #[serde(default)]
+    /// Each ecosystem's upstream, by purl type.
     pub upstreams: BTreeMap<String, String>,
     /// The address written into artifact URLs, when one is configured. `None` means each
     /// request's own `Host` is used, and that address is what lockfiles record.
@@ -159,9 +154,6 @@ pub struct Health {
     /// Origins it does not serve and permits a client to fetch directly.
     pub allowed_direct_origins: Vec<String>,
     /// Packages whose metadata is held, and the records in them.
-    ///
-    /// Serialised under its earlier name, which a `doctor` from another build reads.
-    #[serde(rename = "packuments_held")]
     pub packages_held: usize,
     pub records_held: usize,
     /// Artifacts fetched and verified since the proxy started. See [`crate::verified`].
@@ -344,7 +336,6 @@ impl Proxy {
         Health {
             service: "waharoa".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            upstream: self.upstreams.get(Ecosystem::Npm).to_owned(),
             upstreams: self
                 .upstreams
                 .iter()

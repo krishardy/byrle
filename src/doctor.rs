@@ -339,17 +339,12 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
         ];
     };
 
-    // A proxy built before `upstreams` reports npm's upstream alone.
-    let upstreams = if health.upstreams.is_empty() {
-        health.upstream.clone()
-    } else {
-        crate::ecosystem::written(
-            health
-                .upstreams
-                .iter()
-                .map(|(ecosystem, base)| (ecosystem, base.as_str())),
-        )
-    };
+    let upstreams = crate::ecosystem::written(
+        health
+            .upstreams
+            .iter()
+            .map(|(ecosystem, base)| (ecosystem, base.as_str())),
+    );
     let mut findings = vec![Finding::new(
         Severity::Ok,
         title,
@@ -1262,7 +1257,6 @@ mod tests {
         crate::proxy::Health {
             service: "waharoa".into(),
             version: "0.1.0".into(),
-            upstream: "https://registry.npmjs.org".into(),
             upstreams: [
                 ("npm".to_owned(), "https://registry.npmjs.org".to_owned()),
                 ("pypi".to_owned(), "https://pypi.org/simple".to_owned()),
@@ -1415,27 +1409,6 @@ mod tests {
             findings[0].detail.contains(
                 "forwarding to npm=https://registry.npmjs.org pypi=https://pypi.org/simple"
             ),
-            "{}",
-            findings[0].detail
-        );
-    }
-
-    /// A proxy built before `upstreams` sends `upstream` alone, and a `doctor` built after
-    /// still reads it.
-    #[test]
-    fn a_proxy_from_before_upstreams_still_reads() {
-        let mut older = serde_json::to_value(health()).expect("serialises");
-        older
-            .as_object_mut()
-            .expect("an object")
-            .remove("upstreams");
-        let older: crate::proxy::Health = serde_json::from_value(older).expect("still reads");
-        assert!(older.upstreams.is_empty());
-        let findings = check_proxy(Some(&older), PROXY);
-        assert!(
-            findings[0]
-                .detail
-                .ends_with("forwarding to https://registry.npmjs.org"),
             "{}",
             findings[0].detail
         );
