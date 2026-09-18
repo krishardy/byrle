@@ -827,8 +827,13 @@ async fn a_loaded_store_answers_every_version_row_for_a_package() {
         .expect("query")
         .expect("a snapshot is loaded");
     assert_eq!(found.records.len(), 4, "one row per listed version");
-    assert_eq!(found.for_version(&listed_version.expect("listed")).len(), 1);
-    assert!(found.for_version("0.0.0-not-listed").is_empty());
+    assert_eq!(
+        found
+            .for_version("npm", &listed_version.expect("listed"))
+            .len(),
+        1
+    );
+    assert!(found.for_version("npm", "0.0.0-not-listed").is_empty());
 }
 
 /// Loaded, and nothing is known against this package: consulted, not cold.
@@ -877,12 +882,12 @@ async fn a_package_named_by_two_sources_answers_both() {
         .expect("query")
         .expect("a snapshot is loaded");
     let ids: Vec<&str> = found
-        .for_version("1.0.0")
+        .for_version("npm", "1.0.0")
         .iter()
         .map(|r| r.advisory_id.as_str())
         .collect();
     assert_eq!(ids, ["GHSA-both", "MAL-2021-1"]);
-    assert_eq!(found.for_version("2.0.0").len(), 1);
+    assert_eq!(found.for_version("npm", "2.0.0").len(), 1);
 }
 
 /// `MAL-2022-219` is `introduced: "1.2.2"` with no end and no list.

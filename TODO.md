@@ -437,8 +437,7 @@ That is the failure mode every item below should be brought to.
 
       | Where | What is ecosystem-specific |
       |---|---|
-      | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher` |
-      | `intel/range.rs`, `intel/store.rs` `PackageIntel::for_version` | every version and range is read as SemVer; a PEP 440 version matches no range |
+      | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher`. `PyPI/all.zip` on 2026-09-18: 7,253 `PYSEC-`, 491 with no `GHSA-` counterpart; the PyPA database's licence is not in `advisory-stream-licences.md`. Belongs with step 4 |
       | `identity.rs` `PackageKey::from_registry_name` | npm's `@scope/name` split runs for every ecosystem, with the error "not a valid npm package name"; `npm/paths.rs::key_from_name` holds the other half of the rule |
       | `identity.rs` `split_encoded_scope` | repairs OSV's `pkg:npm/%40scope%2Fname` on every purl parse, not only npm ones |
       | `policy/selector.rs` `looks_like_a_range` | knows npm's range operators only, not PEP 440's `~=`, `!=`, `===` or `.*` |
@@ -455,6 +454,8 @@ That is the failure mode every item below should be brought to.
       Fixed 2026-09-18: a simple index goes through `intel_for` and
       `policy_refused_versions`, and `pypi::rewrite::rewrite_index` removes refused versions
       ([pypi-index-filtering](docs/engineering_decisions/pypi-index-filtering.md));
+      a range and a version are read by the ecosystem's `VersionOrder`, PEP 440 for PyPI
+      ([pep440-version-order](docs/engineering_decisions/pep440-version-order.md));
       the startup log's setup lines come from `Registry::setup`;
       `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
       constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.

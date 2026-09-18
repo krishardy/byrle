@@ -15,10 +15,9 @@
 //! that read advisories all answer from that one result, so the proxy makes one query per
 //! package rather than one per check.
 
-use crate::intel::range::{self, Interval};
+use crate::intel::range::{Interval, Ordered, VersionOrder};
 use crate::intel::refresh::StreamDigest;
 use crate::intel::{Enrichment, Finding, Score};
-use semver::Version;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -133,7 +132,7 @@ pub struct PackageIntel {
     /// Each record with the version it names. `None` is every version.
     pub records: Vec<(Option<String>, Record)>,
     /// Each record with an interval of versions it is against.
-    pub ranges: Vec<(Interval<Version>, Record)>,
+    pub ranges: Vec<(Interval<Ordered>, Record)>,
     /// Whether the snapshot includes the KEV catalogue. Without it, `exploited` is false on
     /// every record because nothing was asked, and `kev` cannot be answered.
     pub exploitation_loaded: bool,
@@ -146,16 +145,23 @@ impl PackageIntel {
     /// three times. Which copy is kept does not matter: every field of [`Record`] comes from
     /// the `advisory` row, keyed by id, and only the version or interval differs.
     ///
-    /// A version that is not SemVer, such as `3.0.0rc1`, is in no range. It still matches a
-    /// listed version and every version. No packument version seen is one: 0 in 103 packages
-    /// on 2026-09-15, and `express` lists `3.0.0-rc1`, which only its tarball name spells
-    /// `3.0.0rc1`.
-    pub fn for_version(&self, version: &str) -> Vec<&Record> {
-        let parsed = range::version(version);
+    /// `version` and the stored versions are read by the [`VersionOrder`] of `ecosystem`, the
+    /// purl type. A listed version matches one equal to it in that order, so a listed PyPI
+    /// `1.0` matches `1.0.0`. A version the order does not read, such as npm's `3.0.0rc1`, is
+    /// in no range and matches a listed version only as written. No npm packument version
+    /// seen is one: 0 in 103 packages on 2026-09-15, and `express` lists `3.0.0-rc1`, which
+    /// only its tarball name spells `3.0.0rc1`.
+    pub fn for_version(&self, ecosystem: &str, version: &str) -> Vec<&Record> {
+        let order = VersionOrder::of(ecosystem);
+        let parsed = order.and_then(|order| order.parse(version));
+        let same = |listed: &str| {
+            listed == version
+                || parsed.is_some() && order.and_then(|order| order.parse(listed)) == parsed
+        };
         let listed = self
             .records
             .iter()
-            .filter(|(v, _)| v.as_deref().is_none_or(|v| v == version));
+            .filter(|(v, _)| v.as_deref().is_none_or(same));
         let ranged = self
             .ranges
             .iter()
@@ -335,14 +341,19 @@ pub mod testing {
     impl Intel for FixedIntel {
         fn lookup<'a>(
             &'a self,
-            _ecosystem: &'a str,
+            ecosystem: &'a str,
             _name: &'a str,
             version: &'a str,
         ) -> Lookup<'a, Vec<Record>> {
             Box::pin(async move {
                 Ok(self
                     .answer()?
-                    .map(|p| p.for_version(version).into_iter().cloned().collect())
+                    .map(|p| {
+                        p.for_version(ecosystem, version)
+                            .into_iter()
+                            .cloned()
+                            .collect()
+                    })
                     .unwrap_or_default())
             })
         }
@@ -485,7 +496,7 @@ mod tests {
         };
         let ids = |version: &str| -> Vec<String> {
             intel
-                .for_version(version)
+                .for_version("npm", version)
                 .iter()
                 .map(|r| r.advisory_id.clone())
                 .collect()
@@ -499,9 +510,10 @@ mod tests {
         introduced: Option<&str>,
         fixed: Option<&str>,
         id: &str,
-    ) -> (Interval<Version>, Record) {
+    ) -> (Interval<Ordered>, Record) {
         (
-            Interval::from_columns(introduced, false, fixed, None).expect("a test interval parses"),
+            Interval::from_columns(VersionOrder::SemVer, introduced, false, fixed, None)
+                .expect("a test interval parses"),
             Record {
                 advisory_id: id.to_owned(),
                 ..record()
@@ -523,7 +535,7 @@ mod tests {
         };
         let ids = |version: &str| -> Vec<String> {
             intel
-                .for_version(version)
+                .for_version("npm", version)
                 .iter()
                 .map(|r| r.advisory_id.clone())
                 .collect()
@@ -535,6 +547,40 @@ mod tests {
         assert!(ids("2.0.0").is_empty());
         // Not SemVer, so in no range.
         assert!(ids("1.5.0rc1").is_empty());
+    }
+
+    /// A PyPI version is read as PEP 440, in a range and in the listed versions, and an
+    /// ecosystem with no order matches only as written.
+    #[test]
+    fn a_pypi_version_is_matched_by_pep_440() {
+        let range = |introduced, fixed, id: &str| {
+            (
+                Interval::from_columns(VersionOrder::Pep440, introduced, false, fixed, None)
+                    .expect("a test interval parses"),
+                Record {
+                    advisory_id: id.to_owned(),
+                    ..record()
+                },
+            )
+        };
+        let intel = PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: vec![at(Some("1.0"), "PYSEC-1")],
+            ranges: vec![range(None, Some("2.6.11.post1"), "GHSA-1")],
+            exploitation_loaded: false,
+        };
+        let ids = |ecosystem: &str, version: &str| -> Vec<String> {
+            intel
+                .for_version(ecosystem, version)
+                .iter()
+                .map(|r| r.advisory_id.clone())
+                .collect()
+        };
+        assert_eq!(ids("pypi", "1.0.0"), ["PYSEC-1", "GHSA-1"]);
+        assert_eq!(ids("pypi", "2.6.11"), ["GHSA-1"]);
+        assert!(ids("pypi", "2.6.11-1").is_empty());
+        assert_eq!(ids("cargo", "1.0"), ["PYSEC-1"]);
+        assert!(ids("cargo", "1.0.0").is_empty());
     }
 
     #[tokio::test]

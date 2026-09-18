@@ -11,7 +11,7 @@
 
 use super::ids;
 use super::load::Row;
-use super::range::Interval;
+use super::range::{Interval, VersionOrder};
 use super::snapshot_dir::{KeptError, SnapshotDir};
 use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
 use std::collections::{HashMap, HashSet};
@@ -78,12 +78,20 @@ impl SnapshotIntel {
                         if packages.contains(&package) {
                             let (fixed, last_affected) = ranged.interval.end.columns();
                             let (introduced, excluded) = ranged.interval.start.columns();
-                            let interval =
-                                Interval::from_columns(introduced, excluded, fixed, last_affected)
-                                    .ok_or_else(|| KeptError::Range {
-                                        digest: digest.clone(),
-                                        advisory_id: records[i].advisory_id.clone(),
-                                    })?;
+                            let interval = VersionOrder::of(&package.0)
+                                .and_then(|order| {
+                                    Interval::from_columns(
+                                        order,
+                                        introduced,
+                                        excluded,
+                                        fixed,
+                                        last_affected,
+                                    )
+                                })
+                                .ok_or_else(|| KeptError::Range {
+                                    digest: digest.clone(),
+                                    advisory_id: records[i].advisory_id.clone(),
+                                })?;
                             entry(&mut found, id, package)
                                 .ranges
                                 .push((interval, records[i].clone()));
@@ -185,7 +193,7 @@ impl Intel for SnapshotIntel {
         Box::pin(async move {
             Ok(self
                 .answer(ecosystem, name)?
-                .for_version(version)
+                .for_version(ecosystem, version)
                 .into_iter()
                 .cloned()
                 .collect())

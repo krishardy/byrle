@@ -7,7 +7,7 @@
 use super::history::{Ingestion, NotLoaded};
 use super::load::{self, Encoded, Fetch, Kind};
 use super::providers::kev;
-use super::range::Interval;
+use super::range::{Interval, VersionOrder};
 use super::refresh::StreamDigest;
 use super::rows::Rows;
 use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Record};
@@ -383,13 +383,19 @@ impl Intel for PgIntel {
         name: &'a str,
         version: &'a str,
     ) -> Lookup<'a, Vec<Record>> {
-        // Ranges compare as SemVer, which SQL does not, so one version is answered the way
-        // the proxy answers every version: read the package, evaluate here.
+        // Ranges compare by the ecosystem's version order, which SQL does not, so one version
+        // is answered the way the proxy answers every version: read the package, evaluate
+        // here.
         Box::pin(async move {
             Ok(self
                 .package(ecosystem, name)
                 .await?
-                .map(|p| p.for_version(version).into_iter().cloned().collect())
+                .map(|p| {
+                    p.for_version(ecosystem, version)
+                        .into_iter()
+                        .cloned()
+                        .collect()
+                })
                 .unwrap_or_default())
         })
     }
@@ -543,15 +549,19 @@ impl Intel for PgIntel {
                     malware,
                 };
                 if row.is_range == Some(true) {
-                    let interval = Interval::from_columns(
-                        row.introduced.as_deref(),
-                        row.introduced_excluded.unwrap_or(false),
-                        row.fixed.as_deref(),
-                        row.last_affected.as_deref(),
-                    )
-                    .ok_or_else(|| IntelError::Range {
-                        advisory_id: record.advisory_id.clone(),
-                    })?;
+                    let interval = VersionOrder::of(ecosystem)
+                        .and_then(|order| {
+                            Interval::from_columns(
+                                order,
+                                row.introduced.as_deref(),
+                                row.introduced_excluded.unwrap_or(false),
+                                row.fixed.as_deref(),
+                                row.last_affected.as_deref(),
+                            )
+                        })
+                        .ok_or_else(|| IntelError::Range {
+                            advisory_id: record.advisory_id.clone(),
+                        })?;
                     intel.ranges.push((interval, record));
                 } else {
                     intel.records.push((row.version, record));

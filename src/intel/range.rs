@@ -1,4 +1,8 @@
-//! OSV version ranges, for npm.
+//! OSV version ranges, ordered by each ecosystem's own rules.
+//!
+//! [`VersionOrder`] is a row's field in [`crate::ecosystem::TABLE`]: SemVer 2.0 for npm, PEP
+//! 440 for PyPI. Every version in a range is read and compared by the order of the ecosystem
+//! the range is for.
 //!
 //! An OSV range is a list of events: `introduced`, `fixed` (the first version not affected)
 //! and `last_affected` (the last one affected). Sorted by version, each `introduced` opens an
@@ -18,6 +22,54 @@
 
 use semver::{BuildMetadata, Version};
 use std::collections::BTreeMap;
+
+use crate::ecosystem::pypi::version::Version as Pep440;
+use crate::identity::Ecosystem;
+
+/// How an ecosystem orders its versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VersionOrder {
+    /// SemVer 2.0, with a short version [`padded`] as osv.dev pads an npm one.
+    SemVer,
+    /// PEP 440, as pip orders versions.
+    Pep440,
+}
+
+/// A version as its ecosystem orders it.
+///
+/// Versions are compared within one ecosystem only. The derived order puts every SemVer
+/// version below every PEP 440 one, and nothing compares across the two.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Ordered {
+    SemVer(Version),
+    Pep440(Pep440),
+}
+
+impl VersionOrder {
+    /// The order of the ecosystem whose purl type is `ecosystem`, or `None` for one no row
+    /// in [`crate::ecosystem::TABLE`] is for.
+    pub fn of(ecosystem: &str) -> Option<Self> {
+        let ecosystem = ecosystem.parse::<Ecosystem>().ok()?;
+        Some(crate::ecosystem::of(ecosystem).versions)
+    }
+
+    /// A version as this order reads it, or `None` when it is not one.
+    pub fn parse(self, s: &str) -> Option<Ordered> {
+        match self {
+            Self::SemVer => version(s).map(Ordered::SemVer),
+            Self::Pep440 => Pep440::parse(s).map(Ordered::Pep440),
+        }
+    }
+
+    /// The form a version is stored in: [`padded`] for SemVer, and PEP 440's normalised
+    /// form, so `1.0-1` is `1.0.post1`. `None` when it is not a version.
+    pub fn normalised(self, s: &str) -> Option<String> {
+        match self {
+            Self::SemVer => padded(s),
+            Self::Pep440 => Pep440::parse(s).map(|v| v.to_string()),
+        }
+    }
+}
 
 /// A version as SemVer 2.0 orders it, or `None` when it is not SemVer.
 pub fn version(s: &str) -> Option<Version> {
@@ -44,10 +96,10 @@ pub fn padded(s: &str) -> Option<String> {
     version(&written).map(|_| written)
 }
 
-/// A listed version as it is stored: [`padded`], so a listed `12.0` matches the published
-/// `12.0.0`, or as written when it does not pad.
-pub fn stored(s: &str) -> String {
-    padded(s).unwrap_or_else(|| s.to_owned())
+/// A listed version as it is stored: [`VersionOrder::normalised`], so a listed npm `12.0`
+/// matches the published `12.0.0`, or as written when it is not a version.
+pub fn stored(order: VersionOrder, s: &str) -> String {
+    order.normalised(s).unwrap_or_else(|| s.to_owned())
 }
 
 /// Where an interval stops.
@@ -72,7 +124,7 @@ impl End<String> {
     }
 }
 
-/// One run of affected versions. `V` is `String` as stored and [`Version`] as compared.
+/// One run of affected versions. `V` is `String` as stored and [`Ordered`] as compared.
 /// Where an interval starts.
 ///
 /// OSV writes only inclusive lower bounds, so every OSV range is `First` or `Introduced`.
@@ -122,8 +174,8 @@ impl<V> Interval<V> {
     }
 }
 
-impl Interval<Version> {
-    pub fn contains(&self, v: &Version) -> bool {
+impl Interval<Ordered> {
+    pub fn contains(&self, v: &Ordered) -> bool {
         let from_start = match &self.start {
             Start::First => true,
             Start::Introduced(from) => v >= from,
@@ -137,25 +189,26 @@ impl Interval<Version> {
             }
     }
 
-    /// An interval from its stored columns. `None` when both ends are set or a version does
-    /// not parse, neither of which the loader writes.
+    /// An interval from its stored columns, read by `order`. `None` when both ends are set or
+    /// a version does not parse, neither of which the loader writes.
     pub fn from_columns(
+        order: VersionOrder,
         introduced: Option<&str>,
         introduced_excluded: bool,
         fixed: Option<&str>,
         last_affected: Option<&str>,
     ) -> Option<Self> {
         let start = match (introduced, introduced_excluded) {
-            (Some(s), false) => Start::Introduced(version(s)?),
-            (Some(s), true) => Start::After(version(s)?),
+            (Some(s), false) => Start::Introduced(order.parse(s)?),
+            (Some(s), true) => Start::After(order.parse(s)?),
             // An excluded bound with no version is not a bound. The loader writes neither.
             (None, true) => return None,
             (None, false) => Start::First,
         };
         let end = match (fixed, last_affected) {
             (None, None) => End::Open,
-            (Some(s), None) => End::Fixed(version(s)?),
-            (None, Some(s)) => End::LastAffected(version(s)?),
+            (Some(s), None) => End::Fixed(order.parse(s)?),
+            (None, Some(s)) => End::LastAffected(order.parse(s)?),
             (Some(_), Some(_)) => return None,
         };
         Some(Self { start, end })
@@ -172,8 +225,8 @@ pub enum Unstorable {
     Event(String),
     /// An event object with other than one key.
     Malformed,
-    /// A version that is not SemVer 2.0 once [`padded`].
-    NotSemver(String),
+    /// A version the ecosystem's [`VersionOrder`] does not read.
+    NotAVersion(String),
 }
 
 #[derive(Clone, Copy)]
@@ -183,8 +236,9 @@ enum Kind {
     LastAffected,
 }
 
-/// The intervals a range's events describe, each version [`padded`].
+/// The intervals a range's events describe, each version [`VersionOrder::normalised`].
 pub fn intervals(
+    order: VersionOrder,
     kind: Option<&str>,
     events: &[BTreeMap<String, String>],
 ) -> Result<Vec<Interval<String>>, Unstorable> {
@@ -208,8 +262,10 @@ pub fn intervals(
         let (at, written) = match (kind, value.as_str()) {
             (Kind::Introduced, "0") => (None, value.clone()),
             _ => {
-                let written = padded(value).ok_or_else(|| Unstorable::NotSemver(value.clone()))?;
-                (version(&written), written)
+                let written = order
+                    .normalised(value)
+                    .ok_or_else(|| Unstorable::NotAVersion(value.clone()))?;
+                (order.parse(&written), written)
             }
         };
         sorted.push((at, kind, written));
@@ -258,8 +314,12 @@ mod tests {
             .collect()
     }
 
+    fn sv(s: &str) -> Option<Ordered> {
+        VersionOrder::SemVer.parse(s)
+    }
+
     fn semver(pairs: &[(&str, &str)]) -> Vec<Interval<String>> {
-        intervals(Some("SEMVER"), &events(pairs)).expect("storable")
+        intervals(VersionOrder::SemVer, Some("SEMVER"), &events(pairs)).expect("storable")
     }
 
     /// `> 4.0.2` says 4.0.2 is the last version not affected. Storing it as an inclusive
@@ -270,16 +330,16 @@ mod tests {
             start: Start::After("4.0.2".to_owned()),
             end: End::Open,
         });
-        assert!(!after.contains(&version("4.0.2").expect("parses")));
-        assert!(after.contains(&version("4.0.3").expect("parses")));
+        assert!(!after.contains(&sv("4.0.2").expect("parses")));
+        assert!(after.contains(&sv("4.0.3").expect("parses")));
         // A prerelease of the next patch sorts above 4.0.2, so it is affected.
-        assert!(after.contains(&version("4.0.3-alpha").expect("parses")));
+        assert!(after.contains(&sv("4.0.3-alpha").expect("parses")));
 
         let introduced = parsed(&Interval {
             start: Start::Introduced("4.0.2".to_owned()),
             end: End::Open,
         });
-        assert!(introduced.contains(&version("4.0.2").expect("parses")));
+        assert!(introduced.contains(&sv("4.0.2").expect("parses")));
     }
 
     /// The columns round-trip, so what a load writes is what a lookup reads.
@@ -293,26 +353,27 @@ mod tests {
         );
         assert_eq!(Start::<String>::First.columns(), (None, false));
         assert_eq!(
-            Interval::from_columns(Some("4.0.2"), true, None, None)
+            Interval::from_columns(VersionOrder::SemVer, Some("4.0.2"), true, None, None)
                 .expect("parses")
                 .start,
-            Start::After(version("4.0.2").expect("parses"))
+            Start::After(sv("4.0.2").expect("parses"))
         );
         assert_eq!(
-            Interval::from_columns(None, true, None, Some("1.0.0")),
+            Interval::from_columns(VersionOrder::SemVer, None, true, None, Some("1.0.0")),
             None
         );
     }
 
-    fn parsed(interval: &Interval<String>) -> Interval<Version> {
+    fn parsed(interval: &Interval<String>) -> Interval<Ordered> {
         let (fixed, last) = interval.end.columns();
         let (introduced, excluded) = interval.start.columns();
-        Interval::from_columns(introduced, excluded, fixed, last).expect("parses")
+        Interval::from_columns(VersionOrder::SemVer, introduced, excluded, fixed, last)
+            .expect("parses")
     }
 
     /// Whether any interval of `pairs` holds `v`.
     fn affected(pairs: &[(&str, &str)], v: &str) -> bool {
-        let v = version(v).expect("a test version is SemVer");
+        let v = sv(v).expect("a test version is SemVer");
         semver(pairs).iter().any(|i| parsed(i).contains(&v))
     }
 
@@ -456,6 +517,7 @@ mod tests {
     #[test]
     fn a_range_is_stored_and_ordered_by_its_padded_versions() {
         let written = intervals(
+            VersionOrder::SemVer,
             Some("ECOSYSTEM"),
             &events(&[
                 ("fixed", "13.1"),
@@ -480,40 +542,50 @@ mod tests {
         assert!(written.iter().all(|i| {
             let (fixed, last) = i.end.columns();
             let (introduced, excluded) = i.start.columns();
-            Interval::from_columns(introduced, excluded, fixed, last).is_some()
+            Interval::from_columns(VersionOrder::SemVer, introduced, excluded, fixed, last)
+                .is_some()
         }));
     }
 
     #[test]
     fn ecosystem_ranges_are_read_and_git_ones_are_not() {
         let e = events(&[("introduced", "1.0.0")]);
-        assert!(intervals(Some("ECOSYSTEM"), &e).is_ok());
+        assert!(intervals(VersionOrder::SemVer, Some("ECOSYSTEM"), &e).is_ok());
         assert_eq!(
-            intervals(Some("GIT"), &e),
+            intervals(VersionOrder::SemVer, Some("GIT"), &e),
             Err(Unstorable::Type("GIT".to_owned()))
         );
-        assert_eq!(intervals(None, &e), Err(Unstorable::Type(String::new())));
+        assert_eq!(
+            intervals(VersionOrder::SemVer, None, &e),
+            Err(Unstorable::Type(String::new()))
+        );
     }
 
     #[test]
     fn a_range_that_cannot_be_evaluated_is_refused_whole() {
         assert_eq!(
             intervals(
+                VersionOrder::SemVer,
                 Some("ECOSYSTEM"),
                 &events(&[("introduced", "0"), ("fixed", "1.0.0rc1")])
             ),
-            Err(Unstorable::NotSemver("1.0.0rc1".to_owned()))
+            Err(Unstorable::NotAVersion("1.0.0rc1".to_owned()))
         );
         assert_eq!(
-            intervals(Some("SEMVER"), &events(&[("limit", "1.0.0")])),
+            intervals(
+                VersionOrder::SemVer,
+                Some("SEMVER"),
+                &events(&[("limit", "1.0.0")])
+            ),
             Err(Unstorable::Event("limit".to_owned()))
         );
         assert_eq!(
             intervals(
+                VersionOrder::SemVer,
                 Some("SEMVER"),
                 &events(&[("introduced", "1.0.0"), ("fixed", "v2")])
             ),
-            Err(Unstorable::NotSemver("v2".to_owned()))
+            Err(Unstorable::NotAVersion("v2".to_owned()))
         );
         let two_keys: BTreeMap<String, String> = [
             ("introduced".to_owned(), "0".to_owned()),
@@ -521,11 +593,11 @@ mod tests {
         ]
         .into();
         assert_eq!(
-            intervals(Some("SEMVER"), &[two_keys]),
+            intervals(VersionOrder::SemVer, Some("SEMVER"), &[two_keys]),
             Err(Unstorable::Malformed)
         );
         assert_eq!(
-            intervals(Some("SEMVER"), &[BTreeMap::new()]),
+            intervals(VersionOrder::SemVer, Some("SEMVER"), &[BTreeMap::new()]),
             Err(Unstorable::Malformed)
         );
     }
@@ -533,14 +605,89 @@ mod tests {
     #[test]
     fn stored_columns_that_the_loader_never_writes_do_not_parse() {
         assert_eq!(
-            Interval::from_columns(Some("1.0.0"), false, Some("2.0.0"), Some("2.0.0")),
+            Interval::from_columns(
+                VersionOrder::SemVer,
+                Some("1.0.0"),
+                false,
+                Some("2.0.0"),
+                Some("2.0.0")
+            ),
             None
         );
-        assert_eq!(Interval::from_columns(Some("1.0"), false, None, None), None);
-        assert_eq!(Interval::from_columns(None, false, Some("x"), None), None);
-        assert_eq!(Interval::from_columns(None, false, None, Some("x")), None);
+        assert_eq!(
+            Interval::from_columns(VersionOrder::SemVer, Some("1.0"), false, None, None),
+            None
+        );
+        assert_eq!(
+            Interval::from_columns(VersionOrder::SemVer, None, false, Some("x"), None),
+            None
+        );
+        assert_eq!(
+            Interval::from_columns(VersionOrder::SemVer, None, false, None, Some("x")),
+            None
+        );
         assert!(
-            Interval::from_columns(None, false, None, None).is_some_and(|i| i.is_every_version())
+            Interval::from_columns(VersionOrder::SemVer, None, false, None, None)
+                .is_some_and(|i| i.is_every_version())
+        );
+    }
+
+    fn pep440(pairs: &[(&str, &str)]) -> Vec<Interval<String>> {
+        intervals(VersionOrder::Pep440, Some("ECOSYSTEM"), &events(pairs)).expect("storable")
+    }
+
+    fn pep440_affected(pairs: &[(&str, &str)], v: &str) -> bool {
+        let v = VersionOrder::Pep440.parse(v).expect("a PEP 440 version");
+        pep440(pairs).iter().any(|i| {
+            let (fixed, last) = i.end.columns();
+            let (introduced, excluded) = i.start.columns();
+            Interval::from_columns(VersionOrder::Pep440, introduced, excluded, fixed, last)
+                .expect("parses")
+                .contains(&v)
+        })
+    }
+
+    /// `GHSA-4vc9-4xpq-77vm` has `fixed: 2.6.11-1`, a post-release of 2.6.11. Read as SemVer
+    /// it is a pre-release below 2.6.11, and 2.6.11 would be reported unaffected.
+    #[test]
+    fn a_pypi_range_orders_by_pep_440() {
+        let fixed_by_a_post_release = [("introduced", "0"), ("fixed", "2.6.11-1")];
+        assert_eq!(
+            pep440(&fixed_by_a_post_release),
+            vec![Interval {
+                start: Start::First,
+                end: End::Fixed("2.6.11.post1".to_owned()),
+            }]
+        );
+        assert!(pep440_affected(&fixed_by_a_post_release, "2.6.11"));
+        assert!(!pep440_affected(&fixed_by_a_post_release, "2.6.11.post1"));
+
+        let fixed_by_a_release = [("introduced", "1.0rc1"), ("fixed", "1.0")];
+        assert!(pep440_affected(&fixed_by_a_release, "1.0rc2"));
+        assert!(pep440_affected(&fixed_by_a_release, "1.0.0rc1"));
+        assert!(!pep440_affected(&fixed_by_a_release, "1.0.0"));
+        assert!(!pep440_affected(&fixed_by_a_release, "1.0b9"));
+
+        assert_eq!(
+            intervals(
+                VersionOrder::Pep440,
+                Some("ECOSYSTEM"),
+                &events(&[("introduced", "not a version")])
+            ),
+            Err(Unstorable::NotAVersion("not a version".to_owned()))
+        );
+    }
+
+    #[test]
+    fn each_ecosystem_has_its_own_order() {
+        assert_eq!(VersionOrder::of("npm"), Some(VersionOrder::SemVer));
+        assert_eq!(VersionOrder::of("pypi"), Some(VersionOrder::Pep440));
+        assert_eq!(VersionOrder::of("cargo"), None);
+        assert_eq!(stored(VersionOrder::Pep440, "1.0-1"), "1.0.post1");
+        assert_eq!(stored(VersionOrder::SemVer, "13.0"), "13.0.0");
+        assert_eq!(
+            stored(VersionOrder::Pep440, "not a version"),
+            "not a version"
         );
     }
 }

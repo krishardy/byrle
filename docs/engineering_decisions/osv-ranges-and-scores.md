@@ -3,7 +3,9 @@
 - **Status:** Implemented. `src/intel/range.rs` (intervals), `src/intel/providers/osv/mod.rs` (GHSA
   records, scores), `src/intel/rows.rs` (the row types), `migrations/0002_ranges.sql`, `PackageIntel::for_version` in `src/intel/store.rs`,
   `Advisory::is_named` in `src/policy/decide.rs`.
-- **Related:** [osv-malware-load](osv-malware-load.md),
+- **Related:** [pep440-version-order](pep440-version-order.md), which orders PyPI's versions
+  by PEP 440; this file is npm's SemVer order.
+  [osv-malware-load](osv-malware-load.md),
   [intel-in-decisions](intel-in-decisions.md),
   [advisory-stream-licences](advisory-stream-licences.md)
 

@@ -81,7 +81,7 @@ impl Facts {
     /// `known_malware` refuses it, and `max_cvss` would refuse it a second time as unscored.
     /// Any other record with no score is kept, with `cvss` `None`, and `max_cvss` refuses it.
     pub fn with_intel(mut self, intel: &PackageIntel) -> Self {
-        let records = intel.for_version(&self.version);
+        let records = intel.for_version(&self.ecosystem, &self.version);
         self.known_malware = records.iter().any(|r| r.malware);
         // One advisory per id, carrying every stream that reported it. `for_version` returns
         // a record per stream, and two streams holding one advisory is corroboration rather

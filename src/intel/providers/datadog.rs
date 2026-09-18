@@ -85,7 +85,10 @@ fn record(name: String, versions: Option<Vec<String>>) -> Result<Rows, DatadogEr
         Some(listed) if listed.iter().any(|v| v.len() > MAX_VERSION_BYTES) => {
             return Err(refused("a version is longer than 255 bytes"));
         }
-        Some(listed) => listed.iter().map(|v| Some(range::stored(v))).collect(),
+        Some(listed) => listed
+            .iter()
+            .map(|v| Some(range::stored(crate::ecosystem::NPM.versions, v)))
+            .collect(),
     };
     let affected: BTreeSet<Affected> = versions
         .into_iter()
