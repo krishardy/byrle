@@ -56,7 +56,7 @@ else
     fi
     log="$workdir/proxy.log"
     WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_PUBLIC_URL="$proxy" WAHAROA_UPSTREAM_NPM="$upstream" \
-        cargo run --quiet --manifest-path "$repo_root/Cargo.toml" >"$log" 2>&1 &
+        cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
         grep -q "waharoa listening" "$log" && break

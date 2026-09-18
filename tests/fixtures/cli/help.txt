@@ -1,8 +1,9 @@
-Dependency firewall. With no command, runs the proxy.
+Dependency firewall
 
-Usage: waharoa [COMMAND]
+Usage: waharoa <COMMAND>
 
 Commands:
+  daemon   Run the proxy in the foreground
   doctor   Check whether this machine installs through the proxy
   explain  Why a package is allowed or refused
   intel    Read what the intel store records

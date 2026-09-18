@@ -130,40 +130,8 @@ async fn run_refresh() -> std::process::ExitCode {
     std::process::ExitCode::from(run.code)
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
-    // An unknown command or argument exits 2, or 4 for `policy diff`, rather than falling
-    // through to the proxy: `waharoa doctr` silently serving traffic is the wrong thing to do
-    // with a typo.
-    // `--help` and `--version` exit 0. Every trust decision the proxy makes comes from the
-    // environment and the packuments it reads, not from argv.
-    // The rule below warns about trusting argv for security decisions. These arguments only
-    // choose the exit code for a command line clap refused, and the program path is skipped.
-    // nosemgrep: rust.lang.security.args-os.args-os
-    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    let parsed = match cli::Cli::try_parse_from(&args) {
-        Ok(parsed) => parsed,
-        Err(e) => {
-            let _ = e.print();
-            return std::process::ExitCode::from(cli::exit_code(&e, &args));
-        }
-    };
-    match parsed.command {
-        None => {}
-        Some(cli::Command::Doctor) => return run_doctor().await,
-        Some(cli::Command::Explain(target)) => return run_explain(target).await,
-        Some(cli::Command::Policy(cli::PolicyCommand::Check(args))) => {
-            return run_policy_check(args);
-        }
-        Some(cli::Command::Policy(cli::PolicyCommand::Diff(args))) => {
-            return run_policy_diff(args).await;
-        }
-        Some(cli::Command::Intel(cli::IntelCommand::History(args))) => {
-            return run_intel_history(args).await;
-        }
-        Some(cli::Command::Refresh) => return run_refresh().await,
-    }
-
+/// `waharoa daemon`: serve the proxy until the process is stopped.
+async fn run_daemon() -> std::process::ExitCode {
     let environment = env::process();
     let filter = or_exit(environment.log_filter());
     tracing_subscriber::fmt()
@@ -208,4 +176,31 @@ async fn main() -> std::process::ExitCode {
         .await
         .expect("server failed");
     std::process::ExitCode::SUCCESS
+}
+
+#[tokio::main]
+async fn main() -> std::process::ExitCode {
+    // No command, or an unknown command or argument, exits 2, or 4 for `policy diff`.
+    // `--help` and `--version` exit 0. Every trust decision the proxy makes comes from the
+    // environment and the packuments it reads, not from argv.
+    // The rule below warns about trusting argv for security decisions. These arguments only
+    // choose the exit code for a command line clap refused, and the program path is skipped.
+    // nosemgrep: rust.lang.security.args-os.args-os
+    let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    let parsed = match cli::Cli::try_parse_from(&args) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            let _ = e.print();
+            return std::process::ExitCode::from(cli::exit_code(&e, &args));
+        }
+    };
+    match parsed.command {
+        cli::Command::Daemon => run_daemon().await,
+        cli::Command::Doctor => run_doctor().await,
+        cli::Command::Explain(target) => run_explain(target).await,
+        cli::Command::Policy(cli::PolicyCommand::Check(args)) => run_policy_check(args),
+        cli::Command::Policy(cli::PolicyCommand::Diff(args)) => run_policy_diff(args).await,
+        cli::Command::Intel(cli::IntelCommand::History(args)) => run_intel_history(args).await,
+        cli::Command::Refresh => run_refresh().await,
+    }
 }
