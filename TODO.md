@@ -438,7 +438,7 @@ That is the failure mode every item below should be brought to.
       | Where | What is ecosystem-specific |
       |---|---|
       | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher`. `PyPI/all.zip` on 2026-09-18: 7,253 `PYSEC-`, 491 with no `GHSA-` counterpart; the PyPA database's licence is not in `advisory-stream-licences.md`. Belongs with step 4 |
-      | `policy/selector.rs` `Canonical::matches` | exact string comparison of name and version; no PEP 503 name normalisation, and `version: "1.0"` does not match PyPI's `1.0.0` |
+      | `policy/selector.rs` `Canonical::matches` | exact string comparison of name and version; no PEP 503 name normalisation, and `version: "1.0"` does not match PyPI's `1.0.0`. Versions and ranges: [policy-version-ranges](docs/engineering_decisions/policy-version-ranges.md) |
       | `intel/snapshot_intel.rs` `key_of`, `intel/postgres.rs` `package()` | advisories looked up by exact `registry_name()`, with no per-ecosystem normalisation |
       | `policy/selector.rs` `decompose` | rejoins `namespace/name`, repeating `PackageKey::registry_name`; it cannot call `PackageKey` as is, because it takes any purl type and an optional version |
       | `proxy.rs`, `env.rs`, `startup.rs`, `ecosystem.rs` `Clients` | the npm and PyPI upstreams are passed through four places as named pairs, not keyed by `Ecosystem` |
