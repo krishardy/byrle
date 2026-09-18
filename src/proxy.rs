@@ -49,7 +49,7 @@
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
-use crate::ecosystem::{self, Clients, UncoveredMetadata};
+use crate::ecosystem::{self, Clients, UncoveredMetadata, Upstreams};
 use crate::ecosystem::{npm, pypi};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
@@ -189,12 +189,10 @@ pub struct Proxy {
     served_origins: Vec<String>,
     /// Origins a client may fetch from directly, kept for the same reason.
     allowed_direct: Vec<String>,
-    /// npm registry base, no trailing slash.
-    upstream_npm: String,
-    /// PyPI simple index base, no trailing slash. The client asks this proxy for
-    /// `/simple/<name>/` and the request goes to `{upstream_pypi}/<name>/`, because the
-    /// base already names the index.
-    upstream_pypi: String,
+    /// Where each ecosystem's requests are forwarded. A PyPI client asks this proxy for
+    /// `/simple/<name>/` and the request goes to `{pypi upstream}/<name>/`, because the base
+    /// already names the index.
+    upstreams: Upstreams,
     /// The policy, when one is configured. `None` is Stage 1 behaviour and is a distinct
     /// state from a policy that allows everything: nothing was asked, rather than asked
     /// and answered yes.
@@ -227,8 +225,7 @@ pub struct Proxy {
 }
 
 impl Proxy {
-    /// A proxy for npm's and PyPI's default registries. `with_upstream_npm` and
-    /// `with_upstream_pypi` point it elsewhere.
+    /// A proxy for each ecosystem's public registry. `with_upstream` points one elsewhere.
     pub fn new(client: reqwest::Client) -> Self {
         let proxy = Self {
             origins: Arc::new(
@@ -243,15 +240,13 @@ impl Proxy {
             allowed_direct: Vec::new(),
             clients: Clients::new(
                 client.clone(),
-                npm::DEFAULT_REGISTRY,
-                pypi::INDEX,
+                &Upstreams::defaults(),
                 DEFAULT_MAX_PACKUMENT_BYTES,
             ),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
-            upstream_npm: npm::DEFAULT_REGISTRY.to_owned(),
-            upstream_pypi: pypi::INDEX.to_owned(),
+            upstreams: Upstreams::defaults(),
             policy: None,
             publish_times: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
@@ -269,13 +264,19 @@ impl Proxy {
         proxy.rebuilt()
     }
 
-    /// The npm registry to forward to. Defaults to [`npm::DEFAULT_REGISTRY`].
+    /// Where `ecosystem`'s requests are forwarded. Defaults to its public registry.
     ///
-    /// Panics on an address that is not a URL with a host. `env::Env::upstream_npm` refuses
+    /// Panics on an address that is not a URL with a host. `env::Env::upstreams` refuses
     /// the same addresses, so only a caller that skips it reaches the panic, and nothing
     /// else would work with that upstream either.
-    pub fn with_upstream_npm(mut self, upstream: impl Into<String>) -> Self {
-        self.upstream_npm = upstream.into().trim_end_matches('/').to_owned();
+    pub fn with_upstream(mut self, ecosystem: Ecosystem, upstream: impl AsRef<str>) -> Self {
+        self.upstreams = self.upstreams.with(ecosystem, upstream.as_ref());
+        self.rebuilt()
+    }
+
+    /// Every upstream at once, as `env::Env::upstreams` reads them.
+    pub fn with_upstreams(mut self, upstreams: Upstreams) -> Self {
+        self.upstreams = upstreams;
         self.rebuilt()
     }
 
@@ -338,7 +339,7 @@ impl Proxy {
         Health {
             service: "waharoa".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
-            upstream: self.upstream_npm.clone(),
+            upstream: self.upstreams.get(Ecosystem::Npm).to_owned(),
             public_base: self.public_base.clone(),
             rewrite_artifacts: self.rewrite_artifacts,
             refuse_unservable: self.refuse_unservable,
@@ -428,22 +429,13 @@ impl Proxy {
         self.rebuilt()
     }
 
-    /// The PyPI simple index to forward to. Defaults to [`pypi::INDEX`].
-    ///
-    /// Panics as [`Proxy::with_upstream_npm`] does.
-    pub fn with_upstream_pypi(mut self, upstream: impl Into<String>) -> Self {
-        self.upstream_pypi = upstream.into().trim_end_matches('/').to_owned();
-        self.rebuilt()
-    }
-
     /// The clients and origin policy for the configured upstreams, origins and body limit.
     /// Every builder that changes one of those ends here, so the order they are called in
     /// does not matter.
     fn rebuilt(mut self) -> Self {
         self.clients = Clients::new(
             self.client.clone(),
-            &self.upstream_npm,
-            &self.upstream_pypi,
+            &self.upstreams,
             self.max_metadata_bytes,
         );
         self.origins = Arc::new(
@@ -458,19 +450,13 @@ impl Proxy {
         served: &[String],
         allowed_direct: &[String],
     ) -> Result<OriginPolicy, crate::origin::OriginError> {
-        let reachable = ReachableOrigins::new(
-            [self.upstream_npm.as_str(), self.upstream_pypi.as_str()],
-            served.iter().map(String::as_str),
-        )?;
+        let reachable =
+            ReachableOrigins::new(self.upstreams.bases(), served.iter().map(String::as_str))?;
         OriginPolicy::new(reachable, allowed_direct.iter().map(String::as_str))
     }
 
-    pub fn upstream_npm(&self) -> &str {
-        &self.upstream_npm
-    }
-
-    pub fn upstream_pypi(&self) -> &str {
-        &self.upstream_pypi
+    pub fn upstreams(&self) -> &Upstreams {
+        &self.upstreams
     }
 
     pub fn router(self) -> Router {
@@ -831,8 +817,7 @@ fn resolver_probe(ecosystem: Ecosystem, target: &RequestTarget) -> bool {
 }
 
 /// Where a request goes upstream: an origin the operator added for artifacts, else the
-/// ecosystem's own rule applied to its configured base. `npm::upstream_url` and
-/// `pypi::upstream_url` say what each rule is.
+/// ecosystem's own rule, its row's `upstream_url`, applied to its configured base.
 fn upstream_url(
     proxy: &Proxy,
     ecosystem: Ecosystem,
@@ -844,12 +829,7 @@ fn upstream_url(
     if let Some(origin) = artifact_origin {
         return format!("{origin}{path_and_query}");
     }
-    // Exhaustive on purpose. A third ecosystem has to answer this question, and a
-    // fall-through would quietly give it PyPI's two hosts.
-    match ecosystem {
-        Ecosystem::Npm => npm::upstream_url(&proxy.upstream_npm, path_and_query),
-        Ecosystem::PyPI => pypi::upstream_url(&proxy.upstream_pypi, path_and_query),
-    }
+    (ecosystem::of(ecosystem).upstream_url)(proxy.upstreams.get(ecosystem), path_and_query)
 }
 
 async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
@@ -1938,7 +1918,7 @@ mod tests {
         let (upstream, seen) = upstream_serving(status, content_type, content_encoding, body).await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
         .await;
@@ -1954,8 +1934,8 @@ mod tests {
     ) -> (String, Recorder) {
         let (upstream, seen) = upstream_serving(status, content_type, None, body).await;
         let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream_npm(upstream.clone())
-            .with_upstream_pypi(upstream);
+            .with_upstream(Ecosystem::Npm, upstream.clone())
+            .with_upstream(Ecosystem::PyPI, upstream);
         let base = serve(proxy.router()).await;
         (base, seen)
     }
@@ -2044,7 +2024,7 @@ mod tests {
     #[test]
     fn a_refusal_takes_the_status_configured_for_its_own_ecosystem() {
         let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream_npm("https://registry.npmjs.org")
+            .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org")
             .with_refusal_status(
                 crate::refusal::RefusalStatus::parse("default=403,pypi/pip=451,npm/pnpm=404")
                     .unwrap(),
@@ -2161,7 +2141,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("429:1:packument").unwrap()))
                 .router(),
         )
@@ -2195,7 +2175,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("503:none:all").unwrap()))
                 .router(),
         )
@@ -2220,7 +2200,7 @@ mod tests {
         // Zero seconds: already lifted when the request arrives.
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_defer_test(Some(DeferTest::parse("503:1:all:0").unwrap()))
                 .router(),
         )
@@ -2277,7 +2257,7 @@ mod tests {
             upstream_revalidating("\"abc\"", fixture("lodash-4.17.21.abbrev.json")).await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
         .await;
@@ -2347,7 +2327,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_artifact_rewriting(false)
                 .router(),
         )
@@ -2410,7 +2390,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_refuse_unservable(false)
                 .router(),
         )
@@ -2472,7 +2452,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_refusal_status(
                     crate::refusal::RefusalStatus::parse("default=403,npm/pnpm=451").unwrap(),
                 )
@@ -2622,7 +2602,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_max_metadata_bytes(16)
                 .router(),
         )
@@ -2691,7 +2671,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
                      denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
@@ -2730,7 +2710,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
                      denials:\n  - purl: pkg:npm/lodash@4.17.20\n    reason: test\n",
@@ -2810,7 +2790,7 @@ mod tests {
         )
         .await;
         let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream_npm(upstream)
+            .with_upstream(Ecosystem::Npm, upstream)
             .with_intel(intel)
             .with_refuse_unservable(false)
             .with_policy(yaml.map(policy));
@@ -2956,7 +2936,7 @@ mod tests {
         }));
         let upstream = serve(router).await;
         let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream_npm(upstream)
+            .with_upstream(Ecosystem::Npm, upstream)
             .with_refuse_unservable(false)
             .with_policy(Some(policy("version: 1\ncooldown_days: 36500\n")));
         let base = serve(proxy.router()).await;
@@ -3009,8 +2989,8 @@ mod tests {
         let (upstream, seen) =
             upstream_serving(StatusCode::OK, pypi::SIMPLE_JSON, None, PYPI_INDEX.to_vec()).await;
         let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream_npm(upstream.clone())
-            .with_upstream_pypi(upstream)
+            .with_upstream(Ecosystem::Npm, upstream.clone())
+            .with_upstream(Ecosystem::PyPI, upstream)
             .with_refuse_unservable(false)
             .with_intel(Some(malware_everywhere()))
             .with_policy(Some(policy("version: 1\ncooldown_days: 0\n")));
@@ -3064,8 +3044,8 @@ mod tests {
         )
         .await;
         let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream_npm(upstream.clone())
-            .with_upstream_pypi(upstream)
+            .with_upstream(Ecosystem::Npm, upstream.clone())
+            .with_upstream(Ecosystem::PyPI, upstream)
             .with_intel(intel)
             .with_policy(Some(policy(yaml)));
         let base = serve(proxy.router()).await;
@@ -3255,7 +3235,7 @@ mod tests {
     async fn a_snapshot_is_read_once_for_its_digest() {
         let store = refreshed("s1", "s1");
         let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream_npm("http://127.0.0.1:9")
+            .with_upstream(Ecosystem::Npm, "http://127.0.0.1:9")
             .with_intel(Some(store.clone()))
             .with_policy(Some(policy("version: 1\n")));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
@@ -3274,7 +3254,7 @@ mod tests {
         use crate::intel::store::testing::FixedIntel;
         let proxy = |intel: Option<Arc<dyn Intel>>, with_policy: bool| {
             let proxy = Proxy::new(reqwest::Client::new())
-                .with_upstream_npm("http://127.0.0.1:9")
+                .with_upstream(Ecosystem::Npm, "http://127.0.0.1:9")
                 .with_intel(intel);
             if with_policy {
                 proxy.with_policy(Some(policy("version: 1\n")))
@@ -3361,7 +3341,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_refuse_unservable(false)
                 .router(),
         )
@@ -3389,7 +3369,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
                      denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
@@ -3432,7 +3412,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
                      denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
@@ -3472,7 +3452,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
                      denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
@@ -3519,7 +3499,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_refuse_unservable(false)
                 .router(),
         )
@@ -3553,7 +3533,7 @@ mod tests {
             .await;
             let base = serve(
                 Proxy::new(reqwest::Client::new())
-                    .with_upstream_npm(upstream)
+                    .with_upstream(Ecosystem::Npm, upstream)
                     .with_policy(Some(policy(&format!(
                         "version: 1\ncooldown_days: 0\n\
                          denials:\n  - purl: {spelling}\n    reason: test\n"
@@ -3587,7 +3567,7 @@ mod tests {
 
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(format!("http://{addr}"))
+                .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
                 .router(),
         )
         .await;
@@ -3614,7 +3594,7 @@ mod tests {
         let addr = crate::util::test_support::closing_server().await;
         let dead = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(format!("http://{addr}"))
+                .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
                 .router(),
         )
         .await;
@@ -3642,7 +3622,7 @@ mod tests {
         .await;
         let live = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_policy(Some(policy(
                     "version: 1\ncooldown_days: 0\n\
                      denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
@@ -3719,7 +3699,7 @@ mod tests {
         let upstream = serve(router).await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .router(),
         )
         .await;
@@ -3790,7 +3770,7 @@ mod tests {
         );
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(serve(router).await)
+                .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
         .await;
@@ -3857,7 +3837,7 @@ mod tests {
         );
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(serve(router).await)
+                .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
         .await;
@@ -4020,7 +4000,7 @@ mod tests {
             );
         serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(serve(router).await)
+                .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
         .await
@@ -4187,7 +4167,7 @@ mod tests {
         // Every other path, the packument included, 404s.
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(serve(router).await)
+                .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
         .await;
@@ -4257,7 +4237,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_refuse_unservable(false)
                 .router(),
         )
@@ -4311,7 +4291,7 @@ mod tests {
         );
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(serve(router).await)
+                .with_upstream(Ecosystem::Npm, serve(router).await)
                 .router(),
         )
         .await;
@@ -4431,7 +4411,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_public_base(Some("https://npm.corp.example/".into()))
                 .router(),
         )
@@ -4468,7 +4448,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_max_concurrent_documents(1)
                 .router(),
         )
@@ -4506,7 +4486,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_max_concurrent_documents(0)
                 .router(),
         )
@@ -4537,7 +4517,7 @@ mod tests {
         .await;
         let base = serve(
             Proxy::new(reqwest::Client::new())
-                .with_upstream_npm(upstream)
+                .with_upstream(Ecosystem::Npm, upstream)
                 .with_public_base(Some("https://npm.corp.example".into()))
                 .with_origin_policy([], ["https://cdn.example"])
                 .unwrap()
@@ -4590,11 +4570,11 @@ mod tests {
         let policy_first = Proxy::new(reqwest::Client::new())
             .with_origin_policy(["https://cdn.example"], ["https://direct.example"])
             .expect("valid origins")
-            .with_upstream_npm("https://npm.mirror.example/")
-            .with_upstream_pypi("https://pypi.mirror.example/simple");
+            .with_upstream(Ecosystem::Npm, "https://npm.mirror.example/")
+            .with_upstream(Ecosystem::PyPI, "https://pypi.mirror.example/simple");
         let upstreams_first = Proxy::new(reqwest::Client::new())
-            .with_upstream_npm("https://npm.mirror.example/")
-            .with_upstream_pypi("https://pypi.mirror.example/simple")
+            .with_upstream(Ecosystem::Npm, "https://npm.mirror.example/")
+            .with_upstream(Ecosystem::PyPI, "https://pypi.mirror.example/simple")
             .with_origin_policy(["https://cdn.example"], ["https://direct.example"])
             .expect("valid origins");
         assert_eq!(origins(&policy_first), origins(&upstreams_first));
@@ -4625,24 +4605,37 @@ mod tests {
     #[test]
     #[should_panic(expected = "upstream is not a usable origin")]
     fn an_upstream_with_no_host_is_refused() {
-        let _ = Proxy::new(reqwest::Client::new()).with_upstream_npm("not a url");
+        let _ = Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, "not a url");
     }
 
     #[test]
     fn the_upstream_base_drops_a_trailing_slash() {
-        let proxy =
-            Proxy::new(reqwest::Client::new()).with_upstream_npm("https://registry.npmjs.org/");
-        assert_eq!(proxy.upstream_npm(), "https://registry.npmjs.org");
-        assert_eq!(proxy.upstream_pypi(), pypi::INDEX);
-        let proxy = proxy.with_upstream_pypi("https://mirror.example/simple/");
-        assert_eq!(proxy.upstream_pypi(), "https://mirror.example/simple");
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org/");
+        assert_eq!(
+            proxy.upstreams().get(Ecosystem::Npm),
+            "https://registry.npmjs.org"
+        );
+        assert_eq!(proxy.upstreams().get(Ecosystem::PyPI), pypi::INDEX);
+        let proxy = proxy.with_upstream(Ecosystem::PyPI, "https://mirror.example/simple/");
+        assert_eq!(
+            proxy.upstreams().get(Ecosystem::PyPI),
+            "https://mirror.example/simple"
+        );
+        assert_eq!(
+            proxy.upstreams().to_string(),
+            "npm=https://registry.npmjs.org pypi=https://mirror.example/simple"
+        );
+        let both = Proxy::new(reqwest::Client::new()).with_upstreams(proxy.upstreams().clone());
+        assert_eq!(both.upstreams(), proxy.upstreams());
     }
 
     mod routing {
         use super::*;
 
         fn proxy() -> Proxy {
-            Proxy::new(reqwest::Client::new()).with_upstream_npm("https://registry.npmjs.org")
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, "https://registry.npmjs.org")
         }
 
         fn upstream_of(path: &str) -> String {
@@ -4693,7 +4686,8 @@ mod tests {
                 "https://pypi.org/simple/requests/"
             );
             assert_eq!(upstream_of("/simple/"), "https://pypi.org/simple/");
-            let proxy = proxy().with_upstream_pypi("https://mirror.example/pypi/simple");
+            let proxy =
+                proxy().with_upstream(Ecosystem::PyPI, "https://mirror.example/pypi/simple");
             assert_eq!(
                 upstream_url(&proxy, Ecosystem::PyPI, "/simple/requests/", None),
                 "https://mirror.example/pypi/simple/requests/"

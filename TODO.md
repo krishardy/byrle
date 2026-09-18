@@ -426,7 +426,7 @@ That is the failure mode every item below should be brought to.
 
       | Where | What | Why it stayed |
       |---|---|---|
-      | `proxy.rs` | the `match` arms in `upstream_url` and `handle`'s `match document`, each one call into the ecosystem module | each picks a `Proxy` field or a reader per ecosystem |
+      | `proxy.rs` | `handle`'s `match document`, each arm one call into the ecosystem module | each picks a reader per document kind |
       | `intel/providers/` | npm-only stream bindings | the directory is per **provider**, and step 4 makes each provider read more than npm rather than moving the file |
       | `doctor.rs` | finding text naming `npm ci` and "every client except npm" | measured npm behaviour, reported as such |
       | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_PACKUMENT_BYTES` and the other variable names | configuration an operator already sets |
@@ -439,8 +439,7 @@ That is the failure mode every item below should be brought to.
       |---|---|
       | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher`. `PyPI/all.zip` on 2026-09-18: 7,253 `PYSEC-`, 491 with no `GHSA-` counterpart; the PyPA database's licence is not in `advisory-stream-licences.md`. Belongs with step 4 |
       | `policy/selector.rs` `decompose` | rejoins `namespace/name`, repeating `PackageKey::registry_name`; it cannot call `PackageKey` as is, because it takes any purl type and an optional version |
-      | `proxy.rs`, `env.rs`, `startup.rs`, `ecosystem.rs` `Clients` | the npm and PyPI upstreams are passed through four places as named pairs, not keyed by `Ecosystem` |
-      | `proxy.rs` `Proxy::health` | reports `upstream_npm` only |
+      | `proxy.rs` `Proxy::health` | `upstream` reports npm's upstream only |
       | `startup.rs` `report_policy` | the cooldown cost warning describes npm's full packument; it is not gated on `PublishTimeSource::FullPackument` |
       | `env.rs` | `HOME` and `BUN_INSTALL_CACHE_DIR` are read only by `npm/clients.rs`; `NPM_CORPUS` and `NPM_CORPUS_FULL` only by npm's corpus test |
       | `record.rs` | `DocumentDetail::{Abbreviated, Full}` and `Provenance`'s fields are npm packument concepts in the shared record |
@@ -459,6 +458,8 @@ That is the failure mode every item below should be brought to.
       an intel row stores its package name as the ecosystem compares names
       (`Affected::new`, `Ranged::new`), so Datadog's `SentinelOne` and GitHub's
       `jupyter_server` are found by the PyPI keys `sentinelone` and `jupyter-server`;
+      each row names its upstream variable and URL rule, and `Upstreams` holds one base
+      per ecosystem in the environment, the clients and the proxy;
       the startup log's setup lines come from `Registry::setup`;
       `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
       constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.
@@ -479,7 +480,7 @@ That is the failure mode every item below should be brought to.
       decide-then-act split replaces: the decisions get names and the acting reads them.
 
 - [ ] **`Proxy` is 19 fields and 14 builders, cloned per request.**
-      Configuration (`upstream`, `upstream_pypi`, `refuse_unservable`,
+      Configuration (`upstreams`, `refuse_unservable`,
       `max_packument_bytes`, `rewrite_artifacts`, `public_base`), transport (`client`,
       `registry`, `index`), caches (`store`, `verified`, `publish_times`) and decision
       (`policy`, `intel`, `audit`, `refusal`) in one struct.

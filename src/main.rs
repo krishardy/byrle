@@ -163,8 +163,7 @@ async fn run_daemon() -> std::process::ExitCode {
 
     info!(
         listen = %listen,
-        upstream_npm = %proxy.upstream_npm(),
-        upstream_pypi = %proxy.upstream_pypi(),
+        upstreams = %proxy.upstreams(),
         artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
         allowed_direct = ?proxy.origin_policy().allowed_direct(),
         "waharoa listening"

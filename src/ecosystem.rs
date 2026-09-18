@@ -22,7 +22,7 @@ pub mod npm;
 pub mod pypi;
 
 use crate::doctor::Client;
-use crate::env::{Env, EnvError};
+use crate::env::{Env, EnvError, Var};
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
 use crate::intel::range::VersionOrder;
 use crate::intel::stream::{self, Stream};
@@ -30,6 +30,7 @@ use crate::lockfile::{Lockfile, Unread};
 use crate::policy::facts::PublishTimes;
 use crate::record::PackageMetadata;
 use crate::route::{DocumentKind, RequestTarget};
+use std::collections::BTreeMap;
 
 /// Metadata the proxy fetched on its own behalf, as records. The outer error is the fetch,
 /// the inner one the document; both are said in the log and neither is propagated.
@@ -47,17 +48,12 @@ pub struct Clients {
 }
 
 impl Clients {
-    /// `npm_registry` and `pypi_index` are base URLs; a trailing slash is accepted.
-    /// `max_bytes` bounds each decoded body.
-    pub fn new(
-        http: reqwest::Client,
-        npm_registry: &str,
-        pypi_index: &str,
-        max_bytes: usize,
-    ) -> Self {
+    /// A client for each upstream. `max_bytes` bounds each decoded body.
+    pub fn new(http: reqwest::Client, upstreams: &Upstreams, max_bytes: usize) -> Self {
         Self {
-            npm: npm::Client::new(http.clone(), npm_registry).with_max_bytes(max_bytes),
-            pypi: pypi::Client::new(http, pypi_index).with_max_bytes(max_bytes),
+            npm: npm::Client::new(http.clone(), upstreams.get(Ecosystem::Npm))
+                .with_max_bytes(max_bytes),
+            pypi: pypi::Client::new(http, upstreams.get(Ecosystem::PyPI)).with_max_bytes(max_bytes),
         }
     }
 
@@ -67,8 +63,7 @@ impl Clients {
     ) -> Result<Self, EnvError> {
         Ok(Self::new(
             reqwest::Client::new(),
-            &environment.upstream_npm()?,
-            &environment.upstream_pypi()?,
+            &environment.upstreams()?,
             environment.max_packument_bytes()?,
         ))
     }
@@ -207,6 +202,70 @@ pub struct Registry {
 
     /// A name as a policy selector compares it, prefix or exact.
     pub canonical_name: fn(&str) -> String,
+
+    /// The variable naming where this ecosystem's requests are forwarded. Its default is
+    /// the ecosystem's public registry.
+    pub upstream: Var,
+
+    /// Where a request path goes, given the upstream base.
+    pub upstream_url: fn(&str, &str) -> String,
+}
+
+/// Each served ecosystem's upstream base, with no trailing slash.
+///
+/// One entry per row of [`TABLE`], so [`Upstreams::get`] has an answer for every ecosystem
+/// the proxy routes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Upstreams(BTreeMap<Ecosystem, String>);
+
+impl Upstreams {
+    /// Each ecosystem's public registry.
+    pub fn defaults() -> Self {
+        Self(
+            TABLE
+                .iter()
+                .map(|registry| {
+                    let base = registry
+                        .upstream
+                        .default_text()
+                        .expect("an upstream variable names its default");
+                    (registry.ecosystem, trimmed(base))
+                })
+                .collect(),
+        )
+    }
+
+    /// These upstreams with `ecosystem`'s at `base`. A trailing slash is accepted.
+    pub fn with(mut self, ecosystem: Ecosystem, base: &str) -> Self {
+        self.0.insert(ecosystem, trimmed(base));
+        self
+    }
+
+    /// `ecosystem`'s upstream base.
+    pub fn get(&self, ecosystem: Ecosystem) -> &str {
+        &self.0[&ecosystem]
+    }
+
+    /// Every upstream base, in ecosystem order.
+    pub fn bases(&self) -> impl Iterator<Item = &str> {
+        self.0.values().map(String::as_str)
+    }
+}
+
+/// `npm=https://registry.npmjs.org pypi=https://pypi.org/simple`.
+impl std::fmt::Display for Upstreams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let written: Vec<String> = self
+            .0
+            .iter()
+            .map(|(ecosystem, base)| format!("{ecosystem}={base}"))
+            .collect();
+        f.write_str(&written.join(" "))
+    }
+}
+
+fn trimmed(base: &str) -> String {
+    base.trim_end_matches('/').to_owned()
 }
 
 /// `name` as `ecosystem`, a purl type, compares it: a PyPI name PEP 503 normalised, an npm
@@ -274,6 +333,8 @@ pub const NPM: Registry = Registry {
     versions: VersionOrder::SemVer,
     split_name: npm::paths::split_name,
     canonical_name: npm::paths::canonical_name,
+    upstream: crate::env::UPSTREAM_NPM,
+    upstream_url: npm::paths::upstream_url,
 };
 
 pub const PYPI: Registry = Registry {
@@ -309,6 +370,8 @@ pub const PYPI: Registry = Registry {
     versions: VersionOrder::Pep440,
     split_name: pypi::paths::split_name,
     canonical_name: pypi::paths::canonical_name,
+    upstream: crate::env::UPSTREAM_PYPI,
+    upstream_url: pypi::paths::upstream_url,
 };
 
 /// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row
@@ -494,12 +557,11 @@ mod table {
     /// client points at an address nothing listens on, so any request would fail.
     #[tokio::test]
     async fn publish_times_for_pypi_ask_nothing() {
-        let clients = Clients::new(
-            reqwest::Client::new(),
-            "http://127.0.0.1:9",
-            "http://127.0.0.1:9",
-            1024,
-        );
+        let nowhere = "http://127.0.0.1:9";
+        let upstreams = Upstreams::defaults()
+            .with(Ecosystem::Npm, nowhere)
+            .with(Ecosystem::PyPI, nowhere);
+        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
         let idna = "pkg:pypi/idna".parse().expect("a purl");
         assert_eq!(clients.publish_times(&idna).await, Ok(None));
         let lodash = "pkg:npm/lodash".parse().expect("a purl");
