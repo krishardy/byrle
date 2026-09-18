@@ -38,7 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The `source` every row from this module is stored under.
 pub const SOURCE: &str = "osv";
 
-const NPM: &str = "npm";
+const NPM: &str = crate::identity::Ecosystem::Npm.as_str();
 
 /// Why a record produced no rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

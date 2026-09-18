@@ -114,6 +114,23 @@ pub enum PublishTimeSource {
     FullPackument,
 }
 
+/// How an operator points this ecosystem's main client at the proxy.
+pub struct Setup {
+    /// The client.
+    pub client: &'static str,
+    /// The command that sets its registry, before the address.
+    pub command: &'static str,
+    /// The path the proxy serves this ecosystem under, after the address.
+    pub path: &'static str,
+}
+
+impl Setup {
+    /// The command line for a proxy listening on `listen`.
+    pub fn command_line(&self, listen: &str) -> String {
+        format!("{} http://{listen}{}", self.command, self.path)
+    }
+}
+
 /// What one ecosystem answers.
 pub struct Registry {
     /// The ecosystem this row is for.
@@ -162,6 +179,9 @@ pub struct Registry {
 
     /// The package managers `waharoa doctor` checks for this ecosystem.
     pub clients: &'static [Client],
+
+    /// What the startup log tells an operator to run.
+    pub setup: Setup,
 }
 
 impl Registry {
@@ -208,6 +228,11 @@ pub const NPM: Registry = Registry {
     lockfiles: npm::lockfile::LOCKFILES,
     unread_lockfiles: npm::lockfile::UNREAD,
     clients: npm::clients::CLIENTS,
+    setup: Setup {
+        client: npm::clients::NPM.name,
+        command: npm::clients::NPM.set_registry,
+        path: "/",
+    },
 };
 
 pub const PYPI: Registry = Registry {
@@ -215,7 +240,7 @@ pub const PYPI: Registry = Registry {
     // PEP 503 puts a project's index under `/simple/`. `/packages/` is where PyPI serves
     // its files, and the proxy keeps that path so a rewritten file URL round-trips: the
     // hash segments the index published are what locate the file upstream.
-    prefixes: &["/simple/", "/packages/"],
+    prefixes: &[pypi::SIMPLE, "/packages/"],
     always_reachable: &[pypi::INDEX, pypi::FILES],
     classify_path: pypi::classify_path,
     read_media_type: pypi::document_from_content_type,
@@ -231,6 +256,11 @@ pub const PYPI: Registry = Registry {
     unread_lockfiles: &[],
     // pip and uv are not checked yet: TODO.md, "`doctor` checks five npm clients".
     clients: &[],
+    setup: Setup {
+        client: "pip",
+        command: "pip config set global.index-url",
+        path: pypi::SIMPLE,
+    },
 };
 
 /// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row
@@ -311,6 +341,21 @@ mod table {
         ] {
             assert_eq!(serving(path).ecosystem, Ecosystem::PyPI, "{path}");
         }
+    }
+
+    #[test]
+    fn each_setup_line_points_its_client_at_the_proxy() {
+        let lines: Vec<String> = TABLE
+            .iter()
+            .map(|registry| registry.setup.command_line("127.0.0.1:8080"))
+            .collect();
+        assert_eq!(
+            lines,
+            [
+                "npm config set registry http://127.0.0.1:8080/",
+                "pip config set global.index-url http://127.0.0.1:8080/simple/",
+            ]
+        );
     }
 
     #[test]

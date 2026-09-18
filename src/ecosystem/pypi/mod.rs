@@ -52,6 +52,9 @@ pub use wire::{File, Kind, Project, parse};
 /// What `waharoa` sends to ask for JSON rather than HTML. PEP 691.
 pub const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 
+/// The path prefix PEP 503 puts a project's index under.
+pub const SIMPLE: &str = "/simple/";
+
 /// The index this build reads.
 pub const INDEX: &str = "https://pypi.org/simple";
 

@@ -433,6 +433,31 @@ That is the failure mode every item below should be brought to.
       | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_PACKUMENT_BYTES` and the other variable names | configuration an operator already sets |
       | `identity.rs`, `route.rs` | `Ecosystem::Npm`, `Ecosystem::PyPI`, `DocumentKind::Packument`, `DocumentKind::SimpleIndex` | the enums that name each ecosystem and its document |
 
+- [ ] **npm and PyPI code outside `src/ecosystem/`, found 2026-09-18 at `6b43f92`.**
+      Not in the table above. Non-test code only.
+
+      | Where | What is ecosystem-specific |
+      |---|---|
+      | `proxy.rs` `handle`, `match document` | the `SimpleIndex` arm calls `pypi::read_index` and returns; only a packument reaches intel and `policy_refused_versions`, so a PyPI index is not filtered |
+      | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher` |
+      | `intel/range.rs`, `intel/store.rs` `PackageIntel::for_version` | every version and range is read as SemVer; a PEP 440 version matches no range |
+      | `identity.rs` `PackageKey::from_registry_name` | npm's `@scope/name` split runs for every ecosystem, with the error "not a valid npm package name"; `npm/paths.rs::key_from_name` holds the other half of the rule |
+      | `identity.rs` `split_encoded_scope` | repairs OSV's `pkg:npm/%40scope%2Fname` on every purl parse, not only npm ones |
+      | `policy/selector.rs` `looks_like_a_range` | knows npm's range operators only, not PEP 440's `~=`, `!=`, `===` or `.*` |
+      | `policy/selector.rs` `Canonical::matches` | exact name comparison; no PEP 503 normalisation for PyPI |
+      | `intel/snapshot_intel.rs` `key_of`, `intel/postgres.rs` `package()` | advisories looked up by exact `registry_name()`, with no per-ecosystem normalisation |
+      | `policy/selector.rs` `decompose` | rejoins `namespace/name`, repeating `PackageKey::registry_name`; it cannot call `PackageKey` as is, because it takes any purl type and an optional version |
+      | `proxy.rs`, `env.rs`, `startup.rs`, `ecosystem.rs` `Clients` | the npm and PyPI upstreams are passed through four places as named pairs, not keyed by `Ecosystem` |
+      | `proxy.rs` `Proxy::health` | reports `upstream_npm` only |
+      | `startup.rs` `report_policy` | the cooldown cost warning describes npm's full packument; it is not gated on `PublishTimeSource::FullPackument` |
+      | `env.rs` | `HOME` and `BUN_INSTALL_CACHE_DIR` are read only by `npm/clients.rs`; `NPM_CORPUS` and `NPM_CORPUS_FULL` only by npm's corpus test |
+      | `record.rs` | `DocumentDetail::{Abbreviated, Full}` and `Provenance`'s fields are npm packument concepts in the shared record |
+      | `defer.rs` | `Scope::{Packument, Tarball}` names generic targets in npm's words |
+
+      Fixed 2026-09-18: the startup log's setup lines come from `Registry::setup`;
+      `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
+      constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.
+
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 
       | Measure | Value |

@@ -82,14 +82,22 @@ impl fmt::Display for Finding {
     }
 }
 
+/// How a client is asked for its registry.
+pub struct RegistryQuery {
+    /// Arguments that make the client print the registry it resolves to.
+    pub args: &'static [&'static str],
+    /// What the client prints for a key with no value.
+    pub unset: &'static str,
+}
+
 /// A package manager `doctor` checks, as its ecosystem's row in
 /// [`crate::ecosystem::TABLE`] lists it.
 pub struct Client {
     /// The program, and the name findings use.
     pub name: &'static str,
-    /// Arguments that make the client print the registry it resolves to. `None` for a client
-    /// whose registry is not checked.
-    pub registry: Option<&'static [&'static str]>,
+    /// How to ask the client for the registry it resolves to. `None` for a client whose
+    /// registry is not checked.
+    pub registry: Option<RegistryQuery>,
     /// The command that points the client at a registry, before the address.
     pub set_registry: &'static str,
     pub cache: CacheLocation,
@@ -667,10 +675,10 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
     }
 
     for client in clients() {
-        if let Some(args) = client.registry {
+        if let Some(query) = &client.registry {
             findings.push(check_registry(
                 client,
-                probe::configured_registry(client, args).as_deref(),
+                probe::configured_registry(client, query).as_deref(),
                 &proxy,
             ));
         }
@@ -727,7 +735,7 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
 
 /// Asking an installed client about itself. The one part of `doctor` that runs programs.
 pub mod probe {
-    use super::{CacheLocation, Client};
+    use super::{CacheLocation, Client, RegistryQuery};
     use crate::env::{EnvError, Process};
     use std::path::PathBuf;
 
@@ -745,13 +753,12 @@ pub mod probe {
         (!printed.is_empty()).then_some(printed)
     }
 
-    /// The registry a client is configured to use, asked with `args`.
+    /// The registry a client is configured to use, asked with `query`.
     ///
-    /// Its own resolved configuration, not a file this could read: the effective value
-    /// comes from a project `.npmrc`, then the user's, then the global one, and only the
-    /// client knows which won. npm prints `undefined` for a key with no value.
-    pub fn configured_registry(client: &Client, args: &[&str]) -> Option<String> {
-        ask(client.name, args).filter(|value| value != "undefined")
+    /// Its own resolved configuration, not a file this could read: only the client knows
+    /// which of its configuration files set the value.
+    pub fn configured_registry(client: &Client, query: &RegistryQuery) -> Option<String> {
+        ask(client.name, query.args).filter(|value| value != query.unset)
     }
 
     /// Where a client keeps its cache. `Ok(None)` when the client does not say, or no home
@@ -854,9 +861,13 @@ pub mod probe {
                 args: &[],
                 under: None,
             });
-            assert_eq!(configured_registry(&client, &["undefined"]), None);
+            let query = |args| RegistryQuery {
+                args,
+                unset: "undefined",
+            };
+            assert_eq!(configured_registry(&client, &query(&["undefined"])), None);
             assert_eq!(
-                configured_registry(&client, &["http://proxy/"]).as_deref(),
+                configured_registry(&client, &query(&["http://proxy/"])).as_deref(),
                 Some("http://proxy/")
             );
         }

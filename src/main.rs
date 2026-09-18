@@ -169,8 +169,14 @@ async fn run_daemon() -> std::process::ExitCode {
         allowed_direct = ?proxy.origin_policy().allowed_direct(),
         "waharoa listening"
     );
-    info!("point npm at it with:  npm config set registry http://{listen}/");
-    info!("point pip at it with:  pip config set global.index-url http://{listen}/simple/");
+    for registry in waharoa::ecosystem::TABLE {
+        let setup = &registry.setup;
+        info!(
+            "point {} at it with:  {}",
+            setup.client,
+            setup.command_line(&listen)
+        );
+    }
 
     axum::serve(listener, proxy.router())
         .await
