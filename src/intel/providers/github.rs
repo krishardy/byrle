@@ -28,7 +28,7 @@ pub const MAX_BYTES: usize = 64 << 20;
 /// Advisories per page. 100 is GitHub's maximum for a connection.
 pub const PAGE: usize = 100;
 
-const NPM: &str = "npm";
+const NPM: &str = crate::identity::Ecosystem::Npm.as_str();
 
 /// The query `waharoa refresh` sends, once per page.
 ///

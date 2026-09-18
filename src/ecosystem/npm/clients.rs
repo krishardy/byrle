@@ -1,10 +1,30 @@
 //! The package managers that install from an npm registry, as `waharoa doctor` checks them.
 
-use crate::doctor::{CacheBypass, CacheLocation, Client};
+use crate::doctor::{CacheBypass, CacheLocation, Client, RegistryQuery};
 use crate::env::Process;
 
 /// npm, pnpm and yarn all read `registry` with `config get` and write it with `config set`.
-const CONFIG_GET_REGISTRY: &[&str] = &["config", "get", "registry"];
+/// Each prints `undefined` for a key with no value. The value comes from a project `.npmrc`,
+/// then the user's, then the global one.
+const CONFIG_GET_REGISTRY: RegistryQuery = RegistryQuery {
+    args: &["config", "get", "registry"],
+    unset: "undefined",
+};
+
+/// npm itself. The startup log's setup line for npm reads this row.
+pub const NPM: Client = Client {
+    name: "npm",
+    registry: Some(CONFIG_GET_REGISTRY),
+    set_registry: "npm config set registry",
+    // npm's cache directory holds _cacache, and every cached response is one file
+    // under its index.
+    cache: CacheLocation::Asked {
+        args: &["config", "get", "cache"],
+        under: Some("_cacache/index-v5"),
+    },
+    bypass: CacheBypass::Complete,
+    clear_cache: "npm cache clean --force",
+};
 
 /// What `bypass` is for each client was measured by installing the same package twice
 /// through the proxy with one cache, and counting what the proxy saw the second time:
@@ -14,19 +34,7 @@ const CONFIG_GET_REGISTRY: &[&str] = &["config", "get", "registry"];
 /// | npm 11, pnpm 10, bun 1.3 | nothing reached the proxy |
 /// | yarn 1, yarn 4 | the packument did, the artifact did not |
 pub const CLIENTS: &[Client] = &[
-    Client {
-        name: "npm",
-        registry: Some(CONFIG_GET_REGISTRY),
-        set_registry: "npm config set registry",
-        // npm's cache directory holds _cacache, and every cached response is one file
-        // under its index.
-        cache: CacheLocation::Asked {
-            args: &["config", "get", "cache"],
-            under: Some("_cacache/index-v5"),
-        },
-        bypass: CacheBypass::Complete,
-        clear_cache: "npm cache clean --force",
-    },
+    NPM,
     Client {
         name: "pnpm",
         registry: Some(CONFIG_GET_REGISTRY),
