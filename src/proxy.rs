@@ -79,7 +79,7 @@ use axum::{
 use bytes::{Bytes, BytesMut};
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -139,8 +139,13 @@ pub struct Health {
     /// Always "waharoa", so a response from something else is recognisable as such.
     pub service: String,
     pub version: String,
-    /// The registry this forwards to.
+    /// npm's upstream. Kept under this name for a `doctor` from an earlier build, which
+    /// reads it; `upstreams` has every ecosystem's.
     pub upstream: String,
+    /// Each ecosystem's upstream, by purl type. Absent from a proxy built before
+    /// 2026-09-19, which reported npm's alone, in `upstream`.
+    #[serde(default)]
+    pub upstreams: BTreeMap<String, String>,
     /// The address written into artifact URLs, when one is configured. `None` means each
     /// request's own `Host` is used, and that address is what lockfiles record.
     pub public_base: Option<String>,
@@ -340,6 +345,11 @@ impl Proxy {
             service: "waharoa".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             upstream: self.upstreams.get(Ecosystem::Npm).to_owned(),
+            upstreams: self
+                .upstreams
+                .iter()
+                .map(|(ecosystem, base)| (ecosystem.as_str().to_owned(), base.to_owned()))
+                .collect(),
             public_base: self.public_base.clone(),
             rewrite_artifacts: self.rewrite_artifacts,
             refuse_unservable: self.refuse_unservable,
