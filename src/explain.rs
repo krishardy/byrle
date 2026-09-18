@@ -387,7 +387,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
 mod run_tests {
     use super::*;
     use crate::env::testing::with;
-    use crate::test_support::{Answer, scripted, tempdir};
+    use crate::util::test_support::{Answer, scripted, tempdir};
 
     fn written(label: &str, yaml: &str) -> std::path::PathBuf {
         let dir = tempdir(label);

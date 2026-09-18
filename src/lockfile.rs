@@ -121,7 +121,7 @@ pub fn read(path: &Path) -> Result<Vec<Locked>, LockfileError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::tempdir;
+    use crate::util::test_support::tempdir;
 
     fn npm(name: &str, version: &str) -> Locked {
         ("npm".to_owned(), name.to_owned(), version.to_owned())

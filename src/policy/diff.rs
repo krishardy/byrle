@@ -530,7 +530,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
 mod run_tests {
     use super::*;
     use crate::env::testing::with;
-    use crate::test_support::{Answer, scripted, tempdir};
+    use crate::util::test_support::{Answer, scripted, tempdir};
 
     /// Two policies on disk, and a lockfile naming one package the scripted registry
     /// publishes.

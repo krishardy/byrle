@@ -400,7 +400,7 @@ mod tests {
     /// A policy that loads is in force, and its exceptions are reported.
     #[tokio::test]
     async fn a_policy_that_loads_is_carried_into_the_proxy() {
-        let dir = crate::test_support::tempdir("startup-policy");
+        let dir = crate::util::test_support::tempdir("startup-policy");
         let path = dir.join("policy.yaml");
         std::fs::write(&path, "version: 1\ncooldown_days: 7\n").expect("writes");
         let started = proxy(&with(&[(env::POLICY, &path.display().to_string())]))

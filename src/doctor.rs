@@ -822,7 +822,7 @@ pub mod probe {
         /// The proxy's own JSON, or `None` when nothing there answers with it.
         #[tokio::test]
         async fn the_proxy_is_asked_about_itself() {
-            use crate::test_support::{Answer, closing_server, scripted};
+            use crate::util::test_support::{Answer, closing_server, scripted};
 
             let serving = scripted(vec![Answer::body(r#"{"ready":true}"#)]).await;
             let answer: Option<serde_json::Value> =
@@ -883,7 +883,7 @@ pub mod probe {
 
         #[test]
         fn a_cache_is_warm_only_when_it_holds_a_file() {
-            let dir = crate::test_support::tempdir("doctor-warm-cache");
+            let dir = crate::util::test_support::tempdir("doctor-warm-cache");
             let path: &'static str = Box::leak(dir.display().to_string().into_boxed_str());
             let args: &'static [&'static str] = Box::leak(Box::new([path]));
             let client = echoing(CacheLocation::Asked { args, under: None });

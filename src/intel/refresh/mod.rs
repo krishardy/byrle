@@ -304,7 +304,7 @@ mod tests {
     /// refresh for as long as the host keeps the connection open.
     #[tokio::test]
     async fn a_stalled_body_times_out() {
-        let addr = crate::test_support::stalling_server().await;
+        let addr = crate::util::test_support::stalling_server().await;
         let client = http_client(Duration::from_millis(100)).expect("a client");
         let response = client
             .get(format!("http://{addr}/all.zip"))

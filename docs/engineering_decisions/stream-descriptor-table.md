@@ -53,7 +53,7 @@ Everything a descriptor holds is decidable from the bytes, so `src/intel/stream.
 100% lines with no network.
 
 The requests are `src/intel/fetch.rs`, tested against a local server rather than the real
-one: `test_support::scripted` answers with a status, a body, a body whose `Content-Length`
+one: `util::test_support::scripted` answers with a status, a body, a body whose `Content-Length`
 lies, a chunked body with no length at all, or a closed connection, which is every case the
 ceilings and the retries branch on. What needs the real network and Postgres stays in the
 binary: which streams to fetch, the transaction and the printing.

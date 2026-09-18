@@ -266,7 +266,7 @@ mod tests {
     use super::*;
     use crate::policy::Policy;
     use crate::policy::decide::{Facts, Intel, decide};
-    use crate::test_support::tempdir;
+    use crate::util::test_support::tempdir;
 
     fn facts() -> Facts {
         Facts {
