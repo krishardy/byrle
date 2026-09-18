@@ -27,8 +27,14 @@ kev: block
 # Known malware always blocks. It is not listed here because it cannot be configured and
 # cannot be excepted.
 
-# Explicitly forbidden, whatever anything else says. Exact versions, permanent, absolute.
-# There is no `expires` field on a denial, so an expiring one cannot be written.
+# Explicitly forbidden, whatever anything else says. Permanent and absolute. There is no
+# `expires` field on a denial, so an expiring one cannot be written.
+#
+# One version goes in the purl. A range goes in `version` as VERS, the same way in every
+# ecosystem, and then refuses every version it covers, future ones included:
+#   - purl: "pkg:npm/lodash"
+#     version: "vers:npm/<4.17.21"
+#     reason: "prototype pollution"
 denials:
   - purl: "pkg:npm/chalk@5.6.1"
     reason: "compromised release, Sept 2025"

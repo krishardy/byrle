@@ -204,6 +204,9 @@ pub struct Registry {
     /// A registry name as a purl namespace and name. [`PackageKey::from_registry_name`]
     /// calls it after refusing an empty name.
     pub split_name: SplitName,
+
+    /// A name as a policy selector compares it, prefix or exact.
+    pub canonical_name: fn(&str) -> String,
 }
 
 /// See [`Registry::split_name`].
@@ -261,6 +264,7 @@ pub const NPM: Registry = Registry {
     uncovered_metadata: UncoveredMetadata::Refuse,
     versions: VersionOrder::SemVer,
     split_name: npm::paths::split_name,
+    canonical_name: npm::paths::canonical_name,
 };
 
 pub const PYPI: Registry = Registry {
@@ -295,6 +299,7 @@ pub const PYPI: Registry = Registry {
     uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
     versions: VersionOrder::Pep440,
     split_name: pypi::paths::split_name,
+    canonical_name: pypi::paths::canonical_name,
 };
 
 /// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row

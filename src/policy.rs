@@ -27,6 +27,7 @@ pub mod merge;
 pub mod packages;
 pub mod selector;
 pub mod strictness;
+pub mod vers;
 
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
@@ -94,7 +95,7 @@ pub enum PolicyError {
     Overlapping(selector::OverlapError),
     /// A denial does not name one exact version.
     DenialNeedsAVersion { at: String, purl: String },
-    /// A denial's purl could not be read.
+    /// A denial's purl or version could not be read.
     UnreadableDenial {
         at: String,
         source: selector::SelectorError,
@@ -139,7 +140,10 @@ impl fmt::Display for PolicyError {
             Self::Overlapping(e) => write!(f, "{e}"),
             Self::DenialNeedsAVersion { at, purl } => write!(
                 f,
-                "{at} denies `{purl}`, which names no version. A denial is permanent and                  absolute, so it is written against one exact version: `{purl}@<version>`.                  Without one it would match nothing and read as a package that had been                  dealt with"
+                "{at} denies `{purl}`, which names no version. A denial is permanent and \
+                 absolute, so it names what it refuses: one version, `{purl}@<version>`, or \
+                 a VERS range in `version`. Without either it would match nothing and read \
+                 as a package that had been dealt with"
             ),
             Self::UnreadableDenial { at, source } => write!(f, "{at}: {source}"),
             Self::ScoreOutOfRange { at, found } => {
@@ -320,25 +324,23 @@ impl Policy {
                 .any(|entry| entry.set.cooldown_days.is_some_and(|days| days > 0))
     }
 
-    /// A denial names one exact version, or the file does not load.
+    /// Every denial names one version, in its purl, or a VERS range, in `version`, or the
+    /// file does not load.
     ///
-    /// `decide` matches denials by parsing the purl, so a denial with no version matches
-    /// nothing. Refusing it at load is the difference between a policy that is wrong and
-    /// a policy that is silently doing nothing.
+    /// A denial with no version would match nothing. Refusing it at load is the difference
+    /// between a policy that is wrong and a policy that is silently doing nothing.
     fn check_denials(&self) -> Result<(), PolicyError> {
         for (i, denial) in self.denials.iter().enumerate() {
             let at = format!("denials[{i}]");
-            let (_, _, version) = selector::decompose(&denial.purl).map_err(|source| {
-                PolicyError::UnreadableDenial {
-                    at: at.clone(),
-                    source,
+            match selector::Canonical::of_denial(&denial.purl, denial.version.as_deref()) {
+                Ok(_) => {}
+                Err(selector::SelectorError::NoVersion) => {
+                    return Err(PolicyError::DenialNeedsAVersion {
+                        at,
+                        purl: denial.purl.clone(),
+                    });
                 }
-            })?;
-            if version.is_none() {
-                return Err(PolicyError::DenialNeedsAVersion {
-                    at,
-                    purl: denial.purl.clone(),
-                });
+                Err(source) => return Err(PolicyError::UnreadableDenial { at, source }),
             }
         }
         Ok(())
@@ -431,6 +433,18 @@ impl Policy {
         selector::check_overlaps(&canonical).map_err(PolicyError::Overlapping)
     }
 
+    /// What each denial refuses, as a selector. Parsing has already refused a denial that
+    /// does not read, so this cannot fail.
+    pub fn denial_selectors(&self) -> Vec<selector::Canonical> {
+        self.denials
+            .iter()
+            .map(|denial| {
+                selector::Canonical::of_denial(&denial.purl, denial.version.as_deref())
+                    .expect("a policy that loaded has readable denials")
+            })
+            .collect()
+    }
+
     /// Every package selector, canonicalised. Parsing has already refused the shapes that
     /// cannot be canonicalised, so this cannot fail.
     pub fn selectors(&self) -> Vec<selector::Canonical> {
@@ -506,7 +520,11 @@ impl<'de> Deserialize<'de> for ExpiryDate {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Denial {
+    /// The package, with `@version` when the denial is for one version.
     pub purl: String,
+    /// A VERS range, when the purl has no `@version`.
+    #[serde(default)]
+    pub version: Option<String>,
     pub reason: String,
 }
 
@@ -776,7 +794,7 @@ mod tests {
             (
                 "a denial",
                 "denials:\n  - purl: pkg:npm/x@1.0.0\n    unknown: r\n",
-                &["purl", "reason"],
+                &["purl", "version", "reason"],
             ),
             (
                 "a packages entry",
@@ -941,8 +959,18 @@ mod tests {
         assert!(message.contains("names no version"), "{message}");
         assert!(message.contains("pkg:npm/evil@<version>"), "{message}");
 
-        // The same denial with a version loads.
+        // The same denial with a version loads, and so does one with a VERS range.
         assert!(parse("denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: malware\n").is_ok());
+        assert!(
+            parse("denials:\n  - purl: pkg:npm/evil\n    version: \"vers:npm/<2.0.0\"\n    reason: m\n")
+                .is_ok()
+        );
+        let both = parse(
+            "denials:\n  - purl: pkg:npm/evil@1.0.0\n    version: \"vers:npm/<2.0.0\"\n    reason: m\n",
+        )
+        .expect_err("a version written twice must not load");
+        assert!(both.to_string().contains("denials[0]"), "{both}");
+        assert!(both.to_string().contains("Write it once"), "{both}");
     }
 
     #[test]

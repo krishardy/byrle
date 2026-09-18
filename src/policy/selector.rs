@@ -9,11 +9,17 @@
 //!
 //! A selector accepting arbitrary version ranges or arbitrary glob syntax would reopen
 //! exactly what that claim depends on: nobody can decide whether `^1.2` contains `>=1.0,
-//! <2` without range algebra, and the answer for `a*` against `*b` needs a matcher. So
-//! both are restricted at load rather than admitted and then compared by guesswork:
+//! <2` without each ecosystem's range algebra, and the answer for `a*` against `*b` needs a
+//! matcher. So both are restricted at load rather than admitted and then compared by
+//! guesswork:
 //!
 //! - a name is `*`, `prefix*`, or a literal. A `*` anywhere else is refused.
-//! - a version is an exact version or absent. A range is refused.
+//! - a version is an exact version, a VERS range, or absent. A VERS range is a union of
+//!   intervals over the ecosystem's version order, so containment is decided on the
+//!   intervals ([`super::vers`]). Every other range notation is refused.
+//!
+//! Names and versions are compared the ecosystem's way: a PyPI name by PEP 503, so
+//! `Django` is `django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`.
 //!
 //! Admitting them and reporting "incomparable" would be worse than refusing them: the
 //! load-time check for overlapping entries could no longer fire either, so the policy
@@ -29,6 +35,8 @@
 //! the operator never sees.
 
 use super::Selector;
+use super::vers::{VersError, Versions};
+use crate::intel::range::VersionOrder;
 use std::fmt;
 
 /// Which package names a selector covers.
@@ -79,6 +87,17 @@ impl NamePattern {
     }
 }
 
+impl NamePattern {
+    /// This pattern with its name as `ecosystem` compares it.
+    fn canonical(self, ecosystem: &str) -> Self {
+        match self {
+            Self::Any => Self::Any,
+            Self::Prefix(p) => Self::Prefix(canonical_name(ecosystem, &p)),
+            Self::Exact(n) => Self::Exact(canonical_name(ecosystem, &n)),
+        }
+    }
+}
+
 impl fmt::Display for NamePattern {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -89,13 +108,33 @@ impl fmt::Display for NamePattern {
     }
 }
 
+/// The version dimension containment is decided on: [`Versions`] in a policy. The proofs
+/// below use a smaller set, because a set of parsed versions is more state than a proof
+/// unwinds in reasonable time, and what they prove is how the dimensions combine.
+pub trait VersionSet: Clone + PartialEq + fmt::Display {
+    /// Whether every version in this set is in `other`.
+    fn contained_by(&self, other: &Self) -> bool;
+    /// Whether some version is in both.
+    fn overlaps(&self, other: &Self) -> bool;
+}
+
+impl VersionSet for Versions {
+    fn contained_by(&self, other: &Self) -> bool {
+        Versions::contained_by(self, other)
+    }
+
+    fn overlaps(&self, other: &Self) -> bool {
+        Versions::overlaps(self, other)
+    }
+}
+
 /// A selector reduced to the four things containment is decided on.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Canonical {
+pub struct Canonical<V = Versions> {
     pub ecosystem: String,
     pub name: NamePattern,
-    /// An exact version, or every version.
-    pub version: Option<String>,
+    /// The versions it covers, or every version.
+    pub version: Option<V>,
     /// A predicate narrows a selector to the packages it holds for.
     pub has_install_scripts: Option<bool>,
 }
@@ -104,10 +143,26 @@ pub struct Canonical {
 #[derive(Debug, PartialEq)]
 pub enum SelectorError {
     BothPurlAndName,
+    /// A purl with `@version` beside a `version`.
+    PurlAndVersion,
+    /// A version or a VERS range that does not read.
+    Version(VersError),
+    /// A version for an ecosystem this build has no version order for.
+    UnorderedEcosystem(String),
+    /// A denial with neither `@version` in its purl nor a `version`.
+    NoVersion,
+    /// A denial's `version` that is not a VERS range.
+    DenialVersionNotARange(String),
     InteriorWildcard(String),
     VersionRange(String),
-    UnreadablePurl { purl: String, reason: String },
-    PurlEcosystemDiffers { purl: String, ecosystem: String },
+    UnreadablePurl {
+        purl: String,
+        reason: String,
+    },
+    PurlEcosystemDiffers {
+        purl: String,
+        ecosystem: String,
+    },
 }
 
 impl fmt::Display for SelectorError {
@@ -126,10 +181,28 @@ impl fmt::Display for SelectorError {
             ),
             Self::VersionRange(v) => write!(
                 f,
-                "`{v}` is a version range, and a selector takes an exact version or none. \
-                 Deciding whether one range contains another needs range algebra, and a \
-                 policy carrying pairs nobody can compare is one the overlap check cannot \
-                 report on"
+                "`{v}` is a version range in an ecosystem's own notation. A range is written \
+                 as VERS, such as `vers:npm/>=1.2.0|<2.0.0`, which reads the same in every \
+                 ecosystem"
+            ),
+            Self::PurlAndVersion => f.write_str(
+                "sets a version twice, in the purl's `@version` and in `version`. Write it \
+                 once",
+            ),
+            Self::Version(e) => write!(f, "{e}"),
+            Self::UnorderedEcosystem(ecosystem) => write!(
+                f,
+                "names a version for `{ecosystem}`, and this build has no version order for \
+                 it"
+            ),
+            Self::NoVersion => f.write_str(
+                "names no version. A denial refuses one version, `@version` in its purl, or \
+                 a VERS range in `version`",
+            ),
+            Self::DenialVersionNotARange(v) => write!(
+                f,
+                "`{v}` is one version, which a denial writes in its purl as `@{v}`. \
+                 `version` takes a VERS range, such as `vers:npm/<2.0.0`"
             ),
             Self::UnreadablePurl { purl, reason } => {
                 write!(f, "`{purl}` is not a readable purl: {reason}")
@@ -174,41 +247,86 @@ impl Canonical {
         if selector.purl.is_some() && selector.name.is_some() {
             return Err(SelectorError::BothPurlAndName);
         }
+        let ecosystem = selector.ecosystem.as_str();
 
         let (name, version) = match &selector.purl {
             Some(purl) => {
                 let (kind, name, version) = decompose(purl)?;
-                if kind != selector.ecosystem {
+                if kind != ecosystem {
                     return Err(SelectorError::PurlEcosystemDiffers {
                         purl: purl.clone(),
                         ecosystem: selector.ecosystem.clone(),
                     });
                 }
-                (
-                    NamePattern::Exact(name),
-                    version.or_else(|| selector.version.clone()),
-                )
+                let version = match (version, &selector.version) {
+                    (Some(_), Some(_)) => return Err(SelectorError::PurlAndVersion),
+                    (Some(exact), None) => Some(exact_version(ecosystem, &exact)?),
+                    (None, written) => written
+                        .as_deref()
+                        .map(|w| version_or_range(ecosystem, w))
+                        .transpose()?,
+                };
+                (NamePattern::Exact(name), version)
             }
             None => (
                 pattern_of(selector.name.as_deref())?,
-                selector.version.clone(),
+                selector
+                    .version
+                    .as_deref()
+                    .map(|w| version_or_range(ecosystem, w))
+                    .transpose()?,
             ),
         };
 
-        if let Some(version) = &version
-            && looks_like_a_range(version)
-        {
-            return Err(SelectorError::VersionRange(version.clone()));
-        }
-
         Ok(Self {
             ecosystem: selector.ecosystem.clone(),
-            name,
+            name: name.canonical(ecosystem),
             version,
             has_install_scripts: selector.has_install_scripts,
         })
     }
 
+    /// What a denial refuses, as a selector: one package, at the version its purl names or
+    /// in the VERS range `version` names.
+    pub fn of_denial(purl: &str, version: Option<&str>) -> Result<Self, SelectorError> {
+        let (ecosystem, name, exact) = decompose(purl)?;
+        let versions = match (exact, version) {
+            (Some(_), Some(_)) => return Err(SelectorError::PurlAndVersion),
+            (Some(exact), None) => exact_version(&ecosystem, &exact)?,
+            (None, Some(range)) if range.starts_with(VERS) => version_or_range(&ecosystem, range)?,
+            (None, Some(exact)) => {
+                return Err(SelectorError::DenialVersionNotARange(exact.to_owned()));
+            }
+            (None, None) => return Err(SelectorError::NoVersion),
+        };
+        Ok(Self {
+            name: NamePattern::Exact(name).canonical(&ecosystem),
+            ecosystem,
+            version: Some(versions),
+            has_install_scripts: None,
+        })
+    }
+
+    /// Whether one specific package is in the set this selector names.
+    ///
+    /// Containment asks how two selectors relate; this asks whether a package is in one
+    /// of them. Both read the same four dimensions, so a selector cannot match a package
+    /// one way here and be ordered another way there.
+    ///
+    /// `name` and `version` are read the ecosystem's way, as the selector's own were.
+    pub fn matches(&self, ecosystem: &str, name: &str, version: &str, scripts: bool) -> bool {
+        self.ecosystem == ecosystem
+            && self.name.matches(&canonical_name(ecosystem, name))
+            && self.version.as_ref().is_none_or(|versions| {
+                VersionOrder::of(ecosystem)
+                    .and_then(|order| order.parse(version))
+                    .is_some_and(|v| versions.contains(&v))
+            })
+            && self.has_install_scripts.is_none_or(|s| s == scripts)
+    }
+}
+
+impl<V: VersionSet> Canonical<V> {
     /// Whether every package this matches is also matched by `other`.
     ///
     /// Per dimension, all of them: a selector is narrower only if it is narrower or equal
@@ -217,10 +335,15 @@ impl Canonical {
     pub fn contained_by(&self, other: &Self) -> bool {
         self.ecosystem == other.ecosystem
             && self.name.contained_by(&other.name)
-            && contained(self.version.as_ref(), other.version.as_ref())
+            && contained(
+                self.version.as_ref(),
+                other.version.as_ref(),
+                V::contained_by,
+            )
             && contained(
                 self.has_install_scripts.as_ref(),
                 other.has_install_scripts.as_ref(),
+                bool::eq,
             )
     }
 
@@ -228,23 +351,12 @@ impl Canonical {
     pub fn overlaps(&self, other: &Self) -> bool {
         self.ecosystem == other.ecosystem
             && self.name.overlaps(&other.name)
-            && intersects(self.version.as_ref(), other.version.as_ref())
+            && intersects(self.version.as_ref(), other.version.as_ref(), V::overlaps)
             && intersects(
                 self.has_install_scripts.as_ref(),
                 other.has_install_scripts.as_ref(),
+                bool::eq,
             )
-    }
-
-    /// Whether one specific package is in the set this selector names.
-    ///
-    /// Containment asks how two selectors relate; this asks whether a package is in one
-    /// of them. Both read the same four dimensions, so a selector cannot match a package
-    /// one way here and be ordered another way there.
-    pub fn matches(&self, ecosystem: &str, name: &str, version: &str, scripts: bool) -> bool {
-        self.ecosystem == ecosystem
-            && self.name.matches(name)
-            && self.version.as_deref().is_none_or(|v| v == version)
-            && self.has_install_scripts.is_none_or(|s| s == scripts)
     }
 
     /// Whether this matches strictly fewer packages than `other`.
@@ -253,21 +365,58 @@ impl Canonical {
     }
 }
 
-/// A dimension that is set is narrower than one that is not; two that are set agree or
-/// neither contains the other.
-fn contained<T: PartialEq>(value: Option<&T>, other: Option<&T>) -> bool {
+/// A dimension that is set is narrower than one that is not; two that are set are decided
+/// by `inside`.
+fn contained<T>(value: Option<&T>, other: Option<&T>, inside: fn(&T, &T) -> bool) -> bool {
     match (value, other) {
         (_, None) => true,
         (None, Some(_)) => false,
-        (Some(a), Some(b)) => a == b,
+        (Some(a), Some(b)) => inside(a, b),
     }
 }
 
-/// Two dimensions share a package when either is unset or both name the same thing.
-fn intersects<T: PartialEq>(value: Option<&T>, other: Option<&T>) -> bool {
+/// Two dimensions share a package when either is unset, or `share` says the two set ones
+/// do.
+fn intersects<T>(value: Option<&T>, other: Option<&T>, share: fn(&T, &T) -> bool) -> bool {
     match (value, other) {
         (None, _) | (_, None) => true,
-        (Some(a), Some(b)) => a == b,
+        (Some(a), Some(b)) => share(a, b),
+    }
+}
+
+/// How a VERS string starts.
+const VERS: &str = "vers:";
+
+/// A name as `ecosystem` compares it, or as written for an ecosystem this build does not
+/// serve.
+fn canonical_name(ecosystem: &str, name: &str) -> String {
+    match ecosystem.parse::<crate::identity::Ecosystem>() {
+        Ok(known) => (crate::ecosystem::of(known).canonical_name)(name),
+        Err(_) => name.to_owned(),
+    }
+}
+
+/// The order `ecosystem`'s versions are read by.
+fn order_of(ecosystem: &str) -> Result<VersionOrder, SelectorError> {
+    VersionOrder::of(ecosystem)
+        .ok_or_else(|| SelectorError::UnorderedEcosystem(ecosystem.to_owned()))
+}
+
+/// One exact version, refusing a range in an ecosystem's own notation by name.
+fn exact_version(ecosystem: &str, written: &str) -> Result<Versions, SelectorError> {
+    let order = order_of(ecosystem)?;
+    if looks_like_a_range(written) {
+        return Err(SelectorError::VersionRange(written.to_owned()));
+    }
+    Versions::exact(order, ecosystem, written).map_err(SelectorError::Version)
+}
+
+/// A VERS range, or one exact version.
+fn version_or_range(ecosystem: &str, written: &str) -> Result<Versions, SelectorError> {
+    if written.starts_with(VERS) {
+        Versions::vers(order_of(ecosystem)?, ecosystem, written).map_err(SelectorError::Version)
+    } else {
+        exact_version(ecosystem, written)
     }
 }
 
@@ -366,7 +515,7 @@ impl std::error::Error for OverlapError {}
 /// Checked at load rather than at the first request that hits the pair, because the
 /// request that would expose it may be months away and the file is in front of the
 /// operator now.
-pub fn check_overlaps(selectors: &[Canonical]) -> Result<(), OverlapError> {
+pub fn check_overlaps<V: VersionSet>(selectors: &[Canonical<V>]) -> Result<(), OverlapError> {
     for (i, a) in selectors.iter().enumerate() {
         for (j, b) in selectors.iter().enumerate().skip(i + 1) {
             if !a.overlaps(b) {
@@ -391,7 +540,7 @@ pub fn check_overlaps(selectors: &[Canonical]) -> Result<(), OverlapError> {
     Ok(())
 }
 
-impl fmt::Display for Canonical {
+impl<V: VersionSet> fmt::Display for Canonical<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.ecosystem, self.name)?;
         if let Some(version) = &self.version {
@@ -433,17 +582,39 @@ mod proofs {
         }
     }
 
-    fn any_version() -> Option<String> {
-        let i: usize = kani::any();
-        kani::assume(i < 3);
-        match i {
-            0 => None,
-            1 => Some("1".to_owned()),
-            _ => Some("2".to_owned()),
+    /// Versions 0, 1 and 2 as bits. Each set is non-empty, as every [`Versions`] is.
+    #[derive(Debug, Clone, PartialEq)]
+    struct Bits(u8);
+
+    impl fmt::Display for Bits {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "{:03b}", self.0)
         }
     }
 
-    fn any_canonical() -> Canonical {
+    impl VersionSet for Bits {
+        fn contained_by(&self, other: &Self) -> bool {
+            self.0 & !other.0 == 0
+        }
+
+        fn overlaps(&self, other: &Self) -> bool {
+            self.0 & other.0 != 0
+        }
+    }
+
+    /// A point inside a range, the range, and a point outside it, or every version.
+    fn any_version() -> Option<Bits> {
+        let i: usize = kani::any();
+        kani::assume(i < 4);
+        match i {
+            0 => None,
+            1 => Some(Bits(0b001)),
+            2 => Some(Bits(0b011)),
+            _ => Some(Bits(0b100)),
+        }
+    }
+
+    fn any_canonical() -> Canonical<Bits> {
         let npm: bool = kani::any();
         Canonical {
             ecosystem: if npm {
@@ -660,7 +831,8 @@ mod tests {
     }
 
     /// The closed vocabulary. A `*` anywhere but the end would need a matcher to compare,
-    /// and a version range would need range algebra.
+    /// and a range in an ecosystem's own notation would need that ecosystem's range
+    /// algebra.
     #[test]
     fn the_shapes_that_could_not_be_compared_are_refused_rather_than_guessed_at() {
         for name in ["*foo", "a*b", "@my*/foo", "**"] {
@@ -817,7 +989,7 @@ mod tests {
     #[test]
     fn one_selector_has_nothing_to_overlap_with() {
         assert!(check_overlaps(&[canon("npm", Some("x"), None, None)]).is_ok());
-        assert!(check_overlaps(&[]).is_ok());
+        assert!(check_overlaps::<Versions>(&[]).is_ok());
     }
 
     /// Matching a package reads the same four dimensions containment does, so a selector
@@ -866,5 +1038,158 @@ mod tests {
         assert!(a.contained_by(&a));
         assert!(!a.strictly_contained_by(&a));
         assert!(a.overlaps(&a));
+    }
+
+    /// A VERS range is a version set like any other: a range inside another is narrower,
+    /// and two ranges that cross cannot be ordered.
+    #[test]
+    fn a_vers_range_is_ordered_by_containment() {
+        let wide = canon("npm", Some("x"), Some("vers:npm/>=1.0.0|<2.0.0"), None);
+        let narrow = canon("npm", Some("x"), Some("vers:npm/>=1.2.0|<1.3.0"), None);
+        let exact = canon("npm", Some("x"), Some("1.2.5"), None);
+        let crossing = canon("npm", Some("x"), Some("vers:npm/>=1.5.0|<3.0.0"), None);
+        let after = canon("npm", Some("x"), Some("vers:npm/>=2.0.0"), None);
+
+        assert!(narrow.strictly_contained_by(&wide));
+        assert!(exact.strictly_contained_by(&narrow));
+        assert!(wide.overlaps(&crossing));
+        assert!(!wide.contained_by(&crossing) && !crossing.contained_by(&wide));
+        assert!(!wide.overlaps(&after));
+        assert_eq!(
+            check_overlaps(&[wide.clone(), crossing]),
+            Err(OverlapError::Incomparable {
+                first: 0,
+                second: 1,
+                first_selector: "npm:x@vers:npm/>=1.0.0|<2.0.0".to_owned(),
+                second_selector: "npm:x@vers:npm/>=1.5.0|<3.0.0".to_owned(),
+            })
+        );
+        assert_eq!(check_overlaps(&[wide.clone(), narrow, after]), Ok(()));
+
+        assert!(wide.matches("npm", "x", "1.9.9", false));
+        assert!(!wide.matches("npm", "x", "2.0.0", false));
+        assert!(!wide.matches("npm", "x", "not a version", false));
+        assert!(!wide.matches("cargo", "x", "1.0.0", false));
+    }
+
+    /// A PyPI name compares by PEP 503 and a PyPI version by PEP 440, as pip reads them.
+    #[test]
+    fn a_pypi_selector_reads_names_and_versions_as_pip_does() {
+        let django = canon("pypi", Some("Django"), Some("4.2"), None);
+        assert_eq!(django.name, NamePattern::Exact("django".to_owned()));
+        assert!(django.matches("pypi", "django", "4.2.0", false));
+        assert!(django.matches("pypi", "DJANGO", "4.2", false));
+        assert!(!django.matches("pypi", "django", "4.2.1", false));
+
+        let zope = canon("pypi", Some("zope.*"), None, None);
+        assert_eq!(zope.name, NamePattern::Prefix("zope-".to_owned()));
+        assert!(zope.matches("pypi", "zope.interface", "1.0", false));
+        assert!(!zope.matches("pypi", "zopefoo", "1.0", false));
+
+        let post = canon("pypi", Some("x"), Some("vers:pypi/>=1.0|<1.0.post2"), None);
+        assert!(post.matches("pypi", "x", "1.0-1", false));
+        assert!(!post.matches("pypi", "x", "1.0.post2", false));
+
+        // An ecosystem this build does not serve keeps its name as written.
+        assert_eq!(
+            canon("cargo", Some("Serde"), None, None).name,
+            NamePattern::Exact("Serde".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_version_that_cannot_be_read_is_refused_by_what_is_wrong_with_it() {
+        let refused = |selector: Selector| Canonical::of(&selector).unwrap_err();
+        assert_eq!(
+            refused(sel("cargo", Some("serde"), Some("1.0.0"), None)),
+            SelectorError::UnorderedEcosystem("cargo".to_owned())
+        );
+        assert!(matches!(
+            refused(sel("npm", Some("x"), Some("vers:pypi/>=1.0"), None)),
+            SelectorError::Version(_)
+        ));
+        assert!(matches!(
+            refused(sel("npm", Some("x"), Some("1.0"), None)),
+            SelectorError::Version(_)
+        ));
+        let both = Selector {
+            ecosystem: "npm".to_owned(),
+            name: None,
+            purl: Some("pkg:npm/chalk@5.6.2".to_owned()),
+            version: Some("5.6.2".to_owned()),
+            has_install_scripts: None,
+        };
+        assert_eq!(refused(both), SelectorError::PurlAndVersion);
+        let purl_and_range = Selector {
+            ecosystem: "npm".to_owned(),
+            name: None,
+            purl: Some("pkg:npm/chalk".to_owned()),
+            version: Some("vers:npm/<5.6.2".to_owned()),
+            has_install_scripts: None,
+        };
+        assert_eq!(
+            Canonical::of(&purl_and_range)
+                .expect("a range beside a purl")
+                .name,
+            NamePattern::Exact("chalk".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_denial_is_one_version_in_its_purl_or_a_vers_range_beside_it() {
+        let one = Canonical::of_denial("pkg:npm/chalk@5.6.1", None).expect("one version");
+        assert!(one.matches("npm", "chalk", "5.6.1", true));
+        assert!(!one.matches("npm", "chalk", "5.6.2", false));
+
+        let range =
+            Canonical::of_denial("pkg:pypi/Requests", Some("vers:pypi/<2.31")).expect("a range");
+        assert!(range.matches("pypi", "requests", "2.30.0", false));
+        assert!(!range.matches("pypi", "requests", "2.31.0", false));
+
+        for (purl, version, error) in [
+            ("pkg:npm/chalk", None, SelectorError::NoVersion),
+            (
+                "pkg:npm/chalk@5.6.1",
+                Some("vers:npm/<6.0.0"),
+                SelectorError::PurlAndVersion,
+            ),
+            (
+                "pkg:npm/chalk",
+                Some("5.6.1"),
+                SelectorError::DenialVersionNotARange("5.6.1".to_owned()),
+            ),
+        ] {
+            assert_eq!(Canonical::of_denial(purl, version), Err(error));
+        }
+        assert!(Canonical::of_denial("not-a-purl", None).is_err());
+    }
+
+    /// Each refusal says what to write instead.
+    #[test]
+    fn each_version_error_names_the_way_to_write_it() {
+        for (error, expected) in [
+            (
+                SelectorError::VersionRange("^1.0.0".to_owned()),
+                "vers:npm/>=1.2.0|<2.0.0",
+            ),
+            (SelectorError::PurlAndVersion, "Write it once"),
+            (
+                SelectorError::UnorderedEcosystem("cargo".to_owned()),
+                "no version order for it",
+            ),
+            (SelectorError::NoVersion, "a VERS range in `version`"),
+            (
+                SelectorError::DenialVersionNotARange("1.0.0".to_owned()),
+                "writes in its purl as `@1.0.0`",
+            ),
+        ] {
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+        let unread = Canonical::of(&sel("npm", Some("x"), Some("1.0"), None)).unwrap_err();
+        assert!(
+            unread
+                .to_string()
+                .contains("is not a version npm publishes")
+        );
     }
 }

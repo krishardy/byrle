@@ -1,6 +1,8 @@
 # Policy version ranges are VERS strings, in every ecosystem
 
-- **Status:** Decided 2026-09-19. Not yet implemented.
+- **Status:** Implemented 2026-09-19. `src/policy/vers.rs`, `Canonical::of` and
+  `Canonical::of_denial` in `src/policy/selector.rs`, `Denial` in `src/policy.rs`,
+  `Registry::canonical_name` in `src/ecosystem.rs`.
 - **Related:** [policy-schema-v1-frozen](policy-schema-v1-frozen.md),
   [pep440-version-order](pep440-version-order.md),
   [policy-tier-resolution](policy-tier-resolution.md), [policy-check](policy-check.md)
@@ -88,6 +90,17 @@ when this is implemented. What changes in it:
 |---|---|---|
 | `match.version` | an exact version | an exact version or a VERS string |
 | `denials[].version` | not a key | a VERS string |
+
+## Settled while implementing
+
+| Question | Answer |
+|---|---|
+| A lone `<2.0.0` or `!=1.0.0` | Every version below 2.0.0, and every version but 1.0.0: the segment Clause 5.3.3 describes. The containment procedure in `how-to-parse.md` walks pairs of constraints and, read literally, reaches neither |
+| A version for an ecosystem with no row in `ecosystem::TABLE`, such as `match: { ecosystem: cargo, version: "1.0.0" }` | Refused: there is no order to read it by. A selector for such an ecosystem without a version still loads |
+| A PyPI name | PEP 503 normalised in a selector, a denial, and every PyPI key, so `Django` is `django`. A prefix keeps a trailing separator as `-`, so `zope.*` covers `zope-interface` and not `zopefoo` |
+| An npm name | Compared as written |
+| Two VERS strings for one set | Cannot occur: two spans that touched would share a version, and VERS names each version once. An exact version and its one-version VERS string are equal |
+| The kani proofs of containment | Proved over a 3-version bit set in place of `Versions`, which is more state than a proof unwinds in reasonable time. `Canonical` is generic over `VersionSet` for this |
 
 ## Known consequences
 

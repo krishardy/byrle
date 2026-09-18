@@ -348,14 +348,15 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             // `pkg:npm/@babel/core@1.0.0` are the same package, and the first is what
             // this codebase's own `Display` emits and what OSV publishes. Comparing the
             // written forms made a denial spelled the canonical way never fire, while the
-            // same spelling in a `packages` selector matched: `selector::decompose` was
-            // already parsing, and this now uses it.
-            let denied = policy.denials.iter().any(|d| {
-                super::selector::decompose(&d.purl).is_ok_and(|(ecosystem, name, version)| {
-                    ecosystem == facts.ecosystem
-                        && name == facts.name
-                        && version.as_deref() == Some(facts.version.as_str())
-                })
+            // same spelling in a `packages` selector matched. A denial is matched as a
+            // selector is, so a VERS range and a PyPI version read the same way in both.
+            let denied = policy.denial_selectors().iter().any(|d| {
+                d.matches(
+                    &facts.ecosystem,
+                    &facts.name,
+                    &facts.version,
+                    facts.has_install_scripts,
+                )
             });
             if denied {
                 Outcome::Failed(Action::Block)
@@ -682,6 +683,25 @@ mod tests {
             ..clean()
         };
         assert!(decide(&p, &other, TODAY).delivered());
+    }
+
+    /// A range blocks every version inside it and none outside, and the name is read the
+    /// ecosystem's way.
+    #[test]
+    fn a_denied_range_blocks_the_versions_inside_it() {
+        let p = policy(
+            "denials:\n  - purl: \"pkg:npm/lodash\"\n    version: \"vers:npm/<4.17.21\"\n    \
+             reason: prototype pollution\n",
+        );
+        let at = |version: &str| Facts {
+            version: version.to_owned(),
+            ..clean()
+        };
+        assert_eq!(
+            *outcome(&decide(&p, &at("4.17.20"), TODAY), Check::Denials),
+            Outcome::Failed(Action::Block)
+        );
+        assert!(decide(&p, &at("4.17.21"), TODAY).delivered());
     }
 
     #[test]
