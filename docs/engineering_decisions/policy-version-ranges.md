@@ -12,12 +12,13 @@ Package-URL project (`github.com/package-url/vers-spec`, Clause 5, read 2026-09-
 `f98c4c6`). One syntax covers every ecosystem. The VERS type names how the versions order,
 and waharoa orders them by the ecosystem's `VersionOrder`.
 
-A denial stays one exact version, written in its purl.
-
 ```yaml
 denials:
-  - purl: "pkg:npm/chalk@5.6.1"
+  - purl: "pkg:npm/chalk@5.6.1"                  # one version, as before
     reason: "compromised release, Sept 2025"
+  - purl: "pkg:npm/lodash"
+    version: "vers:npm/<4.17.21"                 # a range
+    reason: "prototype pollution"
 
 packages:
   - match: { ecosystem: pypi, name: requests, version: "vers:pypi/>=2.31|<3" }
@@ -32,7 +33,8 @@ packages:
 |---|---|---|
 | `match.version` | one exact version, or a VERS string whose type is `match.ecosystem` | a VERS type other than `match.ecosystem` |
 | `match.purl` | a purl, with or without `@version` | a purl with `@version` beside `match.version`. Today the purl's version wins and `match.version` is ignored without a word |
-| `denials[].purl` | a purl with `@version`, as today | a purl without one (`DenialNeedsAVersion`), as today |
+| `denials[].purl` | a purl with `@version`, or without one when `version` is set | neither `@version` nor `version`, as today (`DenialNeedsAVersion`); both |
+| `denials[].version` | a VERS string whose type is the purl's type | a bare version. A single version is written in the purl |
 
 A VERS string is read as Clause 5 and `how-to-parse.md` say, and invalid input is refused
 rather than corrected:
@@ -72,7 +74,6 @@ the intervals, not estimated.
 | Bare constraints, `>=1.0\|<2.0` | Not a string any other tool reads as VERS |
 | GitHub's `>= 1.0, < 2.0` | One interval per entry, no `!=`, and no published specification |
 | A second key, `versions` | Two keys for one question, and an entry could set both |
-| A range in a denial, in a `denials[].version` key | Redundant beside the purl, which already names the package and holds a version. A denial is absolute and has no `expires`, so a range such as `vers:npm/>=1.0.0` would also refuse every future version |
 
 VERS is also what purl-based tools publish ranges in, and `denials` and `match.purl` are
 purls already.
@@ -86,11 +87,12 @@ when this is implemented. What changes in it:
 | Key | Before | After |
 |---|---|---|
 | `match.version` | an exact version | an exact version or a VERS string |
-
-No key is added.
+| `denials[].version` | not a key | a VERS string |
 
 ## Known consequences
 
+- A denial is absolute and has no `expires`. `vers:npm/*` or `vers:npm/>=1.0.0` refuses
+  every future version as well.
 - The registered `pypi` examples in the VERS repository break Clause 5.4's sorting rule,
   for example `vers:pypi/>=3.0.0|2.0.3`. They are refused here.
 - `policy check`, `policy diff` and `explain --policy` print a range as it is written.
