@@ -28,7 +28,7 @@ coverage floor and the mutation runs, and `make mutants` said so. Before this re
 of 20 surviving mutants in one run were in `main.rs`: the byte ceilings on a stream's
 bundle, the retry guard, the `report.unread` counters.
 
-The same code in the library is reachable by a test. `test_support::scripted` serves a
+The same code in the library is reachable by a test. `util::test_support::scripted` serves a
 status, a body, a body whose `Content-Length` lies, a chunked body with no length, or a
 closed connection, and `env::testing::with` builds an environment from `Var` constants.
 `explain::run` and `diff::run` are tested against a local registry; `fetch::bundle` against

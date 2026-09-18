@@ -224,7 +224,7 @@ mod tests {
     use crate::intel::providers::kev;
     use crate::intel::range::{End, Start};
     use crate::intel::rows::{Affected, Ranged, Rows};
-    use crate::test_support::tempdir;
+    use crate::util::test_support::tempdir;
 
     fn advisory(id: &str) -> Rows {
         Rows {

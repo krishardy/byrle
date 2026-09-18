@@ -288,7 +288,7 @@ mod tests {
 
     use super::*;
     use crate::intel::refresh::http_client;
-    use crate::test_support::{Answer, scripted};
+    use crate::util::test_support::{Answer, scripted};
 
     /// A client with a short read timeout, so a stalled test server ends quickly.
     fn client() -> reqwest::Client {

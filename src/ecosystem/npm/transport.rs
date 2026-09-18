@@ -586,7 +586,7 @@ mod tests {
     /// right answer to.
     #[tokio::test]
     async fn a_registry_that_sends_no_response_is_a_transport_error() {
-        let addr = crate::test_support::closing_server().await;
+        let addr = crate::util::test_support::closing_server().await;
 
         let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
         match client

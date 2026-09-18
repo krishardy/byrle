@@ -366,7 +366,7 @@ fn lines<'a>(path: &Path, manifest: &'a str) -> Result<Vec<(&'a str, &'a str)>, 
 mod tests {
     use super::*;
     use crate::intel::rows::{Affected, Rows};
-    use crate::test_support::tempdir;
+    use crate::util::test_support::tempdir;
     use std::time::{Duration, SystemTime};
 
     fn rows(id: &str) -> Rows {

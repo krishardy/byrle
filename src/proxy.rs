@@ -3312,7 +3312,7 @@ mod tests {
     /// A log holding only refusals cannot answer "was this ever evaluated".
     #[tokio::test]
     async fn every_decision_reaches_the_audit_log() {
-        let path = crate::test_support::tempdir("proxy-audit").join("audit.jsonl");
+        let path = crate::util::test_support::tempdir("proxy-audit").join("audit.jsonl");
         let log = Arc::new(AuditLog::open(&path).expect("should open"));
 
         let (upstream, _) = upstream_serving(
@@ -3435,7 +3435,7 @@ mod tests {
     /// because a 4xx from a registry proxy reads as "policy denied you".
     #[tokio::test]
     async fn an_upstream_that_sends_no_response_is_502() {
-        let addr = crate::test_support::closing_server().await;
+        let addr = crate::util::test_support::closing_server().await;
 
         let base = serve(
             Proxy::new(reqwest::Client::new())
@@ -3463,7 +3463,7 @@ mod tests {
     /// `upstream_statuses_pass_through_unchanged`.
     #[tokio::test]
     async fn the_only_4xx_this_proxy_produces_is_a_policy_refusal() {
-        let addr = crate::test_support::closing_server().await;
+        let addr = crate::util::test_support::closing_server().await;
         let dead = serve(
             Proxy::new(reqwest::Client::new())
                 .with_upstream_npm(format!("http://{addr}"))

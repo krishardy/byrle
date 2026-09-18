@@ -1870,7 +1870,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       2026-09-14 while coverage, lint, kani and the integration tests ran at once, and
       passed 3 of 3 alone. Another process can take the freed port. It will be a CI flake.
       Fixed: it and the two other tests that freed a port use
-      `test_support::closing_server`, which keeps the port bound and closes each
+      `util::test_support::closing_server`, which keeps the port bound and closes each
       connection unanswered.
 - [x] `src/intel/postgres.rs` joins the live-test exclusion. Decided 2026-09-16: it speaks to
       a real database and nothing else, its tests are `tests/intel_postgres.rs` under

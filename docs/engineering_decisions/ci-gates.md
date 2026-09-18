@@ -55,7 +55,7 @@ workflow was written:
 | Flake | Fix |
 |---|---|
 | `pg_isready` answering during initdb's temporary server, so a connection then failed with `expected to read 5 bytes, got 0 bytes at EOF` | `scripts/make/lib/postgres.sh` checks readiness over TCP, not the unix socket |
-| a test freeing a port and another process taking it | `test_support::closing_server` keeps the port bound and closes each connection unanswered |
+| a test freeing a port and another process taking it | `util::test_support::closing_server` keeps the port bound and closes each connection unanswered |
 
 ## Not verified here
 
