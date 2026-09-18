@@ -438,7 +438,6 @@ That is the failure mode every item below should be brought to.
       | Where | What is ecosystem-specific |
       |---|---|
       | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher`. `PyPI/all.zip` on 2026-09-18: 7,253 `PYSEC-`, 491 with no `GHSA-` counterpart; the PyPA database's licence is not in `advisory-stream-licences.md`. Belongs with step 4 |
-      | `identity.rs` `split_encoded_scope` | repairs OSV's `pkg:npm/%40scope%2Fname` on every purl parse, not only npm ones |
       | `policy/selector.rs` `looks_like_a_range` | knows npm's range operators only, not PEP 440's `~=`, `!=`, `===` or `.*` |
       | `policy/selector.rs` `Canonical::matches` | exact name comparison; no PEP 503 normalisation for PyPI |
       | `intel/snapshot_intel.rs` `key_of`, `intel/postgres.rs` `package()` | advisories looked up by exact `registry_name()`, with no per-ecosystem normalisation |
@@ -456,7 +455,8 @@ That is the failure mode every item below should be brought to.
       a range and a version are read by the ecosystem's `VersionOrder`, PEP 440 for PyPI
       ([pep440-version-order](docs/engineering_decisions/pep440-version-order.md));
       `PackageKey::from_registry_name` splits a name by the row's `split_name`: npm's
-      scope rule in `npm/paths.rs`, and PyPI refusing a `/`;
+      scope rule in `npm/paths.rs`, and PyPI refusing a `/`, and a purl is read by the same
+      rule, which replaces `split_encoded_scope`;
       the startup log's setup lines come from `Registry::setup`;
       `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
       constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.
