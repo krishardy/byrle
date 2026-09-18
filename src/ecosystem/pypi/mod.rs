@@ -27,23 +27,23 @@
 //! | `paths.rs` | what a request path refers to, PEP 503 names, PEP 427 filenames |
 //! | `wire.rs` | the index as PyPI serves it, and the cleaned form |
 //! | `normalize.rs` | the cleaned form to [`crate::record::PackageMetadata`] |
-//! | `inspect.rs` | reading a forwarded index: keeping its records and pointing its files at the proxy |
+//! | `inspect.rs` | reading a forwarded index and keeping its records |
+//! | `rewrite.rs` | removing refused versions from an index and pointing its files at the proxy |
 //! | `transport.rs` | fetching an index on the proxy's own behalf |
 //! | `error.rs` | what can go wrong reading one, and fetching one |
 //!
-//! `crate::ecosystem::npm` has the same files plus `rewrite.rs`, `lockfile.rs` and
-//! `clients.rs`. There is no PyPI counterpart to `rewrite.rs`: `proxy::handle` returns before any filtering for a simple index, because
-//! filtering one is the range-resolution work rather than a refusal a client can act on.
+//! `crate::ecosystem::npm` has the same files plus `lockfile.rs` and `clients.rs`.
 
 pub mod error;
 pub mod inspect;
 pub mod normalize;
 pub mod paths;
+pub mod rewrite;
 pub mod transport;
 pub mod wire;
 
 pub use error::PypiError;
-pub use inspect::read_index;
+pub use inspect::{Index, read_index};
 pub use normalize::normalize;
 pub use paths::{classify_path, document_from_content_type, index_url, normalise, upstream_url};
 pub use transport::{Client, FetchError};

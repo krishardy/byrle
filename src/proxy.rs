@@ -49,7 +49,7 @@
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
-use crate::ecosystem::Clients;
+use crate::ecosystem::{self, Clients, UncoveredMetadata};
 use crate::ecosystem::{npm, pypi};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
@@ -1374,40 +1374,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     // Each document kind is read by its own normaliser, and a `match` rather than a test
     // and a fall-through: a third kind has to answer this rather than reach whichever arm
-    // was written last.
-    //
-    // A simple index returns here, because nothing below it applies. It carries no publish
-    // times this proxy fetches separately, nothing `dist-tags` stands for, and no
-    // per-version filtering: filtering a simple index is the range-resolution work, which
-    // is open.
-    let detail = match document {
-        DocumentKind::SimpleIndex => {
-            let forwarded = decoded.as_deref().and_then(|d| {
-                pypi::read_index(
-                    d,
-                    &proxy.store,
-                    proxy.origins.reachable(),
-                    rewriting.then_some(rewrite_base.as_deref()).flatten(),
-                    &path_and_query,
-                )
-            });
-            return finish(
-                forwarded,
-                body,
-                headers,
-                forward_status,
-                chosen_encoding,
-                rewrite_base.as_deref(),
-                &path_and_query,
-                log_proxied,
-            );
-        }
-        DocumentKind::Packument(detail) => detail,
-    };
-
-    // Nothing to normalise when decoding failed; it was logged above.
-    let normalized = decoded.as_deref().and_then(|d| {
-        npm::read_packument(
+    // was written last. Nothing to read when decoding failed; it was logged above.
+    let read = decoded.as_deref().and_then(|d| match document {
+        DocumentKind::Packument(detail) => npm::read_packument(
             d,
             detail,
             &proxy.store,
@@ -1416,27 +1385,35 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             parse_started,
             &path_and_query,
         )
+        .map(Read::Packument),
+        DocumentKind::SimpleIndex => {
+            pypi::read_index(d, &proxy.store, &path_and_query).map(Read::SimpleIndex)
+        }
     });
+    let normalized = read.as_ref().and_then(Read::metadata);
 
-    // The rewrite. Every client in the npm ecosystem has to fetch artifacts through the
-    // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
-    // configured registry, pnpm 10 and yarn 1 use it verbatim. Pointing it here makes
-    // them behave alike.
-    //
-    // It needs the records, so a document that did not normalise is not rewritten either.
-    // That is the honest outcome: without records there is nothing to gate on anyway, and
-    // it is already logged as UNINSPECTED above.
     // Fetched here rather than inside the rewrite, which is sync. Costs a request the
-    // client never made, so it happens only when the policy uses a cooldown.
-    let times = match normalized.as_deref() {
-        Some(packument) => publish_times_for(&proxy, &packument.key).await,
+    // client never made, so it happens only when the policy uses a cooldown, and only for
+    // an ecosystem whose metadata document carries no publish times.
+    let times = match normalized {
+        Some(metadata) => publish_times_for(&proxy, &metadata.key).await,
         None => None,
     };
 
-    // Asked once per packument rather than once per version: typescript has 3,823.
-    let intel = match normalized.as_deref() {
-        Some(packument) => match intel_for(&proxy, &packument.key, &path_and_query).await {
+    // Asked once per document rather than once per version: typescript has 3,823.
+    let intel = match normalized {
+        Some(metadata) => match intel_for(&proxy, &metadata.key, &path_and_query).await {
             Ok(intel) => intel,
+            Err(IntelUnavailable::Uncovered(uncovered))
+                if ecosystem::of(uncovered).uncovered_metadata
+                    == UncoveredMetadata::FilterWithoutIntel =>
+            {
+                warn!(
+                    path = %path_and_query,
+                    "filtering without intel; the artifact request answers 503"
+                );
+                None
+            }
             Err(unavailable) => return unavailable.response(),
         },
         None => None,
@@ -1452,23 +1429,49 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // document, so the client's own resolver picks one that is allowed and the install
     // succeeds without anyone being told no. The pinned half, where there is no resolution
     // left to influence, refuses at the artifact request.
-    let forwarded = match (decoded.as_deref(), normalized.as_deref()) {
-        (Some(decoded), Some(packument)) => npm::rewrite_packument(npm::Rewrite {
+    let refused_by_policy = match normalized {
+        Some(metadata) => policy_refused_versions(
+            metadata,
+            proxy.policy.as_deref(),
+            times.as_deref(),
+            intel.as_ref(),
+            &path_and_query,
+            proxy.audit.as_deref(),
+        ),
+        None => HashSet::new(),
+    };
+    let base = rewriting.then_some(rewrite_base.as_deref()).flatten();
+
+    // The npm rewrite. Every client in the npm ecosystem has to fetch artifacts through the
+    // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
+    // configured registry, pnpm 10 and yarn 1 use it verbatim. Pointing it here makes
+    // them behave alike.
+    //
+    // It needs the records, so a packument that did not normalise is not rewritten either.
+    // That is the honest outcome: without records there is nothing to gate on anyway, and
+    // it is already logged as UNINSPECTED above. A simple index that parsed but did not
+    // normalise still has its files repointed, because the file request is where PyPI's
+    // digest is checked.
+    let forwarded = match (decoded.as_deref(), &read) {
+        (Some(decoded), Some(Read::Packument(packument))) => npm::rewrite_packument(npm::Rewrite {
             decoded,
             packument,
-            base: rewriting.then_some(rewrite_base.as_deref()).flatten(),
+            base,
             origins: &proxy.origins,
-            refused_by_policy: &policy_refused_versions(
-                packument,
-                proxy.policy.as_deref(),
-                times.as_deref(),
-                intel.as_ref(),
-                &path_and_query,
-                proxy.audit.as_deref(),
-            ),
+            refused_by_policy: &refused_by_policy,
             refuse_unservable: proxy.refuse_unservable,
             path: &path_and_query,
         }),
+        (Some(decoded), Some(Read::SimpleIndex(index))) => {
+            pypi::rewrite::rewrite_index(pypi::rewrite::Rewrite {
+                decoded,
+                project: &index.project,
+                reachable: proxy.origins.reachable(),
+                base,
+                refused_by_policy: &refused_by_policy,
+                path: &path_and_query,
+            })
+        }
         _ => None,
     };
 
@@ -1640,6 +1643,22 @@ fn uncached_json(status: StatusCode, body: impl Serialize) -> Response {
         axum::Json(body),
     )
         .into_response()
+}
+
+/// A metadata document as its ecosystem's reader returned it.
+enum Read {
+    Packument(Box<PackageMetadata>),
+    SimpleIndex(pypi::Index),
+}
+
+impl Read {
+    /// The records, when the document normalised.
+    fn metadata(&self) -> Option<&PackageMetadata> {
+        match self {
+            Self::Packument(packument) => Some(packument),
+            Self::SimpleIndex(index) => index.metadata.as_deref(),
+        }
+    }
 }
 
 /// Why a package is not decided on. Already logged; [`IntelUnavailable::response`] is what
@@ -2983,7 +3002,8 @@ mod tests {
 
     /// No stream in the snapshot covers PyPI, so a file is not served: an empty answer
     /// would read as "nothing known" about a package nothing was asked about. The index is
-    /// served, because a PyPI decision is made on the file and the index is not filtered.
+    /// served, because pip reports an index 503 as `No matching distribution found`: see
+    /// `UncoveredMetadata::FilterWithoutIntel`.
     #[tokio::test]
     async fn a_file_in_an_ecosystem_no_stream_covers_is_a_503() {
         let (upstream, seen) =
@@ -3022,6 +3042,134 @@ mod tests {
         let (base, _) = proxy_with_intel(malware_everywhere(), true).await;
         let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
         assert_eq!(packument.status(), 200);
+    }
+
+    /// Two versions: 1.0 offers a wheel, 2.0 only an sdist.
+    const PYPI_TWO_VERSIONS: &[u8] = br#"{"name":"x","files":[
+        {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/ef/x-1.0-py3-none-any.whl","hashes":{}},
+        {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0.tar.gz","hashes":{}},
+        {"filename":"x-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-2.0.tar.gz","hashes":{}}
+    ]}"#;
+
+    /// The filenames a simple index served through the proxy lists.
+    async fn served_filenames(
+        intel: Option<Arc<dyn Intel>>,
+        yaml: &str,
+    ) -> (StatusCode, Vec<String>) {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            pypi::SIMPLE_JSON,
+            None,
+            PYPI_TWO_VERSIONS.to_vec(),
+        )
+        .await;
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream_npm(upstream.clone())
+            .with_upstream_pypi(upstream)
+            .with_intel(intel)
+            .with_policy(Some(policy(yaml)));
+        let base = serve(proxy.router()).await;
+        let response = reqwest::get(format!("{base}/simple/x/")).await.unwrap();
+        let status = response.status();
+        let document: serde_json::Value =
+            serde_json::from_slice(&response.bytes().await.unwrap()).expect("json");
+        let names = document["files"]
+            .as_array()
+            .expect("files")
+            .iter()
+            .map(|f| f["filename"].as_str().expect("a filename").to_owned())
+            .collect();
+        (status, names)
+    }
+
+    /// The resolution half for PyPI. 2.0 runs `setup.py` whichever file pip takes, so it
+    /// is removed and pip resolves to 1.0. 1.0's sdist stays: the version offers a wheel,
+    /// and a request for the sdist is refused at the file.
+    #[tokio::test]
+    async fn a_pypi_version_the_policy_refuses_is_removed_from_the_index() {
+        let (status, names) = served_filenames(
+            None,
+            "version: 1\ncooldown_days: 0\ninstall_scripts: block\n",
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
+
+        let (_, unfiltered) = served_filenames(
+            None,
+            "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n",
+        )
+        .await;
+        assert_eq!(unfiltered.len(), 3, "nothing refused, nothing removed");
+    }
+
+    /// With no stream covering PyPI the index is still filtered by the checks that need no
+    /// intel. The file request answers 503, held by
+    /// `a_file_in_an_ecosystem_no_stream_covers_is_a_503`.
+    #[tokio::test]
+    async fn a_pypi_index_no_stream_covers_is_filtered_without_intel() {
+        let (status, names) = served_filenames(
+            Some(malware_everywhere()),
+            "version: 1\ncooldown_days: 0\ninstall_scripts: block\n",
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
+    }
+
+    /// A snapshot that loaded no stream, so it covers no ecosystem.
+    struct NoStreams;
+
+    impl Intel for NoStreams {
+        fn lookup<'a>(
+            &'a self,
+            _ecosystem: &'a str,
+            _name: &'a str,
+            _version: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Vec<crate::intel::store::Record>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn snapshot(&self) -> crate::intel::store::Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move {
+                Ok(Some(LoadedSnapshot {
+                    digest: "s0".to_owned(),
+                    taken_at: "2026-09-18T00:00:00Z".to_owned(),
+                    sources: Vec::new(),
+                    streams: Vec::new(),
+                }))
+            })
+        }
+
+        fn package<'a>(
+            &'a self,
+            _ecosystem: &'a str,
+            _name: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Option<PackageIntel>> {
+            Box::pin(async move {
+                Ok(Some(PackageIntel {
+                    snapshot: "s0".to_owned(),
+                    records: Vec::new(),
+                    ranges: Vec::new(),
+                    exploitation_loaded: false,
+                }))
+            })
+        }
+    }
+
+    /// npm clients report a packument 503 as one, so npm's row keeps it.
+    #[tokio::test]
+    async fn an_npm_packument_no_stream_covers_is_a_503() {
+        let (base, _) = proxy_with_intel(Arc::new(NoStreams), true).await;
+        let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(packument.status(), 503);
+        assert!(
+            packument
+                .text()
+                .await
+                .unwrap()
+                .contains("no advisory stream for npm")
+        );
     }
 
     /// A store whose records name one snapshot and whose newest snapshot is another, as

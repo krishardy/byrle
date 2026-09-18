@@ -1,8 +1,4 @@
 //! Removing versions from a packument, and pointing the rest at the proxy.
-//!
-//! npm only. A simple index gets no equivalent: `proxy::handle` returns before any
-//! filtering for one, because filtering an index is the range-resolution work rather than
-//! a refusal the client can act on.
 
 use std::collections::HashSet;
 
