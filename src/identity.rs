@@ -193,7 +193,9 @@ impl fmt::Display for PackageKey {
     }
 }
 
-/// Reunite a scope that arrived encoded into the name component.
+/// The key a purl names: its namespace and name joined by `/`, which is how npm spells a
+/// scope, then split by the ecosystem's rule as [`PackageKey::from_registry_name`] splits a
+/// registry name.
 ///
 /// OSV publishes scoped npm packages in **two** forms, and they do not parse alike:
 ///
@@ -202,21 +204,21 @@ impl fmt::Display for PackageKey {
 /// pkg:npm/%40antv%2Falgorithm  -> namespace None,    name "@antv/algorithm"
 /// ```
 ///
-/// Measured across OSV's npm bundle: 16,904 scoped entries use the first form and
-/// 855 use the second. OSV's own API normalizes them, but a local mirror holds the
-/// raw strings, so without this those 855 records are unreachable by a key built from
-/// a registry name. `MAL-` malware records are over-represented among them.
-fn split_encoded_scope(namespace: Option<&str>, name: &str) -> (Option<String>, String) {
-    if namespace.is_none()
-        && let Some(rest) = name.strip_prefix('@')
-        && let Some((scope, bare)) = rest.split_once('/')
-        && !scope.is_empty()
-        && !bare.is_empty()
-        && !bare.contains('/')
-    {
-        return (Some(format!("@{scope}")), bare.to_string());
+/// Both join to `@antv/algorithm`. Measured across OSV's npm bundle: 16,904 scoped entries
+/// use the first form and 855 use the second. OSV's own API normalizes them, but a local
+/// mirror holds the raw strings, so without this those 855 records are unreachable by a key
+/// built from a registry name. `MAL-` malware records are over-represented among them.
+fn key_from_purl(
+    ecosystem: Ecosystem,
+    namespace: Option<&str>,
+    name: &str,
+) -> Result<PackageKey, IdentityError> {
+    match namespace {
+        Some(namespace) => {
+            PackageKey::from_registry_name(ecosystem, &format!("{namespace}/{name}"))
+        }
+        None => PackageKey::from_registry_name(ecosystem, name),
     }
-    (namespace.map(str::to_string), name.to_string())
 }
 
 impl FromStr for PackageKey {
@@ -231,12 +233,7 @@ impl FromStr for PackageKey {
                 "`{s}` carries a version; a PackageKey is versionless, use PackageRef"
             )));
         }
-        let (namespace, name) = split_encoded_scope(parsed.namespace(), parsed.name());
-        Ok(PackageKey {
-            ecosystem,
-            namespace,
-            name,
-        })
+        key_from_purl(ecosystem, parsed.namespace(), parsed.name())
     }
 }
 
@@ -286,13 +283,8 @@ impl FromStr for PackageRef {
         let version = parsed
             .version()
             .ok_or_else(|| IdentityError::Malformed(format!("`{s}` has no version")))?;
-        let (namespace, name) = split_encoded_scope(parsed.namespace(), parsed.name());
         Ok(PackageRef {
-            key: PackageKey {
-                ecosystem,
-                namespace,
-                name,
-            },
+            key: key_from_purl(ecosystem, parsed.namespace(), parsed.name())?,
             version: version.to_string(),
         })
     }
@@ -441,13 +433,21 @@ mod tests {
         assert_eq!(slash, encoded);
     }
 
-    /// A name that merely contains a slash without a leading `@` is not a scope, and
-    /// must not be silently split into one.
+    /// A purl is read by its ecosystem's name rule, as a registry name is. An npm `/` needs
+    /// an `@` scope, and a PyPI project has no namespace, whichever way the purl spells it.
     #[test]
-    fn only_at_prefixed_scopes_are_rejoined() {
-        let k: PackageKey = "pkg:npm/plain%2Fslash".parse().unwrap();
-        assert_eq!(k.namespace(), None);
-        assert_eq!(k.name(), "plain/slash");
+    fn a_purl_is_read_by_its_ecosystems_name_rule() {
+        for refused in [
+            "pkg:npm/plain%2Fslash",
+            "pkg:npm/babel/core",
+            "pkg:pypi/%40a%2Fb",
+            "pkg:pypi/ns/name",
+        ] {
+            assert!(refused.parse::<PackageKey>().is_err(), "{refused}");
+        }
+        assert!("pkg:pypi/ns/name@1.0".parse::<PackageRef>().is_err());
+        let k: PackageKey = "pkg:pypi/requests".parse().unwrap();
+        assert_eq!((k.namespace(), k.name()), (None, "requests"));
     }
 
     #[test]
