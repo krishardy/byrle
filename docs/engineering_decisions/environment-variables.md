@@ -13,7 +13,7 @@ and inside messages, and read values through `env::process()`.
 |---|---|
 | Which mentions count | Every one: reads, log and panic messages, `doctor` advice, `--help`, doc comments |
 | A value that does not parse | Refused: `waharoa: WAHAROA_MAX_RECORDS: \`5O000\` is not a whole number`, exit 2 |
-| Which variables | The binary's 20 (`RUST_LOG` and the debug-only `WAHAROA_DEFER_TEST` included), the four read by tests, and `HOME` and `BUN_INSTALL_CACHE_DIR` |
+| Which variables | The binary's 20 (`RUST_LOG` and the debug-only `WAHAROA_DEFER_TEST` included), the four read by tests, and nine other programs read: `HOME`, `BUN_INSTALL_CACHE_DIR`, `XDG_CONFIG_HOME`, and uv's `UV_DEFAULT_INDEX`, `UV_INDEX_URL`, `UV_EXTRA_INDEX_URL`, `UV_INDEX`, `UV_NO_CONFIG` and `UV_CONFIG_FILE`, which `doctor` reads as uv would |
 | Where defaults live | `src/env.rs`. `store`, `verified`, `proxy`, `npm`, `refusal` and `policy::packages` import them |
 
 Shell scripts keep their own copies of the names they set. They cannot import Rust.

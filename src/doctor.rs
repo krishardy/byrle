@@ -90,14 +90,38 @@ pub struct RegistryQuery {
     pub unset: &'static str,
 }
 
+/// The index a client installs from, and the other indexes it also asks.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Indexes {
+    /// The configured index, or the client's own default when none is configured.
+    pub index: String,
+    /// Indexes asked beside it. What they serve never reaches the proxy.
+    pub extra: Vec<String>,
+}
+
+/// Where `doctor` learns which registry a client uses.
+pub enum RegistrySource {
+    /// The client prints it: npm, pnpm and yarn.
+    Asked(RegistryQuery),
+    /// A function of the client's ecosystem module reads it, for a client with no one
+    /// command that answers: pip and uv. `None` when the client is not installed.
+    Read {
+        read: fn(&env::Process) -> Result<Option<Indexes>, env::EnvError>,
+        /// What points the client at `url`.
+        set_index: fn(&str) -> String,
+        /// What removes an extra index.
+        drop_extra: fn() -> String,
+    },
+}
+
 /// A package manager `doctor` checks, as its ecosystem's row in
 /// [`crate::ecosystem::TABLE`] lists it.
 pub struct Client {
     /// The program, and the name findings use.
     pub name: &'static str,
-    /// How to ask the client for the registry it resolves to. `None` for a client whose
-    /// registry is not checked.
-    pub registry: Option<RegistryQuery>,
+    /// How to learn the registry the client uses. `None` for a client whose registry is
+    /// not checked.
+    pub registry: Option<RegistrySource>,
     /// The command that points the client at a registry, before the address.
     pub set_registry: &'static str,
     pub cache: CacheLocation,
@@ -158,7 +182,8 @@ pub fn recorded_origins(key: &str, contents: &str) -> BTreeSet<String> {
     origins
 }
 
-/// Whether a package manager is pointed at the proxy.
+/// Whether a package manager is pointed at the proxy. A credential in the configured URL
+/// is not printed.
 pub fn check_registry(client: &Client, configured: Option<&str>, proxy: &str) -> Finding {
     let title = format!("{} registry", client.name);
     let Some(configured) = configured.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -168,16 +193,61 @@ pub fn check_registry(client: &Client, configured: Option<&str>, proxy: &str) ->
             "not installed, or its configuration could not be read",
         );
     };
+    let shown = crate::origin::without_credentials(configured);
 
     if same_origin(configured, proxy) {
-        return Finding::new(Severity::Ok, title, configured.to_owned());
+        return Finding::new(Severity::Ok, title, shown);
     }
     Finding::new(
         Severity::Problem,
         title,
-        format!("points at {configured}, not the proxy at {proxy}"),
+        format!("points at {shown}, not the proxy at {proxy}"),
     )
-    .with_fix(format!("{} {proxy}", client.set_registry))
+    .with_fix({
+        let url = format!("{proxy}{}", index_path(client).trim_end_matches('/'));
+        match &client.registry {
+            Some(RegistrySource::Read { set_index, .. }) => set_index(&url),
+            _ => format!("{} {url}", client.set_registry),
+        }
+    })
+}
+
+/// The path the proxy serves `client`'s ecosystem under: `/simple/` for PyPI.
+fn index_path(client: &Client) -> &'static str {
+    crate::ecosystem::TABLE
+        .iter()
+        .find(|registry| registry.clients.iter().any(|c| c.name == client.name))
+        .map_or("", |registry| registry.setup.path)
+}
+
+/// Whether a client asks any index besides the one it is pointed at. An extra index serves
+/// its own files, which the proxy never sees: pip with an `extra-index-url` in its
+/// configuration fetched every file from that index on 2026-09-16, and the proxy saw no
+/// `/packages/` request at all.
+pub fn check_extra_indexes(
+    client: &Client,
+    extra: &[String],
+    drop_extra: &str,
+    proxy: &str,
+) -> Finding {
+    let title = format!("{} extra indexes", client.name);
+    let elsewhere: Vec<String> = extra
+        .iter()
+        .filter(|url| !same_origin(url, proxy))
+        .map(|url| crate::origin::without_credentials(url))
+        .collect();
+    if elsewhere.is_empty() {
+        return Finding::new(Severity::Ok, title, "none");
+    }
+    Finding::new(
+        Severity::Problem,
+        title,
+        format!(
+            "also asks {}, whose files never reach the proxy",
+            elsewhere.join(", ")
+        ),
+    )
+    .with_fix(drop_extra)
 }
 
 /// Whether a lockfile is evidence that the proxy produced it.
@@ -279,6 +349,8 @@ pub enum CacheBypass {
     Complete,
     /// Metadata is still fetched; artifacts are not.
     ArtifactsOnly,
+    /// Every install still asks the registry for the index and the files.
+    None,
 }
 
 /// A warm client cache serves without consulting the registry, so what it supplies never
@@ -303,6 +375,16 @@ pub fn check_cache(client: &Client, cache: Option<&std::path::Path>) -> Finding 
     };
 
     let effect = match client.bypass {
+        CacheBypass::None => {
+            return Finding::new(
+                Severity::Ok,
+                title,
+                format!(
+                    "{} holds cached packages, and a warm cache still asks the proxy",
+                    cache.display()
+                ),
+            );
+        }
         CacheBypass::Complete => {
             "A warm cache supplies the whole install, so those packages never reach the proxy"
         }
@@ -681,12 +763,27 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
     }
 
     for client in clients() {
-        if let Some(query) = &client.registry {
-            findings.push(check_registry(
+        match &client.registry {
+            None => {}
+            Some(RegistrySource::Asked(query)) => findings.push(check_registry(
                 client,
                 probe::configured_registry(client, query).as_deref(),
                 &proxy,
-            ));
+            )),
+            Some(RegistrySource::Read {
+                read, drop_extra, ..
+            }) => match read(environment)? {
+                None => findings.push(check_registry(client, None, &proxy)),
+                Some(indexes) => {
+                    findings.push(check_registry(client, Some(&indexes.index), &proxy));
+                    findings.push(check_extra_indexes(
+                        client,
+                        &indexes.extra,
+                        &drop_extra(),
+                        &proxy,
+                    ));
+                }
+            },
         }
     }
 
@@ -748,6 +845,12 @@ pub mod probe {
     /// Run `program` with `args` and return what it printed, trimmed. `None` when it could
     /// not run, failed, or printed nothing.
     pub fn ask(program: &str, args: &[&str]) -> Option<String> {
+        run(program, args).filter(|printed| !printed.is_empty())
+    }
+
+    /// Run `program` with `args` and return what it printed, trimmed, empty included.
+    /// `None` when it could not run or failed.
+    pub fn run(program: &str, args: &[&str]) -> Option<String> {
         let output = std::process::Command::new(program)
             .args(args)
             .output()
@@ -755,8 +858,7 @@ pub mod probe {
         if !output.status.success() {
             return None;
         }
-        let printed = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-        (!printed.is_empty()).then_some(printed)
+        Some(String::from_utf8(output.stdout).ok()?.trim().to_owned())
     }
 
     /// The registry a client is configured to use, asked with `query`.
@@ -1522,9 +1624,82 @@ mod tests {
                 ("npm", true),
                 ("pnpm", true),
                 ("yarn", true),
-                ("bun", false)
+                ("bun", false),
+                ("pip", true),
+                ("uv", true)
             ]
         );
+    }
+
+    /// pip and uv are told how to point at the proxy's index, `/simple` included, and a
+    /// credential in the URL they use now is not printed.
+    #[test]
+    fn a_misdirected_pypi_client_is_told_the_index_and_no_credential_is_printed() {
+        use crate::ecosystem::pypi::clients::{PIP, UV};
+        let finding = check_registry(
+            &PIP,
+            Some("https://user:secret@example.jfrog.io/simple/"),
+            PROXY,
+        );
+        assert_eq!(finding.severity, Severity::Problem);
+        assert!(!finding.detail.contains("secret"), "{}", finding.detail);
+        assert!(finding.detail.contains("https://example.jfrog.io/simple/"));
+        assert_eq!(
+            finding.fix.as_deref(),
+            Some("pip config set global.index-url http://127.0.0.1:8080/simple")
+        );
+        let finding = check_registry(&UV, Some("https://pypi.org/simple"), PROXY);
+        assert!(
+            finding
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix
+                    .contains("to http://127.0.0.1:8080/simple, or `index-url` in uv.toml")),
+            "{finding}"
+        );
+        assert_eq!(
+            check_registry(&PIP, Some("http://127.0.0.1:8080/simple/"), PROXY).severity,
+            Severity::Ok
+        );
+    }
+
+    /// An extra index serves files the proxy never sees. One on the proxy's own origin is
+    /// not extra.
+    #[test]
+    fn an_extra_index_elsewhere_is_a_problem_and_its_credential_is_not_printed() {
+        use crate::ecosystem::pypi::clients::PIP;
+        let none = check_extra_indexes(&PIP, &[], "drop it", PROXY);
+        assert_eq!(
+            (none.severity, none.detail.as_str()),
+            (Severity::Ok, "none")
+        );
+        let own = check_extra_indexes(&PIP, &[format!("{PROXY}/simple/")], "drop it", PROXY);
+        assert_eq!(own.severity, Severity::Ok);
+        let elsewhere = check_extra_indexes(
+            &PIP,
+            &["https://user:secret@example.jfrog.io/api/pypi/simple/".to_owned()],
+            "drop it",
+            PROXY,
+        );
+        assert_eq!(elsewhere.severity, Severity::Problem);
+        assert_eq!(
+            elsewhere.detail,
+            "also asks https://example.jfrog.io/api/pypi/simple/, whose files never reach the proxy"
+        );
+        assert_eq!(elsewhere.fix.as_deref(), Some("drop it"));
+        let RegistrySource::Read { drop_extra, .. } = PIP.registry.as_ref().expect("read") else {
+            panic!("pip is read");
+        };
+        assert!(drop_extra().starts_with("pip config unset global.extra-index-url"));
+    }
+
+    /// pip asks the index and the files again with a warm cache, measured 2026-09-19.
+    #[test]
+    fn a_cache_that_still_asks_the_proxy_is_not_a_warning() {
+        use crate::ecosystem::pypi::clients::{PIP, UV};
+        let dir = std::path::Path::new("/c");
+        assert_eq!(check_cache(&PIP, Some(dir)).severity, Severity::Ok);
+        assert_eq!(check_cache(&UV, Some(dir)).severity, Severity::Warn);
     }
 
     /// The fix names the client's own command.

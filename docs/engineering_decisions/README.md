@@ -32,7 +32,8 @@ code, and the file names where.
 | [An ecosystem no stream covers fails closed](uncovered-ecosystem-fails-closed.md) | Implemented |
 | [A PyPI index is filtered by policy, with or without intel](pypi-index-filtering.md) | Implemented |
 | [Each ecosystem's versions order by its own rules; PEP 440 is hand-written](pep440-version-order.md) | Implemented |
-| [Policy version ranges are VERS strings, in every ecosystem](policy-version-ranges.md) | Decided |
+| [Policy version ranges are VERS strings, in every ecosystem](policy-version-ranges.md) | Implemented |
+| [`doctor` checks pip and uv, and reads uv's TOML configuration](doctor-python-clients.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

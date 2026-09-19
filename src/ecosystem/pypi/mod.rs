@@ -27,6 +27,7 @@
 //! | `paths.rs` | what a request path refers to, PEP 503 names, PEP 427 filenames |
 //! | `wire.rs` | the index as PyPI serves it, and the cleaned form |
 //! | `normalize.rs` | the cleaned form to [`crate::record::PackageMetadata`] |
+//! | `clients.rs` | pip and uv, as `waharoa doctor` checks them |
 //! | `inspect.rs` | reading a forwarded index and keeping its records |
 //! | `version.rs` | PEP 440 versions and their order |
 //! | `rewrite.rs` | removing refused versions from an index and pointing its files at the proxy |
@@ -35,6 +36,7 @@
 //!
 //! `crate::ecosystem::npm` has the same files plus `lockfile.rs` and `clients.rs`.
 
+pub mod clients;
 pub mod error;
 pub mod inspect;
 pub mod normalize;

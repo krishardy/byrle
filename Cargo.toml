@@ -41,6 +41,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # reads it through flate2, already in the tree. `deflate` would add zopfli, which only compresses,
 # and the default features add aes-crypto, bzip2, lzma, ppmd, xz and zstd.
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
 
 [lints.rust]
 # `coverage` is set by cargo-llvm-cov, which `make coverage` runs. Declared so the

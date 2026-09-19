@@ -362,13 +362,15 @@ That is the failure mode every item below should be brought to.
       asked. `policy diff` does the same at `main.rs:303`, but it is reached only through a
       lockfile the reader already refused, so it is not observable there yet.
 
-- [ ] **`doctor` checks five npm clients and no Python ones.**
+- [x] **`doctor` checks five npm clients and no Python ones.**
       Its output covers npm, pnpm, yarn and bun registries and caches. It says nothing about
       pip or uv. Both failure modes it exists to catch were hit by hand on 2026-09-16: a
       configured `extra-index-url` served every file while the proxy saw no `/packages/`
       request, and pip's wheel cache supplies an install without asking any index.
       `scripts/make/smoke-python.sh` works around both with `PIP_CONFIG_FILE=/dev/null` and
       `--no-cache-dir`, which is a test making up for a check that does not exist.
+      Fixed 2026-09-19: `doctor` checks pip's and uv's index, extra indexes and cache:
+      [doctor-python-clients](docs/engineering_decisions/doctor-python-clients.md).
 
 - [x] **Two smaller ecosystem assumptions.**
       Fixed: `doctor::looks_like_a_registry` was
