@@ -420,8 +420,9 @@ That is the failure mode every item below should be brought to.
             counterpart in either direction, 428 of those with a CVE alias. Keep `PYSEC-`
             as non-malware, and treat a `PYSEC-`/`GHSA-` pair as
             [alias-matching](docs/engineering_decisions/alias-matching.md) treats one. The
-            PyPA Advisory Database's licence is not yet in `advisory-stream-licences.md`;
-            add it first. The 7 `OSV-` (OSS-Fuzz) records need their own decision.
+            PyPA Advisory Database is CC-BY-4.0, attribution owed, as `GHSA-` is:
+            [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
+            The 7 `OSV-` (OSS-Fuzz) records need their own decision.
       - [ ] Datadog `samples/pypi/manifest.json`: 1,834 names, 7 not in PEP 503 form, which
             `Affected::new` now normalises.
       - [ ] GitHub `securityVulnerabilities(ecosystem: PIP)`: names such as `GitPython` and
