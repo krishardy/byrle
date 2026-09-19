@@ -1128,7 +1128,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     );
     let mut outbound = proxy.client.request(method.clone(), &url);
     for (name, value) in req.headers() {
-        if is_hop_by_hop(name.as_str()) || name == header::HOST {
+        // `Authorization` is the client's credential for this proxy, and an account's token
+        // under TODO Stage 8. Forwarded, it reached registry.npmjs.org and pypi.org: see
+        // docs/engineering_decisions/account-identification.md.
+        if is_hop_by_hop(name.as_str()) || name == header::HOST || name == header::AUTHORIZATION {
             continue;
         }
         if read_metadata && name == header::ACCEPT_ENCODING {
@@ -2620,7 +2623,7 @@ mod tests {
 
     /// Hop-by-hop headers describe one connection and must not cross to the next.
     #[tokio::test]
-    async fn hop_by_hop_headers_do_not_cross_the_proxy() {
+    async fn hop_by_hop_headers_and_credentials_do_not_cross_the_proxy() {
         let (base, seen) = proxy_serving(
             StatusCode::OK,
             "application/octet-stream",
@@ -2633,6 +2636,7 @@ mod tests {
             .get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
             .header("te", "trailers")
             .header("proxy-authorization", "Basic c2VjcmV0")
+            .header("authorization", "Bearer account-token")
             .send()
             .await
             .unwrap();
@@ -2643,6 +2647,10 @@ mod tests {
         assert!(
             forwarded.get("proxy-authorization").is_none(),
             "a proxy credential must not be handed to the upstream"
+        );
+        assert!(
+            forwarded.get(header::AUTHORIZATION).is_none(),
+            "a credential for this proxy must not be handed to the upstream"
         );
         assert_ne!(
             forwarded.get(header::HOST).map(|v| v.to_str().unwrap()),
