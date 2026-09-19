@@ -99,6 +99,41 @@ survived by npm, pnpm and yarn 1, and fails yarn 4 and bun.
 **yarn 1 treats the two request kinds differently.** It retries a 503 packument five times
 and gives up on a 503 tarball after one. No other client varies by target.
 
+## PyPI clients, measured 2026-09-19
+
+`make retry-matrix` added pip and uv, installing `idna` from a PyPI index through the proxy.
+Metadata is the simple index and an artifact is a file. The scopes `WAHAROA_DEFER_TEST`
+takes were renamed `metadata` and `artifact` at the same time. The npm rows of the same
+run match the tables above, apart from elapsed times within 1.5s.
+
+Deferral that never lifts:
+
+| Client | 429 index | 503 index | 429 file | 503 file |
+|---|---|---|---|---|
+| pip 26.1.1 | 6 @ 1s | 6 @ 1s | 6 @ 1s | 6 @ 1s |
+| uv 0.12.5 | 4 @ 2.0s, 2.5s, 2.7s | 4 @ 1.6s, 3.7s, 4.2s | 4 @ 2.0s, 1.7s, 2.8s | 4 @ 2.0s, 3.7s, 2.1s |
+
+Deferral lifting after 8 seconds:
+
+| Client | Attempts | Installed | Elapsed |
+|---|---|---|---|
+| pip 26.1.1 | 6 @ 1s | **no** | 5.2s |
+| uv 0.12.5 | 3 @ 1.0s, 2.5s | yes | 10.1s |
+
+| Client | Total patience before failing |
+|---|---|
+| pip | 5.5s |
+| uv | 7 to 10s |
+
+- **pip honours `Retry-After`**, at 1.0s gaps, the second client after yarn 4 to do so. It
+  treats 429 and 503 alike, on the index and on a file.
+- **uv runs its own backoff** and treats the codes alike.
+- **An eight-second warm-up fails pip and not uv.** pip gave up after 5.2s. uv installed
+  after 10.1s.
+- **pip reports a deferred index as a missing package.** A 503 on the index ends in
+  `No matching distribution found`, the message for a 404. Measured against a stub on
+  2026-09-18: [pypi-index-filtering](pypi-index-filtering.md).
+
 ## What follows for Stage 2
 
 - The per-client table §5 asks for is warranted: the clients differ by more than a

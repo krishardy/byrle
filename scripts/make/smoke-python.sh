@@ -15,6 +15,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/python.sh
+. "$repo_root/scripts/make/lib/python.sh"
 
 port="${WAHAROA_PORT:-8734}"
 index="http://127.0.0.1:${port}/simple/"
@@ -64,19 +66,12 @@ stop_proxy() {
 clean() { sed -E 's/\x1b\[[0-9;]*m//g' "$log" >"$clean_log"; }
 count() { grep -c "$1" "$clean_log" || true; }
 
-# PIP_CONFIG_FILE=/dev/null because a configured `extra-index-url` is queried alongside
-# this proxy and serves its own file URLs. Measured: with the operator's own pip.conf in
-# place, an install through the proxy fetched every file from the other index and the
-# proxy saw no `/packages/` request at all.
-#
-# --no-cache-dir because pip installs from its wheel cache without asking any index,
-# which would skip enforcement entirely. That bypass is real (plan section 7); here it
-# would just invalidate the check.
+# scripts/make/lib/python.sh says why each flag is there.
 pip_install() {
     local dir="$1"; shift
-    PIP_CONFIG_FILE=/dev/null "$dir/venv/bin/pip" install \
-        --index-url "$index" --trusted-host 127.0.0.1 \
-        --no-cache-dir --disable-pip-version-check --quiet "$@"
+    local cmd
+    mapfile -t cmd < <(waharoa_pip_command "$dir/venv" "$index" --quiet "$@")
+    "${cmd[@]}"
 }
 
 make_venv() {
@@ -213,10 +208,8 @@ else
     start_proxy ""
     mkdir -p "$workdir/uv"
     uv venv -q "$workdir/uv/venv" >/dev/null 2>&1 || fail "uv could not create a venv"
-    # UV_NO_CONFIG for the same reason pip gets PIP_CONFIG_FILE=/dev/null.
-    VIRTUAL_ENV="$workdir/uv/venv" UV_NO_CONFIG=1 uv pip install --quiet \
-        --index-url "$index" --allow-insecure-host 127.0.0.1 --no-cache requests \
-        || fail "uv pip install requests failed"
+    mapfile -t uv_cmd < <(waharoa_uv_command "$workdir/uv/venv" "$index" --quiet requests)
+    "${uv_cmd[@]}" || fail "uv pip install requests failed"
 
     clean
     uv_files="$(count 'artifact requested')"

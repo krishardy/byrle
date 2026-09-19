@@ -2143,7 +2143,7 @@ mod tests {
         let base = serve(
             Proxy::new(reqwest::Client::new())
                 .with_upstream(Ecosystem::Npm, upstream)
-                .with_defer_test(Some(DeferTest::parse("429:1:packument").unwrap()))
+                .with_defer_test(Some(DeferTest::parse("429:1:metadata").unwrap()))
                 .router(),
         )
         .await;

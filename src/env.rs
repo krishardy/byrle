@@ -171,7 +171,7 @@ pub const MAX_METADATA_BYTES: Var = runtime(
 pub const MAX_RECORDS: Var = runtime(
     "WAHAROA_MAX_RECORDS",
     "",
-    &["packument records held in memory"],
+    &["package records held in memory"],
 )
 .with_default(Default::Number(DEFAULT_MAX_RECORDS as u64));
 pub const MAX_VERIFIED: Var = runtime(
@@ -254,7 +254,7 @@ pub const REFUSE_UNSERVABLE: Var = runtime(
     "=0",
     &[
         "forward versions whose artifacts this proxy cannot",
-        "see, instead of removing them from the packument",
+        "see, instead of removing them from the metadata",
     ],
 );
 pub const LOG_FILTER: Var = runtime("RUST_LOG", "", &["log filter, in tracing's syntax"])
@@ -268,8 +268,8 @@ pub const DEFER_TEST: Var = Var {
             "DEBUG BUILDS ONLY: answer every matching request with",
             "a deferral instead of fetching, so client retry",
             "behaviour can be measured. `<status>:<seconds|none>:",
-            "<packument|tarball|all>[:<seconds>]`, e.g.",
-            "\"429:1:tarball\" or \"503:1:all:8\"",
+            "<metadata|artifact|all>[:<seconds>]`, e.g.",
+            "\"429:1:artifact\" or \"503:1:all:8\"",
         ],
     )
 };
@@ -1024,7 +1024,7 @@ mod tests {
     fn a_debug_build_reads_a_well_formed_deferral() {
         #[cfg(debug_assertions)]
         assert!(
-            with(&[(DEFER_TEST, "429:1:tarball")])
+            with(&[(DEFER_TEST, "429:1:artifact")])
                 .defer_test()
                 .unwrap()
                 .is_some()
