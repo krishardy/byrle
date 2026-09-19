@@ -1988,9 +1988,7 @@ fn policy_refused_versions(
         };
         // `enforce::artifact` has already dropped unenforceable checks, so this needs no
         // `enforce::enforced` call.
-        if refusal.action.strength() > strongest.strength() {
-            strongest = refusal.action;
-        }
+        strongest = std::cmp::max_by_key(strongest, refusal.action, |a| a.strength());
         // The reason line leads with the check name, which is what the log records.
         checks.extend(
             refusal
@@ -2740,39 +2738,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_version_the_policy_allows_is_served() {
-        let (upstream, seen) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_policy(Some(policy(
-                    "version: 1\ncooldown_days: 0\n\
-                     denials:\n  - purl: pkg:npm/lodash@4.17.20\n    reason: test\n",
-                )))
-                .with_refuse_unservable(false)
-                .router(),
-        )
-        .await;
-
-        // The upstream serves the packument body for every path, so the artifact fails
-        // its digest check and the stream aborts. What is being tested is whether policy
-        // stopped the request, so the assertion is on what reached upstream.
-        let _ = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
-
-        let paths = &seen.lock().unwrap().paths;
-        assert!(
-            paths.iter().any(|p| p.ends_with(".tgz")),
-            "a version no denial names must be fetched: {paths:?}"
-        );
-    }
-
     /// A store with one advisory for every version, without the KEV catalogue.
     fn everywhere(advisory_id: &str, cvss: Option<f64>, malware: bool) -> Arc<dyn Intel> {
         store_with(
@@ -2848,41 +2813,6 @@ mod tests {
         assert!(!paths.iter().any(|p| p.ends_with(".tgz")), "{paths:?}");
     }
 
-    /// The artifact branch answers without a socket: a held record, intel that matches
-    /// nothing refused, and no policy give the fetch its digest and the purl the verifier
-    /// logs.
-    #[tokio::test]
-    async fn an_allowed_artifact_is_fetched_with_its_digest_and_purl() {
-        let metadata = npm::normalize_packument(
-            &fixture("lodash-4.17.21.abbrev.json"),
-            crate::record::DocumentDetail::Abbreviated,
-        )
-        .unwrap();
-        let key = metadata.key.clone();
-        let proxy = Proxy::new(reqwest::Client::new())
-            .with_intel(Some(malware_everywhere()))
-            .with_refuse_unservable(false);
-        proxy.store.lock().unwrap().insert(metadata);
-        let request = ArtifactRequest {
-            ecosystem: Ecosystem::Npm,
-            method: &Method::GET,
-            key: &key,
-            claimed_version: "4.17.21",
-            filename: "lodash-4.17.21.tgz",
-            path: "/lodash/-/lodash-4.17.21.tgz",
-            client: "-",
-        };
-        let ArtifactStep::Fetch(fetch) = decide_artifact(&proxy, request).await else {
-            panic!("no policy refuses it");
-        };
-        assert_eq!(fetch.purl, "pkg:npm/lodash@4.17.21");
-        assert!(fetch.digest.is_some(), "the packument publishes sha512");
-        assert_eq!(
-            fetch.origin, None,
-            "the default registry is not an added origin"
-        );
-    }
-
     /// A HEAD for an artifact is forwarded as it came. It is not decided, so it costs no
     /// metadata fetch.
     #[tokio::test]
@@ -2897,6 +2827,17 @@ mod tests {
         assert_eq!(seen.lock().unwrap().paths, [tarball]);
     }
 
+    /// A client that reached the proxy at `proxy.test` and accepts `accept_encoding`.
+    fn client_headers(accept_encoding: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_str(accept_encoding).unwrap(),
+        );
+        headers
+    }
+
     fn negotiated(
         yaml: Option<&str>,
         method: Method,
@@ -2905,13 +2846,13 @@ mod tests {
     ) -> Negotiation {
         let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
         let (ecosystem, target) = crate::route::classify(path);
-        let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
-        headers.insert(
-            header::ACCEPT_ENCODING,
-            HeaderValue::from_str(accept_encoding).unwrap(),
-        );
-        negotiate(&proxy, ecosystem, &target, &method, &headers)
+        negotiate(
+            &proxy,
+            ecosystem,
+            &target,
+            &method,
+            &client_headers(accept_encoding),
+        )
     }
 
     /// The full packument is asked for only where it adds a fact: an npm metadata GET the
@@ -3227,37 +3168,6 @@ mod tests {
         assert_eq!(report("gzip"), "", "a rewritten document is inspected");
     }
 
-    /// The metadata branch answers without a socket: a version the intel reports as malware
-    /// is gone from the document the client receives.
-    #[tokio::test]
-    async fn a_refused_version_is_filtered_out_of_the_document() {
-        let proxy = Proxy::new(reqwest::Client::new())
-            .with_intel(Some(malware_everywhere()))
-            .with_refuse_unservable(false)
-            .with_policy(Some(policy("version: 1\ncooldown_days: 0\n")));
-        let body = Bytes::from(fixture("lodash-4.17.21.abbrev.json"));
-        let negotiation = negotiated(None, Method::GET, "/lodash", "gzip");
-        let DocumentStep::Forward(Some(forwarded)) = filtered_document(
-            &proxy,
-            DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
-            &body,
-            None,
-            &negotiation,
-            "/lodash",
-        )
-        .await
-        else {
-            panic!("the document is read and rewritten");
-        };
-        let forwarded = String::from_utf8(forwarded).unwrap();
-        assert!(body.windows(7).any(|w| w == b"4.17.21"));
-        assert!(!forwarded.contains("4.17.21"), "{forwarded}");
-        assert!(
-            proxy.store.lock().unwrap().records() > 0,
-            "the records are kept for the artifact request"
-        );
-    }
-
     /// Whether the packument the client receives offers `version`.
     async fn offered(base: &str, name: &str, version: &str) -> bool {
         let response = reqwest::get(format!("{base}/{name}")).await.unwrap();
@@ -3268,6 +3178,136 @@ mod tests {
         );
         let doc: serde_json::Value = serde_json::from_str(&response.text().await.unwrap()).unwrap();
         doc["versions"].get(version).is_some()
+    }
+
+    /// Nothing listens on port 9, so a test that should need no upstream fails at once if
+    /// it asks one, rather than reaching a public registry.
+    const NO_UPSTREAM: &str = "http://127.0.0.1:9";
+    const NO_POLICY: &str = "version: 1\ncooldown_days: 0\n";
+    const DENY_LODASH: &str = "version: 1\ncooldown_days: 0\n\
+                               denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n";
+    const LODASH_TARBALL: &str = "/lodash/-/lodash-4.17.21.tgz";
+
+    /// A proxy with no upstream to reach. The origin check is off, so a 403 can only be the
+    /// policy's.
+    fn offline(intel: Option<Arc<dyn Intel>>, yaml: Option<&str>) -> Proxy {
+        Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
+            .with_upstream(Ecosystem::PyPI, NO_UPSTREAM)
+            .with_intel(intel)
+            .with_refuse_unservable(false)
+            .with_policy(yaml.map(policy))
+    }
+
+    /// Whether `packument` is the full document, which is the one with publish times.
+    fn is_full(packument: &str) -> bool {
+        packument.contains(".full.")
+    }
+
+    /// Put an npm fixture's records in the store, as an earlier metadata request would.
+    fn hold(proxy: &Proxy, packument: &str) {
+        let detail = if is_full(packument) {
+            crate::record::DocumentDetail::Full
+        } else {
+            crate::record::DocumentDetail::Abbreviated
+        };
+        let metadata = npm::normalize_packument(&fixture(packument), detail).unwrap();
+        proxy.store.lock().unwrap().insert(metadata);
+    }
+
+    /// The proxy's decision on a GET of the artifact at `path`.
+    async fn pinned(proxy: &Proxy, path: &str) -> ArtifactStep {
+        let (
+            ecosystem,
+            RequestTarget::Artifact {
+                key,
+                claimed_version,
+                filename,
+            },
+        ) = crate::route::classify(path)
+        else {
+            panic!("{path} is not an artifact");
+        };
+        let request = ArtifactRequest {
+            ecosystem,
+            method: &Method::GET,
+            key: &key,
+            claimed_version: &claimed_version,
+            filename: &filename,
+            path,
+            client: "-",
+        };
+        decide_artifact(proxy, request).await
+    }
+
+    /// The status and body of a response the proxy gives in place of asking upstream.
+    async fn read(response: Response) -> (StatusCode, String) {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8(body.to_vec()).unwrap())
+    }
+
+    async fn refused(step: ArtifactStep) -> (StatusCode, String) {
+        match step {
+            ArtifactStep::Answer(response) => read(response).await,
+            ArtifactStep::Fetch(_) => panic!("the artifact would be fetched"),
+        }
+    }
+
+    /// Fetched and verified against a digest from a record the store held. A store that
+    /// missed would fetch too, unverified, after its metadata fetch to [`NO_UPSTREAM`]
+    /// failed.
+    fn fetched(step: &ArtifactStep) -> bool {
+        matches!(step, ArtifactStep::Fetch(fetch) if fetch.digest.is_some())
+    }
+
+    /// The proxy's handling of a metadata GET of `path` that upstream answers with `body`.
+    async fn resolve(proxy: &Proxy, path: &str, content_type: &str, body: &[u8]) -> DocumentStep {
+        let (ecosystem, target) = crate::route::classify(path);
+        let document = ecosystem::of(ecosystem)
+            .document(Some(content_type))
+            .expect("a metadata document");
+        let headers = client_headers("gzip");
+        let negotiation = negotiate(proxy, ecosystem, &target, &Method::GET, &headers);
+        let body = Bytes::copy_from_slice(body);
+        filtered_document(proxy, document, &body, None, &negotiation, path).await
+    }
+
+    async fn resolve_npm(proxy: &Proxy, name: &str, packument: &str) -> DocumentStep {
+        let content_type = if is_full(packument) {
+            npm::FULL_ACCEPT
+        } else {
+            npm::ABBREVIATED_ACCEPT
+        };
+        resolve(
+            proxy,
+            &format!("/{name}"),
+            content_type,
+            &fixture(packument),
+        )
+        .await
+    }
+
+    async fn answered(step: DocumentStep) -> (StatusCode, String) {
+        match step {
+            DocumentStep::Answer(response) => read(response).await,
+            DocumentStep::Forward(_) => panic!("the document would be forwarded"),
+        }
+    }
+
+    /// The npm fixture `packument` as the client receives it.
+    async fn resolved(proxy: &Proxy, name: &str, packument: &str) -> serde_json::Value {
+        match resolve_npm(proxy, name, packument).await {
+            DocumentStep::Forward(Some(body)) => serde_json::from_slice(&body).unwrap(),
+            DocumentStep::Forward(None) => panic!("the document would be forwarded unread"),
+            DocumentStep::Answer(response) => panic!("answered {}", response.status()),
+        }
+    }
+
+    fn offers(document: &serde_json::Value, version: &str) -> bool {
+        document["versions"].get(version).is_some()
     }
 
     const LODASH: &str = "lodash-4.17.21.abbrev.json";
@@ -3281,19 +3321,11 @@ mod tests {
     #[tokio::test]
     async fn every_check_refuses_on_a_pinned_fetch_and_filters_the_packument() {
         use crate::policy::decide::Check;
-        const BASE: &str = "version: 1\ncooldown_days: 0\n";
+        const BASE: &str = NO_POLICY;
         for check in Check::ALL {
             let (packument, name, version, intel, yaml): (_, _, _, Option<Arc<dyn Intel>>, _) =
                 match check {
-                    Check::Denials => (
-                        LODASH,
-                        "lodash",
-                        "4.17.21",
-                        None,
-                        format!(
-                            "{BASE}denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n"
-                        ),
-                    ),
+                    Check::Denials => (LODASH, "lodash", "4.17.21", None, DENY_LODASH.to_owned()),
                     Check::KnownMalware => (
                         LODASH,
                         "lodash",
@@ -3347,16 +3379,236 @@ mod tests {
                         format!("{BASE}install_scripts: block\n"),
                     ),
                 };
-            let (base, seen) = proxy_for(packument, intel, Some(&yaml)).await;
+            let label = check.as_str();
+            let proxy = offline(intel, Some(&yaml));
+            hold(&proxy, packument);
             let tarball = format!("/{name}/-/{name}-{version}.tgz");
-            assert_refused_pinned(&base, &seen, &tarball, check.as_str()).await;
-            assert!(!offered(&base, name, version).await, "{}", check.as_str());
-
+            let (status, body) = refused(pinned(&proxy, &tarball).await).await;
+            assert_eq!(status, 403, "{label}");
+            assert!(body.contains(label), "{label}: {body}");
+            assert!(
+                !offers(&resolved(&proxy, name, packument).await, version),
+                "{label}"
+            );
             // The same document under a policy that refuses nothing is offered, so the
             // filtering above is the check's.
-            let allowing = format!("{BASE}install_scripts: allow\n");
-            let (base, _) = proxy_for(packument, None, Some(&allowing)).await;
-            assert!(offered(&base, name, version).await, "{}", check.as_str());
+            let allowing = offline(None, Some(&format!("{BASE}install_scripts: allow\n")));
+            assert!(
+                offers(&resolved(&allowing, name, packument).await, version),
+                "{label}"
+            );
+        }
+    }
+
+    /// A record the store holds, no policy, and intel that would refuse it: the fetch gets
+    /// its digest and the purl the verifier logs.
+    #[tokio::test]
+    async fn an_allowed_artifact_is_fetched_with_its_digest_and_purl() {
+        let proxy = offline(Some(malware_everywhere()), None);
+        hold(&proxy, LODASH);
+        let ArtifactStep::Fetch(fetch) = pinned(&proxy, LODASH_TARBALL).await else {
+            panic!("no policy refuses it");
+        };
+        assert_eq!(fetch.purl, "pkg:npm/lodash@4.17.21");
+        assert!(fetch.digest.is_some(), "the packument publishes sha512");
+        assert_eq!(
+            fetch.origin, None,
+            "the default registry is not an added origin"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_version_no_denial_names_is_fetched() {
+        let proxy = offline(
+            None,
+            Some(&DENY_LODASH.replace("lodash@4.17.21", "lodash@4.17.20")),
+        );
+        hold(&proxy, LODASH);
+        assert!(fetched(&pinned(&proxy, LODASH_TARBALL).await));
+    }
+
+    /// No policy at all is not the same as a policy that allows everything, and neither
+    /// refuses. With no policy the store is never asked, so one that is down changes
+    /// nothing.
+    #[tokio::test]
+    async fn without_a_policy_nothing_is_refused_and_the_store_is_not_asked() {
+        let down: Arc<dyn Intel> = Arc::new(crate::intel::store::testing::FixedIntel(Err(())));
+        for intel in [None, Some(down)] {
+            let proxy = offline(intel, None);
+            hold(&proxy, LODASH);
+            assert!(fetched(&pinned(&proxy, LODASH_TARBALL).await));
+            assert!(offers(&resolved(&proxy, "lodash", LODASH).await, "4.17.21"));
+        }
+    }
+
+    /// A store that cannot answer is not a store that found nothing.
+    #[tokio::test]
+    async fn a_store_that_cannot_answer_is_a_503_on_both_paths() {
+        use crate::intel::store::testing::FixedIntel;
+        for (label, store) in [
+            ("down", FixedIntel(Err(()))),
+            ("empty", FixedIntel(Ok(None))),
+        ] {
+            let proxy = offline(Some(Arc::new(store)), Some(NO_POLICY));
+            hold(&proxy, LODASH);
+            let (status, body) = refused(pinned(&proxy, LODASH_TARBALL).await).await;
+            assert_eq!(status, 503, "{label}");
+            assert!(body.contains("intel store"), "{label}: {body}");
+            let (status, _) = answered(resolve_npm(&proxy, "lodash", LODASH).await).await;
+            assert_eq!(status, 503, "{label}");
+        }
+    }
+
+    /// `handle` returns the metadata branch's answer in place of the document. The answer
+    /// itself is `a_store_that_cannot_answer_is_a_503_on_both_paths`.
+    #[tokio::test]
+    async fn a_packument_the_proxy_cannot_decide_on_is_answered_with_a_503() {
+        let down = Arc::new(crate::intel::store::testing::FixedIntel(Err(())));
+        let (base, _) = proxy_with_intel(down, true).await;
+        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(response.status(), 503);
+    }
+
+    /// Decision #4's resolution half. The refused version is not in the document, so the
+    /// client's resolver picks another. Filtering is a policy question and repointing
+    /// artifact URLs a transport one, so it happens with rewriting off too:
+    /// `enforcement-tiers.md` says rewriting is correctly off once the proxy terminates TLS.
+    #[tokio::test]
+    async fn a_denied_version_is_absent_from_the_packument_the_client_receives() {
+        for rewriting in [true, false] {
+            let proxy = offline(None, Some(DENY_LODASH)).with_artifact_rewriting(rewriting);
+            let document = resolved(&proxy, "lodash", LODASH).await;
+            assert!(!offers(&document, "4.17.21"), "rewriting {rewriting}");
+            // This fixture tags `latest` as 4.18.1, a version the document never carried,
+            // so the tag never named the denied version and survives. Tag dropping is
+            // covered against a document where it does, in `npm::tests::rewriting`.
+            assert_eq!(document["dist-tags"]["latest"], "4.18.1");
+        }
+    }
+
+    /// Both halves of decision #4 are recorded. A log holding only refusals cannot answer
+    /// "was this ever evaluated".
+    #[tokio::test]
+    async fn every_decision_reaches_the_audit_log() {
+        let path = crate::util::test_support::tempdir("proxy-audit").join("audit.jsonl");
+        let log = Arc::new(AuditLog::open(&path).expect("should open"));
+        let proxy = offline(None, Some(DENY_LODASH)).with_audit_log(Some(log));
+
+        resolved(&proxy, "lodash", LODASH).await;
+        pinned(&proxy, LODASH_TARBALL).await;
+
+        let written = std::fs::read_to_string(&path).expect("should read");
+        let events: Vec<serde_json::Value> = written
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("each line is one object"))
+            .collect();
+        let resolution = events
+            .iter()
+            .find(|e| e["path"] == "resolution")
+            .expect("the packument request is recorded");
+        assert_eq!(resolution["removed"], serde_json::json!(["4.17.21"]));
+        assert_eq!(resolution["checks"], serde_json::json!(["denials"]));
+        let pinned = events
+            .iter()
+            .find(|e| e["path"] == "pinned")
+            .expect("the artifact request is recorded");
+        assert_eq!(pinned["version"], "4.17.21");
+        assert_eq!(pinned["action"], "block");
+    }
+
+    /// `pkg` with 1.0.0, published in 2020, and 2.0.0, published now.
+    fn two_versions() -> PackageMetadata {
+        let version = |v: &str| {
+            serde_json::json!({"name": "pkg", "version": v, "dist": {
+                "tarball": format!("https://registry.npmjs.org/pkg/-/pkg-{v}.tgz"),
+                "integrity": "sha512-AAAA"}})
+        };
+        let doc = serde_json::json!({
+            "name": "pkg",
+            "dist-tags": {"latest": "2.0.0"},
+            "versions": {"1.0.0": version("1.0.0"), "2.0.0": version("2.0.0")},
+            "time": {
+                "1.0.0": "2020-01-01T00:00:00.000Z",
+                "2.0.0": jiff::Timestamp::now().to_string(),
+            },
+        });
+        npm::normalize_packument(
+            doc.to_string().as_bytes(),
+            crate::record::DocumentDetail::Full,
+        )
+        .unwrap()
+    }
+
+    const COOLDOWN_AND_DENIAL: &str = "version: 1\ncooldown_days: 7\n\
+                                       denials:\n  - purl: pkg:npm/pkg@1.0.0\n    reason: test\n";
+
+    /// The resolution event carries the strongest action of the versions removed: 1.0.0 is
+    /// blocked by a denial and 2.0.0 quarantined by the cooldown.
+    #[test]
+    fn a_resolution_is_recorded_with_its_strongest_action() {
+        let path = crate::util::test_support::tempdir("proxy-strongest").join("audit.jsonl");
+        let log = AuditLog::open(&path).expect("should open");
+        let policy = policy(COOLDOWN_AND_DENIAL);
+        let refused =
+            policy_refused_versions(&two_versions(), Some(&policy), None, "/pkg", Some(&log));
+        assert_eq!(refused.len(), 2);
+        let written = std::fs::read_to_string(&path).expect("should read");
+        let event: serde_json::Value = serde_json::from_str(written.trim()).unwrap();
+        assert_eq!(event["action"], "block");
+        assert_eq!(
+            event["checks"],
+            serde_json::json!(["cooldown_days", "denials"])
+        );
+    }
+
+    /// A document with every version removed reads as a broken registry to the client, so
+    /// the proxy says so. One with a version left does not.
+    #[test]
+    fn a_document_with_every_version_refused_is_reported() {
+        let refusing = |yaml: &str| {
+            let policy = policy(yaml);
+            logged(|| {
+                policy_refused_versions(&two_versions(), Some(&policy), None, "/pkg", None);
+            })
+        };
+        let every = refusing(COOLDOWN_AND_DENIAL);
+        assert!(every.contains("policy refuses every version"), "{every}");
+        assert_eq!(
+            refusing("version: 1\ncooldown_days: 7\n"),
+            "",
+            "1.0.0 is left"
+        );
+        assert_eq!(refusing(NO_POLICY), "", "nothing refused");
+    }
+
+    /// The record budget is the one given, not the default.
+    #[test]
+    fn the_record_store_holds_the_budget_it_is_given() {
+        let proxy = offline(None, None).with_max_records(1);
+        hold(&proxy, LODASH);
+        hold(&proxy, ESBUILD);
+        assert_eq!(proxy.store.lock().unwrap().records(), 1);
+    }
+
+    /// A refusal is on identity, not on the spelling of the path. `@babel%2ftraverse` and
+    /// `@babel/traverse` are the same package, and a denial written either way reaches
+    /// both.
+    #[tokio::test]
+    async fn a_denial_matches_both_spellings_of_a_scoped_name() {
+        for spelling in [
+            "pkg:npm/%40babel/traverse@8.0.5",
+            "pkg:npm/@babel/traverse@8.0.5",
+        ] {
+            let yaml = DENY_LODASH.replace("pkg:npm/lodash@4.17.21", spelling);
+            let proxy = offline(None, Some(&yaml));
+            hold(&proxy, "@babel_traverse-8.0.5.abbrev.json");
+            for path in [
+                "/@babel%2ftraverse/-/traverse-8.0.5.tgz",
+                "/@babel/traverse/-/traverse-8.0.5.tgz",
+            ] {
+                let (status, _) = refused(pinned(&proxy, path).await).await;
+                assert_eq!(status, 403, "{spelling} did not reach {path}");
+            }
         }
     }
 
@@ -3474,36 +3726,6 @@ mod tests {
         );
     }
 
-    /// A store that cannot answer is not a store that found nothing.
-    #[tokio::test]
-    async fn a_store_that_cannot_answer_is_a_503_on_both_paths_and_nothing_is_fetched() {
-        use crate::intel::store::testing::FixedIntel;
-        for (label, store) in [
-            ("down", FixedIntel(Err(()))),
-            ("empty", FixedIntel(Ok(None))),
-        ] {
-            let (base, seen) = proxy_with_intel(Arc::new(store), true).await;
-
-            let pinned = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
-                .await
-                .unwrap();
-            assert_eq!(pinned.status(), 503, "{label}");
-            assert!(
-                pinned.text().await.unwrap().contains("intel store"),
-                "{label}"
-            );
-
-            let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
-            assert_eq!(packument.status(), 503, "{label}");
-
-            let paths = &seen.lock().unwrap().paths;
-            assert!(
-                !paths.iter().any(|p| p.ends_with(".tgz")),
-                "{label}: {paths:?}"
-            );
-        }
-    }
-
     const PYPI_INDEX: &[u8] = br#"{"name":"x","files":[
         {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0.tar.gz","hashes":{}}
     ]}"#;
@@ -3514,42 +3736,18 @@ mod tests {
     /// `UncoveredMetadata::FilterWithoutIntel`.
     #[tokio::test]
     async fn a_file_in_an_ecosystem_no_stream_covers_is_a_503() {
-        let (upstream, seen) =
-            upstream_serving(StatusCode::OK, pypi::SIMPLE_JSON, None, PYPI_INDEX.to_vec()).await;
-        let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream(Ecosystem::Npm, upstream.clone())
-            .with_upstream(Ecosystem::PyPI, upstream)
-            .with_refuse_unservable(false)
-            .with_intel(Some(malware_everywhere()))
-            .with_policy(Some(policy("version: 1\ncooldown_days: 0\n")));
-        let base = serve(proxy.router()).await;
-
-        let index = reqwest::get(format!("{base}/simple/x/")).await.unwrap();
-        assert_eq!(index.status(), 200);
-        let file = reqwest::get(format!("{base}/packages/ef/01/23/x-1.0.tar.gz"))
-            .await
-            .unwrap();
-        assert_eq!(file.status(), 503);
+        let proxy = offline(Some(malware_everywhere()), Some(NO_POLICY));
+        let index = resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, PYPI_INDEX).await;
+        assert!(matches!(index, DocumentStep::Forward(Some(_))));
+        let (status, body) = refused(pinned(&proxy, "/packages/ef/01/23/x-1.0.tar.gz").await).await;
+        assert_eq!(status, 503);
         assert!(
-            file.text()
-                .await
-                .unwrap()
-                .contains("no advisory stream for pypi"),
-            "the body says which ecosystem"
+            body.contains("no advisory stream for pypi"),
+            "the body says which ecosystem: {body}"
         );
-        let fetched_files = seen
-            .lock()
-            .unwrap()
-            .paths
-            .iter()
-            .filter(|p| p.starts_with("/packages/"))
-            .count();
-        assert_eq!(fetched_files, 0);
-
         // npm is covered by the same snapshot and is served.
-        let (base, _) = proxy_with_intel(malware_everywhere(), true).await;
-        let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
-        assert_eq!(packument.status(), 200);
+        let packument = resolve_npm(&proxy, "lodash", LODASH).await;
+        assert!(matches!(packument, DocumentStep::Forward(Some(_))));
     }
 
     /// Two versions: 1.0 offers a wheel, 2.0 only an sdist.
@@ -3559,35 +3757,21 @@ mod tests {
         {"filename":"x-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-2.0.tar.gz","hashes":{}}
     ]}"#;
 
-    /// The filenames a simple index served through the proxy lists.
-    async fn served_filenames(
-        intel: Option<Arc<dyn Intel>>,
-        yaml: &str,
-    ) -> (StatusCode, Vec<String>) {
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            pypi::SIMPLE_JSON,
-            None,
-            PYPI_TWO_VERSIONS.to_vec(),
-        )
-        .await;
-        let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream(Ecosystem::Npm, upstream.clone())
-            .with_upstream(Ecosystem::PyPI, upstream)
-            .with_intel(intel)
-            .with_policy(Some(policy(yaml)));
-        let base = serve(proxy.router()).await;
-        let response = reqwest::get(format!("{base}/simple/x/")).await.unwrap();
-        let status = response.status();
-        let document: serde_json::Value =
-            serde_json::from_slice(&response.bytes().await.unwrap()).expect("json");
-        let names = document["files"]
+    /// The filenames the client receives for `PYPI_TWO_VERSIONS`.
+    async fn served_filenames(intel: Option<Arc<dyn Intel>>, yaml: &str) -> Vec<String> {
+        let proxy = offline(intel, Some(yaml));
+        let DocumentStep::Forward(Some(body)) =
+            resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, PYPI_TWO_VERSIONS).await
+        else {
+            panic!("the index is read and rewritten");
+        };
+        let document: serde_json::Value = serde_json::from_slice(&body).expect("json");
+        document["files"]
             .as_array()
             .expect("files")
             .iter()
             .map(|f| f["filename"].as_str().expect("a filename").to_owned())
-            .collect();
-        (status, names)
+            .collect()
     }
 
     /// The resolution half for PyPI. 2.0 runs `setup.py` whichever file pip takes, so it
@@ -3595,15 +3779,14 @@ mod tests {
     /// and a request for the sdist is refused at the file.
     #[tokio::test]
     async fn a_pypi_version_the_policy_refuses_is_removed_from_the_index() {
-        let (status, names) = served_filenames(
+        let names = served_filenames(
             None,
             "version: 1\ncooldown_days: 0\ninstall_scripts: block\n",
         )
         .await;
-        assert_eq!(status, 200);
         assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
 
-        let (_, unfiltered) = served_filenames(
+        let unfiltered = served_filenames(
             None,
             "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n",
         )
@@ -3616,12 +3799,11 @@ mod tests {
     /// `a_file_in_an_ecosystem_no_stream_covers_is_a_503`.
     #[tokio::test]
     async fn a_pypi_index_no_stream_covers_is_filtered_without_intel() {
-        let (status, names) = served_filenames(
+        let names = served_filenames(
             Some(malware_everywhere()),
             "version: 1\ncooldown_days: 0\ninstall_scripts: block\n",
         )
         .await;
-        assert_eq!(status, 200);
         assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
     }
 
@@ -3668,16 +3850,10 @@ mod tests {
     /// npm clients report a packument 503 as one, so npm's row keeps it.
     #[tokio::test]
     async fn an_npm_packument_no_stream_covers_is_a_503() {
-        let (base, _) = proxy_with_intel(Arc::new(NoStreams), true).await;
-        let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
-        assert_eq!(packument.status(), 503);
-        assert!(
-            packument
-                .text()
-                .await
-                .unwrap()
-                .contains("no advisory stream for npm")
-        );
+        let proxy = offline(Some(Arc::new(NoStreams)), Some(NO_POLICY));
+        let (status, body) = answered(resolve_npm(&proxy, "lodash", LODASH).await).await;
+        assert_eq!(status, 503);
+        assert!(body.contains("no advisory stream for npm"), "{body}");
     }
 
     /// A store whose records name one snapshot and whose newest snapshot is another, as
@@ -3744,17 +3920,12 @@ mod tests {
     /// different one, nothing is decided.
     #[tokio::test]
     async fn records_from_a_replaced_snapshot_are_not_decided_on() {
-        let store = refreshed("s1", "s2");
-        let (base, _) = proxy_with_intel(store, true).await;
-        let packument = reqwest::get(format!("{base}/lodash")).await.unwrap();
-        assert_eq!(packument.status(), 503);
+        let proxy = offline(Some(refreshed("s1", "s2")), Some(NO_POLICY));
+        let (status, body) = answered(resolve_npm(&proxy, "lodash", LODASH).await).await;
+        assert_eq!(status, 503);
         assert!(
-            packument
-                .text()
-                .await
-                .unwrap()
-                .contains("intel store cannot answer"),
-            "this is the store's answer changing, not a coverage gap"
+            body.contains("intel store cannot answer"),
+            "this is the store's answer changing, not a coverage gap: {body}"
         );
     }
 
@@ -3763,7 +3934,7 @@ mod tests {
     async fn a_snapshot_is_read_once_for_its_digest() {
         let store = refreshed("s1", "s1");
         let proxy = Proxy::new(reqwest::Client::new())
-            .with_upstream(Ecosystem::Npm, "http://127.0.0.1:9")
+            .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
             .with_intel(Some(store.clone()))
             .with_policy(Some(policy("version: 1\n")));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
@@ -3782,7 +3953,7 @@ mod tests {
         use crate::intel::store::testing::FixedIntel;
         let proxy = |intel: Option<Arc<dyn Intel>>, with_policy: bool| {
             let proxy = Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, "http://127.0.0.1:9")
+                .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
                 .with_intel(intel);
             if with_policy {
                 proxy.with_policy(Some(policy("version: 1\n")))
@@ -3843,248 +4014,6 @@ mod tests {
         );
         let paths = &seen.lock().unwrap().paths;
         assert!(paths.is_empty(), "answered here, not forwarded: {paths:?}");
-    }
-
-    /// With no policy nothing is enforced, so the store is never asked.
-    #[tokio::test]
-    async fn without_a_policy_a_store_that_is_down_changes_nothing() {
-        let store = Arc::new(crate::intel::store::testing::FixedIntel(Err(())));
-        let (base, seen) = proxy_with_intel(store, false).await;
-
-        let _ = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
-        let paths = &seen.lock().unwrap().paths;
-        assert!(paths.iter().any(|p| p.ends_with(".tgz")), "{paths:?}");
-    }
-
-    /// No policy at all is not the same as a policy that allows everything, and neither
-    /// refuses.
-    #[tokio::test]
-    async fn no_policy_configured_refuses_nothing() {
-        let (upstream, seen) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_refuse_unservable(false)
-                .router(),
-        )
-        .await;
-
-        let _ = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
-
-        let paths = &seen.lock().unwrap().paths;
-        assert!(
-            paths.iter().any(|p| p.ends_with(".tgz")),
-            "with no policy nothing is refused: {paths:?}"
-        );
-    }
-
-    /// Decision #4's resolution half, end to end. The client asks for the packument and
-    /// the refused version is simply not in it, so its own resolver picks another.
-    #[tokio::test]
-    async fn a_denied_version_is_absent_from_the_packument_the_client_receives() {
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_policy(Some(policy(
-                    "version: 1\ncooldown_days: 0\n\
-                     denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
-                )))
-                .with_refuse_unservable(false)
-                .router(),
-        )
-        .await;
-
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
-        assert_eq!(
-            response.status(),
-            200,
-            "filtering is a 200 with fewer versions, never a 4xx"
-        );
-        let body: serde_json::Value =
-            serde_json::from_str(&response.text().await.unwrap()).unwrap();
-        assert!(
-            body["versions"].get("4.17.21").is_none(),
-            "the denied version is still offered to the resolver"
-        );
-        // This fixture tags `latest` as 4.18.1, a version the document never carried, so
-        // the tag never named the denied version and survives. Tag dropping is covered
-        // against a document where it does, in `npm::tests::rewriting`.
-        assert_eq!(body["dist-tags"]["latest"], "4.18.1");
-    }
-
-    /// Filtering a refused version is a policy question; repointing artifact URLs is a
-    /// transport one. Tying them together meant that turning rewriting off, which
-    /// `enforcement-tiers.md` says is correct once the proxy terminates TLS, silently
-    /// stopped the filtering with it.
-    #[tokio::test]
-    async fn a_denied_version_is_filtered_with_artifact_rewriting_turned_off() {
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_policy(Some(policy(
-                    "version: 1\ncooldown_days: 0\n\
-                     denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
-                )))
-                .with_artifact_rewriting(false)
-                .with_refuse_unservable(false)
-                .router(),
-        )
-        .await;
-
-        let text = reqwest::get(format!("{base}/lodash"))
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert!(
-            body["versions"].get("4.17.21").is_none(),
-            "policy filtering stopped when rewriting was turned off"
-        );
-    }
-
-    /// Both halves of decision #4 are recorded, and an allowed package is recorded too.
-    /// A log holding only refusals cannot answer "was this ever evaluated".
-    #[tokio::test]
-    async fn every_decision_reaches_the_audit_log() {
-        let path = crate::util::test_support::tempdir("proxy-audit").join("audit.jsonl");
-        let log = Arc::new(AuditLog::open(&path).expect("should open"));
-
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_policy(Some(policy(
-                    "version: 1\ncooldown_days: 0\n\
-                     denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
-                )))
-                .with_audit_log(Some(log))
-                .with_refuse_unservable(false)
-                .router(),
-        )
-        .await;
-
-        let _ = reqwest::get(format!("{base}/lodash")).await;
-        let _ = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
-
-        let written = std::fs::read_to_string(&path).expect("should read");
-        let events: Vec<serde_json::Value> = written
-            .lines()
-            .map(|l| serde_json::from_str(l).expect("each line is one object"))
-            .collect();
-
-        let resolution = events
-            .iter()
-            .find(|e| e["path"] == "resolution")
-            .expect("the packument request is recorded");
-        assert_eq!(resolution["removed"], serde_json::json!(["4.17.21"]));
-        assert_eq!(resolution["checks"], serde_json::json!(["denials"]));
-
-        let pinned = events
-            .iter()
-            .find(|e| e["path"] == "pinned")
-            .expect("the artifact request is recorded");
-        assert_eq!(pinned["version"], "4.17.21");
-        assert_eq!(pinned["action"], "block");
-    }
-
-    /// Without a policy the same document comes through whole.
-    #[tokio::test]
-    async fn no_policy_leaves_every_version_in_the_packument() {
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_refuse_unservable(false)
-                .router(),
-        )
-        .await;
-
-        let text = reqwest::get(format!("{base}/lodash"))
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        let body: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert!(body["versions"].get("4.17.21").is_some());
-    }
-
-    /// A refusal is on identity, not on the spelling of the path. `@babel%2ftraverse` and
-    /// `@babel/traverse` are the same package, and a denial written either way reaches
-    /// both.
-    #[tokio::test]
-    async fn a_denial_matches_both_spellings_of_a_scoped_name() {
-        for spelling in [
-            "pkg:npm/%40babel/traverse@8.0.5",
-            "pkg:npm/@babel/traverse@8.0.5",
-        ] {
-            let (upstream, _) = upstream_serving(
-                StatusCode::OK,
-                "application/vnd.npm.install-v1+json",
-                None,
-                fixture("@babel_traverse-8.0.5.abbrev.json"),
-            )
-            .await;
-            let base = serve(
-                Proxy::new(reqwest::Client::new())
-                    .with_upstream(Ecosystem::Npm, upstream)
-                    .with_policy(Some(policy(&format!(
-                        "version: 1\ncooldown_days: 0\n\
-                         denials:\n  - purl: {spelling}\n    reason: test\n"
-                    ))))
-                    .with_refuse_unservable(false)
-                    .router(),
-            )
-            .await;
-
-            for path in [
-                "/@babel%2ftraverse/-/traverse-8.0.5.tgz",
-                "/@babel/traverse/-/traverse-8.0.5.tgz",
-            ] {
-                assert_eq!(
-                    reqwest::get(format!("{base}{path}"))
-                        .await
-                        .unwrap()
-                        .status(),
-                    403,
-                    "{spelling} did not reach {path}"
-                );
-            }
-        }
     }
 
     /// An upstream that sends no response is 502. §5 forbids any 4xx for a not-ready state,
