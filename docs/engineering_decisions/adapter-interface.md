@@ -93,8 +93,10 @@ makes `ecosystem::of` safe to call on the request path.
 
 `ecosystem::Clients::publish_times` fetches only when the row says `FullPackument`, and
 answers `Ok(None)` without a request when it says `Record`. The proxy asks it only when the
-policy uses a cooldown. npm's abbreviated packument has no `time` map, so its times come
-from a second request for the full one. A PyPI record already carries `published_at`,
+policy uses a cooldown, and only for a record with no `published_at`. Under a cooldown an npm
+metadata request asks for the full packument, whose records carry their times
+([no-metadata-cache](no-metadata-cache.md)), so the fetch is left for an artifact whose
+metadata the proxy has not seen. A PyPI record already carries `published_at`,
 which `facts::published_date` reads before any fetched times.
 
 ### Fetching without a document

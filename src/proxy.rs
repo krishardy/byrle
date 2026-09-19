@@ -79,7 +79,7 @@ use axum::{
 use bytes::{Bytes, BytesMut};
 use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
@@ -194,11 +194,6 @@ pub struct Proxy {
     /// state from a policy that allows everything: nothing was asked, rather than asked
     /// and answered yes.
     policy: Option<Arc<Policy>>,
-    /// Publish times, keyed by package, fetched from the full packument.
-    ///
-    /// Only populated when the policy uses a cooldown, because filling it costs a request
-    /// the client never made plus 1.7x to 3.6x the abbreviated document's bytes.
-    publish_times: Arc<Mutex<HashMap<PackageKey, Arc<facts::PublishTimes>>>>,
     /// One line per policy decision, when a path is configured.
     audit: Option<Arc<AuditLog>>,
     /// The intel store, when one is configured. With a policy, every decision consults it,
@@ -245,7 +240,6 @@ impl Proxy {
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             upstreams: Upstreams::defaults(),
             policy: None,
-            publish_times: Arc::new(Mutex::new(HashMap::new())),
             audit: None,
             intel: None,
             coverage: Arc::new(Mutex::new(None)),
@@ -901,6 +895,13 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         && chosen_encoding != RequestedEncoding::Unreadable;
     let rewrite_base = public_base(req.headers(), proxy.public_base.as_deref());
     let rewriting = read_metadata && proxy.rewrite_artifacts && rewrite_base.is_some();
+    // Under a cooldown, an ecosystem that publishes version times only in its full document
+    // is asked for that document, whatever the client asked for, so every record read from it
+    // carries its own publish time. The client is served the full document, filtered and
+    // rewritten; npm clients read it as they read the abbreviated one.
+    let full_document = read_metadata
+        && ecosystem::of(ecosystem).publish_times == ecosystem::PublishTimeSource::FullPackument
+        && proxy.policy.as_deref().is_some_and(Policy::uses_cooldown);
 
     // Every path that forwards a metadata document without rewriting it leaves that
     // package's artifacts to be fetched wherever the document says, which for pnpm, yarn
@@ -973,7 +974,12 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 // Decision #4's pinned half. Asked here because this is the first point
                 // where the exact version and its record are both in hand, and it is
                 // still before a byte is fetched.
-                let times = publish_times_for(&proxy, key).await;
+                // A record read from a full document carries its own publish time; only one
+                // without it needs the time fetched.
+                let times = match record.published_at {
+                    Some(_) => None,
+                    None => publish_times_for(&proxy, key).await,
+                };
                 let intel = match intel_for(&proxy, key, &path_and_query).await {
                     Ok(intel) => intel,
                     Err(unavailable) => return unavailable.response(),
@@ -982,10 +988,8 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                     // Allowed decisions are written too. A log holding only refusals
                     // cannot answer "was this ever evaluated", which is what `policy diff`
                     // needs a package set for.
-                    let mut facts = crate::policy::decide::Facts::from_record_and_times(
-                        record,
-                        times.as_deref(),
-                    );
+                    let mut facts =
+                        crate::policy::decide::Facts::from_record_and_times(record, times.as_ref());
                     if let Some(intel) = &intel {
                         facts = facts.with_intel(intel);
                     }
@@ -995,7 +999,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                             &facts.name,
                             &facts.version,
                             &crate::policy::decide::decide(policy, &facts, crate::policy::today()),
-                            &enforce::unenforceable(policy, record, times.as_deref(), facts.intel),
+                            &enforce::unenforceable(policy, record, times.as_ref(), facts.intel),
                         )
                         .with_intel_snapshot(intel.as_ref().map(|i| i.snapshot.as_str())),
                     );
@@ -1003,7 +1007,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
                 if let enforce::Verdict::Refuse(refusal) = enforce::artifact(
                     proxy.policy.as_deref(),
                     record,
-                    times.as_deref(),
+                    times.as_ref(),
                     intel.as_ref(),
                     crate::policy::today(),
                 ) {
@@ -1137,6 +1141,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         if read_metadata && name == header::ACCEPT_ENCODING {
             continue;
         }
+        if full_document && name == header::ACCEPT {
+            continue;
+        }
         if rewriting && is_conditional(name.as_str()) {
             continue;
         }
@@ -1144,6 +1151,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     }
     if read_metadata && let Some(value) = chosen_encoding.header_value() {
         outbound = outbound.header(header::ACCEPT_ENCODING, value);
+    }
+    if full_document {
+        outbound = outbound.header(header::ACCEPT, npm::FULL_ACCEPT);
     }
     // An `If-None-Match` the client got from us names our rewritten body, not the
     // upstream's. Turn it back, or drop it when it came from a proxy at another address.
@@ -1376,14 +1386,6 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     });
     let normalized = read.as_ref().and_then(Read::metadata);
 
-    // Fetched here rather than inside the rewrite, which is sync. Costs a request the
-    // client never made, so it happens only when the policy uses a cooldown, and only for
-    // an ecosystem whose metadata document carries no publish times.
-    let times = match normalized {
-        Some(metadata) => publish_times_for(&proxy, &metadata.key).await,
-        None => None,
-    };
-
     // Asked once per document rather than once per version: typescript has 3,823.
     let intel = match normalized {
         Some(metadata) => match intel_for(&proxy, &metadata.key, &path_and_query).await {
@@ -1417,7 +1419,6 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         Some(metadata) => policy_refused_versions(
             metadata,
             proxy.policy.as_deref(),
-            times.as_deref(),
             intel.as_ref(),
             &path_and_query,
             proxy.audit.as_deref(),
@@ -1565,33 +1566,21 @@ fn defer_response(
         .into_response()
 }
 
-/// How many packages' publish times are kept before the map is dropped whole.
+/// Publish times for this package, fetched from the registry now.
 ///
-/// Matches the record store's default. Dropping everything rather than evicting one entry
-/// is what `RecordStore` does, for the same reason: the next install refills what it
-/// needs, and a proxy that never lets go is the failure worth avoiding.
-const MAX_PUBLISH_TIME_PACKAGES: usize = 1024;
-
-/// Publish times for this package, fetched once and kept.
+/// Not kept between requests: a map filled once lacked every version published after it, and
+/// a version with no time is one `cooldown_days` cannot hold back, so the newest version, the
+/// one the check exists for, went through. Asked only for a record that carries no
+/// `published_at`, which under a cooldown is an artifact whose document this proxy has not
+/// read: a metadata request under a cooldown reads the full document, whose records carry it.
 ///
-/// `None` when the policy uses no cooldown, which is the common case: no request is made
-/// and nothing is held. `None` too for an ecosystem whose records carry `published_at`,
-/// which [`Clients::publish_times`] answers without a request. A fetch that fails is not
-/// fatal and is not retried within the process, because the check it feeds reports itself
-/// as unenforceable rather than refusing the package.
-async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<Arc<facts::PublishTimes>> {
+/// `None` when the policy uses no cooldown, and for an ecosystem whose records carry
+/// `published_at`, which [`Clients::publish_times`] answers without a request. A fetch that
+/// fails is not fatal: the check it feeds reports itself as unenforceable.
+async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::PublishTimes> {
     if !proxy.policy.as_deref().is_some_and(Policy::uses_cooldown) {
         return None;
     }
-    if let Some(held) = proxy
-        .publish_times
-        .lock()
-        .expect("publish times lock")
-        .get(key)
-    {
-        return Some(held.clone());
-    }
-
     let started = Instant::now();
     let times = match proxy.clients.publish_times(key).await {
         Ok(Some(times)) => times,
@@ -1607,15 +1596,6 @@ async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<Arc<facts:
         fetch_ms = started.elapsed().as_millis() as u64,
         "publish times read from the full packument"
     );
-
-    let times = Arc::new(times);
-    let mut held = proxy.publish_times.lock().expect("publish times lock");
-    // Bounded the same way the record store is, and by the same argument: an unbounded
-    // map keyed by package is a leak on a long-running proxy.
-    if held.len() >= MAX_PUBLISH_TIME_PACKAGES {
-        held.clear();
-    }
-    held.insert(key.clone(), times.clone());
     Some(times)
 }
 
@@ -1757,10 +1737,13 @@ async fn intel_for(
 /// is what the filtering decides. A check the record cannot answer is dropped, the same
 /// way it is on the artifact path, so a configured `cooldown_days` does not empty the
 /// document on a fact the registry never sent.
+///
+/// Publish times come from the records alone. Under a cooldown an npm request asks for the
+/// full packument, whose records carry them, and a PyPI record always does. Fetching them
+/// again would repeat the request this document came from.
 fn policy_refused_versions(
     metadata: &PackageMetadata,
     policy: Option<&Policy>,
-    times: Option<&facts::PublishTimes>,
     intel: Option<&PackageIntel>,
     path: &str,
     audit: Option<&AuditLog>,
@@ -1775,7 +1758,7 @@ fn policy_refused_versions(
     let mut strongest = crate::policy::Action::Allow;
     for record in &metadata.records {
         let enforce::Verdict::Refuse(refusal) =
-            enforce::artifact(Some(policy), record, times, intel, today)
+            enforce::artifact(Some(policy), record, None, intel, today)
         else {
             continue;
         };
@@ -1805,7 +1788,7 @@ fn policy_refused_versions(
                 enforce::unenforceable(
                     policy,
                     record,
-                    times,
+                    None,
                     crate::policy::decide::Intel::of(intel),
                 )
             })
@@ -2953,6 +2936,103 @@ mod tests {
         let tarball = "/lodash/-/lodash-4.17.21.tgz";
         assert_refused_pinned(&base, &seen, tarball, "cooldown_days").await;
         assert!(!offered(&base, "lodash", "4.17.21").await);
+    }
+
+    /// A version published after an earlier request is held back on the next one. Publish
+    /// times were kept per package once fetched, so a version newer than that fetch had no
+    /// time, `cooldown_days` was unenforceable for it, and the newest version went through.
+    /// Now each metadata request reads the full document, once, and its records carry the
+    /// times.
+    #[tokio::test]
+    async fn a_version_published_after_an_earlier_request_is_held_back_by_the_cooldown() {
+        let requests = Arc::new(Mutex::new(Vec::<String>::new()));
+        let published = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (recorder, publisher) = (requests.clone(), published.clone());
+        let router = Router::new().fallback(any(move |req: Request| {
+            let (requests, published) = (recorder.clone(), publisher.clone());
+            async move {
+                let accept = req
+                    .headers()
+                    .get(header::ACCEPT)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("-")
+                    .to_owned();
+                let mut seen = requests.lock().unwrap();
+                seen.push(accept);
+                let now = jiff::Timestamp::now().to_string();
+                let version = |v: &str| {
+                    serde_json::json!({"name": "pkg", "version": v, "dist": {
+                        "tarball": format!("https://registry.npmjs.org/pkg/-/pkg-{v}.tgz"),
+                        "integrity": "sha512-AAAA"}})
+                };
+                let mut doc = serde_json::json!({
+                    "name": "pkg",
+                    "dist-tags": {"latest": "1.0.0"},
+                    "versions": {"1.0.0": version("1.0.0")},
+                    "time": {"1.0.0": "2020-01-01T00:00:00.000Z"},
+                });
+                if published.load(std::sync::atomic::Ordering::SeqCst) {
+                    doc["versions"]["2.0.0"] = version("2.0.0");
+                    doc["time"]["2.0.0"] = serde_json::Value::String(now);
+                    doc["dist-tags"]["latest"] = "2.0.0".into();
+                }
+                // As the registry does: the abbreviated document has no `time` map.
+                let full = seen.last().is_some_and(|accept| accept == npm::FULL_ACCEPT);
+                if !full {
+                    doc.as_object_mut().unwrap().remove("time");
+                }
+                Response::builder()
+                    .header(
+                        header::CONTENT_TYPE,
+                        if full {
+                            npm::FULL_ACCEPT
+                        } else {
+                            npm::ABBREVIATED_ACCEPT
+                        },
+                    )
+                    .body(Body::from(doc.to_string()))
+                    .unwrap()
+            }
+        }));
+        let upstream = serve(router).await;
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, upstream)
+            .with_refuse_unservable(false)
+            .with_policy(Some(policy("version: 1\ncooldown_days: 7\n")));
+        let base = serve(proxy.router()).await;
+
+        assert!(offered(&base, "pkg", "1.0.0").await);
+        published.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(
+            !offered(&base, "pkg", "2.0.0").await,
+            "published today, inside the cooldown"
+        );
+        let accepts = requests.lock().unwrap().clone();
+        assert_eq!(
+            accepts,
+            [npm::FULL_ACCEPT; 2],
+            "one full-document request per client request, and nothing else"
+        );
+    }
+
+    /// Without a cooldown, the client's own `Accept` reaches the registry.
+    #[tokio::test]
+    async fn without_a_cooldown_the_client_asks_for_its_own_document() {
+        let (base, seen) = proxy_with_intel(malware_everywhere(), true).await;
+        reqwest::Client::new()
+            .get(format!("{base}/lodash"))
+            .header(header::ACCEPT, npm::ABBREVIATED_ACCEPT)
+            .send()
+            .await
+            .unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(
+            seen.headers
+                .last()
+                .and_then(|h| h.get(header::ACCEPT))
+                .map(|v| v.to_str().unwrap()),
+            Some(npm::ABBREVIATED_ACCEPT)
+        );
     }
 
     /// A store that cannot answer is not a store that found nothing.

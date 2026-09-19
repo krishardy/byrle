@@ -541,26 +541,14 @@ That is the failure mode every item below should be brought to.
       either. Extracting each one as a function is what made them measurable, and the same
       move is available for the rest of the pipeline.
 
-- [ ] **The cache budgets are counted in units that no longer predict memory.**
-      `store.rs` says a record is "on the order of a few hundred bytes, so this is tens of
-      megabytes" for `DEFAULT_MAX_RECORDS = 50_000`. Measured with
-      `pip install boto3 'botocore<1.34' s3transfer`:
+- [x] **The cache budgets are counted in units that no longer predict memory.**
+      Measured per record with `examples/record_memory.rs`: 906 to 959 bytes for npm, 1,115
+      to 1,397 for PyPI. `DEFAULT_MAX_RECORDS = 50_000` is 45 to 70 MB, and `env.rs` says so.
+      The `publish_times` cache is removed
+      ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
 
-      | | Value |
-      |---|---|
-      | RSS before | 22,804 kB |
-      | RSS after, settled | 49,396 kB |
-      | records held | 4,885 |
-      | artifacts held | 9,603 |
-
-      26.6 MB for one tenth of the budget. The store's share and retained allocator buffers
-      were not separated, so treat that as an upper bound on the store alone.
-      A PyPI record holds one artifact per file, and `botocore` alone is 2,516 records over
-      4,908 files, which is what changed the unit. `publish_times` compounds it: its
-      eviction is `held.clear()`, which drops every package at the ceiling rather than the
-      least recently used one.
-      Either bound the caches by bytes, or re-derive the record ceiling from a measurement
-      that includes PyPI.
+- [ ] **A yanked PyPI file is not a policy input.** `pypi::wire` reads PEP 592 `yanked`, and
+      the index keeps the file. No check reads it.
 
 ## Stage 1 — Pass-through proxy (transport)
 
@@ -1509,6 +1497,9 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             using a cooldown.** `npm::publish_times` parses only the map rather than
             normalising, because building 3,823 records for typescript to read one field
             per version is the part worth not doing. Cached per package, bounded at 1,024.
+            The cache is removed: a version published after it was filled had no time, and
+            the cooldown was dropped for it. A cooldown policy now asks for the full
+            packument on the client's request ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
       - [x] **There is no cheaper source.** `?fields=time` returns the whole document
             unchanged and `/<package>/time` is a 404, both checked against
             registry.npmjs.org. Full against abbreviated, measured on eight packages:
