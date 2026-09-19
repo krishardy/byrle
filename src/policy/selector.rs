@@ -160,6 +160,11 @@ pub enum SelectorError {
         purl: String,
         reason: String,
     },
+    /// A purl whose name its ecosystem's name rule refuses.
+    NotAPackageName {
+        purl: String,
+        reason: String,
+    },
     PurlEcosystemDiffers {
         purl: String,
         ecosystem: String,
@@ -208,6 +213,11 @@ impl fmt::Display for SelectorError {
             Self::UnreadablePurl { purl, reason } => {
                 write!(f, "`{purl}` is not a readable purl: {reason}")
             }
+            Self::NotAPackageName { purl, reason } => write!(
+                f,
+                "`{purl}` names no package its ecosystem can have, so it would match \
+                 nothing: {reason}"
+            ),
             Self::PurlEcosystemDiffers { purl, ecosystem } => write!(
                 f,
                 "`{purl}` is not a `{ecosystem}` package, but the selector says \
@@ -427,11 +437,24 @@ pub(super) fn decompose(purl: &str) -> Result<(String, String, Option<String>), 
             purl: purl.to_owned(),
             reason: e.to_string(),
         })?;
-    // The scope is rejoined, because a selector is written in the name the registry
-    // uses: `@babel/core`, not a namespace and a name side by side.
-    let name = match parsed.namespace() {
-        Some(namespace) => format!("{namespace}/{}", parsed.name()),
-        None => parsed.name().to_owned(),
+    // A selector is written in the name the registry uses, `@babel/core`, not a namespace
+    // and a name side by side. For an ecosystem this build serves, that name is built by the
+    // ecosystem's own rule, as a package key's is, so a purl no package can have is refused
+    // rather than loaded to match nothing. An ecosystem it does not serve has no rule here,
+    // and its parts are joined as they are written.
+    let name = match parsed.package_type().parse::<crate::identity::Ecosystem>() {
+        Ok(ecosystem) => {
+            crate::identity::key_from_purl(ecosystem, parsed.namespace(), parsed.name())
+                .map_err(|e| SelectorError::NotAPackageName {
+                    purl: purl.to_owned(),
+                    reason: e.to_string(),
+                })?
+                .registry_name()
+        }
+        Err(_) => match parsed.namespace() {
+            Some(namespace) => format!("{namespace}/{}", parsed.name()),
+            None => parsed.name().to_owned(),
+        },
     };
     Ok((
         parsed.package_type().to_owned(),
@@ -1182,6 +1205,47 @@ mod tests {
             unread
                 .to_string()
                 .contains("is not a version npm publishes")
+        );
+    }
+
+    /// A purl is read by its ecosystem's name rule, as a package key is, so a denial or a
+    /// selector naming no package that can exist is refused at load rather than matching
+    /// nothing.
+    #[test]
+    fn a_purl_is_read_by_its_ecosystems_name_rule() {
+        for (purl, expected) in [
+            ("pkg:npm/foo/bar@1.0.0", "a `/` needs an `@` scope"),
+            ("pkg:pypi/ns/idna@3.10", "not a valid PyPI project name"),
+        ] {
+            let error = Canonical::of_denial(purl, None).unwrap_err();
+            assert!(
+                matches!(error, SelectorError::NotAPackageName { .. }),
+                "{purl}: {error:?}"
+            );
+            let message = error.to_string();
+            assert!(message.contains(expected), "{message}");
+            assert!(message.contains("would match nothing"), "{message}");
+        }
+        for (purl, ecosystem, name, version) in [
+            (
+                "pkg:npm/%40babel%2Fcore@7.0.0",
+                "npm",
+                "@babel/core",
+                "7.0.0",
+            ),
+            ("pkg:pypi/Django@4.2", "pypi", "django", "4.2.0"),
+        ] {
+            let denial = Canonical::of_denial(purl, None).expect("a package that can exist");
+            assert!(denial.matches(ecosystem, name, version, false), "{purl}");
+        }
+        // An ecosystem this build does not serve keeps its parts as written.
+        assert_eq!(
+            decompose("pkg:cargo/ns/serde@1.0.0").expect("readable"),
+            (
+                "cargo".to_owned(),
+                "ns/serde".to_owned(),
+                Some("1.0.0".to_owned())
+            )
         );
     }
 }
