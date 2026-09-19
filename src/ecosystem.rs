@@ -110,6 +110,29 @@ pub enum PublishTimeSource {
     FullPackument,
 }
 
+impl PublishTimeSource {
+    /// What a policy with `cooldown_days` costs, when it costs a request the client never
+    /// made. `None` when the publish time is in the document the client asked for.
+    pub fn cost(self) -> Option<&'static str> {
+        match self {
+            Self::Record => None,
+            Self::FullPackument => Some(
+                "a full-packument fetch per package that the client never asked for. npm \
+                 publishes version timestamps only in the full document, measured at 1.7x to \
+                 3.6x the abbreviated one",
+            ),
+        }
+    }
+}
+
+/// Each served ecosystem whose cooldown costs a request, and what it costs.
+pub fn cooldown_costs() -> Vec<(Ecosystem, &'static str)> {
+    TABLE
+        .iter()
+        .filter_map(|registry| Some((registry.ecosystem, registry.publish_times.cost()?)))
+        .collect()
+}
+
 /// What a metadata request answers when the intel snapshot has no stream for the ecosystem.
 ///
 /// An artifact request answers 503 either way.
@@ -462,6 +485,18 @@ mod table {
         ] {
             assert_eq!(serving(path).ecosystem, Ecosystem::PyPI, "{path}");
         }
+    }
+
+    /// PyPI's index carries each file's upload time, so only npm's cooldown costs a fetch.
+    #[test]
+    fn only_an_ecosystem_that_fetches_publish_times_reports_a_cooldown_cost() {
+        let costs = cooldown_costs();
+        assert_eq!(
+            costs.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
+            [Ecosystem::Npm]
+        );
+        assert!(costs[0].1.contains("full-packument fetch"));
+        assert_eq!(PublishTimeSource::Record.cost(), None);
     }
 
     #[test]
