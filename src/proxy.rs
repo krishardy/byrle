@@ -827,6 +827,142 @@ fn upstream_url(
     (ecosystem::of(ecosystem).upstream_url)(proxy.upstreams.get(ecosystem), path_and_query)
 }
 
+/// How a request's metadata document is asked for and read, decided from the request and
+/// the proxy's configuration before anything goes upstream.
+#[derive(Debug, PartialEq, Eq)]
+struct Negotiation {
+    /// The encoding asked of upstream on a document the proxy reads.
+    encoding: RequestedEncoding,
+    /// The body is read: a metadata GET, in an encoding this build can decode. Both
+    /// ecosystems: a packument and a simple index are both read so their artifact URLs can
+    /// be pointed at the proxy.
+    read_metadata: bool,
+    /// The address artifact URLs are pointed at. See [`public_base`].
+    rewrite_base: Option<String>,
+    /// Artifact URLs are pointed at the proxy.
+    rewriting: bool,
+    /// Under a cooldown, an ecosystem that publishes version times only in its full
+    /// document is asked for that document, whatever the client asked for, so every record
+    /// read from it carries its own publish time. The client is served the full document,
+    /// filtered and rewritten; npm clients read it as they read the abbreviated one.
+    full_document: bool,
+}
+
+fn negotiate(
+    proxy: &Proxy,
+    ecosystem: Ecosystem,
+    target: &RequestTarget,
+    method: &Method,
+    headers: &HeaderMap,
+) -> Negotiation {
+    let encoding = encoding_to_request(
+        headers
+            .get(header::ACCEPT_ENCODING)
+            .and_then(|v| v.to_str().ok()),
+    );
+    let read_metadata = method == Method::GET
+        && matches!(target, RequestTarget::Metadata(_))
+        && encoding != RequestedEncoding::Unreadable;
+    let rewrite_base = public_base(headers, proxy.public_base.as_deref());
+    let rewriting = read_metadata && proxy.rewrite_artifacts && rewrite_base.is_some();
+    let full_document = read_metadata
+        && ecosystem::of(ecosystem).publish_times == ecosystem::PublishTimeSource::FullPackument
+        && proxy.policy.as_deref().is_some_and(Policy::uses_cooldown);
+    Negotiation {
+        encoding,
+        read_metadata,
+        rewrite_base,
+        rewriting,
+        full_document,
+    }
+}
+
+/// Log a metadata document forwarded without rewriting.
+///
+/// Every such path leaves that package's artifacts to be fetched wherever the document
+/// says, which for pnpm, yarn and pip means not through the proxy. They all carry the same
+/// marker so one grep finds them.
+fn report_uninspected(
+    target: &RequestTarget,
+    method: &Method,
+    negotiation: &Negotiation,
+    headers: &HeaderMap,
+    path: &str,
+) {
+    match uninspected(
+        target,
+        method,
+        negotiation.encoding,
+        negotiation.rewrite_base.as_deref(),
+        negotiation.rewriting,
+    ) {
+        Some(Uninspected::Unreadable) => warn!(
+            path = %path,
+            accept_encoding = headers
+                .get(header::ACCEPT_ENCODING)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("-"),
+            "UNINSPECTED: {}", Uninspected::Unreadable.reason()
+        ),
+        Some(reason) => warn!(path = %path, "UNINSPECTED: {}", reason.reason()),
+        None => {}
+    }
+}
+
+/// The headers sent upstream: the client's, less those that stop at the proxy, with the
+/// encoding, `Accept` and `If-None-Match` the negotiation needs.
+fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -> HeaderMap {
+    let mut outbound = HeaderMap::new();
+    for (name, value) in client {
+        // `Authorization` is the client's credential for this proxy, and an account's token
+        // under TODO Stage 8. Forwarded, it reached registry.npmjs.org and pypi.org: see
+        // docs/engineering_decisions/account-identification.md.
+        if is_hop_by_hop(name.as_str()) || name == header::HOST || name == header::AUTHORIZATION {
+            continue;
+        }
+        if negotiation.read_metadata && name == header::ACCEPT_ENCODING {
+            continue;
+        }
+        if negotiation.full_document && name == header::ACCEPT {
+            continue;
+        }
+        if negotiation.rewriting && is_conditional(name.as_str()) {
+            continue;
+        }
+        outbound.append(name, value.clone());
+    }
+    if negotiation.read_metadata
+        && let Some(value) = negotiation.encoding.header_value()
+    {
+        outbound.append(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
+    }
+    if negotiation.full_document {
+        outbound.append(header::ACCEPT, HeaderValue::from_static(npm::FULL_ACCEPT));
+    }
+    // An `If-None-Match` the client got from us names our rewritten body, not the
+    // upstream's. Turn it back, or drop it when it came from a proxy at another address.
+    if negotiation.rewriting
+        && let Some(inm) = client
+            .get(header::IF_NONE_MATCH)
+            .and_then(|v| v.to_str().ok())
+        && let Some(base) = negotiation.rewrite_base.as_deref()
+    {
+        match unmark_if_none_match(inm, base).map(|v| HeaderValue::from_str(&v)) {
+            Some(Ok(value)) => {
+                outbound.append(header::IF_NONE_MATCH, value);
+            }
+            // A 304 would let the client serve a body this proxy did not produce here,
+            // whose artifact URLs were never pointed at it. Dropping the header makes the
+            // registry send a body to rewrite afresh.
+            _ => info!(
+                path = %path,
+                "dropped a conditional request for a body this proxy did not rewrite"
+            ),
+        }
+    }
+    outbound
+}
+
 /// An artifact GET, as `handle` classified it.
 struct ArtifactRequest<'a> {
     ecosystem: Ecosystem,
@@ -1128,50 +1264,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         );
     }
 
-    let client_accept_encoding = req
-        .headers()
-        .get(header::ACCEPT_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-    let chosen_encoding = encoding_to_request(client_accept_encoding.as_deref());
-
-    // A packument body is only read on a GET, and only when the client's encodings allow
-    // asking for one this can decode.
-    //
-    // Both ecosystems: a packument and a simple index are both read so their artifact
-    // URLs can be pointed at the proxy.
-    let read_metadata = method == Method::GET
-        && matches!(target, RequestTarget::Metadata(_))
-        && chosen_encoding != RequestedEncoding::Unreadable;
-    let rewrite_base = public_base(req.headers(), proxy.public_base.as_deref());
-    let rewriting = read_metadata && proxy.rewrite_artifacts && rewrite_base.is_some();
-    // Under a cooldown, an ecosystem that publishes version times only in its full document
-    // is asked for that document, whatever the client asked for, so every record read from it
-    // carries its own publish time. The client is served the full document, filtered and
-    // rewritten; npm clients read it as they read the abbreviated one.
-    let full_document = read_metadata
-        && ecosystem::of(ecosystem).publish_times == ecosystem::PublishTimeSource::FullPackument
-        && proxy.policy.as_deref().is_some_and(Policy::uses_cooldown);
-
-    // Every path that forwards a metadata document without rewriting it leaves that
-    // package's artifacts to be fetched wherever the document says, which for pnpm, yarn
-    // and pip means not through the proxy. They all carry the same marker so one grep
-    // finds them.
-    match uninspected(
+    let negotiation = negotiate(&proxy, ecosystem, &target, &method, req.headers());
+    report_uninspected(
         &target,
         &method,
-        chosen_encoding,
-        rewrite_base.as_deref(),
-        rewriting,
-    ) {
-        Some(Uninspected::Unreadable) => warn!(
-            path = %path_and_query,
-            accept_encoding = client_accept_encoding.as_deref().unwrap_or("-"),
-            "UNINSPECTED: {}", Uninspected::Unreadable.reason()
-        ),
-        Some(reason) => warn!(path = %path_and_query, "UNINSPECTED: {}", reason.reason()),
-        None => {}
-    }
+        &negotiation,
+        req.headers(),
+        &path_and_query,
+    );
 
     // The digest has to be known before the artifact is fetched, not after: that is what
     // decides whether this exact artifact has been analysed (plan §5).
@@ -1204,54 +1304,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         &path_and_query,
         artifact.origin.as_deref(),
     );
-    let mut outbound = proxy.client.request(method.clone(), &url);
-    for (name, value) in req.headers() {
-        // `Authorization` is the client's credential for this proxy, and an account's token
-        // under TODO Stage 8. Forwarded, it reached registry.npmjs.org and pypi.org: see
-        // docs/engineering_decisions/account-identification.md.
-        if is_hop_by_hop(name.as_str()) || name == header::HOST || name == header::AUTHORIZATION {
-            continue;
-        }
-        if read_metadata && name == header::ACCEPT_ENCODING {
-            continue;
-        }
-        if full_document && name == header::ACCEPT {
-            continue;
-        }
-        if rewriting && is_conditional(name.as_str()) {
-            continue;
-        }
-        outbound = outbound.header(name, value);
-    }
-    if read_metadata && let Some(value) = chosen_encoding.header_value() {
-        outbound = outbound.header(header::ACCEPT_ENCODING, value);
-    }
-    if full_document {
-        outbound = outbound.header(header::ACCEPT, npm::FULL_ACCEPT);
-    }
-    // An `If-None-Match` the client got from us names our rewritten body, not the
-    // upstream's. Turn it back, or drop it when it came from a proxy at another address.
-    if rewriting
-        && let Some(inm) = req
-            .headers()
-            .get(header::IF_NONE_MATCH)
-            .and_then(|v| v.to_str().ok())
-        && let Some(base) = rewrite_base.as_deref()
-    {
-        outbound = match unmark_if_none_match(inm, base) {
-            Some(value) => outbound.header(header::IF_NONE_MATCH, value),
-            // A 304 would let the client serve a body this proxy did not produce here,
-            // whose artifact URLs were never pointed at it. Dropping the header makes
-            // the registry send a body to rewrite afresh.
-            None => {
-                info!(
-                    path = %path_and_query,
-                    "dropped a conditional request for a body this proxy did not rewrite"
-                );
-                outbound
-            }
-        };
-    }
+    let outbound = proxy
+        .client
+        .request(method.clone(), &url)
+        .headers(upstream_headers(
+            req.headers(),
+            &negotiation,
+            &path_and_query,
+        ));
 
     let upstream_response = match outbound.send().await {
         Ok(r) => r,
@@ -1320,8 +1380,8 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     // The body the client is being told to keep is one this proxy rewrote at this base,
     // because that is the only tag the request could have carried to get a 304 here.
     if status == reqwest::StatusCode::NOT_MODIFIED
-        && rewriting
-        && let Some(base) = rewrite_base.as_deref()
+        && negotiation.rewriting
+        && let Some(base) = negotiation.rewrite_base.as_deref()
         && let Some(marked) = headers
             .get(header::ETAG)
             .and_then(|v| v.to_str().ok())
@@ -1360,7 +1420,8 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     let body_stream: ByteStream = Box::pin(upstream_response.bytes_stream());
 
-    let Some(document) = document.filter(|_| read_metadata && status.is_success()) else {
+    let Some(document) = document.filter(|_| negotiation.read_metadata && status.is_success())
+    else {
         log_proxied(upstream_len.unwrap_or(0));
         let Some(sri) = artifact.digest else {
             return (forward_status, headers, Body::from_stream(body_stream)).into_response();
@@ -1499,7 +1560,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         ),
         None => HashSet::new(),
     };
-    let base = rewriting.then_some(rewrite_base.as_deref()).flatten();
+    let base = negotiation
+        .rewriting
+        .then_some(negotiation.rewrite_base.as_deref())
+        .flatten();
 
     // The npm rewrite. Every client in the npm ecosystem has to fetch artifacts through the
     // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
@@ -1539,8 +1603,8 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         body,
         headers,
         forward_status,
-        chosen_encoding,
-        rewrite_base.as_deref(),
+        negotiation.encoding,
+        negotiation.rewrite_base.as_deref(),
         &path_and_query,
         log_proxied,
     )
@@ -1901,6 +1965,9 @@ mod tests {
     use axum::routing::{any, get};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
+
+    /// Neither gzip nor identity, so nothing this build can decode.
+    const UNREADABLE: &str = "br, identity;q=0";
 
     fn fixture(name: &str) -> Vec<u8> {
         let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/npm/");
@@ -2599,7 +2666,7 @@ mod tests {
 
         reqwest::Client::new()
             .get(format!("{base}/lodash"))
-            .header(header::ACCEPT_ENCODING, "br, identity;q=0")
+            .header(header::ACCEPT_ENCODING, UNREADABLE)
             .send()
             .await
             .unwrap();
@@ -2610,7 +2677,7 @@ mod tests {
                 .last()
                 .unwrap()
                 .as_deref(),
-            Some("br, identity;q=0"),
+            Some(UNREADABLE),
             "the client's own header has to survive"
         );
     }
@@ -2920,6 +2987,159 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(seen.lock().unwrap().paths, [tarball]);
+    }
+
+    fn negotiated(
+        yaml: Option<&str>,
+        method: Method,
+        path: &str,
+        accept_encoding: &str,
+    ) -> Negotiation {
+        let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
+        let (ecosystem, target) = crate::route::classify(path);
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_str(accept_encoding).unwrap(),
+        );
+        negotiate(&proxy, ecosystem, &target, &method, &headers)
+    }
+
+    /// The full packument is asked for only where it adds a fact: an npm metadata GET the
+    /// proxy reads, under a cooldown.
+    #[test]
+    fn only_a_read_npm_document_under_a_cooldown_is_asked_for_in_full() {
+        let cooldown = Some("version: 1\ncooldown_days: 7\n");
+        let none = Some("version: 1\ncooldown_days: 0\n");
+        let cases = [
+            (cooldown, Method::GET, "/lodash", "gzip", true),
+            (none, Method::GET, "/lodash", "gzip", false),
+            (None, Method::GET, "/lodash", "gzip", false),
+            (cooldown, Method::HEAD, "/lodash", "gzip", false),
+            (cooldown, Method::GET, "/lodash", UNREADABLE, false),
+            (cooldown, Method::GET, "/simple/requests/", "gzip", false),
+            (
+                cooldown,
+                Method::GET,
+                "/lodash/-/lodash-4.17.21.tgz",
+                "gzip",
+                false,
+            ),
+        ];
+        for (yaml, method, path, encoding, full) in cases {
+            let negotiation = negotiated(yaml, method.clone(), path, encoding);
+            assert_eq!(
+                negotiation.full_document, full,
+                "{yaml:?} {method} {path} {encoding}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_read_document_is_rewritten_at_the_host_the_client_used() {
+        let negotiation = negotiated(None, Method::GET, "/lodash", "gzip");
+        assert_eq!(
+            negotiation,
+            Negotiation {
+                encoding: RequestedEncoding::Gzip,
+                read_metadata: true,
+                rewrite_base: Some("http://proxy.test".to_owned()),
+                rewriting: true,
+                full_document: false,
+            }
+        );
+        let unread = negotiated(None, Method::GET, "/lodash", UNREADABLE);
+        assert!(!unread.read_metadata && !unread.rewriting, "{unread:?}");
+    }
+
+    /// Under a cooldown the client's `Accept` is replaced, not joined, and its credential
+    /// and `Host` stay at the proxy.
+    #[test]
+    fn the_full_document_accept_replaces_the_clients_own() {
+        let negotiation = negotiated(
+            Some("version: 1\ncooldown_days: 7\n"),
+            Method::GET,
+            "/lodash",
+            "gzip",
+        );
+        let mut client = HeaderMap::new();
+        client.insert(header::HOST, HeaderValue::from_static("proxy.test"));
+        client.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer t"));
+        client.insert(
+            header::ACCEPT,
+            HeaderValue::from_static(npm::ABBREVIATED_ACCEPT),
+        );
+        client.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br"),
+        );
+        client.insert(header::USER_AGENT, HeaderValue::from_static("npm/11"));
+        let sent = upstream_headers(&client, &negotiation, "/lodash");
+        let values = |name| sent.get_all(name).iter().collect::<Vec<_>>();
+        assert_eq!(values(header::ACCEPT), [npm::FULL_ACCEPT]);
+        assert_eq!(values(header::ACCEPT_ENCODING), ["gzip"]);
+        assert_eq!(values(header::USER_AGENT), ["npm/11"]);
+        assert!(values(header::AUTHORIZATION).is_empty());
+        assert!(values(header::HOST).is_empty());
+    }
+
+    /// A request the proxy does not read keeps the client's encodings and conditionals.
+    #[test]
+    fn an_unread_request_keeps_the_clients_encoding_and_conditionals() {
+        let negotiation = negotiated(None, Method::GET, "/lodash/-/lodash-4.17.21.tgz", "gzip");
+        let mut client = HeaderMap::new();
+        client.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("gzip, br"),
+        );
+        client.insert(header::IF_NONE_MATCH, HeaderValue::from_static("\"abc\""));
+        let sent = upstream_headers(&client, &negotiation, "/lodash/-/lodash-4.17.21.tgz");
+        assert_eq!(sent, client);
+    }
+
+    /// A log sink a test can read back.
+    struct Captured(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Captured {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// What `f` logs at INFO and above.
+    fn logged(f: impl FnOnce()) -> String {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || Captured(sink.clone()))
+            .with_ansi(false)
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        String::from_utf8(buf.lock().unwrap().clone()).unwrap()
+    }
+
+    /// `make smoke-clients` greps for `UNINSPECTED`, so the line is part of the interface.
+    #[test]
+    fn a_document_the_proxy_cannot_read_is_logged_as_uninspected() {
+        let report = |encoding: &str| {
+            let negotiation = negotiated(None, Method::GET, "/lodash", encoding);
+            let (_, target) = crate::route::classify("/lodash");
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                header::ACCEPT_ENCODING,
+                HeaderValue::from_str(encoding).unwrap(),
+            );
+            logged(|| report_uninspected(&target, &Method::GET, &negotiation, &headers, "/lodash"))
+        };
+        let unread = report(UNREADABLE);
+        assert!(unread.contains("UNINSPECTED"), "{unread}");
+        assert!(unread.contains(UNREADABLE), "{unread}");
+        assert_eq!(report("gzip"), "", "a rewritten document is inspected");
     }
 
     /// Whether the packument the client receives offers `version`.
