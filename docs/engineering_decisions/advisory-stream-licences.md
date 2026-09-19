@@ -66,6 +66,28 @@ is the only share-alike term in the list and it is an operating-system source, s
 cannot reach an npm verdict. If a Linux-distribution ecosystem is ever added, share-alike
 has to be looked at again before any OSV text is displayed.
 
+### The sources that reach PyPI, 2026-09-18
+
+OSV's `PyPI/all.zip` fetched 2026-09-18 (34,417,496 bytes), non-withdrawn records:
+
+| Prefix | Source | Records | Licence | Attribution |
+|---|---|---|---|---|
+| `MAL-` | OpenSSF Malicious Packages | 11,732 | Apache-2.0 | no |
+| `PYSEC-` | PyPI Advisory Database (`github.com/pypa/advisory-database`) | 7,253 | CC-BY-4.0 | yes |
+| `GHSA-` | GitHub Advisory Database | 6,070 | CC-BY-4.0 | yes |
+| `OSV-` | OSS-Fuzz | 7 | CC-BY-4.0 | yes |
+
+The PyPA repository's licence was read at its source on 2026-09-19: GitHub reports
+`CC-BY-4.0`, and its `LICENSE` file is "Attribution 4.0 International". It matches OSV's
+table above.
+
+The four prefixes are disjoint, so the prefix-to-licence mapping holds for PyPI as it does
+for npm. Datadog's `samples/pypi/manifest.json` is in the same Apache-2.0 repository as its
+npm manifest, and GitHub's `ecosystem: PIP` advisories are GHSA, CC-BY-4.0.
+
+So for PyPI, attribution is owed on `PYSEC-`, `GHSA-` and `OSV-` text, and not on `MAL-` or
+Datadog entries.
+
 ### OSV carries no licence metadata
 
 An OSV record has `id`, `summary`, `details`, `affected`, `references`, `severity`,
