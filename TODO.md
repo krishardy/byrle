@@ -2486,8 +2486,10 @@ told by email when something they installed turns out to be malicious or vulnera
 
 Open questions, each needing a decision before it is built:
 
-- How a request is tied to an account: a token in the registry URL, per-user basic auth,
-  or the network address. Each client passes credentials differently.
+- How a request is tied to an account. Measured per client:
+  [account-identification](docs/engineering_decisions/account-identification.md).
+- [ ] The proxy forwards a client's `Authorization` header upstream: `is_hop_by_hop` does
+      not list it. A token sent to the proxy reaches registry.npmjs.org or pypi.org.
 - Where accounts and install history live: the intel Postgres, or a store of their own.
 - How email is sent, and which provider.
 - What a "new" advisory is when a refresh replaces a source whole: a diff between the
