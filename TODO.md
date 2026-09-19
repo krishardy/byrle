@@ -507,25 +507,28 @@ That is the failure mode every item below should be brought to.
       in the same stream at load. In the PyPI bundle, 2,583 take one and 153 stay unscored:
       [alias-matching](docs/engineering_decisions/alias-matching.md).
 
-- [ ] **`handle` is 468 lines, 10 returns and 2 mutable locals.**
+- [ ] **`handle` is 396 lines, 10 returns and 1 mutable local.**
 
-      | Measure | Before | After `decide_artifact` |
-      |---|---|---|
-      | lines | 644 | 468 (`proxy.rs:1080-1547`, 2026-09-20) |
-      | `return` statements | 12 | 10 |
-      | `let mut` | 8 | 2 |
+      | Measure | Before | After `decide_artifact` | After `negotiate` |
+      |---|---|---|---|
+      | lines | 644 | 468 | 396 (`proxy.rs:1216-1611`, 2026-09-20) |
+      | `return` statements | 12 | 10 | 10 |
+      | `let mut` | 8 | 2 | 1 |
 
-      Concerns in one function: health, defer, classification, encoding negotiation,
-      forwarding, ETag rewriting, 304 handling, the semaphore, decode, normalise, rewrite.
+      Concerns in one function: health, defer, classification, forwarding, ETag
+      rewriting, 304 handling, the semaphore, decode, normalise, rewrite.
       - [x] The artifact branch is `decide_artifact`, returning `ArtifactStep::Answer` or
             `ArtifactStep::Fetch`. `expected_digest`, `artifact_purl` and `artifact_origin`
             were set in that branch and read up to 300 lines later; they are now
             `ArtifactFetch`'s fields. `unservable_origin` and `policy_refusal` no longer
             leave it. Mutation testing found two paths no test reached: the verifier's
             purl and a HEAD for an artifact. Both have tests.
-      - [ ] Encoding and document negotiation: `read_metadata`, `rewriting`,
-            `full_document` and `uninspected`. `full_document` is tested only through
-            sockets.
+      - [x] Encoding and document negotiation. `negotiate` returns a `Negotiation`
+            (`encoding`, `read_metadata`, `rewrite_base`, `rewriting`, `full_document`),
+            `upstream_headers` builds the upstream request's headers from it, and
+            `report_uninspected` writes the `UNINSPECTED` line. Each has tests that call it
+            directly. The `UNINSPECTED` test reads the log through a `tracing`
+            subscriber, because `make smoke-clients` greps for that line.
       - [ ] The metadata branch: buffer, decode, read, intel, filter, rewrite.
 
 - [ ] **`Proxy` is 19 fields and 15 builders, cloned per request.**
