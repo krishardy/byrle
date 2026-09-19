@@ -2494,8 +2494,13 @@ Decided 2026-09-19:
 | How email is sent | an outbox table an external mailer reads and marks sent |
 | What is new for an account | a notification not yet written for that (account, advisory, version); existing matches recorded as sent when the account is created |
 
-- [ ] The proxy forwards a client's `Authorization` header upstream: `is_hop_by_hop` does
+- [x] The proxy forwards a client's `Authorization` header upstream: `is_hop_by_hop` does
       not list it. A token sent to the proxy reaches registry.npmjs.org or pypi.org.
+      Fixed 2026-09-19: `proxy::handle` drops it.
+- [ ] A credential for a private upstream, in the proxy's configuration. Until 2026-09-19 a
+      private registry behind the proxy was reached with whatever `Authorization` the client
+      sent; the proxy no longer forwards it, so an upstream that needs a credential is not
+      reachable until this exists.
 
 **Exit:** a user who installed a package through the proxy is emailed within one refresh of
 a malware or critical/high advisory for the version they installed.

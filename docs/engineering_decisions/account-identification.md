@@ -45,11 +45,13 @@ prefix. Each client installed the package once per way of configuring a credenti
 pnpm ignored `_authToken` given as the `npm_config_//host/:_authToken` variable and read it
 from `.npmrc`. yarn 4 was not measured.
 
-## The proxy forwards `Authorization` upstream
+## The proxy forwarded `Authorization` upstream
 
-`is_hop_by_hop` does not list `Authorization`, so `proxy::handle` copies it onto the
-upstream request. A token a client sends the proxy reaches registry.npmjs.org or pypi.org
-today.
+`is_hop_by_hop` does not list `Authorization`, so `proxy::handle` copied it onto the upstream
+request, and a token a client sent the proxy reached registry.npmjs.org or pypi.org. Since
+2026-09-19 `proxy::handle` drops it, held by
+`hop_by_hop_headers_and_credentials_do_not_cross_the_proxy`. A private upstream that needs a
+credential has none until the proxy's configuration gives it one: TODO Stage 8.
 
 ## Options
 
