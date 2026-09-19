@@ -2046,6 +2046,7 @@ mod tests {
     use super::*;
     use crate::defer::DeferTest;
     use crate::identity::Ecosystem;
+    use crate::util::test_support::NO_UPSTREAM;
     use axum::routing::{any, get};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
@@ -3033,9 +3034,6 @@ mod tests {
         doc["versions"].get(version).is_some()
     }
 
-    /// Nothing listens on port 9, so a test that should need no upstream fails at once if
-    /// it asks one, rather than reaching a public registry.
-    const NO_UPSTREAM: &str = "http://127.0.0.1:9";
     const NO_POLICY: &str = "version: 1\ncooldown_days: 0\n";
     const DENY_LODASH: &str = "version: 1\ncooldown_days: 0\n\
                                denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n";

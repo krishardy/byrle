@@ -1,5 +1,16 @@
 //! Helpers for unit tests in more than one module.
 
+/// An upstream address where a request fails at once, for a test that should send none.
+///
+/// Loopback, so the request never leaves the machine, and port 9, the reserved discard
+/// service, which nothing runs: a connection is refused in microseconds. A public host
+/// would send traffic out, a TEST-NET address would wait for a connect timeout, and a
+/// `.invalid` name would ask a resolver first.
+///
+/// A test that needs an upstream to answer wants [`closing_server`] or its own stub. This
+/// is for one whose store or configuration is meant to answer without any request.
+pub const NO_UPSTREAM: &str = "http://127.0.0.1:9";
+
 /// An empty directory for one test. `label` has to differ between the tests that call this,
 /// because the directory is emptied first.
 pub fn tempdir(label: &str) -> std::path::PathBuf {
