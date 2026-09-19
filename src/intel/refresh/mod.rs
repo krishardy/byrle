@@ -97,18 +97,25 @@ pub fn report(
             .find(|l| l.source == source)
             .map(|l| l.payload.rows())
     };
-    if let (Some(osv_rows), Some(datadog_rows)) = (
-        rows_of(super::providers::osv::bundle::NPM_STREAM),
-        rows_of(super::providers::datadog::STREAM),
-    ) {
-        let disagreements = super::providers::datadog::disagreements(osv_rows, datadog_rows);
+    use super::providers::{datadog, osv::bundle};
+    // Each ecosystem's two malware sources, compared where both loaded.
+    for (osv_stream, datadog_stream) in [
+        (bundle::NPM_STREAM, datadog::NPM_STREAM),
+        (bundle::PYPI_STREAM, datadog::PYPI_STREAM),
+    ] {
+        let (Some(osv_rows), Some(datadog_rows)) = (rows_of(osv_stream), rows_of(datadog_stream))
+        else {
+            continue;
+        };
+        let disagreements =
+            datadog::disagreements((osv_stream, osv_rows), (datadog_stream, datadog_rows));
         for disagreement in &disagreements {
             let _ = writeln!(out, "{disagreement}");
         }
         let _ = writeln!(
             out,
             "{:32} {:>8}",
-            "datadog every version, osv some",
+            format!("{datadog_stream} every, {osv_stream} some"),
             disagreements.len()
         );
     }
@@ -267,7 +274,10 @@ mod tests {
         let printed = report(
             &[
                 loaded(osv::bundle::NPM_STREAM, rows("MAL-1", Some("1.0.0"), true)),
-                loaded(datadog::STREAM, rows("DATADOG-npm-left-pad", None, true)),
+                loaded(
+                    datadog::NPM_STREAM,
+                    rows("DATADOG-npm-left-pad", None, true),
+                ),
             ],
             &written,
             None,
@@ -278,7 +288,7 @@ mod tests {
         );
         let counted = printed
             .lines()
-            .find_map(|line| line.strip_prefix("datadog every version, osv some"))
+            .find_map(|line| line.strip_prefix("datadog/npm every, osv/npm some"))
             .expect("the count is printed");
         assert_eq!(counted.trim(), "1", "{printed}");
     }

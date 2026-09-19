@@ -635,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn a_snapshot_covers_npm_only_when_it_records_the_osv_npm_stream() {
+    fn a_snapshot_covers_an_ecosystem_only_when_it_records_that_ecosystems_osv_stream() {
         let without = |ecosystem: &str, missing| crate::intel::Gap {
             ecosystem: ecosystem.to_owned(),
             missing,
@@ -644,12 +644,16 @@ mod tests {
             crate::intel::Capability::Match,
             crate::intel::Capability::Malware,
         );
-        // No stream lists PyPI, so it is reported whatever the snapshot records.
         assert_eq!(
             recording(&["cisa/kev", "osv/npm"]).gaps(),
             [without("pypi", matching), without("pypi", malware)]
         );
-        for streams in [&[][..], &["cisa/kev"], &["osv/pypi"]] {
+        assert_eq!(
+            recording(&["osv/pypi"]).gaps(),
+            [without("npm", matching), without("npm", malware)]
+        );
+        assert!(recording(&["osv/npm", "osv/pypi"]).gaps().is_empty());
+        for streams in [&[][..], &["cisa/kev"]] {
             assert_eq!(
                 recording(streams).gaps(),
                 [

@@ -2,7 +2,7 @@
 //!
 //! A signal stream beside OSV rather than a replacement for it: both are checked
 //! independently and the decision vector reviews what each holds. OSV imports GHSA, so most
-//! ids appear twice, under source `osv` and under source `github`. That is corroboration,
+//! ids appear twice, under source `osv/npm` and under source `github/npm`. That is corroboration,
 //! and `advisory` is keyed `(source, publisher_id)` so both rows exist. See
 //! `docs/engineering_decisions/github-advisory-signal-stream.md`.
 //!
@@ -14,10 +14,15 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
+use crate::identity::Ecosystem;
 use crate::intel::range::{End, Interval, Start, VersionOrder, stored};
 use crate::intel::rows::{Affected, Ranged, Rows, band_ceiling};
 
-pub const STREAM: &str = "github/npm";
+/// The stream a snapshot records npm's advisories under.
+pub const NPM_STREAM: &str = "github/npm";
+
+/// The stream a snapshot records PyPI's advisories under.
+pub const PYPI_STREAM: &str = "github/pypi";
 pub const ENDPOINT: &str = "https://api.github.com/graphql";
 
 /// Bytes past which the concatenated pages are refused. 9,980 rows came to 5.6 MB on
@@ -27,19 +32,19 @@ pub const MAX_BYTES: usize = 64 << 20;
 /// Advisories per page. 100 is GitHub's maximum for a connection.
 pub const PAGE: usize = 100;
 
-const NPM: &str = crate::identity::Ecosystem::Npm.as_str();
-
-/// How npm's versions order, which every bound here is read by.
-const ORDER: VersionOrder = crate::ecosystem::NPM.versions;
-
-/// The query `waharoa refresh` sends, once per page.
+/// The query `waharoa refresh` sends, once per page, for GitHub's name of an ecosystem.
 ///
 /// `securityVulnerabilities` returns one node per advisory-and-range, so an advisory with
 /// several affected ranges appears several times and [`parse`] groups them.
-pub const QUERY: &str = r"
+macro_rules! query {
+    ($ecosystem:literal) => {
+        concat!(
+            r"
 query($after: String) {
   rateLimit { cost remaining }
-  securityVulnerabilities(ecosystem: NPM, first: 100, after: $after) {
+  securityVulnerabilities(ecosystem: ",
+            $ecosystem,
+            r", first: 100, after: $after) {
     pageInfo { hasNextPage endCursor }
     nodes {
       package { name }
@@ -52,7 +57,16 @@ query($after: String) {
     }
   }
 }
-";
+"
+        )
+    };
+}
+
+/// npm's advisories. GitHub names the ecosystem `NPM`.
+pub const NPM_QUERY: &str = query!("NPM");
+
+/// PyPI's advisories. GitHub names the ecosystem `PIP`.
+pub const PYPI_QUERY: &str = query!("PIP");
 
 #[derive(Debug)]
 pub enum GithubError {
@@ -153,21 +167,21 @@ enum Bounds {
     Unexpressed,
 }
 
-fn bounds(range: &str) -> Bounds {
+fn bounds(order: VersionOrder, range: &str) -> Bounds {
     let (mut start, mut end) = (Start::First, End::Open);
     for part in range.split(',') {
         let part = part.trim();
         if let Some(v) = part.strip_prefix(">=") {
-            start = Start::Introduced(stored(ORDER, v.trim()));
+            start = Start::Introduced(stored(order, v.trim()));
         } else if let Some(v) = part.strip_prefix('>') {
             // `> 4.0.2` says 4.0.2 is the last version not affected.
-            start = Start::After(stored(ORDER, v.trim()));
+            start = Start::After(stored(order, v.trim()));
         } else if let Some(v) = part.strip_prefix("<=") {
-            end = End::LastAffected(stored(ORDER, v.trim()));
+            end = End::LastAffected(stored(order, v.trim()));
         } else if let Some(v) = part.strip_prefix('<') {
-            end = End::Fixed(stored(ORDER, v.trim()));
+            end = End::Fixed(stored(order, v.trim()));
         } else if let Some(v) = part.strip_prefix('=') {
-            return Bounds::Exact(stored(ORDER, v.trim()));
+            return Bounds::Exact(stored(order, v.trim()));
         } else {
             return Bounds::Unexpressed;
         }
@@ -196,7 +210,8 @@ fn score(advisory: &Advisory) -> (Option<f64>, Option<String>) {
 ///
 /// A withdrawn advisory is skipped, as `osv::parse` skips one. An advisory whose every range
 /// is unexpressed keeps its record and counts the ranges in `unexpressed`.
-pub fn parse(bytes: &[u8]) -> Result<Vec<Rows>, GithubError> {
+pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Vec<Rows>, GithubError> {
+    let (purl_type, order) = (ecosystem.as_str(), crate::ecosystem::of(ecosystem).versions);
     let pages: Vec<Page> = serde_json::from_slice(bytes).map_err(GithubError::NotJson)?;
     let mut by_id: BTreeMap<String, Rows> = BTreeMap::new();
     for page in pages {
@@ -230,17 +245,17 @@ pub fn parse(bytes: &[u8]) -> Result<Vec<Rows>, GithubError> {
                 }
             }
             let name = node.package.name;
-            match node.range.as_deref().map(bounds) {
+            match node.range.as_deref().map(|range| bounds(order, range)) {
                 Some(Bounds::Exact(version)) => {
                     rows.affected
-                        .insert(Affected::new(NPM, &name, Some(version)));
+                        .insert(Affected::new(purl_type, &name, Some(version)));
                 }
                 Some(Bounds::Interval(interval)) => {
-                    rows.ranges.insert(Ranged::new(NPM, &name, interval));
+                    rows.ranges.insert(Ranged::new(purl_type, &name, interval));
                 }
                 // No range given is every version, as OSV's `introduced: "0"` is.
                 None => {
-                    rows.affected.insert(Affected::new(NPM, &name, None));
+                    rows.affected.insert(Affected::new(purl_type, &name, None));
                 }
                 Some(Bounds::Unexpressed) => rows.unexpressed += 1,
             }
@@ -297,62 +312,71 @@ mod tests {
     #[test]
     fn a_two_bound_range_is_one_interval_and_an_exact_version_is_a_listed_version() {
         assert_eq!(
-            bounds(">= 0.0.1, < 2.1.27"),
+            bounds(VersionOrder::SemVer, ">= 0.0.1, < 2.1.27"),
             Bounds::Interval(Interval {
                 start: Start::Introduced("0.0.1".to_owned()),
                 end: End::Fixed("2.1.27".to_owned()),
             })
         );
         assert_eq!(
-            bounds("< 2.1.30"),
+            bounds(VersionOrder::SemVer, "< 2.1.30"),
             Bounds::Interval(Interval {
                 start: Start::First,
                 end: End::Fixed("2.1.30".to_owned()),
             })
         );
         assert_eq!(
-            bounds("<= 1.5"),
+            bounds(VersionOrder::SemVer, "<= 1.5"),
             Bounds::Interval(Interval {
                 start: Start::First,
                 // Padded as OSV's listed versions are, so 1.5 matches the published 1.5.0.
                 end: End::LastAffected("1.5.0".to_owned()),
             })
         );
-        assert_eq!(bounds("= 1.2.3"), Bounds::Exact("1.2.3".to_owned()));
+        assert_eq!(
+            bounds(VersionOrder::SemVer, "= 1.2.3"),
+            Bounds::Exact("1.2.3".to_owned())
+        );
         // `> X` says X is the last version not affected, so it excludes its own bound.
         assert_eq!(
-            bounds("> 4.0.2"),
+            bounds(VersionOrder::SemVer, "> 4.0.2"),
             Bounds::Interval(Interval {
                 start: Start::After("4.0.2".to_owned()),
                 end: End::Open,
             })
         );
         assert_eq!(
-            bounds("> 6.8.0, < 6.9.0"),
+            bounds(VersionOrder::SemVer, "> 6.8.0, < 6.9.0"),
             Bounds::Interval(Interval {
                 start: Start::After("6.8.0".to_owned()),
                 end: End::Fixed("6.9.0".to_owned()),
             })
         );
-        assert_eq!(bounds("whatever"), Bounds::Unexpressed);
+        assert_eq!(
+            bounds(VersionOrder::SemVer, "whatever"),
+            Bounds::Unexpressed
+        );
     }
 
     #[test]
     fn an_advisory_with_several_ranges_is_one_record_carrying_all_of_them() {
-        let rows = parse(&pages(&[
-            node(
-                "GHSA-aaaa-bbbb-cccc",
-                "left",
-                serde_json::json!("< 1.0.0"),
-                serde_json::json!({}),
-            ),
-            node(
-                "GHSA-aaaa-bbbb-cccc",
-                "right",
-                serde_json::json!(">= 2.0.0"),
-                serde_json::json!({}),
-            ),
-        ]))
+        let rows = parse(
+            Ecosystem::Npm,
+            &pages(&[
+                node(
+                    "GHSA-aaaa-bbbb-cccc",
+                    "left",
+                    serde_json::json!("< 1.0.0"),
+                    serde_json::json!({}),
+                ),
+                node(
+                    "GHSA-aaaa-bbbb-cccc",
+                    "right",
+                    serde_json::json!(">= 2.0.0"),
+                    serde_json::json!({}),
+                ),
+            ]),
+        )
         .expect("the pages read");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "GHSA-aaaa-bbbb-cccc");
@@ -362,15 +386,18 @@ mod tests {
 
     #[test]
     fn a_cve_identifier_is_an_alias_and_the_ghsa_id_is_not() {
-        let rows = parse(&pages(&[node(
-            "GHSA-aaaa-bbbb-cccc",
-            "p",
-            serde_json::json!("< 1.0.0"),
-            serde_json::json!({"identifiers": [
-                {"type": "GHSA", "value": "GHSA-aaaa-bbbb-cccc"},
-                {"type": "CVE", "value": "CVE-2026-1"}
-            ]}),
-        )]))
+        let rows = parse(
+            Ecosystem::Npm,
+            &pages(&[node(
+                "GHSA-aaaa-bbbb-cccc",
+                "p",
+                serde_json::json!("< 1.0.0"),
+                serde_json::json!({"identifiers": [
+                    {"type": "GHSA", "value": "GHSA-aaaa-bbbb-cccc"},
+                    {"type": "CVE", "value": "CVE-2026-1"}
+                ]}),
+            )]),
+        )
         .expect("the pages read");
         assert_eq!(
             rows[0].aliases.iter().collect::<Vec<_>>(),
@@ -381,12 +408,15 @@ mod tests {
 
     #[test]
     fn a_withdrawn_advisory_is_skipped_as_osv_skips_one() {
-        let err = parse(&pages(&[node(
-            "GHSA-aaaa-bbbb-cccc",
-            "p",
-            serde_json::json!("< 1.0.0"),
-            serde_json::json!({"withdrawnAt": "2025-08-11T21:15:20Z"}),
-        )]))
+        let err = parse(
+            Ecosystem::Npm,
+            &pages(&[node(
+                "GHSA-aaaa-bbbb-cccc",
+                "p",
+                serde_json::json!("< 1.0.0"),
+                serde_json::json!({"withdrawnAt": "2025-08-11T21:15:20Z"}),
+            )]),
+        )
         .expect_err("nothing is left to load");
         assert!(matches!(err, GithubError::Empty), "{err}");
     }
@@ -411,12 +441,15 @@ mod tests {
             (serde_json::json!(null), "LOW", Some(3.9), Some("LOW")),
             (serde_json::json!(null), "UNKNOWN", None, None),
         ] {
-            let rows = parse(&pages(&[node(
-                "GHSA-aaaa-bbbb-cccc",
-                "p",
-                serde_json::json!("< 1.0.0"),
-                serde_json::json!({"cvss": cvss, "severity": severity}),
-            )]))
+            let rows = parse(
+                Ecosystem::Npm,
+                &pages(&[node(
+                    "GHSA-aaaa-bbbb-cccc",
+                    "p",
+                    serde_json::json!("< 1.0.0"),
+                    serde_json::json!({"cvss": cvss, "severity": severity}),
+                )]),
+            )
             .expect("the pages read");
             assert_eq!(rows[0].cvss, expected, "{severity}");
             assert_eq!(rows[0].band.as_deref(), band, "{severity}");
@@ -425,12 +458,15 @@ mod tests {
 
     #[test]
     fn a_node_with_no_range_is_every_version() {
-        let rows = parse(&pages(&[node(
-            "GHSA-aaaa-bbbb-cccc",
-            "p",
-            serde_json::json!(null),
-            serde_json::json!({}),
-        )]))
+        let rows = parse(
+            Ecosystem::Npm,
+            &pages(&[node(
+                "GHSA-aaaa-bbbb-cccc",
+                "p",
+                serde_json::json!(null),
+                serde_json::json!({}),
+            )]),
+        )
         .expect("the pages read");
         assert_eq!(rows[0].affected.len(), 1);
         assert_eq!(rows[0].affected.iter().next().expect("one").version, None);
@@ -442,7 +478,7 @@ mod tests {
             {"errors": [{"message": "Bad credentials"}]}
         ]))
         .expect("serialises");
-        let err = parse(&bytes).expect_err("the page carries an error");
+        let err = parse(Ecosystem::Npm, &bytes).expect_err("the page carries an error");
         assert!(
             matches!(err, GithubError::Api(ref m) if m.contains("Bad credentials")),
             "{err}"
@@ -451,19 +487,22 @@ mod tests {
 
     #[test]
     fn pages_that_are_not_json_are_refused_with_the_reason() {
-        let err = parse(b"not json").expect_err("not an array of pages");
+        let err = parse(Ecosystem::Npm, b"not json").expect_err("not an array of pages");
         assert!(matches!(err, GithubError::NotJson(_)), "{err}");
         assert!(!err.to_string().is_empty());
     }
 
     #[test]
     fn an_advisory_whose_every_range_is_unexpressed_says_nothing_about_a_package() {
-        let err = parse(&pages(&[node(
-            "GHSA-aaaa-bbbb-cccc",
-            "p",
-            serde_json::json!("nonsense"),
-            serde_json::json!({}),
-        )]))
+        let err = parse(
+            Ecosystem::Npm,
+            &pages(&[node(
+                "GHSA-aaaa-bbbb-cccc",
+                "p",
+                serde_json::json!("nonsense"),
+                serde_json::json!({}),
+            )]),
+        )
         .expect_err("no version row");
         assert!(matches!(err, GithubError::Empty), "{err}");
     }
@@ -473,15 +512,44 @@ mod tests {
     /// docs/engineering_decisions/github-advisory-signal-stream.md.
     #[test]
     fn an_exclusive_lower_bound_is_stored_and_does_not_cover_its_own_version() {
-        let rows = parse(&pages(&[node(
-            "GHSA-m2hm-hrr2-6p2q",
-            "bootstrap-3-typeahead",
-            serde_json::json!("> 4.0.2"),
-            serde_json::json!({}),
-        )]))
+        let rows = parse(
+            Ecosystem::Npm,
+            &pages(&[node(
+                "GHSA-m2hm-hrr2-6p2q",
+                "bootstrap-3-typeahead",
+                serde_json::json!("> 4.0.2"),
+                serde_json::json!({}),
+            )]),
+        )
         .expect("the pages read");
         let ranged = rows[0].ranges.iter().next().expect("one range");
         assert_eq!(ranged.interval.start, Start::After("4.0.2".to_owned()));
         assert_eq!(rows[0].unexpressed, 0);
+    }
+
+    /// GitHub names PyPI `PIP`; the rows are PyPI's, and ranges are read as PEP 440.
+    #[test]
+    fn pypi_advisories_are_read_by_pypis_rules() {
+        assert!(PYPI_QUERY.contains("securityVulnerabilities(ecosystem: PIP,"));
+        assert!(NPM_QUERY.contains("securityVulnerabilities(ecosystem: NPM,"));
+        let rows = parse(
+            Ecosystem::PyPI,
+            &pages(&[node(
+                "GHSA-aaaa-bbbb-cccc",
+                "GitPython",
+                serde_json::json!("< 3.1.30.post1"),
+                serde_json::json!({}),
+            )]),
+        )
+        .expect("parses");
+        let ranges: Vec<_> = rows[0].ranges.iter().collect();
+        assert_eq!(
+            (ranges[0].ecosystem.as_str(), ranges[0].name.as_str()),
+            ("pypi", "gitpython")
+        );
+        assert_eq!(
+            ranges[0].interval.end,
+            End::Fixed("3.1.30.post1".to_owned())
+        );
     }
 }

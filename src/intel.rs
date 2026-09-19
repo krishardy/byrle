@@ -505,8 +505,10 @@ mod tests {
             ["datadog/npm", "osv/npm"]
         );
         assert_eq!(caps.providers("npm", Capability::Enrich), ["cisa/kev"]);
-        assert!(!caps.has("osv/pypi", "pypi", Capability::Match));
-        assert!(caps.gaps(&["npm"]).is_empty());
+        assert!(caps.has("osv/pypi", "pypi", Capability::Match));
+        assert!(!caps.has("osv/pypi", "npm", Capability::Match));
+        assert_eq!(caps.providers("pypi", Capability::Match), ["osv/pypi"]);
+        assert!(caps.gaps(&["npm", "pypi"]).is_empty());
         assert!(caps.uncovered_by(&["npm"], Capability::Malware).is_empty());
         assert_eq!(caps.providers("pypi", Capability::Enrich), ["cisa/kev"]);
     }
@@ -517,11 +519,11 @@ mod tests {
     fn listing_is_the_rows_whose_streams_include_it() {
         assert_eq!(listing("osv/npm"), ["npm"]);
         assert!(listing("cisa/kev").is_empty());
-        assert!(listing("osv/pypi").is_empty());
+        assert_eq!(listing("osv/pypi"), ["pypi"]);
     }
 
-    /// PyPI is served and no stream lists it, so both gaps are reported rather than
-    /// PyPI reading as covered.
+    /// PyPI is served and the snapshot records none of its streams, so both gaps are reported
+    /// rather than PyPI reading as covered.
     #[test]
     fn a_served_ecosystem_no_stream_lists_is_reported_as_a_gap() {
         let caps = capabilities_of(&[

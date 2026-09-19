@@ -1,19 +1,22 @@
-//! OSV records, as rows for the intel store.
+//! OSV records, as rows for the intel store, one ecosystem's bundle at a time.
 //!
-//! Two publishers' records are read for npm. Non-withdrawn counts from `npm/all.zip` fetched
-//! 2026-09-13:
+//! The publishers read, by id prefix. Non-withdrawn counts from `npm/all.zip` fetched
+//! 2026-09-13 and `PyPI/all.zip` fetched 2026-09-18:
 //!
-//! | Prefix | Publisher | Records | `malware` |
-//! |---|---|---|---|
-//! | `MAL-` | OpenSSF Malicious Packages | 221,217 | true |
-//! | `GHSA-` | GitHub Advisory Database | 7,052 | false |
+//! | Prefix | Publisher | npm | PyPI | `malware` |
+//! |---|---|---|---|---|
+//! | `MAL-` | OpenSSF Malicious Packages | 221,217 | 11,732 | true |
+//! | `GHSA-` | GitHub Advisory Database | 7,052 | 6,070 | false |
+//! | `PYSEC-` | PyPI Advisory Database | 0 | 7,253 | false |
+//! | `OSV-` | OSS-Fuzz | 0 | 7 | false |
 //!
-//! The other two, `EEF-CVE-2026-56812` from the Erlang Ecosystem Foundation CNA and
-//! `GSD-2022-1000008` from the Global Security Database, are skipped as
-//! [`Skipped::OtherPublisher`]. `GHSA-63mc-hw7g-86rr` has the EEF record's npm ranges, and the
-//! GSD record lists no version or range.
+//! Every other prefix is skipped as [`Skipped::OtherPublisher`]. npm had two such records,
+//! `EEF-CVE-2026-56812` from the Erlang Ecosystem Foundation CNA and `GSD-2022-1000008` from
+//! the Global Security Database. `GHSA-63mc-hw7g-86rr` has the EEF record's npm ranges, and
+//! the GSD record lists no version or range.
 //!
-//! Each npm `affected` entry becomes rows:
+//! Each `affected` entry for the ecosystem becomes rows, its versions read by the
+//! ecosystem's [`range::VersionOrder`]:
 //!
 //! | Entry shape | Stored as |
 //! |---|---|
@@ -25,8 +28,9 @@
 //! record was last modified. `MAL-2025-3661` lists 2 versions beside `introduced: "99.9.1"`,
 //! and a version published into that range afterwards is only in the range.
 //!
-//! GHSA text is CC-BY-4.0, which owes attribution wherever it is shown. `summary` is stored
-//! and nothing displays it. See `docs/engineering_decisions/advisory-stream-licences.md`.
+//! `GHSA-`, `PYSEC-` and `OSV-` text is CC-BY-4.0, which owes attribution wherever it is
+//! shown. `summary` is stored and nothing displays it. See
+//! `docs/engineering_decisions/advisory-stream-licences.md`.
 
 pub mod bundle;
 
@@ -35,19 +39,34 @@ use crate::intel::rows::{Affected, Ranged, Rows, band_ceiling};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-const NPM: &str = crate::identity::Ecosystem::Npm.as_str();
+use crate::identity::Ecosystem;
 
-/// How npm's versions order, which every range here is read by.
-const ORDER: range::VersionOrder = crate::ecosystem::NPM.versions;
+/// The publishers whose records are read, by id prefix, and whether each publishes malware.
+const PUBLISHERS: [(&str, bool); 4] = [
+    ("MAL-", true),
+    ("GHSA-", false),
+    ("PYSEC-", false),
+    ("OSV-", false),
+];
+
+/// The name OSV gives `ecosystem`, in `affected[].package.ecosystem` and in its bundle's
+/// path.
+pub const fn osv_name(ecosystem: Ecosystem) -> &'static str {
+    match ecosystem {
+        Ecosystem::Npm => "npm",
+        Ecosystem::PyPI => "PyPI",
+    }
+}
 
 /// Why a record produced no rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skipped {
     Withdrawn,
-    /// Neither a `MAL-` nor a `GHSA-` record.
+    /// An id whose prefix is not `MAL-`, `GHSA-`, `PYSEC-` or `OSV-`.
     OtherPublisher,
-    NoNpmPackage,
-    /// No npm entry held a version, or a range that could be evaluated.
+    /// No `affected` entry is for the ecosystem being read.
+    NoPackage,
+    /// No entry for the ecosystem held a version, or a range that could be evaluated.
     NothingStorable,
 }
 
@@ -208,30 +227,38 @@ fn newness(vector: &cvss::Cvss) -> u8 {
 ///
 /// Unknown fields are accepted. This is a feed that adds fields, not a file an operator
 /// writes, so refusing one would stop every refresh on a schema bump.
-pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
+pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
     let record: Record = serde_json::from_slice(bytes)?;
     if record.withdrawn.is_some() {
         return Ok(Parsed::Skipped(Skipped::Withdrawn));
     }
-    let malware = if record.id.starts_with("MAL-") {
-        true
-    } else if record.id.starts_with("GHSA-") {
-        false
-    } else {
+    let Some(&(_, malware)) = PUBLISHERS
+        .iter()
+        .find(|(prefix, _)| record.id.starts_with(prefix))
+    else {
         return Ok(Parsed::Skipped(Skipped::OtherPublisher));
     };
+    let (osv, purl_type) = (osv_name(ecosystem), ecosystem.as_str());
+    let order = crate::ecosystem::of(ecosystem).versions;
+
+    let entries: Vec<_> = record
+        .affected
+        .iter()
+        .filter_map(|entry| {
+            let package = entry.package.as_ref().filter(|p| p.ecosystem == osv)?;
+            Some((entry, package))
+        })
+        .collect();
+    if entries.is_empty() {
+        return Ok(Parsed::Skipped(Skipped::NoPackage));
+    }
 
     let (mut affected, mut ranges) = (BTreeSet::new(), BTreeSet::new());
-    let (mut npm_entries, mut unexpressed) = (0, 0);
-    for entry in &record.affected {
-        let Some(package) = entry.package.as_ref().filter(|p| p.ecosystem == NPM) else {
-            continue;
-        };
-        npm_entries += 1;
-
+    let mut unexpressed = 0;
+    for (entry, package) in entries {
         let (mut intervals, mut every, mut refused) = (BTreeSet::new(), false, 0);
         for r in &entry.ranges {
-            match range::intervals(ORDER, r.kind.as_deref(), &r.events) {
+            match range::intervals(order, r.kind.as_deref(), &r.events) {
                 Ok(found) => {
                     for interval in found {
                         every |= interval.is_every_version();
@@ -242,7 +269,8 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
             }
         }
 
-        let row = |version: Option<&String>| Affected::new(NPM, &package.name, version.cloned());
+        let row =
+            |version: Option<&String>| Affected::new(purl_type, &package.name, version.cloned());
         // Every version subsumes everything else the entry says, a refused range included.
         if every {
             affected.insert(row(None));
@@ -251,18 +279,15 @@ pub fn parse(bytes: &[u8]) -> Result<Parsed, serde_json::Error> {
         if refused > 0 || (entry.versions.is_empty() && intervals.is_empty()) {
             unexpressed += 1;
         }
-        let listed = entry.versions.iter().map(|v| range::stored(ORDER, v));
+        let listed = entry.versions.iter().map(|v| range::stored(order, v));
         affected.extend(listed.map(|v| row(Some(&v))));
         ranges.extend(
             intervals
                 .into_iter()
-                .map(|interval| Ranged::new(NPM, &package.name, interval)),
+                .map(|interval| Ranged::new(purl_type, &package.name, interval)),
         );
     }
 
-    if npm_entries == 0 {
-        return Ok(Parsed::Skipped(Skipped::NoNpmPackage));
-    }
     if affected.is_empty() && ranges.is_empty() {
         return Ok(Parsed::Skipped(Skipped::NothingStorable));
     }
@@ -297,7 +322,11 @@ mod tests {
             "{}/tests/fixtures/osv/{id}.json",
             env!("CARGO_MANIFEST_DIR")
         );
-        parse(&std::fs::read(path).expect("fixture is missing")).expect("fixture should parse")
+        parse(
+            Ecosystem::Npm,
+            &std::fs::read(path).expect("fixture is missing"),
+        )
+        .expect("fixture should parse")
     }
 
     fn rows(id: &str) -> Rows {
@@ -316,8 +345,11 @@ mod tests {
     }
 
     fn record(id: &str, affected: &str) -> Parsed {
-        parse(format!(r#"{{"id": "{id}", "affected": [{affected}]}}"#).as_bytes())
-            .expect("should parse")
+        parse(
+            Ecosystem::Npm,
+            format!(r#"{{"id": "{id}", "affected": [{affected}]}}"#).as_bytes(),
+        )
+        .expect("should parse")
     }
 
     fn inline(affected: &str) -> Parsed {
@@ -336,6 +368,7 @@ mod tests {
     fn scored(severity: &str) -> Rows {
         stored(
             parse(
+                Ecosystem::Npm,
                 format!(
                     r#"{{"id": "GHSA-0000-0000-0000", "severity": [{severity}],
                          "affected": [{{"package": {{"ecosystem": "npm", "name": "p"}},
@@ -487,10 +520,10 @@ mod tests {
     fn a_record_for_another_ecosystem_is_skipped() {
         let pypi = r#"{"package": {"ecosystem": "PyPI", "name": "p"},
                        "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]}"#;
-        assert_eq!(inline(pypi), Parsed::Skipped(Skipped::NoNpmPackage));
+        assert_eq!(inline(pypi), Parsed::Skipped(Skipped::NoPackage));
         assert_eq!(
             inline(r#"{"versions": ["1.0.0"]}"#),
-            Parsed::Skipped(Skipped::NoNpmPackage)
+            Parsed::Skipped(Skipped::NoPackage)
         );
     }
 
@@ -631,6 +664,7 @@ mod tests {
     fn banded(database_specific: &str, severity: &str) -> Rows {
         stored(
             parse(
+                Ecosystem::Npm,
                 format!(
                     r#"{{"id": "GHSA-0000-0000-0000", "severity": [{severity}],
                          "database_specific": {database_specific},
@@ -694,6 +728,47 @@ mod tests {
 
     #[test]
     fn a_record_that_is_not_json_is_an_error() {
-        assert!(parse(b"{\"id\": ").is_err());
+        assert!(parse(Ecosystem::Npm, b"{\"id\": ").is_err());
+    }
+
+    /// A PyPI record is read by PyPI's rules: OSV's `PyPI` ecosystem name, the purl type
+    /// `pypi`, a PEP 503 name and PEP 440 versions. `PYSEC-` and `OSV-` records are
+    /// vulnerabilities, and the same record read for npm has no package.
+    #[test]
+    fn a_pypi_record_is_read_by_pypis_rules() {
+        let record = |id: &str| {
+            format!(
+                r#"{{"id": "{id}", "affected": [{{"package": {{"ecosystem": "PyPI", "name": "Jupyter_Server"}},
+                    "versions": ["1.0"],
+                    "ranges": [{{"type": "ECOSYSTEM", "events": [{{"introduced": "0"}}, {{"fixed": "2.6.11-1"}}]}}]}}]}}"#
+            )
+        };
+        for id in ["PYSEC-2023-1", "OSV-2021-1", "GHSA-aaaa-bbbb-cccc"] {
+            let Parsed::Rows(rows) = parse(Ecosystem::PyPI, record(id).as_bytes()).expect("parses")
+            else {
+                panic!("{id} is stored");
+            };
+            assert!(!rows.malware, "{id}");
+            let affected: Vec<_> = rows.affected.iter().collect();
+            assert_eq!(affected.len(), 1);
+            assert_eq!(
+                (affected[0].ecosystem.as_str(), affected[0].name.as_str()),
+                ("pypi", "jupyter-server")
+            );
+            assert_eq!(affected[0].version.as_deref(), Some("1.0"));
+            assert_eq!(
+                intervals(&rows),
+                [&Interval {
+                    start: Start::First,
+                    end: End::Fixed("2.6.11.post1".to_owned()),
+                }]
+            );
+            assert_eq!(
+                parse(Ecosystem::Npm, record(id).as_bytes()).expect("parses"),
+                Parsed::Skipped(Skipped::NoPackage)
+            );
+        }
+        assert_eq!(osv_name(Ecosystem::PyPI), "PyPI");
+        assert_eq!(osv_name(Ecosystem::Npm), "npm");
     }
 }
