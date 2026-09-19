@@ -294,7 +294,7 @@ pub const TEST_DATABASE_URL: Var = other(
     "WAHAROA_TEST_DATABASE_URL",
     &["Postgres the integration tests run against, set by `make test-integration`"],
 );
-pub const HOME: Var = other(
+pub const HOME_DIR: Var = other(
     Kind::External,
     "HOME",
     &["the user's home directory, under which bun keeps its default cache"],
@@ -304,9 +304,44 @@ pub const BUN_INSTALL_CACHE_DIR: Var = other(
     "BUN_INSTALL_CACHE_DIR",
     &["where bun keeps its cache, when set"],
 );
+pub const CONFIG_HOME: Var = other(
+    Kind::External,
+    "XDG_CONFIG_HOME",
+    &["the user's configuration directory, where uv looks for `uv/uv.toml`"],
+);
+pub const UV_DEFAULT: Var = other(
+    Kind::External,
+    "UV_DEFAULT_INDEX",
+    &["the index uv installs from"],
+);
+pub const UV_OLDER_INDEX: Var = other(
+    Kind::External,
+    "UV_INDEX_URL",
+    &["the index uv installs from, under its older name"],
+);
+pub const UV_EXTRAS: Var = other(
+    Kind::External,
+    "UV_EXTRA_INDEX_URL",
+    &["indexes uv also asks, separated by spaces"],
+);
+pub const UV_NAMED: Var = other(
+    Kind::External,
+    "UV_INDEX",
+    &["named indexes uv also asks, separated by spaces"],
+);
+pub const UV_NO_FILES: Var = other(
+    Kind::External,
+    "UV_NO_CONFIG",
+    &["set, uv reads no configuration file"],
+);
+pub const UV_FILE: Var = other(
+    Kind::External,
+    "UV_CONFIG_FILE",
+    &["the one configuration file uv reads, when set"],
+);
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 30] = [
+pub const ALL: [Var; 37] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -335,8 +370,15 @@ pub const ALL: [Var; 30] = [
     NPM_CORPUS,
     NPM_CORPUS_FULL,
     TEST_DATABASE_URL,
-    HOME,
+    HOME_DIR,
     BUN_INSTALL_CACHE_DIR,
+    CONFIG_HOME,
+    UV_DEFAULT,
+    UV_OLDER_INDEX,
+    UV_EXTRAS,
+    UV_NAMED,
+    UV_NO_FILES,
+    UV_FILE,
 ];
 
 const fn runtime(name: &'static str, shown: &'static str, help: &'static [&'static str]) -> Var {
@@ -655,11 +697,34 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     }
 
     pub fn home(&self) -> Result<Option<PathBuf>, EnvError> {
-        self.path(HOME)
+        self.path(HOME_DIR)
     }
 
     pub fn bun_install_cache_dir(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(BUN_INSTALL_CACHE_DIR)
+    }
+
+    pub fn xdg_config_home(&self) -> Result<Option<PathBuf>, EnvError> {
+        self.path(CONFIG_HOME)
+    }
+
+    /// uv's index settings from the environment, which beat its configuration files.
+    pub fn uv_indexes(&self) -> Result<crate::ecosystem::pypi::clients::UvVars, EnvError> {
+        Ok(crate::ecosystem::pypi::clients::UvVars {
+            default_index: self.text(UV_DEFAULT)?,
+            index_url: self.text(UV_OLDER_INDEX)?,
+            extra_index_url: self.text(UV_EXTRAS)?,
+            index: self.text(UV_NAMED)?,
+        })
+    }
+
+    /// Whether uv is told to read no configuration file.
+    pub fn uv_no_config(&self) -> Result<bool, EnvError> {
+        Ok(self.text(UV_NO_FILES)?.is_some())
+    }
+
+    pub fn uv_config_file(&self) -> Result<Option<PathBuf>, EnvError> {
+        self.path(UV_FILE)
     }
 }
 
@@ -681,7 +746,7 @@ pub(crate) mod testing {
     use std::collections::HashMap;
     use std::ffi::OsString;
 
-    use super::{BUN_INSTALL_CACHE_DIR, Env, HOME, Process, Var};
+    use super::{BUN_INSTALL_CACHE_DIR, Env, HOME_DIR, Process, Var};
 
     /// An environment holding exactly `pairs`. Each variable is named by its `Var`, so no
     /// name is written outside this module.
@@ -698,7 +763,7 @@ pub(crate) mod testing {
         Env::from_lookup(|name| {
             if name == BUN_INSTALL_CACHE_DIR.name {
                 Some("/bun".into())
-            } else if name == HOME.name {
+            } else if name == HOME_DIR.name {
                 Some("/home/u".into())
             } else {
                 None
@@ -708,7 +773,7 @@ pub(crate) mod testing {
 
     /// Only the home directory, at `/home/u`.
     pub fn home_only() -> Process {
-        Env::from_lookup(|name| (name == HOME.name).then(|| "/home/u".into()))
+        Env::from_lookup(|name| (name == HOME_DIR.name).then(|| "/home/u".into()))
     }
 
     /// Nothing set.
@@ -816,7 +881,7 @@ mod tests {
             (NPM_CORPUS, "abbrev"),
             (NPM_CORPUS_FULL, "full"),
             (TEST_DATABASE_URL, "postgres://test"),
-            (HOME, "/home/u"),
+            (HOME_DIR, "/home/u"),
             (BUN_INSTALL_CACHE_DIR, "/cache"),
         ]);
         assert_eq!(env.listen().unwrap(), "0.0.0.0:9000");
@@ -1077,7 +1142,7 @@ mod tests {
         }
         assert!(LISTEN.listed() && LOG_FILTER.listed());
         assert_eq!(DEFER_TEST.listed(), cfg!(debug_assertions));
-        assert!(!BLESS.listed() && !TEST_DATABASE_URL.listed() && !HOME.listed());
+        assert!(!BLESS.listed() && !TEST_DATABASE_URL.listed() && !HOME_DIR.listed());
     }
 
     /// The rule item 16 set: a name written anywhere but here is a second place to change.

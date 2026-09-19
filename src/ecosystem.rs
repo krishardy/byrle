@@ -391,8 +391,7 @@ pub const PYPI: Registry = Registry {
     // requirements.txt, uv.lock and poetry.lock are not read yet.
     lockfiles: &[],
     unread_lockfiles: &[],
-    // pip and uv are not checked yet: TODO.md, "`doctor` checks five npm clients".
-    clients: &[],
+    clients: pypi::clients::CLIENTS,
     setup: Setup {
         client: "pip",
         command: "pip config set global.index-url",

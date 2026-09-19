@@ -1,6 +1,6 @@
 //! The package managers that install from an npm registry, as `waharoa doctor` checks them.
 
-use crate::doctor::{CacheBypass, CacheLocation, Client, RegistryQuery};
+use crate::doctor::{CacheBypass, CacheLocation, Client, RegistryQuery, RegistrySource};
 use crate::env::Process;
 
 /// npm, pnpm and yarn all read `registry` with `config get` and write it with `config set`.
@@ -14,7 +14,7 @@ const CONFIG_GET_REGISTRY: RegistryQuery = RegistryQuery {
 /// npm itself. The startup log's setup line for npm reads this row.
 pub const NPM: Client = Client {
     name: "npm",
-    registry: Some(CONFIG_GET_REGISTRY),
+    registry: Some(RegistrySource::Asked(CONFIG_GET_REGISTRY)),
     set_registry: "npm config set registry",
     // npm's cache directory holds _cacache, and every cached response is one file
     // under its index.
@@ -37,7 +37,7 @@ pub const CLIENTS: &[Client] = &[
     NPM,
     Client {
         name: "pnpm",
-        registry: Some(CONFIG_GET_REGISTRY),
+        registry: Some(RegistrySource::Asked(CONFIG_GET_REGISTRY)),
         set_registry: "pnpm config set registry",
         cache: CacheLocation::Asked {
             args: &["store", "path"],
@@ -48,7 +48,7 @@ pub const CLIENTS: &[Client] = &[
     },
     Client {
         name: "yarn",
-        registry: Some(CONFIG_GET_REGISTRY),
+        registry: Some(RegistrySource::Asked(CONFIG_GET_REGISTRY)),
         set_registry: "yarn config set registry",
         cache: CacheLocation::Asked {
             args: &["cache", "dir"],

@@ -124,6 +124,20 @@ impl ReachableOrigins {
     }
 }
 
+/// `url` with any `user:password@` removed, for printing. A configured index URL can carry a
+/// credential, and `doctor` reports the URLs clients use.
+pub fn without_credentials(url: &str) -> String {
+    let Some(scheme_end) = url.find("://").map(|at| at + 3) else {
+        return url.to_owned();
+    };
+    let rest = &url[scheme_end..];
+    let authority = &rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())];
+    match authority.rfind('@') {
+        Some(at) => format!("{}{}", &url[..scheme_end], &rest[at + 1..]),
+        None => url.to_owned(),
+    }
+}
+
 pub(crate) fn normalise_origin(base: &str) -> Result<String, OriginError> {
     let url = reqwest::Url::parse(base).map_err(|_| OriginError {
         value: base.to_owned(),
@@ -497,6 +511,29 @@ impl PackageMetadata {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_credential_in_a_url_is_not_printed() {
+        for (url, printed) in [
+            (
+                "https://user:secret@example.jfrog.io/api/pypi/simple/",
+                "https://example.jfrog.io/api/pypi/simple/",
+            ),
+            (
+                "https://token@example.org/simple",
+                "https://example.org/simple",
+            ),
+            (
+                "https://example.org/simple/?q=a@b",
+                "https://example.org/simple/?q=a@b",
+            ),
+            ("https://example.org/a@b", "https://example.org/a@b"),
+            ("not a url", "not a url"),
+            ("https://a:b@c@host/x", "https://host/x"),
+        ] {
+            assert_eq!(super::without_credentials(url), printed, "{url}");
+        }
+    }
+
     use super::*;
     use crate::identity::Ecosystem;
 
