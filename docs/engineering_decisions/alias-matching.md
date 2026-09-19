@@ -59,6 +59,31 @@ entry that marks both exploited, which is the stricter reading.
 deduplication item lands. sqlx checks each applied migration's checksum, so the comment is
 left as it is.
 
+## An unscored record takes a direct alias's score, 2026-09-19
+
+Records are still not merged. One exception reads a field across them: at load, an unscored
+vulnerability takes the highest score among the records in the same stream that it lists by
+id or that list its id. `rows::score_from_aliases`, called by `osv::bundle::read_bundle`.
+Asked of the user, 2026-09-19.
+
+`max_cvss` refuses an unscored non-malware advisory, and PyPI's advisory database publishes
+`PYSEC-` records beside GitHub's `GHSA-` ones for the same vulnerability, most without a
+score. `PYSEC-2018-28` and `GHSA-x84v-xcm2-53pg` are both CVE-2018-18074, each listing the
+other; only the second carries 7.5. Unscored, the first refused every version the second
+lets through.
+
+OSV's `PyPI/all.zip` of 2026-09-18, by `cargo run --example osv_tally -- all.zip pypi`:
+
+| | Before | After |
+|---|---|---|
+| vulnerabilities, scored | 10,558 | 13,141 |
+| scored from an alias | | 2,583 |
+| vulnerabilities, unscored | 2,736 | 153 |
+
+npm's bundle has no record that takes one. The 153 have no scored direct alias; sharing a
+CVE id alone is not enough, because two records naming one CVE can describe different
+packages. A malware record neither takes nor gives a score.
+
 ## Evidence
 
 `a_kev_entry_reaches_an_osv_finding_through_its_alias_and_only_through_it` replaces

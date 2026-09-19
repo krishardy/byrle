@@ -36,6 +36,9 @@ pub struct Tally {
     pub scored: u64,
     /// Scored from a severity band rather than a CVSS vector. Already counted in `scored`.
     pub banded: u64,
+    /// Unscored, and given the score of a scored alias in the same bundle. Already counted
+    /// in `scored`. See [`crate::intel::rows::score_from_aliases`].
+    pub from_alias: u64,
     pub unscored: u64,
     pub withdrawn: u64,
     pub other_publisher: u64,
@@ -86,6 +89,7 @@ impl std::fmt::Display for Tally {
             ("stored: malware", self.malware),
             ("stored: vulnerability, scored", self.scored),
             ("scored from a severity band", self.banded),
+            ("scored from an alias", self.from_alias),
             ("stored: vulnerability, unscored", self.unscored),
             ("skipped: withdrawn", self.withdrawn),
             ("skipped: other publisher", self.other_publisher),
@@ -170,6 +174,10 @@ pub fn read_bundle(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Bundle, BundleE
             bundle.rows.push(*rows);
         }
     }
+    let from_alias = crate::intel::rows::score_from_aliases(&mut bundle.rows);
+    bundle.tally.unscored -= from_alias;
+    bundle.tally.scored += from_alias;
+    bundle.tally.from_alias = from_alias;
     Ok(bundle)
 }
 
@@ -306,6 +314,7 @@ mod tests {
             malware: 2,
             scored: 1,
             banded: 1,
+            from_alias: 1,
             unscored: 1,
             other_publisher: 1,
             no_package: 1,
@@ -320,6 +329,7 @@ mod tests {
             "stored: malware                         2\n\
              stored: vulnerability, scored           1\n\
              scored from a severity band             1\n\
+             scored from an alias                    1\n\
              stored: vulnerability, unscored         1\n\
              skipped: withdrawn                      1\n\
              skipped: other publisher                1\n\
@@ -371,5 +381,45 @@ mod tests {
                 ..Tally::default()
             }
         );
+    }
+
+    /// A bundle's unscored vulnerability takes its scored alias's score, and the tally moves
+    /// it from unscored to scored.
+    #[test]
+    fn an_unscored_record_in_a_bundle_takes_its_aliass_score() {
+        let pypi = |id: &str, extra: &str| {
+            format!(
+                r#"{{"id": "{id}", {extra} "affected": [{{"package": {{"ecosystem": "PyPI", "name": "requests"}}, "versions": ["2.19.0"]}}]}}"#
+            )
+        };
+        let (pysec, ghsa, lone) = (
+            pypi("PYSEC-2018-28", r#""aliases": ["GHSA-x84v-xcm2-53pg"],"#),
+            pypi(
+                "GHSA-x84v-xcm2-53pg",
+                r#""severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N"}],"#,
+            ),
+            pypi("PYSEC-2099-1", ""),
+        );
+        let bundle = read_bundle(
+            Ecosystem::PyPI,
+            &zip_of(&[
+                ("a.json", pysec.as_bytes()),
+                ("b.json", ghsa.as_bytes()),
+                ("c.json", lone.as_bytes()),
+            ]),
+        )
+        .expect("reads");
+        assert_eq!(
+            (
+                bundle.tally.scored,
+                bundle.tally.from_alias,
+                bundle.tally.unscored
+            ),
+            (2, 1, 1)
+        );
+        let cvss = |id: &str| bundle.rows.iter().find(|r| r.id == id).and_then(|r| r.cvss);
+        assert_eq!(cvss("PYSEC-2018-28"), cvss("GHSA-x84v-xcm2-53pg"));
+        assert_eq!(cvss("PYSEC-2018-28"), Some(7.5));
+        assert_eq!(cvss("PYSEC-2099-1"), None);
     }
 }
