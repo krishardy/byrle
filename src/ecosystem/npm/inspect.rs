@@ -104,7 +104,7 @@ pub fn inspect_decoded(decoded: &[u8], detail: DocumentDetail) -> PackumentOutco
 mod tests {
     use super::super::fixture;
     use super::*;
-    use crate::env::DEFAULT_MAX_PACKUMENT_BYTES;
+    use crate::env::DEFAULT_MAX_METADATA_BYTES;
     use crate::http::gzip;
 
     fn gzipped(data: &[u8]) -> Vec<u8> {
@@ -119,7 +119,7 @@ mod tests {
                 &bytes,
                 encoding,
                 DocumentDetail::Abbreviated,
-                DEFAULT_MAX_PACKUMENT_BYTES,
+                DEFAULT_MAX_METADATA_BYTES,
             );
             let PackumentOutcome::Normalized(p) = outcome else {
                 panic!("{encoding:?} should normalise, got {outcome:?}");

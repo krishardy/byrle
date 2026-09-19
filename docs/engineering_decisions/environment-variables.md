@@ -32,7 +32,7 @@ the help text wrote `(50,000)` and `(32 MiB)` by hand beside the constants.
 
 | Before | After |
 |---|---|
-| `WAHAROA_MAX_PACKUMENT_BYTES`, `_MAX_RECORDS`, `_MAX_VERIFIED`, `_MAX_CONCURRENT_PACKUMENTS` and `_EXPIRY_CEILING_DAYS` fell back to the default on a value that did not parse | refused, exit 2 |
+| `WAHAROA_MAX_METADATA_BYTES`, `_MAX_RECORDS`, `_MAX_VERIFIED`, `_MAX_CONCURRENT_METADATA` and `_EXPIRY_CEILING_DAYS` fell back to the default on a value that did not parse | refused, exit 2 |
 | `WAHAROA_CA_BUNDLE_EXCLUSIVE` was on only for `1`; `WAHAROA_REWRITE_ARTIFACTS` and `WAHAROA_REFUSE_UNSERVABLE` were off only for `0`. Anything else was silently the default | each accepts `0` or `1`, and refuses anything else |
 | `WAHAROA_LISTEN=` and `WAHAROA_UPSTREAM=` were used as the empty string | an empty value is unset, for every variable |
 | `RUST_LOG` that did not parse fell back to `waharoa=info` | refused, exit 2 |

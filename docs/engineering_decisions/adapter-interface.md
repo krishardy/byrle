@@ -163,13 +163,10 @@ such as `artifact requested, no metadata seen for it`. "Packument" stays where o
 meant: `DocumentKind::Packument`, the npm arm of `handle`, and `publish_times_for`'s
 full-packument fetch.
 
-Two external names keep the old word, because changing them breaks an operator's
-configuration:
-
-| Name | Kind |
-|---|---|
-| `WAHAROA_MAX_PACKUMENT_BYTES` | environment variable |
-| `WAHAROA_MAX_CONCURRENT_PACKUMENTS` | environment variable |
+`WAHAROA_MAX_METADATA_BYTES`, `WAHAROA_MAX_CONCURRENT_METADATA` and the health JSON's
+`packages_held` were `..._PACKUMENT_BYTES`, `..._CONCURRENT_PACKUMENTS` and
+`packuments_held` until 2026-09-19. No build had been deployed, so no configuration or reader
+from another build held the old names.
 
 ## The resolver looking is not the client installing
 

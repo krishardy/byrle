@@ -31,7 +31,7 @@ Proxy configuration, all through the environment:
                                     them.
   WAHAROA_CA_BUNDLE                 PEM bundle for the upstream connection
   WAHAROA_CA_BUNDLE_EXCLUSIVE=1     trust only that bundle, not the public roots
-  WAHAROA_MAX_PACKUMENT_BYTES       ceiling on a packument body (default 32 MiB)
+  WAHAROA_MAX_METADATA_BYTES        ceiling on a metadata document (default 32 MiB)
   WAHAROA_MAX_RECORDS               packument records held in memory (default 50000)
   WAHAROA_MAX_VERIFIED              verified artifact digests remembered (default 50000)
   WAHAROA_DATABASE_URL              Postgres holding intel from `waharoa refresh`. With a
@@ -48,7 +48,7 @@ Proxy configuration, all through the environment:
   WAHAROA_AUDIT_LOG                 path for one JSON line per policy decision,
                                     appended. Refuses to start if it cannot be opened
   WAHAROA_EXPIRY_CEILING_DAYS       how many days ahead a `packages` entry may be dated (default 90)
-  WAHAROA_MAX_CONCURRENT_PACKUMENTS packuments decoded at once (default 8)
+  WAHAROA_MAX_CONCURRENT_METADATA   metadata documents decoded at once (default 8)
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
                                     "default=403,npm/pnpm=451" (default 403)
   WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot

@@ -31,7 +31,7 @@ impl Client {
         Self {
             http,
             registry: registry.trim_end_matches('/').to_owned(),
-            max_bytes: crate::env::DEFAULT_MAX_PACKUMENT_BYTES,
+            max_bytes: crate::env::DEFAULT_MAX_METADATA_BYTES,
         }
     }
 

@@ -58,14 +58,14 @@ enum Default {
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
-/// Default ceiling on a packument body, applied both to the bytes buffered and to the
+/// Default ceiling on a metadata document, applied both to the bytes buffered and to the
 /// bytes decompression is allowed to produce.
 ///
 /// The largest packument measured is typescript: 8.7 MB as the abbreviated document,
 /// 15.7 MB as the full one, 2.0 MB gzipped. This is roughly 2x headroom on that. Over
 /// the limit the proxy forwards the response without normalising it, because an install
 /// must not fail on account of what the proxy could not inspect.
-pub const DEFAULT_MAX_PACKUMENT_BYTES: usize = 32 * 1024 * 1024;
+pub const DEFAULT_MAX_METADATA_BYTES: usize = 32 * 1024 * 1024;
 
 /// Default record store budget, in records rather than bytes.
 ///
@@ -81,7 +81,7 @@ pub const DEFAULT_MAX_RECORDS: usize = 50_000;
 /// reaches `verified` after a packument named it.
 pub const DEFAULT_MAX_VERIFIED: usize = 50_000;
 
-/// Default ceiling on how many packuments are decoded and rewritten at once.
+/// Default ceiling on how many metadata documents are decoded and rewritten at once.
 ///
 /// Reading a packument costs far more than the bytes on the wire: the decoded copy, the
 /// JSON value tree the rewrite walks, the re-serialised output, and the gzip buffer are
@@ -93,7 +93,7 @@ pub const DEFAULT_MAX_VERIFIED: usize = 50_000;
 /// Eight keeps the worst case near half a gigabyte. A normal install does not reach it:
 /// npm's own request parallelism held a six-package install with 165 packuments to a
 /// 141 MB peak.
-pub const DEFAULT_MAX_CONCURRENT_PACKUMENTS: usize = 8;
+pub const DEFAULT_MAX_CONCURRENT_METADATA: usize = 8;
 
 /// §5.5's ceiling on how far ahead a package entry may be dated.
 ///
@@ -162,12 +162,12 @@ pub const CA_BUNDLE_EXCLUSIVE: Var = runtime(
     "=1",
     &["trust only that bundle, not the public roots"],
 );
-pub const MAX_PACKUMENT_BYTES: Var = runtime(
-    "WAHAROA_MAX_PACKUMENT_BYTES",
+pub const MAX_METADATA_BYTES: Var = runtime(
+    "WAHAROA_MAX_METADATA_BYTES",
     "",
-    &["ceiling on a packument body"],
+    &["ceiling on a metadata document"],
 )
-.with_default(Default::Bytes(DEFAULT_MAX_PACKUMENT_BYTES));
+.with_default(Default::Bytes(DEFAULT_MAX_METADATA_BYTES));
 pub const MAX_RECORDS: Var = runtime(
     "WAHAROA_MAX_RECORDS",
     "",
@@ -234,12 +234,12 @@ pub const EXPIRY_CEILING_DAYS: Var = runtime(
     &["how many days ahead a `packages` entry may be dated"],
 )
 .with_default(Default::Number(DEFAULT_EXPIRY_CEILING_DAYS as u64));
-pub const MAX_CONCURRENT_PACKUMENTS: Var = runtime(
-    "WAHAROA_MAX_CONCURRENT_PACKUMENTS",
+pub const MAX_CONCURRENT_METADATA: Var = runtime(
+    "WAHAROA_MAX_CONCURRENT_METADATA",
     "",
-    &["packuments decoded at once"],
+    &["metadata documents decoded at once"],
 )
-.with_default(Default::Number(DEFAULT_MAX_CONCURRENT_PACKUMENTS as u64));
+.with_default(Default::Number(DEFAULT_MAX_CONCURRENT_METADATA as u64));
 pub const REFUSAL_STATUS: Var = runtime(
     "WAHAROA_REFUSAL_STATUS",
     "",
@@ -316,7 +316,7 @@ pub const ALL: [Var; 30] = [
     REWRITE_ARTIFACTS,
     CA_BUNDLE,
     CA_BUNDLE_EXCLUSIVE,
-    MAX_PACKUMENT_BYTES,
+    MAX_METADATA_BYTES,
     MAX_RECORDS,
     MAX_VERIFIED,
     DATABASE_URL,
@@ -326,7 +326,7 @@ pub const ALL: [Var; 30] = [
     POLICY,
     AUDIT_LOG,
     EXPIRY_CEILING_DAYS,
-    MAX_CONCURRENT_PACKUMENTS,
+    MAX_CONCURRENT_METADATA,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     LOG_FILTER,
@@ -559,8 +559,8 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.flag(CA_BUNDLE_EXCLUSIVE, false)
     }
 
-    pub fn max_packument_bytes(&self) -> Result<usize, EnvError> {
-        self.count(MAX_PACKUMENT_BYTES, DEFAULT_MAX_PACKUMENT_BYTES)
+    pub fn max_metadata_bytes(&self) -> Result<usize, EnvError> {
+        self.count(MAX_METADATA_BYTES, DEFAULT_MAX_METADATA_BYTES)
     }
 
     pub fn max_records(&self) -> Result<usize, EnvError> {
@@ -571,8 +571,8 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.count(MAX_VERIFIED, DEFAULT_MAX_VERIFIED)
     }
 
-    pub fn max_concurrent_packuments(&self) -> Result<usize, EnvError> {
-        self.count(MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_CONCURRENT_PACKUMENTS)
+    pub fn max_concurrent_metadata(&self) -> Result<usize, EnvError> {
+        self.count(MAX_CONCURRENT_METADATA, DEFAULT_MAX_CONCURRENT_METADATA)
     }
 
     pub fn database_url(&self) -> Result<Option<String>, EnvError> {
@@ -743,14 +743,14 @@ mod tests {
         assert_eq!(env.ca_bundle().unwrap(), None);
         assert!(!env.ca_bundle_exclusive().unwrap());
         assert_eq!(
-            env.max_packument_bytes().unwrap(),
-            DEFAULT_MAX_PACKUMENT_BYTES
+            env.max_metadata_bytes().unwrap(),
+            DEFAULT_MAX_METADATA_BYTES
         );
         assert_eq!(env.max_records().unwrap(), DEFAULT_MAX_RECORDS);
         assert_eq!(env.max_verified().unwrap(), DEFAULT_MAX_VERIFIED);
         assert_eq!(
-            env.max_concurrent_packuments().unwrap(),
-            DEFAULT_MAX_CONCURRENT_PACKUMENTS
+            env.max_concurrent_metadata().unwrap(),
+            DEFAULT_MAX_CONCURRENT_METADATA
         );
         assert_eq!(env.database_url().unwrap(), None);
         assert_eq!(env.snapshot_dir().unwrap(), None);
@@ -799,10 +799,10 @@ mod tests {
             (REWRITE_ARTIFACTS, "0"),
             (CA_BUNDLE, "/etc/ca.pem"),
             (CA_BUNDLE_EXCLUSIVE, "1"),
-            (MAX_PACKUMENT_BYTES, "1024"),
+            (MAX_METADATA_BYTES, "1024"),
             (MAX_RECORDS, "10"),
             (MAX_VERIFIED, "20"),
-            (MAX_CONCURRENT_PACKUMENTS, "2"),
+            (MAX_CONCURRENT_METADATA, "2"),
             (DATABASE_URL, "postgres://db"),
             (SNAPSHOT_DIR, "/var/lib/waharoa"),
             (SNAPSHOT_LIMIT, "7"),
@@ -840,10 +840,10 @@ mod tests {
         assert!(!env.rewrite_artifacts().unwrap());
         assert_eq!(env.ca_bundle().unwrap(), Some(PathBuf::from("/etc/ca.pem")));
         assert!(env.ca_bundle_exclusive().unwrap());
-        assert_eq!(env.max_packument_bytes().unwrap(), 1024);
+        assert_eq!(env.max_metadata_bytes().unwrap(), 1024);
         assert_eq!(env.max_records().unwrap(), 10);
         assert_eq!(env.max_verified().unwrap(), 20);
-        assert_eq!(env.max_concurrent_packuments().unwrap(), 2);
+        assert_eq!(env.max_concurrent_metadata().unwrap(), 2);
         assert_eq!(
             env.database_url().unwrap().as_deref(),
             Some("postgres://db")
@@ -878,9 +878,9 @@ mod tests {
     fn a_value_that_does_not_parse_is_an_error_naming_the_variable_and_the_value() {
         let env = with(&[
             (MAX_RECORDS, "5O000"),
-            (MAX_PACKUMENT_BYTES, "-1"),
+            (MAX_METADATA_BYTES, "-1"),
             (MAX_VERIFIED, "1e6"),
-            (MAX_CONCURRENT_PACKUMENTS, "eight"),
+            (MAX_CONCURRENT_METADATA, "eight"),
             (EXPIRY_CEILING_DAYS, "-5"),
             (CA_BUNDLE_EXCLUSIVE, "yes"),
             (REWRITE_ARTIFACTS, "false"),
@@ -893,16 +893,16 @@ mod tests {
                 "WAHAROA_MAX_RECORDS: `5O000` is not a whole number",
             ),
             (
-                env.max_packument_bytes().map(drop),
-                "WAHAROA_MAX_PACKUMENT_BYTES: `-1` is not a whole number",
+                env.max_metadata_bytes().map(drop),
+                "WAHAROA_MAX_METADATA_BYTES: `-1` is not a whole number",
             ),
             (
                 env.max_verified().map(drop),
                 "WAHAROA_MAX_VERIFIED: `1e6` is not a whole number",
             ),
             (
-                env.max_concurrent_packuments().map(drop),
-                "WAHAROA_MAX_CONCURRENT_PACKUMENTS: `eight` is not a whole number",
+                env.max_concurrent_metadata().map(drop),
+                "WAHAROA_MAX_CONCURRENT_METADATA: `eight` is not a whole number",
             ),
             (
                 env.expiry_ceiling_days().map(drop),
@@ -1053,11 +1053,11 @@ mod tests {
     #[test]
     fn a_default_is_shown_in_the_unit_it_is_read_in() {
         assert_eq!(
-            MAX_PACKUMENT_BYTES.default_shown().as_deref(),
+            MAX_METADATA_BYTES.default_shown().as_deref(),
             Some("32 MiB")
         );
         assert_eq!(
-            MAX_PACKUMENT_BYTES
+            MAX_METADATA_BYTES
                 .with_default(Default::Bytes(1000))
                 .default_shown()
                 .as_deref(),
