@@ -447,45 +447,28 @@ That is the failure mode every item below should be brought to.
       | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_METADATA_BYTES` and the other variable names | configuration an operator sets |
       | `identity.rs`, `route.rs` | `Ecosystem::Npm`, `Ecosystem::PyPI`, `DocumentKind::Packument`, `DocumentKind::SimpleIndex` | the enums that name each ecosystem and its document |
 
-- [ ] **npm and PyPI code outside `src/ecosystem/`, found 2026-09-18 at `6b43f92`.**
-      Not in the table above. Non-test code only.
+- [x] **npm and PyPI code outside `src/ecosystem/`, found 2026-09-18 at `6b43f92`.**
+      Closed 2026-09-19 at `6973b3c`. Non-test code only.
 
-      | Where | What is ecosystem-specific |
+      | Found | Now |
       |---|---|
+      | a simple index was not filtered by policy or intel | filtered like a packument, by `pypi::rewrite::rewrite_index` ([pypi-index-filtering](docs/engineering_decisions/pypi-index-filtering.md)) |
+      | versions and ranges read as SemVer for every ecosystem | read by the ecosystem's `VersionOrder`, PEP 440 for PyPI ([pep440-version-order](docs/engineering_decisions/pep440-version-order.md)) |
+      | npm's `@scope/name` split applied to every ecosystem's names and purls | each row's `split_name`; `split_encoded_scope` is gone |
+      | selectors and denials compared names and versions as strings | read the ecosystem's way, and take a VERS range ([policy-version-ranges](docs/engineering_decisions/policy-version-ranges.md)) |
+      | a policy purl no package can have loaded and matched nothing | refused at load, by `identity::key_from_purl` |
+      | intel rows stored names as each source wrote them | stored as the ecosystem compares names, by `Affected::new` and `Ranged::new` |
+      | npm and PyPI upstreams passed around as a pair | `Upstreams`, one base per row, and `upstreams` in `/-/waharoa/health` |
+      | the cooldown cost warning described npm for every policy | names each ecosystem `PublishTimeSource::cost` gives a cost for |
+      | `WAHAROA_DEFER_TEST` scopes `packument` and `tarball`; `make retry-matrix` npm-only | `metadata` and `artifact`; pip and uv measured too |
+      | setup lines, npm's `undefined`, duplicate `"npm"` constants | `Registry::setup`, `RegistryQuery::unset`, `Ecosystem::Npm.as_str()` |
+      | OSV's `PYSEC-` records would be skipped | moved into step 4 above |
 
-      Fixed 2026-09-18: a simple index goes through `intel_for` and
-      `policy_refused_versions`, and `pypi::rewrite::rewrite_index` removes refused versions
-      ([pypi-index-filtering](docs/engineering_decisions/pypi-index-filtering.md));
-      a range and a version are read by the ecosystem's `VersionOrder`, PEP 440 for PyPI
-      ([pep440-version-order](docs/engineering_decisions/pep440-version-order.md));
-      `PackageKey::from_registry_name` splits a name by the row's `split_name`: npm's
-      scope rule in `npm/paths.rs`, and PyPI refusing a `/`, and a purl is read by the same
-      rule, which replaces `split_encoded_scope`;
-      a selector and a denial read names and versions the ecosystem's way, and take a VERS
-      range ([policy-version-ranges](docs/engineering_decisions/policy-version-ranges.md));
-      an intel row stores its package name as the ecosystem compares names
-      (`Affected::new`, `Ranged::new`), so Datadog's `SentinelOne` and GitHub's
-      `jupyter_server` are found by the PyPI keys `sentinelone` and `jupyter-server`;
-      each row names its upstream variable and URL rule, and `Upstreams` holds one base
-      per ecosystem in the environment, the clients and the proxy, and `/-/waharoa/health`
-      reports them all in `upstreams`;
-      the cooldown cost warning names each ecosystem whose `PublishTimeSource` costs a
-      fetch, from `PublishTimeSource::cost`;
-      `HOME`, `BUN_INSTALL_CACHE_DIR`, `NPM_CORPUS` and `NPM_CORPUS_FULL` stay in `env.rs`,
-      read by npm's code only, because
+      Kept as they are: `HOME`, `BUN_INSTALL_CACHE_DIR`, `NPM_CORPUS` and `NPM_CORPUS_FULL`
+      in `env.rs`, because
       [environment-variables](docs/engineering_decisions/environment-variables.md) puts
-      every variable there;
-      `record.rs` stays as it is: `DocumentDetail` says whether the document held everything
-      the registry publishes, which holds for both, and `Provenance`'s PyPI shape waits for
-      PEP 740 in the provenance item below;
-      `defer::Scope` is `Metadata` and `Artifact`, and `make retry-matrix` measures pip and
-      uv beside the npm clients;
-      `selector::decompose` builds a served ecosystem's name through
-      `identity::key_from_purl`, so `pkg:npm/foo/bar@1.0.0` and `pkg:pypi/ns/idna@3.10`
-      are refused at load instead of denying nothing;
-      the startup log's setup lines come from `Registry::setup`;
-      `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
-      constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.
+      every variable there; `record.rs`, because `DocumentDetail` holds for both and
+      `Provenance`'s PyPI shape waits for PEP 740 in the provenance item below.
 
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 
