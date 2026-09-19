@@ -162,23 +162,33 @@ pub struct Health {
 
 #[derive(Clone)]
 pub struct Proxy {
-    client: reqwest::Client,
+    /// Set by the builders and read while serving. Behind one `Arc`, because axum clones
+    /// the proxy for every request and several of these fields are heap allocations.
+    config: Arc<Config>,
     /// Records from packuments already seen, so a tarball request can find the digest
     /// its packument published. Bounded; see [`crate::store`].
     store: Arc<Mutex<RecordStore>>,
-    /// Fetches the metadata a client never asked for. See [`lookup_or_fetch`].
-    clients: Clients,
     /// Artifacts already fetched and verified, keyed by content digest. The fetch path
     /// branches on this (plan §5). See [`crate::verified`].
     verified: Arc<Mutex<VerifiedArtifacts>>,
     /// Bounds how many packuments are decoded and rewritten at once. See
     /// [`DEFAULT_MAX_CONCURRENT_METADATA`].
     metadata_slots: Arc<Semaphore>,
+    /// The intel snapshot [`intel_for`] last read coverage from. See [`snapshot_named`].
+    coverage: Arc<Mutex<Option<LoadedSnapshot>>>,
+}
+
+/// What the builders set. Nothing here changes once the proxy is serving.
+#[derive(Clone)]
+struct Config {
+    client: reqwest::Client,
+    /// Fetches the metadata a client never asked for. See [`lookup_or_fetch`].
+    clients: Clients,
     /// Which origins this proxy serves, and which it permits a client to fetch directly.
     /// One source of truth for rewriting, for the report, and for the refusal.
-    origins: Arc<OriginPolicy>,
+    origins: OriginPolicy,
     /// What a policy refusal answers with, per ecosystem and client.
-    refusal: Arc<RefusalStatus>,
+    refusal: RefusalStatus,
     /// Whether to drop versions whose artifacts this proxy cannot serve.
     refuse_unservable: bool,
     /// Origins the operator added, beyond the upstreams, as `with_origin_policy` accepted
@@ -199,8 +209,6 @@ pub struct Proxy {
     /// The intel store, when one is configured. With a policy, every decision consults it,
     /// and a store that cannot answer is a 503 rather than a serve. See [`intel_for`].
     intel: Option<Arc<dyn Intel>>,
-    /// The intel snapshot [`intel_for`] last read coverage from. See [`snapshot_named`].
-    coverage: Arc<Mutex<Option<LoadedSnapshot>>>,
     max_metadata_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`npm::rewrite_packument`] and [`pypi::rewrite::rewrite_index`].
@@ -220,37 +228,37 @@ impl Proxy {
     /// A proxy for each ecosystem's public registry. `with_upstream` points one elsewhere.
     pub fn new(client: reqwest::Client) -> Self {
         let proxy = Self {
-            origins: Arc::new(
-                OriginPolicy::new(
+            config: Arc::new(Config {
+                origins: OriginPolicy::new(
                     ReachableOrigins::new(std::iter::empty(), std::iter::empty())
                         .expect("the table's own origins are valid"),
                     std::iter::empty(),
                 )
                 .expect("an empty allow list is always valid"),
-            ),
-            served_origins: Vec::new(),
-            allowed_direct: Vec::new(),
-            clients: Clients::new(
-                client.clone(),
-                &Upstreams::defaults(),
-                DEFAULT_MAX_METADATA_BYTES,
-            ),
-            client,
+                served_origins: Vec::new(),
+                allowed_direct: Vec::new(),
+                clients: Clients::new(
+                    client.clone(),
+                    &Upstreams::defaults(),
+                    DEFAULT_MAX_METADATA_BYTES,
+                ),
+                client,
+                upstreams: Upstreams::defaults(),
+                policy: None,
+                audit: None,
+                intel: None,
+                max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
+                rewrite_artifacts: true,
+                public_base: None,
+                refusal: RefusalStatus::default(),
+                refuse_unservable: true,
+                #[cfg(debug_assertions)]
+                defer_test: None,
+            }),
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
-            upstreams: Upstreams::defaults(),
-            policy: None,
-            audit: None,
-            intel: None,
             coverage: Arc::new(Mutex::new(None)),
-            max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
-            rewrite_artifacts: true,
-            public_base: None,
             metadata_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_METADATA)),
-            refusal: Arc::new(RefusalStatus::default()),
-            refuse_unservable: true,
-            #[cfg(debug_assertions)]
-            defer_test: None,
         };
         proxy.rebuilt()
     }
@@ -261,13 +269,18 @@ impl Proxy {
     /// the same addresses, so only a caller that skips it reaches the panic, and nothing
     /// else would work with that upstream either.
     pub fn with_upstream(mut self, ecosystem: Ecosystem, upstream: impl AsRef<str>) -> Self {
-        self.upstreams = self.upstreams.with(ecosystem, upstream.as_ref());
+        let upstreams = self
+            .config
+            .upstreams
+            .clone()
+            .with(ecosystem, upstream.as_ref());
+        self.config_mut().upstreams = upstreams;
         self.rebuilt()
     }
 
     /// Every upstream at once, as `env::Env::upstreams` reads them.
     pub fn with_upstreams(mut self, upstreams: Upstreams) -> Self {
-        self.upstreams = upstreams;
+        self.config_mut().upstreams = upstreams;
         self.rebuilt()
     }
 
@@ -276,19 +289,19 @@ impl Proxy {
     pub fn with_defer_test(mut self, defer_test: Option<DeferTest>) -> Self {
         // The instant is taken here rather than at parse, so a bounded deferral is
         // measured from when the proxy started rather than from when the spec was read.
-        self.defer_test = defer_test.map(|d| (d, Instant::now()));
+        self.config_mut().defer_test = defer_test.map(|d| (d, Instant::now()));
         self
     }
 
     pub fn with_refusal_status(mut self, refusal: RefusalStatus) -> Self {
-        self.refusal = Arc::new(refusal);
+        self.config_mut().refusal = refusal;
         self
     }
 
     /// Whether versions whose artifacts this proxy cannot serve are removed from the
     /// packument. On by default; see [`crate::ecosystem::npm::filter_unservable_versions`].
     pub fn with_refuse_unservable(mut self, refuse: bool) -> Self {
-        self.refuse_unservable = refuse;
+        self.config_mut().refuse_unservable = refuse;
         self
     }
 
@@ -306,19 +319,19 @@ impl Proxy {
     ) -> Result<Self, crate::origin::OriginError> {
         let served: Vec<String> = served.into_iter().map(str::to_owned).collect();
         let allowed_direct: Vec<String> = allowed_direct.into_iter().map(str::to_owned).collect();
-        self.origins = Arc::new(self.origin_policy_for(&served, &allowed_direct)?);
-        self.served_origins = served;
-        self.allowed_direct = allowed_direct;
+        self.config_mut().origins = self.origin_policy_for(&served, &allowed_direct)?;
+        self.config_mut().served_origins = served;
+        self.config_mut().allowed_direct = allowed_direct;
         Ok(self)
     }
 
     /// The policy every decision reads, when one is configured.
     pub fn policy(&self) -> Option<&Policy> {
-        self.policy.as_deref()
+        self.config.policy.as_deref()
     }
 
     pub fn origin_policy(&self) -> &OriginPolicy {
-        &self.origins
+        &self.config.origins
     }
 
     /// What this proxy is and how it is configured. Served at [`HEALTH_PATH`].
@@ -331,15 +344,16 @@ impl Proxy {
             service: "waharoa".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             upstreams: self
+                .config
                 .upstreams
                 .iter()
                 .map(|(ecosystem, base)| (ecosystem.as_str().to_owned(), base.to_owned()))
                 .collect(),
-            public_base: self.public_base.clone(),
-            rewrite_artifacts: self.rewrite_artifacts,
-            refuse_unservable: self.refuse_unservable,
-            served_origins: self.origins.reachable().as_slice().to_vec(),
-            allowed_direct_origins: self.origins.allowed_direct().to_vec(),
+            public_base: self.config.public_base.clone(),
+            rewrite_artifacts: self.config.rewrite_artifacts,
+            refuse_unservable: self.config.refuse_unservable,
+            served_origins: self.config.origins.reachable().as_slice().to_vec(),
+            allowed_direct_origins: self.config.origins.allowed_direct().to_vec(),
             packages_held,
             records_held,
             artifacts_verified: self.verified.lock().expect("verified artifacts lock").len(),
@@ -348,8 +362,8 @@ impl Proxy {
 
     /// The store every decision asks, when a policy is there to ask it. See [`intel_for`].
     fn consulted_intel(&self) -> Option<&dyn Intel> {
-        self.policy.as_ref()?;
-        self.intel.as_deref()
+        self.config.policy.as_ref()?;
+        self.config.intel.as_deref()
     }
 
     /// Whether every package can be decided on now. Served at [`READY_PATH`].
@@ -378,14 +392,14 @@ impl Proxy {
     }
 
     pub fn with_artifact_rewriting(mut self, rewrite: bool) -> Self {
-        self.rewrite_artifacts = rewrite;
+        self.config_mut().rewrite_artifacts = rewrite;
         self
     }
 
     /// Override the address written into artifact URLs. Without it the request's `Host`
     /// is used, which is what the client already reached the proxy on.
     pub fn with_public_base(mut self, base: Option<String>) -> Self {
-        self.public_base = base.map(|b| b.trim_end_matches('/').to_owned());
+        self.config_mut().public_base = base.map(|b| b.trim_end_matches('/').to_owned());
         self
     }
 
@@ -403,22 +417,22 @@ impl Proxy {
     }
 
     pub fn with_audit_log(mut self, audit: Option<Arc<AuditLog>>) -> Self {
-        self.audit = audit;
+        self.config_mut().audit = audit;
         self
     }
 
     pub fn with_policy(mut self, policy: Option<Arc<Policy>>) -> Self {
-        self.policy = policy;
+        self.config_mut().policy = policy;
         self
     }
 
     pub fn with_intel(mut self, intel: Option<Arc<dyn Intel>>) -> Self {
-        self.intel = intel;
+        self.config_mut().intel = intel;
         self
     }
 
     pub fn with_max_metadata_bytes(mut self, limit: usize) -> Self {
-        self.max_metadata_bytes = limit;
+        self.config_mut().max_metadata_bytes = limit;
         // The proxy's own fetches decode under the same ceiling as the bodies it
         // forwards, so one setting means one limit.
         self.rebuilt()
@@ -428,16 +442,24 @@ impl Proxy {
     /// Every builder that changes one of those ends here, so the order they are called in
     /// does not matter.
     fn rebuilt(mut self) -> Self {
-        self.clients = Clients::new(
-            self.client.clone(),
-            &self.upstreams,
-            self.max_metadata_bytes,
+        let clients = Clients::new(
+            self.config.client.clone(),
+            &self.config.upstreams,
+            self.config.max_metadata_bytes,
         );
-        self.origins = Arc::new(
-            self.origin_policy_for(&self.served_origins, &self.allowed_direct)
-                .unwrap_or_else(|e| panic!("upstream is not a usable origin: {e}")),
-        );
+        let origins = self
+            .origin_policy_for(&self.config.served_origins, &self.config.allowed_direct)
+            .unwrap_or_else(|e| panic!("upstream is not a usable origin: {e}"));
+        let config = self.config_mut();
+        config.clients = clients;
+        config.origins = origins;
         self
+    }
+
+    /// The configuration, for a builder to change. Builders run before the proxy serves, so
+    /// the copy-on-write copies nothing.
+    fn config_mut(&mut self) -> &mut Config {
+        Arc::make_mut(&mut self.config)
     }
 
     fn origin_policy_for(
@@ -445,13 +467,15 @@ impl Proxy {
         served: &[String],
         allowed_direct: &[String],
     ) -> Result<OriginPolicy, crate::origin::OriginError> {
-        let reachable =
-            ReachableOrigins::new(self.upstreams.bases(), served.iter().map(String::as_str))?;
+        let reachable = ReachableOrigins::new(
+            self.config.upstreams.bases(),
+            served.iter().map(String::as_str),
+        )?;
         OriginPolicy::new(reachable, allowed_direct.iter().map(String::as_str))
     }
 
     pub fn upstreams(&self) -> &Upstreams {
-        &self.upstreams
+        &self.config.upstreams
     }
 
     pub fn router(self) -> Router {
@@ -639,7 +663,7 @@ async fn buffer_to_limit(mut stream: ByteStream, limit: usize) -> Buffered {
 /// ecosystems were served this passed npm unconditionally, which made a `pypi/...` entry
 /// unreachable.
 fn refusal_status(proxy: &Proxy, ecosystem: Ecosystem, user_agent: Option<&str>) -> StatusCode {
-    let code = proxy.refusal.for_client(ecosystem, user_agent);
+    let code = proxy.config.refusal.for_client(ecosystem, user_agent);
     // Unreachable: `RefusalStatus` is only ever built by `parse`, which refuses anything
     // outside 400..=599, or by `default`, which is 403. Kept rather than unwrapped
     // because a panic here would take down a request handler, and 403 is what the
@@ -714,7 +738,7 @@ async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &
 /// stays allowed.
 async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     let started = Instant::now();
-    match proxy.clients.metadata(key).await {
+    match proxy.config.clients.metadata(key).await {
         Ok(Ok(metadata)) => {
             let versions = metadata.records.len();
             proxy
@@ -824,7 +848,7 @@ fn upstream_url(
     if let Some(origin) = artifact_origin {
         return format!("{origin}{path_and_query}");
     }
-    (ecosystem::of(ecosystem).upstream_url)(proxy.upstreams.get(ecosystem), path_and_query)
+    (ecosystem::of(ecosystem).upstream_url)(proxy.config.upstreams.get(ecosystem), path_and_query)
 }
 
 /// The upstream response's headers, less the hop-by-hop ones.
@@ -943,7 +967,8 @@ async fn filtered_document(
     // artifact URL to the proxy's own origin, which is both the wrong thing to store as
     // the upstream's claim and enough to make the offsite check report every package.
     let parse_started = Instant::now();
-    let decoded = match decode_for_parsing(body, content_encoding, proxy.max_metadata_bytes) {
+    let decoded = match decode_for_parsing(body, content_encoding, proxy.config.max_metadata_bytes)
+    {
         Ok(decoded) => decoded,
         Err(e) => {
             warn!(path = %path, error = %e, "UNINSPECTED: metadata body could not be decoded");
@@ -959,7 +984,7 @@ async fn filtered_document(
             &decoded,
             detail,
             &proxy.store,
-            &proxy.origins,
+            &proxy.config.origins,
             body.len(),
             parse_started,
             path,
@@ -1006,10 +1031,10 @@ async fn filtered_document(
     let refused_by_policy = match normalized {
         Some(metadata) => policy_refused_versions(
             metadata,
-            proxy.policy.as_deref(),
+            proxy.config.policy.as_deref(),
             intel.as_ref(),
             path,
-            proxy.audit.as_deref(),
+            proxy.config.audit.as_deref(),
         ),
         None => HashSet::new(),
     };
@@ -1033,15 +1058,15 @@ async fn filtered_document(
             decoded: &decoded,
             packument,
             base,
-            origins: &proxy.origins,
+            origins: &proxy.config.origins,
             refused_by_policy: &refused_by_policy,
-            refuse_unservable: proxy.refuse_unservable,
+            refuse_unservable: proxy.config.refuse_unservable,
             path,
         }),
         Read::SimpleIndex(index) => pypi::rewrite::rewrite_index(pypi::rewrite::Rewrite {
             decoded: &decoded,
             project: &index.project,
-            reachable: proxy.origins.reachable(),
+            reachable: proxy.config.origins.reachable(),
             base,
             refused_by_policy: &refused_by_policy,
             path,
@@ -1085,11 +1110,15 @@ fn negotiate(
     let read_metadata = method == Method::GET
         && matches!(target, RequestTarget::Metadata(_))
         && encoding != RequestedEncoding::Unreadable;
-    let rewrite_base = public_base(headers, proxy.public_base.as_deref());
-    let rewriting = read_metadata && proxy.rewrite_artifacts && rewrite_base.is_some();
+    let rewrite_base = public_base(headers, proxy.config.public_base.as_deref());
+    let rewriting = read_metadata && proxy.config.rewrite_artifacts && rewrite_base.is_some();
     let full_document = read_metadata
         && ecosystem::of(ecosystem).publish_times == ecosystem::PublishTimeSource::FullPackument
-        && proxy.policy.as_deref().is_some_and(Policy::uses_cooldown);
+        && proxy
+            .config
+            .policy
+            .as_deref()
+            .is_some_and(Policy::uses_cooldown);
     Negotiation {
         encoding,
         read_metadata,
@@ -1301,7 +1330,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     };
     audit_pinned(proxy, record, times.as_ref(), intel.as_ref());
     let policy_refusal = match enforce::artifact(
-        proxy.policy.as_deref(),
+        proxy.config.policy.as_deref(),
         record,
         times.as_ref(),
         intel.as_ref(),
@@ -1317,8 +1346,8 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     // the reason the proxy was pointed at it.
     let artifact_url = artifact.map(|a| a.url.as_str()).unwrap_or("");
     fetch.origin = crate::origin::origin_of_url(artifact_url)
-        .filter(|origin| proxy.origins.reachable().routes_directly(origin));
-    let unservable_origin = match proxy.origins.disposition(artifact_url) {
+        .filter(|origin| proxy.config.origins.reachable().routes_directly(origin));
+    let unservable_origin = match proxy.config.origins.disposition(artifact_url) {
         Disposition::Refused(origin) => Some(origin),
         _ => None,
     };
@@ -1379,7 +1408,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     // resolution, hard fail on a pinned fetch, because there is no resolution step left
     // to influence.
     if let Some(origin) = &unservable_origin
-        && proxy.refuse_unservable
+        && proxy.config.refuse_unservable
     {
         let status = refusal_status(proxy, ecosystem, Some(client));
         info!(
@@ -1416,7 +1445,7 @@ fn audit_pinned(
     times: Option<&facts::PublishTimes>,
     intel: Option<&PackageIntel>,
 ) {
-    let (Some(audit), Some(policy)) = (&proxy.audit, proxy.policy.as_deref()) else {
+    let (Some(audit), Some(policy)) = (&proxy.config.audit, proxy.config.policy.as_deref()) else {
         return;
     };
     let mut facts = crate::policy::decide::Facts::from_record_and_times(record, times);
@@ -1473,7 +1502,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let (ecosystem, target) = crate::route::classify(&path_and_query);
 
     #[cfg(debug_assertions)]
-    if let Some((deferral, since)) = &proxy.defer_test
+    if let Some((deferral, since)) = &proxy.config.defer_test
         && let Some((status, retry_after)) = deferral.applies_to(&target, since.elapsed())
     {
         return defer_response(
@@ -1527,6 +1556,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         artifact.origin.as_deref(),
     );
     let outbound = proxy
+        .config
         .client
         .request(method.clone(), &url)
         .headers(upstream_headers(
@@ -1611,12 +1641,12 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         return (forward_status, headers, Body::from_stream(verified)).into_response();
     };
 
-    let body = match buffer_to_limit(body_stream, proxy.max_metadata_bytes).await {
+    let body = match buffer_to_limit(body_stream, proxy.config.max_metadata_bytes).await {
         Buffered::Complete(body) => body,
         Buffered::Oversized { prefix, rest } => {
             warn!(
                 path = %path_and_query,
-                limit = proxy.max_metadata_bytes,
+                limit = proxy.config.max_metadata_bytes,
                 "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
             );
             log_proxied(upstream_len.unwrap_or(0));
@@ -1767,11 +1797,16 @@ fn defer_response(
 /// `published_at`, which [`Clients::publish_times`] answers without a request. A fetch that
 /// fails is not fatal: the check it feeds reports itself as unenforceable.
 async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::PublishTimes> {
-    if !proxy.policy.as_deref().is_some_and(Policy::uses_cooldown) {
+    if !proxy
+        .config
+        .policy
+        .as_deref()
+        .is_some_and(Policy::uses_cooldown)
+    {
         return None;
     }
     let started = Instant::now();
-    let times = match proxy.clients.publish_times(key).await {
+    let times = match proxy.config.clients.publish_times(key).await {
         Ok(Some(times)) => times,
         Ok(None) => return None,
         Err(e) => {

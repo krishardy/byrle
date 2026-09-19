@@ -536,14 +536,17 @@ That is the failure mode every item below should be brought to.
             testing found the `waited_ms > 0` guard on the slot's DEBUG line untested; it
             has a test now.
 
-- [ ] **`Proxy` is 19 fields and 15 builders, cloned per request.**
-      Configuration (`upstreams`, `refuse_unservable`, `served_origins`, `allowed_direct`,
-      `max_metadata_bytes`, `rewrite_artifacts`, `public_base`, `defer_test`), transport
-      (`client`, `clients`, `metadata_slots`, `origins`), caches (`store`, `verified`) and
-      decision (`policy`, `intel`, `coverage`, `audit`, `refusal`) in one struct.
-      Splitting configuration from runtime state would let most of `handle`'s helpers take
-      what they use rather than the whole proxy, which is what currently forces the test
-      shape below.
+- [x] **`Proxy` was 19 fields and 15 builders, cloned per request.** Now 5 fields: the
+      15 set by builders are in `Config`, behind one `Arc`, beside the 4 that change while
+      serving (`store`, `verified`, `coverage`, `metadata_slots`). The builders'
+      signatures are unchanged, so no caller or test changed.
+      axum's `State` extractor calls `Proxy::clone()` for every request
+      (`FromRef` for `T: Clone`). That clone copied two `Vec<String>`, an `Upstreams` and
+      an `Option<String>`; it is now five reference counts. The saving is not measured,
+      and is small beside the upstream request each one makes.
+      The reason this item gave, that helpers could take only what they use, did not hold:
+      `decide_artifact` and `filtered_document` each read both halves. They are called
+      without a socket anyway, since the `handle` split.
 
 - [ ] **The request pipeline is tested through sockets rather than as functions.**
       61 of 83 tests in `proxy.rs` bind a TCP port, and 2,809 of its 4,858 lines are tests.
