@@ -439,7 +439,6 @@ That is the failure mode every item below should be brought to.
       |---|---|
       | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher`. `PyPI/all.zip` on 2026-09-18: 7,253 `PYSEC-`, 491 with no `GHSA-` counterpart; the PyPA database's licence is not in `advisory-stream-licences.md`. Belongs with step 4 |
       | `policy/selector.rs` `decompose` | rejoins `namespace/name`, repeating `PackageKey::registry_name`; it cannot call `PackageKey` as is, because it takes any purl type and an optional version |
-      | `record.rs` | `DocumentDetail::{Abbreviated, Full}` and `Provenance`'s fields are npm packument concepts in the shared record |
       | `defer.rs` | `Scope::{Packument, Tarball}` names generic targets in npm's words |
 
       Fixed 2026-09-18: a simple index goes through `intel_for` and
@@ -464,6 +463,9 @@ That is the failure mode every item below should be brought to.
       read by npm's code only, because
       [environment-variables](docs/engineering_decisions/environment-variables.md) puts
       every variable there;
+      `record.rs` stays as it is: `DocumentDetail` says whether the document held everything
+      the registry publishes, which holds for both, and `Provenance`'s PyPI shape waits for
+      PEP 740 in the provenance item below;
       the startup log's setup lines come from `Registry::setup`;
       `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
       constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.
@@ -2072,6 +2074,9 @@ changes to the core, that is the finding — make it now, not after five adapter
 - [ ] Provenance and attestation fetching for PyPI, which has its own metadata shape.
       Carried from Stage 1, which measured the npm side only: npm asks its own registry
       for `/-/npm/v1/keys` and never contacts the host the packument named.
+      `record::Provenance` holds npm's fields (`dist.attestations`, `dist.signatures`,
+      `_npmUser.trustedPublisher`) and PyPI records leave it at `Provenance::default()`.
+      Its PyPI shape is decided here, from PEP 740 attestations, not guessed at before.
 - [~] `[!]` PEP 503 simple-index transport, written concretely first. `src/ecosystem/pypi/` reads
       PEP 691 JSON: name normalisation, the index URL, and one project's files with version,
       kind, hash, upload time and yank state. Standalone on purpose, sharing nothing with
