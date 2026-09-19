@@ -37,10 +37,13 @@ bytes. pip skips a yanked file unless the requirement pins that version, which i
 
 ## Version and file
 
+Both fields are `Option<String>`: `None` is not yanked, and `Some` carries the reason the
+publisher gave, empty when the index said only `true`.
+
 | Level | Yanked when | Read by |
 |---|---|---|
 | `Artifact::yanked` | that file's `yanked` is a reason or `true` | the pinned fetch, through `PackageRecord::narrowed_to` |
-| `PackageRecord::yanked` | every file of the version is yanked | the index filter |
+| `PackageRecord::yanked` | every file of the version is yanked, and it carries the first file's reason | the index filter |
 
 A version with one file left is not yanked. PEP 592 is about which file a resolver takes,
 and a version that still offers a wheel is a version to resolve to.
@@ -63,8 +66,22 @@ key absent and one with `true`.
 | Always filter, with no setting | A yank is the publisher's judgement about their own release, and an operator who needs that version has no way to say so |
 | Open `version: 2` for the key | No version 1 policy has been deployed, so v1 was amended instead, as `denials[].version` and `advisory_scores` were |
 
+## The reason is repeated back
+
+The refusal the client reads and the proxy's log line both carry it:
+
+```
+waharoa: pkg:pypi/x@1.0 is blocked by policy
+  - yanked: withdrawn, broken sdist
+```
+
+`waharoa explain` prints the same string beside the check, and a yank with no reason reads
+`withdrawn by the registry`.
+
 ## Not done
 
-- The reason string is not kept. `Artifact::yanked` is a `bool`, so a refusal says `yanked`
-  and not why the publisher yanked it.
-- npm's `deprecated`, which is the nearest npm signal, is not read.
+npm's `deprecated` is not read. It is a per-version string in both the abbreviated and the
+full packument, so it costs no extra request, but it is not a yank: npm installs a
+deprecated version after printing a warning, and no client skips one. Measured on
+2026-09-20: `eslint` marks 405 of 430 versions deprecated, `glob` 160 of 168, and `request`
+and `left-pad` every version. A check over it could not default to `block`.

@@ -45,7 +45,9 @@ pub struct File {
     /// RFC 3339, as the index wrote it. `cooldown_days` reads this, and unlike npm it is
     /// in the document a resolver already fetches.
     pub upload_time: Option<String>,
-    pub yanked: bool,
+    /// The reason the publisher gave, empty when the index said only `true`. `None` is not
+    /// yanked.
+    pub yanked: Option<String>,
     pub requires_python: Option<String>,
 }
 
@@ -137,10 +139,12 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
                 url: entry.url,
                 sha256: entry.hashes.get("sha256").cloned(),
                 upload_time: entry.upload_time,
-                yanked: matches!(
-                    entry.yanked,
-                    serde_json::Value::Bool(true) | serde_json::Value::String(_)
-                ),
+                yanked: match entry.yanked {
+                    serde_json::Value::String(reason) => Some(reason),
+                    // PEP 592 allows a bare `true`, which is a yank with no reason given.
+                    serde_json::Value::Bool(true) => Some(String::new()),
+                    _ => None,
+                },
                 requires_python: entry.requires_python,
             })
         })
@@ -230,18 +234,24 @@ mod tests {
     fn a_file_is_yanked_by_a_reason_or_by_true_and_by_nothing_else() {
         let project = parse("requests", &fixture()).expect("the fixture reads");
         assert!(
-            project.files_for("2.32.0")[0].yanked,
+            project.files_for("2.32.0")[0].yanked.is_some(),
             "a reason string is a yank"
         );
-        assert!(!project.files_for("2.34.2")[0].yanked, "`false` is not");
+        assert!(
+            !project.files_for("2.34.2")[0].yanked.is_some(),
+            "`false` is not"
+        );
 
         let index = br#"{"name":"x","files":[
             {"filename":"x-1.0.tar.gz","url":"https://example/x-1.0.tar.gz"},
             {"filename":"x-2.0.tar.gz","url":"https://example/x-2.0.tar.gz","yanked":true}
         ]}"#;
         let project = parse("x", index).expect("the index reads");
-        assert!(!project.files_for("1.0")[0].yanked, "an absent key is not");
-        assert!(project.files_for("2.0")[0].yanked, "`true` is");
+        assert!(
+            !project.files_for("1.0")[0].yanked.is_some(),
+            "an absent key is not"
+        );
+        assert!(project.files_for("2.0")[0].yanked.is_some(), "`true` is");
     }
 
     /// The PyPI shape of the `install_scripts` question: a wheel installs without running

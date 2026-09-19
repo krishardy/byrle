@@ -51,9 +51,10 @@ pub struct Facts {
     /// `intel::Capabilities::gaps` reports at startup.
     pub intel: Intel,
     pub has_install_scripts: bool,
-    /// Whether the registry withdrew this version. PyPI's PEP 592 yank; npm has none, and
-    /// the check reports not-applicable there.
-    pub yanked: bool,
+    /// The reason the registry gave for withdrawing this version, empty when it gave
+    /// none. PyPI's PEP 592 yank; npm has none, and the check reports not-applicable
+    /// there.
+    pub yanked: Option<String>,
 }
 
 /// Whether anything was in a position to answer about advisories.
@@ -479,7 +480,7 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
                 return Outcome::NotApplicable;
             }
             on_off(
-                facts.yanked,
+                facts.yanked.is_some(),
                 policy.yanked,
                 set.and_then(|s| s.yanked),
                 entry,
@@ -531,7 +532,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
         }
     }
@@ -599,7 +600,7 @@ mod tests {
             published: Some(date(2026, 9, 11)),
             advisories: vec![exploited("CVE-2024-1", 9.8)],
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -782,7 +783,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -822,7 +823,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1228,7 +1229,7 @@ mod tests {
         let facts = Facts {
             ecosystem: "golang".to_owned(),
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1245,7 +1246,7 @@ mod tests {
         let p = policy("install_scripts: allow\n");
         let facts = Facts {
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1303,7 +1304,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
             ..clean()
         };

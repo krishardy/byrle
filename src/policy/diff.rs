@@ -710,7 +710,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
-            yanked: false,
+            yanked: None,
             intel: Intel::Consulted {
                 exploitation_loaded: true,
             },
@@ -744,7 +744,7 @@ mod tests {
     fn two_policies_that_both_block_for_different_reasons_still_show_the_move() {
         let facts = Facts {
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             ..facts()
         };
         let d = diff(
@@ -859,7 +859,7 @@ mod tests {
     fn gaining_an_exception_is_a_loosening_and_names_the_entry() {
         let facts = Facts {
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             ..facts()
         };
         let d = diff(
@@ -974,7 +974,7 @@ mod tests {
         .expect("policy should load");
         let facts = Facts {
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             published: Some(jiff::civil::date(2026, 9, 1)),
             ..facts()
         };

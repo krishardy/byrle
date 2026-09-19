@@ -106,12 +106,13 @@ pub struct PackageRecord {
     /// is itself a metadata heuristic.
     pub repository: Option<Repository>,
 
-    /// Whether the registry withdrew every file this version offers.
+    /// The reason the registry gave for withdrawing every file this version offers.
     ///
     /// A resolver ignores a yanked file unless the requirement pins that version
-    /// (PEP 592), so a version with one file left is still a version to resolve to. This
-    /// is about the version; [`Artifact::yanked`] is about the file a request names.
-    pub yanked: bool,
+    /// (PEP 592), so a version with one file left is still a version to resolve to, and
+    /// this is `None`. It is about the version; [`Artifact::yanked`] is about the file a
+    /// request names.
+    pub yanked: Option<String>,
 
     /// Whether installing this version runs a lifecycle script.
     ///
@@ -234,11 +235,11 @@ pub struct Artifact {
     /// against it, and a mismatch is a finding.
     pub integrity: Option<String>,
 
-    /// Whether the registry withdrew this file.
+    /// The reason the registry gave for withdrawing this file, empty when it gave none.
     ///
-    /// PyPI's PEP 592 yank: the file stays in the index and stays downloadable, with a
-    /// reason beside it. npm has no equivalent, so this is `false` there.
-    pub yanked: bool,
+    /// PyPI's PEP 592 yank: the file stays in the index and stays downloadable, with the
+    /// reason beside it. `None` is not yanked, which is every npm artifact.
+    pub yanked: Option<String>,
 
     /// `dist.shasum`, a legacy SHA-1 digest.
     ///
@@ -288,7 +289,7 @@ impl PackageRecord {
         let artifact = self.artifact_named(filename)?.clone();
         Some(Self {
             has_install_scripts: artifact.runs_install_scripts,
-            yanked: artifact.yanked,
+            yanked: artifact.yanked.clone(),
             artifacts: vec![artifact],
             ..self.clone()
         })
@@ -323,13 +324,13 @@ mod tests {
             maintainers: None,
             repository: None,
             has_install_scripts: has_scripts,
-            yanked: false,
+            yanked: None,
             install_scripts: None,
             provenance: Provenance::default(),
             artifacts: vec![Artifact {
                 filename: format!("{name}-{version}.tgz"),
                 runs_install_scripts: has_scripts,
-                yanked: false,
+                yanked: None,
                 url: format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"),
                 integrity: Some("sha512-AAAA".into()),
                 legacy_sha1: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".into()),
