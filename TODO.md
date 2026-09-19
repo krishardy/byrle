@@ -487,7 +487,7 @@ That is the failure mode every item below should be brought to.
       every variable there; `record.rs`, because `DocumentDetail` holds for both and
       `Provenance`'s PyPI shape waits for PEP 740 in the provenance item below.
 
-- [ ] **An unscored `PYSEC-` record blocks a version its scored `GHSA-` alias allows.**
+- [x] **An unscored `PYSEC-` record blocks a version its scored `GHSA-` alias allows.**
       `max_cvss` refuses a non-malware advisory with no score, and aliases are matched, not
       merged ([alias-matching](docs/engineering_decisions/alias-matching.md)). In the
       `osv/pypi` load of 2026-09-19, 2,731 `PYSEC-` records have no score, and 2,583 of them
@@ -496,6 +496,9 @@ That is the failure mode every item below should be brought to.
       whose `GHSA-` score is under `max_cvss` is still refused through its `PYSEC-` twin.
       `explain 'pkg:pypi/requests@2.19.0'` lists `PYSEC-2018-28` and `PYSEC-2023-74` as
       unscored beside `GHSA-x84v-xcm2-53pg` 7.5.
+      Fixed 2026-09-19: an unscored vulnerability takes the highest score of a direct alias
+      in the same stream at load. In the PyPI bundle, 2,583 take one and 153 stay unscored:
+      [alias-matching](docs/engineering_decisions/alias-matching.md).
 
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 
