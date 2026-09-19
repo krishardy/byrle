@@ -4,6 +4,7 @@ settings
   max_cvss         6.9
   install_scripts  block
   kev              block
+  yanked           block
   denials          0
   packages         0
   advisory_scores  0
@@ -15,6 +16,7 @@ checks
   kev               unenforced, no advisory stream
   max_cvss          unenforced, no advisory stream
   install_scripts   enforced
+  yanked            enforced
 
 === version: 1, cooldown_days: 0, no store
 settings
@@ -22,6 +24,7 @@ settings
   max_cvss         6.9
   install_scripts  block
   kev              block
+  yanked           block
   denials          0
   packages         0
   advisory_scores  0
@@ -33,6 +36,7 @@ checks
   kev               unenforced, no advisory stream
   max_cvss          unenforced, no advisory stream
   install_scripts   enforced
+  yanked            enforced
 
 === examples/policy.yaml, a store without the KEV catalogue
 settings
@@ -40,6 +44,7 @@ settings
   max_cvss         6.9
   install_scripts  block
   kev              block
+  yanked           block
   denials          2
   packages         3
   advisory_scores  0
@@ -51,6 +56,7 @@ checks
   kev               unenforced, no exploitation stream
   max_cvss          enforced
   install_scripts   enforced
+  yanked            enforced
 
 packages[0]  internal, published by our CI
 
@@ -64,6 +70,7 @@ settings
   max_cvss         6.9
   install_scripts  block
   kev              block
+  yanked           block
   denials          2
   packages         3
   advisory_scores  0
@@ -75,6 +82,7 @@ checks
   kev               enforced
   max_cvss          enforced
   install_scripts   enforced
+  yanked            enforced
 
 packages[0]  internal, published by our CI
 

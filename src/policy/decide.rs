@@ -51,6 +51,9 @@ pub struct Facts {
     /// `intel::Capabilities::gaps` reports at startup.
     pub intel: Intel,
     pub has_install_scripts: bool,
+    /// Whether the registry withdrew this version. PyPI's PEP 592 yank; npm has none, and
+    /// the check reports not-applicable there.
+    pub yanked: bool,
 }
 
 /// Whether anything was in a position to answer about advisories.
@@ -109,6 +112,7 @@ pub enum Check {
     Kev,
     MaxCvss,
     InstallScripts,
+    Yanked,
 }
 
 impl Check {
@@ -120,18 +124,20 @@ impl Check {
             Self::Kev => "kev",
             Self::MaxCvss => "max_cvss",
             Self::InstallScripts => "install_scripts",
+            Self::Yanked => "yanked",
         }
     }
 
     /// Every check, in the order the flow chart draws them. One list, so a check added to
     /// the engine and not here is a compile error rather than one silently never run.
-    pub const ALL: [Check; 6] = [
+    pub const ALL: [Check; 7] = [
         Self::Denials,
         Self::KnownMalware,
         Self::CooldownDays,
         Self::Kev,
         Self::MaxCvss,
         Self::InstallScripts,
+        Self::Yanked,
     ];
 
     /// Whether an exception can excuse this check.
@@ -467,6 +473,18 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
                 entry,
             )
         }
+
+        Check::Yanked => {
+            if !merge::applies(&facts.ecosystem, Rule::Yanked) {
+                return Outcome::NotApplicable;
+            }
+            on_off(
+                facts.yanked,
+                policy.yanked,
+                set.and_then(|s| s.yanked),
+                entry,
+            )
+        }
     }
 }
 
@@ -513,6 +531,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            yanked: false,
             intel: Intel::NotConsulted,
         }
     }
@@ -551,7 +570,12 @@ mod tests {
         assert!(d.delivered());
         assert_eq!(d.action(), Action::Allow);
         assert!(d.reasons().is_empty());
-        assert!(d.results.iter().all(|r| r.outcome == Outcome::Passed));
+        // `clean()` is an npm package, and npm has no yank, so that check does not apply.
+        assert!(
+            d.results
+                .iter()
+                .all(|r| matches!(r.outcome, Outcome::Passed | Outcome::NotApplicable))
+        );
     }
 
     /// Every check appears in the vector, whatever the answer. A check that ran and found
@@ -575,6 +599,7 @@ mod tests {
             published: Some(date(2026, 9, 11)),
             advisories: vec![exploited("CVE-2024-1", 9.8)],
             has_install_scripts: true,
+            yanked: false,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -757,6 +782,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
+            yanked: false,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -796,6 +822,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
+            yanked: false,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1201,6 +1228,7 @@ mod tests {
         let facts = Facts {
             ecosystem: "golang".to_owned(),
             has_install_scripts: true,
+            yanked: false,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1217,6 +1245,7 @@ mod tests {
         let p = policy("install_scripts: allow\n");
         let facts = Facts {
             has_install_scripts: true,
+            yanked: false,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1274,6 +1303,7 @@ mod tests {
         );
         let facts = Facts {
             has_install_scripts: true,
+            yanked: false,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1288,6 +1318,6 @@ mod tests {
         for check in Check::ALL {
             assert!(!check.as_str().is_empty());
         }
-        assert_eq!(Check::ALL.len(), 6);
+        assert_eq!(Check::ALL.len(), 7);
     }
 }

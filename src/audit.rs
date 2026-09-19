@@ -277,6 +277,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            yanked: false,
             intel: Intel::NotConsulted,
         }
     }
@@ -454,6 +455,7 @@ mod tests {
         .expect("policy should load");
         let facts = Facts {
             has_install_scripts: true,
+            yanked: false,
             intel: Intel::NotConsulted,
             ..facts()
         };

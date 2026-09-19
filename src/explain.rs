@@ -166,6 +166,7 @@ fn found(
             }
         }
         Check::InstallScripts => "declares an install script".to_owned(),
+        Check::Yanked => "withdrawn by the registry".to_owned(),
     }
 }
 
@@ -194,6 +195,7 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
         policy.install_scripts.as_str()
     ));
     out.push_str(&format!("  kev              {}\n", policy.kev.as_str()));
+    out.push_str(&format!("  yanked           {}\n", policy.yanked.as_str()));
     out.push_str(&format!("  denials          {}\n", policy.denials.len()));
     out.push_str(&format!("  packages         {}\n", policy.packages.len()));
     out.push_str(&format!(
@@ -518,6 +520,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            yanked: false,
             intel: Intel::NotConsulted,
         }
     }
@@ -602,6 +605,7 @@ mod tests {
     fn an_excepted_check_names_the_entry_that_excused_it() {
         let facts = Facts {
             has_install_scripts: true,
+            yanked: false,
             intel: Intel::NotConsulted,
             ..facts()
         };
@@ -970,6 +974,7 @@ mod tests {
                 "version: 1\ninstall_scripts: block",
                 Facts {
                     has_install_scripts: true,
+                    yanked: false,
                     ..consulted()
                 },
             ),
@@ -978,6 +983,7 @@ mod tests {
                 "version: 1\ninstall_scripts: block\npackages:\n  - match: { ecosystem: npm, name: lodash, has_install_scripts: true }\n    set: { install_scripts: allow }\n    reason: reviewed\n    expires: \"2026-10-01\"\n",
                 Facts {
                     has_install_scripts: true,
+                    yanked: false,
                     ..consulted()
                 },
             ),
@@ -987,6 +993,7 @@ mod tests {
                 Facts {
                     ecosystem: "go".to_owned(),
                     has_install_scripts: true,
+                    yanked: false,
                     ..consulted()
                 },
             ),

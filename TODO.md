@@ -588,8 +588,12 @@ That is the failure mode every item below should be brought to.
       The `publish_times` cache is removed
       ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
 
-- [ ] **A yanked PyPI file is not a policy input.** `pypi::wire` reads PEP 592 `yanked`, and
-      the index keeps the file. No check reads it.
+- [x] **A yanked PyPI file is not a policy input.** Closed 2026-09-20: `yanked: block` is a
+      policy setting, a version whose every file is yanked is removed from the index, and a
+      pinned fetch of a yanked file answers 403
+      ([yanked-files](docs/engineering_decisions/yanked-files.md)).
+      `wire::Entry::yanked` read an absent key as a yank, which nothing had noticed because
+      nothing read the field.
 
 ## Stage 1 — Pass-through proxy (transport)
 

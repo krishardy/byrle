@@ -15,6 +15,7 @@ fn artifact(file: &File) -> crate::record::Artifact {
         // An sdist runs the package's own build on install; a wheel unpacks and runs
         // nothing.
         runs_install_scripts: file.kind == Kind::Sdist,
+        yanked: file.yanked,
         url: file.url.clone(),
         integrity: file.sha256.as_deref().and_then(sri),
         // PyPI's index gives sha256 and nothing weaker.
@@ -101,6 +102,9 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
             // shape of the same question, read from what is on offer rather than from a
             // flag the index does not have.
             has_install_scripts: project.only_sdist(version).unwrap_or(false),
+            // Every file withdrawn leaves a resolver nothing to take, so the version is
+            // yanked. One file left and it is not: PEP 592 is about which file is chosen.
+            yanked: artifacts.iter().all(|a| a.yanked),
             install_scripts: None,
             provenance: Provenance::default(),
             artifacts,

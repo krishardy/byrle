@@ -9,6 +9,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -26,6 +27,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: block
 
@@ -40,6 +42,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: block
 
@@ -55,6 +58,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: quarantine
   quarantine lapses on its own; block does not
@@ -71,6 +75,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: quarantine
   quarantine lapses on its own; block does not
@@ -92,6 +97,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -112,6 +118,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: quarantine
   quarantine lapses on its own; block does not
@@ -137,6 +144,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -157,6 +165,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: quarantine
   quarantine lapses on its own; block does not
@@ -173,6 +182,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -189,6 +199,7 @@ pkg:npm/lodash@4.17.21
   kev              FAIL block        CVE-2024-1
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: block
 
@@ -210,6 +221,7 @@ pkg:npm/lodash@4.17.21
   kev              excepted          would have been block: CVE-2024-1; packages[0] excused it, expires 2026-11-30
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -226,6 +238,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -241,6 +254,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         FAIL block        over max_cvss 7: CVE-2024-1 9.8
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: block
 
@@ -261,6 +275,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         FAIL block        over max_cvss 7: CVE-2024-1 9.8
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: block
 
@@ -281,6 +296,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         excepted          would have been block: over max_cvss 7: CVE-2024-1 9.8; packages[0] excused it, expires 2026-11-30
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -301,6 +317,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         excepted          would have been block: over max_cvss 7: GHSA-aaaa-bbbb-cccc 9.8; packages[0] excused it, expires 2026-11-30
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -321,6 +338,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         FAIL block        over max_cvss 7: GHSA-dddd-eeee-ffff 7.5; packages[0] excused GHSA-aaaa-bbbb-cccc 9.8
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: block
 
@@ -338,6 +356,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         FAIL block        over max_cvss 7 or unscored: CVE-2024-1 unscored, CVE-2024-2 8.0 from advisory_scores[0]
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: block
 
@@ -358,6 +377,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         excepted          would have been block: over max_cvss 7 or unscored: CVE-2024-1 unscored; packages[0] excused it, expires 2026-11-30
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -373,6 +393,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  FAIL block        declares an install script
+  yanked           n/a               no meaning for npm
 
   verdict: block
 
@@ -393,6 +414,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  excepted          would have been block: declares an install script; packages[0] excused it, expires 2026-10-01
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -408,6 +430,7 @@ pkg:go/lodash@4.17.21
   kev              pass
   max_cvss         pass
   install_scripts  n/a               no meaning for go
+  yanked           pass
 
   verdict: allow
 
@@ -422,6 +445,7 @@ pkg:npm/lodash@4.17.21
   kev              unenforced        no intel store was consulted, so nothing was asked
   max_cvss         unenforced        no intel store was consulted, so nothing was asked
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: allow
 
@@ -441,6 +465,7 @@ pkg:npm/lodash@4.17.21
   kev              pass
   max_cvss         FAIL block        over max_cvss 7: CVE-2024-1 9.8
   install_scripts  pass
+  yanked           n/a               no meaning for npm
 
   verdict: block
 

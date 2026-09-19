@@ -37,6 +37,7 @@ code, and the file names where.
 | [How a request through the proxy is tied to an account](account-identification.md) | Decided |
 | [Reporting: accounts, installed dependencies and notifications](reporting-accounts-and-notifications.md) | Decided |
 | [Metadata is fetched from upstream on every request](no-metadata-cache.md) | Implemented |
+| [A yanked file is refused, and the policy can allow it](yanked-files.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
