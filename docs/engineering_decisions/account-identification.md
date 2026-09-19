@@ -1,10 +1,25 @@
 # How a request through the proxy is tied to an account
 
-- **Status:** Open question. Measured 2026-09-19 for TODO Stage 8.
+- **Status:** Decided 2026-09-19: a token per account. Not yet implemented. TODO Stage 8.
 - **Related:** [doctor-python-clients](doctor-python-clients.md)
 
 Stage 8 needs every request, metadata and artifact alike, to name the account that made it,
 without a secret landing in a file that gets committed.
+
+## Decision
+
+Each account has a token. A client sends it the way it sends any registry credential, and the
+proxy reads it from `Authorization`: `Bearer <token>`, or `Basic` with the token as the
+password.
+
+| Client | Where the token goes |
+|---|---|
+| npm, pnpm, yarn 1 | `//<proxy host>/:_authToken=<token>` in `.npmrc` |
+| bun | `token` under `[install.registry]` in `bunfig.toml`, or `NPM_CONFIG_TOKEN` |
+| pip, uv | `https://<account>:<token>@<proxy host>/simple/` as the index URL |
+
+Every metadata and artifact request carries it, and no lockfile records it. `Authorization`
+stops at the proxy.
 
 ## What each client sends, measured
 

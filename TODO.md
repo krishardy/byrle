@@ -2486,7 +2486,8 @@ told by email when something they installed turns out to be malicious or vulnera
 
 Open questions, each needing a decision before it is built:
 
-- How a request is tied to an account. Measured per client:
+- How a request is tied to an account: decided 2026-09-19, a token per account, sent as
+  each client sends a registry credential:
   [account-identification](docs/engineering_decisions/account-identification.md).
 - [ ] The proxy forwards a client's `Authorization` header upstream: `is_hop_by_hop` does
       not list it. A token sent to the proxy reaches registry.npmjs.org or pypi.org.
