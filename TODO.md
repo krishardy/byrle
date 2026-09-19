@@ -2466,6 +2466,38 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 
 ---
 
+## Stage 8 — Reporting (accounts and notifications)
+
+**Goal:** a user with an account can see what they have installed through the proxy, and is
+told by email when something they installed turns out to be malicious or vulnerable.
+
+- [ ] Accounts: a user signs up and is identified on the requests they make through the
+      proxy. Today a request carries a user-agent and nothing that names a person, so the
+      audit log records packages, not who installed them.
+- [ ] A list of every dependency the user has installed: purl, version, first and last
+      install, and the verdict at the time. Built from the audit log once requests carry
+      the account.
+- [ ] Email when a dependency the user installed gets a new malware advisory: a `MAL-`
+      record or a Datadog entry that a refresh loaded and the previous snapshot did not
+      hold, matched against the user's installed versions.
+- [ ] Email when a dependency the user installed gets a new critical or high vulnerability:
+      a new advisory scored 7.0 or above, or banded `HIGH` or `CRITICAL`, matched the same
+      way.
+
+Open questions, each needing a decision before it is built:
+
+- How a request is tied to an account: a token in the registry URL, per-user basic auth,
+  or the network address. Each client passes credentials differently.
+- Where accounts and install history live: the intel Postgres, or a store of their own.
+- How email is sent, and which provider.
+- What a "new" advisory is when a refresh replaces a source whole: a diff between the
+  snapshot before and after the refresh.
+
+**Exit:** a user who installed a package through the proxy is emailed within one refresh of
+a malware or critical/high advisory for the version they installed.
+
+---
+
 ## Deferred / post-v1
 
 - [ ] **Everything that needs a policy surface beyond schema v1.** Five Stage 2 items with
