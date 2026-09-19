@@ -548,7 +548,7 @@ That is the failure mode every item below should be brought to.
       `decide_artifact` and `filtered_document` each read both halves. They are called
       without a socket anyway, since the `handle` split.
 
-- [ ] **The request pipeline is tested through sockets rather than as functions.**
+- [x] **The request pipeline is tested through sockets rather than as functions.**
       61 of 83 tests in `proxy.rs` bind a TCP port, and 2,809 of its 4,858 lines are tests.
       Mutation testing says what that costs. Before `uninspected()` was extracted as a pure
       function (`b31f50a`), **12 mutants of the two `UNINSPECTED` guards survived** with the
@@ -572,13 +572,15 @@ That is the failure mode every item below should be brought to.
             the resolution event's strongest action, the "refuses every version" warning
             and `with_max_records`. Each has a test now, and the strongest action is
             `std::cmp::max_by_key`, since `>` and `>=` were the same on distinct strengths.
-      - [ ] Rewrite, ETag, 304, public base, health, deferral: `filtered_document`,
-            `revalidated`, `finish`, `Proxy::health` and `defer_response` can be called
-            directly.
-      - [ ] What stays on sockets: tests of how `handle` wires the pieces to real HTTP (a
-            502, an oversized body, status passthrough, streaming verification). reqwest
-            makes real requests, so these need an upstream to answer them.
-      2026-09-20: 40 of 76 tests bind a port.
+      - [x] Rewriting, origins, refusal status, public base, health: 15 socket tests are
+            9 tests of `filtered_document`, `decide_artifact`, `negotiate`,
+            `upstream_headers`, `finish`, `metadata_slot` and `Proxy::health`.
+      - [x] What stays on sockets: 26 tests of how `handle` wires the pieces to real HTTP.
+            Forwarding a failed or oversized body, 502, status passthrough, 304 round
+            trips, deferral, the cooldown's full-document fetch, the `npm ci` path that
+            fetches metadata first, concurrency, and which paths are forwarded unread.
+            reqwest makes real requests, so these need an upstream to answer them.
+      2026-09-20: 26 of 70 tests bind a port, from 59 of 82.
 
 - [x] **The cache budgets are counted in units that no longer predict memory.**
       Measured per record with `examples/record_memory.rs`: 906 to 959 bytes for npm, 1,115
