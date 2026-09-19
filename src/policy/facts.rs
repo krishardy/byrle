@@ -65,7 +65,7 @@ impl Facts {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: record.has_install_scripts,
-            yanked: record.yanked,
+            yanked: record.yanked.clone(),
             intel: Intel::NotConsulted,
         }
     }

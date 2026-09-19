@@ -15,7 +15,7 @@ fn artifact(file: &File) -> crate::record::Artifact {
         // An sdist runs the package's own build on install; a wheel unpacks and runs
         // nothing.
         runs_install_scripts: file.kind == Kind::Sdist,
-        yanked: file.yanked,
+        yanked: file.yanked.clone(),
         url: file.url.clone(),
         integrity: file.sha256.as_deref().and_then(sri),
         // PyPI's index gives sha256 and nothing weaker.
@@ -103,8 +103,13 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
             // flag the index does not have.
             has_install_scripts: project.only_sdist(version).unwrap_or(false),
             // Every file withdrawn leaves a resolver nothing to take, so the version is
-            // yanked. One file left and it is not: PEP 592 is about which file is chosen.
-            yanked: artifacts.iter().all(|a| a.yanked),
+            // yanked, and the first file's reason stands for it. One file left and it is
+            // not: PEP 592 is about which file is chosen.
+            yanked: artifacts
+                .iter()
+                .all(|a| a.yanked.is_some())
+                .then(|| artifacts.first().and_then(|a| a.yanked.clone()))
+                .flatten(),
             install_scripts: None,
             provenance: Provenance::default(),
             artifacts,
@@ -326,7 +331,7 @@ mod tests {
             records.iter().any(|r| r.package.version() == "2.32.0"),
             "the yanked version is still a version"
         );
-        assert!(project.files_for("2.32.0")[0].yanked);
+        assert!(project.files_for("2.32.0")[0].yanked.is_some());
     }
 
     #[test]

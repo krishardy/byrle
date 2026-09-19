@@ -418,6 +418,36 @@ pkg:npm/lodash@4.17.21
 
   verdict: allow
 
+=== yanked, with the reason the publisher gave
+  | version: 1
+
+pkg:pypi/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+  yanked           FAIL block        withdrawn by the registry: Yanked due to conflicts with CVE-2024-35195 mitigation
+
+  verdict: block
+
+=== yanked, no reason given
+  | version: 1
+
+pkg:pypi/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+  yanked           FAIL block        withdrawn by the registry
+
+  verdict: block
+
 === install script, an ecosystem with no install step
   | version: 1
   | install_scripts: block

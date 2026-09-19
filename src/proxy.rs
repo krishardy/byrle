@@ -3790,18 +3790,22 @@ mod tests {
         assert!(matches!(packument, DocumentStep::Forward(Some(_))));
     }
 
-    /// Three versions: 1.0 is yanked whole, 2.0 is not, and 3.0 offers a wheel and a yanked
-    /// sdist. A sha256 on each, so a record carries a digest.
+    /// Four versions: 1.0 is yanked whole, 2.0 is not, 3.0 offers a wheel and a yanked
+    /// sdist, and 4.0 is yanked with no reason. A sha256 on each, so a record carries a
+    /// digest.
     const PYPI_YANKED: &[u8] = br#"{"name":"x","files":[
         {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0.tar.gz","hashes":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"yanked":"broken sdist"},
         {"filename":"x-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-2.0.tar.gz","hashes":{"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
         {"filename":"x-3.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ef/01/25/x-3.0-py3-none-any.whl","hashes":{"sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
-        {"filename":"x-3.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/26/x-3.0.tar.gz","hashes":{"sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"yanked":"wheel only"}
+        {"filename":"x-3.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/26/x-3.0.tar.gz","hashes":{"sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"yanked":"wheel only"},
+        {"filename":"x-4.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/27/x-4.0.tar.gz","hashes":{"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"yanked":true}
     ]}"#;
 
     const YANKED_FILE: &str = "/packages/ef/01/23/x-1.0.tar.gz";
     /// 3.0's sdist, yanked, beside a wheel that is not.
     const YANKED_SDIST: &str = "/packages/ef/01/26/x-3.0.tar.gz";
+    /// 4.0, yanked with `true` and no reason.
+    const YANKED_NO_REASON: &str = "/packages/ef/01/27/x-4.0.tar.gz";
 
     /// A yanked version is removed from the index and refused on a pinned fetch, unless the
     /// policy allows yanked files.
@@ -3821,15 +3825,20 @@ mod tests {
         assert_eq!(
             served_filenames(&refusing, PYPI_YANKED).await,
             ["x-2.0.tar.gz", "x-3.0-py3-none-any.whl", "x-3.0.tar.gz"],
-            "1.0 is yanked whole and gone; 3.0 keeps a file, so the version stays"
+            "1.0 and 4.0 are yanked whole and gone; 3.0 keeps a file, so the version stays"
         );
-        for (file, label) in [
-            (YANKED_FILE, "every file of the version"),
-            (YANKED_SDIST, "one file of a version that has another"),
+        for (file, told) in [
+            (YANKED_FILE, "yanked: withdrawn, broken sdist"),
+            (YANKED_SDIST, "yanked: withdrawn, wheel only"),
+            // PEP 592 allows a bare `true`, and then there is no reason to repeat.
+            (YANKED_NO_REASON, "yanked: withdrawn by the registry"),
         ] {
             let (status, body) = refused(pinned(&refusing, file).await).await;
-            assert_eq!(status, 403, "{label}");
-            assert!(body.contains("yanked"), "{label}: {body}");
+            assert_eq!(status, 403, "{file}");
+            assert!(
+                body.contains(told),
+                "the publisher's reason is what the client is told: {body}"
+            );
         }
         assert!(
             fetched(&pinned(&refusing, "/packages/ef/01/25/x-3.0-py3-none-any.whl").await),
@@ -3843,7 +3852,8 @@ mod tests {
                 "x-1.0.tar.gz",
                 "x-2.0.tar.gz",
                 "x-3.0-py3-none-any.whl",
-                "x-3.0.tar.gz"
+                "x-3.0.tar.gz",
+                "x-4.0.tar.gz"
             ]
         );
         assert!(fetched(&pinned(&allowing, YANKED_FILE).await));

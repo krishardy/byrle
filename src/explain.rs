@@ -166,7 +166,10 @@ fn found(
             }
         }
         Check::InstallScripts => "declares an install script".to_owned(),
-        Check::Yanked => "withdrawn by the registry".to_owned(),
+        Check::Yanked => match facts.yanked.as_deref() {
+            Some(reason) if !reason.is_empty() => format!("withdrawn by the registry: {reason}"),
+            _ => "withdrawn by the registry".to_owned(),
+        },
     }
 }
 
@@ -520,7 +523,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
         }
     }
@@ -605,7 +608,7 @@ mod tests {
     fn an_excepted_check_names_the_entry_that_excused_it() {
         let facts = Facts {
             has_install_scripts: true,
-            yanked: false,
+            yanked: None,
             intel: Intel::NotConsulted,
             ..facts()
         };
@@ -974,7 +977,7 @@ mod tests {
                 "version: 1\ninstall_scripts: block",
                 Facts {
                     has_install_scripts: true,
-                    yanked: false,
+                    yanked: None,
                     ..consulted()
                 },
             ),
@@ -983,7 +986,27 @@ mod tests {
                 "version: 1\ninstall_scripts: block\npackages:\n  - match: { ecosystem: npm, name: lodash, has_install_scripts: true }\n    set: { install_scripts: allow }\n    reason: reviewed\n    expires: \"2026-10-01\"\n",
                 Facts {
                     has_install_scripts: true,
-                    yanked: false,
+                    yanked: None,
+                    ..consulted()
+                },
+            ),
+            case(
+                "yanked, with the reason the publisher gave",
+                "version: 1",
+                Facts {
+                    ecosystem: "pypi".to_owned(),
+                    yanked: Some(
+                        "Yanked due to conflicts with CVE-2024-35195 mitigation".to_owned(),
+                    ),
+                    ..consulted()
+                },
+            ),
+            case(
+                "yanked, no reason given",
+                "version: 1",
+                Facts {
+                    ecosystem: "pypi".to_owned(),
+                    yanked: Some(String::new()),
                     ..consulted()
                 },
             ),
@@ -993,7 +1016,7 @@ mod tests {
                 Facts {
                     ecosystem: "go".to_owned(),
                     has_install_scripts: true,
-                    yanked: false,
+                    yanked: None,
                     ..consulted()
                 },
             ),

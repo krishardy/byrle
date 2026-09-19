@@ -44,7 +44,7 @@ async fn main() {
                     records.len(),
                     wheels,
                     project.files.len() - wheels,
-                    project.files.iter().filter(|f| f.yanked).count(),
+                    project.files.iter().filter(|f| f.yanked.is_some()).count(),
                     records.iter().filter(|r| r.has_install_scripts).count(),
                 );
             }

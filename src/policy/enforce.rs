@@ -173,14 +173,23 @@ fn verdict(facts: &Facts, decision: &Decision) -> Verdict {
     Verdict::Refuse(Refusal {
         action,
         purl: format!("pkg:{}/{}@{}", facts.ecosystem, facts.name, facts.version),
-        reasons: decision.reasons().iter().map(|r| reason(r)).collect(),
+        reasons: decision
+            .reasons()
+            .iter()
+            .map(|r| reason(r, facts))
+            .collect(),
     })
 }
 
 /// One check's answer, in a line a person can act on.
-fn reason(result: &super::decide::Result) -> String {
+fn reason(result: &super::decide::Result, facts: &Facts) -> String {
     let name = result.check.as_str();
     match (&result.check, &result.outcome) {
+        // The publisher's own words for why the release was withdrawn, when they gave any.
+        (Check::Yanked, _) => match facts.yanked.as_deref() {
+            Some(reason) if !reason.is_empty() => format!("{name}: withdrawn, {reason}"),
+            _ => format!("{name}: withdrawn by the registry"),
+        },
         (Check::Denials, _) => format!("{name}: this exact version is denied"),
         (Check::KnownMalware, _) => format!("{name}: reported as malware"),
         (Check::CooldownDays, _) => {
