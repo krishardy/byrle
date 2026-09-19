@@ -185,8 +185,8 @@ digests. On npm the filename is the same fact said twice, except for the 38 meas
 tarballs whose filename spells the version differently from the packument.
 
 The names are `Metadata` and `Artifact` rather than `Packument` and `Tarball`, which are
-npm's words. `WAHAROA_DEFER_TEST` keeps its `packument` and `tarball` scope strings: they
-are a debug-only knob's parsed input, and `make retry-matrix` is written against them.
+npm's words. `WAHAROA_DEFER_TEST`'s scope strings followed on 2026-09-19, to `metadata` and
+`artifact`, when `make retry-matrix` added pip and uv.
 
 `proxy::handle` still calls `npm::classify_path` alone. Routing between the two is the next
 commit; this one is the type they both produce.

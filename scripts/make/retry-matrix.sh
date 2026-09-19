@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# What each package manager does when the proxy defers a request.
+# What each package manager does when the proxy defers a request: npm, pnpm, yarn 1,
+# yarn 4 and bun installing from npm, and pip and uv installing from PyPI.
 #
 # §5 defers rather than refuses when the proxy is not ready to answer: warming, or an
 # artifact still under analysis. Which status code says that is an open decision, and it
@@ -26,11 +27,18 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/make/lib/node.sh
 . "$repo_root/scripts/make/lib/node.sh"
+# shellcheck source=scripts/make/lib/python.sh
+. "$repo_root/scripts/make/lib/python.sh"
 waharoa_use_latest_node
 
 port="${WAHAROA_PORT:-8733}"
 registry="http://127.0.0.1:${port}/"
+index="http://127.0.0.1:${port}/simple/"
 package="${WAHAROA_RETRY_PACKAGE:-lodash}"
+# One wheel and no dependencies, so every deferred request is the one being measured.
+pypi_package="${WAHAROA_RETRY_PYPI_PACKAGE:-idna}"
+npm_clients=(npm pnpm yarn yarn-berry bun)
+pypi_clients=(pip uv)
 # How long a bounded deferral lasts. Long enough that a client which gives up straight
 # away is not credited with waiting, short enough to run five clients through it.
 bounded_seconds="${WAHAROA_RETRY_BOUNDED_SECONDS:-8}"
@@ -94,6 +102,16 @@ unsafeHttpWhitelist:
 YML
 }
 
+# A venv for pip or uv to install into, made before the proxy starts so the timing is the
+# install's alone.
+prepare_python() {
+    local client="$1" dir="$2"
+    case "$client" in
+        pip) python3 -m venv "$dir/venv" >/dev/null 2>&1 ;;
+        uv) uv venv -q "$dir/venv" >/dev/null 2>&1 ;;
+    esac
+}
+
 # The install command for one client, into a cache directory nothing else shares.
 client_command() {
     local client="$1" dir="$2"
@@ -114,12 +132,15 @@ client_command() {
         yarn-berry) printf '%s\n' env "PATH=$workdir/shims:$PATH" \
             COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "YARN_NPM_REGISTRY_SERVER=${registry%/}" \
             yarn add "$package" ;;
+        pip) waharoa_pip_command "$dir/venv" "$index" "$pypi_package" ;;
+        uv) waharoa_uv_command "$dir/venv" "$index" "$pypi_package" ;;
     esac
 }
 
 runner_for() {
     case "$1" in
         yarn-berry) echo corepack ;;
+        pip) echo python3 ;;
         *) echo "$1" ;;
     esac
 }
@@ -138,6 +159,10 @@ run_cell() {
     printf '{"name":"waharoa-retry","version":"1.0.0","private":true}\n' >"$dir/package.json"
     if [[ "$client" == "yarn-berry" ]] && ! prepare_yarn_berry "$dir"; then
         printf '  %-11s needs corepack and node 18 or later, skipped\n' "$client"
+        return 0
+    fi
+    if [[ "$client" == pip || "$client" == uv ]] && ! prepare_python "$client" "$dir"; then
+        printf '  %-11s could not create a venv, skipped\n' "$client"
         return 0
     fi
 
@@ -172,15 +197,16 @@ run_cell() {
     fi
 }
 
-echo "==> deferral matrix: ${package} through the proxy, 5 clients"
+clients=("${npm_clients[@]}" "${pypi_clients[@]}")
+echo "==> deferral matrix: ${package} from npm and ${pypi_package} from PyPI through the proxy, ${#clients[@]} clients"
 echo "    Retry-After is 1 second throughout. Gaps are the seconds between the attempts"
 echo "    the proxy saw, so a client that honours the header shows gaps near 1."
 echo
 
-for scope in packument tarball; do
+for scope in metadata artifact; do
     for status in 429 503; do
         echo "--- ${status} on the ${scope}, never lifting (measures the retry budget)"
-        for client in npm pnpm yarn yarn-berry bun; do
+        for client in "${clients[@]}"; do
             run_cell "$client" "${status}:1:${scope}" "unbounded-${status}-${scope}"
         done
         echo
@@ -188,7 +214,7 @@ for scope in packument tarball; do
 done
 
 echo "--- 503 on everything, lifting after ${bounded_seconds}s (measures whether a warm-up is waited out)"
-for client in npm pnpm yarn yarn-berry bun; do
+for client in "${clients[@]}"; do
     run_cell "$client" "503:1:all:${bounded_seconds}" "bounded-${client}"
 done
 echo
@@ -205,4 +231,5 @@ Reading this:
             somewhere the proxy did not see.
   ua        the user-agent the proxy saw, which is the key a per-client code table
             would use. yarn 4 sends `got`, not `yarn`.
+  metadata  an npm packument or a PyPI index; artifact, an npm tarball or a PyPI file.
 NOTE

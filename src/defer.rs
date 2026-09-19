@@ -19,10 +19,12 @@ use std::time::Duration;
 /// Which requests a deferral applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// Packument requests. §5's "we are not ready, all requests" case.
-    Packument,
-    /// Tarball requests. §5's "this one artifact is under analysis" case.
-    Tarball,
+    /// Metadata requests: an npm packument, a PyPI index. §5's "we are not ready, all
+    /// requests" case.
+    Metadata,
+    /// Artifact requests: an npm tarball, a PyPI file. §5's "this one artifact is under
+    /// analysis" case.
+    Artifact,
     /// Both.
     All,
 }
@@ -34,8 +36,8 @@ impl Scope {
             (
                 Self::All,
                 RequestTarget::Metadata(_) | RequestTarget::Artifact { .. }
-            ) | (Self::Packument, RequestTarget::Metadata(_))
-                | (Self::Tarball, RequestTarget::Artifact { .. })
+            ) | (Self::Metadata, RequestTarget::Metadata(_))
+                | (Self::Artifact, RequestTarget::Artifact { .. })
         )
     }
 }
@@ -71,7 +73,7 @@ impl std::fmt::Display for SpecError {
             Self::Fields(n) => write!(f, "expected 3 colon-separated fields, found {n}"),
             Self::Status(s) => write!(f, "`{s}` is not a status in 400..=599"),
             Self::RetryAfter(s) => write!(f, "`{s}` is not a number of seconds, or `none`"),
-            Self::Scope(s) => write!(f, "`{s}` is not `packument`, `tarball` or `all`"),
+            Self::Scope(s) => write!(f, "`{s}` is not `metadata`, `artifact` or `all`"),
             Self::Duration(s) => write!(f, "`{s}` is not a number of seconds"),
         }
     }
@@ -80,9 +82,9 @@ impl std::fmt::Display for SpecError {
 impl std::error::Error for SpecError {}
 
 impl DeferTest {
-    /// Parse `<status>:<retry-after seconds|none>:<packument|tarball|all>[:<seconds>]`.
+    /// Parse `<status>:<retry-after seconds|none>:<metadata|artifact|all>[:<seconds>]`.
     ///
-    /// Examples: `429:1:tarball` defers those requests for as long as the proxy runs.
+    /// Examples: `429:1:artifact` defers those requests for as long as the proxy runs.
     /// `503:1:all:5` defers everything for the first five seconds and then serves.
     pub fn parse(spec: &str) -> Result<Self, SpecError> {
         let fields: Vec<&str> = spec.split(':').map(str::trim).collect();
@@ -110,8 +112,8 @@ impl DeferTest {
         };
 
         let scope = match *scope {
-            "packument" => Scope::Packument,
-            "tarball" => Scope::Tarball,
+            "metadata" => Scope::Metadata,
+            "artifact" => Scope::Artifact,
             "all" => Scope::All,
             other => return Err(SpecError::Scope(other.to_owned())),
         };
@@ -174,7 +176,7 @@ mod proofs {
     use super::*;
     use crate::identity::PackageKey;
 
-    const SCOPES: [Scope; 3] = [Scope::Packument, Scope::Tarball, Scope::All];
+    const SCOPES: [Scope; 3] = [Scope::Metadata, Scope::Artifact, Scope::All];
 
     /// A target in scope for something, so the time comparison is what decides rather
     /// than `Scope::covers` short-circuiting every case to `None`.
@@ -255,11 +257,11 @@ mod tests {
         PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap()
     }
 
-    fn packument() -> RequestTarget {
+    fn metadata() -> RequestTarget {
         RequestTarget::Metadata(key())
     }
 
-    fn tarball() -> RequestTarget {
+    fn artifact() -> RequestTarget {
         RequestTarget::Artifact {
             key: key(),
             claimed_version: "4.17.21".to_owned(),
@@ -271,9 +273,9 @@ mod tests {
 
     #[test]
     fn a_spec_names_a_status_a_delay_and_what_it_applies_to() {
-        let d = DeferTest::parse("429:1:tarball").unwrap();
-        assert_eq!(d.applies_to(&tarball(), NOW), Some((429, Some(1))));
-        assert_eq!(d.applies_to(&packument(), NOW), None);
+        let d = DeferTest::parse("429:1:artifact").unwrap();
+        assert_eq!(d.applies_to(&artifact(), NOW), Some((429, Some(1))));
+        assert_eq!(d.applies_to(&metadata(), NOW), None);
         assert_eq!(d.applies_to(&RequestTarget::Other, NOW), None);
     }
 
@@ -282,15 +284,15 @@ mod tests {
     fn a_bounded_deferral_stops_once_the_proxy_has_run_that_long() {
         let d = DeferTest::parse("503:1:all:5").unwrap();
         assert_eq!(
-            d.applies_to(&packument(), Duration::ZERO),
+            d.applies_to(&metadata(), Duration::ZERO),
             Some((503, Some(1)))
         );
         assert_eq!(
-            d.applies_to(&packument(), Duration::from_millis(4_999)),
+            d.applies_to(&metadata(), Duration::from_millis(4_999)),
             Some((503, Some(1)))
         );
-        assert_eq!(d.applies_to(&packument(), Duration::from_secs(5)), None);
-        assert_eq!(d.applies_to(&packument(), Duration::from_secs(600)), None);
+        assert_eq!(d.applies_to(&metadata(), Duration::from_secs(5)), None);
+        assert_eq!(d.applies_to(&metadata(), Duration::from_secs(600)), None);
     }
 
     /// Without a duration it never stops, which is what measures a retry budget.
@@ -298,24 +300,24 @@ mod tests {
     fn an_unbounded_deferral_still_applies_after_a_long_run() {
         let d = DeferTest::parse("429:1:all").unwrap();
         assert_eq!(
-            d.applies_to(&tarball(), Duration::from_secs(86_400)),
+            d.applies_to(&artifact(), Duration::from_secs(86_400)),
             Some((429, Some(1)))
         );
     }
 
     #[test]
     fn retry_after_can_be_left_off_so_the_code_is_measured_alone() {
-        for spec in ["503:none:packument", "503:-:packument", "503::packument"] {
+        for spec in ["503:none:metadata", "503:-:metadata", "503::metadata"] {
             let d = DeferTest::parse(spec).unwrap();
-            assert_eq!(d.applies_to(&packument(), NOW), Some((503, None)), "{spec}");
+            assert_eq!(d.applies_to(&metadata(), NOW), Some((503, None)), "{spec}");
         }
     }
 
     #[test]
     fn all_covers_both_kinds_but_not_paths_this_does_not_classify() {
         let d = DeferTest::parse("503:2:all").unwrap();
-        assert_eq!(d.applies_to(&packument(), NOW), Some((503, Some(2))));
-        assert_eq!(d.applies_to(&tarball(), NOW), Some((503, Some(2))));
+        assert_eq!(d.applies_to(&metadata(), NOW), Some((503, Some(2))));
+        assert_eq!(d.applies_to(&artifact(), NOW), Some((503, Some(2))));
         assert_eq!(d.applies_to(&RequestTarget::Other, NOW), None);
     }
 
@@ -362,8 +364,8 @@ mod tests {
     #[test]
     fn the_startup_log_says_what_is_on() {
         assert_eq!(
-            DeferTest::parse("429:1:tarball").unwrap().to_string(),
-            "429 with 1s on Tarball, until the proxy stops"
+            DeferTest::parse("429:1:artifact").unwrap().to_string(),
+            "429 with 1s on Artifact, until the proxy stops"
         );
         assert_eq!(
             DeferTest::parse("503:none:all:5").unwrap().to_string(),

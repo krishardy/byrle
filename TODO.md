@@ -439,7 +439,6 @@ That is the failure mode every item below should be brought to.
       |---|---|
       | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher`. `PyPI/all.zip` on 2026-09-18: 7,253 `PYSEC-`, 491 with no `GHSA-` counterpart; the PyPA database's licence is not in `advisory-stream-licences.md`. Belongs with step 4 |
       | `policy/selector.rs` `decompose` | rejoins `namespace/name`, repeating `PackageKey::registry_name`; it cannot call `PackageKey` as is, because it takes any purl type and an optional version |
-      | `defer.rs` | `Scope::{Packument, Tarball}` names generic targets in npm's words |
 
       Fixed 2026-09-18: a simple index goes through `intel_for` and
       `policy_refused_versions`, and `pypi::rewrite::rewrite_index` removes refused versions
@@ -466,6 +465,8 @@ That is the failure mode every item below should be brought to.
       `record.rs` stays as it is: `DocumentDetail` says whether the document held everything
       the registry publishes, which holds for both, and `Provenance`'s PyPI shape waits for
       PEP 740 in the provenance item below;
+      `defer::Scope` is `Metadata` and `Artifact`, and `make retry-matrix` measures pip and
+      uv beside the npm clients;
       the startup log's setup lines come from `Registry::setup`;
       `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
       constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.
