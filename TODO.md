@@ -557,6 +557,15 @@ That is the failure mode every item below should be brought to.
       A decision reachable only through a socket is a decision `cargo mutants` cannot reach
       either. Extracting each one as a function is what made them measurable, and the same
       move is available for the rest of the pipeline.
+      - [x] Headers sent upstream: 7 socket tests are one table test over `negotiate` and
+            `upstream_headers`, `what_each_request_sends_upstream`. Every mutant of the two
+            functions is caught by the unit tests alone.
+      - [ ] Decisions: the policy, intel and origin tests assert on `decide_artifact` or
+            `filtered_document`, which a test can now call directly.
+      - [ ] What stays on sockets: tests of how `handle` wires the pieces to real HTTP (a
+            502, an oversized body, status passthrough, streaming verification). reqwest
+            makes real requests, so these need an upstream to answer them.
+      2026-09-20: 52 of 76 tests bind a port.
 
 - [x] **The cache budgets are counted in units that no longer predict memory.**
       Measured per record with `examples/record_memory.rs`: 906 to 959 bytes for npm, 1,115
