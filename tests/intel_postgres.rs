@@ -358,7 +358,7 @@ async fn a_row_becomes_a_finding_carrying_its_source_and_score() {
     insert(
         &intel,
         "INSERT INTO advisory (publisher_id, source, cvss, cvss_source, exploited) \
-         VALUES ('CVE-1', 'osv', 7.5, 'nvd', TRUE); \
+         VALUES ('CVE-1', 'osv/npm', 7.5, 'nvd', TRUE); \
          INSERT INTO advisory_affected (advisory_id, ecosystem, name, version) \
          SELECT id, 'npm', 'q', '1.0.0' FROM advisory WHERE publisher_id = 'CVE-1'",
     )
@@ -367,7 +367,7 @@ async fn a_row_becomes_a_finding_carrying_its_source_and_score() {
     let hit = &intel.lookup("npm", "q", "1.0.0").await.expect("query")[0];
     let finding = hit.finding();
     assert_eq!(finding.advisory_id, "CVE-1");
-    assert_eq!(finding.source, "osv");
+    assert_eq!(finding.source, "osv/npm");
     assert!(finding.exploited(), "an exploited row carries it through");
     assert_eq!(hit.score().expect("a score").source, "nvd");
 }
@@ -429,7 +429,11 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
     let (name, _) = target(&rows);
 
     let loaded = intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&rows),
+            &fetch("s1"),
+        )
         .await
         .expect("load");
     assert_eq!(
@@ -440,10 +444,10 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
             affected: 1,
             ranges: 0,
             exploited: 0,
-            snapshot: id_of(&[(osv::SOURCE, std::slice::from_ref(&rows))]),
+            snapshot: id_of(&[(osv::bundle::NPM_STREAM, std::slice::from_ref(&rows))]),
             manifest: load::manifest([(
-                osv::SOURCE,
-                load::encode(osv::SOURCE, std::slice::from_ref(&rows))
+                osv::bundle::NPM_STREAM,
+                load::encode(osv::bundle::NPM_STREAM, std::slice::from_ref(&rows))
                     .digest
                     .as_str()
             )]),
@@ -454,7 +458,7 @@ async fn a_loaded_malware_record_is_found_for_every_version() {
         let hit = intel.lookup("npm", &name, version).await.expect("query");
         assert_eq!(hit.len(), 1, "{version}");
         assert!(hit[0].malware, "{version}");
-        assert_eq!(hit[0].source, "osv");
+        assert_eq!(hit[0].source, "osv/npm");
     }
     assert_eq!(
         intel.snapshot().await.expect("query").map(|s| s.digest),
@@ -470,7 +474,11 @@ async fn a_record_listing_versions_matches_only_those() {
     let version = version.expect("this fixture lists versions");
 
     let loaded = intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&rows),
+            &fetch("s1"),
+        )
         .await
         .expect("load");
     assert_eq!((loaded.aliases, loaded.affected), (1, 4));
@@ -499,11 +507,19 @@ async fn a_refresh_replaces_what_the_source_held() {
     let (gone, kept) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
 
     intel
-        .replace_source(osv::SOURCE, &[gone.clone(), kept.clone()], &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            &[gone.clone(), kept.clone()],
+            &fetch("s1"),
+        )
         .await
         .expect("first load");
     intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&kept), &fetch("s2"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&kept),
+            &fetch("s2"),
+        )
         .await
         .expect("second load");
 
@@ -526,7 +542,10 @@ async fn a_refresh_replaces_what_the_source_held() {
     );
     assert_eq!(
         intel.snapshot().await.expect("query").map(|s| s.digest),
-        Some(id_of(&[(osv::SOURCE, std::slice::from_ref(&kept))]))
+        Some(id_of(&[(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&kept)
+        )]))
     );
 }
 
@@ -537,11 +556,19 @@ async fn a_failed_refresh_leaves_the_previous_load_in_place() {
     let (first, second) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
 
     intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&first), &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&first),
+            &fetch("s1"),
+        )
         .await
         .expect("first load");
     let error = intel
-        .replace_source(osv::SOURCE, &[second.clone(), second.clone()], &fetch("s2"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            &[second.clone(), second.clone()],
+            &fetch("s2"),
+        )
         .await
         .expect_err("a duplicate advisory id should fail the load")
         .to_string();
@@ -569,7 +596,10 @@ async fn a_failed_refresh_leaves_the_previous_load_in_place() {
     );
     assert_eq!(
         intel.snapshot().await.expect("query").map(|s| s.digest),
-        Some(id_of(&[(osv::SOURCE, std::slice::from_ref(&first))]))
+        Some(id_of(&[(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&first)
+        )]))
     );
 }
 
@@ -582,7 +612,11 @@ async fn the_same_rows_loaded_twice_are_one_snapshot() {
 
     for tag in ["s1", "s2"] {
         intel
-            .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &fetch(tag))
+            .replace_source(
+                osv::bundle::NPM_STREAM,
+                std::slice::from_ref(&rows),
+                &fetch(tag),
+            )
             .await
             .expect("load");
     }
@@ -595,7 +629,7 @@ async fn the_same_rows_loaded_twice_are_one_snapshot() {
         .expect("a snapshot is loaded");
     assert_eq!(
         reported.digest,
-        id_of(&[(osv::SOURCE, std::slice::from_ref(&rows))])
+        id_of(&[(osv::bundle::NPM_STREAM, std::slice::from_ref(&rows))])
     );
     assert_eq!(reported.taken_at, fetch("s2").taken_at);
     assert_eq!(reported.streams, fetch("s2").streams);
@@ -609,11 +643,15 @@ async fn different_rows_from_one_bundle_are_different_snapshots() {
     let (a, b) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
 
     let both = intel
-        .replace_source(osv::SOURCE, &[a.clone(), b], &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &[a.clone(), b], &fetch("s1"))
         .await
         .expect("load");
     let one = intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&a), &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&a),
+            &fetch("s1"),
+        )
         .await
         .expect("load");
 
@@ -625,13 +663,16 @@ async fn different_rows_from_one_bundle_are_different_snapshots() {
 async fn the_snapshot_id_covers_every_source_in_the_store() {
     let intel = skip_without_database!("t_load_sources");
     let (ours, theirs) = ([osv_fixture("MAL-2021-1")], [osv_fixture("MAL-2022-174")]);
-    let both = id_of(&[(osv::SOURCE, &ours[..]), ("other", &theirs[..])]);
+    let both = id_of(&[(osv::bundle::NPM_STREAM, &ours[..]), ("other", &theirs[..])]);
 
     let first = intel
-        .replace_source(osv::SOURCE, &ours, &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &ours, &fetch("s1"))
         .await
         .expect("load");
-    assert_eq!(first.snapshot, id_of(&[(osv::SOURCE, &ours[..])]));
+    assert_eq!(
+        first.snapshot,
+        id_of(&[(osv::bundle::NPM_STREAM, &ours[..])])
+    );
 
     let second = intel
         .replace_source("other", &theirs, &fetch("s2"))
@@ -649,7 +690,7 @@ async fn the_snapshot_id_covers_every_source_in_the_store() {
 
     // One source reloaded with the same rows: still both.
     let third = intel
-        .replace_source(osv::SOURCE, &ours, &fetch("s3"))
+        .replace_source(osv::bundle::NPM_STREAM, &ours, &fetch("s3"))
         .await
         .expect("load");
     assert_eq!(third.snapshot, both);
@@ -675,7 +716,11 @@ async fn a_refresh_waits_for_another_sources_uncommitted_digest() {
     let rows = [osv_fixture("MAL-2021-1")];
     let refresh = {
         let (intel, rows) = (intel.clone(), rows.clone());
-        tokio::spawn(async move { intel.replace_source(osv::SOURCE, &rows, &fetch("s1")).await })
+        tokio::spawn(async move {
+            intel
+                .replace_source(osv::bundle::NPM_STREAM, &rows, &fetch("s1"))
+                .await
+        })
     };
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     assert!(
@@ -685,11 +730,11 @@ async fn a_refresh_waits_for_another_sources_uncommitted_digest() {
 
     tx.commit().await.expect("commit");
     let loaded = refresh.await.expect("joined").expect("load");
-    let ours = load::encode(osv::SOURCE, &rows).digest;
+    let ours = load::encode(osv::bundle::NPM_STREAM, &rows).digest;
     assert_eq!(
         loaded.snapshot,
         load::snapshot_id(&load::manifest([
-            (osv::SOURCE, ours.as_str()),
+            (osv::bundle::NPM_STREAM, ours.as_str()),
             ("other", "sha256:other")
         ]))
     );
@@ -707,7 +752,7 @@ async fn a_refresh_leaves_other_sources_alone() {
     .await;
 
     intel
-        .replace_source(osv::SOURCE, &[], &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &[], &fetch("s1"))
         .await
         .expect("empty load");
 
@@ -738,7 +783,7 @@ async fn text_copy_treats_specially_round_trips() {
     ];
 
     intel
-        .replace_source(osv::SOURCE, &rows, &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &rows, &fetch("s1"))
         .await
         .expect("load");
 
@@ -777,7 +822,7 @@ async fn a_load_larger_than_one_copy_chunk_arrives_whole() {
         .collect();
 
     let loaded = intel
-        .replace_source(osv::SOURCE, &rows, &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &rows, &fetch("s1"))
         .await
         .expect("load");
     assert_eq!((loaded.advisories, loaded.affected), (3000, 3000));
@@ -805,7 +850,11 @@ async fn a_loaded_store_answers_every_version_row_for_a_package() {
     let intel = skip_without_database!("t_package_loaded");
     let (every, listed) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
     let loaded = intel
-        .replace_source(osv::SOURCE, &[every.clone(), listed.clone()], &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            &[every.clone(), listed.clone()],
+            &fetch("s1"),
+        )
         .await
         .expect("load");
 
@@ -841,7 +890,11 @@ async fn a_loaded_store_answers_every_version_row_for_a_package() {
 async fn a_package_nothing_is_known_against_still_names_the_snapshot() {
     let intel = skip_without_database!("t_package_unknown");
     let loaded = intel
-        .replace_source(osv::SOURCE, &[osv_fixture("MAL-2021-1")], &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            &[osv_fixture("MAL-2021-1")],
+            &fetch("s1"),
+        )
         .await
         .expect("load");
 
@@ -865,7 +918,7 @@ async fn a_package_named_by_two_sources_answers_both() {
         "the fixture this test is written against"
     );
     intel
-        .replace_source(osv::SOURCE, &[malware], &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &[malware], &fetch("s1"))
         .await
         .expect("load");
     insert(
@@ -896,7 +949,11 @@ async fn a_loaded_range_is_found_for_the_versions_inside_it() {
     let intel = skip_without_database!("t_range_open");
     let rows = osv_fixture("MAL-2022-219");
     let loaded = intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&rows), &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&rows),
+            &fetch("s1"),
+        )
         .await
         .expect("load");
     assert_eq!((loaded.affected, loaded.ranges), (0, 1));
@@ -927,7 +984,11 @@ async fn a_loaded_range_is_found_for_the_versions_inside_it() {
 async fn a_version_published_into_a_range_after_the_list_was_written_is_found() {
     let intel = skip_without_database!("t_range_and_list");
     intel
-        .replace_source(osv::SOURCE, &[osv_fixture("MAL-2025-3661")], &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            &[osv_fixture("MAL-2025-3661")],
+            &fetch("s1"),
+        )
         .await
         .expect("load");
 
@@ -969,7 +1030,7 @@ async fn a_vulnerability_record_loads_with_its_score_and_aliases() {
         panic!("should be stored");
     };
     let loaded = intel
-        .replace_source(osv::SOURCE, &[*rows], &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &[*rows], &fetch("s1"))
         .await
         .expect("load");
     assert_eq!((loaded.aliases, loaded.ranges), (2, 2));
@@ -1122,11 +1183,11 @@ async fn every_stream_a_refresh_tried_is_appended_to_the_history() {
     assert!(intel.history(10).await.expect("reads").is_empty());
 
     let rows = [osv_fixture("MAL-2021-1")];
-    let encoded = load::encode(osv::SOURCE, &rows);
+    let encoded = load::encode(osv::bundle::NPM_STREAM, &rows);
     let s1 = fetch("s1");
     let refused = NotLoaded {
-        source: kev::SOURCE.to_owned(),
-        stream: kev::SOURCE.to_owned(),
+        source: kev::STREAM.to_owned(),
+        stream: kev::STREAM.to_owned(),
         bundle: None,
         error: "fetching: refused".to_owned(),
     };
@@ -1146,7 +1207,7 @@ async fn every_stream_a_refresh_tried_is_appended_to_the_history() {
         Ingestion::not_loaded(&s1.taken_at, &refused, Some(&loaded.snapshot)),
         Ingestion::loaded(
             &s1.taken_at,
-            osv::SOURCE,
+            osv::bundle::NPM_STREAM,
             &s1.streams[0],
             &encoded.digest,
             &loaded.snapshot,
@@ -1159,14 +1220,14 @@ async fn every_stream_a_refresh_tried_is_appended_to_the_history() {
         ..rows[0].clone()
     };
     intel
-        .replace_source(osv::SOURCE, &[long], &fetch("s2"))
+        .replace_source(osv::bundle::NPM_STREAM, &[long], &fetch("s2"))
         .await
         .expect_err("a value longer than its column");
     assert_eq!(intel.history(10).await.expect("reads"), first);
 
     let s3 = fetch("s3");
     let unread = NotLoaded {
-        source: osv::SOURCE.to_owned(),
+        source: osv::bundle::NPM_STREAM.to_owned(),
         stream: s3.streams[0].stream.clone(),
         bundle: Some(s3.streams[0].clone()),
         error: "a record did not read".to_owned(),
@@ -1201,7 +1262,11 @@ async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
     let intel = skip_without_database!("t_too_long");
     let first = osv_fixture("MAL-2021-1");
     intel
-        .replace_source(osv::SOURCE, std::slice::from_ref(&first), &fetch("s1"))
+        .replace_source(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&first),
+            &fetch("s1"),
+        )
         .await
         .expect("first load");
 
@@ -1215,7 +1280,7 @@ async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
         ..osv_fixture("MAL-2022-174")
     };
     let error = intel
-        .replace_source(osv::SOURCE, &[long], &fetch("s2"))
+        .replace_source(osv::bundle::NPM_STREAM, &[long], &fetch("s2"))
         .await
         .expect_err("a 513-character name should fail the load")
         .to_string();
@@ -1236,7 +1301,10 @@ async fn a_value_longer_than_its_column_fails_the_load_and_names_the_column() {
     );
     assert_eq!(
         intel.snapshot().await.expect("query").map(|s| s.digest),
-        Some(id_of(&[(osv::SOURCE, std::slice::from_ref(&first))]))
+        Some(id_of(&[(
+            osv::bundle::NPM_STREAM,
+            std::slice::from_ref(&first)
+        )]))
     );
 }
 
@@ -1249,7 +1317,7 @@ async fn timestamps_written_as_rfc_3339_are_stored_as_timestamps() {
         ..osv_fixture("MAL-2021-1")
     };
     intel
-        .replace_source(osv::SOURCE, &[rows], &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &[rows], &fetch("s1"))
         .await
         .expect("load");
 
@@ -1280,7 +1348,7 @@ async fn a_stored_score_prints_as_the_encoding_wrote_it() {
         })
         .collect();
     intel
-        .replace_source(osv::SOURCE, &rows, &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &rows, &fetch("s1"))
         .await
         .expect("load");
 
@@ -1310,15 +1378,15 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
             ..osv_fixture("MAL-2022-174")
         },
     ];
-    let encoded = load::encode(osv::SOURCE, &rows);
-    let exploited = load::encode_exploited(kev::SOURCE, &["CVE-2099-1".to_owned()].into());
+    let encoded = load::encode(osv::bundle::NPM_STREAM, &rows);
+    let exploited = load::encode_exploited(kev::STREAM, &["CVE-2099-1".to_owned()].into());
     // A second advisory source, on packages OSV's records also affect.
     let (every, _) = target(&rows[0]);
     let (listed, _) = target(&rows[1]);
     let manifest =
         datadog::parse(format!(r#"{{"{every}": null, "{listed}": ["1.0"]}}"#).as_bytes())
             .expect("parses");
-    let flagged = load::encode(datadog::SOURCE, &manifest);
+    let flagged = load::encode(datadog::STREAM, &manifest);
     let s1 = fetch("s1");
     let loaded = intel
         .replace(
@@ -1385,7 +1453,7 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         datadog_records += from_postgres
             .iter()
             .flat_map(|p| &p.records)
-            .filter(|(_, r)| r.source == datadog::SOURCE && r.malware)
+            .filter(|(_, r)| r.source == datadog::STREAM && r.malware)
             .count();
         let from_files = kept.package("npm", name).await.expect("answers");
         assert_eq!(from_files.map(sorted), from_postgres.map(sorted), "{name}");
@@ -1459,7 +1527,7 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
     };
 
     intel
-        .replace_source(osv::SOURCE, &rows, &fetch("s1"))
+        .replace_source(osv::bundle::NPM_STREAM, &rows, &fetch("s1"))
         .await
         .expect("load");
     assert_eq!(
@@ -1471,11 +1539,11 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         .map(str::to_owned)
         .into();
     let (osv_rows, exploited) = (
-        load::encode(osv::SOURCE, &rows),
-        load::encode_exploited(kev::SOURCE, &catalogue),
+        load::encode(osv::bundle::NPM_STREAM, &rows),
+        load::encode_exploited(kev::STREAM, &catalogue),
     );
     let kev_streams = [StreamDigest {
-        stream: kev::SOURCE.to_owned(),
+        stream: kev::STREAM.to_owned(),
         sha256: "kev".to_owned(),
         etag: None,
         last_modified: None,
@@ -1509,8 +1577,8 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
     assert_eq!(
         loaded.manifest,
         load::manifest([
-            (osv::SOURCE, osv_rows.digest.as_str()),
-            (kev::SOURCE, exploited.digest.as_str()),
+            (osv::bundle::NPM_STREAM, osv_rows.digest.as_str()),
+            (kev::STREAM, exploited.digest.as_str()),
         ])
     );
     assert_eq!(
@@ -1518,16 +1586,16 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         (true, marked([true, true, false]))
     );
     let snapshot = intel.snapshot().await.expect("query").expect("loaded");
-    assert_eq!(snapshot.sources, [kev::SOURCE, osv::SOURCE]);
+    assert_eq!(snapshot.sources, [kev::STREAM, osv::bundle::NPM_STREAM]);
     assert!(snapshot.exploitation_loaded());
     assert!(
-        snapshot.streams.iter().any(|s| s.stream == kev::SOURCE),
+        snapshot.streams.iter().any(|s| s.stream == kev::STREAM),
         "{:?}",
         snapshot.streams
     );
 
     let reloaded = intel
-        .replace_source(osv::SOURCE, &rows, &fetch("s3"))
+        .replace_source(osv::bundle::NPM_STREAM, &rows, &fetch("s3"))
         .await
         .expect("load");
     assert_eq!(reloaded.exploited, 0);
@@ -1537,7 +1605,7 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         (true, marked([true, true, false]))
     );
 
-    let smaller = load::encode_exploited(kev::SOURCE, &["CVE-2099-3".to_owned()].into());
+    let smaller = load::encode_exploited(kev::STREAM, &["CVE-2099-3".to_owned()].into());
     let replaced = intel
         .replace(&kev_only(&smaller), &[], &fetch("s4").taken_at)
         .await

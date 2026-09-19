@@ -12,9 +12,6 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const MANIFEST: &str = "https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json";
 
-/// The source the records are stored under.
-pub const SOURCE: &str = "datadog";
-
 /// The stream a snapshot records the manifest under.
 pub const STREAM: &str = "datadog/npm";
 

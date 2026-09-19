@@ -35,9 +35,6 @@ use crate::intel::rows::{Affected, Ranged, Rows, band_ceiling};
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The `source` every row from this module is stored under.
-pub const SOURCE: &str = "osv";
-
 const NPM: &str = crate::identity::Ecosystem::Npm.as_str();
 
 /// How npm's versions order, which every range here is read by.

@@ -201,7 +201,7 @@ impl LoadedSnapshot {
     pub fn exploitation_loaded(&self) -> bool {
         self.sources
             .iter()
-            .any(|source| source == crate::intel::providers::kev::SOURCE)
+            .any(|source| source == crate::intel::providers::kev::STREAM)
     }
 
     /// Each served ecosystem no stream in this snapshot can originate a finding for, then

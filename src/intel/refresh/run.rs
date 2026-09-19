@@ -121,8 +121,8 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: 
 
     let read = fetch::read_streams(&http, stream::ALL, github_token.as_deref(), notice).await;
     let (loaded, not_loaded) = (read.loaded, read.not_loaded);
-    if let Some(error) = read.stopped {
-        notice(&format!("nothing loaded: {error}"));
+    if loaded.is_empty() {
+        notice("nothing loaded: no stream loaded");
         return nothing_loaded(&intel, &not_loaded, notice).await;
     }
 

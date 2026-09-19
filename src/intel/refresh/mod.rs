@@ -98,8 +98,8 @@ pub fn report(
             .map(|l| l.payload.rows())
     };
     if let (Some(osv_rows), Some(datadog_rows)) = (
-        rows_of(super::providers::osv::SOURCE),
-        rows_of(super::providers::datadog::SOURCE),
+        rows_of(super::providers::osv::bundle::NPM_STREAM),
+        rows_of(super::providers::datadog::STREAM),
     ) {
         let disagreements = super::providers::datadog::disagreements(osv_rows, datadog_rows);
         for disagreement in &disagreements {
@@ -266,8 +266,8 @@ mod tests {
         };
         let printed = report(
             &[
-                loaded(osv::SOURCE, rows("MAL-1", Some("1.0.0"), true)),
-                loaded(datadog::SOURCE, rows("DATADOG-npm-left-pad", None, true)),
+                loaded(osv::bundle::NPM_STREAM, rows("MAL-1", Some("1.0.0"), true)),
+                loaded(datadog::STREAM, rows("DATADOG-npm-left-pad", None, true)),
             ],
             &written,
             None,

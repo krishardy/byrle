@@ -321,7 +321,7 @@ mod tests {
             "intel-kev",
             &[
                 load::encode("osv", &[by_alias, by_id, unlisted]),
-                load::encode_exploited(kev::SOURCE, &catalogue),
+                load::encode_exploited(kev::STREAM, &catalogue),
             ],
         );
         let intel = SnapshotIntel::read(&dir, &id, npm(&["jquery", "lodash"])).expect("reads");

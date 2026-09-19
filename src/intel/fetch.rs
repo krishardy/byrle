@@ -9,7 +9,7 @@
 use super::history::NotLoaded;
 use super::providers::osv::bundle::Tally;
 use super::refresh::{ATTEMPTS, FetchFailure, RETRY_WAIT, StreamDigest, retried, sha256_hex};
-use super::stream::{Payload, Requirement, Stream, Transport};
+use super::stream::{Payload, Stream, Transport};
 
 /// Where a fetch's progress lines go.
 pub type Notice<'a> = &'a dyn Fn(&str);
@@ -137,15 +137,12 @@ pub struct Loaded {
 pub struct Read {
     pub loaded: Vec<Loaded>,
     pub not_loaded: Vec<NotLoaded>,
-    /// Why nothing is written: a [`Requirement::Required`] stream did not load. The streams
-    /// after it are not fetched.
-    pub stopped: Option<String>,
 }
 
 /// Fetch and parse each stream in `streams`, in order.
 ///
-/// A stream that does not load is one [`NotLoaded`]; whether the rest still load is its
-/// [`Requirement`]. One stream's bytes are freed before the next is fetched.
+/// A stream that does not load is one [`NotLoaded`], and the rest still load. One stream's
+/// bytes are freed before the next is fetched.
 pub async fn read_streams(
     http: &reqwest::Client,
     streams: &'static [Stream],
@@ -168,29 +165,21 @@ pub async fn read_streams(
         let (parsed, bundle) = match parsed {
             Ok(parsed) => parsed,
             Err((bundle, error)) => {
+                notice(&format!(
+                    "{} is not loaded, and its last load stays: {error}",
+                    declared.stream
+                ));
                 read.not_loaded.push(NotLoaded {
-                    source: declared.source.to_owned(),
+                    source: declared.stream.to_owned(),
                     stream: declared.stream.to_owned(),
                     bundle,
-                    error: error.clone(),
+                    error,
                 });
-                match declared.requirement {
-                    Requirement::Required => {
-                        read.stopped = Some(error);
-                        return read;
-                    }
-                    Requirement::Optional => {
-                        notice(&format!(
-                            "{} is not loaded, and its last load stays: {error}",
-                            declared.stream
-                        ));
-                        continue;
-                    }
-                }
+                continue;
             }
         };
         read.loaded.push(Loaded {
-            source: declared.source,
+            source: declared.stream,
             payload: parsed.payload,
             tally: parsed.tally,
             streams: [bundle],
@@ -483,8 +472,8 @@ mod tests {
         assert!(!failure.again);
     }
 
-    /// A table of two streams served by one scripted server, the first `Required`.
-    fn two_streams(required_parses: bool) -> &'static [Stream] {
+    /// A table of two streams served by one scripted server.
+    fn two_streams(first_parses: bool) -> &'static [Stream] {
         fn ok(_: &[u8]) -> Result<crate::intel::stream::Parsed, String> {
             Ok(crate::intel::stream::Parsed {
                 payload: crate::intel::stream::Payload::Exploited(Default::default()),
@@ -496,16 +485,12 @@ mod tests {
         }
         Box::leak(Box::new([
             Stream {
-                source: "first",
                 stream: "first/one",
-                requirement: Requirement::Required,
-                parse: if required_parses { ok } else { unreadable },
+                parse: if first_parses { ok } else { unreadable },
                 ..crate::intel::stream::ALL[0]
             },
             Stream {
-                source: "second",
                 stream: "second/one",
-                requirement: Requirement::Optional,
                 parse: ok,
                 ..crate::intel::stream::ALL[0]
             },
@@ -534,15 +519,15 @@ mod tests {
                 .iter()
                 .map(|l| (l.source, l.streams[0].stream.as_str()))
                 .collect::<Vec<_>>(),
-            [("first", "first/one"), ("second", "second/one")]
+            [("first/one", "first/one"), ("second/one", "second/one")]
         );
-        assert!(read.not_loaded.is_empty() && read.stopped.is_none());
+        assert!(read.not_loaded.is_empty());
     }
 
-    /// A required stream that does not parse stops the read, and the streams after it are
-    /// not fetched. Its bundle is recorded, because it was fetched.
+    /// A stream that does not parse does not stop the ones after it: `osv/pypi` failing
+    /// does not hold back `osv/npm`. Its bundle is recorded, because it was fetched.
     #[tokio::test]
-    async fn a_required_stream_that_does_not_read_stops_everything() {
+    async fn a_stream_that_does_not_read_leaves_the_others_loading() {
         let addr = scripted(vec![Answer::body("{}")]).await;
         let url: &'static str = Box::leak(format!("http://{addr}/b").into_boxed_str());
         let streams: Vec<Stream> = two_streams(false)
@@ -557,18 +542,25 @@ mod tests {
             &printed.notice(),
         )
         .await;
-        assert_eq!(read.stopped.as_deref(), Some("not a bundle"));
-        assert!(read.loaded.is_empty());
+        assert_eq!(
+            read.loaded.iter().map(|l| l.source).collect::<Vec<_>>(),
+            ["second/one"]
+        );
         assert_eq!(read.not_loaded.len(), 1);
         assert_eq!(read.not_loaded[0].stream, "first/one");
+        assert_eq!(read.not_loaded[0].source, "first/one");
+        assert_eq!(read.not_loaded[0].error, "not a bundle");
         assert!(
             read.not_loaded[0].bundle.is_some(),
             "the bundle was fetched, so it is recorded"
         );
         assert_eq!(
             printed.lines(),
-            [format!("fetching {url}")],
-            "the second stream was not fetched"
+            [
+                format!("fetching {url}"),
+                "first/one is not loaded, and its last load stays: not a bundle".to_owned(),
+                format!("fetching {url}"),
+            ]
         );
     }
 
@@ -595,7 +587,6 @@ mod tests {
             &printed.notice(),
         )
         .await;
-        assert!(read.stopped.is_none());
         assert_eq!(read.loaded.len(), 1);
         assert_eq!(read.not_loaded.len(), 1);
         assert!(read.not_loaded[0].bundle.is_none(), "nothing was fetched");

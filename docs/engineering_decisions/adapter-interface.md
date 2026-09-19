@@ -119,9 +119,8 @@ A package-keyed stream's grant is `Scope::Listed`, which replaced `Scope::Only(e
 every listed stream is in `intel::stream::ALL`, and a stream is listed by one row exactly
 when a grant of its is `Listed`.
 
-`intel::stream::ALL` stays hand-written. The refresh loads it in order and stops at the
-first `Required` stream it cannot read, so its order is a property of that list rather than
-of the ecosystem table.
+`intel::stream::ALL` stays hand-written. The refresh loads it in order, and a stream that
+does not load leaves the others loading.
 
 ## What still matches on `Ecosystem`, and why
 

@@ -17,7 +17,6 @@ use serde::Deserialize;
 use crate::intel::range::{End, Interval, Start, VersionOrder, stored};
 use crate::intel::rows::{Affected, Ranged, Rows, band_ceiling};
 
-pub const SOURCE: &str = "github";
 pub const STREAM: &str = "github/npm";
 pub const ENDPOINT: &str = "https://api.github.com/graphql";
 

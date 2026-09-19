@@ -1,8 +1,12 @@
 //! What a refresh knows about each advisory stream before it fetches anything.
 //!
 //! One [`Stream`] per stream, in [`ALL`], holding the facts a refresh needs: where the
-//! bundle is, how large it may be, whether the refresh continues without it, what it may
-//! say once loaded, and how its bytes become rows.
+//! bundle is, how large it may be, what it may say once loaded, and how its bytes become
+//! rows.
+//!
+//! Each stream is its own source in the store, so one stream's load replaces its own rows
+//! and nothing else. A stream that does not load keeps its last load, and the others load
+//! without it: `osv/pypi` failing does not hold back `osv/npm`.
 //!
 //! This is the declaration side. `waharoa refresh` does the fetching, because a fetch is
 //! network I/O and everything here is decidable from the bytes alone.
@@ -15,19 +19,8 @@ use std::collections::BTreeSet;
 use super::Capability;
 use super::load::{Encoded, encode, encode_exploited};
 use super::providers::osv::bundle::{self, Tally};
-use super::providers::{datadog, github, kev, osv};
+use super::providers::{datadog, github, kev};
 use super::rows::Rows;
-
-/// Whether a refresh loads anything at all when this stream does not load.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Requirement {
-    /// A refresh that cannot load this stream loads nothing, and stops before fetching the
-    /// streams after it.
-    Required,
-    /// A refresh that cannot load this stream keeps that stream's last load, loads the
-    /// others and exits 1.
-    Optional,
-}
 
 /// The ecosystems one grant covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -99,15 +92,13 @@ pub struct Parsed {
 /// One advisory stream, as this build declares it.
 #[derive(Debug)]
 pub struct Stream {
-    /// The source a row is stored under.
-    pub source: &'static str,
-    /// The name a snapshot records the bundle under.
+    /// The name a snapshot records the bundle under, and the source its rows are stored
+    /// under.
     pub stream: &'static str,
     /// Where the bundle is fetched from.
     pub url: &'static str,
     /// Bytes past which the fetch is refused.
     pub ceiling: usize,
-    pub requirement: Requirement,
     pub transport: Transport,
     /// What this stream may say, per ecosystem.
     pub grants: &'static [Grant],
@@ -121,14 +112,11 @@ const MATCH_AND_MALWARE: &[Grant] = &[Grant {
     capabilities: &[Capability::Match, Capability::Malware],
 }];
 
-/// OSV's npm bundle. Required: it carries every vulnerability and malware record the proxy
-/// matches on, so a refresh without it would replace the store with the catalogues alone.
+/// OSV's npm bundle: every npm vulnerability and malware record OSV holds.
 pub const OSV_NPM: Stream = Stream {
-    source: osv::SOURCE,
     stream: bundle::NPM_STREAM,
     url: bundle::NPM_BUNDLE,
     ceiling: bundle::MAX_BUNDLE_BYTES,
-    requirement: Requirement::Required,
     transport: Transport::Get,
     grants: MATCH_AND_MALWARE,
     parse: |bytes| {
@@ -141,14 +129,11 @@ pub const OSV_NPM: Stream = Stream {
     },
 };
 
-/// CISA's KEV catalogue. `source` and `stream` are the same string, which snapshots and the
-/// ingestion history already record.
+/// CISA's KEV catalogue.
 const KEV: Stream = Stream {
-    source: kev::SOURCE,
-    stream: kev::SOURCE,
+    stream: kev::STREAM,
     url: kev::CATALOGUE,
     ceiling: kev::MAX_CATALOGUE_BYTES,
-    requirement: Requirement::Optional,
     transport: Transport::Get,
     grants: &[Grant {
         scope: Scope::Served,
@@ -166,11 +151,9 @@ const KEV: Stream = Stream {
 
 /// Datadog's npm manifest.
 pub const DATADOG_NPM: Stream = Stream {
-    source: datadog::SOURCE,
     stream: datadog::STREAM,
     url: datadog::MANIFEST,
     ceiling: datadog::MAX_MANIFEST_BYTES,
-    requirement: Requirement::Optional,
     transport: Transport::Get,
     grants: MATCH_AND_MALWARE,
     parse: |bytes| {
@@ -184,14 +167,12 @@ pub const DATADOG_NPM: Stream = Stream {
 };
 
 /// GitHub's Advisory Database. A signal stream beside OSV: it publishes the same `GHSA-` ids
-/// OSV imports, and `advisory` is keyed `(source, publisher_id)` so both rows exist.
-/// `Optional`, so a refresh without a token still loads the rest.
+/// OSV imports, and `advisory` is keyed `(source, publisher_id)` so both rows exist. A
+/// refresh without a token loads the rest.
 pub const GITHUB_NPM: Stream = Stream {
-    source: github::SOURCE,
     stream: github::STREAM,
     url: github::ENDPOINT,
     ceiling: github::MAX_BYTES,
-    requirement: Requirement::Optional,
     transport: Transport::GithubGraphql,
     grants: &[Grant {
         scope: Scope::Listed,
@@ -208,9 +189,6 @@ pub const GITHUB_NPM: Stream = Stream {
 };
 
 /// Every stream a refresh loads, in the order it loads them.
-///
-/// OSV is first because it is the one [`Requirement::Required`] stream: a refresh that
-/// cannot load it stops here rather than downloading the rest.
 pub const ALL: &[Stream] = &[OSV_NPM, KEV, DATADOG_NPM, GITHUB_NPM];
 
 /// The stream a snapshot records under `stream`, or `None` for one this build does not know.
@@ -227,20 +205,6 @@ mod tests {
         by_stream(stream).expect("this build declares the stream")
     }
 
-    /// The refresh loop returns on the first `Required` stream it cannot read, so a required
-    /// stream after an optional one would be reached only when the optional one was fetched
-    /// first.
-    #[test]
-    fn exactly_one_stream_is_required_and_it_is_the_first() {
-        let required: Vec<&str> = ALL
-            .iter()
-            .filter(|s| s.requirement == Requirement::Required)
-            .map(|s| s.stream)
-            .collect();
-        assert_eq!(required, [bundle::NPM_STREAM]);
-        assert_eq!(ALL[0].stream, bundle::NPM_STREAM);
-    }
-
     #[test]
     fn a_stream_this_build_does_not_declare_is_not_found() {
         assert_eq!(
@@ -251,15 +215,6 @@ mod tests {
         assert!(by_stream("osv").is_none());
     }
 
-    /// `source` is what a row is stored under and `stream` is what a snapshot records. They
-    /// are the same string for KEV, which snapshots and the ingestion history already hold.
-    #[test]
-    fn kev_stores_and_records_under_the_same_name() {
-        let kev = declared(kev::SOURCE);
-        assert_eq!(kev.source, "cisa/kev");
-        assert_eq!(kev.stream, "cisa/kev");
-    }
-
     #[test]
     fn each_stream_declares_the_url_and_ceiling_its_module_gives() {
         for (stream, url, ceiling) in [
@@ -268,7 +223,7 @@ mod tests {
                 bundle::NPM_BUNDLE,
                 bundle::MAX_BUNDLE_BYTES,
             ),
-            (kev::SOURCE, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES),
+            (kev::STREAM, kev::CATALOGUE, kev::MAX_CATALOGUE_BYTES),
             (
                 datadog::STREAM,
                 datadog::MANIFEST,
@@ -290,15 +245,15 @@ mod tests {
             parsed.tally.is_none(),
             "a manifest counts nothing for the refresh to print"
         );
-        let encoded = parsed.payload.encode(datadog::SOURCE);
+        let encoded = parsed.payload.encode(datadog::STREAM);
         assert_eq!(encoded.kind, Kind::Advisories);
-        assert_eq!(encoded.source, "datadog");
+        assert_eq!(encoded.source, "datadog/npm");
     }
 
     #[test]
     fn exploited_ids_encode_as_exploited_and_have_no_rows() {
         let catalogue = br#"{"vulnerabilities": [{"cveID": "CVE-2021-44228"}]}"#;
-        let parsed = (declared(kev::SOURCE).parse)(catalogue).expect("the catalogue parses");
+        let parsed = (declared(kev::STREAM).parse)(catalogue).expect("the catalogue parses");
         assert_eq!(
             parsed.payload,
             Payload::Exploited(BTreeSet::from(["CVE-2021-44228".to_owned()]))
@@ -307,7 +262,7 @@ mod tests {
             parsed.payload.rows().is_empty(),
             "exploited ids have no child tables"
         );
-        let encoded = parsed.payload.encode(kev::SOURCE);
+        let encoded = parsed.payload.encode(kev::STREAM);
         assert_eq!(encoded.kind, Kind::Exploited);
         assert_eq!(encoded.source, "cisa/kev");
     }
@@ -326,7 +281,10 @@ mod tests {
         assert_eq!(tally.records(), 7);
         assert_eq!(tally.withdrawn, 1);
         assert_eq!(parsed.payload.rows().len(), 6);
-        assert_eq!(parsed.payload.encode(osv::SOURCE).kind, Kind::Advisories);
+        assert_eq!(
+            parsed.payload.encode(bundle::NPM_STREAM).kind,
+            Kind::Advisories
+        );
     }
 
     /// The shim turns each module's error type into the string the refresh records as
@@ -335,7 +293,7 @@ mod tests {
     fn a_bundle_that_does_not_read_gives_the_error_as_a_string() {
         for (stream, bytes) in [
             (bundle::NPM_STREAM, &b"not a zip"[..]),
-            (kev::SOURCE, &b"not json"[..]),
+            (kev::STREAM, &b"not json"[..]),
             (datadog::STREAM, &b"not json"[..]),
         ] {
             let error = (declared(stream).parse)(bytes).expect_err("the bundle does not read");
