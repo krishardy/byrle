@@ -36,6 +36,7 @@ code, and the file names where.
 | [`doctor` checks pip and uv, and reads uv's TOML configuration](doctor-python-clients.md) | Implemented |
 | [How a request through the proxy is tied to an account](account-identification.md) | Decided |
 | [Reporting: accounts, installed dependencies and notifications](reporting-accounts-and-notifications.md) | Decided |
+| [Metadata is fetched from upstream on every request](no-metadata-cache.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

@@ -69,9 +69,9 @@ pub const DEFAULT_MAX_METADATA_BYTES: usize = 32 * 1024 * 1024;
 
 /// Default record store budget, in records rather than bytes.
 ///
-/// Roughly five installs of the size measured in `store`. A record is on the order of a few
-/// hundred bytes, so this is tens of megabytes; `RecordStore::records` reports the live
-/// count for anyone measuring it properly.
+/// Roughly five installs of the size measured in `store`. A record holds 0.9 to 1.4 KB of
+/// heap, measured by `examples/record_memory.rs`, so this is 45 to 70 MB.
+/// `RecordStore::records` reports the live count.
 pub const DEFAULT_MAX_RECORDS: usize = 50_000;
 
 /// Default verified-artifact budget, in artifacts.

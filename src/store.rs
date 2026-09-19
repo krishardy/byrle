@@ -19,10 +19,13 @@
 //! that follows it is the reason to have stored anything. The budget is a target, not a
 //! hard ceiling.
 //!
-//! The budget counts records, and a record was one artifact when it was calibrated. A PyPI
-//! record holds one artifact per file, `requests` 2.32.3 being a wheel and an sdist, so the
-//! count tracks memory less closely than it did. It is still a bound; it is no longer a
-//! proportional one.
+//! The budget counts records. A PyPI record holds one artifact per file, `requests` 2.32.3
+//! being a wheel and an sdist. `examples/record_memory.rs` measured 906 to 959 bytes of heap
+//! per npm record and 1,115 to 1,397 per PyPI record.
+//!
+//! The store never answers a metadata request: every one goes upstream. Its records are
+//! read by the artifact request that follows, for facts that do not change once a version is
+//! published. See `docs/engineering_decisions/no-metadata-cache.md`.
 
 use crate::identity::PackageKey;
 use crate::record::{PackageMetadata, PackageRecord};
