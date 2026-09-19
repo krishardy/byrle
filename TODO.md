@@ -410,6 +410,21 @@ That is the failure mode every item below should be brought to.
       omissions visible, which is why `adapter-interface.md` lists the questions that still
       match on `Ecosystem` and why each does. Three remain after step 2.
 
+      Step 4's parts:
+
+      - [ ] OSV `PyPI/all.zip`: `osv::parse` keeps only `MAL-` and `GHSA-` ids, so PyPI's
+            `PYSEC-` records would be skipped as `OtherPublisher`. On 2026-09-18 the bundle
+            held 7,253 non-withdrawn `PYSEC-` records, 491 of them with no `GHSA-`
+            counterpart in either direction, 428 of those with a CVE alias. Keep `PYSEC-`
+            as non-malware, and treat a `PYSEC-`/`GHSA-` pair as
+            [alias-matching](docs/engineering_decisions/alias-matching.md) treats one. The
+            PyPA Advisory Database's licence is not yet in `advisory-stream-licences.md`;
+            add it first. The 7 `OSV-` (OSS-Fuzz) records need their own decision.
+      - [ ] Datadog `samples/pypi/manifest.json`: 1,834 names, 7 not in PEP 503 form, which
+            `Affected::new` now normalises.
+      - [ ] GitHub `securityVulnerabilities(ecosystem: PIP)`: names such as `GitPython` and
+            `jupyter_server`, also normalised by `Affected::new`.
+
       Step 5 landed out of order, at the operator's request. It moved no `match` arm, so
       steps 2 to 4 are unchanged by it.
 
@@ -437,7 +452,6 @@ That is the failure mode every item below should be brought to.
 
       | Where | What is ecosystem-specific |
       |---|---|
-      | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher`. `PyPI/all.zip` on 2026-09-18: 7,253 `PYSEC-`, 491 with no `GHSA-` counterpart; the PyPA database's licence is not in `advisory-stream-licences.md`. Belongs with step 4 |
       | `policy/selector.rs` `decompose` | rejoins `namespace/name`, repeating `PackageKey::registry_name`; it cannot call `PackageKey` as is, because it takes any purl type and an optional version |
 
       Fixed 2026-09-18: a simple index goes through `intel_for` and
