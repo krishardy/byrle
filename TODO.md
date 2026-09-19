@@ -280,7 +280,7 @@ That is the failure mode every item below should be brought to.
 
 ### Wrong answers
 
-- [ ] **Every intel stream is npm-only, so a PyPI package is evaluated against an empty
+- [x] **Every intel stream is npm-only, so a PyPI package is evaluated against an empty
       advisory set and the audit says it was checked.**
 
       | Stream | npm binding |
@@ -308,8 +308,7 @@ That is the failure mode every item below should be brought to.
       - [x] Fail closed. A package whose ecosystem has no `match` or no `malware` stream in
             the snapshot is answered 503 and no decision is written.
             [uncovered-ecosystem-fails-closed](docs/engineering_decisions/uncovered-ecosystem-fails-closed.md).
-      - [ ] Load PyPI's streams: step 4 below. Until then PyPI files are refused under a
-            policy with a store.
+      - [x] Load PyPI's streams: step 4 below. Done 2026-09-19.
 
 - [x] **`Ecosystem::ALL` is still `[Npm]`, so nothing reports the gap above.**
       Closed by step 3 below: `Ecosystem::ALL` is gone and `intel::served` reads
@@ -405,7 +404,7 @@ That is the failure mode every item below should be brought to.
       | 1 | `ecosystem::Registry` holding the fields that already dispatch, npm and pypi filling them | `[x]` |
       | 2 | add `publish_times` and `streams` to the descriptor | `[x]` |
       | 3 | point `Ecosystem::ALL` at the table | `[x]` |
-      | 4 | fetch PyPI's OSV, Datadog and GHSA streams | `[ ]` |
+      | 4 | fetch PyPI's OSV, Datadog and GHSA streams | `[x]` |
       | 5 | split `npm.rs` and `pypi.rs` into directories with matching file names | `[x]` |
 
       Steps 2 to 4 are what close the **Wrong answers** items above; step 1 only makes the
@@ -414,7 +413,7 @@ That is the failure mode every item below should be brought to.
 
       Step 4's parts:
 
-      - [ ] OSV `PyPI/all.zip`: `osv::parse` keeps only `MAL-` and `GHSA-` ids, so PyPI's
+      - [x] OSV `PyPI/all.zip`: `osv::parse` keeps only `MAL-` and `GHSA-` ids, so PyPI's
             `PYSEC-` records would be skipped as `OtherPublisher`. On 2026-09-18 the bundle
             held 7,253 non-withdrawn `PYSEC-` records, 491 of them with no `GHSA-`
             counterpart in either direction, 428 of those with a CVE alias. Keep `PYSEC-`
@@ -423,10 +422,25 @@ That is the failure mode every item below should be brought to.
             PyPA Advisory Database is CC-BY-4.0, attribution owed, as `GHSA-` is:
             [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
             The 7 `OSV-` (OSS-Fuzz) records need their own decision.
-      - [ ] Datadog `samples/pypi/manifest.json`: 1,834 names, 7 not in PEP 503 form, which
+      - [x] Datadog `samples/pypi/manifest.json`: 1,834 names, 7 not in PEP 503 form, which
             `Affected::new` now normalises.
-      - [ ] GitHub `securityVulnerabilities(ecosystem: PIP)`: names such as `GitPython` and
+      - [x] GitHub `securityVulnerabilities(ecosystem: PIP)`: names such as `GitPython` and
             `jupyter_server`, also normalised by `Affected::new`.
+
+      Done 2026-09-19. Each stream is its own source, and a stream that does not load keeps
+      its last load while the others load: `stream-descriptor-table.md`. A live
+      `waharoa refresh` against Postgres with no `WAHAROA_GITHUB_TOKEN`:
+
+      | Stream | Result |
+      |---|---|
+      | `osv/npm` | 221,356 malware, 7,077 scored vulnerabilities |
+      | `osv/pypi` | 11,733 malware, 10,565 scored and 2,736 unscored vulnerabilities, 36 nothing storable |
+      | `datadog/npm`, `datadog/pypi`, `cisa/kev` | loaded |
+      | `github/npm`, `github/pypi` | not loaded, token unset; the rest loaded |
+
+      `waharoa explain 'pkg:pypi/requests@2.19.0'` blocks on `GHSA-x84v-xcm2-53pg` 7.5, and
+      `pip install requests==2.19.0` through the proxy finds no matching distribution: the
+      index lists 2.31.0 and later.
 
       Step 5 landed out of order, at the operator's request. It moved no `match` arm, so
       steps 2 to 4 are unchanged by it.
@@ -472,6 +486,16 @@ That is the failure mode every item below should be brought to.
       [environment-variables](docs/engineering_decisions/environment-variables.md) puts
       every variable there; `record.rs`, because `DocumentDetail` holds for both and
       `Provenance`'s PyPI shape waits for PEP 740 in the provenance item below.
+
+- [ ] **An unscored `PYSEC-` record blocks a version its scored `GHSA-` alias allows.**
+      `max_cvss` refuses a non-malware advisory with no score, and aliases are matched, not
+      merged ([alias-matching](docs/engineering_decisions/alias-matching.md)). In the
+      `osv/pypi` load of 2026-09-19, 2,731 `PYSEC-` records have no score, and 2,583 of them
+      have a scored `GHSA-` alias in the same stream. `PYSEC-2018-28` and
+      `GHSA-x84v-xcm2-53pg` are CVE-2018-18074 twice; only the second carries 7.5. A version
+      whose `GHSA-` score is under `max_cvss` is still refused through its `PYSEC-` twin.
+      `explain 'pkg:pypi/requests@2.19.0'` lists `PYSEC-2018-28` and `PYSEC-2023-74` as
+      unscored beside `GHSA-x84v-xcm2-53pg` 7.5.
 
 - [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
 

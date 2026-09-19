@@ -383,9 +383,11 @@ pub const PYPI: Registry = Registry {
     other_is_probe: true,
     // `pypi::normalize` reads each file's `upload-time`.
     publish_times: PublishTimeSource::Record,
-    // OSV, Datadog and GitHub all publish PyPI advisories. None is fetched yet: TODO.md,
-    // step 4 of the module directory item.
-    streams: &[],
+    streams: &[
+        &stream::OSV_PYPI,
+        &stream::DATADOG_PYPI,
+        &stream::GITHUB_PYPI,
+    ],
     // requirements.txt, uv.lock and poetry.lock are not read yet.
     lockfiles: &[],
     unread_lockfiles: &[],

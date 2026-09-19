@@ -1,11 +1,12 @@
-//! Reading OSV's npm bundle.
+//! Reading one ecosystem's OSV bundle.
 //!
-//! The bundle is `npm/all.zip`. On 2026-09-13 it was 214,977,916 bytes: 228,951 deflate
+//! npm's is `npm/all.zip` and PyPI's `PyPI/all.zip`. On 2026-09-13 npm's was 214,977,916 bytes: 228,951 deflate
 //! entries, 379,092,155 bytes expanded, the largest entry 73,089 bytes. It is read from
 //! memory. `ZipArchive` needs `Read + Seek` to reach the central directory at the end, and
 //! holding the bytes avoids a temp file to create, protect and remove. The two ceilings below
 //! bound what a broken or hostile upstream can make this allocate.
 
+use crate::identity::Ecosystem;
 use crate::intel::providers::osv::{self, Parsed, Skipped};
 use crate::intel::rows::Rows;
 use std::io::{Cursor, Read};
@@ -14,6 +15,12 @@ pub const NPM_BUNDLE: &str = "https://osv-vulnerabilities.storage.googleapis.com
 
 /// The name a snapshot records the npm bundle under.
 pub const NPM_STREAM: &str = "osv/npm";
+
+/// 34,417,496 bytes on 2026-09-18.
+pub const PYPI_BUNDLE: &str = "https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip";
+
+/// The name a snapshot records the PyPI bundle under.
+pub const PYPI_STREAM: &str = "osv/pypi";
 
 /// 2.5 times the bundle on 2026-09-13.
 pub const MAX_BUNDLE_BYTES: usize = 512 << 20;
@@ -32,7 +39,8 @@ pub struct Tally {
     pub unscored: u64,
     pub withdrawn: u64,
     pub other_publisher: u64,
-    pub no_npm_package: u64,
+    /// Records with no `affected` entry for the ecosystem being read.
+    pub no_package: u64,
     pub nothing_storable: u64,
     /// Stored records with an entry or a range left out. Already counted above.
     pub partly_stored: u64,
@@ -55,7 +63,7 @@ impl Tally {
             }
             Parsed::Skipped(Skipped::Withdrawn) => &mut self.withdrawn,
             Parsed::Skipped(Skipped::OtherPublisher) => &mut self.other_publisher,
-            Parsed::Skipped(Skipped::NoNpmPackage) => &mut self.no_npm_package,
+            Parsed::Skipped(Skipped::NoPackage) => &mut self.no_package,
             Parsed::Skipped(Skipped::NothingStorable) => &mut self.nothing_storable,
         };
         *slot += 1;
@@ -67,7 +75,7 @@ impl Tally {
             + self.unscored
             + self.withdrawn
             + self.other_publisher
-            + self.no_npm_package
+            + self.no_package
             + self.nothing_storable
     }
 }
@@ -81,7 +89,7 @@ impl std::fmt::Display for Tally {
             ("stored: vulnerability, unscored", self.unscored),
             ("skipped: withdrawn", self.withdrawn),
             ("skipped: other publisher", self.other_publisher),
-            ("skipped: no npm package", self.no_npm_package),
+            ("skipped: no package", self.no_package),
             ("skipped: nothing storable", self.nothing_storable),
             ("records", self.records()),
             ("stored with something left out", self.partly_stored),
@@ -133,11 +141,11 @@ impl std::fmt::Display for BundleError {
 
 impl std::error::Error for BundleError {}
 
-/// Read every record in a bundle.
+/// Read every record in `ecosystem`'s bundle.
 ///
 /// One unreadable record fails the bundle. Skipping it would load a set missing whatever it
 /// held with nothing to say so; failing leaves the previous load in place.
-pub fn read_bundle(bytes: &[u8]) -> Result<Bundle, BundleError> {
+pub fn read_bundle(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Bundle, BundleError> {
     let mut archive = zip::ZipArchive::new(Cursor::new(bytes)).map_err(BundleError::Archive)?;
     let mut bundle = Bundle::default();
     for index in 0..archive.len() {
@@ -153,7 +161,7 @@ pub fn read_bundle(bytes: &[u8]) -> Result<Bundle, BundleError> {
         if record.len() as u64 > MAX_RECORD_BYTES {
             return Err(BundleError::TooLarge { name });
         }
-        let parsed = match osv::parse(&record) {
+        let parsed = match osv::parse(ecosystem, &record) {
             Ok(parsed) => parsed,
             Err(error) => return Err(BundleError::Record { name, error }),
         };
@@ -197,7 +205,7 @@ mod tests {
 
     #[test]
     fn the_fixture_bundle_is_read_through_deflate() {
-        let bundle = read_bundle(&fixture("bundle.zip")).expect("bundle reads");
+        let bundle = read_bundle(Ecosystem::Npm, &fixture("bundle.zip")).expect("bundle reads");
         assert_eq!(
             bundle.tally,
             Tally {
@@ -224,13 +232,20 @@ mod tests {
             .expect("write entry");
         let bytes = writer.finish().expect("finish").into_inner();
 
-        assert_eq!(read_bundle(&bytes).expect("reads").tally.records(), 1);
+        assert_eq!(
+            read_bundle(Ecosystem::Npm, &bytes)
+                .expect("reads")
+                .tally
+                .records(),
+            1
+        );
     }
 
     #[test]
     fn a_record_past_the_ceiling_is_refused_and_one_at_it_is_not() {
         let over = vec![b' '; MAX_RECORD_BYTES as usize + 1];
-        let err = read_bundle(&zip_of(&[("big.json", &over)])).expect_err("over the cap");
+        let err =
+            read_bundle(Ecosystem::Npm, &zip_of(&[("big.json", &over)])).expect_err("over the cap");
         assert!(matches!(&err, BundleError::TooLarge { name } if name == "big.json"));
         assert!(
             err.to_string().starts_with("big.json: expands past"),
@@ -240,7 +255,7 @@ mod tests {
         // At the ceiling it is read, and fails only as JSON.
         let at = vec![b' '; MAX_RECORD_BYTES as usize];
         assert!(matches!(
-            read_bundle(&zip_of(&[("at.json", &at)])),
+            read_bundle(Ecosystem::Npm, &zip_of(&[("at.json", &at)])),
             Err(BundleError::Record { .. })
         ));
     }
@@ -248,10 +263,10 @@ mod tests {
     #[test]
     fn one_unreadable_record_fails_the_whole_bundle() {
         let good = fixture("MAL-2021-1.json");
-        let err = read_bundle(&zip_of(&[
-            ("MAL-2021-1.json", &good),
-            ("broken.json", b"{"),
-        ]))
+        let err = read_bundle(
+            Ecosystem::Npm,
+            &zip_of(&[("MAL-2021-1.json", &good), ("broken.json", b"{")]),
+        )
         .expect_err("one bad record");
         assert!(matches!(&err, BundleError::Record { name, .. } if name == "broken.json"));
         assert!(
@@ -273,14 +288,14 @@ mod tests {
         let space = at + good.iter().position(|&b| b == b' ').expect("a space");
         bytes[space] = b'\t';
 
-        let err = read_bundle(&bytes).expect_err("checksum mismatch");
+        let err = read_bundle(Ecosystem::Npm, &bytes).expect_err("checksum mismatch");
         assert!(matches!(&err, BundleError::Entry { name, .. } if name == "MAL-2021-1.json"));
         assert!(err.to_string().starts_with("MAL-2021-1.json: "), "{err}");
     }
 
     #[test]
     fn bytes_that_are_not_a_zip_are_refused() {
-        let err = read_bundle(b"not a zip").expect_err("not an archive");
+        let err = read_bundle(Ecosystem::Npm, b"not a zip").expect_err("not an archive");
         assert!(matches!(err, BundleError::Archive(_)));
         assert!(err.to_string().starts_with("not a readable zip archive"));
     }
@@ -293,7 +308,7 @@ mod tests {
             banded: 1,
             unscored: 1,
             other_publisher: 1,
-            no_npm_package: 1,
+            no_package: 1,
             nothing_storable: 1,
             withdrawn: 1,
             partly_stored: 3,
@@ -308,7 +323,7 @@ mod tests {
              stored: vulnerability, unscored         1\n\
              skipped: withdrawn                      1\n\
              skipped: other publisher                1\n\
-             skipped: no npm package                 1\n\
+             skipped: no package                     1\n\
              skipped: nothing storable               1\n\
              records                                 8\n\
              stored with something left out          3\n\

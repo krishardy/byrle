@@ -54,6 +54,13 @@ empty manifest would delete every stored record. At commit `8fff54014596` the lo
 
 The ceiling is 16 MiB, 9.9 times the 1,698,934-byte manifest of 2026-09-14.
 
+## PyPI, 2026-09-19
+
+`datadog/pypi` reads `samples/pypi/manifest.json` the same way, as records
+`DATADOG-pypi-<name>` with names PEP 503 normalised. It was 49,739 bytes and listed 1,834
+packages, 1,817 at every version. The first refresh to load it reported 840 packages it flags
+at every version and `osv/pypi` flags only at some.
+
 ## Disagreements
 
 `datadog::disagreements` gives each package Datadog flags at every version that has OSV

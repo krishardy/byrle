@@ -377,7 +377,12 @@ fn osv_fixture(id: &str) -> Rows {
         "{}/tests/fixtures/osv/{id}.json",
         env!("CARGO_MANIFEST_DIR")
     );
-    match osv::parse(&std::fs::read(path).expect("fixture is missing")).expect("fixture parses") {
+    match osv::parse(
+        waharoa::identity::Ecosystem::Npm,
+        &std::fs::read(path).expect("fixture is missing"),
+    )
+    .expect("fixture parses")
+    {
         Parsed::Rows(rows) => *rows,
         other => panic!("{id}: {other:?}"),
     }
@@ -1026,7 +1031,8 @@ async fn a_vulnerability_record_loads_with_its_score_and_aliases() {
             ]}]
         }]
     }"#;
-    let Parsed::Rows(rows) = osv::parse(record).expect("parses") else {
+    let Parsed::Rows(rows) = osv::parse(waharoa::identity::Ecosystem::Npm, record).expect("parses")
+    else {
         panic!("should be stored");
     };
     let loaded = intel
@@ -1383,10 +1389,12 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
     // A second advisory source, on packages OSV's records also affect.
     let (every, _) = target(&rows[0]);
     let (listed, _) = target(&rows[1]);
-    let manifest =
-        datadog::parse(format!(r#"{{"{every}": null, "{listed}": ["1.0"]}}"#).as_bytes())
-            .expect("parses");
-    let flagged = load::encode(datadog::STREAM, &manifest);
+    let manifest = datadog::parse(
+        waharoa::identity::Ecosystem::Npm,
+        format!(r#"{{"{every}": null, "{listed}": ["1.0"]}}"#).as_bytes(),
+    )
+    .expect("parses");
+    let flagged = load::encode(datadog::NPM_STREAM, &manifest);
     let s1 = fetch("s1");
     let loaded = intel
         .replace(
@@ -1453,7 +1461,7 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         datadog_records += from_postgres
             .iter()
             .flat_map(|p| &p.records)
-            .filter(|(_, r)| r.source == datadog::STREAM && r.malware)
+            .filter(|(_, r)| r.source == datadog::NPM_STREAM && r.malware)
             .count();
         let from_files = kept.package("npm", name).await.expect("answers");
         assert_eq!(from_files.map(sorted), from_postgres.map(sorted), "{name}");

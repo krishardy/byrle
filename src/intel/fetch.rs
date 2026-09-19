@@ -48,8 +48,10 @@ pub async fn stream_bundle(
     for attempt in 1..=ATTEMPTS {
         let got = match declared.transport {
             Transport::Get => bundle(http, declared.url, declared.ceiling, notice).await,
-            Transport::GithubGraphql => match github_token {
-                Some(token) => graphql(http, declared.url, declared.ceiling, token, notice).await,
+            Transport::GithubGraphql { query } => match github_token {
+                Some(token) => {
+                    graphql(http, declared.url, declared.ceiling, token, query, notice).await
+                }
                 None => Err(FetchFailure::settled(format!(
                     "{} is unset, so this stream is not read",
                     crate::env::GITHUB_TOKEN
@@ -213,6 +215,7 @@ pub async fn graphql(
     url: &str,
     ceiling: usize,
     token: &str,
+    query: &str,
     notice: Notice<'_>,
 ) -> Result<Fetched, FetchFailure> {
     let mut bytes = vec![b'['];
@@ -221,7 +224,7 @@ pub async fn graphql(
     notice(&format!("fetching {url}"));
     loop {
         let body = serde_json::json!({
-            "query": crate::intel::providers::github::QUERY,
+            "query": query,
             "variables": { "after": after },
         });
         let body =
@@ -423,7 +426,7 @@ mod tests {
         let addr = scripted(vec![Answer::body(page.to_vec())]).await;
         let printed = Printed::default();
         let url = format!("http://{addr}/graphql");
-        let fetched = graphql(&client(), &url, 4096, "token", &printed.notice())
+        let fetched = graphql(&client(), &url, 4096, "token", "query", &printed.notice())
             .await
             .expect("one page");
         let array: serde_json::Value = serde_json::from_slice(&fetched.bytes).expect("an array");
@@ -443,9 +446,16 @@ mod tests {
         let addr = scripted(vec![Answer::body(page.to_vec())]).await;
         let printed = Printed::default();
         let url = format!("http://{addr}/graphql");
-        let failure = graphql(&client(), &url, page.len() + 8, "token", &printed.notice())
-            .await
-            .expect_err("the second page is over the ceiling");
+        let failure = graphql(
+            &client(),
+            &url,
+            page.len() + 8,
+            "token",
+            "query",
+            &printed.notice(),
+        )
+        .await
+        .expect_err("the second page is over the ceiling");
         assert!(
             failure.why.ends_with("byte ceiling after 1 pages"),
             "{}",
@@ -464,6 +474,7 @@ mod tests {
             &format!("http://{addr}/graphql"),
             4096,
             "token",
+            "query",
             &printed.notice(),
         )
         .await
@@ -604,7 +615,7 @@ mod tests {
     #[tokio::test]
     async fn the_github_stream_without_a_token_is_not_fetched() {
         let printed = Printed::default();
-        let github = crate::intel::stream::by_stream(crate::intel::providers::github::STREAM)
+        let github = crate::intel::stream::by_stream(crate::intel::providers::github::NPM_STREAM)
             .expect("this build declares it");
         let why = stream_bundle(&client(), github, None, &printed.notice())
             .await

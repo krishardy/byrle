@@ -5,17 +5,27 @@
 //!
 //!   curl -sO https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip
 //!
-//! Run: cargo run --example osv_tally -- all.zip
+//! PyPI's is `https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip`.
+//!
+//! Run: cargo run --example osv_tally -- all.zip [npm|pypi]
+use waharoa::identity::Ecosystem;
 use waharoa::intel::providers::osv::bundle;
 
 fn main() {
     // The rule below guards against trusting argv for security decisions. This is a
     // developer tool reading a file the developer just typed.
     // nosemgrep: rust.lang.security.args.args
-    let path = std::env::args().nth(1).expect("usage: osv_tally <all.zip>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: osv_tally <all.zip> [npm|pypi]");
+    // nosemgrep: rust.lang.security.args.args
+    let ecosystem: Ecosystem = std::env::args()
+        .nth(2)
+        .map_or(Ok(Ecosystem::Npm), |e| e.parse())
+        .expect("npm or pypi");
     let bytes = std::fs::read(&path).expect("cannot read bundle");
 
-    match bundle::read_bundle(&bytes) {
+    match bundle::read_bundle(ecosystem, &bytes) {
         Ok(bundle) => {
             print!("{}", bundle.tally);
             let affected: usize = bundle.rows.iter().map(|r| r.affected.len()).sum();
