@@ -507,16 +507,16 @@ That is the failure mode every item below should be brought to.
       in the same stream at load. In the PyPI bundle, 2,583 take one and 153 stay unscored:
       [alias-matching](docs/engineering_decisions/alias-matching.md).
 
-- [ ] **`handle` is 396 lines, 10 returns and 1 mutable local.**
+- [x] **`handle` was 644 lines, 12 returns and 8 mutable locals.** Now 225, 10 and 1.
 
-      | Measure | Before | After `decide_artifact` | After `negotiate` |
-      |---|---|---|---|
-      | lines | 644 | 468 | 396 (`proxy.rs:1216-1611`, 2026-09-20) |
-      | `return` statements | 12 | 10 | 10 |
-      | `let mut` | 8 | 2 | 1 |
+      | Measure | Before | After `decide_artifact` | After `negotiate` | After `filtered_document` |
+      |---|---|---|---|---|
+      | lines | 644 | 468 | 396 | 225 (2026-09-20) |
+      | `return` statements | 12 | 10 | 10 | 10 |
+      | `let mut` | 8 | 2 | 1 | 1 |
 
-      Concerns in one function: health, defer, classification, forwarding, ETag
-      rewriting, 304 handling, the semaphore, decode, normalise, rewrite.
+      What is left in `handle`: health and readiness, defer, classification, the upstream
+      request, and the choice between streaming, verifying and buffering.
       - [x] The artifact branch is `decide_artifact`, returning `ArtifactStep::Answer` or
             `ArtifactStep::Fetch`. `expected_digest`, `artifact_purl` and `artifact_origin`
             were set in that branch and read up to 300 lines later; they are now
@@ -529,7 +529,12 @@ That is the failure mode every item below should be brought to.
             `report_uninspected` writes the `UNINSPECTED` line. Each has tests that call it
             directly. The `UNINSPECTED` test reads the log through a `tracing`
             subscriber, because `make smoke-clients` greps for that line.
-      - [ ] The metadata branch: buffer, decode, read, intel, filter, rewrite.
+      - [x] The metadata branch. `filtered_document` decodes, reads, asks intel, filters
+            by policy and rewrites, returning `DocumentStep::Answer` or
+            `DocumentStep::Forward`. `revalidated` handles a 304, `metadata_slot` the
+            semaphore and `upstream_response_headers` the hop-by-hop filter. Mutation
+            testing found the `waited_ms > 0` guard on the slot's DEBUG line untested; it
+            has a test now.
 
 - [ ] **`Proxy` is 19 fields and 15 builders, cloned per request.**
       Configuration (`upstreams`, `refuse_unservable`, `served_origins`, `allowed_direct`,
