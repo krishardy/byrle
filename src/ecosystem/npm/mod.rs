@@ -1,4 +1,4 @@
-//! npm: fetching packuments and normalising them into [`PackageRecord`].
+//! npm: fetching packuments and normalising them into [`crate::record::PackageRecord`].
 //!
 //! Written concretely against npm alone. What this shares with PyPI is what
 //! [`crate::ecosystem::Registry`] names and nothing else; there is no `Registry` trait,
@@ -42,7 +42,7 @@
 //!
 //! # Skipping is visible
 //!
-//! A version that cannot be normalised lands in [`PackageMetadata::skipped`]
+//! A version that cannot be normalised lands in [`crate::record::PackageMetadata::skipped`]
 //! instead of being dropped. A package version that vanishes between the registry and
 //! the policy engine is a version nothing gates, which is the shape of a bypass rather
 //! than a parse detail.

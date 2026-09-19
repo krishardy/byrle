@@ -41,6 +41,14 @@ if ! cargo clippy --manifest-path "$repo_root/Cargo.toml" --release --lib --bins
     failed=1
 fi
 
+note "rust (rustdoc)"
+# Private items too, since most of the crate's documentation is on them. A link to an item
+# that moved or was renamed builds silently otherwise: ten had built up by 2026-09-19.
+if ! RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path "$repo_root/Cargo.toml" \
+    --no-deps --document-private-items --quiet; then
+    failed=1
+fi
+
 note "shell (shellcheck)"
 if ! command -v shellcheck >/dev/null 2>&1; then
     echo "shellcheck is not installed. Run 'make dev-setup'."

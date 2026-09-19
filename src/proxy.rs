@@ -11,7 +11,7 @@
 //!
 //! The rewrite replaces URLs in the text rather than rebuilding the document, so what the
 //! client receives is byte-identical to the upstream's apart from those URLs. See
-//! [`crate::ecosystem::npm::rewrite_artifact_origins`] for why, and what it costs.
+//! [`crate::origin::rewrite_artifact_origins`] for why, and what it costs.
 //!
 //! The rewrite exists because clients disagree about `dist.tarball`. npm rewrites it to
 //! the configured registry; pnpm 10, yarn 1, yarn 4 and bun 1.3 use it verbatim and
@@ -208,7 +208,7 @@ pub struct Proxy {
     coverage: Arc<Mutex<Option<LoadedSnapshot>>>,
     max_metadata_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
-    /// [`rewrite_packument`].
+    /// [`npm::rewrite_packument`] and [`pypi::rewrite::rewrite_index`].
     rewrite_artifacts: bool,
     /// The address to write into artifact URLs, when it must not be taken from the
     /// request's `Host`. Needed behind a load balancer, and for a stable name in

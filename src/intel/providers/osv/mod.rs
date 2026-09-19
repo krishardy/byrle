@@ -19,7 +19,7 @@
 //! |---|---|
 //! | a range that is every version, such as `introduced: "0"` alone | one `advisory_affected` row, `version` NULL, and nothing else from the entry |
 //! | otherwise, a `versions` list | one `advisory_affected` row per version |
-//! | otherwise, and beside a list, other ranges | one `advisory_range` row per interval; see [`super::range`] |
+//! | otherwise, and beside a list, other ranges | one `advisory_range` row per interval; see [`crate::intel::range`] |
 //!
 //! A list and a range are both stored because the list is what OSV enumerated when the
 //! record was last modified. `MAL-2025-3661` lists 2 versions beside `introduced: "99.9.1"`,

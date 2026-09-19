@@ -12,7 +12,7 @@
 //! which come from upstream on this request and could differ. Skipping the hash on a hit
 //! would mean a registry that served correct bytes once could serve anything afterwards
 //! and have it forwarded unchecked, which is the exact failure
-//! [`crate::proxy::VerifyingStream`] exists to catch.
+//! `proxy::VerifyingStream` exists to catch.
 //!
 //! So every artifact is hashed every time, and this answers a different question: has
 //! this artifact been past before? In Stage 1 that changes no response, because nothing

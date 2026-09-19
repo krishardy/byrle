@@ -563,7 +563,7 @@ fn take_table<'a>(rest: &mut &'a [u8], table: &'static str) -> Result<Records<'a
     Ok(Records { table, csv, i: 0 })
 }
 
-/// Each record's bytes and fields, as [`line`] writes them: an empty field is `None`, and a
+/// Each record's bytes and fields, as [`line()`] writes them: an empty field is `None`, and a
 /// quoted one is its text with doubled quotes undone. Anything else is refused.
 #[derive(Debug)]
 struct Records<'a> {

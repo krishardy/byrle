@@ -371,7 +371,7 @@ That is the failure mode every item below should be brought to.
       `scripts/make/smoke-python.sh` works around both with `PIP_CONFIG_FILE=/dev/null` and
       `--no-cache-dir`, which is a test making up for a check that does not exist.
 
-- [ ] **Two smaller ecosystem assumptions.**
+- [x] **Two smaller ecosystem assumptions.**
       Fixed: `doctor::looks_like_a_registry` was
       `origin == crate::npm::DEFAULT_REGISTRY`, so a `files.pythonhosted.org` origin in a
       lockfile read as a stale proxy address rather than as a public registry. It now reads
@@ -379,6 +379,8 @@ That is the failure mode every item below should be brought to.
       `cargo doc` has four unresolved links to `crate::npm::rewrite_artifact_origins` and
       `crate::npm::PackageMetadata::bypassing_origins`, left behind when those moved to
       `origin` and `record`. Nothing gates rustdoc warnings, which is why they survived.
+      Fixed 2026-09-19: sixteen public and two private documentation warnings, and `make
+      lint` now runs `cargo doc --document-private-items` with warnings as errors.
 
 - [x] **`waharoa refresh` had no timeout, so a stalled download blocked it indefinitely.**
       On 2026-09-17 a refresh sat for 12 minutes with its TLS connection established,
