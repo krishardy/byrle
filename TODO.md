@@ -560,12 +560,25 @@ That is the failure mode every item below should be brought to.
       - [x] Headers sent upstream: 7 socket tests are one table test over `negotiate` and
             `upstream_headers`, `what_each_request_sends_upstream`. Every mutant of the two
             functions is caught by the unit tests alone.
-      - [ ] Decisions: the policy, intel and origin tests assert on `decide_artifact` or
-            `filtered_document`, which a test can now call directly.
+      - [x] Decisions: 14 socket tests of policy, intel, audit and coverage call
+            `decide_artifact` and `filtered_document` directly, through `offline()`, whose
+            upstreams refuse connections, and `hold()`, which fills the store. `fetched()`
+            requires a digest, so a test whose store missed cannot pass by fetching
+            unverified. Two stay on sockets: `a_denied_version_is_refused_on_a_pinned_fetch_before_the_artifact_is_fetched`,
+            for the `npm ci` path that fetches metadata first, and
+            `a_packument_the_proxy_cannot_decide_on_is_answered_with_a_503`, for `handle`
+            returning the metadata branch's answer.
+            cargo-mutants over the decision functions found 7 survivors that HEAD had too:
+            the resolution event's strongest action, the "refuses every version" warning
+            and `with_max_records`. Each has a test now, and the strongest action is
+            `std::cmp::max_by_key`, since `>` and `>=` were the same on distinct strengths.
+      - [ ] Rewrite, ETag, 304, public base, health, deferral: `filtered_document`,
+            `revalidated`, `finish`, `Proxy::health` and `defer_response` can be called
+            directly.
       - [ ] What stays on sockets: tests of how `handle` wires the pieces to real HTTP (a
             502, an oversized body, status passthrough, streaming verification). reqwest
             makes real requests, so these need an upstream to answer them.
-      2026-09-20: 52 of 76 tests bind a port.
+      2026-09-20: 40 of 76 tests bind a port.
 
 - [x] **The cache budgets are counted in units that no longer predict memory.**
       Measured per record with `examples/record_memory.rs`: 906 to 959 bytes for npm, 1,115
