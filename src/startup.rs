@@ -283,16 +283,17 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
     // has to be said out loud rather than discovered by a package getting through.
     warn!(
         "ENFORCED: denials, install_scripts, cooldown_days. A refused version is removed \
-         from the packument so the resolver picks another, and a pinned fetch of one is \
-         refused"
+         from the metadata document so the resolver picks another, and a pinned fetch of \
+         one is refused"
     );
     if policy.uses_cooldown() {
-        warn!(
-            cooldown_days = policy.cooldown_days,
-            "cooldown_days is enforced, and costs a full-packument fetch per package that \
-             the client never asked for. npm publishes version timestamps only in the full \
-             document, measured at 1.7x to 3.6x the abbreviated one"
-        );
+        for (ecosystem, cost) in crate::ecosystem::cooldown_costs() {
+            warn!(
+                cooldown_days = policy.cooldown_days,
+                %ecosystem,
+                "cooldown_days is enforced, and for {ecosystem} costs {cost}"
+            );
+        }
     }
     // An entry that does nothing is valid and worth saying out loud. `waharoa policy check`
     // and `doctor` report the same entries.

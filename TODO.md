@@ -439,7 +439,6 @@ That is the failure mode every item below should be brought to.
       |---|---|
       | `intel/providers/osv/mod.rs` `parse` | keeps only `MAL-` and `GHSA-` ids; PyPI's `PYSEC-` records are skipped as `OtherPublisher`. `PyPI/all.zip` on 2026-09-18: 7,253 `PYSEC-`, 491 with no `GHSA-` counterpart; the PyPA database's licence is not in `advisory-stream-licences.md`. Belongs with step 4 |
       | `policy/selector.rs` `decompose` | rejoins `namespace/name`, repeating `PackageKey::registry_name`; it cannot call `PackageKey` as is, because it takes any purl type and an optional version |
-      | `startup.rs` `report_policy` | the cooldown cost warning describes npm's full packument; it is not gated on `PublishTimeSource::FullPackument` |
       | `env.rs` | `HOME` and `BUN_INSTALL_CACHE_DIR` are read only by `npm/clients.rs`; `NPM_CORPUS` and `NPM_CORPUS_FULL` only by npm's corpus test |
       | `record.rs` | `DocumentDetail::{Abbreviated, Full}` and `Provenance`'s fields are npm packument concepts in the shared record |
       | `defer.rs` | `Scope::{Packument, Tarball}` names generic targets in npm's words |
@@ -460,6 +459,8 @@ That is the failure mode every item below should be brought to.
       each row names its upstream variable and URL rule, and `Upstreams` holds one base
       per ecosystem in the environment, the clients and the proxy, and `/-/waharoa/health`
       reports them all in `upstreams`;
+      the cooldown cost warning names each ecosystem whose `PublishTimeSource` costs a
+      fetch, from `PublishTimeSource::cost`;
       the startup log's setup lines come from `Registry::setup`;
       `doctor`'s `undefined` is `RegistryQuery::unset` on npm's client rows; the `NPM`
       constants in `osv/mod.rs` and `github.rs` read `Ecosystem::Npm.as_str()`.
