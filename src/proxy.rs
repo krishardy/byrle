@@ -2304,42 +2304,6 @@ mod tests {
         assert_eq!(served, expected, "something other than the URL changed");
     }
 
-    /// The length has to describe the body actually sent, or the client reads the wrong
-    /// number of bytes.
-    #[tokio::test]
-    async fn a_rewritten_body_carries_its_own_length() {
-        let original = fixture("lodash-4.17.21.abbrev.json");
-        let (base, _) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            original.clone(),
-        )
-        .await;
-
-        let response = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
-            .header(header::ACCEPT_ENCODING, "identity")
-            .send()
-            .await
-            .unwrap();
-        let declared: usize = response
-            .headers()
-            .get(header::CONTENT_LENGTH)
-            .expect("a length is declared")
-            .to_str()
-            .unwrap()
-            .parse()
-            .unwrap();
-        let body = response.bytes().await.unwrap();
-        assert_eq!(declared, body.len());
-        assert_ne!(
-            body.len(),
-            original.len(),
-            "this fixture does change length, so the test would pass vacuously otherwise"
-        );
-    }
-
     /// The deferral knob answers instead of fetching, which is what `make retry-matrix`
     /// measures the clients against. Debug builds only.
     #[tokio::test]
@@ -2499,166 +2463,9 @@ mod tests {
         );
     }
 
-    /// Turning rewriting off restores byte-for-byte forwarding.
-    #[tokio::test]
-    async fn rewriting_can_be_turned_off() {
-        let original = fixture("lodash-4.17.21.abbrev.json");
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            original.clone(),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_artifact_rewriting(false)
-                .router(),
-        )
-        .await;
-
-        let body = reqwest::get(format!("{base}/lodash"))
-            .await
-            .unwrap()
-            .bytes()
-            .await
-            .unwrap();
-        assert_eq!(body.as_ref(), original.as_slice());
-    }
-
     const OFFSITE_PACKUMENT: &str = r#"{"name":"widget","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{
             "version":"1.0.0","dist":{
             "tarball":"https://elsewhere.example/widget-1.0.0.tgz","integrity":"sha512-AAAA"}}}}"#;
-
-    /// An artifact the proxy cannot serve is removed from the packument, so a resolver
-    /// picks a version that can be examined. It is the only control that works: the
-    /// client would fetch that URL from `elsewhere.example` and never ask the proxy.
-    #[tokio::test]
-    async fn versions_the_proxy_cannot_serve_are_removed_from_the_packument() {
-        let (base, _) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            OFFSITE_PACKUMENT.as_bytes().to_vec(),
-        )
-        .await;
-
-        let body = reqwest::get(format!("{base}/widget"))
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert!(
-            !body.contains("elsewhere.example"),
-            "the version should be gone, not forwarded: {body}"
-        );
-        let served: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert!(served["versions"].as_object().unwrap().is_empty());
-        assert!(
-            served["dist-tags"].as_object().unwrap().is_empty(),
-            "a tag naming a removed version resolves to nothing"
-        );
-    }
-
-    /// Turning the refusal off forwards them instead, and the artifact URL stays as it
-    /// was: rewriting it would mean the proxy fetching from an arbitrary host.
-    #[tokio::test]
-    async fn refusal_can_be_turned_off_and_then_they_are_forwarded() {
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            OFFSITE_PACKUMENT.as_bytes().to_vec(),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_refuse_unservable(false)
-                .router(),
-        )
-        .await;
-
-        let body = reqwest::get(format!("{base}/widget"))
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert!(
-            body.contains("https://elsewhere.example/widget-1.0.0.tgz"),
-            "an unreachable origin stays as it is: {body}"
-        );
-    }
-
-    /// A pinned fetch of a version the filter removes. Decision #4: filter on
-    /// resolution, hard fail on a pinned fetch, because there is no resolution left to
-    /// influence. The status is the configured one.
-    #[tokio::test]
-    async fn a_pinned_fetch_of_an_unservable_artifact_is_refused() {
-        let (base, seen) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            OFFSITE_PACKUMENT.as_bytes().to_vec(),
-        )
-        .await;
-
-        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 403);
-        let body = response.text().await.unwrap();
-        assert!(body.contains("elsewhere.example"), "got: {body}");
-        assert!(
-            !seen
-                .lock()
-                .unwrap()
-                .paths
-                .iter()
-                .any(|p| p.ends_with(".tgz")),
-            "a refused artifact must not be fetched"
-        );
-    }
-
-    /// Clients bucket status codes differently, so the refusal is configurable by
-    /// (ecosystem, client). pnpm and yarn both carry `npm/` in their user-agent, so this
-    /// also checks the client is read from the first token.
-    #[tokio::test]
-    async fn the_refusal_status_is_configurable_per_client() {
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            OFFSITE_PACKUMENT.as_bytes().to_vec(),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_refusal_status(
-                    crate::refusal::RefusalStatus::parse("default=403,npm/pnpm=451").unwrap(),
-                )
-                .router(),
-        )
-        .await;
-
-        for (agent, expected) in [
-            ("pnpm/10.33.0 npm/? node/v20.11.1 linux x64", 451),
-            ("npm/9.9.4 node/v16.20.1 linux x64", 403),
-            ("yarn/1.22.22 npm/? node/v16.20.1 linux x64", 403),
-        ] {
-            let response = reqwest::Client::new()
-                .get(format!("{base}/widget/-/widget-1.0.0.tgz"))
-                .header(header::USER_AGENT, agent)
-                .send()
-                .await
-                .unwrap();
-            assert_eq!(response.status().as_u16(), expected, "{agent}");
-        }
-    }
 
     /// A body past the limit is forwarded whole rather than truncated or refused. The
     /// prefix already read has to be spliced back in front of the rest of the stream.
@@ -3059,21 +2866,56 @@ mod tests {
         }
     }
 
-    /// A tag this proxy issued reaches upstream as the upstream's own tag.
+    /// A tag this proxy issued reaches upstream as the upstream's own tag. One issued at
+    /// another address does not reach upstream: a 304 would leave the client with artifact
+    /// URLs pointing at an address nobody listens on, so the registry has to send a body
+    /// to rewrite afresh.
     #[test]
-    fn a_tag_this_proxy_issued_is_turned_back_into_the_upstreams() {
+    fn a_tag_is_turned_back_only_at_the_address_that_issued_it() {
         let proxy = Proxy::new(reqwest::Client::new());
         let (ecosystem, target) = crate::route::classify("/lodash");
+        for (issued_at, expected) in [
+            ("http://proxy.test", Some("W/\"abc123\"")),
+            ("http://some-old-address:9999", None),
+        ] {
+            let mut headers = client_headers("gzip");
+            let issued = mark_etag("W/\"abc123\"", issued_at);
+            headers.insert(
+                header::IF_NONE_MATCH,
+                HeaderValue::from_str(&issued).unwrap(),
+            );
+            let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
+            let sent = upstream_headers(&headers, &negotiation, "/lodash");
+            assert_eq!(
+                sent.get(header::IF_NONE_MATCH).map(|v| v.to_str().unwrap()),
+                expected,
+                "{issued_at}"
+            );
+        }
+    }
+
+    /// Artifact URLs point at the address the client used, so a proxy reachable by several
+    /// names points each client back at its own. A configured base wins over `Host`, which
+    /// a deployment behind a load balancer needs, and which pins a stable name into
+    /// lockfiles.
+    #[test]
+    fn artifact_urls_point_at_the_host_the_client_used_unless_a_base_is_configured() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
-        let issued = mark_etag("W/\"abc123\"", "http://proxy.test");
-        headers.insert(
-            header::IF_NONE_MATCH,
-            HeaderValue::from_str(&issued).unwrap(),
-        );
-        let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
-        let sent = upstream_headers(&headers, &negotiation, "/lodash");
-        assert_eq!(sent[header::IF_NONE_MATCH], "W/\"abc123\"");
+        headers.insert(header::HOST, HeaderValue::from_static("npm.corp.example"));
+        headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
+        let (ecosystem, target) = crate::route::classify("/lodash");
+        for (configured, expected) in [
+            (None, "https://npm.corp.example"),
+            (
+                Some("https://registry.example/"),
+                "https://registry.example",
+            ),
+        ] {
+            let proxy =
+                Proxy::new(reqwest::Client::new()).with_public_base(configured.map(str::to_owned));
+            let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
+            assert_eq!(negotiation.rewrite_base.as_deref(), Some(expected));
+        }
     }
 
     /// A request the proxy does not read keeps every header the client sent it, other than
@@ -3128,6 +2970,17 @@ mod tests {
         f();
         drop(guard);
         text(&buf)
+    }
+
+    /// A limit of zero would deadlock every metadata request, so it is raised to one.
+    #[tokio::test]
+    async fn a_limit_of_zero_is_treated_as_one() {
+        let proxy = Proxy::new(reqwest::Client::new()).with_max_concurrent_documents(0);
+        let slot = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            metadata_slot(&proxy, "/lodash"),
+        );
+        assert!(slot.await.is_ok(), "no slot was ever free");
     }
 
     /// A slot taken at once is not reported; one waited for is.
@@ -3211,12 +3064,21 @@ mod tests {
         } else {
             crate::record::DocumentDetail::Abbreviated
         };
-        let metadata = npm::normalize_packument(&fixture(packument), detail).unwrap();
+        hold_document(proxy, &fixture(packument), detail);
+    }
+
+    fn hold_document(proxy: &Proxy, packument: &[u8], detail: crate::record::DocumentDetail) {
+        let metadata = npm::normalize_packument(packument, detail).unwrap();
         proxy.store.lock().unwrap().insert(metadata);
     }
 
     /// The proxy's decision on a GET of the artifact at `path`.
     async fn pinned(proxy: &Proxy, path: &str) -> ArtifactStep {
+        pinned_by(proxy, path, "-").await
+    }
+
+    /// The same, for a client whose user agent is `client`.
+    async fn pinned_by(proxy: &Proxy, path: &str, client: &str) -> ArtifactStep {
         let (
             ecosystem,
             RequestTarget::Artifact {
@@ -3235,7 +3097,7 @@ mod tests {
             claimed_version: &claimed_version,
             filename: &filename,
             path,
-            client: "-",
+            client,
         };
         decide_artifact(proxy, request).await
     }
@@ -3588,6 +3450,179 @@ mod tests {
         hold(&proxy, LODASH);
         hold(&proxy, ESBUILD);
         assert_eq!(proxy.store.lock().unwrap().records(), 1);
+    }
+
+    /// An artifact the proxy cannot serve is removed from the packument, so a resolver
+    /// picks a version that can be examined. It is the only control that works: the client
+    /// would fetch that URL from `elsewhere.example` and never ask the proxy. With the
+    /// refusal off, the document is forwarded as it came, and the URL stays as it was:
+    /// rewriting it would mean the proxy fetching from an arbitrary host.
+    #[tokio::test]
+    async fn versions_the_proxy_cannot_serve_are_removed_from_the_packument() {
+        let refusing = offline(None, None).with_refuse_unservable(true);
+        let DocumentStep::Forward(Some(body)) = resolve(
+            &refusing,
+            "/widget",
+            npm::ABBREVIATED_ACCEPT,
+            OFFSITE_PACKUMENT.as_bytes(),
+        )
+        .await
+        else {
+            panic!("the packument is rewritten");
+        };
+        let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(served["versions"].as_object().unwrap().is_empty());
+        assert!(
+            served["dist-tags"].as_object().unwrap().is_empty(),
+            "a tag naming a removed version resolves to nothing"
+        );
+
+        let forwarding = offline(None, None);
+        let forwarded = resolve(
+            &forwarding,
+            "/widget",
+            npm::ABBREVIATED_ACCEPT,
+            OFFSITE_PACKUMENT.as_bytes(),
+        )
+        .await;
+        assert!(matches!(forwarded, DocumentStep::Forward(None)));
+    }
+
+    /// A pinned fetch of a version the filter removes. Decision #4: filter on resolution,
+    /// hard fail on a pinned fetch, because there is no resolution left to influence.
+    /// Clients bucket status codes differently, so the status is configurable by
+    /// (ecosystem, client). pnpm and yarn both carry `npm/` in their user-agent, so this
+    /// also checks the client is read from the first token.
+    #[tokio::test]
+    async fn a_pinned_fetch_of_an_unservable_artifact_is_refused_with_the_clients_status() {
+        let proxy = offline(None, None)
+            .with_refuse_unservable(true)
+            .with_refusal_status(
+                crate::refusal::RefusalStatus::parse("default=403,npm/pnpm=451").unwrap(),
+            );
+        hold_document(
+            &proxy,
+            OFFSITE_PACKUMENT.as_bytes(),
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        for (agent, expected) in [
+            ("pnpm/10.33.0 npm/? node/v20.11.1 linux x64", 451),
+            ("npm/9.9.4 node/v16.20.1 linux x64", 403),
+            ("yarn/1.22.22 npm/? node/v16.20.1 linux x64", 403),
+        ] {
+            let step = pinned_by(&proxy, "/widget/-/widget-1.0.0.tgz", agent).await;
+            let (status, body) = refused(step).await;
+            assert_eq!(status.as_u16(), expected, "{agent}");
+            assert!(body.contains("elsewhere.example"), "{agent}: {body}");
+        }
+    }
+
+    /// With rewriting off, a document no policy changes is forwarded as it came.
+    #[tokio::test]
+    async fn rewriting_can_be_turned_off() {
+        let proxy = offline(None, None).with_artifact_rewriting(false);
+        assert!(matches!(
+            resolve_npm(&proxy, "lodash", LODASH).await,
+            DocumentStep::Forward(None)
+        ));
+    }
+
+    /// A 200 carrying something unreadable, or in an encoding this cannot decode, is
+    /// forwarded rather than turned into a 502: it is our gap, not an upstream outage.
+    #[tokio::test]
+    async fn a_document_the_proxy_cannot_read_is_forwarded_as_it_came() {
+        let proxy = offline(None, None);
+        let junk = resolve(
+            &proxy,
+            "/lodash",
+            npm::ABBREVIATED_ACCEPT,
+            b"<html>maintenance</html>",
+        )
+        .await;
+        assert!(matches!(junk, DocumentStep::Forward(None)));
+
+        let (ecosystem, target) = crate::route::classify("/lodash");
+        let negotiation = negotiate(
+            &proxy,
+            ecosystem,
+            &target,
+            &Method::GET,
+            &client_headers("gzip"),
+        );
+        let brotli = filtered_document(
+            &proxy,
+            DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
+            &Bytes::from_static(b"\x1b[brotli bytes]"),
+            Some("br"),
+            &negotiation,
+            "/lodash",
+        )
+        .await;
+        assert!(matches!(brotli, DocumentStep::Forward(None)));
+    }
+
+    /// A rewritten body is this proxy's, so its length, encoding and entity tag describe
+    /// it. A body that was not rewritten goes as it came, headers included.
+    #[tokio::test]
+    async fn a_rewritten_body_carries_its_own_length_encoding_and_tag() {
+        let mut upstream = HeaderMap::new();
+        upstream.insert(header::CONTENT_LENGTH, HeaderValue::from_static("8"));
+        upstream.insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
+        upstream.insert(header::ETAG, HeaderValue::from_static("\"t\""));
+        let base = "http://proxy.test";
+        let finished = |rewritten: Option<&[u8]>, encoding| {
+            finish(
+                rewritten.map(<[u8]>::to_vec),
+                Bytes::from_static(b"original"),
+                upstream.clone(),
+                StatusCode::OK,
+                encoding,
+                Some(base),
+                "/lodash",
+                |_| {},
+            )
+        };
+
+        let (status, body) = read(finished(Some(b"rewritten"), RequestedEncoding::Identity)).await;
+        assert_eq!((status, body.as_str()), (StatusCode::OK, "rewritten"));
+        let response = finished(Some(b"rewritten"), RequestedEncoding::Identity);
+        assert_eq!(response.headers()[header::CONTENT_LENGTH], "9");
+        assert!(!response.headers().contains_key(header::CONTENT_ENCODING));
+        assert_eq!(response.headers()[header::ETAG], mark_etag("\"t\"", base));
+
+        let gzipped = finished(Some(b"rewritten"), RequestedEncoding::Gzip);
+        assert_eq!(gzipped.headers()[header::CONTENT_ENCODING], "gzip");
+        let bytes = axum::body::to_bytes(gzipped.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(
+            decode_for_parsing(&bytes, Some("gzip"), 1 << 10).unwrap(),
+            b"rewritten"
+        );
+
+        let unread = finished(None, RequestedEncoding::Identity);
+        assert_eq!(unread.headers(), &upstream);
+        assert_eq!(read(unread).await.1, "original");
+    }
+
+    /// The settings that decide what gets examined are visible without reading a running
+    /// process's environment.
+    #[test]
+    fn health_reports_the_settings_that_decide_what_is_examined() {
+        let health = offline(None, None)
+            .with_refuse_unservable(true)
+            .with_public_base(Some("https://npm.corp.example".into()))
+            .with_origin_policy([], ["https://cdn.example"])
+            .unwrap()
+            .health();
+        assert_eq!(health.service, "waharoa");
+        assert_eq!(
+            health.public_base.as_deref(),
+            Some("https://npm.corp.example")
+        );
+        assert!(health.rewrite_artifacts);
+        assert!(health.refuse_unservable);
+        assert_eq!(health.allowed_direct_origins, ["https://cdn.example"]);
     }
 
     /// A refusal is on identity, not on the spelling of the path. `@babel%2ftraverse` and
@@ -4307,41 +4342,6 @@ mod tests {
         );
     }
 
-    /// A 200 carrying something unreadable does not become a 502 and does not stop the
-    /// install: it is our gap, not an upstream outage.
-    #[tokio::test]
-    async fn an_unreadable_packument_still_reaches_the_client() {
-        let junk = b"<html>maintenance</html>".to_vec();
-        let (base, _) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            junk.clone(),
-        )
-        .await;
-
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
-        assert_eq!(response.status(), 200);
-        assert_eq!(response.bytes().await.unwrap().as_ref(), junk.as_slice());
-    }
-
-    /// Likewise a body in an encoding this cannot decode.
-    #[tokio::test]
-    async fn an_undecodable_packument_still_reaches_the_client() {
-        let body = b"\x1b[brotli bytes]".to_vec();
-        let (base, _) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            Some("br"),
-            body.clone(),
-        )
-        .await;
-
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
-        assert_eq!(response.status(), 200);
-        assert_eq!(response.bytes().await.unwrap().as_ref(), body.as_slice());
-    }
-
     // -----------------------------------------------------------------------
     // Digest verification
     // -----------------------------------------------------------------------
@@ -4606,36 +4606,6 @@ mod tests {
         }
     }
 
-    /// With the refusal off, the packument is forwarded byte for byte, and no artifact
-    /// request follows because the client goes straight to the other host. That is the
-    /// exposure the refusal exists to close.
-    #[tokio::test]
-    async fn without_the_refusal_an_offsite_packument_is_forwarded_unchanged() {
-        let (upstream, seen) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            OFFSITE_PACKUMENT.as_bytes().to_vec(),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_refuse_unservable(false)
-                .router(),
-        )
-        .await;
-
-        let response = reqwest::get(format!("{base}/widget")).await.unwrap();
-        assert_eq!(response.status(), 200);
-        assert_eq!(response.text().await.unwrap(), OFFSITE_PACKUMENT);
-        assert_eq!(
-            seen.lock().unwrap().paths,
-            vec!["/widget"],
-            "no artifact request follows, because the client goes straight to the other host"
-        );
-    }
-
     /// A client that caches a rewritten packument revalidates against a tag we issued,
     /// not the upstream's. The proxy has to translate it back, or the registry never
     /// answers 304 and the conditional request buys nothing.
@@ -4717,101 +4687,6 @@ mod tests {
         );
     }
 
-    /// A tag issued when the proxy answered on another address must not revalidate: a 304
-    /// would leave the client serving artifact URLs pointing at an address nobody
-    /// listens on. Dropping the header makes the registry send a body to rewrite afresh.
-    #[tokio::test]
-    async fn a_tag_from_another_proxy_address_does_not_revalidate() {
-        let body = fixture("lodash-4.17.21.abbrev.json");
-        let (base, seen) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            body,
-        )
-        .await;
-
-        let stale = crate::http::mark_etag("\"upstream-tag\"", "http://some-old-address:9999");
-        let response = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
-            .header(header::IF_NONE_MATCH, stale)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), 200);
-        assert_eq!(
-            seen.lock()
-                .unwrap()
-                .headers
-                .last()
-                .unwrap()
-                .get(header::IF_NONE_MATCH),
-            None,
-            "the stale conditional header must not reach the registry"
-        );
-    }
-
-    /// The address written into artifact URLs comes from the `Host` the client used, so
-    /// a proxy reachable by several names points each client back at its own.
-    #[tokio::test]
-    async fn artifact_urls_use_the_host_the_client_reached_us_on() {
-        let body = fixture("lodash-4.17.21.abbrev.json");
-        let (base, _) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            body,
-        )
-        .await;
-
-        let text = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
-            .header(header::HOST, "npm.corp.example")
-            .header("x-forwarded-proto", "https")
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert!(
-            text.contains("https://npm.corp.example/lodash/-/lodash-4.17.21.tgz"),
-            "artifact URL did not follow Host and X-Forwarded-Proto: {text}"
-        );
-    }
-
-    /// An explicit public base wins over `Host`, which is what a deployment behind a load
-    /// balancer needs, and what pins a stable name into lockfiles.
-    #[tokio::test]
-    async fn a_configured_public_base_overrides_the_host_header() {
-        let body = fixture("lodash-4.17.21.abbrev.json");
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            body,
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_public_base(Some("https://npm.corp.example/".into()))
-                .router(),
-        )
-        .await;
-
-        let text = reqwest::get(format!("{base}/lodash"))
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap();
-        assert!(
-            text.contains("https://npm.corp.example/lodash/-/lodash-4.17.21.tgz"),
-            "the configured base was not used: {text}"
-        );
-    }
-
     /// Concurrent packument requests all have to be served, however tight the limit.
     ///
     /// The slot is taken after the body is buffered, not before it is read. With the
@@ -4854,76 +4729,6 @@ mod tests {
                 "every queued request still gets a rewritten body"
             );
         }
-    }
-
-    /// A limit of zero would deadlock every packument request, so it is raised to one.
-    #[tokio::test]
-    async fn a_limit_of_zero_is_treated_as_one() {
-        let body = fixture("lodash-4.17.21.abbrev.json");
-        let (upstream, _) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            body,
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_max_concurrent_documents(0)
-                .router(),
-        )
-        .await;
-
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
-        assert_eq!(response.status(), 200);
-        assert!(
-            response
-                .text()
-                .await
-                .unwrap()
-                .contains("/lodash/-/lodash-4.17.21.tgz")
-        );
-    }
-
-    /// The proxy answers for itself at one path, so a client can tell a waharoa from any
-    /// other registry, and the settings that decide what gets examined are visible
-    /// without reading a running process's environment.
-    #[tokio::test]
-    async fn the_health_path_is_answered_by_the_proxy_itself() {
-        let (upstream, seen) = upstream_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            b"{}".to_vec(),
-        )
-        .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_public_base(Some("https://npm.corp.example".into()))
-                .with_origin_policy([], ["https://cdn.example"])
-                .unwrap()
-                .router(),
-        )
-        .await;
-
-        let response = reqwest::get(format!("{base}{HEALTH_PATH}")).await.unwrap();
-        assert_eq!(response.status(), 200);
-        let health: Health = serde_json::from_str(&response.text().await.unwrap()).unwrap();
-
-        assert_eq!(health.service, "waharoa");
-        assert_eq!(
-            health.public_base.as_deref(),
-            Some("https://npm.corp.example")
-        );
-        assert!(health.rewrite_artifacts);
-        assert!(health.refuse_unservable);
-        assert_eq!(health.allowed_direct_origins, ["https://cdn.example"]);
-        assert!(
-            seen.lock().unwrap().paths.is_empty(),
-            "the health path must not be forwarded upstream"
-        );
     }
 
     /// `/-/` is the registry's own namespace, and everything else under it still goes
