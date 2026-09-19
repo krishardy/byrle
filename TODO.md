@@ -507,20 +507,26 @@ That is the failure mode every item below should be brought to.
       in the same stream at load. In the PyPI bundle, 2,583 take one and 153 stay unscored:
       [alias-matching](docs/engineering_decisions/alias-matching.md).
 
-- [ ] **`handle` is 644 lines, 12 returns and 8 mutable locals.**
+- [ ] **`handle` is 468 lines, 10 returns and 2 mutable locals.**
 
-      | Measure | Value |
-      |---|---|
-      | lines | 644 (`proxy.rs:830-1473`, 2026-09-20) |
-      | `return` statements | 12 |
-      | `let mut` threaded through | 8 |
+      | Measure | Before | After `decide_artifact` |
+      |---|---|---|
+      | lines | 644 | 468 (`proxy.rs:1080-1547`, 2026-09-20) |
+      | `return` statements | 12 | 10 |
+      | `let mut` | 8 | 2 |
 
-      Concerns in one function: health, defer, classification, encoding negotiation, digest
-      lookup, policy, forwarding, ETag rewriting, 304 handling, the semaphore, decode,
-      normalise, rewrite.
-      `expected_digest`, `artifact_origin`, `unservable_origin` and `policy_refusal` are
-      each set in one branch and read roughly 300 lines later. That is what a
-      decide-then-act split replaces: the decisions get names and the acting reads them.
+      Concerns in one function: health, defer, classification, encoding negotiation,
+      forwarding, ETag rewriting, 304 handling, the semaphore, decode, normalise, rewrite.
+      - [x] The artifact branch is `decide_artifact`, returning `ArtifactStep::Answer` or
+            `ArtifactStep::Fetch`. `expected_digest`, `artifact_purl` and `artifact_origin`
+            were set in that branch and read up to 300 lines later; they are now
+            `ArtifactFetch`'s fields. `unservable_origin` and `policy_refusal` no longer
+            leave it. Mutation testing found two paths no test reached: the verifier's
+            purl and a HEAD for an artifact. Both have tests.
+      - [ ] Encoding and document negotiation: `read_metadata`, `rewriting`,
+            `full_document` and `uninspected`. `full_document` is tested only through
+            sockets.
+      - [ ] The metadata branch: buffer, decode, read, intel, filter, rewrite.
 
 - [ ] **`Proxy` is 19 fields and 15 builders, cloned per request.**
       Configuration (`upstreams`, `refuse_unservable`, `served_origins`, `allowed_direct`,
