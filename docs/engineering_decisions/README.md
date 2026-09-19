@@ -34,7 +34,7 @@ code, and the file names where.
 | [Each ecosystem's versions order by its own rules; PEP 440 is hand-written](pep440-version-order.md) | Implemented |
 | [Policy version ranges are VERS strings, in every ecosystem](policy-version-ranges.md) | Implemented |
 | [`doctor` checks pip and uv, and reads uv's TOML configuration](doctor-python-clients.md) | Implemented |
-| [How a request through the proxy is tied to an account](account-identification.md) | Open question |
+| [How a request through the proxy is tied to an account](account-identification.md) | Decided |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
