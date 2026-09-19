@@ -394,7 +394,8 @@ That is the failure mode every item below should be brought to.
 
 ### Structure
 
-- [~] **Each ecosystem should be a module directory with the same file structure.**
+- [x] **Each ecosystem should be a module directory with the same file structure.**
+      Closed 2026-09-19: all five steps are done.
 
       Reached in five steps, each one gated on `smoke-npm`, `smoke-python` and
       `smoke-clients`. The table is the interface; the directories are what fills it.
