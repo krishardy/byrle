@@ -2501,33 +2501,6 @@ mod tests {
         );
     }
 
-    /// Only `If-None-Match` carries the identity that says a cached body was rewritten
-    /// here. A date-based 304 would authorise the client to serve one that was not.
-    #[tokio::test]
-    async fn date_conditionals_do_not_reach_upstream_while_rewriting() {
-        let (base, seen) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-
-        let response = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
-            .header(header::IF_MODIFIED_SINCE, "Wed, 21 Oct 2015 07:28:00 GMT")
-            .header(header::IF_RANGE, "\"abc\"")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-
-        let seen = seen.lock().unwrap();
-        let sent = &seen.headers[0];
-        assert!(!sent.contains_key(header::IF_MODIFIED_SINCE));
-        assert!(!sent.contains_key(header::IF_RANGE));
-    }
-
     /// Turning rewriting off restores byte-for-byte forwarding.
     #[tokio::test]
     async fn rewriting_can_be_turned_off() {
@@ -2689,119 +2662,6 @@ mod tests {
         }
     }
 
-    /// npm 9 offers `gzip,deflate` and registry.npmjs.org answers brotli whenever br is
-    /// offered. The proxy narrows the outbound request so only gzip has to be decoded.
-    #[tokio::test]
-    async fn accept_encoding_is_narrowed_on_packument_requests() {
-        let (base, seen) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-        let client = reqwest::Client::new();
-
-        client
-            .get(format!("{base}/lodash"))
-            .header(header::ACCEPT_ENCODING, "gzip, deflate, br")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            seen.lock()
-                .unwrap()
-                .accept_encoding
-                .last()
-                .unwrap()
-                .as_deref(),
-            Some("gzip"),
-            "br was on offer and would not be decodable here"
-        );
-
-        client
-            .get(format!("{base}/lodash"))
-            .header(header::ACCEPT_ENCODING, "br")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            seen.lock()
-                .unwrap()
-                .accept_encoding
-                .last()
-                .unwrap()
-                .as_deref(),
-            Some("identity"),
-            "the client does not accept gzip, so ask for something it does"
-        );
-    }
-
-    /// A client that accepts neither gzip nor identity keeps its own header, and its
-    /// body is left alone. Rewriting it to an encoding the client refused would break
-    /// the install for the sake of our inspection.
-    #[tokio::test]
-    async fn a_client_refusing_both_encodings_is_passed_through_untouched() {
-        let (base, seen) = proxy_serving(
-            StatusCode::OK,
-            "application/vnd.npm.install-v1+json",
-            None,
-            fixture("lodash-4.17.21.abbrev.json"),
-        )
-        .await;
-
-        reqwest::Client::new()
-            .get(format!("{base}/lodash"))
-            .header(header::ACCEPT_ENCODING, UNREADABLE)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            seen.lock()
-                .unwrap()
-                .accept_encoding
-                .last()
-                .unwrap()
-                .as_deref(),
-            Some(UNREADABLE),
-            "the client's own header has to survive"
-        );
-    }
-
-    /// Tarballs are not packuments: no rewriting, no buffering.
-    ///
-    /// The assertion picks the tarball request out of what the upstream saw rather than
-    /// taking the last one, because the proxy also fetches a packument of its own here.
-    #[tokio::test]
-    async fn tarball_requests_keep_the_clients_encoding() {
-        let (base, seen) = proxy_serving(
-            StatusCode::OK,
-            "application/octet-stream",
-            None,
-            b"tarball bytes".to_vec(),
-        )
-        .await;
-
-        let response = reqwest::Client::new()
-            .get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
-            .header(header::ACCEPT_ENCODING, "gzip, deflate, br")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(response.bytes().await.unwrap().as_ref(), b"tarball bytes");
-
-        let seen = seen.lock().unwrap();
-        let tarball = seen
-            .paths
-            .iter()
-            .position(|p| p.ends_with(".tgz"))
-            .expect("the upstream saw the tarball request");
-        assert_eq!(
-            seen.accept_encoding[tarball].as_deref(),
-            Some("gzip, deflate, br")
-        );
-    }
-
     /// A body past the limit is forwarded whole rather than truncated or refused. The
     /// prefix already read has to be spliced back in front of the rest of the stream.
     #[tokio::test]
@@ -2828,44 +2688,6 @@ mod tests {
             response.bytes().await.unwrap().as_ref(),
             body.as_slice(),
             "the whole body has to arrive, including the prefix already buffered"
-        );
-    }
-
-    /// Hop-by-hop headers describe one connection and must not cross to the next.
-    #[tokio::test]
-    async fn hop_by_hop_headers_and_credentials_do_not_cross_the_proxy() {
-        let (base, seen) = proxy_serving(
-            StatusCode::OK,
-            "application/octet-stream",
-            None,
-            b"x".to_vec(),
-        )
-        .await;
-
-        reqwest::Client::new()
-            .get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
-            .header("te", "trailers")
-            .header("proxy-authorization", "Basic c2VjcmV0")
-            .header("authorization", "Bearer account-token")
-            .send()
-            .await
-            .unwrap();
-
-        let seen = seen.lock().unwrap();
-        let forwarded = seen.headers.last().unwrap();
-        assert!(forwarded.get("te").is_none());
-        assert!(
-            forwarded.get("proxy-authorization").is_none(),
-            "a proxy credential must not be handed to the upstream"
-        );
-        assert!(
-            forwarded.get(header::AUTHORIZATION).is_none(),
-            "a credential for this proxy must not be handed to the upstream"
-        );
-        assert_ne!(
-            forwarded.get(header::HOST).map(|v| v.to_str().unwrap()),
-            Some(base.trim_start_matches("http://")),
-            "Host has to name the upstream, not the proxy"
         );
     }
 
@@ -3139,49 +2961,195 @@ mod tests {
         assert!(!unread.read_metadata && !unread.rewriting, "{unread:?}");
     }
 
-    /// Under a cooldown the client's `Accept` is replaced, not joined, and its credential
-    /// and `Host` stay at the proxy.
-    #[test]
-    fn the_full_document_accept_replaces_the_clients_own() {
-        let negotiation = negotiated(
-            Some("version: 1\ncooldown_days: 7\n"),
-            Method::GET,
-            "/lodash",
-            "gzip",
-        );
-        let mut client = HeaderMap::new();
-        client.insert(header::HOST, HeaderValue::from_static("proxy.test"));
-        client.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer t"));
-        client.insert(
-            header::ACCEPT,
-            HeaderValue::from_static(npm::ABBREVIATED_ACCEPT),
-        );
-        client.insert(
-            header::ACCEPT_ENCODING,
-            HeaderValue::from_static("gzip, br"),
-        );
-        client.insert(header::USER_AGENT, HeaderValue::from_static("npm/11"));
-        let sent = upstream_headers(&client, &negotiation, "/lodash");
-        let values = |name| sent.get_all(name).iter().collect::<Vec<_>>();
-        assert_eq!(values(header::ACCEPT), [npm::FULL_ACCEPT]);
-        assert_eq!(values(header::ACCEPT_ENCODING), ["gzip"]);
-        assert_eq!(values(header::USER_AGENT), ["npm/11"]);
-        assert!(values(header::AUTHORIZATION).is_empty());
-        assert!(values(header::HOST).is_empty());
+    /// The headers `handle` sends upstream for a client request carrying `client`, with
+    /// `yaml` as the policy. The client reached the proxy at `proxy.test`.
+    fn sent_upstream(
+        yaml: Option<&str>,
+        path: &str,
+        client: &[(header::HeaderName, &'static str)],
+    ) -> HeaderMap {
+        let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
+        let (ecosystem, target) = crate::route::classify(path);
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
+        for (name, value) in client {
+            headers.append(name, HeaderValue::from_static(value));
+        }
+        let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
+        upstream_headers(&headers, &negotiation, path)
     }
 
-    /// A request the proxy does not read keeps the client's encodings and conditionals.
+    /// What reaches upstream, header by header. `None` is a header that must not.
     #[test]
-    fn an_unread_request_keeps_the_clients_encoding_and_conditionals() {
-        let negotiation = negotiated(None, Method::GET, "/lodash/-/lodash-4.17.21.tgz", "gzip");
-        let mut client = HeaderMap::new();
-        client.insert(
-            header::ACCEPT_ENCODING,
-            HeaderValue::from_static("gzip, br"),
+    fn what_each_request_sends_upstream() {
+        const COOLDOWN: Option<&str> = Some("version: 1\ncooldown_days: 7\n");
+        const PACKUMENT: &str = "/lodash";
+        const TARBALL: &str = "/lodash/-/lodash-4.17.21.tgz";
+        // Label, policy, path, the client's headers, the header asked about, and what
+        // reaches upstream for it.
+        type Case<'a> = (
+            &'a str,
+            Option<&'a str>,
+            &'a str,
+            &'a [(header::HeaderName, &'static str)],
+            header::HeaderName,
+            Option<&'a str>,
         );
-        client.insert(header::IF_NONE_MATCH, HeaderValue::from_static("\"abc\""));
-        let sent = upstream_headers(&client, &negotiation, "/lodash/-/lodash-4.17.21.tgz");
-        assert_eq!(sent, client);
+        let cases: [Case; 13] = [
+            // npm 9 offers `gzip,deflate` and registry.npmjs.org answers brotli whenever br
+            // is offered. Narrowed, only gzip has to be decoded here.
+            (
+                "br narrowed away",
+                None,
+                PACKUMENT,
+                &[(header::ACCEPT_ENCODING, "gzip, deflate, br")],
+                header::ACCEPT_ENCODING,
+                Some("gzip"),
+            ),
+            (
+                "no gzip, so identity",
+                None,
+                PACKUMENT,
+                &[(header::ACCEPT_ENCODING, "br")],
+                header::ACCEPT_ENCODING,
+                Some("identity"),
+            ),
+            // Rewriting the header to an encoding the client refused would break the
+            // install for the sake of our inspection.
+            (
+                "neither gzip nor identity is kept",
+                None,
+                PACKUMENT,
+                &[(header::ACCEPT_ENCODING, UNREADABLE)],
+                header::ACCEPT_ENCODING,
+                Some(UNREADABLE),
+            ),
+            (
+                "an artifact is not read",
+                None,
+                TARBALL,
+                &[(header::ACCEPT_ENCODING, "gzip, deflate, br")],
+                header::ACCEPT_ENCODING,
+                Some("gzip, deflate, br"),
+            ),
+            (
+                "hop-by-hop",
+                None,
+                TARBALL,
+                &[(header::TE, "trailers")],
+                header::TE,
+                None,
+            ),
+            (
+                "a proxy credential",
+                None,
+                TARBALL,
+                &[(header::PROXY_AUTHORIZATION, "Basic c2VjcmV0")],
+                header::PROXY_AUTHORIZATION,
+                None,
+            ),
+            // A credential for this proxy, an account's token under TODO Stage 8.
+            (
+                "a credential for this proxy",
+                None,
+                TARBALL,
+                &[(header::AUTHORIZATION, "Bearer account-token")],
+                header::AUTHORIZATION,
+                None,
+            ),
+            // reqwest writes the upstream's own `Host`.
+            ("the proxy's Host", None, TARBALL, &[], header::HOST, None),
+            // Only `If-None-Match` carries the identity that says a cached body was
+            // rewritten here. A date-based 304 would authorise the client to serve one that
+            // was not.
+            (
+                "a date conditional",
+                None,
+                PACKUMENT,
+                &[(header::IF_MODIFIED_SINCE, "Wed, 21 Oct 2015 07:28:00 GMT")],
+                header::IF_MODIFIED_SINCE,
+                None,
+            ),
+            (
+                "a range conditional",
+                None,
+                PACKUMENT,
+                &[(header::IF_RANGE, "\"abc\"")],
+                header::IF_RANGE,
+                None,
+            ),
+            // Measured: after rewriting was enabled at an address that had run without it,
+            // npm sent the upstream's own tag, the registry answered 304, and the client
+            // stayed on its unrewritten copy.
+            (
+                "a tag this proxy did not issue",
+                None,
+                PACKUMENT,
+                &[(header::IF_NONE_MATCH, "W/\"abc123\"")],
+                header::IF_NONE_MATCH,
+                None,
+            ),
+            (
+                "the client's Accept, without a cooldown",
+                None,
+                PACKUMENT,
+                &[(header::ACCEPT, npm::ABBREVIATED_ACCEPT)],
+                header::ACCEPT,
+                Some(npm::ABBREVIATED_ACCEPT),
+            ),
+            // Replaced, not joined.
+            (
+                "the full packument, under a cooldown",
+                COOLDOWN,
+                PACKUMENT,
+                &[(header::ACCEPT, npm::ABBREVIATED_ACCEPT)],
+                header::ACCEPT,
+                Some(npm::FULL_ACCEPT),
+            ),
+        ];
+        for (label, yaml, path, client, name, expected) in cases {
+            let sent = sent_upstream(yaml, path, client);
+            let values: Vec<&str> = sent
+                .get_all(&name)
+                .iter()
+                .map(|v| v.to_str().unwrap())
+                .collect();
+            assert_eq!(values, expected.into_iter().collect::<Vec<_>>(), "{label}");
+        }
+    }
+
+    /// A tag this proxy issued reaches upstream as the upstream's own tag.
+    #[test]
+    fn a_tag_this_proxy_issued_is_turned_back_into_the_upstreams() {
+        let proxy = Proxy::new(reqwest::Client::new());
+        let (ecosystem, target) = crate::route::classify("/lodash");
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
+        let issued = mark_etag("W/\"abc123\"", "http://proxy.test");
+        headers.insert(
+            header::IF_NONE_MATCH,
+            HeaderValue::from_str(&issued).unwrap(),
+        );
+        let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
+        let sent = upstream_headers(&headers, &negotiation, "/lodash");
+        assert_eq!(sent[header::IF_NONE_MATCH], "W/\"abc123\"");
+    }
+
+    /// A request the proxy does not read keeps every header the client sent it, other than
+    /// the ones that stop at the proxy.
+    #[test]
+    fn an_artifact_request_keeps_the_clients_encoding_and_conditionals() {
+        let client = [
+            (header::ACCEPT_ENCODING, "gzip, br"),
+            (header::IF_NONE_MATCH, "\"abc\""),
+            (header::USER_AGENT, "npm/11"),
+        ];
+        let sent = sent_upstream(None, "/lodash/-/lodash-4.17.21.tgz", &client);
+        let mut expected = HeaderMap::new();
+        for (name, value) in client {
+            expected.insert(name, HeaderValue::from_static(value));
+        }
+        assert_eq!(sent, expected);
     }
 
     /// A log sink a test can read back.
@@ -3503,26 +3471,6 @@ mod tests {
             accepts,
             [npm::FULL_ACCEPT; 2],
             "one full-document request per client request, and nothing else"
-        );
-    }
-
-    /// Without a cooldown, the client's own `Accept` reaches the registry.
-    #[tokio::test]
-    async fn without_a_cooldown_the_client_asks_for_its_own_document() {
-        let (base, seen) = proxy_with_intel(malware_everywhere(), true).await;
-        reqwest::Client::new()
-            .get(format!("{base}/lodash"))
-            .header(header::ACCEPT, npm::ABBREVIATED_ACCEPT)
-            .send()
-            .await
-            .unwrap();
-        let seen = seen.lock().unwrap();
-        assert_eq!(
-            seen.headers
-                .last()
-                .and_then(|h| h.get(header::ACCEPT))
-                .map(|v| v.to_str().unwrap()),
-            Some(npm::ABBREVIATED_ACCEPT)
         );
     }
 
@@ -4239,80 +4187,6 @@ mod tests {
                 status
             );
         }
-    }
-
-    /// A conditional request for a body this proxy did not rewrite is not forwarded. A
-    /// 304 authorises the client to serve what it cached, and that copy has artifact URLs
-    /// that were never pointed here.
-    ///
-    /// Measured: after enabling rewriting at an address that previously ran without it,
-    /// npm sent the upstream's own tag, the registry answered 304, and the client stayed
-    /// on its unrewritten copy.
-    #[tokio::test]
-    async fn a_conditional_request_for_a_body_we_did_not_rewrite_is_dropped() {
-        let seen: Recorder = Arc::default();
-        let recorder = seen.clone();
-        let body = fixture("lodash-4.17.21.abbrev.json");
-        let router = Router::new().route(
-            "/lodash",
-            get(move |req: Request| {
-                let seen = recorder.clone();
-                let body = body.clone();
-                async move {
-                    seen.lock().unwrap().headers.push(req.headers().clone());
-                    if req.headers().contains_key(header::IF_NONE_MATCH) {
-                        return Response::builder()
-                            .status(StatusCode::NOT_MODIFIED)
-                            .header(header::ETAG, "W/\"abc123\"")
-                            .body(Body::empty())
-                            .unwrap();
-                    }
-                    Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")
-                        .header(header::ETAG, "W/\"abc123\"")
-                        .body(Body::from(body))
-                        .unwrap()
-                }
-            }),
-        );
-        let upstream = serve(router).await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .router(),
-        )
-        .await;
-
-        let response = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
-            .header(header::IF_NONE_MATCH, "W/\"abc123\"")
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(
-            response.status(),
-            200,
-            "the registry has to send a body, so it can be rewritten"
-        );
-        assert!(
-            response
-                .text()
-                .await
-                .unwrap()
-                .contains("/lodash/-/lodash-4.17.21.tgz"),
-            "and the body that arrives has to be the rewritten one"
-        );
-        assert!(
-            !seen
-                .lock()
-                .unwrap()
-                .headers
-                .last()
-                .unwrap()
-                .contains_key(header::IF_NONE_MATCH),
-            "the foreign tag must not reach the registry"
-        );
     }
 
     /// A 304 leaves the proxy nothing to normalise, so when it holds no records for that
