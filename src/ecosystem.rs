@@ -603,7 +603,7 @@ mod table {
     /// client points at an address nothing listens on, so any request would fail.
     #[tokio::test]
     async fn publish_times_for_pypi_ask_nothing() {
-        let nowhere = "http://127.0.0.1:9";
+        let nowhere = crate::util::test_support::NO_UPSTREAM;
         let upstreams = Upstreams::defaults()
             .with(Ecosystem::Npm, nowhere)
             .with(Ecosystem::PyPI, nowhere);
