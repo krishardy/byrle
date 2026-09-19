@@ -429,7 +429,7 @@ That is the failure mode every item below should be brought to.
       | `proxy.rs` | `handle`'s `match document`, each arm one call into the ecosystem module | each picks a reader per document kind |
       | `intel/providers/` | npm-only stream bindings | the directory is per **provider**, and step 4 makes each provider read more than npm rather than moving the file |
       | `doctor.rs` | finding text naming `npm ci` and "every client except npm" | measured npm behaviour, reported as such |
-      | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_PACKUMENT_BYTES` and the other variable names | configuration an operator already sets |
+      | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_METADATA_BYTES` and the other variable names | configuration an operator sets |
       | `identity.rs`, `route.rs` | `Ecosystem::Npm`, `Ecosystem::PyPI`, `DocumentKind::Packument`, `DocumentKind::SimpleIndex` | the enums that name each ecosystem and its document |
 
 - [ ] **npm and PyPI code outside `src/ecosystem/`, found 2026-09-18 at `6b43f92`.**
@@ -481,7 +481,7 @@ That is the failure mode every item below should be brought to.
 
 - [ ] **`Proxy` is 19 fields and 14 builders, cloned per request.**
       Configuration (`upstreams`, `refuse_unservable`,
-      `max_packument_bytes`, `rewrite_artifacts`, `public_base`), transport (`client`,
+      `max_metadata_bytes`, `rewrite_artifacts`, `public_base`), transport (`client`,
       `registry`, `index`), caches (`store`, `verified`, `publish_times`) and decision
       (`policy`, `intel`, `audit`, `refusal`) in one struct.
       Splitting configuration from runtime state would let most of `handle`'s helpers take
@@ -696,7 +696,7 @@ implementations.
                   Accept headers): exactly the two media types, no `charset` parameter.
                   A response with any other type is forwarded unread, so a mirror that
                   labels packuments differently would be observed by nothing.
-            - [x] Decompression is capped (`WAHAROA_MAX_PACKUMENT_BYTES`, default 32 MiB)
+            - [x] Decompression is capped (`WAHAROA_MAX_METADATA_BYTES`, default 32 MiB)
                   against a zip bomb. Over the cap the body is forwarded whole and not
                   parsed: an install must not fail on what the proxy could not inspect.
             - [x] Measured parse cost: 2 ms for lodash (117 versions), 7 ms for
@@ -775,7 +775,7 @@ implementations.
             address, `--prefer-online`. The registry answered 304, the proxy logged
             `held=false` and fetched the document itself in 21 ms, 117 versions, and the
             install completed.
-- [x] Memory under concurrency, measured. `WAHAROA_MAX_CONCURRENT_PACKUMENTS` (default 8)
+- [x] Memory under concurrency, measured. `WAHAROA_MAX_CONCURRENT_METADATA` (default 8)
       bounds how many packuments are decoded and rewritten at once.
       - [x] Realistic load is fine. A six-package install pulling typescript, eslint,
             webpack, react, @angular/core and @types/node: 165 packuments, peak 127 MB,
@@ -818,7 +818,7 @@ implementations.
             CI path.
       - [x] A body past the ceiling is a `FetchError::Undecodable`, not a normalisation
             failure: the bytes never became a document to model.
-      - [x] `DEFAULT_MAX_PACKUMENT_BYTES` moved to `http`, where the decoder is, so the
+      - [x] `DEFAULT_MAX_METADATA_BYTES` moved to `http`, where the decoder is, so the
             proxy's own fetches and the bodies it forwards read one value.
 - [x] Conditional requests (ETag / If-None-Match) so pass-through stays cheap. A
       rewritten packument gets an `ETag` marked with the proxy's own address, and only a

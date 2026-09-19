@@ -19,7 +19,7 @@ its own header, and its body is not read.
 
 Which document arrived is read from the response `Content-Type`, not from the request.
 
-Decompression is capped, default 32 MiB, settable with `WAHAROA_MAX_PACKUMENT_BYTES`.
+Decompression is capped, default 32 MiB, settable with `WAHAROA_MAX_METADATA_BYTES`.
 Past the cap the body is forwarded whole and not parsed.
 
 ## Rationale

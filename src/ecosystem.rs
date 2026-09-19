@@ -64,7 +64,7 @@ impl Clients {
         Ok(Self::new(
             reqwest::Client::new(),
             &environment.upstreams()?,
-            environment.max_packument_bytes()?,
+            environment.max_metadata_bytes()?,
         ))
     }
 

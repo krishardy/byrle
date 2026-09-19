@@ -104,7 +104,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
             .map_err(|e| StartupError::Unusable(format!("upstream HTTP client: {e}")))?,
     };
 
-    let max_packument_bytes = environment.max_packument_bytes()?;
+    let max_metadata_bytes = environment.max_metadata_bytes()?;
     let max_records = environment.max_records()?;
     let max_verified = environment.max_verified()?;
 
@@ -130,7 +130,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         );
     }
 
-    let max_concurrent = environment.max_concurrent_packuments()?;
+    let max_concurrent = environment.max_concurrent_metadata()?;
 
     // Additional origins whose artifacts this proxy serves, for a registry that publishes
     // them somewhere else. The upstream and the default registry are always included.
@@ -249,7 +249,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_max_concurrent_documents(max_concurrent)
         .with_policy(policy)
         .with_audit_log(audit)
-        .with_max_metadata_bytes(max_packument_bytes)
+        .with_max_metadata_bytes(max_metadata_bytes)
         .with_max_records(max_records)
         .with_max_verified(max_verified)
         .with_artifact_rewriting(rewrite_artifacts)

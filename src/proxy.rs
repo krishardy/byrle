@@ -52,7 +52,7 @@ use crate::defer::DeferTest;
 use crate::ecosystem::{self, Clients, UncoveredMetadata, Upstreams};
 use crate::ecosystem::{npm, pypi};
 use crate::env::{
-    DEFAULT_MAX_CONCURRENT_PACKUMENTS, DEFAULT_MAX_PACKUMENT_BYTES, DEFAULT_MAX_RECORDS,
+    DEFAULT_MAX_CONCURRENT_METADATA, DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_VERIFIED,
 };
 use crate::http::{
@@ -172,7 +172,7 @@ pub struct Proxy {
     /// branches on this (plan §5). See [`crate::verified`].
     verified: Arc<Mutex<VerifiedArtifacts>>,
     /// Bounds how many packuments are decoded and rewritten at once. See
-    /// [`DEFAULT_MAX_CONCURRENT_PACKUMENTS`].
+    /// [`DEFAULT_MAX_CONCURRENT_METADATA`].
     metadata_slots: Arc<Semaphore>,
     /// Which origins this proxy serves, and which it permits a client to fetch directly.
     /// One source of truth for rewriting, for the report, and for the refusal.
@@ -238,7 +238,7 @@ impl Proxy {
             clients: Clients::new(
                 client.clone(),
                 &Upstreams::defaults(),
-                DEFAULT_MAX_PACKUMENT_BYTES,
+                DEFAULT_MAX_METADATA_BYTES,
             ),
             client,
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
@@ -249,10 +249,10 @@ impl Proxy {
             audit: None,
             intel: None,
             coverage: Arc::new(Mutex::new(None)),
-            max_metadata_bytes: DEFAULT_MAX_PACKUMENT_BYTES,
+            max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
             rewrite_artifacts: true,
             public_base: None,
-            metadata_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_PACKUMENTS)),
+            metadata_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_METADATA)),
             refusal: Arc::new(RefusalStatus::default()),
             refuse_unservable: true,
             #[cfg(debug_assertions)]
