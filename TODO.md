@@ -507,12 +507,12 @@ That is the failure mode every item below should be brought to.
       in the same stream at load. In the PyPI bundle, 2,583 take one and 153 stay unscored:
       [alias-matching](docs/engineering_decisions/alias-matching.md).
 
-- [ ] **`handle` is 653 lines, 13 returns and 8 mutable locals.**
+- [ ] **`handle` is 644 lines, 12 returns and 8 mutable locals.**
 
       | Measure | Value |
       |---|---|
-      | lines | 653 (`proxy.rs:980-1633`) |
-      | `return` statements | 13 |
+      | lines | 644 (`proxy.rs:830-1473`, 2026-09-20) |
+      | `return` statements | 12 |
       | `let mut` threaded through | 8 |
 
       Concerns in one function: health, defer, classification, encoding negotiation, digest
@@ -522,11 +522,11 @@ That is the failure mode every item below should be brought to.
       each set in one branch and read roughly 300 lines later. That is what a
       decide-then-act split replaces: the decisions get names and the acting reads them.
 
-- [ ] **`Proxy` is 19 fields and 14 builders, cloned per request.**
-      Configuration (`upstreams`, `refuse_unservable`,
-      `max_metadata_bytes`, `rewrite_artifacts`, `public_base`), transport (`client`,
-      `registry`, `index`), caches (`store`, `verified`, `publish_times`) and decision
-      (`policy`, `intel`, `audit`, `refusal`) in one struct.
+- [ ] **`Proxy` is 19 fields and 15 builders, cloned per request.**
+      Configuration (`upstreams`, `refuse_unservable`, `served_origins`, `allowed_direct`,
+      `max_metadata_bytes`, `rewrite_artifacts`, `public_base`, `defer_test`), transport
+      (`client`, `clients`, `metadata_slots`, `origins`), caches (`store`, `verified`) and
+      decision (`policy`, `intel`, `coverage`, `audit`, `refusal`) in one struct.
       Splitting configuration from runtime state would let most of `handle`'s helpers take
       what they use rather than the whole proxy, which is what currently forces the test
       shape below.
@@ -2366,12 +2366,9 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       concurrency-memory item worse rather than better. Measured RSS after an
       `express + @babel/code-frame` install holding 70 packuments and 2,576
       records: 25 MB.
-- [ ] The publish-time store is per-process too, so every restart re-fetches every full
-      packument a cooldown needs. `npm::publish_times` parses only the `time` map and
-      caches per package, bounded at 1,024. Moved from Stage 2's `cooldown_days`, where
-      the check and the fetch are built and persistence is all that is left. The full
-      document is 1.7x to 3.6x the abbreviated one, measured over eight packages, so a
-      restart costs that much again on every package a cooldown is asked about.
+- [x] The publish-time store is per-process too. Removed 2026-09-19: a cooldown policy asks
+      npm for the full packument on each metadata request, and nothing is kept
+      ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
 - [ ] `waharoa doctor` should check that the configured public URL resolves
       and matches what lockfiles in the project record. This is the failure
       an operator will actually hit.
