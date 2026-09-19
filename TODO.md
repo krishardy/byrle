@@ -438,6 +438,10 @@ That is the failure mode every item below should be brought to.
       | `datadog/npm`, `datadog/pypi`, `cisa/kev` | loaded |
       | `github/npm`, `github/pypi` | not loaded, token unset; the rest loaded |
 
+      A second refresh with `~/.config/waharoa/env` sourced loaded all seven streams in
+      279 s: `github/npm` 7,078 advisories over 101 pages, `github/pypi` 6,078 over 114, and
+      every `github/pypi` name in PEP 503 form (`GitPython` stored as `gitpython`).
+
       `waharoa explain 'pkg:pypi/requests@2.19.0'` blocks on `GHSA-x84v-xcm2-53pg` 7.5, and
       `pip install requests==2.19.0` through the proxy finds no matching distribution: the
       index lists 2.31.0 and later.
