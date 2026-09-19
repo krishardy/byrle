@@ -208,7 +208,7 @@ impl fmt::Display for PackageKey {
 /// use the first form and 855 use the second. OSV's own API normalizes them, but a local
 /// mirror holds the raw strings, so without this those 855 records are unreachable by a key
 /// built from a registry name. `MAL-` malware records are over-represented among them.
-fn key_from_purl(
+pub fn key_from_purl(
     ecosystem: Ecosystem,
     namespace: Option<&str>,
     name: &str,
