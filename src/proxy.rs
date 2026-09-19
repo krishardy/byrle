@@ -827,6 +827,228 @@ fn upstream_url(
     (ecosystem::of(ecosystem).upstream_url)(proxy.upstreams.get(ecosystem), path_and_query)
 }
 
+/// The upstream response's headers, less the hop-by-hop ones.
+fn upstream_response_headers(upstream: &HeaderMap) -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    for (name, value) in upstream {
+        if is_hop_by_hop(name.as_str()) {
+            continue;
+        }
+        headers.insert(name.clone(), value.clone());
+    }
+    headers
+}
+
+/// A 304 for a metadata document: refill the store if its records are gone, and mark the
+/// `ETag` the client is told to keep.
+async fn revalidated(
+    proxy: &Proxy,
+    target: &RequestTarget,
+    negotiation: &Negotiation,
+    headers: &mut HeaderMap,
+    path: &str,
+) {
+    // A warm client cache sends If-None-Match, and 304 carries no body, so there is
+    // nothing to normalise from this response. The client is about to resolve against a
+    // document the proxy cannot see.
+    //
+    // When the records are still held that does not matter: the 304 only revalidates a
+    // body this proxy produced, so it was normalised when it was first served. When they
+    // are not, because the proxy restarted or the entry was evicted, the packument is
+    // fetched here so the metadata is in hand before the artifact requests arrive rather
+    // than one lazy fetch at a time.
+    if let RequestTarget::Metadata(key) = target {
+        let held = proxy.store.lock().expect("record store lock").holds(key);
+        info!(
+            path = %path,
+            purl = %key,
+            etag = headers.get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("-"),
+            held,
+            "metadata not modified, nothing to normalize"
+        );
+        if !held {
+            fetch_and_store(proxy, key, path).await;
+        }
+    }
+
+    // A 304 carries the upstream's own `ETag`, and the client stores whatever comes back.
+    // Left alone it replaces the marked tag with the upstream's, `unmark_if_none_match`
+    // drops that tag on the next revalidation, and the client gets a full body. Measured
+    // over four requests for lodash before this: 200 (68,970 bytes), 304, 200, 304. After:
+    // 200, then 304 every time.
+    //
+    // The body the client is being told to keep is one this proxy rewrote at this base,
+    // because that is the only tag the request could have carried to get a 304 here.
+    if negotiation.rewriting
+        && let Some(base) = negotiation.rewrite_base.as_deref()
+        && let Some(marked) = headers
+            .get(header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(|etag| mark_etag(etag, base))
+        && let Ok(value) = HeaderValue::from_str(&marked)
+    {
+        headers.insert(header::ETAG, value);
+    }
+}
+
+/// Wait for a slot to decode, read and rewrite a metadata document in.
+///
+/// Queue after the body is read, not before. The encoded body is already in hand and the
+/// upstream connection is finished, so waiting costs only time. Waiting with the response
+/// still streaming stalls it until it times out: measured with the acquire placed before
+/// the read, 18 of 24 concurrent requests failed with "error decoding response body".
+///
+/// What this bounds is the expensive part. The decoded copy, the value tree the rewrite
+/// walks, the re-serialised output and the gzip buffer are live together, and 24
+/// simultaneous large packuments reached 1,348 MB while the encoded bodies totalled
+/// 27.6 MB.
+async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphorePermit {
+    let queued = Instant::now();
+    let slot = proxy
+        .metadata_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("the semaphore is never closed");
+    let waited = queued.elapsed();
+    if waited.as_millis() > 0 {
+        debug!(
+            path = %path,
+            waited_ms = waited.as_millis() as u64,
+            "waited for a metadata slot"
+        );
+    }
+    slot
+}
+
+/// What the proxy does with a metadata document it has read.
+enum DocumentStep {
+    /// The proxy answers in place of the document: no intel to filter it with.
+    Answer(Response),
+    /// Send the document on: rewritten when `Some`, the upstream's bytes when `None`.
+    Forward(Option<Vec<u8>>),
+}
+
+/// Decode, read, filter by policy and rewrite a metadata document.
+async fn filtered_document(
+    proxy: &Proxy,
+    document: DocumentKind,
+    body: &Bytes,
+    content_encoding: Option<&str>,
+    negotiation: &Negotiation,
+    path: &str,
+) -> DocumentStep {
+    // Decoded once. Normalising and the store read these bytes; the rewrite below works
+    // on a copy. Building records from the rewritten document instead would set every
+    // artifact URL to the proxy's own origin, which is both the wrong thing to store as
+    // the upstream's claim and enough to make the offsite check report every package.
+    let parse_started = Instant::now();
+    let decoded = match decode_for_parsing(body, content_encoding, proxy.max_metadata_bytes) {
+        Ok(decoded) => decoded,
+        Err(e) => {
+            warn!(path = %path, error = %e, "UNINSPECTED: metadata body could not be decoded");
+            return DocumentStep::Forward(None);
+        }
+    };
+
+    // Each document kind is read by its own normaliser, and a `match` rather than a test
+    // and a fall-through: a third kind has to answer this rather than reach whichever arm
+    // was written last.
+    let read = match document {
+        DocumentKind::Packument(detail) => npm::read_packument(
+            &decoded,
+            detail,
+            &proxy.store,
+            &proxy.origins,
+            body.len(),
+            parse_started,
+            path,
+        )
+        .map(Read::Packument),
+        DocumentKind::SimpleIndex => {
+            pypi::read_index(&decoded, &proxy.store, path).map(Read::SimpleIndex)
+        }
+    };
+    let Some(read) = read else {
+        return DocumentStep::Forward(None);
+    };
+    let normalized = read.metadata();
+
+    // Asked once per document rather than once per version: typescript has 3,823.
+    let intel = match normalized {
+        Some(metadata) => match intel_for(proxy, &metadata.key, path).await {
+            Ok(intel) => intel,
+            Err(IntelUnavailable::Uncovered(uncovered))
+                if ecosystem::of(uncovered).uncovered_metadata
+                    == UncoveredMetadata::FilterWithoutIntel =>
+            {
+                warn!(
+                    path = %path,
+                    "filtering without intel; the artifact request answers 503"
+                );
+                None
+            }
+            Err(unavailable) => return DocumentStep::Answer(unavailable.response()),
+        },
+        None => None,
+    };
+
+    // Not gated on `rewriting`. Filtering refused versions is a policy question and
+    // repointing artifact URLs is a transport one, and tying them together meant that
+    // turning rewriting off, which `docs/engineering_decisions/enforcement-tiers.md` says
+    // is correct once the proxy terminates TLS, silently stopped the policy filtering
+    // with it.
+    //
+    // Decision #4's resolution half. A version the policy refuses is dropped from the
+    // document, so the client's own resolver picks one that is allowed and the install
+    // succeeds without anyone being told no. The pinned half, where there is no resolution
+    // left to influence, refuses at the artifact request.
+    let refused_by_policy = match normalized {
+        Some(metadata) => policy_refused_versions(
+            metadata,
+            proxy.policy.as_deref(),
+            intel.as_ref(),
+            path,
+            proxy.audit.as_deref(),
+        ),
+        None => HashSet::new(),
+    };
+    let base = negotiation
+        .rewriting
+        .then_some(negotiation.rewrite_base.as_deref())
+        .flatten();
+
+    // The npm rewrite. Every client in the npm ecosystem has to fetch artifacts through the
+    // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
+    // configured registry, pnpm 10 and yarn 1 use it verbatim. Pointing it here makes
+    // them behave alike.
+    //
+    // It needs the records, so a packument that did not normalise is not rewritten either.
+    // That is the honest outcome: without records there is nothing to gate on anyway, and
+    // it is already logged as UNINSPECTED. A simple index that parsed but did not
+    // normalise still has its files repointed, because the file request is where PyPI's
+    // digest is checked.
+    DocumentStep::Forward(match &read {
+        Read::Packument(packument) => npm::rewrite_packument(npm::Rewrite {
+            decoded: &decoded,
+            packument,
+            base,
+            origins: &proxy.origins,
+            refused_by_policy: &refused_by_policy,
+            refuse_unservable: proxy.refuse_unservable,
+            path,
+        }),
+        Read::SimpleIndex(index) => pypi::rewrite::rewrite_index(pypi::rewrite::Rewrite {
+            decoded: &decoded,
+            project: &index.project,
+            reachable: proxy.origins.reachable(),
+            base,
+            refused_by_policy: &refused_by_policy,
+            path,
+        }),
+    })
+}
+
 /// How a request's metadata document is asked for and read, decided from the request and
 /// the proxy's configuration before anything goes upstream.
 #[derive(Debug, PartialEq, Eq)]
@@ -1330,13 +1552,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let status = upstream_response.status();
     let upstream_len = upstream_response.content_length();
 
-    let mut headers = HeaderMap::new();
-    for (name, value) in upstream_response.headers() {
-        if is_hop_by_hop(name.as_str()) {
-            continue;
-        }
-        headers.insert(name.clone(), value.clone());
-    }
+    let mut headers = upstream_response_headers(upstream_response.headers());
     let content_encoding = headers
         .get(header::CONTENT_ENCODING)
         .and_then(|v| v.to_str().ok())
@@ -1346,49 +1562,8 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         .and_then(|v| v.to_str().ok());
     let document = crate::ecosystem::of(ecosystem).document(content_type);
 
-    // A warm client cache sends If-None-Match, and 304 carries no body, so there is
-    // nothing to normalise from this response. The client is about to resolve against a
-    // document the proxy cannot see.
-    //
-    // When the records are still held that does not matter: the 304 only revalidates a
-    // body this proxy produced, so it was normalised when it was first served. When they
-    // are not, because the proxy restarted or the entry was evicted, the packument is
-    // fetched here so the metadata is in hand before the artifact requests arrive rather
-    // than one lazy fetch at a time.
-    if status == reqwest::StatusCode::NOT_MODIFIED
-        && let RequestTarget::Metadata(key) = &target
-    {
-        let held = proxy.store.lock().expect("record store lock").holds(key);
-        info!(
-            path = %path_and_query,
-            purl = %key,
-            etag = headers.get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("-"),
-            held,
-            "metadata not modified, nothing to normalize"
-        );
-        if !held {
-            fetch_and_store(&proxy, key, &path_and_query).await;
-        }
-    }
-
-    // A 304 carries the upstream's own `ETag`, and the client stores whatever comes back.
-    // Left alone it replaces the marked tag with the upstream's, `unmark_if_none_match`
-    // drops that tag on the next revalidation, and the client gets a full body. Measured
-    // over four requests for lodash before this: 200 (68,970 bytes), 304, 200, 304. After:
-    // 200, then 304 every time.
-    //
-    // The body the client is being told to keep is one this proxy rewrote at this base,
-    // because that is the only tag the request could have carried to get a 304 here.
-    if status == reqwest::StatusCode::NOT_MODIFIED
-        && negotiation.rewriting
-        && let Some(base) = negotiation.rewrite_base.as_deref()
-        && let Some(marked) = headers
-            .get(header::ETAG)
-            .and_then(|v| v.to_str().ok())
-            .map(|etag| mark_etag(etag, base))
-        && let Ok(value) = HeaderValue::from_str(&marked)
-    {
-        headers.insert(header::ETAG, value);
+    if status == reqwest::StatusCode::NOT_MODIFIED {
+        revalidated(&proxy, &target, &negotiation, &mut headers, &path_and_query).await;
     }
 
     let forward_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -1458,144 +1633,20 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         }
     };
 
-    // Queue here, not before the body is read. The encoded body is already in hand and
-    // the upstream connection is finished, so waiting costs only time. Waiting with the
-    // response still streaming stalls it until it times out: measured with the acquire
-    // placed before the read, 18 of 24 concurrent requests failed with "error decoding
-    // response body".
-    //
-    // What this bounds is the expensive part. The decoded copy, the value tree the
-    // rewrite walks, the re-serialised output and the gzip buffer are live together, and
-    // 24 simultaneous large packuments reached 1,348 MB while the encoded bodies totalled
-    // 27.6 MB.
-    let queued = Instant::now();
-    let _slot = proxy
-        .metadata_slots
-        .clone()
-        .acquire_owned()
-        .await
-        .expect("the semaphore is never closed");
-    let waited = queued.elapsed();
-    if waited.as_millis() > 0 {
-        debug!(
-            path = %path_and_query,
-            waited_ms = waited.as_millis() as u64,
-            "waited for a metadata slot"
-        );
-    }
+    let _slot = metadata_slot(&proxy, &path_and_query).await;
 
-    // Decoded once. Normalising and the store read these bytes; the rewrite below works
-    // on a copy. Building records from the rewritten document instead would set every
-    // artifact URL to the proxy's own origin, which is both the wrong thing to store as
-    // the upstream's claim and enough to make the offsite check report every package.
-    let parse_started = Instant::now();
-    let decoded = match decode_for_parsing(
+    let forwarded = match filtered_document(
+        &proxy,
+        document,
         &body,
         content_encoding.as_deref(),
-        proxy.max_metadata_bytes,
-    ) {
-        Ok(decoded) => Some(decoded),
-        Err(e) => {
-            warn!(path = %path_and_query, error = %e, "UNINSPECTED: metadata body could not be decoded");
-            None
-        }
-    };
-
-    // Each document kind is read by its own normaliser, and a `match` rather than a test
-    // and a fall-through: a third kind has to answer this rather than reach whichever arm
-    // was written last. Nothing to read when decoding failed; it was logged above.
-    let read = decoded.as_deref().and_then(|d| match document {
-        DocumentKind::Packument(detail) => npm::read_packument(
-            d,
-            detail,
-            &proxy.store,
-            &proxy.origins,
-            body.len(),
-            parse_started,
-            &path_and_query,
-        )
-        .map(Read::Packument),
-        DocumentKind::SimpleIndex => {
-            pypi::read_index(d, &proxy.store, &path_and_query).map(Read::SimpleIndex)
-        }
-    });
-    let normalized = read.as_ref().and_then(Read::metadata);
-
-    // Asked once per document rather than once per version: typescript has 3,823.
-    let intel = match normalized {
-        Some(metadata) => match intel_for(&proxy, &metadata.key, &path_and_query).await {
-            Ok(intel) => intel,
-            Err(IntelUnavailable::Uncovered(uncovered))
-                if ecosystem::of(uncovered).uncovered_metadata
-                    == UncoveredMetadata::FilterWithoutIntel =>
-            {
-                warn!(
-                    path = %path_and_query,
-                    "filtering without intel; the artifact request answers 503"
-                );
-                None
-            }
-            Err(unavailable) => return unavailable.response(),
-        },
-        None => None,
-    };
-
-    // Not gated on `rewriting`. Filtering refused versions is a policy question and
-    // repointing artifact URLs is a transport one, and tying them together meant that
-    // turning rewriting off, which `docs/engineering_decisions/enforcement-tiers.md` says
-    // is correct once the proxy terminates TLS, silently stopped the policy filtering
-    // with it.
-    //
-    // Decision #4's resolution half. A version the policy refuses is dropped from the
-    // document, so the client's own resolver picks one that is allowed and the install
-    // succeeds without anyone being told no. The pinned half, where there is no resolution
-    // left to influence, refuses at the artifact request.
-    let refused_by_policy = match normalized {
-        Some(metadata) => policy_refused_versions(
-            metadata,
-            proxy.policy.as_deref(),
-            intel.as_ref(),
-            &path_and_query,
-            proxy.audit.as_deref(),
-        ),
-        None => HashSet::new(),
-    };
-    let base = negotiation
-        .rewriting
-        .then_some(negotiation.rewrite_base.as_deref())
-        .flatten();
-
-    // The npm rewrite. Every client in the npm ecosystem has to fetch artifacts through the
-    // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
-    // configured registry, pnpm 10 and yarn 1 use it verbatim. Pointing it here makes
-    // them behave alike.
-    //
-    // It needs the records, so a packument that did not normalise is not rewritten either.
-    // That is the honest outcome: without records there is nothing to gate on anyway, and
-    // it is already logged as UNINSPECTED above. A simple index that parsed but did not
-    // normalise still has its files repointed, because the file request is where PyPI's
-    // digest is checked.
-    let forwarded = match (decoded.as_deref(), &read) {
-        (Some(decoded), Some(Read::Packument(packument))) => npm::rewrite_packument(npm::Rewrite {
-            decoded,
-            packument,
-            base,
-            origins: &proxy.origins,
-            refused_by_policy: &refused_by_policy,
-            refuse_unservable: proxy.refuse_unservable,
-            path: &path_and_query,
-        }),
-        (Some(decoded), Some(Read::SimpleIndex(index))) => {
-            pypi::rewrite::rewrite_index(pypi::rewrite::Rewrite {
-                decoded,
-                project: &index.project,
-                reachable: proxy.origins.reachable(),
-                base,
-                refused_by_policy: &refused_by_policy,
-                path: &path_and_query,
-            })
-        }
-        _ => None,
+        &negotiation,
+        &path_and_query,
+    )
+    .await
+    {
+        DocumentStep::Answer(response) => return response,
+        DocumentStep::Forward(forwarded) => forwarded,
     };
 
     finish(
@@ -3111,16 +3162,47 @@ mod tests {
         }
     }
 
-    /// What `f` logs at INFO and above.
-    fn logged(f: impl FnOnce()) -> String {
+    /// Route this thread's logs at `level` and above into a buffer, until the guard drops.
+    fn capture(level: tracing::Level) -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<u8>>>) {
         let buf = Arc::new(Mutex::new(Vec::new()));
         let sink = buf.clone();
         let subscriber = tracing_subscriber::fmt()
+            .with_max_level(level)
             .with_writer(move || Captured(sink.clone()))
             .with_ansi(false)
             .finish();
-        tracing::subscriber::with_default(subscriber, f);
+        (tracing::subscriber::set_default(subscriber), buf)
+    }
+
+    fn text(buf: &Mutex<Vec<u8>>) -> String {
         String::from_utf8(buf.lock().unwrap().clone()).unwrap()
+    }
+
+    /// What `f` logs at INFO and above.
+    fn logged(f: impl FnOnce()) -> String {
+        let (guard, buf) = capture(tracing::Level::INFO);
+        f();
+        drop(guard);
+        text(&buf)
+    }
+
+    /// A slot taken at once is not reported; one waited for is.
+    #[tokio::test]
+    async fn only_a_wait_for_a_metadata_slot_is_logged() {
+        let proxy = Proxy::new(reqwest::Client::new()).with_max_concurrent_documents(1);
+        let (_guard, buf) = capture(tracing::Level::DEBUG);
+        let held = metadata_slot(&proxy, "/first").await;
+        assert_eq!(text(&buf), "", "nothing was waited for");
+
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            drop(held);
+        });
+        let _second = metadata_slot(&proxy, "/second").await;
+        release.await.unwrap();
+        let log = text(&buf);
+        assert!(log.contains("waited for a metadata slot"), "{log}");
+        assert!(log.contains("/second"), "{log}");
     }
 
     /// `make smoke-clients` greps for `UNINSPECTED`, so the line is part of the interface.
@@ -3140,6 +3222,37 @@ mod tests {
         assert!(unread.contains("UNINSPECTED"), "{unread}");
         assert!(unread.contains(UNREADABLE), "{unread}");
         assert_eq!(report("gzip"), "", "a rewritten document is inspected");
+    }
+
+    /// The metadata branch answers without a socket: a version the intel reports as malware
+    /// is gone from the document the client receives.
+    #[tokio::test]
+    async fn a_refused_version_is_filtered_out_of_the_document() {
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_intel(Some(malware_everywhere()))
+            .with_refuse_unservable(false)
+            .with_policy(Some(policy("version: 1\ncooldown_days: 0\n")));
+        let body = Bytes::from(fixture("lodash-4.17.21.abbrev.json"));
+        let negotiation = negotiated(None, Method::GET, "/lodash", "gzip");
+        let DocumentStep::Forward(Some(forwarded)) = filtered_document(
+            &proxy,
+            DocumentKind::Packument(crate::record::DocumentDetail::Abbreviated),
+            &body,
+            None,
+            &negotiation,
+            "/lodash",
+        )
+        .await
+        else {
+            panic!("the document is read and rewritten");
+        };
+        let forwarded = String::from_utf8(forwarded).unwrap();
+        assert!(body.windows(7).any(|w| w == b"4.17.21"));
+        assert!(!forwarded.contains("4.17.21"), "{forwarded}");
+        assert!(
+            proxy.store.lock().unwrap().records() > 0,
+            "the records are kept for the artifact request"
+        );
     }
 
     /// Whether the packument the client receives offers `version`.
