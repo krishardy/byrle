@@ -11,7 +11,7 @@ pub const CATALOGUE: &str =
     "https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json";
 
 /// The source the catalogue's ids are stored under, and the stream a snapshot records.
-pub const SOURCE: &str = "cisa/kev";
+pub const STREAM: &str = "cisa/kev";
 
 /// 9.7 times the catalogue on 2026-09-14.
 pub const MAX_CATALOGUE_BYTES: usize = 16 << 20;

@@ -14,28 +14,26 @@ needs to know before it fetches, and how to read the bundle once it has one:
 
 | Field | Holds |
 |---|---|
-| `source` | the name a row is stored under |
-| `stream` | the name a snapshot records the bundle under |
+| `stream` | the name a snapshot records the bundle under, and the source its rows are stored under |
 | `url` | where the bundle is fetched from |
 | `ceiling` | bytes past which the fetch is refused |
-| `requirement` | `Required` or `Optional` |
 | `grants` | what the stream may say, and for which ecosystems: `Listed` (the rows of `ecosystem::TABLE` whose `streams` list it) or `Served` (every row) |
 | `parse` | the bundle's bytes as `Parsed { payload, tally }` |
 
 `waharoa refresh` loops over `ALL` in order. `intel::capabilities_of` reads `grants`. Neither
 holds a branch naming a stream.
 
-`Requirement` is what the refresh does when a stream does not load:
+A stream that does not fetch or parse keeps its last load, the others load, and the refresh
+exits 1. When no stream loads, nothing is written.
 
-| Requirement | A stream that does not fetch or parse |
-|---|---|
-| `Required` | nothing loads, the streams after it are not fetched, exit 1 |
-| `Optional` | that stream's last load stays, the others load, exit 1 |
-
-OSV is the one `Required` stream and is first in `ALL`, held by
-`exactly_one_stream_is_required_and_it_is_the_first`. It carries every vulnerability and
-malware record the proxy matches on, so a refresh without it would replace the store with the
-catalogues alone.
+Until 2026-09-19 `osv/npm` was `Required`: a refresh that could not load it loaded nothing,
+and the streams after it were not fetched. Each stream was stored under its provider's name,
+`osv`, `datadog` or `github`, and a load replaces a source whole, so `osv/pypi` under `osv`
+would have deleted `osv/npm`'s rows on every load. Each stream is now its own source and
+every stream loads or fails alone: `osv/pypi` failing does not hold back `osv/npm`.
+Migration `0008` deletes the rows stored under the old names; the next refresh reloads them.
+An ecosystem whose stream has never loaded is uncovered and fails closed:
+[uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md).
 
 `Payload` is the two shapes a load encodes:
 
@@ -64,7 +62,7 @@ What a fetch does about a connection that stops is `src/intel/refresh.rs`:
 |---|---|---|
 | `CONNECT_TIMEOUT` | 10 s | past this the host is not answering |
 | `READ_TIMEOUT` | 30 s | per read, reset by each one. OSV's 215 MB npm bundle took 9 s on 2026-09-17 and would take 36 minutes at 100 kB/s, neither with a 30 s gap. A total timeout would have to exceed that 36 minutes to allow it, and would then let a stall run as long |
-| `ATTEMPTS` | 3 | `osv/npm` is `Required`, so a refresh that gives up on it loads nothing |
+| `ATTEMPTS` | 3 | a stream a refresh gives up on keeps its last load until the next refresh |
 | `RETRY_WAIT` | 2 s | between attempts |
 
 `refresh::retried` decides whether a failure gets another attempt: a status the host chose
@@ -150,8 +148,8 @@ refresh exit 1
 ```
 
 One fetch line. The KEV catalogue and the Datadog manifest were not fetched, which is what
-`Requirement::Required` is for: the refresh stops rather than downloading bundles it will not
-load. `advisory` still held 228,323 `osv` and 48,316 `datadog` rows, and `exploited_cve` 1,710.
+`Requirement::Required` was for until 2026-09-19: the refresh stopped rather than downloading
+bundles it would not load. Every stream now loads or fails alone. `advisory` still held 228,323 `osv` and 48,316 `datadog` rows, and `exploited_cve` 1,710.
 
 The same proxy with OSV's and CISA's hosts in `NO_PROXY`, so only the manifest fetch fails:
 

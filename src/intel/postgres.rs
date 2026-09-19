@@ -515,7 +515,7 @@ impl Intel for PgIntel {
                 "#,
                 ecosystem,
                 name,
-                kev::SOURCE
+                kev::STREAM
             )
             .fetch_all(&self.pool)
             .await
