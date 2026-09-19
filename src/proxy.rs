@@ -827,6 +827,256 @@ fn upstream_url(
     (ecosystem::of(ecosystem).upstream_url)(proxy.upstreams.get(ecosystem), path_and_query)
 }
 
+/// An artifact GET, as `handle` classified it.
+struct ArtifactRequest<'a> {
+    ecosystem: Ecosystem,
+    method: &'a Method,
+    key: &'a PackageKey,
+    claimed_version: &'a str,
+    filename: &'a str,
+    path: &'a str,
+    client: &'a str,
+}
+
+/// What the proxy does with an artifact GET, decided before a byte is fetched.
+enum ArtifactStep {
+    /// The proxy answers without asking upstream: refused by policy, published on an origin
+    /// the proxy does not serve, or no intel to decide with.
+    Answer(Response),
+    /// Fetch it upstream.
+    Fetch(ArtifactFetch),
+}
+
+/// How to fetch an artifact and check what arrives.
+#[derive(Default)]
+struct ArtifactFetch {
+    /// The purl the request claims, for the verifier's log lines. Empty on a request that
+    /// is not an artifact GET.
+    purl: String,
+    /// The digest the metadata published. `None` forwards the bytes unverified.
+    digest: Option<Sri>,
+    /// An origin the operator added, when the metadata published the artifact there.
+    /// `None` sends the request to the ecosystem's upstream.
+    origin: Option<String>,
+}
+
+/// Look up the record for an artifact, decide on it, and say how to fetch it.
+///
+/// Decision #4's pinned half. This is the first point where the exact version and its
+/// record are both in hand, and it is still before a byte is fetched.
+async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> ArtifactStep {
+    let ArtifactRequest {
+        ecosystem,
+        method,
+        key,
+        claimed_version,
+        filename,
+        path,
+        client,
+    } = request;
+    let purl = key
+        .at_version(claimed_version)
+        .map(|r| r.to_string())
+        .unwrap_or_else(|_| format!("{key}@{claimed_version}"));
+    let mut fetch = ArtifactFetch {
+        purl: purl.clone(),
+        ..ArtifactFetch::default()
+    };
+    let found = match lookup_or_fetch(proxy, key, claimed_version, path).await {
+        Lookup::Found(found) => found,
+        // The packument was read and does not name this version. A tarball filename
+        // that spells the version differently lands here: `express@3.0.0-rc1` is
+        // served at `express-3.0.0rc1.tgz`.
+        Lookup::NoSuchVersion => {
+            warn!(
+                path = %path,
+                claimed_purl = %purl,
+                "artifact requested, but its metadata does not list this version"
+            );
+            return ArtifactStep::Fetch(fetch);
+        }
+        // Nothing was observed for this package, and fetching its packument did not
+        // help either.
+        Lookup::Unknown => {
+            warn!(
+                path = %path,
+                claimed_purl = %purl,
+                "artifact requested, no metadata seen for it"
+            );
+            return ArtifactStep::Fetch(fetch);
+        }
+    };
+
+    // The lookup is by version; the request is for a file. On npm those are the same
+    // thing. On PyPI one version offers a wheel and an sdist, with different digests and
+    // different install behaviour, so everything below decides about the file that was
+    // asked for rather than the version.
+    let narrowed = found.narrowed_to(filename);
+    if narrowed.is_none() {
+        warn!(
+            path = %path,
+            claimed_purl = %purl,
+            filename = %filename,
+            "the record names no file by this name; deciding on the version's first file"
+        );
+    }
+    let record: &PackageRecord = narrowed.as_ref().unwrap_or(&found);
+    let artifact = record.artifact();
+    info!(
+        path = %path,
+        claimed_purl = %purl,
+        integrity = artifact
+            .and_then(|a| a.integrity.as_deref())
+            .unwrap_or("-"),
+        has_install_scripts = record.has_install_scripts,
+        "artifact requested, digest known"
+    );
+    // A record read from a full document carries its own publish time; only one without
+    // it needs the time fetched.
+    let times = match record.published_at {
+        Some(_) => None,
+        None => publish_times_for(proxy, key).await,
+    };
+    let intel = match intel_for(proxy, key, path).await {
+        Ok(intel) => intel,
+        Err(unavailable) => return ArtifactStep::Answer(unavailable.response()),
+    };
+    audit_pinned(proxy, record, times.as_ref(), intel.as_ref());
+    let policy_refusal = match enforce::artifact(
+        proxy.policy.as_deref(),
+        record,
+        times.as_ref(),
+        intel.as_ref(),
+        crate::policy::today(),
+    ) {
+        enforce::Verdict::Refuse(refusal) => Some(refusal),
+        _ => None,
+    };
+    // Where the packument said the artifact lives, when that is an origin the operator
+    // added. Rewriting pointed the client at the proxy, so the proxy has to know where
+    // "here" stood for. Everything else goes to the upstream, including artifacts
+    // advertised on the default registry: a private mirror publishes those URLs and is
+    // the reason the proxy was pointed at it.
+    let artifact_url = artifact.map(|a| a.url.as_str()).unwrap_or("");
+    fetch.origin = crate::origin::origin_of_url(artifact_url)
+        .filter(|origin| proxy.origins.reachable().routes_directly(origin));
+    let unservable_origin = match proxy.origins.disposition(artifact_url) {
+        Disposition::Refused(origin) => Some(origin),
+        _ => None,
+    };
+    match artifact
+        .and_then(|a| a.integrity.as_deref())
+        .map(Sri::parse)
+    {
+        Some(Ok(sri)) => {
+            // Plan §5's branch, decided before a byte is fetched. In Stage 1 both arms do
+            // the same thing, because nothing analyses and nothing defers; a hit is where
+            // Stage 5 skips the analysis it already ran, and a miss is where the
+            // novel-artifact branches go. The hit arm still hashes: see `crate::verified`.
+            let seen = proxy
+                .verified
+                .lock()
+                .expect("verified artifacts lock")
+                .lookup(&sri);
+            info!(
+                path = %path,
+                claimed_purl = %purl,
+                digest = %sri,
+                cache = seen.as_str(),
+                "artifact cache consulted"
+            );
+            fetch.digest = Some(sri);
+        }
+        Some(Err(e)) => warn!(
+            path = %path,
+            claimed_purl = %purl,
+            error = %e,
+            "metadata integrity string is unusable; not verifying"
+        ),
+        // Two versions in 24,852 offer only SHA-1, which is collision-broken and not
+        // verified here.
+        None => warn!(
+            path = %path,
+            claimed_purl = %purl,
+            "metadata publishes no strong digest; not verifying"
+        ),
+    }
+
+    if let Some(refusal) = &policy_refusal {
+        let status = refusal_status(proxy, ecosystem, Some(client));
+        info!(
+            %method,
+            path = %path,
+            status = status.as_u16(),
+            claimed_purl = %purl,
+            action = refusal.action.as_str(),
+            reasons = ?refusal.reasons,
+            client = %client,
+            "refused by policy"
+        );
+        return ArtifactStep::Answer((status, refusal.message()).into_response());
+    }
+
+    // A pinned fetch of a version the packument filter removes. Decision #4: filter on
+    // resolution, hard fail on a pinned fetch, because there is no resolution step left
+    // to influence.
+    if let Some(origin) = &unservable_origin
+        && proxy.refuse_unservable
+    {
+        let status = refusal_status(proxy, ecosystem, Some(client));
+        info!(
+            %method,
+            path = %path,
+            status = status.as_u16(),
+            claimed_purl = %purl,
+            origin = %origin,
+            client = %client,
+            "refused: this artifact is published on an origin the proxy does not serve"
+        );
+        return ArtifactStep::Answer(
+            (
+                status,
+                format!(
+                    "waharoa: {purl} is published at {origin}, which this proxy does not \
+                     serve, so it cannot be examined\n"
+                ),
+            )
+                .into_response(),
+        );
+    }
+
+    ArtifactStep::Fetch(fetch)
+}
+
+/// Write the pinned decision to the audit log, when there is a log and a policy.
+///
+/// Allowed decisions are written too. A log holding only refusals cannot answer "was this
+/// ever evaluated", which is what `policy diff` needs a package set for.
+fn audit_pinned(
+    proxy: &Proxy,
+    record: &PackageRecord,
+    times: Option<&facts::PublishTimes>,
+    intel: Option<&PackageIntel>,
+) {
+    let (Some(audit), Some(policy)) = (&proxy.audit, proxy.policy.as_deref()) else {
+        return;
+    };
+    let mut facts = crate::policy::decide::Facts::from_record_and_times(record, times);
+    if let Some(intel) = intel {
+        facts = facts.with_intel(intel);
+    }
+    audit.write(
+        &audit::Event::pinned(
+            &facts.ecosystem,
+            &facts.name,
+            &facts.version,
+            &crate::policy::decide::decide(policy, &facts, crate::policy::today()),
+            &enforce::unenforceable(policy, record, times, facts.intel),
+        )
+        .with_intel_snapshot(intel.map(|i| i.snapshot.as_str())),
+    );
+}
+
 async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let started = Instant::now();
     let method = req.method().clone();
@@ -924,211 +1174,35 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     }
 
     // The digest has to be known before the artifact is fetched, not after: that is what
-    // decides whether this exact artifact has been analysed (plan §5). Looking it up here
-    // also says which origin the packument published it on, so the request goes there
-    // rather than assuming the upstream serves it.
-    let mut expected_digest: Option<Sri> = None;
-    let mut artifact_purl = String::new();
-    let mut artifact_origin: Option<String> = None;
-    let mut unservable_origin: Option<String> = None;
-    let mut policy_refusal: Option<enforce::Refusal> = None;
-    if let RequestTarget::Artifact {
-        key,
-        claimed_version,
-        filename,
-    } = &target
-        && method == Method::GET
-    {
-        let purl = key
-            .at_version(claimed_version)
-            .map(|r| r.to_string())
-            .unwrap_or_else(|_| format!("{key}@{claimed_version}"));
-        artifact_purl = purl.clone();
-        match lookup_or_fetch(&proxy, key, claimed_version, &path_and_query).await {
-            Lookup::Found(found) => {
-                // The lookup is by version; the request is for a file. On npm those are
-                // the same thing. On PyPI one version offers a wheel and an sdist, with
-                // different digests and different install behaviour, so everything below
-                // decides about the file that was asked for rather than the version.
-                let narrowed = found.narrowed_to(filename);
-                if narrowed.is_none() {
-                    warn!(
-                        path = %path_and_query,
-                        claimed_purl = %purl,
-                        filename = %filename,
-                        "the record names no file by this name; deciding on the version's \
-                         first file"
-                    );
-                }
-                let record: &PackageRecord = narrowed.as_ref().unwrap_or(&found);
-                let artifact = record.artifact();
-                info!(
-                    path = %path_and_query,
-                    claimed_purl = %purl,
-                    integrity = artifact
-                        .and_then(|a| a.integrity.as_deref())
-                        .unwrap_or("-"),
-                    has_install_scripts = record.has_install_scripts,
-                    "artifact requested, digest known"
-                );
-                // Decision #4's pinned half. Asked here because this is the first point
-                // where the exact version and its record are both in hand, and it is
-                // still before a byte is fetched.
-                // A record read from a full document carries its own publish time; only one
-                // without it needs the time fetched.
-                let times = match record.published_at {
-                    Some(_) => None,
-                    None => publish_times_for(&proxy, key).await,
-                };
-                let intel = match intel_for(&proxy, key, &path_and_query).await {
-                    Ok(intel) => intel,
-                    Err(unavailable) => return unavailable.response(),
-                };
-                if let (Some(audit), Some(policy)) = (&proxy.audit, proxy.policy.as_deref()) {
-                    // Allowed decisions are written too. A log holding only refusals
-                    // cannot answer "was this ever evaluated", which is what `policy diff`
-                    // needs a package set for.
-                    let mut facts =
-                        crate::policy::decide::Facts::from_record_and_times(record, times.as_ref());
-                    if let Some(intel) = &intel {
-                        facts = facts.with_intel(intel);
-                    }
-                    audit.write(
-                        &audit::Event::pinned(
-                            &facts.ecosystem,
-                            &facts.name,
-                            &facts.version,
-                            &crate::policy::decide::decide(policy, &facts, crate::policy::today()),
-                            &enforce::unenforceable(policy, record, times.as_ref(), facts.intel),
-                        )
-                        .with_intel_snapshot(intel.as_ref().map(|i| i.snapshot.as_str())),
-                    );
-                }
-                if let enforce::Verdict::Refuse(refusal) = enforce::artifact(
-                    proxy.policy.as_deref(),
-                    record,
-                    times.as_ref(),
-                    intel.as_ref(),
-                    crate::policy::today(),
-                ) {
-                    policy_refusal = Some(refusal);
-                }
-                // Where the packument said the artifact lives, when that is an origin
-                // the operator added. Rewriting pointed the client at the proxy, so the
-                // proxy has to know where "here" stood for. Everything else goes to the
-                // upstream, including artifacts advertised on the default registry: a
-                // private mirror publishes those URLs and is the reason the proxy was
-                // pointed at it.
-                let artifact_url = artifact.map(|a| a.url.as_str()).unwrap_or("");
-                artifact_origin = crate::origin::origin_of_url(artifact_url)
-                    .filter(|origin| proxy.origins.reachable().routes_directly(origin));
-                unservable_origin = match proxy.origins.disposition(artifact_url) {
-                    Disposition::Refused(origin) => Some(origin),
-                    _ => None,
-                };
-                match artifact
-                    .and_then(|a| a.integrity.as_deref())
-                    .map(Sri::parse)
-                {
-                    Some(Ok(sri)) => {
-                        // Plan §5's branch, decided before a byte is fetched. In Stage 1
-                        // both arms do the same thing, because nothing analyses and
-                        // nothing defers; a hit is where Stage 5 skips the analysis it
-                        // already ran, and a miss is where the novel-artifact branches
-                        // go. The hit arm still hashes: see `crate::verified`.
-                        let seen = proxy
-                            .verified
-                            .lock()
-                            .expect("verified artifacts lock")
-                            .lookup(&sri);
-                        info!(
-                            path = %path_and_query,
-                            claimed_purl = %purl,
-                            digest = %sri,
-                            cache = seen.as_str(),
-                            "artifact cache consulted"
-                        );
-                        expected_digest = Some(sri);
-                    }
-                    Some(Err(e)) => warn!(
-                        path = %path_and_query,
-                        claimed_purl = %purl,
-                        error = %e,
-                        "metadata integrity string is unusable; not verifying"
-                    ),
-                    // Two versions in 24,852 offer only SHA-1, which is
-                    // collision-broken and not verified here.
-                    None => warn!(
-                        path = %path_and_query,
-                        claimed_purl = %purl,
-                        "metadata publishes no strong digest; not verifying"
-                    ),
-                }
+    // decides whether this exact artifact has been analysed (plan §5).
+    let artifact = match &target {
+        RequestTarget::Artifact {
+            key,
+            claimed_version,
+            filename,
+        } if method == Method::GET => {
+            let request = ArtifactRequest {
+                ecosystem,
+                method: &method,
+                key,
+                claimed_version,
+                filename,
+                path: &path_and_query,
+                client: &client_ua,
+            };
+            match decide_artifact(&proxy, request).await {
+                ArtifactStep::Answer(response) => return response,
+                ArtifactStep::Fetch(fetch) => fetch,
             }
-            // The packument was read and does not name this version. A tarball filename
-            // that spells the version differently lands here: `express@3.0.0-rc1` is
-            // served at `express-3.0.0rc1.tgz`.
-            Lookup::NoSuchVersion => warn!(
-                path = %path_and_query,
-                claimed_purl = %purl,
-                "artifact requested, but its metadata does not list this version"
-            ),
-            // Nothing was observed for this package, and fetching its packument did not
-            // help either.
-            Lookup::Unknown => warn!(
-                path = %path_and_query,
-                claimed_purl = %purl,
-                "artifact requested, no metadata seen for it"
-            ),
         }
-
-        if let Some(refusal) = &policy_refusal {
-            let status = refusal_status(&proxy, ecosystem, Some(&client_ua));
-            info!(
-                %method,
-                path = %path_and_query,
-                status = status.as_u16(),
-                claimed_purl = %purl,
-                action = refusal.action.as_str(),
-                reasons = ?refusal.reasons,
-                client = %client_ua,
-                "refused by policy"
-            );
-            return (status, refusal.message()).into_response();
-        }
-
-        // A pinned fetch of a version the packument filter removes. Decision #4: filter
-        // on resolution, hard fail on a pinned fetch, because there is no resolution step
-        // left to influence.
-        if let Some(origin) = &unservable_origin
-            && proxy.refuse_unservable
-        {
-            let status = refusal_status(&proxy, ecosystem, Some(&client_ua));
-            info!(
-                %method,
-                path = %path_and_query,
-                status = status.as_u16(),
-                claimed_purl = %purl,
-                origin = %origin,
-                client = %client_ua,
-                "refused: this artifact is published on an origin the proxy does not serve"
-            );
-            return (
-                status,
-                format!(
-                    "waharoa: {purl} is published at {origin}, which this proxy does not \
-                     serve, so it cannot be examined\n"
-                ),
-            )
-                .into_response();
-        }
-    }
+        _ => ArtifactFetch::default(),
+    };
 
     let url = upstream_url(
         &proxy,
         ecosystem,
         &path_and_query,
-        artifact_origin.as_deref(),
+        artifact.origin.as_deref(),
     );
     let mut outbound = proxy.client.request(method.clone(), &url);
     for (name, value) in req.headers() {
@@ -1288,14 +1362,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     let Some(document) = document.filter(|_| read_metadata && status.is_success()) else {
         log_proxied(upstream_len.unwrap_or(0));
-        let Some(sri) = expected_digest else {
+        let Some(sri) = artifact.digest else {
             return (forward_status, headers, Body::from_stream(body_stream)).into_response();
         };
         let verified = VerifyingStream::new(
             body_stream,
             &sri,
             path_and_query.clone(),
-            artifact_purl,
+            artifact.purl,
             proxy.verified.clone(),
         );
         return (forward_status, headers, Body::from_stream(verified)).into_response();
@@ -2797,6 +2871,55 @@ mod tests {
         assert!(body.contains(check), "{body}");
         let paths = &seen.lock().unwrap().paths;
         assert!(!paths.iter().any(|p| p.ends_with(".tgz")), "{paths:?}");
+    }
+
+    /// The artifact branch answers without a socket: a held record, intel that matches
+    /// nothing refused, and no policy give the fetch its digest and the purl the verifier
+    /// logs.
+    #[tokio::test]
+    async fn an_allowed_artifact_is_fetched_with_its_digest_and_purl() {
+        let metadata = npm::normalize_packument(
+            &fixture("lodash-4.17.21.abbrev.json"),
+            crate::record::DocumentDetail::Abbreviated,
+        )
+        .unwrap();
+        let key = metadata.key.clone();
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_intel(Some(malware_everywhere()))
+            .with_refuse_unservable(false);
+        proxy.store.lock().unwrap().insert(metadata);
+        let request = ArtifactRequest {
+            ecosystem: Ecosystem::Npm,
+            method: &Method::GET,
+            key: &key,
+            claimed_version: "4.17.21",
+            filename: "lodash-4.17.21.tgz",
+            path: "/lodash/-/lodash-4.17.21.tgz",
+            client: "-",
+        };
+        let ArtifactStep::Fetch(fetch) = decide_artifact(&proxy, request).await else {
+            panic!("no policy refuses it");
+        };
+        assert_eq!(fetch.purl, "pkg:npm/lodash@4.17.21");
+        assert!(fetch.digest.is_some(), "the packument publishes sha512");
+        assert_eq!(
+            fetch.origin, None,
+            "the default registry is not an added origin"
+        );
+    }
+
+    /// A HEAD for an artifact is forwarded as it came. It is not decided, so it costs no
+    /// metadata fetch.
+    #[tokio::test]
+    async fn a_head_for_an_artifact_asks_upstream_for_nothing_else() {
+        let (base, seen) = proxy_with_intel(malware_everywhere(), true).await;
+        let tarball = "/lodash/-/lodash-4.17.21.tgz";
+        reqwest::Client::new()
+            .head(format!("{base}{tarball}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().paths, [tarball]);
     }
 
     /// Whether the packument the client receives offers `version`.
