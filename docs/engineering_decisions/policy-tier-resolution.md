@@ -116,6 +116,12 @@ subgraph Ecosystem_Check
   end
 
   subgraph Ecosystem_Check_PyPI
+    Is_Yanked
+    Package_Has_Yanked_Exception
+    Is_Yanked --NO--> RECORD_yanked_PASS
+    Is_Yanked --YES--> Package_Has_Yanked_Exception
+    Package_Has_Yanked_Exception --YES--> RECORD_yanked_EXCEPTED
+    Package_Has_Yanked_Exception --NO--> RECORD_yanked_BLOCK
   end
   subgraph Ecosystem_Check_Cargo
   end
@@ -124,17 +130,27 @@ subgraph Ecosystem_Check
   subgraph Ecosystem_Check_Golang
     RECORD_install_scripts_NOT_APPLICABLE
   end
+  subgraph Ecosystem_Check_NPM_Yanked
+    RECORD_yanked_NOT_APPLICABLE
+  end
   subgraph Ecosystem_Check_...
   end
 
   Which_Ecosystem --npm--> Has_Install_Scripts
   Which_Ecosystem --golang: no install step exists--> RECORD_install_scripts_NOT_APPLICABLE
+  Which_Ecosystem --pypi--> Is_Yanked
+  Which_Ecosystem --npm: no yank exists--> RECORD_yanked_NOT_APPLICABLE
 end
 
 RECORD_install_scripts_PASS --> Evaluate_Decision_Vector
 RECORD_install_scripts_EXCEPTED --> Evaluate_Decision_Vector
 RECORD_install_scripts_BLOCK --> Evaluate_Decision_Vector
 RECORD_install_scripts_NOT_APPLICABLE --> Evaluate_Decision_Vector
+
+RECORD_yanked_PASS --> Evaluate_Decision_Vector
+RECORD_yanked_EXCEPTED --> Evaluate_Decision_Vector
+RECORD_yanked_BLOCK --> Evaluate_Decision_Vector
+RECORD_yanked_NOT_APPLICABLE --> Evaluate_Decision_Vector
 
 Evaluate_Decision_Vector --strongest is allow--> DISPOSITION_ALLOW
 Evaluate_Decision_Vector --strongest is quarantine--> DISPOSITION_QUARANTINE

@@ -14,6 +14,7 @@ pub enum Rule {
     Kev,
     InstallScripts,
     VulnAdvisoryIds,
+    Yanked,
 }
 
 impl Rule {
@@ -23,16 +24,18 @@ impl Rule {
             Self::Kev => "kev",
             Self::InstallScripts => "install_scripts",
             Self::VulnAdvisoryIds => "vuln_advisory_ids",
+            Self::Yanked => "yanked",
         }
     }
 
     /// Every setting an exception can carry. One list, so a setting added to the schema
     /// and not here is a compile error rather than a silently unchecked field.
-    pub const ALL: [Rule; 4] = [
+    pub const ALL: [Rule; 5] = [
         Self::CooldownDays,
         Self::Kev,
         Self::InstallScripts,
         Self::VulnAdvisoryIds,
+        Self::Yanked,
     ];
 }
 
@@ -50,6 +53,8 @@ pub fn applies(ecosystem: &str, rule: Rule) -> bool {
         // Go modules have no install step, so there is no script to run. The check
         // reports not-applicable rather than a violation.
         ("golang" | "go", Rule::InstallScripts) => false,
+        // npm has no yank: a version is published or it is gone from the packument.
+        ("npm", Rule::Yanked) => false,
         _ => true,
     }
 }
@@ -64,6 +69,7 @@ pub struct RuleValues<'a> {
     pub kev: Option<Action>,
     pub install_scripts: Option<Action>,
     pub vuln_advisory_ids: Option<&'a [String]>,
+    pub yanked: Option<Action>,
 }
 
 impl<'a> From<&'a SetBlock> for RuleValues<'a> {
@@ -76,6 +82,7 @@ impl<'a> From<&'a SetBlock> for RuleValues<'a> {
             // exception that ignores nothing.
             vuln_advisory_ids: (!s.vuln_advisory_ids.is_empty())
                 .then_some(s.vuln_advisory_ids.as_slice()),
+            yanked: s.yanked,
         }
     }
 }
@@ -90,6 +97,7 @@ impl From<&Policy> for RuleValues<'_> {
             // nothing above it to be compared against, and ignoring an advisory can only
             // ever loosen, which `compare` reports directly.
             vuln_advisory_ids: None,
+            yanked: Some(p.yanked),
         }
     }
 }
@@ -115,6 +123,7 @@ pub fn compare(
         },
         Rule::Kev => action_strictness(value.kev, baseline.kev),
         Rule::InstallScripts => action_strictness(value.install_scripts, baseline.install_scripts),
+        Rule::Yanked => action_strictness(value.yanked, baseline.yanked),
         // Ignoring an advisory can only loosen. There is nothing above to compare it to,
         // so naming any is a loosening and naming none is no change at all.
         Rule::VulnAdvisoryIds => match value.vuln_advisory_ids {
@@ -239,9 +248,16 @@ mod tests {
 
     #[test]
     fn every_setting_an_exception_can_carry_has_a_name() {
-        for rule in Rule::ALL {
-            assert!(!rule.as_str().is_empty());
-        }
-        assert_eq!(Rule::ALL.len(), 4);
+        assert_eq!(
+            Rule::ALL.map(Rule::as_str),
+            [
+                "cooldown_days",
+                "kev",
+                "install_scripts",
+                "vuln_advisory_ids",
+                "yanked",
+            ],
+            "a name here is the key in the policy file"
+        );
     }
 }

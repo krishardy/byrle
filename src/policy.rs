@@ -261,6 +261,13 @@ pub struct Policy {
     /// `allow`.
     #[serde(default = "default_block")]
     pub kev: Action,
+    /// Whether a version the registry withdrew is served. `block` or `allow`.
+    ///
+    /// PyPI's PEP 592 yank. A resolver skips a yanked file unless the requirement pins
+    /// that version, so `block` is what a pinned install of a withdrawn version meets.
+    /// npm has no yank, and the check reports not-applicable there.
+    #[serde(default = "default_block")]
+    pub yanked: Action,
 
     #[serde(default)]
     pub denials: Vec<Denial>,
@@ -306,7 +313,7 @@ impl Policy {
         Self::parse(&source)
     }
 
-    /// `install_scripts` and `kev` take `block` or `allow`, and nothing else.
+    /// `install_scripts`, `kev` and `yanked` take `block` or `allow`, and nothing else.
     ///
     /// Refused rather than silently treated as one of the two. `quarantine` means "refused
     /// now, allowed later", and neither of these lapses: waiting does not change whether a
@@ -383,6 +390,7 @@ impl Policy {
         let mut checked: Vec<(String, Action)> = vec![
             ("install_scripts".to_owned(), self.install_scripts),
             ("kev".to_owned(), self.kev),
+            ("yanked".to_owned(), self.yanked),
         ];
         for (i, entry) in self.packages.iter().enumerate() {
             if let Some(action) = entry.set.install_scripts {
@@ -390,6 +398,9 @@ impl Policy {
             }
             if let Some(action) = entry.set.kev {
                 checked.push((format!("packages[{i}].set.kev"), action));
+            }
+            if let Some(action) = entry.set.yanked {
+                checked.push((format!("packages[{i}].set.yanked"), action));
             }
         }
         for (at, found) in checked {
@@ -634,6 +645,8 @@ pub struct SetBlock {
     pub kev: Option<Action>,
     #[serde(default)]
     pub install_scripts: Option<Action>,
+    #[serde(default)]
+    pub yanked: Option<Action>,
     /// Specific vulnerability advisories to ignore for this package, by id. An id matches an
     /// advisory's own id or any of its aliases, so a CVE id reaches a `GHSA-` advisory.
     ///
@@ -664,22 +677,25 @@ mod tests {
     /// An operator who has not thought about install scripts is better served by the
     /// strict answer, and turning one off is a line they have to write.
     #[test]
-    fn a_policy_that_says_nothing_blocks_both_checks() {
+    fn a_policy_that_says_nothing_blocks_every_on_off_check() {
         let policy = parse("").unwrap();
         assert_eq!(policy.cooldown_days, DEFAULT_COOLDOWN_DAYS);
         assert_eq!(policy.max_cvss, DEFAULT_MAX_CVSS);
         assert_eq!(policy.install_scripts, Action::Block);
         assert_eq!(policy.kev, Action::Block);
+        assert_eq!(policy.yanked, Action::Block);
     }
 
     #[test]
     fn every_setting_can_be_given_a_value() {
-        let policy =
-            parse("cooldown_days: 14\nmax_cvss: 3.9\ninstall_scripts: allow\nkev: allow\n")
-                .unwrap();
+        let policy = parse(
+            "cooldown_days: 14\nmax_cvss: 3.9\ninstall_scripts: allow\nkev: allow\nyanked: allow\n",
+        )
+        .unwrap();
         assert_eq!(policy.cooldown_days, 14);
         assert_eq!(policy.max_cvss, 3.9);
         assert_eq!(policy.install_scripts, Action::Allow);
+        assert_eq!(policy.yanked, Action::Allow);
         assert_eq!(policy.kev, Action::Allow);
     }
 
@@ -774,6 +790,7 @@ mod tests {
                     "max_cvss",
                     "install_scripts",
                     "kev",
+                    "yanked",
                     "denials",
                     "packages",
                     "advisory_scores",
@@ -822,6 +839,7 @@ mod tests {
                     "cooldown_days",
                     "kev",
                     "install_scripts",
+                    "yanked",
                     "vuln_advisory_ids",
                 ],
             ),

@@ -24,6 +24,11 @@ install_scripts: block
 # Whether a package carrying a known-exploited vulnerability is served.
 kev: block
 
+# Whether a version the registry withdrew is served. PyPI's PEP 592 yank: the file stays
+# in the index, with a reason beside it, and a resolver skips it unless the requirement
+# pins that version. npm has no yank, and the check reports not-applicable there.
+yanked: block
+
 # Known malware always blocks. It is not listed here because it cannot be configured and
 # cannot be excepted.
 

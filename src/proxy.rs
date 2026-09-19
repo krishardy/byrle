@@ -3183,6 +3183,12 @@ mod tests {
         use crate::policy::decide::Check;
         const BASE: &str = NO_POLICY;
         for check in Check::ALL {
+            // A yank is PyPI's, so that check has its own document and paths:
+            // `a_yanked_version_is_refused_and_filtered`.
+            if check == Check::Yanked {
+                yanked_is_refused_and_filtered().await;
+                continue;
+            }
             let (packument, name, version, intel, yaml): (_, _, _, Option<Arc<dyn Intel>>, _) =
                 match check {
                     Check::Denials => (LODASH, "lodash", "4.17.21", None, DENY_LODASH.to_owned()),
@@ -3238,6 +3244,7 @@ mod tests {
                         None,
                         format!("{BASE}install_scripts: block\n"),
                     ),
+                    Check::Yanked => unreachable!("run above, against a PyPI index"),
                 };
             let label = check.as_str();
             let proxy = offline(intel, Some(&yaml));
@@ -3783,6 +3790,66 @@ mod tests {
         assert!(matches!(packument, DocumentStep::Forward(Some(_))));
     }
 
+    /// Three versions: 1.0 is yanked whole, 2.0 is not, and 3.0 offers a wheel and a yanked
+    /// sdist. A sha256 on each, so a record carries a digest.
+    const PYPI_YANKED: &[u8] = br#"{"name":"x","files":[
+        {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0.tar.gz","hashes":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"yanked":"broken sdist"},
+        {"filename":"x-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-2.0.tar.gz","hashes":{"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
+        {"filename":"x-3.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ef/01/25/x-3.0-py3-none-any.whl","hashes":{"sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}},
+        {"filename":"x-3.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/26/x-3.0.tar.gz","hashes":{"sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"},"yanked":"wheel only"}
+    ]}"#;
+
+    const YANKED_FILE: &str = "/packages/ef/01/23/x-1.0.tar.gz";
+    /// 3.0's sdist, yanked, beside a wheel that is not.
+    const YANKED_SDIST: &str = "/packages/ef/01/26/x-3.0.tar.gz";
+
+    /// A yanked version is removed from the index and refused on a pinned fetch, unless the
+    /// policy allows yanked files.
+    #[tokio::test]
+    async fn a_yanked_version_is_refused_and_filtered() {
+        yanked_is_refused_and_filtered().await;
+    }
+
+    /// The body of the test above, which
+    /// `every_check_refuses_on_a_pinned_fetch_and_filters_the_packument` also runs, so that
+    /// every check has a case there.
+    async fn yanked_is_refused_and_filtered() {
+        // Both versions are sdists, so `install_scripts` is allowed here and the only
+        // check that can remove a file is the yank.
+        const ALLOW_SDISTS: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n";
+        let refusing = offline(None, Some(ALLOW_SDISTS));
+        assert_eq!(
+            served_filenames(&refusing, PYPI_YANKED).await,
+            ["x-2.0.tar.gz", "x-3.0-py3-none-any.whl", "x-3.0.tar.gz"],
+            "1.0 is yanked whole and gone; 3.0 keeps a file, so the version stays"
+        );
+        for (file, label) in [
+            (YANKED_FILE, "every file of the version"),
+            (YANKED_SDIST, "one file of a version that has another"),
+        ] {
+            let (status, body) = refused(pinned(&refusing, file).await).await;
+            assert_eq!(status, 403, "{label}");
+            assert!(body.contains("yanked"), "{label}: {body}");
+        }
+        assert!(
+            fetched(&pinned(&refusing, "/packages/ef/01/25/x-3.0-py3-none-any.whl").await),
+            "the wheel beside the yanked sdist is served"
+        );
+
+        let allowing = offline(None, Some(&format!("{ALLOW_SDISTS}yanked: allow\n")));
+        assert_eq!(
+            served_filenames(&allowing, PYPI_YANKED).await,
+            [
+                "x-1.0.tar.gz",
+                "x-2.0.tar.gz",
+                "x-3.0-py3-none-any.whl",
+                "x-3.0.tar.gz"
+            ]
+        );
+        assert!(fetched(&pinned(&allowing, YANKED_FILE).await));
+        assert!(fetched(&pinned(&allowing, YANKED_SDIST).await));
+    }
+
     /// Two versions: 1.0 offers a wheel, 2.0 only an sdist.
     const PYPI_TWO_VERSIONS: &[u8] = br#"{"name":"x","files":[
         {"filename":"x-1.0-py3-none-any.whl","url":"https://files.pythonhosted.org/packages/ab/cd/ef/x-1.0-py3-none-any.whl","hashes":{}},
@@ -3790,11 +3857,10 @@ mod tests {
         {"filename":"x-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-2.0.tar.gz","hashes":{}}
     ]}"#;
 
-    /// The filenames the client receives for `PYPI_TWO_VERSIONS`.
-    async fn served_filenames(intel: Option<Arc<dyn Intel>>, yaml: &str) -> Vec<String> {
-        let proxy = offline(intel, Some(yaml));
+    /// The filenames the client receives for `index`.
+    async fn served_filenames(proxy: &Proxy, index: &[u8]) -> Vec<String> {
         let DocumentStep::Forward(Some(body)) =
-            resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, PYPI_TWO_VERSIONS).await
+            resolve(proxy, "/simple/x/", pypi::SIMPLE_JSON, index).await
         else {
             panic!("the index is read and rewritten");
         };
@@ -3812,18 +3878,18 @@ mod tests {
     /// and a request for the sdist is refused at the file.
     #[tokio::test]
     async fn a_pypi_version_the_policy_refuses_is_removed_from_the_index() {
-        let names = served_filenames(
+        let blocking = offline(
             None,
-            "version: 1\ncooldown_days: 0\ninstall_scripts: block\n",
-        )
-        .await;
+            Some("version: 1\ncooldown_days: 0\ninstall_scripts: block\n"),
+        );
+        let names = served_filenames(&blocking, PYPI_TWO_VERSIONS).await;
         assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
 
-        let unfiltered = served_filenames(
+        let allowing = offline(
             None,
-            "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n",
-        )
-        .await;
+            Some("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n"),
+        );
+        let unfiltered = served_filenames(&allowing, PYPI_TWO_VERSIONS).await;
         assert_eq!(unfiltered.len(), 3, "nothing refused, nothing removed");
     }
 
@@ -3832,11 +3898,11 @@ mod tests {
     /// `a_file_in_an_ecosystem_no_stream_covers_is_a_503`.
     #[tokio::test]
     async fn a_pypi_index_no_stream_covers_is_filtered_without_intel() {
-        let names = served_filenames(
+        let proxy = offline(
             Some(malware_everywhere()),
-            "version: 1\ncooldown_days: 0\ninstall_scripts: block\n",
-        )
-        .await;
+            Some("version: 1\ncooldown_days: 0\ninstall_scripts: block\n"),
+        );
+        let names = served_filenames(&proxy, PYPI_TWO_VERSIONS).await;
         assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
     }
 

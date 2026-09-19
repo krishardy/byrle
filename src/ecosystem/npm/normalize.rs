@@ -102,6 +102,9 @@ fn version_record(
         maintainers,
         repository,
         has_install_scripts: scripts,
+        // npm has no yank. A version is published or unpublished, and an unpublished one
+        // is not in the packument at all.
+        yanked: false,
         install_scripts: entry.scripts.as_ref().map(install_scripts),
         provenance: provenance(entry, dist),
         // One file. An npm version resolves to one tarball, so the version-level
@@ -109,6 +112,7 @@ fn version_record(
         artifacts: vec![Artifact {
             filename: tarball_filename(&url),
             runs_install_scripts: scripts,
+            yanked: false,
             url,
             // Absent on two versions in the measured corpus, both from 2012. A record
             // with no `integrity` has only a SHA-1 digest behind it, which the policy
