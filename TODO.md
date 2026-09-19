@@ -2484,17 +2484,18 @@ told by email when something they installed turns out to be malicious or vulnera
       a new advisory scored 7.0 or above, or banded `HIGH` or `CRITICAL`, matched the same
       way.
 
-Open questions, each needing a decision before it is built:
+Decided 2026-09-19:
+[reporting-accounts-and-notifications](docs/engineering_decisions/reporting-accounts-and-notifications.md).
 
-- How a request is tied to an account: decided 2026-09-19, a token per account, sent as
-  each client sends a registry credential:
-  [account-identification](docs/engineering_decisions/account-identification.md).
+| Question | Decided |
+|---|---|
+| How a request names its account | a token per account, sent as each client sends a registry credential |
+| Where accounts and installs live | new tables in the intel Postgres |
+| How email is sent | an outbox table an external mailer reads and marks sent |
+| What is new for an account | a notification not yet written for that (account, advisory, version); existing matches recorded as sent when the account is created |
+
 - [ ] The proxy forwards a client's `Authorization` header upstream: `is_hop_by_hop` does
       not list it. A token sent to the proxy reaches registry.npmjs.org or pypi.org.
-- Where accounts and install history live: the intel Postgres, or a store of their own.
-- How email is sent, and which provider.
-- What a "new" advisory is when a refresh replaces a source whole: a diff between the
-  snapshot before and after the refresh.
 
 **Exit:** a user who installed a package through the proxy is emailed within one refresh of
 a malware or critical/high advisory for the version they installed.
