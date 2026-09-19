@@ -22,7 +22,7 @@
 //! [`super::decide`] treats an unknown publish date as not old enough, which is the
 //! correct direction and makes `cooldown_days` fail every package rather than pass it.
 //! That is why this build does not enforce `cooldown_days`: see
-//! [`Facts::can_answer`].
+//! [`Facts::can_answer_cooldown`].
 
 use super::decide::{Advisory, Facts, Intel};
 use crate::intel::store::PackageIntel;

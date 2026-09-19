@@ -1,6 +1,6 @@
 //! A simple index as PyPI serves it, and the cleaned form the normaliser reads.
 //!
-//! Two shapes rather than npm's one. [`Document`] and [`Entry`] are the PEP 691
+//! Two shapes rather than npm's one. `Document` and `Entry` are the PEP 691
 //! deserialisation targets; [`Project`] is what [`parse`] turns them into. The
 //! intermediate exists because a simple index is **file**-keyed and
 //! [`crate::record::PackageMetadata`] is version-keyed: `requests` lists 244 files for 160

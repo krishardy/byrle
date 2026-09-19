@@ -14,8 +14,8 @@ use std::fmt;
 /// The origins whose artifacts the proxy serves.
 ///
 /// One source of truth for two questions that must never disagree: which artifact URLs
-/// get pointed at the proxy ([`crate::ecosystem::npm::rewrite_artifact_origins`]), and which are reported as
-/// fetched directly ([`crate::ecosystem::npm::PackageMetadata::bypassing_origins`]). If those sets differed,
+/// get pointed at the proxy ([`rewrite_artifact_origins`]), and which are reported as
+/// fetched directly ([`PackageMetadata::bypassing_origins`]). If those sets differed,
 /// an artifact could be rewritten and reported as bypassing, or left alone and reported
 /// as fine.
 ///
@@ -316,7 +316,7 @@ impl std::error::Error for RewriteError {}
 /// way.
 ///
 /// Only the **origin** changes. The path is kept, so the request that comes back is the
-/// one [`classify_path`] already understands and the proxy forwards it upstream unchanged.
+/// one [`crate::ecosystem::npm::classify_path`] already understands and the proxy forwards it upstream unchanged.
 ///
 /// An artifact whose origin is not in `reachable` is left alone. Rewriting those would
 /// mean the proxy fetching from an arbitrary host on a client's behalf, which is a

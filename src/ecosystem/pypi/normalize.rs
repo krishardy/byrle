@@ -39,7 +39,7 @@ fn sri(hex: &str) -> Option<String> {
     Some(format!("sha256-{}", BASE64.encode(&bytes)))
 }
 
-/// One [`PackageRecord`] per version, as the policy engine sees it.
+/// One [`crate::record::PackageRecord`] per version, as the policy engine sees it.
 ///
 /// A record is about a **version**, which is the question the index filter answers: may
 /// this version be installed. Several files carry one version and the record names the one

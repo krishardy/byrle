@@ -97,11 +97,19 @@ pub struct Diff {
     pub from: PathBuf,
     /// The policy that would replace it
     pub to: PathBuf,
-    /// Judge <FROM> as of this date, YYYY-MM-DD or +<days>d [default: today, UTC]
-    #[arg(long, value_name = "DATE", value_parser = when)]
+    #[arg(
+        long,
+        value_name = "DATE",
+        value_parser = when,
+        help = "Judge <FROM> as of this date, YYYY-MM-DD or +<days>d [default: today, UTC]"
+    )]
     pub from_date: Option<When>,
-    /// Judge <TO> as of this date, YYYY-MM-DD or +<days>d [default: today, UTC]
-    #[arg(long, value_name = "DATE", value_parser = when)]
+    #[arg(
+        long,
+        value_name = "DATE",
+        value_parser = when,
+        help = "Judge <TO> as of this date, YYYY-MM-DD or +<days>d [default: today, UTC]"
+    )]
     pub to_date: Option<When>,
     /// Judge both against this kept intel snapshot, not the store's latest load
     #[arg(long, value_name = "ID")]
