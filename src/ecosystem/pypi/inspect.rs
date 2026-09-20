@@ -73,6 +73,13 @@ pub fn read_index(
                 artifacts,
                 skipped,
                 sdist_only_versions_listed = sdist_only,
+                // PEP 740, counted over the files the index lists: `attrs` published 12 of
+                // 72 with one on 2026-09-21 and `ruff` none of 7,134.
+                provenance_files_listed = project
+                    .files
+                    .iter()
+                    .filter(|file| file.provenance.is_some())
+                    .count(),
                 held_packages,
                 held_records,
                 "simple index normalized"

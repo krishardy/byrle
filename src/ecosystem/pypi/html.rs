@@ -20,6 +20,7 @@
 //! | `data-yanked` | PEP 592: the reason, empty when the attribute has no value |
 //! | `data-requires-python` | as written, with `&gt;` and friends turned back |
 //! | `data-upload-time` | the publish time, which PEP 503 has no field for. `download.pytorch.org` writes it; PyPI's HTML does not |
+//! | `data-provenance` | PEP 740: where the file's attestation bundle is |
 
 use super::error::PypiError;
 use super::paths::{filename_parts, normalise};
@@ -59,6 +60,8 @@ pub fn parse(name: &str, page: &str, bytes: &[u8]) -> Result<Project, PypiError>
             upload_time: anchor.attribute("data-upload-time"),
             yanked: anchor.attribute("data-yanked"),
             requires_python: anchor.attribute("data-requires-python"),
+            // PEP 740 writes it as an attribute here and as a key in the JSON form.
+            provenance: anchor.attribute("data-provenance"),
         });
     }
     if files.is_empty() {
