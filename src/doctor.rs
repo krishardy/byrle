@@ -364,6 +364,47 @@ pub enum CacheBypass {
 /// Reports presence and location rather than a count. Every client lays its cache out
 /// differently, so one number would mean packages for one and files for another: the same
 /// yarn cache is 12,983 entries or 749,073 files depending on which you count.
+/// Which form the configured PyPI index serves, and what that costs a cooldown.
+///
+/// PEP 503 has no field for a publish time and almost no index adds one, so a cooldown
+/// cannot be answered while filtering such an index. It is answered on the artifact
+/// request, from the file's `Last-Modified`: see
+/// `docs/engineering_decisions/pep-503-html-index.md`. An operator reading
+/// `cooldown_days: enforced` should be told which of the two they have.
+pub fn check_index_format(index: &str, content_type: Option<&str>, uses_cooldown: bool) -> Finding {
+    let title = "pypi index form";
+    let shown = crate::origin::without_credentials(index);
+    let format = content_type
+        .and_then(|t| crate::ecosystem::of(crate::identity::Ecosystem::PyPI).document(Some(t)));
+    match format {
+        Some(crate::route::DocumentKind::SimpleIndex(crate::route::IndexFormat::Json)) => {
+            Finding::new(Severity::Ok, title, format!("{shown} serves PEP 691 JSON"))
+        }
+        Some(crate::route::DocumentKind::SimpleIndex(crate::route::IndexFormat::Html))
+            if uses_cooldown =>
+        {
+            Finding::new(
+                Severity::Warn,
+                title,
+                format!(
+                    "{shown} serves PEP 503 HTML, which carries no publish time, so \
+                     cooldown_days is answered on the artifact request rather than while \
+                     filtering the index"
+                ),
+            )
+            .with_fix(
+                "nothing to change here; a version too new is refused when its file is fetched",
+            )
+        }
+        Some(_) => Finding::new(Severity::Ok, title, format!("{shown} serves PEP 503 HTML")),
+        None => Finding::new(
+            Severity::Warn,
+            title,
+            format!("{shown} did not say which form it serves"),
+        ),
+    }
+}
+
 pub fn check_cache(client: &Client, cache: Option<&std::path::Path>) -> Finding {
     let title = format!("{} cache", client.name);
     let Some(cache) = cache else {
@@ -747,6 +788,23 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
         findings.push(check_readiness(readiness.as_ref(), &proxy));
     }
 
+    // Which form the PyPI index serves, and what a cooldown can be answered from. Asked
+    // only when a cooldown is configured, because that is the check the answer changes.
+    let uses_cooldown = match environment.policy()? {
+        Some(path) => crate::policy::Policy::load(&path)
+            .map(|policy| policy.uses_cooldown())
+            .unwrap_or(false),
+        None => false,
+    };
+    if uses_cooldown {
+        let index = environment
+            .upstreams()?
+            .get(crate::identity::Ecosystem::PyPI)
+            .to_owned();
+        let content_type = probe::index_content_type(&index).await;
+        findings.push(check_index_format(&index, content_type.as_deref(), true));
+    }
+
     // The policy the proxy is configured with, judged as `waharoa policy check` judges it.
     if let Some(path) = environment.policy()? {
         let loaded = crate::policy::check::load(
@@ -839,6 +897,7 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
 /// Asking an installed client about itself. The one part of `doctor` that runs programs.
 pub mod probe {
     use super::{CacheLocation, Client, RegistryQuery};
+
     use crate::env::{EnvError, Process};
     use std::path::PathBuf;
 
@@ -902,6 +961,31 @@ pub mod probe {
     ///
     /// The timeout is short because doctor is a command someone is waiting on, and a proxy
     /// that takes seconds to say hello is not one that is working.
+    /// What the index answers a `HEAD` with, which says which form it serves without
+    /// fetching a body. Measured 2026-09-21: pypi.org answers
+    /// `application/vnd.pypi.simple.v1+json`, and www.piwheels.org, pypi.nvidia.com and
+    /// download.pytorch.org answer `text/html`, to the same request.
+    pub async fn index_content_type(index: &str) -> Option<String> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .ok()?;
+        let response = client
+            .head(index)
+            .header(reqwest::header::ACCEPT, crate::ecosystem::pypi::SIMPLE_JSON)
+            .send()
+            .await
+            .ok()?;
+        Some(
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)?
+                .to_str()
+                .ok()?
+                .to_owned(),
+        )
+    }
+
     pub async fn own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Option<T> {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(3))
@@ -932,6 +1016,45 @@ pub mod probe {
                 bypass: CacheBypass::Complete,
                 clear_cache: "",
             }
+        }
+
+        /// A `HEAD` says which form an index serves without fetching its body. Measured
+        /// 2026-09-21: pypi.org answers the PEP 691 type and piwheels answers `text/html`
+        /// to the same request.
+        #[tokio::test]
+        async fn an_index_is_asked_which_form_it_serves() {
+            use crate::util::test_support::closing_server;
+            use axum::Router;
+            use axum::routing::any;
+
+            let router = Router::new().fallback(any(|| async {
+                (
+                    [(reqwest::header::CONTENT_TYPE, "text/html")],
+                    "<html></html>",
+                )
+            }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a loopback port should bind");
+            let addr = listener
+                .local_addr()
+                .expect("a bound listener has an address");
+            tokio::spawn(async move {
+                let _ = axum::serve(listener, router).await;
+            });
+            assert_eq!(
+                index_content_type(&format!("http://{addr}/simple/"))
+                    .await
+                    .as_deref(),
+                Some("text/html")
+            );
+
+            let silent = closing_server().await;
+            assert_eq!(
+                index_content_type(&format!("http://{silent}/simple/")).await,
+                None,
+                "nothing is listening for this"
+            );
         }
 
         /// The proxy's own JSON, or `None` when nothing there answers with it.
@@ -1039,6 +1162,50 @@ pub mod probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An operator reading `cooldown_days: enforced` is told which form their index serves,
+    /// because a PEP 503 page carries no publish time. Measured 2026-09-21: pypi.org
+    /// answers the JSON type to a HEAD, and piwheels, nvidia and pytorch answer text/html.
+    #[test]
+    fn the_index_form_says_what_a_cooldown_can_be_answered_from() {
+        use super::{Severity, check_index_format};
+        let json = check_index_format(
+            "https://pypi.org/simple/",
+            Some(crate::ecosystem::pypi::SIMPLE_JSON),
+            true,
+        );
+        assert_eq!(json.severity, Severity::Ok);
+        assert!(json.detail.contains("PEP 691 JSON"), "{}", json.detail);
+
+        let html = check_index_format("https://www.piwheels.org/simple/", Some("text/html"), true);
+        assert_eq!(html.severity, Severity::Warn);
+        assert!(
+            html.detail.contains("answered on the artifact request"),
+            "{}",
+            html.detail
+        );
+
+        // Without a cooldown the form costs nothing, so it is not a warning.
+        let quiet =
+            check_index_format("https://www.piwheels.org/simple/", Some("text/html"), false);
+        assert_eq!(quiet.severity, Severity::Ok);
+
+        let silent = check_index_format("https://example.test/simple/", None, true);
+        assert_eq!(silent.severity, Severity::Warn);
+        assert!(silent.detail.contains("did not say"), "{}", silent.detail);
+
+        // A credential in the index URL is not printed, as everywhere else doctor prints one.
+        let credential = check_index_format(
+            "https://user:secret@example.test/simple/",
+            Some("text/html"),
+            true,
+        );
+        assert!(
+            !credential.detail.contains("secret"),
+            "{}",
+            credential.detail
+        );
+    }
     use crate::ecosystem::npm::clients::named;
 
     fn pins(name: &str) -> &'static Pins {

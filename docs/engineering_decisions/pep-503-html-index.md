@@ -124,8 +124,13 @@ INFO publish time read from the file's Last-Modified path=/packages/.../idna-3.1
       - cooldown_days: published too recently, installable on 2124-08-22
 ```
 
-A check that is dropped is reported, never passed silently: the audit log's event carries
-it.
+A check that is dropped is reported, never passed silently. Three places say so:
+
+| Where | What it says |
+|---|---|
+| `waharoa doctor` | asks the configured index with a `HEAD` and reports its form. `WARN pypi index form: ... serves PEP 503 HTML, which carries no publish time, so cooldown_days is answered on the artifact request rather than while filtering the index` |
+| the proxy's log, once per document | `cooldown_days cannot be answered while filtering this document; a pinned fetch of one of these versions is decided on the file's own date` |
+| the audit log, per decision | `unenforceable=['cooldown_days', ...]` |
 
 ```
 pinned 3.10 action=block unenforceable=['cooldown_days', 'known_malware', 'kev', 'max_cvss']

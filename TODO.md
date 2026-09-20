@@ -2189,9 +2189,12 @@ changes to the core, that is the finding — make it now, not after five adapter
             own upload time on six files. The resolution filter still cannot answer it, so
             an index whose pages carry no dates is filtered by every other check and holds
             a too-new version at the artifact request.
-      - [ ] Startup and `policy check` report `cooldown_days` as enforced whatever the
-            index serves. They could say that against a PEP 503 index it is answered on
-            the artifact request alone.
+      - [x] Startup and `policy check` reported `cooldown_days` as enforced whatever the
+            index serves. `waharoa doctor` now asks the configured index with a `HEAD` and
+            reports its form, and the proxy says so once per document it reads with no
+            dates in it. Measured against the real indexes: pypi.org reads `ok ... serves
+            PEP 691 JSON`, www.piwheels.org reads `WARN ... cooldown_days is answered on
+            the artifact request rather than while filtering the index`.
 - [x] `[!]` Extract the adapter interface (transport + normalizer) from the two working
       implementations — refactor, not upfront design. It is three shared modules (`route`,
       `origin`, `record::PackageMetadata`) and four exhaustive matches, not a trait. See
