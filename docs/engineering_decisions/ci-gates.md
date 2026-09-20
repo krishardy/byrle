@@ -37,7 +37,7 @@ runner's default so the choice is visible.
 | Target | Why not |
 |---|---|
 | `make coverage` | needs `cargo-llvm-cov`, and the 95% floor is enforced by review today |
-| `make verify` | needs a kani install, which bundles its own rustc |
+| `make verify` | needs a kani install, which bundles its own rustc, and roughly 10 GB of memory: `kani-compiler` reached 9,526 MiB RSS on 2026-09-20 and `earlyoom` sent it SIGTERM at 9.9% memory free. A kill reads as `(signal: 15, SIGTERM)` with `Found 0 compilation errors`, which is a machine that ran out of room, not a proof that failed |
 | `make test-integration` | a second Postgres container for 9 tests the `sqlx` job's schema already proves loadable |
 | `make mutants` | minutes per changed file, and it measures a diff rather than a state |
 | `make sast` | needs semgrep and trufflehog |
