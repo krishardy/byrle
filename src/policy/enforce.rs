@@ -162,10 +162,14 @@ pub fn artifact(
         facts = facts.with_intel(intel);
     }
     let dropped = unenforceable(policy, record, times, facts.intel);
-    verdict(&facts, &enforced(&decide(policy, &facts, today), &dropped))
+    verdict(
+        policy,
+        &facts,
+        &enforced(&decide(policy, &facts, today), &dropped),
+    )
 }
 
-fn verdict(facts: &Facts, decision: &Decision) -> Verdict {
+fn verdict(policy: &Policy, facts: &Facts, decision: &Decision) -> Verdict {
     let action = decision.action();
     if action == Action::Allow {
         return Verdict::Serve;
@@ -176,13 +180,30 @@ fn verdict(facts: &Facts, decision: &Decision) -> Verdict {
         reasons: decision
             .reasons()
             .iter()
-            .map(|r| reason(r, facts))
+            .map(|r| reason(r, policy, facts, decision.entry))
             .collect(),
     })
 }
 
+/// The day `cooldown_days` stops refusing this version.
+///
+/// `None` when the registry published no date for it, which is the case the check is
+/// dropped as unenforceable for anyway.
+fn lifts_on(policy: &Policy, facts: &Facts, entry: Option<usize>) -> Option<Date> {
+    let days = i64::from(super::decide::cooldown_required(policy, entry));
+    facts
+        .published?
+        .checked_add(jiff::Span::new().days(days))
+        .ok()
+}
+
 /// One check's answer, in a line a person can act on.
-fn reason(result: &super::decide::Result, facts: &Facts) -> String {
+fn reason(
+    result: &super::decide::Result,
+    policy: &Policy,
+    facts: &Facts,
+    entry: Option<usize>,
+) -> String {
     let name = result.check.as_str();
     match (&result.check, &result.outcome) {
         // The publisher's own words. A deprecation with nothing to say is not one: see
@@ -198,9 +219,12 @@ fn reason(result: &super::decide::Result, facts: &Facts) -> String {
         },
         (Check::Denials, _) => format!("{name}: this exact version is denied"),
         (Check::KnownMalware, _) => format!("{name}: reported as malware"),
-        (Check::CooldownDays, _) => {
-            format!("{name}: published too recently, and this lapses as it ages")
-        }
+        // A quarantine that lapses is worth a date: the client is told when this version
+        // becomes installable rather than only that it is too new.
+        (Check::CooldownDays, _) => match lifts_on(policy, facts, entry) {
+            Some(date) => format!("{name}: published too recently, installable on {date}"),
+            None => format!("{name}: published too recently, and this lapses as it ages"),
+        },
         (_, Outcome::Failed(action)) => format!("{name}: {}", action.as_str()),
         // A check that passed or was excepted is not a reason, so this is unreachable
         // through `reasons()`. Rendered rather than panicked on: a wrong line in an error
@@ -422,9 +446,9 @@ mod tests {
     }
 
     /// A pinned fetch has no other version to fall back to, so quarantine refuses. What
-    /// separates it from a block is what the client is told.
+    /// separates it from a block is what the client is told: the day it lapses.
     #[test]
-    fn quarantine_refuses_on_a_pinned_fetch_and_says_it_lapses() {
+    fn quarantine_refuses_on_a_pinned_fetch_and_says_when_it_lapses() {
         let mut r = record();
         r.published_at = Some(
             "2026-09-12T00:00:00Z"
@@ -444,7 +468,48 @@ mod tests {
             "held, not blocked: {}",
             refusal.message()
         );
-        assert!(refusal.reasons[0].contains("lapses as it ages"));
+        assert_eq!(
+            refusal.reasons,
+            ["cooldown_days: published too recently, installable on 2026-10-12"],
+            "published 2026-09-12, 30 days"
+        );
+
+        // A package entry's own wait is the one the date is measured against.
+        let shortened = loaded(
+            "version: 1\ncooldown_days: 30\npackages:\n  \
+             - match: { ecosystem: npm, name: lodash }\n    set: { cooldown_days: 3 }\n    \
+             reason: reviewed\n    permanent: true\n",
+        );
+        let Verdict::Refuse(refusal) = artifact(Some(&shortened), &r, None, None, TODAY) else {
+            panic!("2026-09-12 plus 3 days is still ahead of 2026-09-13");
+        };
+        assert_eq!(
+            refusal.reasons,
+            ["cooldown_days: published too recently, installable on 2026-09-15"]
+        );
+    }
+
+    /// With no publish date there is no date to give. `unenforceable` drops the check
+    /// before a verdict reaches this, so the line is reached only by asking for it.
+    #[test]
+    fn a_cooldown_with_no_publish_date_says_only_that_it_lapses() {
+        let facts = Facts {
+            published: None,
+            ..Facts::from_record(&record())
+        };
+        let refused = super::super::decide::Result {
+            check: Check::CooldownDays,
+            outcome: Outcome::Failed(Action::Quarantine),
+        };
+        assert_eq!(
+            reason(
+                &refused,
+                &loaded("version: 1\ncooldown_days: 30\n"),
+                &facts,
+                None
+            ),
+            "cooldown_days: published too recently, and this lapses as it ages"
+        );
     }
 
     /// The lattice decides, so the strongest reason leads.
