@@ -395,9 +395,8 @@ pub const PYPI: Registry = Registry {
         &stream::DATADOG_PYPI,
         &stream::GITHUB_PYPI,
     ],
-    // requirements.txt, uv.lock and poetry.lock are not read yet.
-    lockfiles: &[],
-    unread_lockfiles: &[],
+    lockfiles: pypi::lockfile::LOCKFILES,
+    unread_lockfiles: pypi::lockfile::UNREAD,
     clients: pypi::clients::CLIENTS,
     setup: Setup {
         client: "pip",

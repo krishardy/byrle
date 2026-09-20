@@ -31,6 +31,8 @@ The file name chooses the reader. A lockfile under any other name is refused.
 | `yarn.lock` | yarn 1's text, by hand | the first descriptor, or the package after `npm:` in an alias, and `version` |
 | `pnpm-lock.yaml` | YAML with `serde-saphyr`, `lockfileVersion` 9 | each `packages` key, `name@version` |
 | `bun.lock` | YAML with `serde-saphyr`, `lockfileVersion` 0 or 1 | the first element of each `packages` value, `name@version` |
+| `uv.lock`, `poetry.lock` | TOML | each `[[package]]`'s `name` and `version` |
+| `requirements.txt` | pip's requirement lines | a line pinned with `==`, its name normalised |
 
 In npm, yarn and bun an entry's key can be an alias. The fixtures lock `my-lodash` as
 `npm:lodash@4.17.21`:
@@ -60,6 +62,13 @@ A version from a registry is kept. The rest are not versions a packument lists.
 | all | a version that does not start with a digit: `file:../x`, `link:`, `workspace:`, `github:o/r#abc`, a tarball URL, `latest` |
 | npm | an entry outside `node_modules` (the project, a workspace), a `link`, one `resolved` from other than `http://` or `https://` |
 | yarn 1 | an entry with no `resolved` or one from other than `http://` or `https://`. yarn 1 writes `resolved` for every registry entry |
+| uv | a package whose `source` is not `{ registry = ... }`: `{ git = ... }`, a path, and `{ virtual = "." }`, which is the project itself |
+| poetry | a package whose `[package.source]` has a `type` other than `legacy`, which is another index. `git`, `url` and `directory` are not |
+| `requirements.txt` | a line that is not an `==` pin: a range, `name @ url`, `name @ git+...`, `-e .`, an option. A file with lines and no pin at all is refused, because reading it as no packages would say the project depends on nothing |
+
+A `requirements.txt` pins a package once per environment marker, so a project resolving
+`urllib3` differently before and after Python 3.10 locks both versions, and both are
+judged: each is installed somewhere.
 
 Dev dependencies are kept. npm marks them `dev`, pnpm lists them under `devDependencies`, and
 yarn 1 and bun do not record the difference, so no format could filter them the same way.

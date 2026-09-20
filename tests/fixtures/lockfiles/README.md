@@ -13,3 +13,16 @@ Each directory contains the lockfile one package manager wrote for `package.json
 
 `my-lodash` is an alias for `lodash@4.17.21`, and `minimist` is a dev dependency. Every
 lockfile locks the same 15 package versions.
+
+`pypi/` holds what uv 0.12.5 and poetry 2.2.1 wrote on 2026-09-21 for a project depending
+on `idna==3.10` and, from git, `packaging` at 23.2:
+
+| File | Command |
+|---|---|
+| `pypi/uv.lock` | `uv lock` |
+| `pypi/poetry.lock` | `poetry lock` |
+| `pypi/requirements.txt` | `uv export`, for a project depending on `requests==2.32.3` and `idna==3.10` |
+
+Each lockfile carries one package a registry published, `idna`, beside one from git and,
+in uv's, the project itself. `requirements.txt` pins `urllib3` twice, once per Python
+version marker.

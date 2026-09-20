@@ -1775,6 +1775,7 @@ mod tests {
                 ("npm-shrinkwrap.json", "resolved"),
                 ("yarn.lock", "resolved"),
                 ("pnpm-lock.yaml", "tarball"),
+                ("uv.lock", "url"),
             ]
         );
     }
