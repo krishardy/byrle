@@ -11,6 +11,7 @@ use serde_json::Value;
 use tracing::{info, warn};
 
 use crate::origin::{ReachableOrigins, rewrite_artifact_origins};
+use crate::route::IndexFormat;
 
 use super::wire::Project;
 
@@ -18,6 +19,8 @@ use super::wire::Project;
 pub struct Rewrite<'a> {
     /// The index as it arrived, decoded.
     pub decoded: &'a [u8],
+    /// Which form it is, because a file is removed from each differently.
+    pub format: IndexFormat,
     /// The same index, parsed.
     pub project: &'a Project,
     pub reachable: &'a ReachableOrigins,
@@ -42,6 +45,7 @@ pub struct Rewrite<'a> {
 pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
     let Rewrite {
         decoded,
+        format,
         project,
         reachable,
         base,
@@ -60,7 +64,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
     let filtered = if refused_by_policy.is_empty() {
         None
     } else {
-        match remove_versions(decoded, project, refused_by_policy) {
+        match remove_versions(decoded, format, project, refused_by_policy) {
             Ok(body) => {
                 warn!(
                     path = %path,
@@ -119,16 +123,67 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
 /// files are matched by `filename` against `project`.
 fn remove_versions(
     decoded: &[u8],
+    format: IndexFormat,
     project: &Project,
     refused: &HashSet<String>,
-) -> Result<Vec<u8>, serde_json::Error> {
+) -> Result<Vec<u8>, RemoveError> {
     let removed: HashSet<&str> = project
         .files
         .iter()
         .filter(|file| refused.contains(&file.version))
         .map(|file| file.filename.as_str())
         .collect();
-    let mut document: Value = serde_json::from_slice(decoded)?;
+    match format {
+        IndexFormat::Json => remove_from_json(decoded, &removed, refused),
+        IndexFormat::Html => remove_from_html(decoded, &removed),
+    }
+}
+
+/// Why a document could not have a file taken out of it.
+#[derive(Debug)]
+pub enum RemoveError {
+    Json(serde_json::Error),
+    /// A page that parsed as anchors and then did not, which cannot happen through
+    /// `rewrite_index`: the same bytes were read by `html::parse` first.
+    Html(&'static str),
+}
+
+impl std::fmt::Display for RemoveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Json(e) => write!(f, "{e}"),
+            Self::Html(why) => write!(f, "{why}"),
+        }
+    }
+}
+
+/// The PEP 503 page without the anchors naming a removed file.
+///
+/// The anchor is cut out whole and nothing else is touched: the page is the index's own
+/// document, and reserialising it would change bytes nobody asked us to change.
+fn remove_from_html(decoded: &[u8], removed: &HashSet<&str>) -> Result<Vec<u8>, RemoveError> {
+    let text = std::str::from_utf8(decoded).map_err(|_| RemoveError::Html("not UTF-8"))?;
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for anchor in super::html::anchor_spans(text).map_err(|_| RemoveError::Html("unreadable"))? {
+        if !removed.contains(anchor.filename.as_str()) {
+            continue;
+        }
+        out.push_str(&text[cursor..anchor.start]);
+        cursor = anchor.end;
+    }
+    out.push_str(&text[cursor..]);
+    Ok(out.into_bytes())
+}
+
+/// The PEP 691 document without the removed files, and without those versions in the
+/// PEP 700 `versions` key when it has one.
+fn remove_from_json(
+    decoded: &[u8],
+    removed: &HashSet<&str>,
+    refused: &HashSet<String>,
+) -> Result<Vec<u8>, RemoveError> {
+    let mut document: Value = serde_json::from_slice(decoded).map_err(RemoveError::Json)?;
     if let Some(files) = document.get_mut("files").and_then(Value::as_array_mut) {
         files.retain(|file| {
             !file
@@ -140,7 +195,7 @@ fn remove_versions(
     if let Some(versions) = document.get_mut("versions").and_then(Value::as_array_mut) {
         versions.retain(|version| !version.as_str().is_some_and(|v| refused.contains(v)));
     }
-    serde_json::to_vec(&document)
+    serde_json::to_vec(&document).map_err(RemoveError::Json)
 }
 
 #[cfg(test)]
@@ -169,12 +224,57 @@ mod tests {
         let refused: HashSet<String> = refused.iter().map(|v| (*v).to_owned()).collect();
         rewrite_index(Rewrite {
             decoded,
+            format: IndexFormat::Json,
             project,
             reachable: &reachable(),
             base,
             refused_by_policy: &refused,
             path: "/simple/x/",
         })
+    }
+
+    /// The log line says why a document could not have a file taken out of it.
+    #[test]
+    fn a_document_that_cannot_be_filtered_says_why() {
+        let json = remove_from_json(b"not json", &HashSet::new(), &HashSet::new())
+            .expect_err("not a document");
+        assert!(json.to_string().contains("expected ident"), "{json}");
+        let html = remove_from_html(&[0xff], &HashSet::new()).expect_err("not text");
+        assert_eq!(html.to_string(), "not UTF-8");
+    }
+
+    /// A PEP 503 page: the refused version's anchor is cut out whole, and every other byte
+    /// is left as the index wrote it.
+    #[test]
+    fn a_refused_version_is_cut_out_of_a_pep_503_page() {
+        const PAGE: &str = "<!DOCTYPE html>\n<html><body>\n\
+            <a href=\"https://files.pythonhosted.org/packages/ab/x-1.0.tar.gz#sha256=aa\">x-1.0.tar.gz</a><br/>\n\
+            <a href=\"https://files.pythonhosted.org/packages/cd/x-2.0.tar.gz#sha256=bb\">x-2.0.tar.gz</a><br/>\n\
+            </body></html>\n";
+        let project =
+            super::super::html::parse("x", "https://example.test/simple/x/", PAGE.as_bytes())
+                .expect("the page reads");
+        let refused: HashSet<String> = ["1.0".to_owned()].into_iter().collect();
+        let out = rewrite_index(Rewrite {
+            decoded: PAGE.as_bytes(),
+            format: IndexFormat::Html,
+            project: &project,
+            reachable: &reachable(),
+            base: Some("http://127.0.0.1:8080"),
+            refused_by_policy: &refused,
+            path: "/simple/x/",
+        })
+        .expect("a version was refused, so the body changes");
+        let out = String::from_utf8(out).expect("utf-8");
+        assert!(
+            !out.contains("x-1.0.tar.gz"),
+            "the refused version is gone: {out}"
+        );
+        assert!(
+            out.contains("<a href=\"http://127.0.0.1:8080/packages/cd/x-2.0.tar.gz#sha256=bb\">x-2.0.tar.gz</a>"),
+            "the kept file points at the proxy, digest and all: {out}"
+        );
+        assert!(out.starts_with("<!DOCTYPE html>"), "{out}");
     }
 
     fn json(body: &[u8]) -> Value {

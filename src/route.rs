@@ -46,8 +46,22 @@ pub enum RequestTarget {
 pub enum DocumentKind {
     /// An npm packument, abbreviated or full.
     Packument(DocumentDetail),
-    /// A PEP 691 simple index.
-    SimpleIndex,
+    /// A simple index, in the form the index served it.
+    SimpleIndex(IndexFormat),
+}
+
+/// Which of the two simple-index forms a body is.
+///
+/// PEP 691 added the JSON form and PyPI serves it. An index that predates it, or has not
+/// added it, serves the PEP 503 page: `download.pytorch.org`, `pypi.nvidia.com`,
+/// `www.piwheels.org` and `data.pyg.org` all did on 2026-09-21, whatever `Accept` asked
+/// for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexFormat {
+    /// PEP 691 JSON.
+    Json,
+    /// PEP 503 HTML: a list of anchors.
+    Html,
 }
 
 /// The media type out of a `Content-Type`, lowercased, with parameters dropped.

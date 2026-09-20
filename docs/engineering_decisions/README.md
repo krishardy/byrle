@@ -40,6 +40,7 @@ code, and the file names where.
 | [A yanked file is refused, and the policy can allow it](yanked-files.md) | Implemented |
 | [One library crate and one binary, not a workspace](one-crate.md) | Decided |
 | [waharoa resolves no version ranges](no-range-resolution.md) | Decided |
+| [The PEP 503 HTML index is read, not forwarded](pep-503-html-index.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

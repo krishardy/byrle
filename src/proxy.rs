@@ -1020,8 +1020,11 @@ async fn filtered_document(
             path,
         )
         .map(Read::Packument),
-        DocumentKind::SimpleIndex => {
-            pypi::read_index(&decoded, &proxy.store, path).map(Read::SimpleIndex)
+        DocumentKind::SimpleIndex(format) => {
+            // The page's own URL, because a PEP 503 href may be relative to it. It is the
+            // URL this body was fetched from, which `upstream_url` built for the request.
+            let page = upstream_url(proxy, Ecosystem::PyPI, path, None);
+            pypi::read_index(&decoded, format, &page, &proxy.store, path).map(Read::SimpleIndex)
         }
     };
     let Some(read) = read else {
@@ -1098,6 +1101,7 @@ async fn filtered_document(
         }),
         Read::SimpleIndex(index) => pypi::rewrite::rewrite_index(pypi::rewrite::Rewrite {
             decoded: &decoded,
+            format: index.format,
             project: &index.project,
             reachable: proxy.config.origins.reachable(),
             base,
@@ -5056,6 +5060,7 @@ mod tests {
 
     mod routing {
         use super::*;
+        use crate::route::IndexFormat;
 
         fn proxy() -> Proxy {
             Proxy::new(reqwest::Client::new())
@@ -5283,15 +5288,25 @@ mod tests {
                 (
                     Ecosystem::PyPI,
                     Some("application/vnd.pypi.simple.v1+json"),
-                    Some(DocumentKind::SimpleIndex),
+                    Some(DocumentKind::SimpleIndex(IndexFormat::Json)),
                 ),
                 (
                     Ecosystem::PyPI,
                     Some("APPLICATION/VND.PYPI.SIMPLE.V1+JSON; charset=utf-8"),
-                    Some(DocumentKind::SimpleIndex),
+                    Some(DocumentKind::SimpleIndex(IndexFormat::Json)),
                 ),
-                (Ecosystem::PyPI, Some("text/html"), None),
-                (Ecosystem::PyPI, Some("application/json"), None),
+                (
+                    Ecosystem::PyPI,
+                    Some("text/html"),
+                    Some(DocumentKind::SimpleIndex(IndexFormat::Html)),
+                ),
+                // An index may serve PEP 691 under the generic type, which
+                // `pypi::Client::project` accepts too.
+                (
+                    Ecosystem::PyPI,
+                    Some("application/json"),
+                    Some(DocumentKind::SimpleIndex(IndexFormat::Json)),
+                ),
                 (
                     Ecosystem::Npm,
                     Some("application/vnd.pypi.simple.v1+json"),

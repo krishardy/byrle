@@ -93,9 +93,9 @@ impl Client {
     /// says the index redirects a non-normalised name, so asking for the normalised one
     /// saves the round trip and makes one project one request whatever the client spelled.
     ///
-    /// An index that answers with HTML is an error rather than a silent empty project.
-    /// PyPI serves JSON when asked; another index may not, and reading its HTML is a
-    /// separate piece of work that has not been done.
+    /// Both simple-index forms are read: PEP 691 JSON, and the PEP 503 page an index that
+    /// has not implemented PEP 691 answers with. Anything else is an error rather than a
+    /// silent empty project.
     pub async fn project(&self, name: &str) -> Result<Project, FetchError> {
         let url = index_url(&self.index, name).map_err(FetchError::Unreadable)?;
         let response = self
@@ -116,13 +116,14 @@ impl Client {
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
         // PEP 691 names the type exactly. A plain `application/json` is accepted too: an
-        // index may serve the right document under the generic type.
-        let json = content_type
-            .as_deref()
-            .is_some_and(|t| t.starts_with(SIMPLE_JSON) || t.starts_with("application/json"));
-        if !json {
-            return Err(FetchError::NotJson(content_type));
-        }
+        // index may serve the right document under the generic type. An index that has
+        // not implemented PEP 691 answers the PEP 503 page, which `html` reads.
+        let format = match crate::ecosystem::of(crate::identity::Ecosystem::PyPI)
+            .document(content_type.as_deref())
+        {
+            Some(crate::route::DocumentKind::SimpleIndex(format)) => format,
+            _ => return Err(FetchError::NotJson(content_type)),
+        };
         let encoding = response
             .headers()
             .get(reqwest::header::CONTENT_ENCODING)
@@ -131,7 +132,11 @@ impl Client {
         let body = response.bytes().await.map_err(FetchError::Transport)?;
         let decoded = crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes)
             .map_err(FetchError::Undecodable)?;
-        parse(name, &decoded).map_err(FetchError::Unreadable)
+        match format {
+            crate::route::IndexFormat::Json => parse(name, &decoded),
+            crate::route::IndexFormat::Html => super::html::parse(name, &url, &decoded),
+        }
+        .map_err(FetchError::Unreadable)
     }
 }
 
@@ -193,18 +198,51 @@ mod tests {
         assert_eq!(project.versions().len(), 3);
     }
 
-    /// An index serving its own HTML is an error rather than an empty project. PyPI
-    /// serves JSON when asked; another index may not.
+    /// A PEP 503 page is read, with its relative hrefs resolved against the page's own
+    /// URL. `www.piwheels.org` writes them that way.
     #[tokio::test]
-    async fn html_is_refused_rather_than_read_as_no_versions() {
+    async fn a_pep_503_page_is_read_and_its_relative_hrefs_resolved() {
+        const PAGE: &str = r#"<a href="x-1.0.tar.gz#sha256=ab">x-1.0.tar.gz</a>"#;
+        let base = serve(Router::new().route(
+            "/x/",
+            get(|| async { ([(header::CONTENT_TYPE, "text/html")], PAGE) }),
+        ))
+        .await;
+        let project = client(&base).project("x").await.expect("the page reads");
+        assert_eq!(project.files.len(), 1);
+        assert_eq!(
+            project.files[0].url,
+            format!("{base}/x/x-1.0.tar.gz#sha256=ab")
+        );
+    }
+
+    /// A body that is neither form is an error rather than an empty project: an empty
+    /// project reads as a package the index does not have.
+    #[tokio::test]
+    async fn a_body_that_is_neither_form_is_refused() {
+        let base = serve(Router::new().route(
+            "/x/",
+            get(|| async { ([(header::CONTENT_TYPE, "application/octet-stream")], "...") }),
+        ))
+        .await;
+        let error = client(&base).project("x").await.expect_err("not an index");
+        assert!(
+            matches!(&error, FetchError::NotJson(Some(t)) if t.starts_with("application/octet-stream")),
+            "{error}"
+        );
+    }
+
+    /// An HTML page with no distribution on it is an error too.
+    #[tokio::test]
+    async fn html_with_no_files_is_refused_rather_than_read_as_no_versions() {
         let base = serve(Router::new().route(
             "/x/",
             get(|| async { ([(header::CONTENT_TYPE, "text/html")], "<html></html>") }),
         ))
         .await;
-        let error = client(&base).project("x").await.expect_err("not JSON");
+        let error = client(&base).project("x").await.expect_err("no files");
         assert!(
-            matches!(&error, FetchError::NotJson(Some(t)) if t.starts_with("text/html")),
+            matches!(&error, FetchError::Unreadable(PypiError::NotHtml(_))),
             "{error}"
         );
     }

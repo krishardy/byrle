@@ -547,12 +547,18 @@ mod table {
         assert_eq!(of(Ecosystem::Npm).document(Some(pypi::SIMPLE_JSON)), None);
         assert_eq!(
             of(Ecosystem::PyPI).document(Some(pypi::SIMPLE_JSON)),
-            Some(DocumentKind::SimpleIndex),
+            Some(DocumentKind::SimpleIndex(crate::route::IndexFormat::Json)),
         );
         assert_eq!(
             of(Ecosystem::PyPI).document(Some(npm::ABBREVIATED_ACCEPT)),
             None,
         );
+        // PEP 503, which four public indexes still answer with: see `pypi::html`.
+        assert_eq!(
+            of(Ecosystem::PyPI).document(Some("text/html; charset=utf-8")),
+            Some(DocumentKind::SimpleIndex(crate::route::IndexFormat::Html)),
+        );
+        assert_eq!(of(Ecosystem::Npm).document(Some("text/html")), None);
     }
 
     /// A listed stream that the refresh does not load would grant coverage nothing fetches.

@@ -7,12 +7,16 @@ use tracing::{info, warn};
 use crate::record::PackageMetadata;
 use crate::store::RecordStore;
 
+use crate::route::IndexFormat;
+
 use super::normalize::normalize;
 use super::wire::{Project, parse};
 
 /// A simple index as read.
 pub struct Index {
     pub project: Project,
+    /// The form the index was served in, which the rewrite has to remove files from.
+    pub format: IndexFormat,
     /// Its records, when it normalised.
     pub metadata: Option<Box<PackageMetadata>>,
 }
@@ -20,11 +24,23 @@ pub struct Index {
 /// Parse a forwarded simple index and keep its records.
 ///
 /// `None` when it did not parse: the body is then forwarded as it arrived.
-pub fn read_index(decoded: &[u8], store: &Mutex<RecordStore>, path: &str) -> Option<Index> {
+pub fn read_index(
+    decoded: &[u8],
+    format: IndexFormat,
+    page: &str,
+    store: &Mutex<RecordStore>,
+    path: &str,
+) -> Option<Index> {
     // The project name is not read from here: `pypi::parse` takes one as the fallback for
     // an index that does not name itself, and every message below says `path`, which
     // identifies the project already.
-    let project = match parse("", decoded) {
+    // An HTML page's hrefs may be relative, so it is read against the URL it came from:
+    // piwheels writes `/simple/idna/idna-3.20-py3-none-any.whl#sha256=...`.
+    let read = match format {
+        IndexFormat::Json => parse("", decoded),
+        IndexFormat::Html => super::html::parse("", page, decoded),
+    };
+    let project = match read {
         Ok(project) => project,
         Err(e) => {
             warn!(path = %path, error = %e, "UNINSPECTED: simple index did not parse");
@@ -68,7 +84,11 @@ pub fn read_index(decoded: &[u8], store: &Mutex<RecordStore>, path: &str) -> Opt
             None
         }
     };
-    Some(Index { project, metadata })
+    Some(Index {
+        project,
+        format,
+        metadata,
+    })
 }
 
 #[cfg(test)]
@@ -82,7 +102,13 @@ mod tests {
     }
 
     fn read(store: &Mutex<RecordStore>, decoded: &[u8]) -> Option<Index> {
-        read_index(decoded, store, "/simple/x/")
+        read_index(
+            decoded,
+            IndexFormat::Json,
+            "https://pypi.org/simple/x/",
+            store,
+            "/simple/x/",
+        )
     }
 
     /// Reading the index is what gives the artifact request that follows it a digest.

@@ -2173,8 +2173,15 @@ changes to the core, that is the finding — make it now, not after five adapter
             through it: 5 index pages, 2,937 file URLs rewritten, 10 `/packages/` requests
             arriving. Records are stored, so an artifact request finds its digest: all
             five wheels verified.
-      - [ ] HTML fallback for an index that does not serve PEP 691 JSON. PyPI does, and an
-            index that answers HTML is refused rather than read as an empty project.
+      - [x] HTML fallback for an index that does not serve PEP 691 JSON. `pypi::html`
+            reads the PEP 503 page into the same `Project`, so it is filtered, rewritten
+            and stored like the JSON one
+            ([pep-503-html-index](docs/engineering_decisions/pep-503-html-index.md)).
+            Measured: before, a policy refusing every version removed nothing from an
+            HTML index and no `/packages/` request reached the proxy; after, pip is told
+            `No matching distribution found` and an allowed file is fetched through the
+            proxy and verified. Four public indexes serve only HTML, whatever `Accept`
+            asks for: download.pytorch.org, pypi.nvidia.com, www.piwheels.org, data.pyg.org.
 - [x] `[!]` Extract the adapter interface (transport + normalizer) from the two working
       implementations — refactor, not upfront design. It is three shared modules (`route`,
       `origin`, `record::PackageMetadata`) and four exhaustive matches, not a trait. See
