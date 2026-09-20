@@ -38,6 +38,7 @@ code, and the file names where.
 | [Reporting: accounts, installed dependencies and notifications](reporting-accounts-and-notifications.md) | Decided |
 | [Metadata is fetched from upstream on every request](no-metadata-cache.md) | Implemented |
 | [A yanked file is refused, and the policy can allow it](yanked-files.md) | Implemented |
+| [One library crate and one binary, not a workspace](one-crate.md) | Decided |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

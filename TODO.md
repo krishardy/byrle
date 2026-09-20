@@ -2145,10 +2145,11 @@ from. The four the stage decided rather than built are the two `UNINSPECTED` not
 design against. The interface is an output of this stage, not an input. If PyPI forces
 changes to the core, that is the finding — make it now, not after five adapters exist.
 
-- [ ] Defer: single binary vs. workspace crates. Splitting later is cheap; not enough
-      information yet.
-      Moved from Stage 1: this stage extracts the adapter interface, which is when there
-      is enough information to judge.
+- [x] Defer: single binary vs. workspace crates. Decided 2026-09-20: one library crate and
+      one binary ([one-crate](docs/engineering_decisions/one-crate.md)). The adapter
+      interface is four exhaustive `match`es over `Ecosystem`, so a crate per ecosystem
+      would need dependency edges in both directions, and an incremental rebuild is 2.8s,
+      so there is no build time to buy back.
 - [ ] Provenance and attestation fetching for PyPI, which has its own metadata shape.
       Carried from Stage 1, which measured the npm side only: npm asks its own registry
       for `/-/npm/v1/keys` and never contacts the host the packument named.
@@ -2219,11 +2220,26 @@ changes to the core, that is the finding — make it now, not after five adapter
       against the digest the index published. With `install_scripts: block`,
       `pip install --no-binary :all: idna` is refused 403 at the sdist while the wheel of the
       same version is served. Ad-hoc #18 has the isolation flags and the controls.
-- [ ] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass).
-      Moved from Stage 2's `install_scripts`, where the engine side is built:
-      `merge::applies` and its Go test cover not-applicable, and the flow chart carries
-      `RECORD_install_scripts_NOT_APPLICABLE` under the golang branch. What is missing is
-      an ecosystem with no install step going through the proxy, which this stage adds.
+- [x] Ecosystem-namespaced predicates degrade loudly (report N/A, never silent pass).
+      Closed 2026-09-20 by two checks that are not applicable on an ecosystem the proxy
+      serves: `yanked` on npm, which has no yank, and `deprecated` on PyPI, which has no
+      deprecation marker. `merge::applies` answers for both, `Outcome::NotApplicable` is
+      its own state in the decision vector, and `explain` prints it with its reason:
+
+      ```
+      $ waharoa explain pkg:npm/lodash@4.17.21
+        install_scripts  pass
+        yanked           n/a               no meaning for npm
+        deprecated       pass
+
+      $ waharoa explain pkg:pypi/requests@2.32.3
+        yanked           pass
+        deprecated       n/a               no meaning for pypi
+      ```
+
+      `n/a`, `pass` and `unenforced` are three states, not two. The audit log records a
+      decision rather than the per-check table, so a not-applicable check is absent from
+      it: `explain` is where per-check states are read.
 - [ ] `waharoa status`: adapter maturity and intel coverage as separate axes, per
       ecosystem. Moved from Stage 2, which held two items for this, one under the stream
       capabilities and one under observability. Both wanted the same command and neither
