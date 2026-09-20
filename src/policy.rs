@@ -69,6 +69,9 @@ fn default_max_cvss() -> f64 {
 fn default_block() -> Action {
     Action::Block
 }
+fn default_allow() -> Action {
+    Action::Allow
+}
 
 /// Why a policy could not be loaded.
 #[derive(Debug)]
@@ -261,6 +264,15 @@ pub struct Policy {
     /// `allow`.
     #[serde(default = "default_block")]
     pub kev: Action,
+    /// Whether a version its publisher deprecated is served. `block` or `allow`, and
+    /// `allow` by default.
+    ///
+    /// npm's `deprecated`. npm installs a deprecated version after printing a warning and
+    /// no npm client skips one, and publishers deprecate whole release lines: `eslint`
+    /// marks 405 of its 430 versions, measured 2026-09-20. `block` is a choice an operator
+    /// makes. PyPI has no deprecation marker, and the check reports not-applicable there.
+    #[serde(default = "default_allow")]
+    pub deprecated: Action,
     /// Whether a version the registry withdrew is served. `block` or `allow`.
     ///
     /// PyPI's PEP 592 yank. A resolver skips a yanked file unless the requirement pins
@@ -313,7 +325,8 @@ impl Policy {
         Self::parse(&source)
     }
 
-    /// `install_scripts`, `kev` and `yanked` take `block` or `allow`, and nothing else.
+    /// `install_scripts`, `kev`, `yanked` and `deprecated` take `block` or `allow`, and
+    /// nothing else.
     ///
     /// Refused rather than silently treated as one of the two. `quarantine` means "refused
     /// now, allowed later", and neither of these lapses: waiting does not change whether a
@@ -391,6 +404,7 @@ impl Policy {
             ("install_scripts".to_owned(), self.install_scripts),
             ("kev".to_owned(), self.kev),
             ("yanked".to_owned(), self.yanked),
+            ("deprecated".to_owned(), self.deprecated),
         ];
         for (i, entry) in self.packages.iter().enumerate() {
             if let Some(action) = entry.set.install_scripts {
@@ -401,6 +415,9 @@ impl Policy {
             }
             if let Some(action) = entry.set.yanked {
                 checked.push((format!("packages[{i}].set.yanked"), action));
+            }
+            if let Some(action) = entry.set.deprecated {
+                checked.push((format!("packages[{i}].set.deprecated"), action));
             }
         }
         for (at, found) in checked {
@@ -647,6 +664,8 @@ pub struct SetBlock {
     pub install_scripts: Option<Action>,
     #[serde(default)]
     pub yanked: Option<Action>,
+    #[serde(default)]
+    pub deprecated: Option<Action>,
     /// Specific vulnerability advisories to ignore for this package, by id. An id matches an
     /// advisory's own id or any of its aliases, so a CVE id reaches a `GHSA-` advisory.
     ///
@@ -684,18 +703,24 @@ mod tests {
         assert_eq!(policy.install_scripts, Action::Block);
         assert_eq!(policy.kev, Action::Block);
         assert_eq!(policy.yanked, Action::Block);
+        // npm installs a deprecated version after a warning, and publishers deprecate whole
+        // release lines, so this one is a choice an operator makes rather than a default.
+        assert_eq!(policy.deprecated, Action::Allow);
     }
 
     #[test]
     fn every_setting_can_be_given_a_value() {
         let policy = parse(
-            "cooldown_days: 14\nmax_cvss: 3.9\ninstall_scripts: allow\nkev: allow\nyanked: allow\n",
+            "cooldown_days: 14\nmax_cvss: 3.9\ninstall_scripts: allow\nkev: allow\nyanked: allow\n\
+             deprecated: block\n",
         )
         .unwrap();
         assert_eq!(policy.cooldown_days, 14);
         assert_eq!(policy.max_cvss, 3.9);
         assert_eq!(policy.install_scripts, Action::Allow);
         assert_eq!(policy.yanked, Action::Allow);
+        assert_eq!(policy.deprecated, Action::Block);
+        assert_eq!(policy.deprecated, Action::Block);
         assert_eq!(policy.kev, Action::Allow);
     }
 
@@ -790,6 +815,7 @@ mod tests {
                     "max_cvss",
                     "install_scripts",
                     "kev",
+                    "deprecated",
                     "yanked",
                     "denials",
                     "packages",
@@ -840,6 +866,7 @@ mod tests {
                     "kev",
                     "install_scripts",
                     "yanked",
+                    "deprecated",
                     "vuln_advisory_ids",
                 ],
             ),

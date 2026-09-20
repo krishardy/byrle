@@ -24,6 +24,11 @@ install_scripts: block
 # Whether a package carrying a known-exploited vulnerability is served.
 kev: block
 
+# Whether a version its publisher deprecated is served. npm's `deprecated`. Allowed by
+# default: npm installs a deprecated version after printing a warning, no npm client skips
+# one, and publishers deprecate whole release lines. `eslint` marks 405 of its 430 versions.
+deprecated: allow
+
 # Whether a version the registry withdrew is served. PyPI's PEP 592 yank: the file stays
 # in the index, with a reason beside it, and a resolver skips it unless the requirement
 # pins that version. npm has no yank, and the check reports not-applicable there.

@@ -711,6 +711,7 @@ mod tests {
             advisories: Vec::new(),
             has_install_scripts: false,
             yanked: None,
+            deprecated: None,
             intel: Intel::Consulted {
                 exploitation_loaded: true,
             },
@@ -745,6 +746,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             ..facts()
         };
         let d = diff(
@@ -860,6 +862,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             ..facts()
         };
         let d = diff(
@@ -975,6 +978,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             published: Some(jiff::civil::date(2026, 9, 1)),
             ..facts()
         };

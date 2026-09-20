@@ -66,6 +66,7 @@ impl Facts {
             advisories: Vec::new(),
             has_install_scripts: record.has_install_scripts,
             yanked: record.yanked.clone(),
+            deprecated: record.deprecated.clone(),
             intel: Intel::NotConsulted,
         }
     }

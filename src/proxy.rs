@@ -3193,6 +3193,8 @@ mod tests {
     const LODASH: &str = "lodash-4.17.21.abbrev.json";
     /// The only lodash fixture with publish times, which `cooldown_days` needs.
     const LODASH_FULL: &str = "lodash-4.17.21.full.json";
+    /// rimraf 1.0.0 carries `deprecated`.
+    const RIMRAF: &str = "rimraf-1.0.0.abbrev.json";
     /// esbuild 0.28.2 carries `hasInstallScript`.
     const ESBUILD: &str = "esbuild-0.28.2.abbrev.json";
 
@@ -3263,6 +3265,14 @@ mod tests {
                         "0.28.2",
                         None,
                         format!("{BASE}install_scripts: block\n"),
+                    ),
+                    // rimraf 1.0.0 carries npm's `deprecated`.
+                    Check::Deprecated => (
+                        RIMRAF,
+                        "rimraf",
+                        "1.0.0",
+                        None,
+                        format!("{BASE}deprecated: block\n"),
                     ),
                     Check::Yanked => unreachable!("run above, against a PyPI index"),
                 };
