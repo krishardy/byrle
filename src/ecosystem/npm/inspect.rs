@@ -69,10 +69,12 @@ pub fn read_packument(
                 detail = ?detail,
                 versions = p.records.len(),
                 skipped = p.skipped.len(),
-                // Every version in the document, not the one being installed.
-                versions_with_install_scripts =
+                // Every version in the document, not the one being installed, which the
+                // artifact request's own line answers.
+                install_script_versions_listed =
                     p.records.iter().filter(|r| r.has_install_scripts).count(),
-                deprecated_versions = p.records.iter().filter(|r| r.deprecated.is_some()).count(),
+                deprecated_versions_listed =
+                    p.records.iter().filter(|r| r.deprecated.is_some()).count(),
                 latest = %p.latest.as_deref().unwrap_or("-"),
                 encoded_bytes,
                 parse_ms = parse_started.elapsed().as_millis() as u64,

@@ -191,7 +191,9 @@ Two things did read as intent and no longer do:
 
 - `versions_with_install_scripts` and `sdist_only_versions` are
   `install_script_versions_listed` and `sdist_only_versions_listed`. Both always counted
-  the document; the comments said so, which meant the names were wrong.
+  the document; the comments said so, which meant the names were wrong. npm's rename was
+  missed at the time and made on 2026-09-20, with
+  [no-range-resolution](no-range-resolution.md).
 - 679 INFO `proxied` lines buried the 7 an operator needs. A probe logs at DEBUG. The same
   install went from 731 log lines to 52, with every index and artifact line kept.
 

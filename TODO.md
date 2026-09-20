@@ -2246,21 +2246,21 @@ changes to the core, that is the finding — make it now, not after five adapter
       has anything to report with one ecosystem: maturity is a comparison. The intel axis
       is built and read by `doctor` already (`Capabilities::gaps` and `uncovered_by` warn
       when a served ecosystem has no stream providing a capability).
-- [ ] **Range resolution, and the install-script count that waits on it.** Three Stage 2
-      items, one piece of work, moved here because the normalizer is what this stage
-      extracts and a range resolver designed against npm alone is the thing this stage
-      exists to prevent.
-      - [ ] Range resolution lives in the normalizer, never in the engine. Nothing resolves
-            a range today. `dist-tags.latest` is kept as a string and deliberately not
-            resolved: the lodash fixture tags `4.18.1` while the document carries only
-            `4.17.21`, so a tag can name a version the `versions` map omits.
-      - [~] `versions_with_install_scripts` in the log counts every version in the
-            document, not the version being installed. Renamed
-            `install_script_versions_listed`, so the name now says what it counts; the
-            resolved version's own answer still needs the artifact request
-            correlated against the packument records, the same correlation
-            `dist.integrity` already does in `src/store.rs`, applied to a second field.
-            It cannot answer for the installed version until a range resolves to one.
+- [x] **Range resolution, and the install-script count that waits on it.** Decided
+      2026-09-20: nothing in waharoa resolves a range or a tag
+      ([no-range-resolution](docs/engineering_decisions/no-range-resolution.md)).
+      - [x] Range resolution lives in the normalizer, never in the engine. It lives in
+            neither: every caller is given a version already. A resolver in the proxy is
+            the substitution decision #4 refuses, because it would pick a version the
+            client did not ask for and break the integrity hash its lockfile records.
+            `dist-tags.latest` stays the string the registry published, and a tag naming a
+            refused version is dropped rather than repointed.
+      - [x] `versions_with_install_scripts` counted every version in the document. The
+            installed version's own answer is on the artifact request's line, which names
+            a file: `has_install_scripts=true` for `x-3.0.tar.gz` and `false` for the wheel
+            of the same version, held by
+            `an_artifact_request_logs_the_answer_for_the_file_it_names`. The document's
+            count is `install_script_versions_listed`, the rename PyPI got and npm missed.
 - [x] Document every core change this stage forced.
       `docs/engineering_decisions/pypi-simple-index.md` holds the five candidates and what
       each turned out to be; `adapter-interface.md` holds what the two implementations

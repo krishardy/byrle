@@ -3035,6 +3035,28 @@ mod tests {
         text(&buf)
     }
 
+    /// The installed version's own install-script answer is on the artifact request's line,
+    /// which is what a range resolver was once wanted for: a file, not a document.
+    #[tokio::test]
+    async fn an_artifact_request_logs_the_answer_for_the_file_it_names() {
+        let proxy = offline(None, Some(NO_POLICY));
+        // 3.0 offers a wheel, which runs nothing, and an sdist, which runs `setup.py`.
+        resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, PYPI_YANKED).await;
+        for (file, expected) in [
+            (
+                "/packages/ef/01/25/x-3.0-py3-none-any.whl",
+                "has_install_scripts=false",
+            ),
+            (YANKED_SDIST, "has_install_scripts=true"),
+        ] {
+            let (_guard, buf) = capture(tracing::Level::INFO);
+            pinned(&proxy, file).await;
+            drop(_guard);
+            let log = text(&buf);
+            assert!(log.contains(expected), "{file}: {log}");
+        }
+    }
+
     /// A deprecated version is served, and the message its publisher left is logged. npm
     /// installs one after a warning and no client skips it, so the proxy does not refuse
     /// it: `docs/engineering_decisions/yanked-files.md`.

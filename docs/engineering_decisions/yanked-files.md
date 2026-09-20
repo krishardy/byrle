@@ -82,7 +82,7 @@ waharoa: pkg:pypi/x@1.0 is blocked by policy
 
 A deprecated npm version is served, and the message its publisher left is logged.
 `PackageRecord::deprecated` carries it. An artifact request logs it as `deprecated=<message>`
-beside the digest, and a packument logs `deprecated_versions=<count>`.
+beside the digest, and a packument logs `deprecated_versions_listed=<count>`.
 
 `deprecated: block` in the policy refuses one, the way `yanked` does, and a `packages` entry
 can set it for one package. It is `allow` by default: an operator turns it on. PyPI has no
