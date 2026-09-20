@@ -89,6 +89,10 @@ pub struct Check {
     /// Also exit 1 when an entry changes nothing or never wins
     #[arg(long)]
     pub strict: bool,
+    /// Ask each registry when the versions cooldown waivers name were published, and
+    /// report the waivers their version no longer needs
+    #[arg(long)]
+    pub fetch: bool,
 }
 
 #[derive(Debug, PartialEq, Args)]
@@ -266,6 +270,7 @@ mod tests {
                 path: "p.yaml".into(),
                 as_of: Some(jiff::civil::date(2026, 1, 1)),
                 strict: true,
+                fetch: false,
             }))
         );
     }

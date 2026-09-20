@@ -104,6 +104,134 @@ pub struct Report {
     pub permanent: Vec<usize>,
     /// `advisory_scores` entries marked `permanent: true`, as their label, id and reason.
     pub permanent_scores: Vec<String>,
+    /// Cooldown waivers whose version is now old enough without them. Empty unless the
+    /// caller fetched publish dates: see [`Waiver`].
+    pub outlived: Vec<Outlived>,
+}
+
+/// A `packages` entry that shortens `cooldown_days` for one named version.
+///
+/// A waiver is needed only while its version is younger than the global wait. Whether it
+/// still is takes the version's publish date, which is registry data, so `policy check`
+/// asks for it only with `--fetch`.
+///
+/// Only an entry naming one exact version is a waiver here. One naming a range or a whole
+/// package also covers versions not published yet, so no publish date answers it.
+pub struct Waiver {
+    pub entry: usize,
+    pub reference: crate::identity::PackageRef,
+    /// The wait this entry shortens, which is the policy's own `cooldown_days`.
+    pub global_days: u32,
+}
+
+/// A waiver whose version passed the global cooldown anyway.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Outlived {
+    pub entry: usize,
+    pub purl: String,
+    pub published: Date,
+    /// The wait it passed, which is the policy's own `cooldown_days`.
+    pub days: u32,
+    /// The day the global `cooldown_days` stopped refusing this version.
+    pub passed_on: Date,
+}
+
+/// Ask each waiver's registry when its version was published, and report the waivers whose
+/// version the global `cooldown_days` would now admit anyway.
+///
+/// A waiver whose date cannot be read is reported as a note rather than as a finding: not
+/// knowing is not the same as knowing it is unnecessary.
+pub async fn outlived_waivers(
+    policy: &Policy,
+    clients: &crate::ecosystem::Clients,
+    as_of: Date,
+) -> (Vec<Outlived>, Vec<String>) {
+    let mut outlived = Vec::new();
+    let mut notes = Vec::new();
+    for waiver in cooldown_waivers(policy) {
+        match published(clients, &waiver.reference).await {
+            Ok(Some(published)) => outlived.extend(waiver.outlived(published, as_of)),
+            Ok(None) => notes.push(format!(
+                "{} {}: the registry publishes no date for it",
+                packages::label(waiver.entry),
+                waiver.reference
+            )),
+            Err(e) => notes.push(format!(
+                "{} {}: {e}",
+                packages::label(waiver.entry),
+                waiver.reference
+            )),
+        }
+    }
+    (outlived, notes)
+}
+
+/// When the registry says this version was published.
+async fn published(
+    clients: &crate::ecosystem::Clients,
+    reference: &crate::identity::PackageRef,
+) -> Result<Option<Date>, String> {
+    let metadata = crate::ecosystem::fetched(clients.metadata(reference.key()).await)?;
+    let Some(record) = metadata.version(reference.version()) else {
+        return Ok(None);
+    };
+    let times = clients.publish_times(reference.key()).await?;
+    Ok(super::decide::Facts::from_record_and_times(record, times.as_ref()).published)
+}
+
+/// Every entry that shortens `cooldown_days` for one exact version.
+pub fn cooldown_waivers(policy: &Policy) -> Vec<Waiver> {
+    policy
+        .packages
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| {
+            rule.set
+                .cooldown_days
+                .is_some_and(|days| days < policy.cooldown_days)
+        })
+        .filter_map(|(entry, rule)| {
+            Some(Waiver {
+                entry,
+                reference: pinned_version(&rule.selector)?,
+                global_days: policy.cooldown_days,
+            })
+        })
+        .collect()
+}
+
+/// The one version a selector names, when it names one.
+fn pinned_version(selector: &crate::policy::Selector) -> Option<crate::identity::PackageRef> {
+    if let Some(purl) = &selector.purl {
+        return purl.parse().ok();
+    }
+    let name = selector.name.as_deref()?;
+    let version = selector.version.as_deref()?;
+    // A range covers versions nobody has published yet, so no publish date answers it.
+    if version.starts_with(super::selector::VERS) {
+        return None;
+    }
+    let ecosystem = selector.ecosystem.parse().ok()?;
+    crate::identity::PackageKey::from_registry_name(ecosystem, name)
+        .ok()?
+        .at_version(version)
+        .ok()
+}
+
+impl Waiver {
+    /// Whether the version is old enough without this entry, as of `as_of`.
+    pub fn outlived(&self, published: Date, as_of: Date) -> Option<Outlived> {
+        let passed_on = published
+            .checked_add(jiff::Span::new().days(i64::from(self.global_days)))
+            .ok()?;
+        (passed_on <= as_of).then(|| Outlived {
+            entry: self.entry,
+            purl: self.reference.to_string(),
+            published,
+            days: self.global_days,
+            passed_on,
+        })
+    }
 }
 
 impl Report {
@@ -140,6 +268,8 @@ impl Report {
 
         Self {
             as_of,
+            // Filled by the caller, which is the only side that can fetch.
+            outlived: Vec::new(),
             entries: policy
                 .packages
                 .iter()
@@ -179,9 +309,10 @@ impl Report {
     /// wins.
     pub fn strict_failure(&self) -> Option<String> {
         let never = self.never_wins().count();
-        (!self.unchanged.is_empty() || never > 0).then(|| {
+        let outlived = self.outlived.len();
+        (!self.unchanged.is_empty() || never > 0 || outlived > 0).then(|| {
             format!(
-                "changes nothing: {}, never wins: {never}",
+                "changes nothing: {}, never wins: {never}, cooldown outlived: {outlived}",
                 self.unchanged.len()
             )
         })
@@ -211,6 +342,22 @@ impl Report {
                     .filter_map(|s| {
                         s.through
                             .map(|day| format!("{}: {}, through {day}", name(s.index), s.cover()))
+                    })
+                    .collect(),
+            ),
+            (
+                "cooldown waivers no longer needed",
+                self.outlived
+                    .iter()
+                    .map(|o| {
+                        format!(
+                            "{} {}: published {}, past cooldown_days {} since {}",
+                            packages::label(o.entry),
+                            o.purl,
+                            o.published,
+                            o.days,
+                            o.passed_on
+                        )
                     })
                     .collect(),
             ),
@@ -250,6 +397,125 @@ mod tests {
 
     const TODAY: Date = date(2026, 9, 13);
     const PERMANENT: &str = "    permanent: true\n";
+
+    /// A policy with one waiver for `purl`, shortening a 30-day wait to nothing.
+    fn waiving(selector: &str) -> Policy {
+        Policy::parse(&format!(
+            "version: 1\ncooldown_days: 30\npackages:\n  - match: {{ {selector} }}\n    \
+             set: {{ cooldown_days: 0 }}\n    reason: urgent fix\n    permanent: true\n"
+        ))
+        .expect("the policy loads")
+    }
+
+    /// A waiver is an entry that shortens the wait for one named version. One naming a
+    /// range or a whole package covers versions nobody has published yet, so no publish
+    /// date answers it.
+    #[test]
+    fn only_an_entry_naming_one_version_is_a_waiver() {
+        for (selector, named) in [
+            (
+                "ecosystem: npm, purl: \"pkg:npm/lodash@4.17.21\"",
+                Some("pkg:npm/lodash@4.17.21"),
+            ),
+            (
+                "ecosystem: npm, name: lodash, version: \"4.17.21\"",
+                Some("pkg:npm/lodash@4.17.21"),
+            ),
+            ("ecosystem: npm, name: lodash", None),
+            (
+                "ecosystem: npm, name: lodash, version: \"vers:npm/>=4.0.0\"",
+                None,
+            ),
+        ] {
+            let policy = waiving(selector);
+            let found: Vec<String> = cooldown_waivers(&policy)
+                .iter()
+                .map(|w| w.reference.to_string())
+                .collect();
+            assert_eq!(found, named.into_iter().collect::<Vec<_>>(), "{selector}");
+        }
+    }
+
+    /// An entry that does not shorten the wait is not a waiver, whatever else it sets. One
+    /// setting the same wait changes nothing, which is its own section.
+    #[test]
+    fn an_entry_that_shortens_nothing_is_not_a_waiver() {
+        for set in ["kev: allow", "cooldown_days: 30"] {
+            let policy = Policy::parse(&format!(
+                "version: 1\ncooldown_days: 30\npackages:\n  \
+                 - match: {{ ecosystem: npm, purl: \"pkg:npm/lodash@4.17.21\" }}\n    \
+                 set: {{ {set} }}\n    reason: reviewed\n    permanent: true\n"
+            ))
+            .expect("the policy loads");
+            assert!(cooldown_waivers(&policy).is_empty(), "{set}");
+        }
+    }
+
+    /// The day the global wait passed is the finding's date, and the day before it is not.
+    #[test]
+    fn a_waiver_outlives_its_cooldown_on_the_day_the_wait_passes() {
+        let policy = waiving("ecosystem: npm, purl: \"pkg:npm/lodash@4.17.21\"");
+        let waiver = &cooldown_waivers(&policy)[0];
+        let published = date(2026, 9, 1);
+        assert_eq!(waiver.outlived(published, date(2026, 9, 30)), None);
+        let outlived = waiver
+            .outlived(published, date(2026, 10, 1))
+            .expect("30 days after 2026-09-01");
+        assert_eq!(
+            (outlived.published, outlived.passed_on, outlived.days),
+            (published, date(2026, 10, 1), 30)
+        );
+    }
+
+    /// The fetch path, against a registry that serves the lodash fixture.
+    #[tokio::test]
+    async fn a_waiver_whose_version_is_old_enough_is_reported() {
+        use crate::util::test_support::{Answer, scripted};
+        let full = crate::ecosystem::npm::fixture("lodash-4.17.21.full.json");
+        let addr = scripted(vec![Answer::body(full)]).await;
+        let clients = crate::ecosystem::Clients::from_env(&crate::env::testing::with(&[(
+            crate::env::UPSTREAM_NPM,
+            &format!("http://{addr}"),
+        )]))
+        .expect("the upstream parses");
+        let policy = waiving("ecosystem: npm, purl: \"pkg:npm/lodash@4.17.21\"");
+
+        let (outlived, notes) = outlived_waivers(&policy, &clients, TODAY).await;
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(outlived.len(), 1);
+        assert_eq!(outlived[0].published, date(2021, 2, 20));
+
+        let mut report = Report::of(&policy, TODAY);
+        report.outlived = outlived;
+        assert!(
+            report.render().contains(
+                "packages[0] pkg:npm/lodash@4.17.21: published 2021-02-20, \
+                 past cooldown_days 30 since 2021-03-22"
+            ),
+            "{}",
+            report.render()
+        );
+        assert!(report.strict_failure().is_some(), "--strict fails on it");
+    }
+
+    /// A version the registry does not publish is a note, not a finding: not knowing is
+    /// not knowing it is unnecessary.
+    #[tokio::test]
+    async fn a_waiver_whose_version_cannot_be_dated_is_a_note() {
+        use crate::util::test_support::{Answer, scripted};
+        let addr = scripted(vec![Answer::Status(404)]).await;
+        let clients = crate::ecosystem::Clients::from_env(&crate::env::testing::with(&[(
+            crate::env::UPSTREAM_NPM,
+            &format!("http://{addr}"),
+        )]))
+        .expect("the upstream parses");
+        let policy = waiving("ecosystem: npm, purl: \"pkg:npm/lodash@4.17.21\"");
+
+        let (outlived, notes) = outlived_waivers(&policy, &clients, TODAY).await;
+        assert!(outlived.is_empty());
+        assert_eq!(notes.len(), 1);
+        assert!(notes[0].contains("pkg:npm/lodash@4.17.21"), "{notes:?}");
+    }
 
     fn fixture(name: &str) -> std::path::PathBuf {
         format!(
@@ -302,7 +568,7 @@ mod tests {
         );
         assert_eq!(
             found.strict_failure().as_deref(),
-            Some("changes nothing: 0, never wins: 1")
+            Some("changes nothing: 0, never wins: 1, cooldown outlived: 0")
         );
     }
 
@@ -365,7 +631,7 @@ mod tests {
         assert_eq!(found.unchanged, vec![0]);
         assert_eq!(
             found.strict_failure().as_deref(),
-            Some("changes nothing: 1, never wins: 0")
+            Some("changes nothing: 1, never wins: 0, cooldown outlived: 0")
         );
     }
 

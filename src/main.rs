@@ -35,20 +35,30 @@ fn or_exit_with<T>(result: Result<T, env::EnvError>, code: u8) -> T {
     })
 }
 
-/// `waharoa policy check <path> [--as-of YYYY-MM-DD] [--strict]`.
+/// `waharoa policy check <path> [--as-of YYYY-MM-DD] [--strict] [--fetch]`.
 ///
 /// The same load as the proxy at startup, with the same expiry ceiling, so a policy this
 /// accepts is one the proxy starts with.
-fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
+async fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
     let as_of = args.as_of.unwrap_or_else(today);
     let ceiling = or_exit(env::process().expiry_ceiling_days());
-    let report = match check::load(&args.path, as_of, ceiling) {
-        Ok((_, report)) => report,
+    let (policy, mut report) = match check::load(&args.path, as_of, ceiling) {
+        Ok(loaded) => loaded,
         Err(e) => {
             eprintln!("waharoa policy check: {}: {e}", args.path.display());
             return std::process::ExitCode::from(e.exit_code());
         }
     };
+    // The only part that leaves the machine, and only when asked: a waiver's version has
+    // to be dated by the registry that published it.
+    if args.fetch {
+        let clients = or_exit(waharoa::ecosystem::Clients::from_env(&env::process()));
+        let (outlived, notes) = check::outlived_waivers(&policy, &clients, as_of).await;
+        for note in notes {
+            eprintln!("waharoa policy check: {note}");
+        }
+        report.outlived = outlived;
+    }
     print!("{}", report.render());
     if args.strict
         && let Some(failure) = report.strict_failure()
@@ -203,7 +213,7 @@ async fn main() -> std::process::ExitCode {
         cli::Command::Daemon => run_daemon().await,
         cli::Command::Doctor => run_doctor().await,
         cli::Command::Explain(target) => run_explain(target).await,
-        cli::Command::Policy(cli::PolicyCommand::Check(args)) => run_policy_check(args),
+        cli::Command::Policy(cli::PolicyCommand::Check(args)) => run_policy_check(args).await,
         cli::Command::Policy(cli::PolicyCommand::Diff(args)) => run_policy_diff(args).await,
         cli::Command::Intel(cli::IntelCommand::History(args)) => run_intel_history(args).await,
         cli::Command::Refresh => run_refresh().await,

@@ -2271,7 +2271,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       `x-waharoa-filtered-versions` and `x-waharoa-filtered-checks` on the response, a
       `resolution` event in the audit log, and `explain`'s per-check reasons
       ([quarantine-filter-metadata](docs/engineering_decisions/quarantine-filter-metadata.md)).
-- [ ] `policy check` flags cooldown waivers whose underlying cooldown already elapsed
+- [x] `policy check` flags cooldown waivers whose underlying cooldown already elapsed.
+      `waharoa policy check --fetch` dates each waiver's version at its registry and lists
+      the ones the global wait now admits anyway. Offline without the flag
+      ([policy-check](docs/engineering_decisions/policy-check.md)).
 - [ ] `[!]` **Lifecycle script policy** — npm pre/postinstall, Python sdist `setup.py`
       — cheap tier, buffers inline
 - [ ] `[!]` **Provenance enforcement** — sigstore / npm provenance verification
