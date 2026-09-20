@@ -8,6 +8,8 @@ pub enum PypiError {
     UnusableName(String),
     /// The document lists no file this build can read.
     NothingReadable { name: String, files: usize },
+    /// The body is not a PEP 503 page this build can read, and why.
+    NotHtml(&'static str),
 }
 
 impl std::fmt::Display for PypiError {
@@ -15,6 +17,7 @@ impl std::fmt::Display for PypiError {
         match self {
             Self::NotJson(e) => write!(f, "the index is not readable: {e}"),
             Self::UnusableName(name) => write!(f, "`{name}` is not a usable project name"),
+            Self::NotHtml(why) => write!(f, "the HTML index is not readable: {why}"),
             Self::NothingReadable { name, files } => write!(
                 f,
                 "the index for `{name}` lists {files} files and none is readable"

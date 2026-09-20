@@ -38,6 +38,7 @@
 
 pub mod clients;
 pub mod error;
+pub mod html;
 pub mod inspect;
 pub mod normalize;
 pub mod paths;
@@ -55,6 +56,10 @@ pub use wire::{File, Kind, Project, parse};
 
 /// What `waharoa` sends to ask for JSON rather than HTML. PEP 691.
 pub const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
+
+/// PEP 691's name for the HTML form. An index that predates PEP 691 answers `text/html`,
+/// which is read the same way.
+pub const SIMPLE_HTML: &str = "application/vnd.pypi.simple.v1+html";
 
 /// The path prefix PEP 503 puts a project's index under.
 pub const SIMPLE: &str = "/simple/";

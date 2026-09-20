@@ -5,11 +5,11 @@
 //! place a file's version is written.
 
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
-use crate::route::{DocumentKind, RequestTarget};
+use crate::route::{DocumentKind, IndexFormat, RequestTarget};
 
 use super::error::PypiError;
 use super::wire::Kind;
-use super::{FILES, SIMPLE_JSON};
+use super::{FILES, SIMPLE_HTML, SIMPLE_JSON};
 
 /// Split a project name for its purl: no namespace, and the name [`normalise`]d, so one
 /// project is one key however it is spelled. A PyPI project has no namespace, so a name with
@@ -123,10 +123,15 @@ pub fn upstream_url(index: &str, path_and_query: &str) -> String {
 
 /// Which metadata document a body with this `Content-Type` is.
 ///
-/// PyPI's row of [`crate::ecosystem::TABLE`] reads media types through this. Only PEP 691
-/// JSON is read; an index that answers HTML is forwarded unchanged.
+/// PyPI's row of [`crate::ecosystem::TABLE`] reads media types through this. Both simple
+/// index forms are read: PEP 691 JSON, and the PEP 503 page an index that has not
+/// implemented PEP 691 serves.
 pub fn document_from_content_type(content_type: Option<&str>) -> Option<DocumentKind> {
-    (crate::route::media_type(content_type)? == SIMPLE_JSON).then_some(DocumentKind::SimpleIndex)
+    match crate::route::media_type(content_type)?.as_str() {
+        SIMPLE_JSON | "application/json" => Some(DocumentKind::SimpleIndex(IndexFormat::Json)),
+        SIMPLE_HTML | "text/html" => Some(DocumentKind::SimpleIndex(IndexFormat::Html)),
+        _ => None,
+    }
 }
 
 pub fn classify_path(path: &str) -> RequestTarget {
@@ -136,8 +141,14 @@ pub fn classify_path(path: &str) -> RequestTarget {
     if let Some(rest) = path.strip_prefix("simple/") {
         let name = rest.trim_end_matches('/');
         // `/simple/` itself is the root index: every project PyPI serves, not one of them.
-        if name.is_empty() || name.contains('/') {
+        if name.is_empty() {
             return RequestTarget::Other;
+        }
+        // A file served from under the index rather than from a file host.
+        // `www.piwheels.org` writes `/simple/idna/idna-3.20-py3-none-any.whl`, and the
+        // request that follows the rewrite carries that path.
+        if name.contains('/') {
+            return artifact(name.rsplit('/').next().unwrap_or_default());
         }
         let normalised = normalise(name);
         if normalised.is_empty() {
@@ -152,9 +163,11 @@ pub fn classify_path(path: &str) -> RequestTarget {
     let Some(rest) = path.strip_prefix("packages/") else {
         return RequestTarget::Other;
     };
-    let Some(filename) = rest.rsplit('/').next().filter(|f| !f.is_empty()) else {
-        return RequestTarget::Other;
-    };
+    artifact(rest.rsplit('/').next().unwrap_or_default())
+}
+
+/// The request for one file, named by a filename this build can read a version out of.
+fn artifact(filename: &str) -> RequestTarget {
     let Some((name, version, _)) = filename_parts(filename) else {
         return RequestTarget::Other;
     };

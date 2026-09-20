@@ -450,15 +450,26 @@ fn next_candidate(text: &str, from: usize, prefixes: &[String]) -> Option<usize>
 }
 
 /// The path to keep, when this URL names an origin the proxy fronts.
+///
+/// A fragment is kept too. A PEP 503 index writes the file's digest there,
+/// `...whl#sha256=<hex>`, and pip checks the bytes against it. An HTTP request never
+/// carries a fragment, so keeping it changes what the client verifies and not what it asks
+/// for.
 pub(crate) fn reachable_path(url: &str, reachable: &ReachableOrigins) -> Option<String> {
     let parsed = reqwest::Url::parse(url).ok()?;
     if !reachable.contains(&origin_of(&parsed)) {
         return None;
     }
-    Some(match parsed.query() {
-        Some(query) => format!("{}?{query}", parsed.path()),
-        None => parsed.path().to_owned(),
-    })
+    let mut path = parsed.path().to_owned();
+    if let Some(query) = parsed.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    if let Some(fragment) = parsed.fragment() {
+        path.push('#');
+        path.push_str(fragment);
+    }
+    Some(path)
 }
 
 impl PackageMetadata {
@@ -541,6 +552,24 @@ mod tests {
 
     fn reachable(additional: &[&str]) -> ReachableOrigins {
         ReachableOrigins::new([UPSTREAM], additional.iter().copied()).expect("valid origins")
+    }
+
+    /// A PEP 503 index writes the digest in the href's fragment, and pip checks the bytes
+    /// it downloads against it. The rewrite points the href at the proxy and leaves the
+    /// digest on it.
+    #[test]
+    fn a_rewritten_url_keeps_the_digest_a_simple_index_wrote_in_its_fragment() {
+        let reachable = reachable(&[]);
+        let href = "https://files.pythonhosted.org/packages/ab/cd/idna-3.10.tar.gz#sha256=12f6";
+        let body = format!("<a href=\"{href}\">idna-3.10.tar.gz</a>");
+        let out =
+            rewrite_artifact_origins(body.as_bytes(), [href], &reachable, "http://127.0.0.1:8080")
+                .expect("one href is rewritten");
+        assert_eq!(
+            String::from_utf8(out.body).unwrap(),
+            "<a href=\"http://127.0.0.1:8080/packages/ab/cd/idna-3.10.tar.gz#sha256=12f6\">\
+             idna-3.10.tar.gz</a>"
+        );
     }
 
     /// The set a default deployment fronts: npm's registry, PyPI's index and PyPI's file
