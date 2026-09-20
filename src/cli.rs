@@ -28,6 +28,8 @@ pub enum Command {
     Daemon,
     /// Check whether this machine installs through the proxy
     Doctor,
+    /// What this build does for each ecosystem, and which streams cover it
+    Status,
     /// Why a package is allowed or refused
     Explain(Explain),
     /// Read what the intel store records

@@ -2139,7 +2139,10 @@ from. The four the stage decided rather than built are the two `UNINSPECTED` not
 
 ## Stage 3 — Second ecosystem (PyPI)
 
-**Status: open, started 2026-09-16.**
+**Status: open, started 2026-09-16.** Every item closed except the deferrals and the
+PEP 691 transport row's own sub-items; exit met: PyPI enforcing, the adapter interface
+extracted from two working implementations and documented, and npm passing every Stage 1
+and Stage 2 test.
 
 **Goal:** **extract** the adapter interface, using npm and PyPI as the two shapes to
 design against. The interface is an output of this stage, not an input. If PyPI forces
@@ -2263,12 +2266,21 @@ changes to the core, that is the finding — make it now, not after five adapter
       `n/a`, `pass` and `unenforced` are three states, not two. The audit log records a
       decision rather than the per-check table, so a not-applicable check is absent from
       it: `explain` is where per-check states are read.
-- [ ] `waharoa status`: adapter maturity and intel coverage as separate axes, per
-      ecosystem. Moved from Stage 2, which held two items for this, one under the stream
-      capabilities and one under observability. Both wanted the same command and neither
-      has anything to report with one ecosystem: maturity is a comparison. The intel axis
-      is built and read by `doctor` already (`Capabilities::gaps` and `uncovered_by` warn
-      when a served ecosystem has no stream providing a capability).
+- [x] `waharoa status`: adapter maturity and intel coverage as separate axes, per
+      ecosystem. `src/status.rs`, every line read from `ecosystem::TABLE` or the loaded
+      snapshot, so a row added to the table reports itself. The adapter axis is the
+      upstream, the media types read, where publish times come from, the version order,
+      which checks have no meaning here, the clients `doctor` checks and the lockfiles
+      read; the intel axis is the streams listed, which of them the snapshot loaded, and
+      which capabilities have none. A golden file holds the whole report.
+      It reported something on its first run: no lockfile written by a Python client is
+      read, so `policy diff` has no package set for that ecosystem beyond the audit log.
+
+- [ ] **No lockfile written by a Python client is read**, which `waharoa status` reports
+      as `client lockfiles none read` under pypi. `uv.lock`, `poetry.lock` and a pinned
+      `requirements.txt` each record a resolved graph, and `policy diff` takes its package
+      set from lockfiles and the audit log, so a deployment installing only Python
+      packages compares two policies over the audit log alone.
 - [x] **Range resolution, and the install-script count that waits on it.** Decided
       2026-09-20: nothing in waharoa resolves a range or a tag
       ([no-range-resolution](docs/engineering_decisions/no-range-resolution.md)).

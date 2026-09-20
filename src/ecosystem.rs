@@ -185,6 +185,11 @@ pub struct Registry {
     /// Which metadata document a response body is, read from its `Content-Type`.
     pub read_media_type: fn(Option<&str>) -> Option<DocumentKind>,
 
+    /// The media types [`Registry::read_media_type`] reads, for `waharoa status` to
+    /// report. Held beside the function because a function cannot be asked what it
+    /// accepts; `every_named_media_type_is_read` holds the two together.
+    pub documents: &'static [&'static str],
+
     /// Whether a request that is neither metadata nor an artifact is a resolver probing
     /// rather than a client installing, and is logged at DEBUG.
     pub other_is_probe: bool,
@@ -349,6 +354,7 @@ pub const NPM: Registry = Registry {
     always_reachable: &[npm::DEFAULT_REGISTRY],
     classify_path: npm::classify_path,
     read_media_type: npm::document_from_content_type,
+    documents: &[npm::ABBREVIATED_ACCEPT, npm::FULL_ACCEPT],
     // `/-/v1/search` and `/-/whoami` are a handful per install, and
     // `scripts/make/retry-matrix.sh` counts their INFO lines.
     other_is_probe: false,
@@ -379,6 +385,7 @@ pub const PYPI: Registry = Registry {
     always_reachable: &[pypi::INDEX, pypi::FILES],
     classify_path: pypi::classify_path,
     read_media_type: pypi::document_from_content_type,
+    documents: &[pypi::SIMPLE_JSON, pypi::SIMPLE_HTML, "text/html"],
     // PEP 658 `<file>.metadata` requests.
     other_is_probe: true,
     // `pypi::normalize` reads each file's `upload-time`.
@@ -553,6 +560,22 @@ mod table {
             of(Ecosystem::PyPI).document(Some(npm::ABBREVIATED_ACCEPT)),
             None,
         );
+        // Every type a row names is one its reader reads: the field is for `status` to
+        // print, and a name that read as nothing would be a claim the code does not keep.
+        for registry in TABLE {
+            for media_type in registry.documents {
+                assert!(
+                    registry.document(Some(media_type)).is_some(),
+                    "{} names {media_type} and does not read it",
+                    registry.ecosystem.as_str()
+                );
+            }
+            assert!(
+                !registry.documents.is_empty(),
+                "{} reads no document",
+                registry.ecosystem.as_str()
+            );
+        }
         // PEP 503, which four public indexes still answer with: see `pypi::html`.
         assert_eq!(
             of(Ecosystem::PyPI).document(Some("text/html; charset=utf-8")),

@@ -5,6 +5,7 @@ Usage: waharoa <COMMAND>
 Commands:
   daemon   Run the proxy in the foreground
   doctor   Check whether this machine installs through the proxy
+  status   What this build does for each ecosystem, and which streams cover it
   explain  Why a package is allowed or refused
   intel    Read what the intel store records
   policy   Work with policy files
