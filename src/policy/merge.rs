@@ -15,6 +15,7 @@ pub enum Rule {
     InstallScripts,
     VulnAdvisoryIds,
     Yanked,
+    Deprecated,
 }
 
 impl Rule {
@@ -25,17 +26,19 @@ impl Rule {
             Self::InstallScripts => "install_scripts",
             Self::VulnAdvisoryIds => "vuln_advisory_ids",
             Self::Yanked => "yanked",
+            Self::Deprecated => "deprecated",
         }
     }
 
     /// Every setting an exception can carry. One list, so a setting added to the schema
     /// and not here is a compile error rather than a silently unchecked field.
-    pub const ALL: [Rule; 5] = [
+    pub const ALL: [Rule; 6] = [
         Self::CooldownDays,
         Self::Kev,
         Self::InstallScripts,
         Self::VulnAdvisoryIds,
         Self::Yanked,
+        Self::Deprecated,
     ];
 }
 
@@ -55,6 +58,8 @@ pub fn applies(ecosystem: &str, rule: Rule) -> bool {
         ("golang" | "go", Rule::InstallScripts) => false,
         // npm has no yank: a version is published or it is gone from the packument.
         ("npm", Rule::Yanked) => false,
+        // PyPI has no deprecation marker: a release is there, or it is yanked.
+        ("pypi", Rule::Deprecated) => false,
         _ => true,
     }
 }
@@ -70,6 +75,7 @@ pub struct RuleValues<'a> {
     pub install_scripts: Option<Action>,
     pub vuln_advisory_ids: Option<&'a [String]>,
     pub yanked: Option<Action>,
+    pub deprecated: Option<Action>,
 }
 
 impl<'a> From<&'a SetBlock> for RuleValues<'a> {
@@ -83,6 +89,7 @@ impl<'a> From<&'a SetBlock> for RuleValues<'a> {
             vuln_advisory_ids: (!s.vuln_advisory_ids.is_empty())
                 .then_some(s.vuln_advisory_ids.as_slice()),
             yanked: s.yanked,
+            deprecated: s.deprecated,
         }
     }
 }
@@ -98,6 +105,7 @@ impl From<&Policy> for RuleValues<'_> {
             // ever loosen, which `compare` reports directly.
             vuln_advisory_ids: None,
             yanked: Some(p.yanked),
+            deprecated: Some(p.deprecated),
         }
     }
 }
@@ -124,6 +132,7 @@ pub fn compare(
         Rule::Kev => action_strictness(value.kev, baseline.kev),
         Rule::InstallScripts => action_strictness(value.install_scripts, baseline.install_scripts),
         Rule::Yanked => action_strictness(value.yanked, baseline.yanked),
+        Rule::Deprecated => action_strictness(value.deprecated, baseline.deprecated),
         // Ignoring an advisory can only loosen. There is nothing above to compare it to,
         // so naming any is a loosening and naming none is no change at all.
         Rule::VulnAdvisoryIds => match value.vuln_advisory_ids {
@@ -256,6 +265,7 @@ mod tests {
                 "install_scripts",
                 "vuln_advisory_ids",
                 "yanked",
+                "deprecated",
             ],
             "a name here is the key in the policy file"
         );

@@ -278,6 +278,7 @@ mod tests {
             advisories: Vec::new(),
             has_install_scripts: false,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
         }
     }
@@ -456,6 +457,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
             ..facts()
         };

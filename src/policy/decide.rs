@@ -55,6 +55,9 @@ pub struct Facts {
     /// none. PyPI's PEP 592 yank; npm has none, and the check reports not-applicable
     /// there.
     pub yanked: Option<String>,
+    /// The message the publisher left when deprecating this version. npm's `deprecated`;
+    /// PyPI has none, and the check reports not-applicable there.
+    pub deprecated: Option<String>,
 }
 
 /// Whether anything was in a position to answer about advisories.
@@ -114,6 +117,7 @@ pub enum Check {
     MaxCvss,
     InstallScripts,
     Yanked,
+    Deprecated,
 }
 
 impl Check {
@@ -126,12 +130,13 @@ impl Check {
             Self::MaxCvss => "max_cvss",
             Self::InstallScripts => "install_scripts",
             Self::Yanked => "yanked",
+            Self::Deprecated => "deprecated",
         }
     }
 
     /// Every check, in the order the flow chart draws them. One list, so a check added to
     /// the engine and not here is a compile error rather than one silently never run.
-    pub const ALL: [Check; 7] = [
+    pub const ALL: [Check; 8] = [
         Self::Denials,
         Self::KnownMalware,
         Self::CooldownDays,
@@ -139,6 +144,7 @@ impl Check {
         Self::MaxCvss,
         Self::InstallScripts,
         Self::Yanked,
+        Self::Deprecated,
     ];
 
     /// Whether an exception can excuse this check.
@@ -486,6 +492,18 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
                 entry,
             )
         }
+
+        Check::Deprecated => {
+            if !merge::applies(&facts.ecosystem, Rule::Deprecated) {
+                return Outcome::NotApplicable;
+            }
+            on_off(
+                facts.deprecated.is_some(),
+                policy.deprecated,
+                set.and_then(|s| s.deprecated),
+                entry,
+            )
+        }
     }
 }
 
@@ -533,6 +551,7 @@ mod tests {
             advisories: Vec::new(),
             has_install_scripts: false,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
         }
     }
@@ -601,6 +620,7 @@ mod tests {
             advisories: vec![exploited("CVE-2024-1", 9.8)],
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -784,6 +804,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -824,6 +845,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1230,6 +1252,7 @@ mod tests {
             ecosystem: "golang".to_owned(),
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1247,6 +1270,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1305,6 +1329,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
             ..clean()
         };
@@ -1319,6 +1344,6 @@ mod tests {
         for check in Check::ALL {
             assert!(!check.as_str().is_empty());
         }
-        assert_eq!(Check::ALL.len(), 7);
+        assert_eq!(Check::ALL.len(), 8);
     }
 }

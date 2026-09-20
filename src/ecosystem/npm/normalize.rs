@@ -101,7 +101,14 @@ fn version_record(
         published_at,
         maintainers,
         repository,
-        deprecated: entry.deprecated.clone(),
+        // `npm deprecate pkg@range ""` removes a deprecation, and npm then omits the key:
+        // of 566 deprecated versions across ten packages on 2026-09-20, none carried an
+        // empty message. An empty one is read as not deprecated rather than as a
+        // deprecation with nothing to say.
+        deprecated: entry
+            .deprecated
+            .clone()
+            .filter(|message| !message.trim().is_empty()),
         has_install_scripts: scripts,
         // npm has no yank. A version is published or unpublished, and an unpublished one
         // is not in the packument at all.
@@ -871,6 +878,13 @@ mod tests {
         }
         let lodash = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
         assert_eq!(lodash.records[0].deprecated, None, "no key is no message");
+
+        // `npm deprecate pkg@range ""` removes the deprecation.
+        let undeprecated = br#"{"name":"x","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{
+            "name":"x","version":"1.0.0","deprecated":"","dist":{
+            "tarball":"https://registry.npmjs.org/x/-/x-1.0.0.tgz","integrity":"sha512-AAAA"}}}}"#;
+        let p = normalize_packument(undeprecated, DocumentDetail::Abbreviated).expect("reads");
+        assert_eq!(p.records[0].deprecated, None, "an empty message is not one");
     }
 
     /// `rimraf@1.0.0` is the shorthand string form in the wild, and its document also

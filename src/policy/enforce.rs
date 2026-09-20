@@ -185,6 +185,12 @@ fn verdict(facts: &Facts, decision: &Decision) -> Verdict {
 fn reason(result: &super::decide::Result, facts: &Facts) -> String {
     let name = result.check.as_str();
     match (&result.check, &result.outcome) {
+        // The publisher's own words. A deprecation with nothing to say is not one: see
+        // `npm::normalize`.
+        (Check::Deprecated, _) => match facts.deprecated.as_deref() {
+            Some(message) => format!("{name}: {message}"),
+            None => format!("{name}: deprecated by its publisher"),
+        },
         // The publisher's own words for why the release was withdrawn, when they gave any.
         (Check::Yanked, _) => match facts.yanked.as_deref() {
             Some(reason) if !reason.is_empty() => format!("{name}: withdrawn, {reason}"),

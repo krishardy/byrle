@@ -166,6 +166,10 @@ fn found(
             }
         }
         Check::InstallScripts => "declares an install script".to_owned(),
+        Check::Deprecated => match facts.deprecated.as_deref() {
+            Some(message) => format!("deprecated by its publisher: {message}"),
+            None => "deprecated by its publisher".to_owned(),
+        },
         Check::Yanked => match facts.yanked.as_deref() {
             Some(reason) if !reason.is_empty() => format!("withdrawn by the registry: {reason}"),
             _ => "withdrawn by the registry".to_owned(),
@@ -199,6 +203,10 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
     ));
     out.push_str(&format!("  kev              {}\n", policy.kev.as_str()));
     out.push_str(&format!("  yanked           {}\n", policy.yanked.as_str()));
+    out.push_str(&format!(
+        "  deprecated       {}\n",
+        policy.deprecated.as_str()
+    ));
     out.push_str(&format!("  denials          {}\n", policy.denials.len()));
     out.push_str(&format!("  packages         {}\n", policy.packages.len()));
     out.push_str(&format!(
@@ -524,6 +532,7 @@ mod tests {
             advisories: Vec::new(),
             has_install_scripts: false,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
         }
     }
@@ -609,6 +618,7 @@ mod tests {
         let facts = Facts {
             has_install_scripts: true,
             yanked: None,
+            deprecated: None,
             intel: Intel::NotConsulted,
             ..facts()
         };
@@ -978,6 +988,7 @@ mod tests {
                 Facts {
                     has_install_scripts: true,
                     yanked: None,
+                    deprecated: None,
                     ..consulted()
                 },
             ),
@@ -987,6 +998,15 @@ mod tests {
                 Facts {
                     has_install_scripts: true,
                     yanked: None,
+                    deprecated: None,
+                    ..consulted()
+                },
+            ),
+            case(
+                "deprecated, which is allowed unless a policy says otherwise",
+                "version: 1\ndeprecated: block",
+                Facts {
+                    deprecated: Some("no longer supported, use rimraf@4".to_owned()),
                     ..consulted()
                 },
             ),
@@ -1017,6 +1037,7 @@ mod tests {
                     ecosystem: "go".to_owned(),
                     has_install_scripts: true,
                     yanked: None,
+                    deprecated: None,
                     ..consulted()
                 },
             ),

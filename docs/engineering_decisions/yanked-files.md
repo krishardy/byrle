@@ -78,12 +78,15 @@ waharoa: pkg:pypi/x@1.0 is blocked by policy
 `waharoa explain` prints the same string beside the check, and a yank with no reason reads
 `withdrawn by the registry`.
 
-## npm's `deprecated` is logged, not filtered
+## npm's `deprecated` is logged, and refused only if asked
 
 A deprecated npm version is served, and the message its publisher left is logged.
 `PackageRecord::deprecated` carries it. An artifact request logs it as `deprecated=<message>`
-beside the digest, and a packument logs `deprecated_versions=<count>`. A check added over the
-field later defaults to `allow`: an operator turns it on, it is never on by default.
+beside the digest, and a packument logs `deprecated_versions=<count>`.
+
+`deprecated: block` in the policy refuses one, the way `yanked` does, and a `packages` entry
+can set it for one package. It is `allow` by default: an operator turns it on. PyPI has no
+deprecation marker, so the check reports not-applicable there.
 
 `deprecated` is a per-version string in both the abbreviated and the full packument, so
 reading it costs no extra request. It is not a yank. npm prints a warning during install and

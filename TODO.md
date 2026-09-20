@@ -588,12 +588,10 @@ That is the failure mode every item below should be brought to.
       The `publish_times` cache is removed
       ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
 
-- [ ] **A deprecated npm version is logged, and nothing else reports it.**
-      `PackageRecord::deprecated` carries the publisher's message, the artifact request logs
-      it and a packument logs how many of its versions carry one. A deprecated version is
-      served, and stays served: a check over it defaults to `allow`, never `block`
-      ([yanked-files](docs/engineering_decisions/yanked-files.md)). What is open is whether
-      `explain` and the audit log should say a version is deprecated.
+- [x] **A deprecated npm version is logged, and `deprecated: block` refuses one.** Default
+      `allow` ([yanked-files](docs/engineering_decisions/yanked-files.md)). The audit log
+      says which checks removed a version, so a deprecation reaches it through the check;
+      a version nothing refuses is not recorded as deprecated.
 
 - [x] **A yanked PyPI file is not a policy input.** Closed 2026-09-20: `yanked: block` is a
       policy setting, a version whose every file is yanked is removed from the index, and a
