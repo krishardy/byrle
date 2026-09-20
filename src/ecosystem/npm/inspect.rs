@@ -72,6 +72,7 @@ pub fn read_packument(
                 // Every version in the document, not the one being installed.
                 versions_with_install_scripts =
                     p.records.iter().filter(|r| r.has_install_scripts).count(),
+                deprecated_versions = p.records.iter().filter(|r| r.deprecated.is_some()).count(),
                 latest = %p.latest.as_deref().unwrap_or("-"),
                 encoded_bytes,
                 parse_ms = parse_started.elapsed().as_millis() as u64,

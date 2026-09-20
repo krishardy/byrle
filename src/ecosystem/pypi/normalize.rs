@@ -101,6 +101,8 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
             // version offering a wheel is not an install-script version. This is the PyPI
             // shape of the same question, read from what is on offer rather than from a
             // flag the index does not have.
+            // PyPI has no deprecation marker: a release is there or it is yanked.
+            deprecated: None,
             has_install_scripts: project.only_sdist(version).unwrap_or(false),
             // Every file withdrawn leaves a resolver nothing to take, so the version is
             // yanked, and the first file's reason stands for it. One file left and it is

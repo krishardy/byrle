@@ -44,6 +44,10 @@ pub(super) struct WireVersion {
     /// carried the key, none of them `false`).
     #[serde(default, rename = "hasInstallScript")]
     pub(super) has_install_script: Option<bool>,
+    /// The message `npm deprecate` set, in both documents. `npm deprecate pkg@range ""`
+    /// clears it, and npm then omits the key.
+    #[serde(default)]
+    pub(super) deprecated: Option<String>,
     /// Full only.
     #[serde(default)]
     pub(super) scripts: Option<BTreeMap<String, String>>,

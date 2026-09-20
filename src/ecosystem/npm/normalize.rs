@@ -101,6 +101,7 @@ fn version_record(
         published_at,
         maintainers,
         repository,
+        deprecated: entry.deprecated.clone(),
         has_install_scripts: scripts,
         // npm has no yank. A version is published or unpublished, and an unpublished one
         // is not in the packument at all.
@@ -850,6 +851,26 @@ mod tests {
         );
         assert_eq!(r.artifact().expect("one file").file_count, None);
         assert_eq!(r.artifact().expect("one file").unpacked_size, None);
+    }
+
+    /// npm's `deprecated`, carried in both documents. It is reported and never refused:
+    /// npm installs a deprecated version after printing a warning, and no npm client skips
+    /// one. See `docs/engineering_decisions/yanked-files.md`.
+    #[test]
+    fn a_deprecated_version_carries_the_message_its_publisher_left() {
+        for (name, detail) in [
+            ("rimraf-1.0.0.abbrev.json", DocumentDetail::Abbreviated),
+            ("rimraf-1.0.0.full.json", DocumentDetail::Full),
+        ] {
+            let p = normalized(name, detail);
+            assert_eq!(
+                p.records[0].deprecated.as_deref(),
+                Some("Rimraf versions prior to v4 are no longer supported"),
+                "{name}"
+            );
+        }
+        let lodash = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
+        assert_eq!(lodash.records[0].deprecated, None, "no key is no message");
     }
 
     /// `rimraf@1.0.0` is the shorthand string form in the wild, and its document also
