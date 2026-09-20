@@ -2276,11 +2276,18 @@ changes to the core, that is the finding — make it now, not after five adapter
       It reported something on its first run: no lockfile written by a Python client is
       read, so `policy diff` has no package set for that ecosystem beyond the audit log.
 
-- [ ] **No lockfile written by a Python client is read**, which `waharoa status` reports
-      as `client lockfiles none read` under pypi. `uv.lock`, `poetry.lock` and a pinned
-      `requirements.txt` each record a resolved graph, and `policy diff` takes its package
-      set from lockfiles and the audit log, so a deployment installing only Python
-      packages compares two policies over the audit log alone.
+- [x] **No lockfile written by a Python client is read.** `uv.lock`, `poetry.lock` and a
+      pinned `requirements.txt` are read by `src/ecosystem/pypi/lockfile.rs`, against files
+      uv 0.12.5 and poetry 2.2.1 wrote on 2026-09-21. Only a registry's packages are kept:
+      uv's `source = { git = ... }` and `{ virtual = "." }` are not, and poetry's
+      `[package.source]` counts only `type = "legacy"`, another index. A
+      `requirements.txt` with lines and no `==` pin is refused rather than read as a
+      project with no dependencies.
+      `waharoa policy diff --lockfile uv.lock` now answers for a Python project: measured,
+      6 packages evaluated and `pkg:pypi/idna@3.10 allow -> block` under a denial.
+
+- [ ] `Pipfile.lock` is listed as unread, with `pipenv requirements` as the way to a file
+      that is read. Reading it directly would be one more TOML-ish reader.
 - [x] **Range resolution, and the install-script count that waits on it.** Decided
       2026-09-20: nothing in waharoa resolves a range or a tag
       ([no-range-resolution](docs/engineering_decisions/no-range-resolution.md)).

@@ -173,7 +173,8 @@ mod tests {
             unknown.to_string(),
             format!(
                 "{}: a lockfile is read only under one of these names: package-lock.json, \
-                 npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock",
+                 npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock, uv.lock, \
+                 poetry.lock, requirements.txt",
                 dir.join("deps.txt").display()
             )
         );

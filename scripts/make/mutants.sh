@@ -9,6 +9,9 @@
 #   make mutants                 the working tree against HEAD, before committing
 #   make mutants BASE=HEAD~3     everything since another commit
 #
+# An untracked `.rs` file is included whole: it is in no diff, and leaving it out reported
+# "every mutant caught" for a module nothing had mutated.
+#
 # Exit codes are cargo-mutants' own: 0 every mutant caught, 2 some missed, 3 some timed
 # out, 4 the unmutated tree failed its tests. Results are in target/mutants.out.
 set -euo pipefail
@@ -24,6 +27,11 @@ fi
 diff="$(mktemp)"
 trap 'rm -f "$diff"' EXIT
 git -C "$repo_root" diff "$base" -- '*.rs' >"$diff"
+# A file git has never seen is in no diff, so a new module would be mutated not at all and
+# the run would report every mutant caught. Each one is added to the diff as the whole file.
+while IFS= read -r new; do
+    git -C "$repo_root" diff --no-index /dev/null "$new" >>"$diff" || true
+done < <(git -C "$repo_root" ls-files --others --exclude-standard -- '*.rs')
 if [[ ! -s "$diff" ]]; then
     echo "no Rust changes since $base"
     exit 0

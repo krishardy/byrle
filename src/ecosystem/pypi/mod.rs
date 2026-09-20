@@ -40,6 +40,7 @@ pub mod clients;
 pub mod error;
 pub mod html;
 pub mod inspect;
+pub mod lockfile;
 pub mod normalize;
 pub mod paths;
 pub mod rewrite;
