@@ -97,6 +97,21 @@ pub const HEALTH_PATH: &str = "/-/waharoa/health";
 /// readiness probe. Under `/-/` for the same reason as [`HEALTH_PATH`].
 pub const READY_PATH: &str = "/-/waharoa/ready";
 
+/// How many versions the policy took out of a metadata document, on the response carrying
+/// it. Absent when it took none.
+///
+/// Decision #4 filters on resolution, so the client resolves against a document this proxy
+/// changed. `docs/engineering_decisions/enforcement-tiers.md` calls changing it silently a
+/// trust problem of its own, and these two headers are what a client, a CI log or a person
+/// with `curl -I` can see it by.
+pub const FILTERED_VERSIONS: header::HeaderName =
+    header::HeaderName::from_static("x-waharoa-filtered-versions");
+
+/// Which checks took them out, comma separated, in name order. Beside
+/// [`FILTERED_VERSIONS`].
+pub const FILTERED_CHECKS: header::HeaderName =
+    header::HeaderName::from_static("x-waharoa-filtered-checks");
+
 /// Whether the proxy can decide on a package now. Served at [`READY_PATH`].
 ///
 /// 200 when ready and 503 when not, so a probe needs only the status. Ready exactly when a
@@ -945,12 +960,24 @@ async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphore
     slot
 }
 
+/// The versions a policy removed from one document, and which checks removed them.
+#[derive(Default)]
+struct Refused {
+    versions: HashSet<String>,
+    /// Each check that removed at least one version, in name order.
+    checks: Vec<String>,
+}
+
 /// What the proxy does with a metadata document it has read.
 enum DocumentStep {
     /// The proxy answers in place of the document: no intel to filter it with.
     Answer(Response),
-    /// Send the document on: rewritten when `Some`, the upstream's bytes when `None`.
-    Forward(Option<Vec<u8>>),
+    /// Send the document on, saying what the policy took out of it.
+    Forward {
+        /// The rewritten document, or `None` to forward the upstream's bytes.
+        body: Option<Vec<u8>>,
+        refused: Refused,
+    },
 }
 
 /// Decode, read, filter by policy and rewrite a metadata document.
@@ -972,7 +999,10 @@ async fn filtered_document(
         Ok(decoded) => decoded,
         Err(e) => {
             warn!(path = %path, error = %e, "UNINSPECTED: metadata body could not be decoded");
-            return DocumentStep::Forward(None);
+            return DocumentStep::Forward {
+                body: None,
+                refused: Refused::default(),
+            };
         }
     };
 
@@ -995,7 +1025,10 @@ async fn filtered_document(
         }
     };
     let Some(read) = read else {
-        return DocumentStep::Forward(None);
+        return DocumentStep::Forward {
+            body: None,
+            refused: Refused::default(),
+        };
     };
     let normalized = read.metadata();
 
@@ -1036,7 +1069,7 @@ async fn filtered_document(
             path,
             proxy.config.audit.as_deref(),
         ),
-        None => HashSet::new(),
+        None => Refused::default(),
     };
     let base = negotiation
         .rewriting
@@ -1053,13 +1086,13 @@ async fn filtered_document(
     // it is already logged as UNINSPECTED. A simple index that parsed but did not
     // normalise still has its files repointed, because the file request is where PyPI's
     // digest is checked.
-    DocumentStep::Forward(match &read {
+    let body = match &read {
         Read::Packument(packument) => npm::rewrite_packument(npm::Rewrite {
             decoded: &decoded,
             packument,
             base,
             origins: &proxy.config.origins,
-            refused_by_policy: &refused_by_policy,
+            refused_by_policy: &refused_by_policy.versions,
             refuse_unservable: proxy.config.refuse_unservable,
             path,
         }),
@@ -1068,10 +1101,14 @@ async fn filtered_document(
             project: &index.project,
             reachable: proxy.config.origins.reachable(),
             base,
-            refused_by_policy: &refused_by_policy,
+            refused_by_policy: &refused_by_policy.versions,
             path,
         }),
-    })
+    };
+    DocumentStep::Forward {
+        body,
+        refused: refused_by_policy,
+    }
 }
 
 /// How a request's metadata document is asked for and read, decided from the request and
@@ -1678,7 +1715,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     .await
     {
         DocumentStep::Answer(response) => return response,
-        DocumentStep::Forward(forwarded) => forwarded,
+        DocumentStep::Forward { body, refused } => {
+            mark_filtered(&mut headers, &refused);
+            body
+        }
     };
 
     finish(
@@ -1691,6 +1731,23 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         &path_and_query,
         log_proxied,
     )
+}
+
+/// Say what the policy took out of this document, on the response that carries it.
+///
+/// Nothing is added when nothing was removed: an absent header is a document the policy
+/// left alone, not one nobody looked at. Whether the proxy inspects at all is
+/// [`HEALTH_PATH`].
+fn mark_filtered(headers: &mut HeaderMap, refused: &Refused) {
+    if refused.versions.is_empty() {
+        return;
+    }
+    if let Ok(value) = HeaderValue::from_str(&refused.versions.len().to_string()) {
+        headers.insert(FILTERED_VERSIONS, value);
+    }
+    if let Ok(value) = HeaderValue::from_str(&refused.checks.join(",")) {
+        headers.insert(FILTERED_CHECKS, value);
+    }
 }
 
 /// Send the document on, rewritten or not.
@@ -1973,9 +2030,9 @@ fn policy_refused_versions(
     intel: Option<&PackageIntel>,
     path: &str,
     audit: Option<&AuditLog>,
-) -> HashSet<String> {
+) -> Refused {
     let Some(policy) = policy else {
-        return HashSet::new();
+        return Refused::default();
     };
     let today = crate::policy::today();
     let mut refused = HashSet::new();
@@ -2023,7 +2080,7 @@ fn policy_refused_versions(
                 &metadata.key.registry_name(),
                 strongest.as_str(),
                 order,
-                checks.into_iter().collect(),
+                checks.iter().cloned().collect(),
                 &unenforceable,
             )
             .with_intel_snapshot(intel.map(|i| i.snapshot.as_str())),
@@ -2040,7 +2097,10 @@ fn policy_refused_versions(
             "policy refuses every version of this package, so nothing is left to resolve to"
         );
     }
-    refused
+    Refused {
+        checks: checks.into_iter().collect(),
+        versions: refused,
+    }
 }
 
 #[cfg(test)]
@@ -2993,6 +3053,25 @@ mod tests {
         );
     }
 
+    /// A document the policy changed says so, and one it left alone says nothing.
+    #[test]
+    fn a_filtered_document_says_how_many_versions_went_and_which_checks_took_them() {
+        let mut headers = HeaderMap::new();
+        mark_filtered(&mut headers, &Refused::default());
+        assert!(headers.is_empty(), "nothing removed, nothing said");
+
+        let refused = Refused {
+            versions: ["4.17.21", "4.17.20"]
+                .map(str::to_owned)
+                .into_iter()
+                .collect(),
+            checks: vec!["cooldown_days".to_owned(), "denials".to_owned()],
+        };
+        mark_filtered(&mut headers, &refused);
+        assert_eq!(headers[FILTERED_VERSIONS], "2");
+        assert_eq!(headers[FILTERED_CHECKS], "cooldown_days,denials");
+    }
+
     /// A limit of zero would deadlock every metadata request, so it is raised to one.
     #[tokio::test]
     async fn a_limit_of_zero_is_treated_as_one() {
@@ -3173,15 +3252,19 @@ mod tests {
     async fn answered(step: DocumentStep) -> (StatusCode, String) {
         match step {
             DocumentStep::Answer(response) => read(response).await,
-            DocumentStep::Forward(_) => panic!("the document would be forwarded"),
+            DocumentStep::Forward { .. } => panic!("the document would be forwarded"),
         }
     }
 
     /// The npm fixture `packument` as the client receives it.
     async fn resolved(proxy: &Proxy, name: &str, packument: &str) -> serde_json::Value {
         match resolve_npm(proxy, name, packument).await {
-            DocumentStep::Forward(Some(body)) => serde_json::from_slice(&body).unwrap(),
-            DocumentStep::Forward(None) => panic!("the document would be forwarded unread"),
+            DocumentStep::Forward {
+                body: Some(body), ..
+            } => serde_json::from_slice(&body).unwrap(),
+            DocumentStep::Forward { body: None, .. } => {
+                panic!("the document would be forwarded unread")
+            }
             DocumentStep::Answer(response) => panic!("answered {}", response.status()),
         }
     }
@@ -3356,6 +3439,23 @@ mod tests {
         }
     }
 
+    /// The headers reach the client, on the response carrying the document they describe.
+    #[tokio::test]
+    async fn a_client_is_told_its_packument_was_filtered() {
+        let (base, _) = proxy_for(LODASH, None, Some(DENY_LODASH)).await;
+        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.headers()[FILTERED_VERSIONS], "1");
+        assert_eq!(response.headers()[FILTERED_CHECKS], "denials");
+
+        let (base, _) = proxy_for(LODASH, None, Some(NO_POLICY)).await;
+        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        assert!(
+            !response.headers().contains_key(FILTERED_VERSIONS),
+            "nothing was removed from this one"
+        );
+    }
+
     /// `handle` returns the metadata branch's answer in place of the document. The answer
     /// itself is `a_store_that_cannot_answer_is_a_503_on_both_paths`.
     #[tokio::test]
@@ -3448,7 +3548,8 @@ mod tests {
         let policy = policy(COOLDOWN_AND_DENIAL);
         let refused =
             policy_refused_versions(&two_versions(), Some(&policy), None, "/pkg", Some(&log));
-        assert_eq!(refused.len(), 2);
+        assert_eq!(refused.versions.len(), 2);
+        assert_eq!(refused.checks, ["cooldown_days", "denials"]);
         let written = std::fs::read_to_string(&path).expect("should read");
         let event: serde_json::Value = serde_json::from_str(written.trim()).unwrap();
         assert_eq!(event["action"], "block");
@@ -3495,7 +3596,9 @@ mod tests {
     #[tokio::test]
     async fn versions_the_proxy_cannot_serve_are_removed_from_the_packument() {
         let refusing = offline(None, None).with_refuse_unservable(true);
-        let DocumentStep::Forward(Some(body)) = resolve(
+        let DocumentStep::Forward {
+            body: Some(body), ..
+        } = resolve(
             &refusing,
             "/widget",
             npm::ABBREVIATED_ACCEPT,
@@ -3520,7 +3623,10 @@ mod tests {
             OFFSITE_PACKUMENT.as_bytes(),
         )
         .await;
-        assert!(matches!(forwarded, DocumentStep::Forward(None)));
+        assert!(matches!(
+            forwarded,
+            DocumentStep::Forward { body: None, .. }
+        ));
     }
 
     /// A pinned fetch of a version the filter removes. Decision #4: filter on resolution,
@@ -3558,7 +3664,7 @@ mod tests {
         let proxy = offline(None, None).with_artifact_rewriting(false);
         assert!(matches!(
             resolve_npm(&proxy, "lodash", LODASH).await,
-            DocumentStep::Forward(None)
+            DocumentStep::Forward { body: None, .. }
         ));
     }
 
@@ -3574,7 +3680,7 @@ mod tests {
             b"<html>maintenance</html>",
         )
         .await;
-        assert!(matches!(junk, DocumentStep::Forward(None)));
+        assert!(matches!(junk, DocumentStep::Forward { body: None, .. }));
 
         let (ecosystem, target) = crate::route::classify("/lodash");
         let negotiation = negotiate(
@@ -3593,7 +3699,7 @@ mod tests {
             "/lodash",
         )
         .await;
-        assert!(matches!(brotli, DocumentStep::Forward(None)));
+        assert!(matches!(brotli, DocumentStep::Forward { body: None, .. }));
     }
 
     /// A rewritten body is this proxy's, so its length, encoding and entity tag describe
@@ -3808,7 +3914,7 @@ mod tests {
     async fn a_file_in_an_ecosystem_no_stream_covers_is_a_503() {
         let proxy = offline(Some(malware_everywhere()), Some(NO_POLICY));
         let index = resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, PYPI_INDEX).await;
-        assert!(matches!(index, DocumentStep::Forward(Some(_))));
+        assert!(matches!(index, DocumentStep::Forward { body: Some(_), .. }));
         let (status, body) = refused(pinned(&proxy, "/packages/ef/01/23/x-1.0.tar.gz").await).await;
         assert_eq!(status, 503);
         assert!(
@@ -3817,7 +3923,10 @@ mod tests {
         );
         // npm is covered by the same snapshot and is served.
         let packument = resolve_npm(&proxy, "lodash", LODASH).await;
-        assert!(matches!(packument, DocumentStep::Forward(Some(_))));
+        assert!(matches!(
+            packument,
+            DocumentStep::Forward { body: Some(_), .. }
+        ));
     }
 
     /// Four versions: 1.0 is yanked whole, 2.0 is not, 3.0 offers a wheel and a yanked
@@ -3899,8 +4008,9 @@ mod tests {
 
     /// The filenames the client receives for `index`.
     async fn served_filenames(proxy: &Proxy, index: &[u8]) -> Vec<String> {
-        let DocumentStep::Forward(Some(body)) =
-            resolve(proxy, "/simple/x/", pypi::SIMPLE_JSON, index).await
+        let DocumentStep::Forward {
+            body: Some(body), ..
+        } = resolve(proxy, "/simple/x/", pypi::SIMPLE_JSON, index).await
         else {
             panic!("the index is read and rewritten");
         };

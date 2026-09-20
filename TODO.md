@@ -2259,12 +2259,18 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 
 **Goal:** the intel-independent controls. This is the launch story, not stages 1–3.
 
-- [ ] `[!]` **Cooldown / quarantine** — hold versions published within N days
-- [ ] `[!]` Resolution path: filter quarantined versions from metadata (packument /
-      simple index / sparse index) so the resolver picks a clean version naturally
-- [ ] `[!]` Pinned path: hard fail with the rule that fired and the quarantine lift date
-- [ ] `[!]` Surface filtering in response header, audit log, and `explain` — silent
-      modification is its own trust problem
+- [x] `[!]` **Cooldown / quarantine** — hold versions published within N days.
+      `cooldown_days`, decided in `decide.rs` against the record's publish time.
+- [x] `[!]` Resolution path: filter quarantined versions from metadata. Built for the
+      packument and the simple index by `proxy::policy_refused_versions` and each
+      ecosystem's rewrite. A sparse index waits for Stage 6's cargo adapter.
+- [x] `[!]` Pinned path: hard fail with the rule that fired and the quarantine lift date.
+      `cooldown_days: published too recently, installable on 2026-10-12`, from the publish
+      date and the wait that applied.
+- [x] `[!]` Surface filtering in response header, audit log, and `explain`.
+      `x-waharoa-filtered-versions` and `x-waharoa-filtered-checks` on the response, a
+      `resolution` event in the audit log, and `explain`'s per-check reasons
+      ([quarantine-filter-metadata](docs/engineering_decisions/quarantine-filter-metadata.md)).
 - [ ] `policy check` flags cooldown waivers whose underlying cooldown already elapsed
 - [ ] `[!]` **Lifecycle script policy** — npm pre/postinstall, Python sdist `setup.py`
       — cheap tier, buffers inline
