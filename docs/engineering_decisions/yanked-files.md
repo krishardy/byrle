@@ -78,10 +78,24 @@ waharoa: pkg:pypi/x@1.0 is blocked by policy
 `waharoa explain` prints the same string beside the check, and a yank with no reason reads
 `withdrawn by the registry`.
 
-## Not done
+## npm's `deprecated` is not filtered
 
-npm's `deprecated` is not read. It is a per-version string in both the abbreviated and the
-full packument, so it costs no extra request, but it is not a yank: npm installs a
-deprecated version after printing a warning, and no client skips one. Measured on
-2026-09-20: `eslint` marks 405 of 430 versions deprecated, `glob` 160 of 168, and `request`
-and `left-pad` every version. A check over it could not default to `block`.
+A deprecated npm version is served. Nothing reads the field today, and a check added over it
+later defaults to `allow`: an operator turns it on, it is never on by default.
+
+`deprecated` is a per-version string in both the abbreviated and the full packument, so
+reading it costs no extra request. It is not a yank. npm prints a warning during install and
+installs the version, and no npm client skips a deprecated version the way pip skips a
+yanked file. Measured against registry.npmjs.org on 2026-09-20:
+
+| Package | Versions | Deprecated | An example value |
+|---|---|---|---|
+| `lodash` | 117 | 1 | "Bad release. Please use lodash@4.17.21 instead." |
+| `eslint` | 430 | 405 | "This version is no longer supported. Please see https://eslint.org/version-support for other options." |
+| `glob` | 168 | 160 | "Old versions of glob are not supported..." |
+| `left-pad` | 15 | 15 | "use String.prototype.padStart()" |
+| `request` | 126 | 126 | "request has been deprecated, see https://github.com/request/request/issues/3142" |
+
+Filtering on it would remove 405 of eslint's 430 versions, and every version of `request`
+and `left-pad`. What the string means is up to the publisher: `lodash@4.18.0` is a bad
+release, eslint's are an end-of-support policy.
