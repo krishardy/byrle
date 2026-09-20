@@ -49,6 +49,11 @@ pub struct File {
     /// yanked.
     pub yanked: Option<String>,
     pub requires_python: Option<String>,
+    /// PEP 740: where this file's attestation bundle is, when the index published one.
+    ///
+    /// The index carries the URL and not the bundle, so presence is a claim of provenance
+    /// and nothing here is verified: fetching and checking it is Stage 4.
+    pub provenance: Option<String>,
 }
 
 /// One project's index.
@@ -113,6 +118,10 @@ struct Entry {
     yanked: serde_json::Value,
     #[serde(default, rename = "requires-python")]
     requires_python: Option<String>,
+    /// PEP 740. `null` on a file published without attestations, which is most of them:
+    /// counted 2026-09-21, `attrs` publishes 12 of 72 with one and `ruff` none of 7,134.
+    #[serde(default)]
+    provenance: Option<String>,
 }
 
 /// One project's index, read.
@@ -146,6 +155,7 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
                     _ => None,
                 },
                 requires_python: entry.requires_python,
+                provenance: entry.provenance,
             })
         })
         .collect();

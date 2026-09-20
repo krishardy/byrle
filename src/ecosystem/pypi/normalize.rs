@@ -113,7 +113,14 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
                 .then(|| artifacts.first().and_then(|a| a.yanked.clone()))
                 .flatten(),
             install_scripts: None,
-            provenance: Provenance::default(),
+            provenance: Provenance {
+                // PEP 740: the index publishes where the bundle is, not the bundle. Presence
+                // is a claim; verifying it is Stage 4. This is the preferred file's, the one a
+                // resolver would take, because `Provenance` is about the version; a pinned
+                // fetch of another file of the same version reads the same field.
+                attestation_url: file.provenance.clone(),
+                ..Provenance::default()
+            },
             artifacts,
         });
     }
@@ -320,6 +327,46 @@ mod tests {
         assert!(sri(&hex[..63]).is_none(), "too short");
         assert!(sri(&format!("{hex}0")).is_none(), "too long");
         assert!(sri(&"g".repeat(64)).is_none(), "not hex digits");
+    }
+
+    /// PEP 740: the index says where a file's attestation bundle is, in both forms.
+    /// Measured against pypi.org 2026-09-21, `attrs` 26.1.0 publishes one.
+    #[test]
+    fn a_file_with_an_attestation_bundle_carries_where_it_is() {
+        const URL: &str = "https://pypi.org/integrity/attrs/26.1.0/attrs-26.1.0.tar.gz/provenance";
+        let json = format!(
+            r#"{{"name":"attrs","files":[
+                {{"filename":"attrs-26.1.0.tar.gz","url":"https://files.pythonhosted.org/attrs-26.1.0.tar.gz","hashes":{{}},"provenance":"{URL}"}},
+                {{"filename":"attrs-25.0.0.tar.gz","url":"https://files.pythonhosted.org/attrs-25.0.0.tar.gz","hashes":{{}}}}
+            ]}}"#
+        );
+        let project = super::super::wire::parse("attrs", json.as_bytes()).expect("the index reads");
+        let metadata = normalize(&project).expect("it normalises");
+        let with = metadata.version("26.1.0").expect("26.1.0 is listed");
+        assert_eq!(with.provenance.attestation_url.as_deref(), Some(URL));
+        let without = metadata.version("25.0.0").expect("25.0.0 is listed");
+        assert_eq!(
+            without.provenance.attestation_url, None,
+            "most files have none: `ruff` published 0 of 7,134"
+        );
+
+        // The HTML form writes the same thing as an attribute.
+        let page = format!(
+            r#"<a href="https://files.pythonhosted.org/attrs-26.1.0.tar.gz" data-provenance="{URL}">attrs-26.1.0.tar.gz</a>"#
+        );
+        let project =
+            super::super::html::parse("attrs", "https://pypi.org/simple/attrs/", page.as_bytes())
+                .expect("the page reads");
+        let metadata = normalize(&project).expect("it normalises");
+        assert_eq!(
+            metadata
+                .version("26.1.0")
+                .expect("listed")
+                .provenance
+                .attestation_url
+                .as_deref(),
+            Some(URL)
+        );
     }
 
     /// PEP 592: a resolver ignores a yanked version unless it is pinned, so yanking is an

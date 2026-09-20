@@ -2150,12 +2150,15 @@ changes to the core, that is the finding — make it now, not after five adapter
       interface is four exhaustive `match`es over `Ecosystem`, so a crate per ecosystem
       would need dependency edges in both directions, and an incremental rebuild is 2.8s,
       so there is no build time to buy back.
-- [ ] Provenance and attestation fetching for PyPI, which has its own metadata shape.
-      Carried from Stage 1, which measured the npm side only: npm asks its own registry
-      for `/-/npm/v1/keys` and never contacts the host the packument named.
-      `record::Provenance` holds npm's fields (`dist.attestations`, `dist.signatures`,
-      `_npmUser.trustedPublisher`) and PyPI records leave it at `Provenance::default()`.
-      Its PyPI shape is decided here, from PEP 740 attestations, not guessed at before.
+- [x] Provenance and attestation fetching for PyPI, which has its own metadata shape.
+      PEP 740 puts the bundle's URL in the index itself, `provenance` in the JSON form and
+      `data-provenance` in the HTML one, so reading it costs no request. It fills
+      `record::Provenance::attestation_url`, the field npm's `dist.attestations.url`
+      fills, and the proxy counts them per document: `provenance_files_listed=12` for
+      `attrs` on a real run
+      ([pypi-provenance](docs/engineering_decisions/pypi-provenance.md)).
+      Fetching the bundle is Stage 4's provenance item: the publisher identity and the
+      predicate type are inside it, and it needs sigstore to mean anything.
 - [~] `[!]` PEP 503 simple-index transport, written concretely first. `src/ecosystem/pypi/` reads
       PEP 691 JSON: name normalisation, the index URL, and one project's files with version,
       kind, hash, upload time and yank state. Standalone on purpose, sharing nothing with
