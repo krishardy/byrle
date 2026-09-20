@@ -76,8 +76,21 @@ no files, which would read as a package the index does not have.
 ## The enforcement difference this leaves
 
 A page with no `data-upload-time` gives records with no publish date, so `cooldown_days`
-is unenforceable for every version from such an index. It is dropped and reported, never
-passed silently: the audit log's event carries it.
+is unenforceable for every version from such an index. That is the normal case, not an
+edge: PEP 700 added `upload-time` to the JSON form only, and no PEP defines an HTML
+attribute for it. Counted 2026-09-21:
+
+| Index | Anchors | With `data-upload-time` |
+|---|---|---|
+| pypi.org, HTML form | 75 | 0 |
+| www.piwheels.org | 40 | 0 |
+| pypi.nvidia.com | 62 | 0 |
+| data.pyg.org | 75 | 0 |
+| download.pytorch.org | 3,557 | 3,557 |
+
+download.pytorch.org writes it by its own convention. Everywhere else a cooldown policy
+does nothing against an HTML index. It is dropped and reported, never passed silently: the
+audit log's event carries it.
 
 ```
 pinned 3.10 action=block unenforceable=['cooldown_days', 'known_malware', 'kev', 'max_cvss']

@@ -2182,6 +2182,12 @@ changes to the core, that is the finding — make it now, not after five adapter
             `No matching distribution found` and an allowed file is fetched through the
             proxy and verified. Four public indexes serve only HTML, whatever `Accept`
             asks for: download.pytorch.org, pypi.nvidia.com, www.piwheels.org, data.pyg.org.
+      - [ ] `cooldown_days` cannot be enforced against a PEP 503 index. No PEP defines an
+            HTML attribute for the publish time, and of five indexes counted 2026-09-21
+            only download.pytorch.org writes `data-upload-time`. The check is dropped and
+            reported per decision, but an operator reading `policy check` or startup is
+            told the cooldown is enforced. Startup could say which ecosystem's index form
+            leaves it unenforceable.
 - [x] `[!]` Extract the adapter interface (transport + normalizer) from the two working
       implementations — refactor, not upfront design. It is three shared modules (`route`,
       `origin`, `record::PackageMetadata`) and four exhaustive matches, not a trait. See
