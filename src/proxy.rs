@@ -1316,6 +1316,8 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             .and_then(|a| a.integrity.as_deref())
             .unwrap_or("-"),
         has_install_scripts = record.has_install_scripts,
+        // Reported, not refused: see docs/engineering_decisions/yanked-files.md.
+        deprecated = record.deprecated.as_deref().unwrap_or("-"),
         "artifact requested, digest known"
     );
     // A record read from a full document carries its own publish time; only one without
@@ -2971,6 +2973,24 @@ mod tests {
         f();
         drop(guard);
         text(&buf)
+    }
+
+    /// A deprecated version is served, and the message its publisher left is logged. npm
+    /// installs one after a warning and no client skips it, so the proxy does not refuse
+    /// it: `docs/engineering_decisions/yanked-files.md`.
+    #[tokio::test]
+    async fn a_deprecated_version_is_served_and_its_message_logged() {
+        let proxy = offline(None, Some(NO_POLICY));
+        hold(&proxy, "rimraf-1.0.0.abbrev.json");
+        let (_guard, buf) = capture(tracing::Level::INFO);
+        let step = pinned(&proxy, "/rimraf/-/rimraf-1.0.0.tgz").await;
+        drop(_guard);
+        assert!(fetched(&step), "a deprecated version is served");
+        let log = text(&buf);
+        assert!(
+            log.contains("Rimraf versions prior to v4 are no longer supported"),
+            "{log}"
+        );
     }
 
     /// A limit of zero would deadlock every metadata request, so it is raised to one.

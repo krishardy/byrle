@@ -114,6 +114,13 @@ pub struct PackageRecord {
     /// request names.
     pub yanked: Option<String>,
 
+    /// The message the publisher left when deprecating this version, where they left one.
+    ///
+    /// npm's `deprecated`. Reported, never refused: npm installs a deprecated version
+    /// after printing a warning, and no npm client skips one. See
+    /// `docs/engineering_decisions/yanked-files.md`. PyPI has no equivalent.
+    pub deprecated: Option<String>,
+
     /// Whether installing this version runs a lifecycle script.
     ///
     /// Not optional, because both documents can answer it, by different routes.
@@ -323,6 +330,7 @@ mod tests {
             published_at: None,
             maintainers: None,
             repository: None,
+            deprecated: None,
             has_install_scripts: has_scripts,
             yanked: None,
             install_scripts: None,
