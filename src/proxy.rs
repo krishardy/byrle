@@ -1365,7 +1365,11 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     // it needs the time fetched.
     let times = match record.published_at {
         Some(_) => None,
-        None => publish_times_for(proxy, key).await,
+        None => match publish_times_for(proxy, key).await {
+            Some(times) => Some(times),
+            // The index gave no date for this version, so the file host is asked for one.
+            None => dated_by_host(proxy, record, path).await,
+        },
     };
     let intel = match intel_for(proxy, key, path).await {
         Ok(intel) => intel,
@@ -1884,6 +1888,65 @@ async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::Pub
         "publish times read from the full packument"
     );
     Some(times)
+}
+
+/// The publish time read from the file itself, for a record whose index gave none.
+///
+/// A PEP 503 page has no field for a publish time and almost no index adds one, so
+/// `cooldown_days` would be unenforceable for every version such an index lists. The file
+/// host answers `Last-Modified`, and for an immutable artifact that is when it was
+/// published: measured against PyPI's own upload times on 2026-09-21, files.pythonhosted.org
+/// was within 4 seconds on six files, against a check measured in days.
+///
+/// One `HEAD` per artifact decision that needs it, on the pinned path only. The resolution
+/// filter decides every version on the page at once, and one request per version is
+/// thousands for `download.pytorch.org/whl/torch/`.
+///
+/// `None` leaves the check unenforceable, which is what it already was. A mirror that
+/// rewrote the object makes the file look newer and holds it longer, which is the safe
+/// direction.
+async fn dated_by_host(
+    proxy: &Proxy,
+    record: &PackageRecord,
+    path: &str,
+) -> Option<facts::PublishTimes> {
+    if !proxy
+        .config
+        .policy
+        .as_deref()
+        .is_some_and(Policy::uses_cooldown)
+    {
+        return None;
+    }
+    let url = record.artifact()?.url.as_str();
+    let started = Instant::now();
+    let response = match proxy.config.client.head(url).send().await {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            warn!(path = %path, status = response.status().as_u16(), "no publish time: the file host refused a HEAD");
+            return None;
+        }
+        Err(e) => {
+            warn!(path = %path, error = %e, "no publish time: the file host could not be asked");
+            return None;
+        }
+    };
+    let last_modified = response
+        .headers()
+        .get(header::LAST_MODIFIED)
+        .and_then(|value| value.to_str().ok())
+        .and_then(crate::http::http_date)?;
+    info!(
+        path = %path,
+        published = %last_modified,
+        fetch_ms = started.elapsed().as_millis() as u64,
+        "publish time read from the file's Last-Modified"
+    );
+    Some(
+        [(record.package.version().to_owned(), last_modified)]
+            .into_iter()
+            .collect(),
+    )
 }
 
 /// JSON about the proxy itself, marked not to be cached: it reports the state at this moment.
@@ -3058,6 +3121,61 @@ mod tests {
             drop(_guard);
             let log = text(&buf);
             assert!(log.contains(expected), "{file}: {log}");
+        }
+    }
+
+    /// An index with no publish time in it, and a file host that answers `Last-Modified`:
+    /// the cooldown is decided on the file's own date. A PEP 503 page is this case, and
+    /// almost none carries a date: see `docs/engineering_decisions/pep-503-html-index.md`.
+    #[tokio::test]
+    async fn a_cooldown_is_decided_on_the_file_hosts_last_modified() {
+        for (label, status, last_modified, refused) in [
+            (
+                "published today",
+                StatusCode::OK,
+                Some(jiff::Timestamp::now()),
+                true,
+            ),
+            (
+                "published in 2020",
+                StatusCode::OK,
+                Some("2020-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap()),
+                false,
+            ),
+            // No date, so the check is dropped as unenforceable, which is what it was
+            // before the file host was asked at all.
+            ("no Last-Modified", StatusCode::OK, None, false),
+            // A host that refuses the HEAD answers no question, whatever it puts in the
+            // headers of its refusal.
+            (
+                "a 404 carrying a date",
+                StatusCode::NOT_FOUND,
+                Some(jiff::Timestamp::now()),
+                false,
+            ),
+        ] {
+            let router = Router::new().fallback(any(move |_req: Request| async move {
+                let mut response = Response::builder().status(status);
+                if let Some(at) = last_modified {
+                    let zoned = at.to_zoned(jiff::tz::TimeZone::UTC);
+                    let date = jiff::fmt::rfc2822::to_string(&zoned).unwrap();
+                    response = response.header(header::LAST_MODIFIED, date);
+                }
+                response.body(Body::empty()).unwrap()
+            }));
+            let host = serve(router).await;
+            // An sdist, so `install_scripts` is allowed here and the cooldown is the only
+            // check that can refuse it.
+            let yaml = "version: 1\ncooldown_days: 7\ninstall_scripts: allow\n";
+            let proxy = offline(None, Some(yaml))
+                .with_origin_policy([host.as_str()], [])
+                .expect("the host is an origin");
+            let index = format!(
+                r#"{{"name":"x","files":[{{"filename":"x-1.0.tar.gz","url":"{host}/x-1.0.tar.gz","hashes":{{}}}}]}}"#
+            );
+            resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, index.as_bytes()).await;
+            let step = pinned(&proxy, "/packages/x-1.0.tar.gz").await;
+            assert_eq!(matches!(step, ArtifactStep::Answer(_)), refused, "{label}");
         }
     }
 

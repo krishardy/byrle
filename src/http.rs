@@ -601,3 +601,42 @@ mod proofs {
         assert!(encoding_to_request(None) == RequestedEncoding::Identity);
     }
 }
+
+/// The instant an HTTP date names, or `None` when it is not one.
+///
+/// `Last-Modified` is an IMF-fixdate, `Sun, 15 Sep 2024 18:07:39 GMT`, which is RFC 2822's
+/// shape with a named zone. The two obsolete forms RFC 9110 still allows are not read: a
+/// host that writes one gives no publish time rather than a wrong one.
+pub fn http_date(value: &str) -> Option<jiff::Timestamp> {
+    let zoned = jiff::fmt::rfc2822::parse(value.trim()).ok()?;
+    Some(zoned.timestamp())
+}
+
+#[cfg(test)]
+mod http_date_tests {
+    /// Read from files.pythonhosted.org, www.piwheels.org and pypi.nvidia.com on
+    /// 2026-09-21.
+    #[test]
+    fn an_imf_fixdate_is_read_and_anything_else_is_not() {
+        for (value, expected) in [
+            (
+                "Sun, 15 Sep 2024 18:07:39 GMT",
+                Some("2024-09-15T18:07:39Z"),
+            ),
+            (
+                "Wed, 24 Sep 2025 00:07:42 GMT",
+                Some("2025-09-24T00:07:42Z"),
+            ),
+            // RFC 850, which RFC 9110 calls obsolete.
+            ("Sunday, 15-Sep-24 18:07:39 GMT", None),
+            ("not a date", None),
+            ("", None),
+        ] {
+            assert_eq!(
+                super::http_date(value).map(|t| t.to_string()),
+                expected.map(str::to_owned),
+                "{value}"
+            );
+        }
+    }
+}
