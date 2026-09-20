@@ -109,6 +109,36 @@ async fn run_doctor() -> std::process::ExitCode {
     std::process::ExitCode::from(checked.code)
 }
 
+/// `waharoa status`: what this build does for each ecosystem, and what covers it.
+///
+/// Two axes that fail separately: an adapter can be complete while no stream covers its
+/// ecosystem. `doctor` answers whether this machine is wired up; this answers what waharoa
+/// does at all.
+async fn run_status() -> std::process::ExitCode {
+    let environment = env::process();
+    let upstreams = or_exit(environment.upstreams());
+    // The snapshot is what the store last loaded. No store, or one that cannot answer, is
+    // reported as no snapshot rather than as an error: the adapter axis is still worth
+    // printing.
+    use waharoa::intel::store::Intel as _;
+    let snapshot = match postgres::from_env(&environment).await {
+        Ok(Some(store)) => match store.snapshot().await {
+            Ok(snapshot) => snapshot,
+            Err(e) => {
+                eprintln!("waharoa status: the intel store could not be read: {e}");
+                None
+            }
+        },
+        Ok(None) => None,
+        Err(e) => {
+            eprintln!("waharoa status: {}: {e}", env::DATABASE_URL);
+            None
+        }
+    };
+    print!("{}", waharoa::status::report(&upstreams, snapshot.as_ref()));
+    std::process::ExitCode::SUCCESS
+}
+
 /// `waharoa intel history`: the newest entries of the ingestion history.
 async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
     let intel = match postgres::required(&env::process()).await {
@@ -212,6 +242,7 @@ async fn main() -> std::process::ExitCode {
     match parsed.command {
         cli::Command::Daemon => run_daemon().await,
         cli::Command::Doctor => run_doctor().await,
+        cli::Command::Status => run_status().await,
         cli::Command::Explain(target) => run_explain(target).await,
         cli::Command::Policy(cli::PolicyCommand::Check(args)) => run_policy_check(args).await,
         cli::Command::Policy(cli::PolicyCommand::Diff(args)) => run_policy_diff(args).await,

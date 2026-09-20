@@ -1,0 +1,26 @@
+waharoa status
+  intel snapshot   s1 taken 2026-09-21T00:00:00Z
+
+npm
+  upstream         https://registry.npmjs.org
+  documents        application/vnd.npm.install-v1+json, application/json
+  publish times    the full packument, fetched under a cooldown
+  versions         SemVer 2.0
+  checks           no meaning here: yanked
+  clients          npm, pnpm, yarn, bun
+  client lockfiles package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock
+  streams          osv/npm, datadog/npm, github/npm
+  loaded           osv/npm, datadog/npm
+  not covered      nothing: every capability has a stream
+
+pypi
+  upstream         https://pypi.org/simple
+  documents        application/vnd.pypi.simple.v1+json, application/vnd.pypi.simple.v1+html, text/html
+  publish times    in the document
+  versions         PEP 440
+  checks           no meaning here: deprecated
+  clients          pip, uv
+  client lockfiles none read
+  streams          osv/pypi, datadog/pypi, github/pypi
+  loaded           osv/pypi
+  not covered      nothing: every capability has a stream

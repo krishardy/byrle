@@ -1,0 +1,254 @@
+//! `waharoa status`: what this build does for each ecosystem, and what it knows about.
+//!
+//! Two axes, because they fail separately. An adapter can be complete while no advisory
+//! stream covers its ecosystem, and a stream can cover an ecosystem this build barely
+//! reads. `waharoa doctor` answers "is this deployment wired up"; this answers "what does
+//! waharoa do here at all".
+//!
+//! Every line is read from [`crate::ecosystem::TABLE`] or from the loaded snapshot, so a
+//! row added to the table appears here without anything being written twice.
+
+use std::fmt::Write as _;
+
+use crate::ecosystem::{Registry, TABLE, Upstreams};
+use crate::intel::store::LoadedSnapshot;
+use crate::intel::{Capability, capabilities_of};
+use crate::policy::merge::{Rule, applies};
+
+/// The report, as `waharoa status` prints it.
+///
+/// `snapshot` is what the intel store last loaded, `None` when there is no store or it
+/// holds nothing.
+pub fn report(upstreams: &Upstreams, snapshot: Option<&LoadedSnapshot>) -> String {
+    let mut out = String::from("waharoa status\n");
+    let _ = writeln!(
+        out,
+        "  intel snapshot   {}",
+        match snapshot {
+            Some(snapshot) => format!("{} taken {}", snapshot.digest, snapshot.taken_at),
+            None => "none loaded: every check that reads advisories is unenforceable".to_owned(),
+        }
+    );
+    for registry in TABLE {
+        let _ = write!(out, "\n{}\n", registry.ecosystem.as_str());
+        let _ = write!(out, "{}", adapter(registry, upstreams));
+        let _ = write!(out, "{}", intel(registry, snapshot));
+    }
+    out
+}
+
+/// What this build reads and decides for one ecosystem.
+fn adapter(registry: &Registry, upstreams: &Upstreams) -> String {
+    let mut out = String::new();
+    let line = |out: &mut String, label: &str, value: String| {
+        let _ = writeln!(out, "  {label:<16} {value}");
+    };
+    line(
+        &mut out,
+        "upstream",
+        crate::origin::without_credentials(upstreams.get(registry.ecosystem)),
+    );
+    line(
+        &mut out,
+        "documents",
+        registry.documents.join(", ").to_string(),
+    );
+    line(
+        &mut out,
+        "publish times",
+        match registry.publish_times {
+            crate::ecosystem::PublishTimeSource::Record => "in the document".to_owned(),
+            crate::ecosystem::PublishTimeSource::FullPackument => {
+                "the full packument, fetched under a cooldown".to_owned()
+            }
+        },
+    );
+    line(
+        &mut out,
+        "versions",
+        match registry.versions {
+            crate::intel::range::VersionOrder::SemVer => "SemVer 2.0".to_owned(),
+            crate::intel::range::VersionOrder::Pep440 => "PEP 440".to_owned(),
+        },
+    );
+    let not_applicable: Vec<&str> = Rule::ALL
+        .iter()
+        .filter(|rule| !applies(registry.ecosystem.as_str(), **rule))
+        .map(|rule| rule.as_str())
+        .collect();
+    line(
+        &mut out,
+        "checks",
+        match not_applicable.is_empty() {
+            true => "every one applies".to_owned(),
+            false => format!("no meaning here: {}", not_applicable.join(", ")),
+        },
+    );
+    line(
+        &mut out,
+        "clients",
+        match registry.clients.is_empty() {
+            true => "none checked by doctor".to_owned(),
+            false => registry
+                .clients
+                .iter()
+                .map(|client| client.name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        },
+    );
+    // Written by this ecosystem's clients, npm and pip and the rest, not by the registry.
+    line(
+        &mut out,
+        "client lockfiles",
+        match registry.lockfiles.is_empty() {
+            true => "none read".to_owned(),
+            false => registry
+                .lockfiles
+                .iter()
+                .map(|lockfile| lockfile.name)
+                .collect::<Vec<_>>()
+                .join(", "),
+        },
+    );
+    out
+}
+
+/// Which streams cover this ecosystem, and what they let it decide.
+fn intel(registry: &Registry, snapshot: Option<&LoadedSnapshot>) -> String {
+    let mut out = String::new();
+    let listed: Vec<&str> = registry
+        .streams
+        .iter()
+        .map(|stream| stream.stream)
+        .collect();
+    let _ = writeln!(
+        out,
+        "  {:<16} {}",
+        "streams",
+        match listed.is_empty() {
+            true => "none: this ecosystem is served with nothing to decide on".to_owned(),
+            false => listed.join(", "),
+        }
+    );
+    let Some(snapshot) = snapshot else {
+        return out;
+    };
+    let loaded: Vec<&str> = snapshot
+        .streams
+        .iter()
+        .map(|stream| stream.stream.as_str())
+        .filter(|stream| listed.contains(stream))
+        .collect();
+    let _ = writeln!(
+        out,
+        "  {:<16} {}",
+        "loaded",
+        match loaded.is_empty() {
+            true => "none of them".to_owned(),
+            false => loaded.join(", "),
+        }
+    );
+    let capabilities = capabilities_of(&snapshot.streams);
+    let missing: Vec<&str> = [Capability::Match, Capability::Malware, Capability::Enrich]
+        .into_iter()
+        .filter(|capability| {
+            !capabilities
+                .uncovered_by(&[registry.ecosystem.as_str()], *capability)
+                .is_empty()
+        })
+        .map(Capability::as_str)
+        .collect();
+    let _ = writeln!(
+        out,
+        "  {:<16} {}",
+        "not covered",
+        match missing.is_empty() {
+            true => "nothing: every capability has a stream".to_owned(),
+            false => missing.join(", "),
+        }
+    );
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::intel::refresh::StreamDigest;
+
+    fn snapshot(streams: &[&str]) -> LoadedSnapshot {
+        LoadedSnapshot {
+            digest: "s1".to_owned(),
+            taken_at: "2026-09-21T00:00:00Z".to_owned(),
+            sources: Vec::new(),
+            streams: streams
+                .iter()
+                .map(|stream| StreamDigest {
+                    stream: (*stream).to_owned(),
+                    sha256: "aa".to_owned(),
+                    etag: None,
+                    last_modified: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// The whole report, so a row added to the table or a stream added to one shows up
+    /// here as a diff to review rather than silently.
+    #[test]
+    fn the_report_renders_as_the_golden_file_says() {
+        let loaded = snapshot(&["osv/npm", "osv/pypi", "datadog/npm", "cisa/kev"]);
+        let out = report(&Upstreams::defaults(), Some(&loaded));
+        crate::golden::assert_matches("status", "report.txt", &out);
+    }
+
+    /// Every ecosystem in the table is reported, with both axes.
+    #[test]
+    fn each_served_ecosystem_is_reported_on_both_axes() {
+        let out = report(&Upstreams::defaults(), Some(&snapshot(&["osv/npm"])));
+        for registry in TABLE {
+            assert!(
+                out.contains(registry.ecosystem.as_str()),
+                "{} is missing: {out}",
+                registry.ecosystem.as_str()
+            );
+        }
+        assert!(out.contains("streams"), "{out}");
+        assert!(out.contains("loaded           osv/npm"), "{out}");
+        // PyPI's streams are listed and none of them loaded in this snapshot.
+        assert!(out.contains("none of them"), "{out}");
+        assert!(out.contains("not covered"), "{out}");
+    }
+
+    /// The not-applicable axis is per ecosystem: npm has no yank and PyPI no deprecation.
+    #[test]
+    fn a_check_with_no_meaning_for_an_ecosystem_is_named() {
+        let out = report(&Upstreams::defaults(), None);
+        // On the section headers, not the word: PyPI's upstream URL contains it too.
+        let npm = out.split("\npypi\n").next().expect("npm comes first");
+        assert!(npm.contains("no meaning here: yanked"), "{npm}");
+        let pypi = out.split("\npypi\n").nth(1).expect("pypi is reported");
+        assert!(pypi.contains("no meaning here: deprecated"), "{pypi}");
+    }
+
+    /// With no store, every check that reads advisories is unenforceable, and the report
+    /// says so rather than leaving the line out.
+    #[test]
+    fn no_snapshot_is_said_out_loud() {
+        let out = report(&Upstreams::defaults(), None);
+        assert!(out.contains("none loaded"), "{out}");
+        assert!(!out.contains("not covered"), "nothing to measure against");
+    }
+
+    /// A credential in an upstream URL is not printed, as everywhere else one is not.
+    #[test]
+    fn a_credential_in_an_upstream_is_not_printed() {
+        let upstreams = Upstreams::defaults().with(
+            crate::identity::Ecosystem::PyPI,
+            "https://user:secret@example.test/simple",
+        );
+        let out = report(&upstreams, None);
+        assert!(!out.contains("secret"), "{out}");
+        assert!(out.contains("https://example.test/simple"), "{out}");
+    }
+}

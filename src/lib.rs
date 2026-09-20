@@ -28,6 +28,7 @@ pub mod record;
 pub mod refusal;
 pub mod route;
 pub mod startup;
+pub mod status;
 pub mod store;
 pub mod tls;
 mod util;
