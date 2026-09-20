@@ -1033,6 +1033,7 @@ async fn filtered_document(
             refused: Refused::default(),
         };
     };
+    report_undated(proxy, &read, path);
     let normalized = read.metadata();
 
     // Asked once per document rather than once per version: typescript has 3,823.
@@ -1888,6 +1889,41 @@ async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::Pub
         "publish times read from the full packument"
     );
     Some(times)
+}
+
+/// Say when a cooldown cannot be answered while filtering this document.
+///
+/// A PEP 503 page carries no publish time and almost none adds one, so every version it
+/// lists is undated and `cooldown_days` is dropped for each. The check still bites on the
+/// artifact request, where [`dated_by_host`] asks the file host, so this says which of the
+/// two an operator has rather than reporting the check as unenforceable and stopping.
+fn report_undated(proxy: &Proxy, read: &Read, path: &str) {
+    if !proxy
+        .config
+        .policy
+        .as_deref()
+        .is_some_and(Policy::uses_cooldown)
+    {
+        return;
+    }
+    let Some(metadata) = read.metadata() else {
+        return;
+    };
+    let undated = metadata
+        .records
+        .iter()
+        .filter(|record| record.published_at.is_none())
+        .count();
+    if undated == 0 {
+        return;
+    }
+    warn!(
+        path = %path,
+        undated,
+        versions = metadata.records.len(),
+        "cooldown_days cannot be answered while filtering this document; a pinned fetch of \
+         one of these versions is decided on the file's own date"
+    );
 }
 
 /// The publish time read from the file itself, for a record whose index gave none.
@@ -3122,6 +3158,34 @@ mod tests {
             let log = text(&buf);
             assert!(log.contains(expected), "{file}: {log}");
         }
+    }
+
+    /// A document whose versions carry no date says so once, rather than leaving the
+    /// operator to read `cooldown_days: enforced` and believe the index was filtered by it.
+    #[tokio::test]
+    async fn a_document_with_no_dates_says_the_cooldown_waits_for_the_artifact() {
+        const INDEX: &[u8] = br#"{"name":"x","files":[
+            {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ab/x-1.0.tar.gz","hashes":{}}
+        ]}"#;
+        async fn said(yaml: &str) -> String {
+            let proxy = offline(None, Some(yaml));
+            let (guard, buf) = capture(tracing::Level::WARN);
+            resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, INDEX).await;
+            drop(guard);
+            text(&buf)
+        }
+        let warned = said("version: 1\ncooldown_days: 7\ninstall_scripts: allow\n").await;
+        assert!(
+            warned.contains("cooldown_days cannot be answered"),
+            "{warned}"
+        );
+        assert!(warned.contains("undated=1"), "{warned}");
+        assert!(
+            !said(NO_POLICY)
+                .await
+                .contains("cooldown_days cannot be answered"),
+            "no cooldown, nothing to say"
+        );
     }
 
     /// An index with no publish time in it, and a file host that answers `Last-Modified`:
