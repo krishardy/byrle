@@ -588,6 +588,11 @@ That is the failure mode every item below should be brought to.
       The `publish_times` cache is removed
       ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
 
+- [ ] **npm's `deprecated` is not read.** A per-version string, in both packuments. A
+      deprecated version is served, and stays served: a check over it defaults to `allow`,
+      never `block` ([yanked-files](docs/engineering_decisions/yanked-files.md)). What is
+      open is whether `explain` and the audit log should say a version is deprecated.
+
 - [x] **A yanked PyPI file is not a policy input.** Closed 2026-09-20: `yanked: block` is a
       policy setting, a version whose every file is yanked is removed from the index, and a
       pinned fetch of a yanked file answers 403
