@@ -88,9 +88,44 @@ attribute for it. Counted 2026-09-21:
 | data.pyg.org | 75 | 0 |
 | download.pytorch.org | 3,557 | 3,557 |
 
-download.pytorch.org writes it by its own convention. Everywhere else a cooldown policy
-does nothing against an HTML index. It is dropped and reported, never passed silently: the
-audit log's event carries it.
+download.pytorch.org writes it by its own convention.
+
+## The file host answers what the index does not
+
+A pinned fetch of a record with no publish time asks the file host for one: a `HEAD`, and
+`Last-Modified`. For an immutable artifact that is when it was published. Measured against
+PyPI's own upload times on 2026-09-21:
+
+| File | Upload time | `Last-Modified` | Difference |
+|---|---|---|---|
+| idna-3.10-py3-none-any.whl | 2024-09-15 18:07:37 | 2024-09-15 18:07:39 | +2s |
+| requests-2.32.3-py3-none-any.whl | 2024-05-29 15:37:47 | 2024-05-29 15:37:49 | +2s |
+| urllib3-2.2.3.tar.gz | 2024-09-12 10:52:18 | 2024-09-12 10:52:22 | +4s |
+
+Seconds, against a check measured in days. www.piwheels.org answers with when piwheels
+built its own wheel, an hour after PyPI's upload, which is the date that matters for that
+index. pypi.nvidia.com answers one too.
+
+It is the pinned path only: one `HEAD` per artifact decision that needs it. The resolution
+filter decides every version on the page at once, and one request per version is 3,557 for
+`download.pytorch.org/whl/torch/`, so the index filter leaves the check unenforceable and
+the artifact request is where a cooldown bites.
+
+A host that gives no date, or refuses the `HEAD`, leaves the check unenforceable, which is
+what it was before. A mirror that rewrote the object makes the file look newer and holds it
+longer, which is the safe direction.
+
+Measured end to end against a stub HTML index that carries no dates, under
+`cooldown_days: 36500`:
+
+```
+INFO publish time read from the file's Last-Modified path=/packages/.../idna-3.10-py3-none-any.whl
+403 waharoa: pkg:pypi/idna@3.10 is held by policy
+      - cooldown_days: published too recently, installable on 2124-08-22
+```
+
+A check that is dropped is reported, never passed silently: the audit log's event carries
+it.
 
 ```
 pinned 3.10 action=block unenforceable=['cooldown_days', 'known_malware', 'kev', 'max_cvss']
