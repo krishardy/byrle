@@ -7,9 +7,9 @@
 
 ## Decision
 
-`waharoa policy check <path> [--as-of YYYY-MM-DD] [--strict]` loads a policy the way the
-proxy does at startup: `Policy::load`, then `packages::check` with the expiry ceiling from
-the environment and the date, UTC today by default. It prints four lists, each only when
+`waharoa policy check <path> [--as-of YYYY-MM-DD] [--strict] [--fetch]` loads a policy the
+way the proxy does at startup: `Policy::load`, then `packages::check` with the expiry ceiling
+from the environment and the date, UTC today by default. It prints five lists, each only when
 it has an entry:
 
 | Section | An entry is listed when |
@@ -17,17 +17,39 @@ it has an entry:
 | changes nothing | every value it sets equals the global setting (`packages::changes_nothing`) |
 | never wins | two narrower entries match every package it does, and neither expires |
 | shadowed until a narrower entry lapses | the same, and one of the two expires. The line gives the last day |
+| cooldown waivers no longer needed | `--fetch` only: it shortens `cooldown_days` for one version the global wait now admits anyway |
 | permanent | it has `permanent: true` |
 
 | Exit | When |
 |---|---|
-| 0 | the policy loads, and with `--strict`, nothing changes nothing or never wins |
-| 1 | load or the `packages` rules refuse it, or `--strict` and an entry changes nothing or never wins |
+| 0 | the policy loads, and with `--strict`, no entry changes nothing, never wins, or has outlived its cooldown |
+| 1 | load or the `packages` rules refuse it, or `--strict` and an entry changes nothing, never wins, or has outlived its cooldown |
 | 2 | the file cannot be read, or the command line is malformed |
 
 The proxy at startup and `waharoa doctor` read the same `check::Report`. Startup warns for
 each entry that changes nothing or never wins. `doctor` reports each as `WARN`, and a
 refused policy as `PROBLEM`.
+
+## `--fetch`
+
+A cooldown waiver is a `packages` entry that shortens `cooldown_days` for one exact version.
+It does something only while that version is younger than the global wait, and then sits in
+the file loosening the policy for nothing until its `expires` date. Whether it still does
+anything takes the version's publish date, which only the registry has, so the command asks
+for it under a flag and is offline without one.
+
+```
+$ waharoa policy check policy.yaml --fetch
+2 package entries, as of 2026-09-20
+
+cooldown waivers no longer needed
+  packages[0] pkg:npm/lodash@4.17.21: published 2021-02-20, past cooldown_days 30 since 2021-03-22
+```
+
+An entry naming a range or a whole package is not a waiver here: it covers versions nobody
+has published, so no publish date answers it. A version the registry does not publish, or a
+fetch that fails, is a note on stderr rather than a finding: not knowing is not the same as
+knowing the entry is unnecessary.
 
 ## Which entries can never win
 

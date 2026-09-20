@@ -396,7 +396,7 @@ fn intersects<T>(value: Option<&T>, other: Option<&T>, share: fn(&T, &T) -> bool
 }
 
 /// How a VERS string starts.
-const VERS: &str = "vers:";
+pub(super) const VERS: &str = "vers:";
 
 /// The order `ecosystem`'s versions are read by.
 fn order_of(ecosystem: &str) -> Result<VersionOrder, SelectorError> {
