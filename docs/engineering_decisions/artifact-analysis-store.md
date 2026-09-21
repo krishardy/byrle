@@ -95,8 +95,31 @@ tarball's host for its length:
 | 64 MiB | 0 |
 
 The sample is the latest version of 93 widely installed packages, which skews large: a
-popular package is a big one. The median is 334 KB and the buffer is that size on a
-typical request.
+popular package is a big one. A real dependency closure is mostly small transitive
+packages: `npm install express eslint typescript webpack react react-dom next` resolves
+276.
+
+## What the reader has to see is a prefix, not the artifact
+
+`analysis::member` walks the tar sequentially and returns at the first `package.json`, so
+it needs a prefix of the gzip stream. `examples/manifest_offset.py` asks each tarball's
+host for a prefix and reports the smallest one a complete `package.json` member is
+readable from, over 78 packages:
+
+| Prefix | Readable from this | At or below it |
+|---|---|---|
+| 16 KiB | 15 | 15 |
+| 64 KiB | 15 | 30 |
+| 256 KiB | 22 | 52 |
+| 1 MiB | 16 | 68 |
+| 4 MiB | 5 | 73 |
+
+Five are not readable from 4 MiB: `next`, `selenium-webdriver`, `three`, `echarts`,
+`aws-sdk`. `package/package.json` is not always the first member, so the prefix is
+bounded by the artifact rather than by a small constant.
+
+67 of 78 are readable from 1 MiB, and the buffer is that size or smaller on those
+requests. The bound is what the other 11 cost.
 
 ## Where it is kept
 
