@@ -87,7 +87,7 @@ A reworded message fails these tests, so the copies cannot drift. Action: leave.
 | # | What | Where | Action | Suggested |
 |---|---|---|---|---|
 | T1 | `fn fixture(name) -> Vec<u8>` reading `tests/fixtures/npm/` | `npm.rs:1339`, `policy/facts.rs:139`, `proxy.rs:1615` | helper | identical; a `#[cfg(test)]` module beside `src/golden.rs` |
-| T2 | OSV fixture loaders | `intel/refresh.rs:219` (bytes), `intel/osv.rs:306` (parsed), `tests/intel_postgres.rs:288` `osv_fixture` (rows) | helper | share the path only; return types differ, and `tests/` cannot use a `#[cfg(test)]` library module |
+| T2 | OSV fixture loaders | `intel/refresh.rs:219` (bytes), `intel/osv.rs:306` (parsed), `tests/postgres.rs:288` `osv_fixture` (rows) | helper | share the path only; return types differ, and `tests/` cannot use a `#[cfg(test)]` library module |
 | T3 | `CARGO_MANIFEST_DIR` path formatting, 13 sites | `golden.rs:7` and the loaders above | helper | removed by T1 and T2 |
 | T4 | `fn facts() -> Facts` for `lodash` | `audit.rs:264`, `explain.rs:204`, `policy/diff.rs:255` | helper | identical |
 | T5 | `fn loaded(yaml) -> Policy` | `explain.rs:217`, `policy/enforce.rs:219` | helper | identical |

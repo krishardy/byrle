@@ -20,13 +20,13 @@ note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 if ! docker info >/dev/null 2>&1; then
     echo "docker is not available, and these tests need a real Postgres."
     echo "Start docker, or point WAHAROA_TEST_DATABASE_URL at a database and run:"
-    echo "  cargo test --test intel_postgres"
+    echo "  cargo test --test postgres"
     exit 1
 fi
 
 note "postgres ($postgres_image) on port $port"
 start_postgres "waharoa-test-pg-$$" "$port"
 
-note "cargo test --test intel_postgres"
+note "cargo test --test postgres"
 WAHAROA_TEST_DATABASE_URL="$(postgres_url "$port")" \
-    cargo test --manifest-path "$repo_root/Cargo.toml" --test intel_postgres -- --test-threads=1
+    cargo test --manifest-path "$repo_root/Cargo.toml" --test postgres -- --test-threads=1

@@ -1,0 +1,52 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT\n                a.ecosystem AS \"ecosystem!\",\n                a.name      AS \"name!\",\n                a.version   AS \"version!\",\n                a.unreadable,\n                s.name      AS \"script?\",\n                s.body      AS \"body?\"\n            FROM artifact_analysis a\n            LEFT JOIN artifact_install_script s ON s.analysis_id = a.id\n            WHERE a.digest = $1\n            ORDER BY s.ordinal\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "ecosystem!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "version!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "unreadable",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "script?",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "body?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      true
+    ]
+  },
+  "hash": "b55681267dbbe8e4afb46be8a767c51bbd260392e9e852cefd016393ff956a8b"
+}

@@ -20,7 +20,7 @@ an installed CLI of another minor, so `make sqlx-prepare` runs the version the b
 | Change in 0.9 | Effect here | State |
 |---|---|---|
 | `rust-version = 1.94.0` on sqlx, sqlx-core, sqlx-macros, sqlx-macros-core, sqlx-postgres | `make verify` fails. kani 0.67.0 compiles with its bundled `rustc 1.93.0-nightly (53732d5e0 2025-11-20)` and cargo refuses the build | Blocks the upgrade |
-| `query` and `raw_sql` take `SqlSafeStr`: a `&'static str` or `AssertSqlSafe(..)` | `tests/intel_postgres.rs` did not compile | Prepared in part. `insert` takes `&'static str`. `fresh` asserts schema names are `[a-z0-9_]`. Its four `format!` calls still need `AssertSqlSafe` |
+| `query` and `raw_sql` take `SqlSafeStr`: a `&'static str` or `AssertSqlSafe(..)` | `tests/postgres.rs` did not compile | Prepared in part. `insert` takes `&'static str`. `fresh` asserts schema names are `[a-z0-9_]`. Its four `format!` calls still need `AssertSqlSafe` |
 | Connecting to a server that serves no TLS | Fails unless the URL carries `sslmode=disable` | Both container scripts pass it |
 | `.sqlx/` query files | Each column gains an `origin` | Regenerate |
 | `rsa` | No longer in `Cargo.lock` | The RUSTSEC-2023-0071 block can go |

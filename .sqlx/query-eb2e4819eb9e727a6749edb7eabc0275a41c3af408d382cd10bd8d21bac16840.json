@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_install_script (analysis_id, ordinal, name, body)\n            SELECT $1, (t.ordinal - 1)::SMALLINT, t.name, t.body\n            FROM UNNEST($2::VARCHAR[], $3::TEXT[]) WITH ORDINALITY AS t(name, body, ordinal)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "VarcharArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "eb2e4819eb9e727a6749edb7eabc0275a41c3af408d382cd10bd8d21bac16840"
+}
