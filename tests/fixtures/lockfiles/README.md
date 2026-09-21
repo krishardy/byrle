@@ -22,6 +22,7 @@ on `idna==3.10` and, from git, `packaging` at 23.2:
 | `pypi/uv.lock` | `uv lock` |
 | `pypi/poetry.lock` | `poetry lock` |
 | `pypi/requirements.txt` | `uv export`, for a project depending on `requests==2.32.3` and `idna==3.10` |
+| `pypi/Pipfile.lock` | `pipenv lock`, pipenv 2024.4.1, with `requests` as a dev dependency |
 
 Each lockfile carries one package a registry published, `idna`, beside one from git and,
 in uv's, the project itself. `requirements.txt` pins `urllib3` twice, once per Python

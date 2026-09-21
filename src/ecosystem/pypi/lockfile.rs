@@ -8,6 +8,7 @@
 //! | `uv.lock` | uv | TOML | each `[[package]]`'s `name` and `version` |
 //! | `poetry.lock` | poetry | TOML | the same |
 //! | `requirements.txt` | pip, or `uv export` | pip's requirement lines | a line pinned with `==` |
+//! | `Pipfile.lock` | pipenv | JSON | each entry of `default` and `develop`, whose `version` is an `==` pin |
 //!
 //! Only versions from a registry are kept, as npm's readers keep only those. uv writes
 //! `source = { registry = ... }` for one and `{ git = ... }`, `{ virtual = ... }` or a path
@@ -52,14 +53,16 @@ pub const LOCKFILES: &[Lockfile] = &[
         read: requirements,
         pins: None,
     },
+    Lockfile {
+        name: "Pipfile.lock",
+        read: pipenv,
+        // pipenv records each file's hash and the index's name, never a URL.
+        pins: None,
+    },
 ];
 
 /// File names a Python client writes that no reader here takes.
-pub const UNREAD: &[Unread] = &[Unread {
-    name: "Pipfile.lock",
-    reason: "pipenv's lockfile is not read; export it with `pipenv requirements` and pass \
-             that requirements.txt",
-}];
+pub const UNREAD: &[Unread] = &[];
 
 fn locked(name: &str, version: &str) -> Locked {
     (
@@ -114,6 +117,37 @@ fn poetry(text: &str) -> Result<BTreeSet<Locked>, String> {
             Some(source) => source.get("type").and_then(toml::Value::as_str) == Some("legacy"),
         })
         .map(|package| locked(&package.name, &package.version))
+        .collect())
+}
+
+/// pipenv's lockfile: `default` and `develop`, each a map of name to entry.
+///
+/// A registry entry carries `version` as an `==` pin, and `index` when the project names
+/// more than one source. One from git carries `git` and `ref` and no version at all, and a
+/// local one carries `path` or `file`. Dev dependencies are kept, as every npm reader
+/// keeps them.
+fn pipenv(text: &str) -> Result<BTreeSet<Locked>, String> {
+    #[derive(Deserialize)]
+    struct Lock {
+        #[serde(default)]
+        default: std::collections::BTreeMap<String, Entry>,
+        #[serde(default)]
+        develop: std::collections::BTreeMap<String, Entry>,
+    }
+    #[derive(Deserialize)]
+    struct Entry {
+        #[serde(default)]
+        version: Option<String>,
+    }
+    let lock: Lock = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    Ok(lock
+        .default
+        .iter()
+        .chain(&lock.develop)
+        .filter_map(|(name, entry)| {
+            let version = entry.version.as_deref()?.strip_prefix("==")?;
+            Some(locked(name, version))
+        })
         .collect())
 }
 
@@ -219,6 +253,40 @@ url = "../local"
         assert_eq!(names(&locked), ["torch@2.4.0"]);
     }
 
+    /// pipenv 2024.4.1, with a git dependency in `default` and dev dependencies beside it.
+    #[test]
+    fn pipenv_keeps_the_pinned_packages_of_both_sections() {
+        let locked = pipenv(&fixture("Pipfile.lock")).expect("the lockfile reads");
+        assert_eq!(
+            names(&locked),
+            [
+                "certifi@2026.7.22",
+                "charset-normalizer@3.5.1",
+                "idna@3.10",
+                "requests@2.32.3",
+                "urllib3@2.8.0"
+            ],
+            "the git package has no version, and dev dependencies are kept"
+        );
+    }
+
+    /// An entry with no `==` version is not a locked version, whatever else it says.
+    #[test]
+    fn pipenv_keeps_only_an_exact_pin() {
+        let text = r#"{"default": {
+            "from-git": {"git": "https://github.com/o/r.git", "ref": "abc"},
+            "local": {"path": "."},
+            "ranged": {"version": ">=2.0"},
+            "pinned": {"version": "==1.0", "index": "internal"}
+        }}"#;
+        let locked = pipenv(text).expect("the lockfile reads");
+        assert_eq!(
+            names(&locked),
+            ["pinned@1.0"],
+            "another index is still an index"
+        );
+    }
+
     /// `uv export`'s requirements.txt: a pin per package, hashes on their own lines, and
     /// comments saying what asked for it.
     ///
@@ -276,10 +344,11 @@ url = "../local"
         assert_eq!(names(&locked), ["charset-normalizer@3.5.1"]);
     }
 
-    /// A file that is not TOML says so rather than reading as no packages.
+    /// A file that is not what its name says says so, rather than reading as no packages.
     #[test]
-    fn a_lockfile_that_is_not_toml_is_an_error() {
+    fn a_lockfile_that_does_not_parse_is_an_error() {
         assert!(uv("{not toml").is_err());
         assert!(poetry("{not toml").is_err());
+        assert!(pipenv("not json").is_err());
     }
 }
