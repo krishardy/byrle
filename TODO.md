@@ -2286,8 +2286,10 @@ changes to the core, that is the finding — make it now, not after five adapter
       `waharoa policy diff --lockfile uv.lock` now answers for a Python project: measured,
       6 packages evaluated and `pkg:pypi/idna@3.10 allow -> block` under a denial.
 
-- [ ] `Pipfile.lock` is listed as unread, with `pipenv requirements` as the way to a file
-      that is read. Reading it directly would be one more TOML-ish reader.
+- [x] `Pipfile.lock` is read, against what pipenv 2024.4.1 wrote on 2026-09-21. Its
+      `default` and `develop` entries carry `version` as an `==` pin; one from git carries
+      `git` and `ref` and no version. `policy diff --lockfile Pipfile.lock` evaluates 5
+      packages for the fixture project. No Python lockfile is listed as unread now.
 - [x] **Range resolution, and the install-script count that waits on it.** Decided
       2026-09-20: nothing in waharoa resolves a range or a tag
       ([no-range-resolution](docs/engineering_decisions/no-range-resolution.md)).

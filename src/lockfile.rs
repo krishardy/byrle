@@ -174,7 +174,7 @@ mod tests {
             format!(
                 "{}: a lockfile is read only under one of these names: package-lock.json, \
                  npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock, uv.lock, \
-                 poetry.lock, requirements.txt",
+                 poetry.lock, requirements.txt, Pipfile.lock",
                 dir.join("deps.txt").display()
             )
         );

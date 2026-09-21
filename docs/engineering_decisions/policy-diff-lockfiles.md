@@ -33,6 +33,7 @@ The file name chooses the reader. A lockfile under any other name is refused.
 | `bun.lock` | YAML with `serde-saphyr`, `lockfileVersion` 0 or 1 | the first element of each `packages` value, `name@version` |
 | `uv.lock`, `poetry.lock` | TOML | each `[[package]]`'s `name` and `version` |
 | `requirements.txt` | pip's requirement lines | a line pinned with `==`, its name normalised |
+| `Pipfile.lock` | JSON | each entry of `default` and `develop` whose `version` is an `==` pin |
 
 In npm, yarn and bun an entry's key can be an alias. The fixtures lock `my-lodash` as
 `npm:lodash@4.17.21`:
@@ -65,6 +66,7 @@ A version from a registry is kept. The rest are not versions a packument lists.
 | uv | a package whose `source` is not `{ registry = ... }`: `{ git = ... }`, a path, and `{ virtual = "." }`, which is the project itself |
 | poetry | a package whose `[package.source]` has a `type` other than `legacy`, which is another index. `git`, `url` and `directory` are not |
 | `requirements.txt` | a line that is not an `==` pin: a range, `name @ url`, `name @ git+...`, `-e .`, an option. A file with lines and no pin at all is refused, because reading it as no packages would say the project depends on nothing |
+| pipenv | an entry with no `==` version: one carrying `git` and `ref`, or `path`, or `file`. An `index` naming another source is kept, because another index is still an index |
 
 A `requirements.txt` pins a package once per environment marker, so a project resolving
 `urllib3` differently before and after Python 3.10 locks both versions, and both are

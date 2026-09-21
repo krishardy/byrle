@@ -20,7 +20,7 @@ pypi
   versions         PEP 440
   checks           no meaning here: deprecated
   clients          pip, uv
-  client lockfiles uv.lock, poetry.lock, requirements.txt
+  client lockfiles uv.lock, poetry.lock, requirements.txt, Pipfile.lock
   streams          osv/pypi, datadog/pypi, github/pypi
   loaded           osv/pypi
   not covered      nothing: every capability has a stream
