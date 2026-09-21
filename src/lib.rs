@@ -5,6 +5,7 @@
 //! identity. Splitting into separate *crates* remains deliberately deferred (TODO.md);
 //! a lib plus a bin in one crate is not that split.
 
+pub mod analysis;
 pub mod audit;
 pub mod cli;
 /// Debug builds only: see the module docs.

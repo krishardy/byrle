@@ -40,6 +40,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Reads OSV's per-ecosystem bundle, `npm/all.zip`. All 228,951 entries are deflate. `deflate-flate2`
 # reads it through flate2, already in the tree. `deflate` would add zopfli, which only compresses,
 # and the default features add aes-crypto, bzip2, lzma, ppmd, xz and zstd.
+tar = { version = "0.4.46", default-features = false }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
 

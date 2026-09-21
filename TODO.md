@@ -2335,8 +2335,18 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       `waharoa policy check --fetch` dates each waiver's version at its registry and lists
       the ones the global wait now admits anyway. Offline without the flag
       ([policy-check](docs/engineering_decisions/policy-check.md)).
-- [ ] `[!]` **Lifecycle script policy** — npm pre/postinstall, Python sdist `setup.py`
-      — cheap tier, buffers inline
+- [~] `[!]` **Lifecycle script policy** — npm pre/postinstall, Python sdist `setup.py`
+      — cheap tier, buffers inline.
+      - [x] The reader: `src/analysis.rs` takes `package.json` out of a tarball and looks
+            for a `setup.py` at the root of an sdist, bounded at 4 MiB a member, with
+            `Claim` naming whether the artifact keeps the metadata's claim
+            ([install-scripts-from-the-artifact](docs/engineering_decisions/install-scripts-from-the-artifact.md)).
+            Verified against the published `bufferutil` 4.1.0, `node-gyp-build` 4.8.4 and
+            `six` 1.17.0.
+      - [ ] Wire it into the artifact path: the bytes are already buffered for the digest
+            check, so the reader runs there, the `install_scripts` check decides on what
+            the artifact declares rather than on the claim, and an `undeclared` claim is
+            logged whatever the policy says.
 - [ ] `[!]` **Provenance enforcement** — sigstore / npm provenance verification
   - [ ] `[!]` Validate `sigstore-rs` maturity first; cosign shell-out as fallback
 - [ ] `[!]` **Declare an analysis cost tier for every content detector** — cheap
