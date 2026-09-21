@@ -1,4 +1,4 @@
-//! The repository trait against a real Postgres.
+//! The repository traits against a real Postgres: the advisory mirror and the analyses.
 //!
 //! Not unit tests. They need a database, which `make test-integration` starts in a
 //! container and points at with `waharoa::env::TEST_DATABASE_URL`. Without that variable every
@@ -12,6 +12,10 @@
 
 use sqlx::PgPool;
 use std::collections::BTreeSet;
+use waharoa::analysis::InstallScripts;
+use waharoa::analysis::postgres::PgAnalyses;
+use waharoa::analysis::store::{Analyses, Analysis, Scripts};
+use waharoa::integrity::Sri;
 use waharoa::intel::history::{Ingestion, NotLoaded};
 use waharoa::intel::load::{self, Fetch};
 use waharoa::intel::postgres::{Loaded, PgIntel, Replacement};
@@ -1118,11 +1122,15 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .filter(|c| c.2 == "text")
         .map(named)
         .collect();
-    // An upstream's response headers, and an error from anywhere a refresh fails.
+    // An upstream's response headers, an error from anywhere a refresh fails, the message
+    // a read error carries out of serde_json or the tar reader, and an npm script body,
+    // which package.json does not limit.
     assert_eq!(
         text,
         [
             "advisory.summary",
+            "artifact_analysis.unreadable",
+            "artifact_install_script.body",
             "intel_ingestion.etag",
             "intel_ingestion.last_modified",
             "intel_ingestion.error"
@@ -1141,11 +1149,14 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .filter(|c| c.1 == "id" || c.1 == "advisory_id")
         .map(|c| (named(c), c.2.clone(), c.3.clone()))
         .collect();
+    // Alphabetical, which is the order the query returns them in.
     let tables = [
         "advisory",
         "advisory_affected",
         "advisory_alias",
         "advisory_range",
+        "artifact_analysis",
+        "artifact_install_script",
         "exploited_cve",
         "intel_ingestion",
         "intel_snapshot",
@@ -1623,4 +1634,156 @@ async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_os
         exploitation(&intel, &name).await,
         (true, marked([false, false, true]))
     );
+}
+
+/// The analysis store shares the intel pool, so it answers on the schema `fresh` made.
+fn analyses(intel: &PgIntel) -> PgAnalyses {
+    PgAnalyses::new(intel.pool().clone())
+}
+
+fn sri(seed: u8) -> Sri {
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(vec![seed; 64]);
+    Sri::parse(&format!("sha512-{encoded}")).expect("the digest parses")
+}
+
+fn analysis(scripts: Scripts) -> Analysis {
+    Analysis {
+        ecosystem: "npm".to_owned(),
+        name: "bufferutil".to_owned(),
+        version: "4.1.0".to_owned(),
+        scripts,
+    }
+}
+
+#[tokio::test]
+async fn an_artifact_nothing_has_analysed_has_no_row() {
+    let intel = skip_without_database!("t_analysis_absent");
+    assert_eq!(
+        analyses(&intel)
+            .get(&sri(1))
+            .await
+            .expect("the store answers"),
+        None
+    );
+}
+
+/// npm runs them in this order, and the reader found them in it.
+#[tokio::test]
+async fn the_scripts_come_back_in_the_order_they_were_written() {
+    let intel = skip_without_database!("t_analysis_order");
+    let store = analyses(&intel);
+    let written = analysis(Scripts::Declared(InstallScripts {
+        names: vec![
+            "preinstall".to_owned(),
+            "install".to_owned(),
+            "postinstall".to_owned(),
+        ],
+        bodies: vec![
+            ("preinstall".to_owned(), "echo one".to_owned()),
+            ("install".to_owned(), "node-gyp-build".to_owned()),
+            ("postinstall".to_owned(), "node install.js".to_owned()),
+        ],
+    }));
+
+    store.put(&sri(1), &written).await.expect("it writes");
+    assert_eq!(
+        store.get(&sri(1)).await.expect("the store answers"),
+        Some(written)
+    );
+}
+
+/// A second read of the same bytes writes the same answer. The row is replaced, and a
+/// script the later answer does not carry is gone rather than merged into it.
+#[tokio::test]
+async fn re_analysing_an_artifact_replaces_its_scripts() {
+    let intel = skip_without_database!("t_analysis_replace");
+    let store = analyses(&intel);
+    let first = analysis(Scripts::Declared(InstallScripts {
+        names: vec!["preinstall".to_owned(), "postinstall".to_owned()],
+        bodies: vec![
+            ("preinstall".to_owned(), "echo one".to_owned()),
+            ("postinstall".to_owned(), "echo two".to_owned()),
+        ],
+    }));
+    let second = analysis(Scripts::Declared(InstallScripts {
+        names: vec!["postinstall".to_owned()],
+        bodies: vec![("postinstall".to_owned(), "echo two".to_owned())],
+    }));
+
+    store.put(&sri(1), &first).await.expect("it writes");
+    store.put(&sri(1), &second).await.expect("it writes again");
+
+    assert_eq!(
+        store.get(&sri(1)).await.expect("the store answers"),
+        Some(second)
+    );
+}
+
+/// The two answers a bool would collapse. An archive nobody could read is not an archive
+/// that declares no script.
+#[tokio::test]
+async fn an_unreadable_archive_is_stored_apart_from_one_that_declares_nothing() {
+    let intel = skip_without_database!("t_analysis_unreadable");
+    let store = analyses(&intel);
+    let unreadable = analysis(Scripts::Unreadable(
+        "the archive holds no manifest to read".to_owned(),
+    ));
+    let nothing = analysis(Scripts::Declared(InstallScripts::default()));
+
+    store.put(&sri(1), &unreadable).await.expect("it writes");
+    store.put(&sri(2), &nothing).await.expect("it writes");
+
+    assert_eq!(
+        store.get(&sri(1)).await.expect("the store answers"),
+        Some(unreadable)
+    );
+    let held = store
+        .get(&sri(2))
+        .await
+        .expect("the store answers")
+        .expect("the row is there");
+    assert_eq!(held.scripts.names(), Some(&[][..]));
+}
+
+/// pip runs a `setup.py` to build an sdist. The reader names the file and has no command
+/// to report, so the body is NULL and the name still comes back.
+#[tokio::test]
+async fn a_script_with_no_command_keeps_its_name() {
+    let intel = skip_without_database!("t_analysis_no_body");
+    let store = analyses(&intel);
+    let written = Analysis {
+        ecosystem: "pypi".to_owned(),
+        name: "six".to_owned(),
+        version: "1.17.0".to_owned(),
+        scripts: Scripts::Declared(InstallScripts {
+            names: vec!["setup.py".to_owned()],
+            bodies: Vec::new(),
+        }),
+    };
+
+    store.put(&sri(1), &written).await.expect("it writes");
+    assert_eq!(
+        store.get(&sri(1)).await.expect("the store answers"),
+        Some(written)
+    );
+}
+
+/// The key is the bytes. A registry that repoints a version at different bytes gets a
+/// different row, and the first one is untouched.
+#[tokio::test]
+async fn two_digests_of_one_package_are_two_analyses() {
+    let intel = skip_without_database!("t_analysis_by_digest");
+    let store = analyses(&intel);
+    let runs = analysis(Scripts::Declared(InstallScripts {
+        names: vec!["postinstall".to_owned()],
+        bodies: vec![("postinstall".to_owned(), "node install.js".to_owned())],
+    }));
+    let nothing = analysis(Scripts::Declared(InstallScripts::default()));
+
+    store.put(&sri(1), &runs).await.expect("it writes");
+    store.put(&sri(2), &nothing).await.expect("it writes");
+
+    assert_eq!(store.get(&sri(1)).await.expect("it answers"), Some(runs));
+    assert_eq!(store.get(&sri(2)).await.expect("it answers"), Some(nothing));
 }

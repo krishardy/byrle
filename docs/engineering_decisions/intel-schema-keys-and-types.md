@@ -117,7 +117,7 @@ nothing is lost that a refresh does not restore.
 ## Held by
 
 - `every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_text` in
-  `tests/intel_postgres.rs` reads `information_schema`. It fails on a `TEXT` column it does not
+  `tests/postgres.rs` reads `information_schema`. It fails on a `TEXT` column it does not
   list, a `VARCHAR` with no length, a table whose primary key is not a `BIGINT` identity `id`,
   or an `advisory_id` that is not `BIGINT`. It lists every table, so a new table fails it until
   the table is added.

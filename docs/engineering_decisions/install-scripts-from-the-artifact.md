@@ -3,6 +3,7 @@
 - **Status:** Implemented 2026-09-21, the reader. `src/analysis.rs`. Not yet wired into the
   artifact path.
 - **Related:** [fetch-path-branching](fetch-path-branching.md),
+  [artifact-analysis-store](artifact-analysis-store.md),
   [deferral-status-codes](deferral-status-codes.md),
   [policy-tier-resolution](policy-tier-resolution.md)
 

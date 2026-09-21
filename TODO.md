@@ -167,7 +167,7 @@ Items that I've added that are not stage-bound.
       every path not scanned with semgrep's reason. A second pass with `--disable-nosem`,
       5s with rules cached; `scripts/make/lib/semgrep_exceptions.py`. The exit status is
       the scan's.
-    - Found: `tests/intel_postgres.rs` is not scanned. With no `.semgrepignore`, semgrep's
+    - Found: `tests/postgres.rs` is not scanned. With no `.semgrepignore`, semgrep's
       built-in ignore list skips `tests/`.
 13. [x] In the code, policy, documentation, etc. change from "CVE" to "VulnAdvisory". (Has CVE should instead be Has Vulnerability, etc.)
     - Decided 2026-09-13: the policy key `cve_ids` becomes `vuln_advisory_ids`, before the
@@ -1988,13 +1988,13 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `util::test_support::closing_server`, which keeps the port bound and closes each
       connection unanswered.
 - [x] `src/intel/postgres.rs` joins the live-test exclusion. Decided 2026-09-16: it speaks to
-      a real database and nothing else, its tests are `tests/intel_postgres.rs` under
+      a real database and nothing else, its tests are `tests/postgres.rs` under
       `make test-integration`, and CLAUDE.md excludes live tests from the floor. It had grown
       to 290 lines at 0%. `scripts/make/coverage.sh` ignores it for the floor and prints its
       figure beside `main.rs`, so it is visible rather than excluded quietly. The floor reads
       98.30% lines without it.
 - [x] `[!]` Tests that do not need a database must not require the container. Without
-      `WAHAROA_TEST_DATABASE_URL`, `tests/intel_postgres.rs` returns early from every test.
+      `WAHAROA_TEST_DATABASE_URL`, `tests/postgres.rs` returns early from every test.
 - [x] `[!]` Bulk refresh via `COPY FROM STDIN` (`PgCopyIn`). CSV rather than binary; see
       `docs/engineering_decisions/osv-malware-load.md`.
 - [x] `[!]` Atomic refresh. One source's rows are deleted and copied in one transaction

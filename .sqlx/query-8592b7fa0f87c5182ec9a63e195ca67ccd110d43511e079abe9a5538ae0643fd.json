@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM artifact_install_script WHERE analysis_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Int8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "8592b7fa0f87c5182ec9a63e195ca67ccd110d43511e079abe9a5538ae0643fd"
+}
