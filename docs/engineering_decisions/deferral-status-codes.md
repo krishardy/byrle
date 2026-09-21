@@ -1,6 +1,8 @@
 # Deferral status codes: what a client does when the proxy says "not yet"
 
-- **Status:** Measured Sept 2026, decision pending Stage 2
+- **Status:** Measured Sept 2026. Decided 2026-09-21 for the not-ready case, implemented in
+  `IntelUnavailable::response`. The per-artifact case waits for an analysis that can defer
+  one.
 - **Plan reference:** §5 status codes, §5 client compatibility
 - **Related:** [fetch-path-branching](fetch-path-branching.md),
   [enforcement-tiers](enforcement-tiers.md)
@@ -147,8 +149,28 @@ Deferral lifting after 8 seconds:
 - The upstream issues §5 wants filed have their evidence here: four of five clients ignore
   `Retry-After`, and two treat 429 as terminal.
 
-## Not decided here
+## Decided: 503 for not-ready, with a wait and a reason
 
-Which code goes to which client. That is Stage 2, alongside the deferral it would answer;
-nothing in Stage 1 produces one. This records what the clients do so the choice is made
-against measurement rather than against protocol reading.
+A request the proxy cannot decide on answers 503, whatever the client. Of seven clients
+measured, all seven retry a 503 and two treat a 429 as terminal, reporting it and stopping.
+429 says "this one artifact is under analysis", and nothing here is under analysis, so the
+code that works is also the one that is true.
+
+The response carries two things it did not before:
+
+| Header | Value |
+|---|---|
+| `Retry-After` | `1`. Only yarn 4 and pip read it; the other five run their own backoff. One second is inside both of their budgets, 3.2s and 5.5s |
+| `x-waharoa-not-ready` | `intel-store` when the store cannot answer, `no-stream-for-ecosystem` when the snapshot covers the ecosystem with nothing. Neither status code tells those apart |
+
+## Still open: the per-artifact case
+
+429 is reserved for "this one artifact is under analysis", which nothing produces yet: no
+detector holds an artifact long enough to defer a request. When one exists, the table below
+is what it has to be written against.
+
+| Decision | What the measurement says |
+|---|---|
+| Which code per client | 429 only where a client tolerates it, and never by default. yarn 1 and bun stop on the first one |
+| How the table is keyed | on the user agent as the proxy reads it. `refusal::client_name` takes the first token, so yarn 4 is `got`, not `yarn`: a rule written for the brand never matches it |
+| A bounded internal wait | the mechanism rather than a fallback for bun, whose total patience is 0.2s: no code and no header buys time from it. A wait longer than a client's patience is worse than an immediate deferral, because the client fails and the connection was held too |

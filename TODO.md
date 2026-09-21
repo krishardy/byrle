@@ -2347,6 +2347,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         an expensive detector runs only if the cheap decision vector has not already
         settled the answer. See `docs/engineering_decisions/policy-tier-resolution.md`,
         "Where the short circuit survives".
+  - [x] The not-ready half is decided and implemented: 503 always, with `Retry-After: 1`
+        and `x-waharoa-not-ready` naming the case
+        ([deferral-status-codes](docs/engineering_decisions/deferral-status-codes.md)).
+        Of seven clients measured, all seven retry a 503 and two stop on a 429.
   - [ ] Implement **429**, moved from Stage 2. The split was decided in Stage 1 (502
         upstream unreachable or malformed, 503 we are not ready, 429 this one artifact is
         under analysis) and 503 landed in Stage 2 on the intel store. 429 had no cause:

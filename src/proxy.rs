@@ -2011,6 +2011,19 @@ impl Read {
     }
 }
 
+/// How long a client is told to wait before asking again, on a request the proxy is not
+/// ready to answer.
+///
+/// One second. Measured 2026-09-19, two clients of seven honour `Retry-After`: yarn 4 and
+/// pip, whose total patience is 3.2s and 5.5s. npm, pnpm, yarn 1, uv and bun run their own
+/// backoff and ignore the header, so the value only decides how promptly those two come
+/// back. See `docs/engineering_decisions/deferral-status-codes.md`.
+const RETRY_AFTER_SECONDS: &str = "1";
+
+/// The header naming which not-ready case a 503 is, for a client or a log to read without
+/// parsing prose. Neither status code distinguishes them.
+pub const NOT_READY: header::HeaderName = header::HeaderName::from_static("x-waharoa-not-ready");
+
 /// Why a package is not decided on. Already logged; [`IntelUnavailable::response`] is what
 /// the client is sent.
 enum IntelUnavailable {
@@ -2023,6 +2036,20 @@ enum IntelUnavailable {
 }
 
 impl IntelUnavailable {
+    /// What a log and the `x-waharoa-not-ready` header call this case.
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Unanswered => "intel-store",
+            Self::Uncovered(_) => "no-stream-for-ecosystem",
+        }
+    }
+
+    /// 503 with a wait and a reason.
+    ///
+    /// 503 rather than 429: measured over seven clients, a 429 is terminal for yarn 1 and
+    /// bun, which report it and stop, while every one of the seven retries a 503. 429 says
+    /// "this one artifact is under analysis" and nothing here is, so the code that works
+    /// is also the one that is true.
     fn response(self) -> Response {
         let body = match self {
             Self::Unanswered => {
@@ -2034,7 +2061,15 @@ impl IntelUnavailable {
                  {ecosystem} package is served unchecked\n"
             ),
         };
-        (StatusCode::SERVICE_UNAVAILABLE, body).into_response()
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [
+                (header::RETRY_AFTER, RETRY_AFTER_SECONDS),
+                (NOT_READY, self.reason()),
+            ],
+            body,
+        )
+            .into_response()
     }
 }
 
@@ -3662,6 +3697,25 @@ mod tests {
             !response.headers().contains_key(FILTERED_VERSIONS),
             "nothing was removed from this one"
         );
+    }
+
+    /// A 503 says how long to wait and which case it is. Measured over seven clients, a
+    /// 429 is terminal for yarn 1 and bun and every one of the seven retries a 503:
+    /// `docs/engineering_decisions/deferral-status-codes.md`.
+    #[tokio::test]
+    async fn a_request_the_proxy_cannot_decide_says_how_long_to_wait_and_why() {
+        for (unavailable, reason) in [
+            (IntelUnavailable::Unanswered, "intel-store"),
+            (
+                IntelUnavailable::Uncovered(Ecosystem::PyPI),
+                "no-stream-for-ecosystem",
+            ),
+        ] {
+            let response = unavailable.response();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(response.headers()[header::RETRY_AFTER], "1");
+            assert_eq!(response.headers()[NOT_READY], reason);
+        }
     }
 
     /// `handle` returns the metadata branch's answer in place of the document. The answer
