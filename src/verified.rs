@@ -25,7 +25,7 @@
 //! as it runs. Evicted by count, least recently used first, like [`crate::store`].
 
 use crate::integrity::Sri;
-use std::collections::HashMap;
+use crate::util::lru::Lru;
 
 /// Whether this artifact has been fetched and verified before.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,31 +47,17 @@ impl Seen {
 }
 
 /// Content digests of artifacts that have been fetched and verified.
-pub struct VerifiedArtifacts {
-    entries: HashMap<Sri, u64>,
-    max_entries: usize,
-    clock: u64,
-}
+pub struct VerifiedArtifacts(Lru<Sri, ()>);
 
 impl VerifiedArtifacts {
     pub fn new(max_entries: usize) -> Self {
-        Self {
-            entries: HashMap::new(),
-            // Zero would mean recording nothing while still paying for the lookup, so the
-            // smallest useful budget is one.
-            max_entries: max_entries.max(1),
-            clock: 0,
-        }
+        Self(Lru::new(max_entries))
     }
 
     /// Whether this digest has been verified before, marking it recently used.
     pub fn lookup(&mut self, sri: &Sri) -> Seen {
-        self.clock += 1;
-        match self.entries.get_mut(sri) {
-            Some(last_used) => {
-                *last_used = self.clock;
-                Seen::Before
-            }
+        match self.0.get(sri) {
+            Some(()) => Seen::Before,
             None => Seen::First,
         }
     }
@@ -82,37 +68,15 @@ impl VerifiedArtifacts {
     /// registry served bytes its own packument does not describe, and recording that
     /// would be recording the attack.
     pub fn record(&mut self, sri: Sri) {
-        self.clock += 1;
-        self.entries.insert(sri, self.clock);
-        self.evict_to_budget();
+        self.0.insert(sri, ());
     }
 
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.0.len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Drop least recently used artifacts until the budget is met.
-    fn evict_to_budget(&mut self) {
-        if self.entries.len() <= self.max_entries {
-            return;
-        }
-        let mut order: Vec<(u64, Sri)> = self
-            .entries
-            .iter()
-            .map(|(sri, last_used)| (*last_used, sri.clone()))
-            .collect();
-        order.sort_unstable_by_key(|(last_used, _)| *last_used);
-
-        for (_, sri) in order {
-            if self.entries.len() <= self.max_entries {
-                break;
-            }
-            self.entries.remove(&sri);
-        }
+        self.0.is_empty()
     }
 }
 
