@@ -73,38 +73,41 @@ is a script no reader found.
 
 ## How large a buffer the analysis needs
 
-A novel artifact is buffered, because the reader needs the whole archive and the response
-cannot be refused once its status and headers have gone out (`proxy.rs:522`). The ceiling
-is what the buffer costs in the worst case, so it is measured rather than picked.
+A novel artifact is buffered, because the reader needs the archive and the response cannot
+be refused once its status and headers have gone out (`proxy.rs:522`). What that costs is
+measured rather than picked.
 
-`examples/tarball_sizes.py` reads the latest version of 93 npm packages and asks each
-tarball's host for its length:
+`examples/artifact_sizes.py` walks dependency edges from a seed of roots and measures every
+package it reaches, which is the population a proxy serves: a real install is mostly small
+transitive utilities and a few large ones. npm sizes come from a one-byte range request
+against each tarball's host; PyPI reports a file's size in its JSON API.
 
-| | bytes | package |
+| | npm, 1,178 artifacts | PyPI, 3,858 artifacts |
 |---|---|---|
-| min | 2,719 | `jest@30.5.2` |
-| p50 | 334,351 | `mocha@12.0.2` |
-| p90 | 2,050,111 | `@apollo/client@4.3.1` |
-| max | 41,746,205 | `next@16.3.5` |
+| p50 | 9,078 `@aws-sdk/credential-provider-web-identity@3.972.77` | 562,551 `ml_dtypes@0.6.0` |
+| p90 | 315,640 `lodash@4.18.1` | 10,161,518 `pandas@3.0.6` |
+| p99 | 9,624,925 `@typescript/typescript-openbsd-x64@7.0.2` | 124,096,356 `torch@2.14.0` |
+| max | 41,746,205 `next@16.3.5` | 572,881,074 `tensorflow@2.21.0` |
+| over 64 MiB | 0 | 43 (1.11%) |
 
-| Over | Packages |
-|---|---|
-| 8 MiB | 5: `selenium-webdriver`, `aws-sdk`, `echarts`, `googleapis`, `next` |
-| 16 MiB | 2: `googleapis`, `next` |
-| 32 MiB | 1: `next` |
-| 64 MiB | 0 |
+A wheel runs nothing, so only an npm tarball and a PyPI sdist are read. Splitting PyPI by
+kind takes the 572 MB artifact out of the population that needs a buffer:
 
-The sample is the latest version of 93 widely installed packages, which skews large: a
-popular package is a big one. A real dependency closure is mostly small transitive
-packages: `npm install express eslint typescript webpack react react-dom next` resolves
-276.
+| PyPI kind | n | p50 | p99 | max | over 64 MiB |
+|---|---|---|---|---|---|
+| `bdist_wheel` | 3,659 | 754,690 | 124,113,865 | 572,881,074 `tensorflow@2.21.0` | 42 (1.15%) |
+| `sdist` | 199 | 238,888 | 47,025,035 | 81,802,749 `opencv-python@5.0.0.93` | 1 (0.50%) |
+
+The artifacts that are read top out at 81,802,749 bytes in this sample, and the median is
+9,078 on npm and 238,888 on PyPI. Nothing bounds the tail: PyPI's own per-file limit is
+100 MB and is raised on request, which `tensorflow` at 572 MB is.
 
 ## What the reader has to see is a prefix, not the artifact
 
 `analysis::member` walks the tar sequentially and returns at the first `package.json`, so
-it needs a prefix of the gzip stream. `examples/manifest_offset.py` asks each tarball's
-host for a prefix and reports the smallest one a complete `package.json` member is
-readable from, over 78 packages:
+it needs a prefix rather than the whole archive. `examples/manifest_offset.py` asks each
+tarball's host for a prefix and reports the smallest one a complete `package.json` member
+is readable from, over 78 npm packages:
 
 | Prefix | Readable from this | At or below it |
 |---|---|---|
@@ -115,11 +118,12 @@ readable from, over 78 packages:
 | 4 MiB | 5 | 73 |
 
 Five are not readable from 4 MiB: `next`, `selenium-webdriver`, `three`, `echarts`,
-`aws-sdk`. `package/package.json` is not always the first member, so the prefix is
-bounded by the artifact rather than by a small constant.
+`aws-sdk`. `package/package.json` is not always the first member, so the prefix is bounded
+by the artifact rather than by a small constant.
 
-67 of 78 are readable from 1 MiB, and the buffer is that size or smaller on those
-requests. The bound is what the other 11 cost.
+That sample is the latest version of 78 widely installed packages, chosen by hand. It is
+the adversarial half of the distribution rather than a representative one, which the
+closure walk above shows: its median artifact is 9,078 bytes.
 
 ## Where it is kept
 
