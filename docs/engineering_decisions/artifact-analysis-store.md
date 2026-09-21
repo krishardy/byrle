@@ -71,6 +71,33 @@ for one artifact at once and each analysed the same bytes, so a second write is 
 error. The scripts are replaced rather than merged: a name the later answer does not carry
 is a script no reader found.
 
+## How large a buffer the analysis needs
+
+A novel artifact is buffered, because the reader needs the whole archive and the response
+cannot be refused once its status and headers have gone out (`proxy.rs:522`). The ceiling
+is what the buffer costs in the worst case, so it is measured rather than picked.
+
+`examples/tarball_sizes.py` reads the latest version of 93 npm packages and asks each
+tarball's host for its length:
+
+| | bytes | package |
+|---|---|---|
+| min | 2,719 | `jest@30.5.2` |
+| p50 | 334,351 | `mocha@12.0.2` |
+| p90 | 2,050,111 | `@apollo/client@4.3.1` |
+| max | 41,746,205 | `next@16.3.5` |
+
+| Over | Packages |
+|---|---|
+| 8 MiB | 5: `selenium-webdriver`, `aws-sdk`, `echarts`, `googleapis`, `next` |
+| 16 MiB | 2: `googleapis`, `next` |
+| 32 MiB | 1: `next` |
+| 64 MiB | 0 |
+
+The sample is the latest version of 93 widely installed packages, which skews large: a
+popular package is a big one. The median is 334 KB and the buffer is that size on a
+typical request.
+
 ## Where it is kept
 
 The Postgres store shares the pool the advisory mirror already holds, because the analyses
