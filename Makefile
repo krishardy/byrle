@@ -9,7 +9,7 @@ help:
 	@echo "  trufflehog     credential scanning (working tree and git history)"
 	@echo "  sast           semgrep + trufflehog"
 	@echo "  test           unit tests"
-	@echo "  test-integration  tests needing a real Postgres, in a container"
+	@echo "  test-integration  tests needing a real Postgres, in a container or local cluster"
 	@echo "  sqlx-prepare   regenerate .sqlx/, the offline query cache"
 	@echo "  coverage       unit test coverage, failing under the CLAUDE.md floor"
 	@echo "  mutants        mutation testing of the Rust changed since BASE (default HEAD)"

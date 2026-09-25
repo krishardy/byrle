@@ -32,8 +32,9 @@ binary.
 
 ## Consequences
 
-- **Tests that need a database need a container.** `make test-integration` starts
-  Postgres, runs them and tears it down. Tests that do not need a database must not
+- **Tests that need a database need a real Postgres.** `make test-integration` starts
+  one in a docker container, or as a local cluster from `initdb` and `pg_ctl` when docker
+  does not answer, runs them and tears it down. Tests that do not need a database must not
   require it.
 - **The repository trait stays, for a different reason.** It was backend portability,
   which is moot. It remains because the 95% unit coverage floor excludes corpus and live
