@@ -61,7 +61,7 @@ fi
 # Debug build: WAHAROA_DEFER_TEST is compiled out of a release binary on purpose.
 start_proxy() {
     local log="$1" spec="$2"
-    WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_DEFER_TEST="$spec" \
+    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_DEFER_TEST="$spec" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do

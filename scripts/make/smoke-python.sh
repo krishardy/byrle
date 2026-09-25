@@ -44,7 +44,7 @@ fail() { echo "FAIL: $*"; echo "--- proxy log ---"; cat "$log"; exit 1; }
 # so without a public base the files are fetched from files.pythonhosted.org and nothing
 # about them is observed.
 start_proxy() {
-    WAHAROA_LISTEN="127.0.0.1:${port}" \
+    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" \
     WAHAROA_PUBLIC_URL="http://127.0.0.1:${port}" \
     WAHAROA_POLICY="${1:-}" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &

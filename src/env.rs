@@ -95,6 +95,14 @@ pub const DEFAULT_MAX_VERIFIED: usize = 50_000;
 /// 141 MB peak.
 pub const DEFAULT_MAX_CONCURRENT_METADATA: usize = 8;
 
+/// Default ceiling on one artifact written to the spool.
+///
+/// The largest artifact a detector reads measured 81,802,749 bytes, `opencv-python`
+/// 5.0.0.93. This sits an order of magnitude above it, so it refuses an artifact whose
+/// length is a lie rather than one anybody publishes. See
+/// `docs/engineering_decisions/artifact-spool.md`.
+pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1 << 30;
+
 /// §5.5's ceiling on how far ahead a package entry may be dated.
 ///
 /// Long enough to cover a review cycle, short enough that an entry nobody looked at
@@ -240,6 +248,21 @@ pub const MAX_CONCURRENT_METADATA: Var = runtime(
     &["metadata documents decoded at once"],
 )
 .with_default(Default::Number(DEFAULT_MAX_CONCURRENT_METADATA as u64));
+pub const SPOOL_DIR: Var = runtime(
+    "WAHAROA_SPOOL_DIR",
+    "",
+    &[
+        "directory an artifact is written to while it is",
+        "analysed. Locked; spool files left in it are removed",
+        "at startup (default waharoa-spool in the OS temp dir)",
+    ],
+);
+pub const MAX_ARTIFACT_BYTES: Var = runtime(
+    "WAHAROA_MAX_ARTIFACT_BYTES",
+    "",
+    &["ceiling on an artifact written to the spool"],
+)
+.with_default(Default::Bytes(DEFAULT_MAX_ARTIFACT_BYTES as usize));
 pub const REFUSAL_STATUS: Var = runtime(
     "WAHAROA_REFUSAL_STATUS",
     "",
@@ -341,7 +364,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 37] = [
+pub const ALL: [Var; 39] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -362,6 +385,8 @@ pub const ALL: [Var; 37] = [
     AUDIT_LOG,
     EXPIRY_CEILING_DAYS,
     MAX_CONCURRENT_METADATA,
+    SPOOL_DIR,
+    MAX_ARTIFACT_BYTES,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     LOG_FILTER,
@@ -617,6 +642,23 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.count(MAX_CONCURRENT_METADATA, DEFAULT_MAX_CONCURRENT_METADATA)
     }
 
+    /// [`crate::spool::default_dir`] when unset.
+    pub fn spool_dir(&self) -> Result<PathBuf, EnvError> {
+        Ok(self
+            .path(SPOOL_DIR)?
+            .unwrap_or_else(crate::spool::default_dir))
+    }
+
+    /// At least one byte: a ceiling of none would refuse every artifact.
+    pub fn max_artifact_bytes(&self) -> Result<u64, EnvError> {
+        self.parsed(
+            MAX_ARTIFACT_BYTES,
+            DEFAULT_MAX_ARTIFACT_BYTES,
+            |v| v.parse().ok().filter(|limit| *limit > 0),
+            "is not a whole number above 0",
+        )
+    }
+
     pub fn database_url(&self) -> Result<Option<String>, EnvError> {
         self.text(DATABASE_URL)
     }
@@ -750,7 +792,7 @@ pub(crate) mod testing {
 
     /// An environment holding exactly `pairs`. Each variable is named by its `Var`, so no
     /// name is written outside this module.
-    pub fn with(pairs: &[(Var, &str)]) -> Env<impl Fn(&str) -> Option<OsString>> {
+    pub fn with(pairs: &[(Var, &str)]) -> Env<impl Fn(&str) -> Option<OsString> + use<>> {
         let map: HashMap<&'static str, OsString> = pairs
             .iter()
             .map(|(var, value)| (var.name, OsString::from(value)))
@@ -817,6 +859,11 @@ mod tests {
             env.max_concurrent_metadata().unwrap(),
             DEFAULT_MAX_CONCURRENT_METADATA
         );
+        assert_eq!(env.spool_dir().unwrap(), crate::spool::default_dir());
+        assert_eq!(
+            env.max_artifact_bytes().unwrap(),
+            DEFAULT_MAX_ARTIFACT_BYTES
+        );
         assert_eq!(env.database_url().unwrap(), None);
         assert_eq!(env.snapshot_dir().unwrap(), None);
         assert_eq!(env.snapshot_limit().unwrap(), DEFAULT_SNAPSHOT_LIMIT);
@@ -868,6 +915,8 @@ mod tests {
             (MAX_RECORDS, "10"),
             (MAX_VERIFIED, "20"),
             (MAX_CONCURRENT_METADATA, "2"),
+            (SPOOL_DIR, "/var/spool/waharoa"),
+            (MAX_ARTIFACT_BYTES, "4096"),
             (DATABASE_URL, "postgres://db"),
             (SNAPSHOT_DIR, "/var/lib/waharoa"),
             (SNAPSHOT_LIMIT, "7"),
@@ -910,6 +959,11 @@ mod tests {
         assert_eq!(env.max_verified().unwrap(), 20);
         assert_eq!(env.max_concurrent_metadata().unwrap(), 2);
         assert_eq!(
+            env.spool_dir().unwrap(),
+            PathBuf::from("/var/spool/waharoa")
+        );
+        assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
+        assert_eq!(
             env.database_url().unwrap().as_deref(),
             Some("postgres://db")
         );
@@ -951,8 +1005,9 @@ mod tests {
             (REWRITE_ARTIFACTS, "false"),
             (REFUSE_UNSERVABLE, "no"),
             (SNAPSHOT_LIMIT, "0"),
+            (MAX_ARTIFACT_BYTES, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 9] = [
+        let cases: [(Result<(), EnvError>, &str); 10] = [
             (
                 env.max_records().map(drop),
                 "WAHAROA_MAX_RECORDS: `5O000` is not a whole number",
@@ -988,6 +1043,10 @@ mod tests {
             (
                 env.snapshot_limit().map(drop),
                 "WAHAROA_SNAPSHOT_LIMIT: `0` is not a whole number above 0",
+            ),
+            (
+                env.max_artifact_bytes().map(drop),
+                "WAHAROA_MAX_ARTIFACT_BYTES: `0` is not a whole number above 0",
             ),
         ];
         for (result, expected) in cases {

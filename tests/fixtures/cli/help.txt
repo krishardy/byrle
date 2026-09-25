@@ -50,6 +50,10 @@ Proxy configuration, all through the environment:
                                     appended. Refuses to start if it cannot be opened
   WAHAROA_EXPIRY_CEILING_DAYS       how many days ahead a `packages` entry may be dated (default 90)
   WAHAROA_MAX_CONCURRENT_METADATA   metadata documents decoded at once (default 8)
+  WAHAROA_SPOOL_DIR                 directory an artifact is written to while it is
+                                    analysed. Locked; spool files left in it are removed
+                                    at startup (default waharoa-spool in the OS temp dir)
+  WAHAROA_MAX_ARTIFACT_BYTES        ceiling on an artifact written to the spool (default 1024 MiB)
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
                                     "default=403,npm/pnpm=451" (default 403)
   WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot

@@ -67,6 +67,7 @@ use crate::policy::{Policy, enforce, facts};
 use crate::record::{PackageMetadata, PackageRecord};
 use crate::refusal::RefusalStatus;
 use crate::route::{DocumentKind, RequestTarget};
+use crate::spool::Spool;
 use crate::store::{Lookup, RecordStore};
 use crate::verified::VerifiedArtifacts;
 use axum::{
@@ -173,6 +174,9 @@ pub struct Health {
     pub records_held: usize,
     /// Artifacts fetched and verified since the proxy started. See [`crate::verified`].
     pub artifacts_verified: usize,
+    /// Where an artifact being analysed is written, when a spool is open. See
+    /// [`crate::spool`].
+    pub spool_dir: Option<String>,
 }
 
 #[derive(Clone)]
@@ -224,6 +228,9 @@ struct Config {
     /// The intel store, when one is configured. With a policy, every decision consults it,
     /// and a store that cannot answer is a 503 rather than a serve. See [`intel_for`].
     intel: Option<Arc<dyn Intel>>,
+    /// Where an artifact is written while it is analysed. Its lock is held for as long as
+    /// the proxy lives. See [`crate::spool`].
+    spool: Option<Arc<Spool>>,
     max_metadata_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`npm::rewrite_packument`] and [`pypi::rewrite::rewrite_index`].
@@ -262,6 +269,7 @@ impl Proxy {
                 policy: None,
                 audit: None,
                 intel: None,
+                spool: None,
                 max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
                 rewrite_artifacts: true,
                 public_base: None,
@@ -372,6 +380,11 @@ impl Proxy {
             packages_held,
             records_held,
             artifacts_verified: self.verified.lock().expect("verified artifacts lock").len(),
+            spool_dir: self
+                .config
+                .spool
+                .as_ref()
+                .map(|spool| spool.dir().display().to_string()),
         }
     }
 
@@ -443,6 +456,11 @@ impl Proxy {
 
     pub fn with_intel(mut self, intel: Option<Arc<dyn Intel>>) -> Self {
         self.config_mut().intel = intel;
+        self
+    }
+
+    pub fn with_spool(mut self, spool: Option<Arc<Spool>>) -> Self {
+        self.config_mut().spool = spool;
         self
     }
 
