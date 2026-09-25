@@ -2343,10 +2343,14 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
             ([install-scripts-from-the-artifact](docs/engineering_decisions/install-scripts-from-the-artifact.md)).
             Verified against the published `bufferutil` 4.1.0, `node-gyp-build` 4.8.4 and
             `six` 1.17.0.
-      - [ ] Wire it into the artifact path: the bytes are already buffered for the digest
-            check, so the reader runs there, the `install_scripts` check decides on what
-            the artifact declares rather than on the claim, and an `undeclared` claim is
-            logged whatever the policy says.
+      - [x] The spool: `src/spool.rs` writes an artifact to a file deleted when the
+            request ends, bounded by `WAHAROA_MAX_ARTIFACT_BYTES`. The proxy locks
+            `WAHAROA_SPOOL_DIR` at startup and removes the spool files left in it
+            ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
+      - [ ] Wire it into the artifact path: on an analysis miss for an npm tarball or a
+            PyPI sdist, the artifact is spooled, the reader runs on the file, the
+            `install_scripts` check decides on what the artifact declares rather than on
+            the claim, and an `undeclared` claim is logged whatever the policy says.
 - [ ] `[!]` **Provenance enforcement** — sigstore / npm provenance verification
   - [ ] `[!]` Validate `sigstore-rs` maturity first; cosign shell-out as fallback
 - [ ] `[!]` **Declare an analysis cost tier for every content detector** — cheap

@@ -1539,6 +1539,7 @@ mod tests {
             packages_held: 0,
             records_held: 0,
             artifacts_verified: 0,
+            spool_dir: None,
         }
     }
 

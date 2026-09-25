@@ -17,6 +17,7 @@ use crate::intel::postgres;
 use crate::intel::store::Intel;
 use crate::policy::{Policy, check, packages, today};
 use crate::proxy::Proxy;
+use crate::spool::Spool;
 use crate::tls::{self, TrustMode};
 
 /// A proxy built from the environment, and the address it is to listen on.
@@ -234,9 +235,23 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     }
     let intel = intel.map(|store| Arc::new(store) as Arc<dyn Intel>);
 
+    // Refusing to start is right: a second proxy on the same directory would remove the
+    // first one's files, and a directory that cannot be written is a proxy that cannot
+    // analyse. Every spool file present now was left by a process that ended.
+    let spool_dir = environment.spool_dir()?;
+    let (spool, swept) = Spool::open(&spool_dir, environment.max_artifact_bytes()?)
+        .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::SPOOL_DIR)))?;
+    info!(
+        path = %spool_dir.display(),
+        ceiling = spool.ceiling(),
+        swept,
+        "spool open; files left by an earlier process removed"
+    );
+
     let proxy = Proxy::new(client)
         .with_upstreams(upstreams)
         .with_intel(intel)
+        .with_spool(Some(Arc::new(spool)))
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
         .with_origin_policy(
@@ -322,6 +337,19 @@ mod tests {
     use crate::env::testing::with;
     use crate::identity::Ecosystem;
 
+    /// `pairs`, with a spool directory of this test's own. Tests run at once in one
+    /// process, and a second proxy on one directory is refused.
+    fn spooled(
+        label: &str,
+        pairs: &[(env::Var, &str)],
+    ) -> (PathBuf, Env<impl Fn(&str) -> Option<OsString> + use<>>) {
+        let dir = crate::util::test_support::tempdir(label);
+        let mut pairs = pairs.to_vec();
+        let spool = dir.join("spool").display().to_string();
+        pairs.push((env::SPOOL_DIR, &spool));
+        (dir, with(&pairs))
+    }
+
     /// The failure `pairs` starts with. `Proxy` is not `Debug`, so `expect_err` cannot
     /// print the proxy it did build.
     async fn refused(pairs: &[(env::Var, &str)]) -> StartupError {
@@ -331,11 +359,12 @@ mod tests {
         }
     }
 
-    /// Nothing set: npm's and PyPI's own registries, no policy, no store, and artifact
-    /// URLs pointed at the proxy.
+    /// Nothing set but the spool directory: npm's and PyPI's own registries, no policy, no
+    /// store, and artifact URLs pointed at the proxy.
     #[tokio::test]
     async fn an_empty_environment_starts_the_default_proxy() {
-        let started = proxy(&with(&[])).await.expect("the defaults are usable");
+        let (dir, environment) = spooled("startup-empty", &[]);
+        let started = proxy(&environment).await.expect("the defaults are usable");
         assert_eq!(started.listen, env::DEFAULT_LISTEN);
         assert_eq!(
             started.proxy.upstreams().get(Ecosystem::Npm),
@@ -351,23 +380,49 @@ mod tests {
         assert!(health.refuse_unservable);
         assert_eq!(health.public_base, None);
         assert_eq!(health.allowed_direct_origins, Vec::<String>::new());
+        assert_eq!(
+            health.spool_dir,
+            Some(dir.join("spool").display().to_string())
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A spool directory another proxy holds refuses the start, naming the variable.
+    #[tokio::test]
+    async fn a_spool_directory_in_use_refuses_the_start() {
+        let (dir, environment) = spooled("startup-spool", &[]);
+        let _first = proxy(&environment).await.expect("the first proxy starts");
+        let second = match proxy(&environment).await {
+            Err(e) => e,
+            Ok(_) => panic!("a second proxy on one spool directory should not start"),
+        };
+        assert!(matches!(second, StartupError::Unusable(_)), "{second}");
+        assert!(
+            second
+                .to_string()
+                .starts_with(&format!("{}: ", env::SPOOL_DIR)),
+            "{second}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Each configured value reaches the proxy it builds.
     #[tokio::test]
     async fn the_environment_reaches_the_proxy() {
-        let started = proxy(&with(&[
-            (env::LISTEN, "127.0.0.1:9999"),
-            (env::UPSTREAM_NPM, "https://npm.mirror.example/"),
-            (env::UPSTREAM_PYPI, "https://pypi.mirror.example/simple"),
-            (env::PUBLIC_URL, "http://waharoa.corp.example"),
-            (env::ARTIFACT_ORIGINS, "https://cdn.example"),
-            (env::ALLOW_DIRECT_ORIGINS, "https://direct.example"),
-            (env::REWRITE_ARTIFACTS, "0"),
-            (env::REFUSE_UNSERVABLE, "0"),
-        ]))
-        .await
-        .expect("every value is usable");
+        let (dir, environment) = spooled(
+            "startup-values",
+            &[
+                (env::LISTEN, "127.0.0.1:9999"),
+                (env::UPSTREAM_NPM, "https://npm.mirror.example/"),
+                (env::UPSTREAM_PYPI, "https://pypi.mirror.example/simple"),
+                (env::PUBLIC_URL, "http://waharoa.corp.example"),
+                (env::ARTIFACT_ORIGINS, "https://cdn.example"),
+                (env::ALLOW_DIRECT_ORIGINS, "https://direct.example"),
+                (env::REWRITE_ARTIFACTS, "0"),
+                (env::REFUSE_UNSERVABLE, "0"),
+            ],
+        );
+        let started = proxy(&environment).await.expect("every value is usable");
         assert_eq!(started.listen, "127.0.0.1:9999");
         let health = started.proxy.health();
         assert_eq!(
@@ -395,6 +450,7 @@ mod tests {
             health.served_origins
         );
         assert_eq!(health.allowed_direct_origins, ["https://direct.example"]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A variable that does not parse is `Env`, which exits 2. Something the operator
@@ -413,15 +469,17 @@ mod tests {
     /// A policy that loads is in force, and its exceptions are reported.
     #[tokio::test]
     async fn a_policy_that_loads_is_carried_into_the_proxy() {
-        let dir = crate::util::test_support::tempdir("startup-policy");
-        let path = dir.join("policy.yaml");
+        let path = std::env::temp_dir().join(format!("waharoa-policy-{}.yaml", std::process::id()));
         std::fs::write(&path, "version: 1\ncooldown_days: 7\n").expect("writes");
-        let started = proxy(&with(&[(env::POLICY, &path.display().to_string())]))
-            .await
-            .expect("the policy loads");
+        let (dir, environment) = spooled(
+            "startup-policy",
+            &[(env::POLICY, &path.display().to_string())],
+        );
+        let started = proxy(&environment).await.expect("the policy loads");
         let policy = started.proxy.policy().expect("the proxy holds it");
         assert_eq!(policy.cooldown_days, 7);
         assert!(policy.uses_cooldown());
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -41,7 +41,7 @@ fi
 fail() { echo "FAIL: $*"; echo "--- proxy log ---"; cat "$log"; exit 1; }
 
 start_proxy() {
-    WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_POLICY="${1:-}" \
+    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_POLICY="${1:-}" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do

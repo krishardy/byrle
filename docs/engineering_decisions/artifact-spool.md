@@ -1,6 +1,7 @@
 # An artifact being analysed is spooled to disk, not held in memory
 
-- **Status:** Decided 2026-09-22, not implemented.
+- **Status:** Decided 2026-09-22. The spool is implemented 2026-09-25, `src/spool.rs`, and
+  opened at startup. Not yet used by the artifact path.
 - **Related:** [artifact-analysis-store](artifact-analysis-store.md),
   [fetch-path-branching](fetch-path-branching.md),
   [artifact-digest-verification](artifact-digest-verification.md),
@@ -61,19 +62,25 @@ and skips the analysis, not the fetch.
 
 | | |
 |---|---|
-| Directory | `WAHAROA_SPOOL_DIR`, defaulting to the OS temporary directory |
+| Directory | `WAHAROA_SPOOL_DIR`, defaulting to `waharoa-spool` in the OS temporary directory, created with mode `0700` |
+| Name | `artifact-<pid>-<n>` |
 | Created | `O_CREAT` with `O_EXCL`, mode `0600` |
 | Deleted | by a guard when the request ends, on every path: served, refused, or failed |
 | Contents | never logged, and the path is logged at DEBUG only |
 
-The proxy locks `.lock` in the directory at startup, as `SnapshotDir::open` does, and
-refuses to start when another proxy holds it. Two proxies sharing a spool directory would
-each sweep the other's files. Holding the lock is what makes the startup sweep safe: every
-file in the directory at startup is an orphan from a process that crashed, so it is removed
-and the count is logged.
+The proxy locks `.lock` in the directory at startup and refuses to start when another
+proxy holds it. `SnapshotDir::open` takes the same lock and waits for it instead. Two
+proxies sharing a spool directory would each sweep the other's files. Holding the lock is
+what makes the startup sweep safe: every spool file in the directory at startup is an
+orphan from a process that crashed, so it is removed and the count is logged.
 
 Leaving them would accumulate artifact bytes on disk for as long as the machine lives, and
 an operator who never looks in the directory would never find out.
+
+The sweep removes regular files whose names start with `artifact-`, and nothing else: not
+`.lock`, not a directory, and not a symlink. The decision as first written defaulted to the
+OS temporary directory itself and removed every file in it, which on a default start would
+have emptied `/tmp`.
 
 ## The ceiling, and what it is for
 
