@@ -56,7 +56,21 @@ if need trufflehog; then
 elif need brew; then
     brew install trufflehog
 elif need go; then
-    go install github.com/trufflesecurity/trufflehog/v3@latest
+    # Not `go install ...@latest`: trufflehog's go.mod has replace directives, which Go
+    # applies only to the main module, and refuses that install with "The go.mod file
+    # for the module providing named packages contains one or more replace directives".
+    # Built from a clone of the latest tag instead, where it is the main module.
+    src="$(mktemp -d)"
+    trap 'rm -rf "$src"' EXIT
+    version=""
+    if ! { version="$(go list -m -f '{{.Version}}' github.com/trufflesecurity/trufflehog/v3@latest)" \
+        && git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$version" \
+            https://github.com/trufflesecurity/trufflehog.git "$src" \
+        && (cd "$src" && go install .); }; then
+        echo "    NOT INSTALLED: building trufflehog ${version:-@latest} failed. 'make sast' cannot scan."
+    fi
+    rm -rf "$src"
+    trap - EXIT
 else
     # Upstream offers `curl ... install.sh | sh`. Not run automatically here: piping a
     # remote script into a shell is the pattern this project exists to distrust, and it
