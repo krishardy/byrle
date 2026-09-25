@@ -21,12 +21,9 @@ if ! cargo sqlx --version >/dev/null 2>&1; then
     echo "sqlx-cli is not installed. Run 'make dev-setup'."
     exit 1
 fi
-if ! docker info >/dev/null 2>&1; then
-    echo "docker is not available, and preparing the cache needs a real schema to check against."
-    exit 1
-fi
+choose_postgres || exit 1
 
-note "postgres ($postgres_image) on port $port"
+note "postgres ($postgres_where) on port $port"
 start_postgres "waharoa-prepare-pg-$$" "$port"
 
 DATABASE_URL="$(postgres_url "$port")"

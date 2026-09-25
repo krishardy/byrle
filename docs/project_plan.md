@@ -230,9 +230,10 @@ supporting two backends bought portability nobody asked for and constrained the 
 path, which is the one place the storage layer has to be fast. There is no embedded
 fallback and no development-only backend.
 
-**Development and tests run against Postgres in a container.** `make test-integration`
-starts one, runs the tests that need a database, and tears it down. Tests that do not need
-a database must not require the container: the policy engine, the decision vector and
+**Development and tests run against a real Postgres.** `make test-integration` starts one,
+in a docker container or as a local cluster from `initdb` and `pg_ctl` when docker does not
+answer, runs the tests that need a database, and tears it down. Tests that do not need a
+database must not require it: the policy engine, the decision vector and
 everything above the repository trait are pure and stay that way.
 
 **The repository trait stays, for a different reason.** It was there for backend
