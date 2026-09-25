@@ -51,6 +51,10 @@ find_postgres_bin() {
 # Pick where the server runs: `container` when docker answers, else `local` when `initdb`
 # and `pg_ctl` are found. Sets `postgres_kind` and `postgres_where` in the caller's shell,
 # so it is called directly rather than in `$(...)`.
+#
+# `postgres_where` is read only by the scripts that source this file, which shellcheck
+# does not see.
+# shellcheck disable=SC2034
 choose_postgres() {
     if docker info >/dev/null 2>&1; then
         postgres_kind=container
