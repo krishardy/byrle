@@ -1540,6 +1540,7 @@ mod tests {
             records_held: 0,
             artifacts_verified: 0,
             spool_dir: None,
+            artifacts_revalidated: 0,
         }
     }
 

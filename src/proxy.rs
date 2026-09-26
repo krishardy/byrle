@@ -88,6 +88,7 @@ use futures_util::{StreamExt, stream};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Instant;
@@ -183,6 +184,11 @@ pub struct Health {
     /// Where an artifact being analysed is written, when a spool is open. See
     /// [`crate::spool`].
     pub spool_dir: Option<String>,
+    /// Artifact requests answered 304 since the proxy started. The client installed bytes
+    /// from its own cache, which this proxy did not hash on that request. Every warm-cache
+    /// install makes one per artifact, so this is a count, not a finding.
+    #[serde(default)]
+    pub artifacts_revalidated: u64,
 }
 
 #[derive(Clone)]
@@ -203,6 +209,8 @@ pub struct Proxy {
     coverage: Arc<Mutex<Option<LoadedSnapshot>>>,
     /// Artifacts answered 503 while their analysis ran. See [`Deferred`].
     deferred: Arc<Mutex<Deferred>>,
+    /// Artifact requests answered 304, whose bytes the client took from its cache.
+    revalidated: Arc<AtomicU64>,
 }
 
 /// What the builders set. Nothing here changes once the proxy is serving.
@@ -294,6 +302,7 @@ impl Proxy {
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             coverage: Arc::new(Mutex::new(None)),
             deferred: Arc::new(Mutex::new(Deferred(Lru::new(DEFAULT_MAX_VERIFIED)))),
+            revalidated: Arc::default(),
             metadata_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_METADATA)),
         };
         proxy.rebuilt()
@@ -398,6 +407,7 @@ impl Proxy {
                 .spool
                 .as_ref()
                 .map(|spool| spool.dir().display().to_string()),
+            artifacts_revalidated: self.revalidated.load(Ordering::Relaxed),
         }
     }
 
@@ -2098,6 +2108,22 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         let Some(sri) = artifact.digest else {
             return (forward_status, headers, Body::from_stream(body_stream)).into_response();
         };
+        // Only a 200 carries the artifact. A 404's body is an error page, and a 206's is a
+        // part; hashing either reported a mismatch and cut the response off, so a missing
+        // tarball reached the client as a broken connection rather than a 404.
+        if status != reqwest::StatusCode::OK {
+            if status == reqwest::StatusCode::NOT_MODIFIED {
+                proxy.revalidated.fetch_add(1, Ordering::Relaxed);
+                info!(
+                    path = %path_and_query,
+                    purl = %artifact.purl,
+                    client = %client_ua,
+                    "artifact revalidated with a 304: the client installs its cached bytes, \
+                     which this proxy did not hash on this request"
+                );
+            }
+            return (forward_status, headers, Body::from_stream(body_stream)).into_response();
+        }
         let verified = VerifyingStream::new(
             body_stream,
             &sri,
@@ -5357,6 +5383,18 @@ mod tests {
         );
     }
 
+    async fn revalidations(base: &str) -> u64 {
+        let body = reqwest::get(format!("{base}{HEALTH_PATH}"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        serde_json::from_str::<Health>(&body)
+            .unwrap()
+            .artifacts_revalidated
+    }
+
     async fn artifacts_verified(base: &str) -> usize {
         let body = reqwest::get(format!("{base}{HEALTH_PATH}"))
             .await
@@ -6846,5 +6884,116 @@ mod tests {
                 "{NO_UPSTREAM}/integrity/x/1.0/x-1.0.tar.gz/provenance"
             ))
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Bypass self-detection
+    // -----------------------------------------------------------------------
+
+    /// A registry whose `widget` 1.0.0 tarball answers 304 to a conditional request and 200
+    /// otherwise, and whose 2.0.0 tarball is gone, 404. Both digests are published.
+    async fn conditional_registry() -> (String, Vec<u8>) {
+        let tarball: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8).collect();
+        let digest = sri_of(&tarball);
+        let packument = format!(
+            r#"{{"name":"widget","dist-tags":{{"latest":"2.0.0"}},"versions":{{
+                "1.0.0":{{"version":"1.0.0","dist":{{"integrity":"{digest}",
+                    "tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}},
+                "2.0.0":{{"version":"2.0.0","dist":{{"integrity":"{digest}",
+                    "tarball":"https://registry.npmjs.org/widget/-/widget-2.0.0.tgz"}}}}}}}}"#
+        );
+        let body = tarball.clone();
+        let router = Router::new()
+            .route(
+                "/widget",
+                get(move || {
+                    let packument = packument.clone();
+                    async move {
+                        (
+                            [(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")],
+                            packument,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/widget/-/widget-1.0.0.tgz",
+                get(move |headers: HeaderMap| {
+                    let body = body.clone();
+                    async move {
+                        if headers.contains_key(header::IF_NONE_MATCH) {
+                            StatusCode::NOT_MODIFIED.into_response()
+                        } else {
+                            ([(header::ETAG, "\"t1\"")], body).into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/widget/-/widget-2.0.0.tgz",
+                get(|| async { (StatusCode::NOT_FOUND, "gone") }),
+            );
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, serve(router).await)
+                .router(),
+        )
+        .await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        (base, tarball)
+    }
+
+    /// A 304 and a 404 on an artifact pass through as they came. Neither body is the
+    /// artifact, so neither is hashed or reported as a mismatch, and neither counts as
+    /// verified.
+    #[tokio::test]
+    async fn an_artifact_answered_without_its_bytes_is_passed_through_unhashed() {
+        let (base, tarball) = conditional_registry().await;
+        let client = reqwest::Client::new();
+        let (guard, log) = capture(tracing::Level::INFO);
+
+        let fresh = client
+            .get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(fresh.status(), 200);
+        assert_eq!(fresh.bytes().await.unwrap().as_ref(), tarball.as_slice());
+        assert_eq!(artifacts_verified(&base).await, 1);
+
+        let revalidated = client
+            .get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .header(header::IF_NONE_MATCH, "\"t1\"")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(revalidated.status(), 304);
+        assert!(revalidated.bytes().await.is_ok(), "the 304 ends cleanly");
+        assert_eq!(revalidations(&base).await, 1);
+
+        let gone = client
+            .get(format!("{base}/widget/-/widget-2.0.0.tgz"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(gone.status(), 404);
+        assert_eq!(gone.text().await.unwrap(), "gone");
+        drop(guard);
+
+        let log = text(&log);
+        assert!(!log.contains("MISMATCH"), "{log}");
+        let revalidated: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("artifact revalidated with a 304"))
+            .collect();
+        assert_eq!(revalidated.len(), 1, "{log}");
+        assert!(
+            revalidated[0].contains("widget-1.0.0.tgz"),
+            "{}",
+            revalidated[0]
+        );
+        assert_eq!(artifacts_verified(&base).await, 1);
+        // The 404 is not a revalidation.
+        assert_eq!(revalidations(&base).await, 1);
     }
 }
