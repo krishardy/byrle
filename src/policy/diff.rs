@@ -484,18 +484,23 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
                     return out.stop();
                 }
             };
-        // What the document answers without verifying anything, as `explain` and the proxy's
-        // resolution path decide it.
-        let provenance = crate::analysis::attestation::from_metadata(
-            record,
-            &crate::analysis::attestation::previous(&metadata.records, version, times.as_ref()),
-        );
         let decided: Vec<(super::decide::Decision, Vec<super::enforce::Unenforceable>)> = loaded
             .iter()
             .zip([from_date, to_date])
             .map(|(policy, as_of)| {
+                // What the document answers without verifying anything, as `explain` and the
+                // proxy's resolution path decide it, over each policy's own window.
+                let provenance = crate::analysis::attestation::from_metadata(
+                    record,
+                    &crate::analysis::attestation::previous(
+                        &metadata.records,
+                        version,
+                        times.as_ref(),
+                        policy.provenance_window(),
+                    ),
+                );
                 let mut facts = super::decide::Facts::from_record_and_times(record, times.as_ref())
-                    .with_provenance(provenance.clone());
+                    .with_provenance(provenance);
                 if let Some(intel) = &intel {
                     facts = facts.with_intel(intel);
                 }

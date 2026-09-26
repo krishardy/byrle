@@ -15,8 +15,14 @@
 | Case | Example |
 |---|---|
 | An attestation it publishes fails verification | a forged or mismatched bundle |
-| It publishes none, and the version published before it did | a release published from a laptop after a stolen token, instead of from CI |
-| Its attestation names a different repository or workflow file than the version published before it | a fork, or a workflow added to the repository by an attacker |
+| It publishes none, and a version before it did | a release published from a laptop after a stolen token, instead of from CI |
+| Its attestation names a different repository or workflow file than a version before it | a fork, or a workflow added to the repository by an attacker |
+
+The versions before it are the one published just before it, and every version published in
+`provenance_window_days`, 7 by default, before it. Only the one just before was compared
+until 2026-09-26: a burst of malicious releases then made each one after the first the
+predecessor of the next. Nx published 19 in two hours, and the check caught 6; with the
+window it catches 17 ([incident-benchmark](incident-benchmark.md)).
 
 A version with no attestation after one with none passes. Plan §5 does not require
 provenance: 81% of 138 packages publish none.
@@ -54,8 +60,9 @@ reached writes nothing, so a missing row means not yet verified.
 
 ## Definitions
 
-- **The version published before it**: the version with the latest publish time earlier
-  than this version's. On npm the times are in the full packument.
+- **The versions before it**: the version with the latest publish time earlier than this
+  version's, however old, and every version published in the window before it. Only those
+  claiming attestations are compared. On npm the times are in the full packument.
 - **Identity**: the repository and workflow file an attestation names, without the ref.
   `github.com/python-attrs/attrs/.github/workflows/pypi-package.yml`, not
   `...@refs/tags/26.1.0`: every release is built from a new tag. Cut at the first
@@ -94,8 +101,9 @@ The previous version's times come from the full packument. `provenance: block` f
 as a cooldown does (`Policy::needs_publish_times`), so a policy with `cooldown_days: 0` still
 pays for the full document unless it sets `provenance: allow`.
 
-A predecessor whose attestation does not verify leaves the check unknown for the version
-after it, not refused: that version's own attestation may be sound.
+A version before it whose attestation does not verify is left out of the identity
+comparison, and when every one of them fails the check is unknown for this version, not
+refused: this version's own attestation may be sound.
 
 ## Measured
 

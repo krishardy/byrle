@@ -1810,10 +1810,15 @@ async fn attested(
         Ecosystem::Npm => npm::attestation::provenance_bundle,
         Ecosystem::PyPI => pypi::attestation::provenance_bundle,
     };
+    let window = proxy.config.policy.as_deref().map_or_else(
+        || crate::policy::window_of(crate::policy::DEFAULT_PROVENANCE_WINDOW_DAYS),
+        Policy::provenance_window,
+    );
     let previous = proxy.store.lock().expect("record store lock").previous(
         key,
         record.package.version(),
         times,
+        window,
     );
     // Without an analyser nothing is verified, and only what metadata answers is known.
     let Some(analyser) = analyser else {
@@ -1829,32 +1834,34 @@ async fn attested(
         (Some(Ok(_)), None) => failed("it publishes no strong digest to verify against".to_owned()),
         (Some(Ok(_)), Some(digest)) => analyser.attested(digest).await,
     };
-    let prior = match &previous {
-        attestation::Previous::Version(prior) => prior.attestation_url.as_ref().map(|url| {
-            (
-                routed(url),
-                prior.integrity.as_deref().and_then(|i| Sri::parse(i).ok()),
-            )
-        }),
-        _ => None,
+    // Each prior's route, digest and result. A prior routed nowhere, or with no strong
+    // digest, cannot be verified and counts as not verifying.
+    let priors: Vec<_> = match &previous {
+        attestation::Previous::Known(priors) => priors
+            .iter()
+            .map(|prior| {
+                (
+                    routed(&prior.attestation_url),
+                    prior.integrity.as_deref().and_then(|i| Sri::parse(i).ok()),
+                )
+            })
+            .collect(),
+        attestation::Previous::Unknown => Vec::new(),
     };
-    let prior_result = match &prior {
-        None => None,
-        Some((Err(why), _)) => failed(why.clone()),
-        // A predecessor with no strong digest cannot be verified.
-        Some((Ok(_), None)) => failed("it publishes no strong digest".to_owned()),
-        Some((Ok(_), Some(prior_digest))) => analyser.attested(prior_digest).await,
-    };
-    match attestation::provenance(
-        record,
-        &previous,
-        this_result.as_ref(),
-        prior_result.as_ref(),
-    ) {
+    let mut prior_results = Vec::with_capacity(priors.len());
+    for (url, prior_digest) in &priors {
+        prior_results.push(match (url, prior_digest) {
+            (Err(why), _) => failed(why.clone()),
+            (Ok(_), None) => failed("it publishes no strong digest".to_owned()),
+            (Ok(_), Some(prior_digest)) => analyser.attested(prior_digest).await,
+        });
+    }
+    let prior_results: Vec<_> = prior_results.iter().map(Option::as_ref).collect();
+    match attestation::provenance(record, &previous, this_result.as_ref(), &prior_results) {
         attestation::Answer::Known(provenance) => (provenance, Vec::new()),
         attestation::Answer::Needs {
             this,
-            previous: needs_prior,
+            priors: needed,
         } => {
             let mut work = Vec::new();
             if this && let (Some(Ok(url)), Some(digest)) = (this_url, digest) {
@@ -1864,12 +1871,14 @@ async fn attested(
                     bundle,
                 });
             }
-            if needs_prior && let Some((Ok(url), Some(prior_digest))) = prior {
-                work.push(Attestation {
-                    digest: prior_digest,
-                    url,
-                    bundle,
-                });
+            for i in needed {
+                if let (Ok(url), Some(prior_digest)) = &priors[i] {
+                    work.push(Attestation {
+                        digest: prior_digest.clone(),
+                        url: url.clone(),
+                        bundle,
+                    });
+                }
             }
             (Provenance::NOT_VERIFIED, work)
         }
@@ -2606,7 +2615,8 @@ fn policy_refused_versions(
     let mut strongest = crate::policy::Action::Allow;
     // Dropped provenance is decided here from the document alone. A change of identity or a
     // failed verification needs an attestation verified, which the artifact request does.
-    let predecessors = attestation::predecessors(&metadata.records, None);
+    let predecessors =
+        attestation::predecessors(&metadata.records, None, policy.provenance_window());
     for (record, previous) in metadata.records.iter().zip(&predecessors) {
         let provenance = attestation::from_metadata(record, previous);
         let enforce::Verdict::Refuse(refusal) =

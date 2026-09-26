@@ -209,8 +209,9 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
         policy.deprecated.as_str()
     ));
     out.push_str(&format!(
-        "  provenance       {}\n",
-        policy.provenance.as_str()
+        "  provenance       {}, over {} days\n",
+        policy.provenance.as_str(),
+        policy.provenance_window_days
     ));
     out.push_str(&format!("  denials          {}\n", policy.denials.len()));
     out.push_str(&format!("  packages         {}\n", policy.packages.len()));
@@ -391,7 +392,12 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
     use crate::analysis::attestation;
     let provenance = attestation::from_metadata(
         package,
-        &attestation::previous(&metadata.records, reference.version(), times.as_ref()),
+        &attestation::previous(
+            &metadata.records,
+            reference.version(),
+            times.as_ref(),
+            policy.provenance_window(),
+        ),
     );
     let mut facts = crate::policy::decide::Facts::from_record_and_times(package, times.as_ref())
         .with_provenance(provenance);

@@ -6,7 +6,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
-  provenance       block
+  provenance       block, over 7 days
   denials          0
   packages         0
   advisory_scores  0
@@ -30,7 +30,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
-  provenance       block
+  provenance       block, over 7 days
   denials          0
   packages         0
   advisory_scores  0
@@ -54,7 +54,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
-  provenance       block
+  provenance       block, over 7 days
   denials          2
   packages         3
   advisory_scores  0
@@ -84,7 +84,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
-  provenance       block
+  provenance       block, over 7 days
   denials          2
   packages         3
   advisory_scores  0

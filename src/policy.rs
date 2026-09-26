@@ -59,13 +59,25 @@ pub fn today() -> jiff::civil::Date {
 /// off is a line they have to write.
 pub const DEFAULT_COOLDOWN_DAYS: u32 = 7;
 pub const DEFAULT_MAX_CVSS: f64 = 6.9;
+/// Seven days, the cooldown's own default. Nx's 19 malicious versions came within two
+/// hours: see `docs/engineering_decisions/incident-benchmark.md`.
+pub const DEFAULT_PROVENANCE_WINDOW_DAYS: u32 = 7;
 
 fn default_cooldown_days() -> u32 {
     DEFAULT_COOLDOWN_DAYS
 }
+fn default_provenance_window_days() -> u32 {
+    DEFAULT_PROVENANCE_WINDOW_DAYS
+}
 fn default_max_cvss() -> f64 {
     DEFAULT_MAX_CVSS
 }
+/// A window of `days`, which the proxy uses under no policy with
+/// [`DEFAULT_PROVENANCE_WINDOW_DAYS`].
+pub fn window_of(days: u32) -> jiff::SignedDuration {
+    jiff::SignedDuration::from_hours(i64::from(days) * 24)
+}
+
 fn default_block() -> Action {
     Action::Block
 }
@@ -289,6 +301,12 @@ pub struct Policy {
     /// See `docs/engineering_decisions/provenance-check.md`.
     #[serde(default = "default_block")]
     pub provenance: Action,
+    /// How far back `provenance` looks, in days. A version is compared with the version
+    /// published just before it and with every version published in this window before
+    /// it, so a burst of releases is compared with the last attested one before the burst.
+    /// 0 compares with the version just before only.
+    #[serde(default = "default_provenance_window_days")]
+    pub provenance_window_days: u32,
 
     #[serde(default)]
     pub denials: Vec<Denial>,
@@ -340,6 +358,11 @@ impl Policy {
     /// Refused rather than silently treated as one of the two. `quarantine` means "refused
     /// now, allowed later", and neither of these lapses: waiting does not change whether a
     /// package has an install script or a known-exploited vulnerability.
+    /// [`Policy::provenance_window_days`] as a duration.
+    pub fn provenance_window(&self) -> jiff::SignedDuration {
+        window_of(self.provenance_window_days)
+    }
+
     /// Whether any cooldown is in force, globally or in a package entry.
     pub fn uses_cooldown(&self) -> bool {
         self.cooldown_days > 0
@@ -725,6 +748,14 @@ mod tests {
         assert_eq!(policy.kev, Action::Block);
         assert_eq!(policy.yanked, Action::Block);
         assert_eq!(policy.provenance, Action::Block);
+        assert_eq!(
+            policy.provenance_window_days,
+            DEFAULT_PROVENANCE_WINDOW_DAYS
+        );
+        assert_eq!(
+            policy.provenance_window(),
+            jiff::SignedDuration::from_hours(168)
+        );
         // npm installs a deprecated version after a warning, and publishers deprecate whole
         // release lines, so this one is a choice an operator makes rather than a default.
         assert_eq!(policy.deprecated, Action::Allow);
@@ -734,7 +765,7 @@ mod tests {
     fn every_setting_can_be_given_a_value() {
         let policy = parse(
             "cooldown_days: 14\nmax_cvss: 3.9\ninstall_scripts: allow\nkev: allow\nyanked: allow\n\
-             deprecated: block\nprovenance: allow\n",
+             deprecated: block\nprovenance: allow\nprovenance_window_days: 30\n",
         )
         .unwrap();
         assert_eq!(policy.cooldown_days, 14);
@@ -743,6 +774,7 @@ mod tests {
         assert_eq!(policy.yanked, Action::Allow);
         assert_eq!(policy.deprecated, Action::Block);
         assert_eq!(policy.provenance, Action::Allow);
+        assert_eq!(policy.provenance_window_days, 30);
         assert_eq!(policy.kev, Action::Allow);
     }
 
@@ -848,6 +880,7 @@ mod tests {
                     "deprecated",
                     "yanked",
                     "provenance",
+                    "provenance_window_days",
                     "denials",
                     "packages",
                     "advisory_scores",
