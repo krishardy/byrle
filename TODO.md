@@ -2355,7 +2355,11 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
             a digest mismatch is a 502. An `undeclared` claim is logged whatever the
             policy says ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
 - [ ] `[!]` **Provenance enforcement** — sigstore / npm provenance verification
-  - [ ] `[!]` Validate `sigstore-rs` maturity first; cosign shell-out as fallback
+  - [x] `[!]` Validate `sigstore-rs` maturity first; cosign shell-out as fallback.
+        `sigstore` 0.14.0 verified none of npm's two attestations or a PEP 740 one, and
+        skips the log's inclusion proof. `sigstore-verify` 0.13.0, from
+        `sigstore/sigstore-rust`, verified all three
+        ([sigstore-verifier](docs/engineering_decisions/sigstore-verifier.md)). No cosign.
 - [ ] `[!]` **Declare an analysis cost tier for every content detector.** Since
       2026-09-26 every detector runs in the background and no request waits for one, so
       the tier no longer decides whether a request is deferred.
