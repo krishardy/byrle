@@ -5,6 +5,10 @@
 --
 -- One of identity and failure is set. A registry that could not be reached writes no row,
 -- so a missing row is "not verified yet" and never "no attestation".
+--
+-- A row is read back only by the verifier that wrote it. A failure caused by the verifier
+-- or its trusted root, a key Sigstore rotated before the crate carried it, would otherwise
+-- refuse the package for good, past the upgrade that fixes it.
 CREATE TABLE artifact_attestation (
     id          BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     -- The Subresource Integrity string the metadata published, as in artifact_analysis.
@@ -15,6 +19,8 @@ CREATE TABLE artifact_attestation (
     -- Why the attestation did not verify, as sigstore-verify or the JSON reader said it.
     -- TEXT, as artifact_analysis.unreadable is: the message has no bound.
     failure     TEXT,
+    -- `sigstore-verify <version>; root sha256:<prefix>`, from analysis::attestation.
+    verifier    VARCHAR(128) NOT NULL,
     verified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     CHECK ((identity IS NULL) <> (failure IS NULL))
 );

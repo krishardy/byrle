@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_attestation (digest, identity, failure, verifier)\n            VALUES ($1, $2, $3, $4)\n            ON CONFLICT (digest) DO UPDATE SET\n                identity    = EXCLUDED.identity,\n                failure     = EXCLUDED.failure,\n                verifier    = EXCLUDED.verifier,\n                verified_at = now()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ebf5f335d2b0e7e5817df09abbad2533caa79412e18da6e469ec68ef611df686"
+}

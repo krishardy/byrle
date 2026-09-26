@@ -62,7 +62,9 @@ the analysis path to do what a 30-crate dependency does in-process.
   Two minor versions shipped on one day, so the API moves. The pin is exact and an upgrade
   is a reviewed change.
 - The embedded trusted root changes only with a crate upgrade. Sigstore rotating a key
-  before a release carries it would fail every verification until the upgrade. TUF
+  before a release carries it would fail every verification until the upgrade. A stored
+  result names the verifier that wrote it, and another verifier does not read it, so the
+  failures end with the upgrade rather than being kept. TUF
   (`tuf` feature) would follow rotations at runtime, and this sandbox's egress proxy
   refuses `tuf-repo-cdn.sigstore.dev`, so it was not tested.
 - npm's publish attestation is signed with a registry key served at

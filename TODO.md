@@ -256,6 +256,10 @@ Items that I've added that are not stage-bound.
     failure this repo already refuses to accept for shellcheck. It now reports python3 and
     installs uv through pipx.
 20. [ ] main.rs is still NPM focused, especially in the comments. Generalize the comments and code.
+21. [ ] Consider making each ecosystem an optional module, pluggable through Cargo features in
+    `Cargo.toml`, so a build carries only the ecosystems it serves. Raised 2026-09-26 while
+    `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
+    well as its metadata formats.
 
 ## Architecture Refactor
 

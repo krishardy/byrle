@@ -67,6 +67,22 @@ fn verified_identity(bundle: &Bundle, digest: &Sri) -> Result<String, String> {
         .ok_or_else(|| "the certificate names no identity".to_owned())
 }
 
+/// The `sigstore-verify` version `Cargo.toml` pins. Checked against it by a test.
+const SIGSTORE_VERIFY: &str = "0.13.0";
+
+/// What verified a stored result: the crate version and a digest of the root it embeds.
+/// A result is read back only by the verifier that wrote it, so an upgrade that fixes a
+/// verification failure verifies again rather than keep the refusal.
+pub fn verifier_id() -> &'static str {
+    static ID: OnceLock<String> = OnceLock::new();
+    ID.get_or_init(|| {
+        use sha2::{Digest, Sha256};
+        let root = Sha256::digest(SIGSTORE_PRODUCTION_TRUSTED_ROOT.as_bytes());
+        let prefix: String = root.iter().take(8).map(|b| format!("{b:02x}")).collect();
+        format!("sigstore-verify {SIGSTORE_VERIFY}; root sha256:{prefix}")
+    })
+}
+
 /// The verifier for Sigstore's production root, built once.
 fn verifier() -> Result<&'static Verifier, String> {
     static VERIFIER: OnceLock<Result<Verifier, String>> = OnceLock::new();
@@ -83,10 +99,14 @@ fn verifier() -> Result<&'static Verifier, String> {
 /// The repository and workflow file a certificate's identity names, without the scheme
 /// or the ref: `https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1` is
 /// `github.com/o/r/.github/workflows/release.yml`.
+///
+/// Cut at the first `@refs/`, not the last `@`: a monorepo tags releases
+/// `@scope/pkg@1.2.3`, and the ref would otherwise be half kept. GitHub and GitLab both
+/// write the ref this way. An identity with no `@refs/` is kept whole.
 fn identity(san: &str) -> String {
     let without_scheme = san.split_once("://").map_or(san, |(_, rest)| rest);
     without_scheme
-        .rsplit_once('@')
+        .split_once("@refs/")
         .map_or(without_scheme, |(path, _)| path)
         .to_owned()
 }
@@ -174,8 +194,12 @@ pub const PYPI_NOT_VERIFIED: Provenance =
 
 /// The fact as metadata alone answers it, with nothing verified: dropped provenance, or a
 /// version and its predecessor that both publish none. Anything that needs a verification
-/// is [`Provenance::NOT_VERIFIED`]. What the resolution path decides on.
+/// is [`Provenance::NOT_VERIFIED`]. What the resolution path, `explain` and `policy diff`
+/// decide on.
 pub fn from_metadata(this: &PackageRecord, previous: &Previous) -> Provenance {
+    if this.package.key().ecosystem() == crate::identity::Ecosystem::PyPI {
+        return PYPI_NOT_VERIFIED;
+    }
     match provenance(this, previous, None, None) {
         Answer::Known(fact) => fact,
         Answer::Needs { .. } => Provenance::NOT_VERIFIED,
@@ -325,12 +349,39 @@ mod tests {
     }
 
     #[test]
+    fn the_verifier_names_the_pinned_version_and_the_root() {
+        let manifest = include_str!("../../Cargo.toml");
+        assert!(
+            manifest.contains(&format!(
+                "sigstore-verify = {{ version = \"={SIGSTORE_VERIFY}\""
+            )),
+            "SIGSTORE_VERIFY must match the pin in Cargo.toml"
+        );
+        let id = verifier_id();
+        assert!(
+            id.starts_with("sigstore-verify 0.13.0; root sha256:"),
+            "{id}"
+        );
+        assert_eq!(id.len(), "sigstore-verify 0.13.0; root sha256:".len() + 16);
+    }
+
+    #[test]
     fn an_identity_is_the_repository_and_workflow_without_the_ref() {
         assert_eq!(
             identity("https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1"),
             "github.com/o/r/.github/workflows/release.yml"
         );
         assert_eq!(identity("github.com/o/r/x.yml"), "github.com/o/r/x.yml");
+        assert_eq!(
+            identity(
+                "https://github.com/o/r/.github/workflows/release.yml@refs/tags/@scope/pkg@1.2.3"
+            ),
+            "github.com/o/r/.github/workflows/release.yml"
+        );
+        assert_eq!(
+            identity("https://gitlab.com/g/p//.gitlab-ci.yml@refs/heads/main"),
+            "gitlab.com/g/p//.gitlab-ci.yml"
+        );
     }
 
     /// Four versions, published in the order 1.0.0, 2.0.0, 1.0.1, 3.0.0: a backport

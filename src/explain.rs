@@ -390,13 +390,10 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
     // What the document answers without verifying anything, as the proxy's resolution path
     // decides it: dropped provenance, or nothing to verify.
     use crate::analysis::attestation;
-    let provenance = match reference.key().ecosystem() {
-        crate::identity::Ecosystem::Npm => attestation::from_metadata(
-            package,
-            &attestation::previous(&metadata.records, reference.version(), times.as_ref()),
-        ),
-        crate::identity::Ecosystem::PyPI => attestation::PYPI_NOT_VERIFIED,
-    };
+    let provenance = attestation::from_metadata(
+        package,
+        &attestation::previous(&metadata.records, reference.version(), times.as_ref()),
+    );
     let mut facts = crate::policy::decide::Facts::from_record_and_times(package, times.as_ref())
         .with_provenance(provenance);
     if let Some(intel) = &intel {

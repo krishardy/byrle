@@ -9,7 +9,7 @@
 //! Tested by `tests/postgres.rs`, which `make test-integration` runs against a container.
 
 use crate::analysis::InstallScripts;
-use crate::analysis::attestation::Attested;
+use crate::analysis::attestation::{Attested, verifier_id};
 use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored};
 use crate::integrity::Sri;
 use sqlx::PgPool;
@@ -169,16 +169,18 @@ impl PgAnalyses {
         };
         sqlx::query!(
             r#"
-            INSERT INTO artifact_attestation (digest, identity, failure)
-            VALUES ($1, $2, $3)
+            INSERT INTO artifact_attestation (digest, identity, failure, verifier)
+            VALUES ($1, $2, $3, $4)
             ON CONFLICT (digest) DO UPDATE SET
                 identity    = EXCLUDED.identity,
                 failure     = EXCLUDED.failure,
+                verifier    = EXCLUDED.verifier,
                 verified_at = now()
             "#,
             digest.to_string(),
             identity,
             failure,
+            verifier_id(),
         )
         .execute(&self.pool)
         .await
@@ -188,8 +190,9 @@ impl PgAnalyses {
 
     async fn read_attested(&self, digest: &Sri) -> Result<Option<Attested>, AnalysisError> {
         let row = sqlx::query!(
-            "SELECT identity, failure FROM artifact_attestation WHERE digest = $1",
+            "SELECT identity, failure FROM artifact_attestation WHERE digest = $1 AND verifier = $2",
             digest.to_string(),
+            verifier_id(),
         )
         .fetch_optional(&self.pool)
         .await

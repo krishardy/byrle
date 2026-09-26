@@ -1758,6 +1758,34 @@ async fn analysed(
     }
 }
 
+/// Where the proxy fetches an attestations document the packument names, routed as an
+/// artifact is: an origin the proxy serves through its upstream, an origin the operator
+/// added directly, and any other not at all. `Err` names the origin, and counts as an
+/// attestation that does not verify: a version must not escape the check by pointing its
+/// attestations somewhere the proxy will not go.
+fn attestation_url(
+    proxy: &Proxy,
+    ecosystem: Ecosystem,
+    advertised: &str,
+) -> Result<String, String> {
+    match proxy.config.origins.disposition(advertised) {
+        Disposition::Served => {}
+        Disposition::AllowedDirect(origin) | Disposition::Refused(origin) => {
+            return Err(format!(
+                "its attestations are published at {origin}, which this proxy does not serve"
+            ));
+        }
+    }
+    let parsed = reqwest::Url::parse(advertised).map_err(|e| e.to_string())?;
+    let path = match parsed.query() {
+        Some(query) => format!("{}?{query}", parsed.path()),
+        None => parsed.path().to_owned(),
+    };
+    let direct = crate::origin::origin_of_url(advertised)
+        .filter(|origin| proxy.config.origins.reachable().routes_directly(origin));
+    Ok(upstream_url(proxy, ecosystem, &path, direct.as_deref()))
+}
+
 /// What the version's attestations say against the version published before it, and the
 /// attestations still to verify before that can be said. See
 /// `docs/engineering_decisions/provenance-check.md`.
@@ -1784,29 +1812,31 @@ async fn attested(
     let Some(analyser) = analyser else {
         return (attestation::from_metadata(record, &previous), Vec::new());
     };
+    let ecosystem = key.ecosystem();
+    let routed = |url: &String| attestation_url(proxy, ecosystem, url);
+    let failed = |why: String| Some(attestation::Attested::Failed { why });
+    let this_url = record.provenance.attestation_url.as_ref().map(routed);
+    let this_result = match (&this_url, digest) {
+        (None, _) => None,
+        (Some(Err(why)), _) => failed(why.clone()),
+        (Some(Ok(_)), None) => failed("it publishes no strong digest to verify against".to_owned()),
+        (Some(Ok(_)), Some(digest)) => analyser.attested(digest).await,
+    };
     let prior = match &previous {
         attestation::Previous::Version(prior) => prior.attestation_url.as_ref().map(|url| {
             (
-                url.clone(),
+                routed(url),
                 prior.integrity.as_deref().and_then(|i| Sri::parse(i).ok()),
             )
         }),
         _ => None,
     };
-    let this_result = match (&record.provenance.attestation_url, digest) {
-        (Some(_), Some(digest)) => analyser.attested(digest).await,
-        (Some(_), None) => Some(attestation::Attested::Failed {
-            why: "it publishes no strong digest to verify against".to_owned(),
-        }),
-        (None, _) => None,
-    };
     let prior_result = match &prior {
-        Some((_, Some(prior_digest))) => analyser.attested(prior_digest).await,
-        // A predecessor with no strong digest cannot be verified.
-        Some((_, None)) => Some(attestation::Attested::Failed {
-            why: "it publishes no strong digest".to_owned(),
-        }),
         None => None,
+        Some((Err(why), _)) => failed(why.clone()),
+        // A predecessor with no strong digest cannot be verified.
+        Some((Ok(_), None)) => failed("it publishes no strong digest".to_owned()),
+        Some((Ok(_), Some(prior_digest))) => analyser.attested(prior_digest).await,
     };
     match attestation::provenance(
         record,
@@ -1820,15 +1850,14 @@ async fn attested(
             previous: needs_prior,
         } => {
             let mut work = Vec::new();
-            if this && let (Some(url), Some(digest)) = (&record.provenance.attestation_url, digest)
-            {
+            if this && let (Some(Ok(url)), Some(digest)) = (this_url, digest) {
                 work.push(Attestation {
                     digest: digest.clone(),
-                    url: url.clone(),
+                    url,
                     bundle,
                 });
             }
-            if needs_prior && let Some((url, Some(prior_digest))) = prior {
+            if needs_prior && let Some((Ok(url), Some(prior_digest))) = prior {
                 work.push(Attestation {
                     digest: prior_digest,
                     url,
@@ -2572,10 +2601,7 @@ fn policy_refused_versions(
     // failed verification needs an attestation verified, which the artifact request does.
     let predecessors = attestation::predecessors(&metadata.records, None);
     for (record, previous) in metadata.records.iter().zip(&predecessors) {
-        let provenance = match metadata.key.ecosystem() {
-            Ecosystem::Npm => attestation::from_metadata(record, previous),
-            Ecosystem::PyPI => attestation::PYPI_NOT_VERIFIED,
-        };
+        let provenance = attestation::from_metadata(record, previous);
         let enforce::Verdict::Refuse(refusal) =
             enforce::artifact(Some(policy), record, None, intel, &provenance, today)
         else {
@@ -6403,7 +6429,8 @@ mod tests {
     }
 
     /// `widget` 1.0.0 then 2.0.0, as a full packument with publish times. A version in
-    /// `attested` publishes attestations, at an address that refuses connections.
+    /// `attested` publishes attestations on npm's registry, which an offline proxy routes
+    /// to its upstream, an address that refuses connections.
     fn widget_versions(attested: &[&str]) -> String {
         let mut doc = serde_json::json!({"name": "widget", "dist-tags": {"latest": "2.0.0"},
             "versions": {}, "time": {}});
@@ -6414,7 +6441,7 @@ mod tests {
             });
             if attested.contains(&version) {
                 dist["attestations"] = serde_json::json!({
-                    "url": format!("{NO_UPSTREAM}/-/npm/v1/attestations/widget@{version}"),
+                    "url": format!("https://registry.npmjs.org/-/npm/v1/attestations/widget@{version}"),
                     "provenance": {"predicateType": "https://slsa.dev/provenance/v1"},
                 });
             }
@@ -6563,6 +6590,11 @@ mod tests {
         let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         analyser.ended(1).await;
+        // The upstream refused the connection, so nothing was stored and the retry waits
+        // again rather than being served unverified.
+        let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        analyser.ended(2).await;
 
         let allow = format!("{PROVENANCE}provenance: allow\n");
         let (proxy, analyser) =
@@ -6621,5 +6653,48 @@ mod tests {
         let (status, body) = refused(pinned(&proxy, WIDGET_2).await).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(body.contains("publishes no attestation"), "{body}");
+    }
+
+    /// An attestations document is fetched where the artifact would be: npm's registry
+    /// through the upstream, an added origin directly, and any other origin not at all.
+    #[test]
+    fn attestations_are_fetched_where_the_artifact_would_be() {
+        let proxy = offline(None, None)
+            .with_origin_policy(["https://cdn.example"], ["https://direct.example"])
+            .unwrap();
+        let routed = |url: &str| attestation_url(&proxy, Ecosystem::Npm, url);
+        assert_eq!(
+            routed("https://registry.npmjs.org/-/npm/v1/attestations/widget@1.0.0?x=1"),
+            Ok(format!(
+                "{NO_UPSTREAM}/-/npm/v1/attestations/widget@1.0.0?x=1"
+            ))
+        );
+        assert_eq!(
+            routed("https://cdn.example/attestations/widget@1.0.0"),
+            Ok("https://cdn.example/attestations/widget@1.0.0".to_owned())
+        );
+        for origin in ["https://direct.example", "https://elsewhere.example"] {
+            let error = routed(&format!("{origin}/a")).expect_err(origin);
+            assert!(error.contains(origin), "{error}");
+        }
+    }
+
+    /// Attestations published somewhere the proxy will not go count as not verifying, so
+    /// a version cannot slip the check by pointing them at a dead host.
+    #[tokio::test]
+    async fn attestations_the_proxy_will_not_fetch_are_refused() {
+        let packument = widget_versions(&["2.0.0"]).replace(
+            "https://registry.npmjs.org/-/npm/v1/attestations",
+            "https://elsewhere.example/attestations",
+        );
+        let (proxy, _) = provenance_proxy("provenance-elsewhere", PROVENANCE, &[], &[]).await;
+        hold_document(
+            &proxy,
+            packument.as_bytes(),
+            crate::record::DocumentDetail::Full,
+        );
+        let (status, body) = refused(pinned(&proxy, WIDGET_2).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("https://elsewhere.example"), "{body}");
     }
 }
