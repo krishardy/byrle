@@ -781,7 +781,7 @@ implementations.
                   Accept headers): exactly the two media types, no `charset` parameter.
                   A response with any other type is forwarded unread, so a mirror that
                   labels packuments differently would be observed by nothing.
-            - [x] Decompression is capped (`WAHAROA_MAX_METADATA_BYTES`, default 32 MiB)
+            - [x] Decompression is capped (`WAHAROA_MAX_METADATA_BYTES`, default 64 MiB)
                   against a zip bomb. Over the cap the body is forwarded whole and not
                   parsed: an install must not fail on what the proxy could not inspect.
             - [x] Measured parse cost: 2 ms for lodash (117 versions), 7 ms for
@@ -2413,7 +2413,7 @@ Measured 2026-09-26 over 311 versions in five dependency sets
 ([tier-1-false-positives](docs/engineering_decisions/tier-1-false-positives.md)):
 `cooldown_days: 7` refused 35 (11%), `install_scripts: block` 1, `provenance: block` 1.
 `vite`'s 38.9 MB full packument exceeds `WAHAROA_MAX_METADATA_BYTES`, so its cooldown and
-dropped-provenance checks are unenforceable.
+dropped-provenance checks were unenforceable until the default was raised to 64 MiB.
 
 ---
 

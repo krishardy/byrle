@@ -78,8 +78,9 @@ pub const INDEX: &str = "https://pypi.org/simple";
 pub const FILES: &str = "https://files.pythonhosted.org";
 
 /// Bytes past which an index document is refused. `requests` was 123,104 bytes as JSON on
-/// 2026-09-16, the largest of the eight measured; 32 MiB matches the npm packument ceiling.
-pub const MAX_INDEX_BYTES: usize = 32 << 20;
+/// 2026-09-16, the largest of the eight measured. The npm packument ceiling, so one number
+/// bounds every metadata document.
+pub const MAX_INDEX_BYTES: usize = crate::env::DEFAULT_MAX_METADATA_BYTES;
 
 /// The `requests` index from `tests/fixtures/pypi/`.
 #[cfg(test)]
