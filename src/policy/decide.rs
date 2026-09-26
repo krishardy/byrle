@@ -58,6 +58,60 @@ pub struct Facts {
     /// The message the publisher left when deprecating this version. npm's `deprecated`;
     /// PyPI has none, and the check reports not-applicable there.
     pub deprecated: Option<String>,
+    /// What its attestations say, against the version published before it.
+    pub provenance: Provenance,
+}
+
+/// What a version's attestations say, against the version published before it.
+///
+/// Identity is the repository and workflow file an attestation names, without the ref:
+/// every release is built from a new tag.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Provenance {
+    /// Not established, and why. Nothing verified an attestation it publishes, or the
+    /// version published before it is not known. `decide` fails the check in the safe
+    /// direction and `enforce::unenforceable` drops it, as for a missing publish date.
+    Unknown(&'static str),
+    /// Nothing contradicts it. It publishes no attestation and the version before it
+    /// published none, or its attestation verified and names the same identity as the
+    /// previous version's, or the previous version published none.
+    Consistent,
+    /// An attestation it publishes failed verification.
+    Unverified { why: String },
+    /// It publishes no attestation, and `previous`, published before it, did.
+    Dropped { previous: String },
+    /// Its attestation names `to`, and `previous`'s names `from`.
+    IdentityChanged {
+        previous: String,
+        from: String,
+        to: String,
+    },
+}
+
+impl Provenance {
+    /// What facts built from metadata alone carry until something verifies them.
+    pub const NOT_VERIFIED: Self = Self::Unknown("no attestation of it has been verified");
+
+    /// What it says, in the words `explain` and a refusal both use.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Unknown(why) => (*why).to_owned(),
+            Self::Consistent => "its attestations agree with the version before it".to_owned(),
+            Self::Unverified { why } => format!("an attestation failed verification: {why}"),
+            Self::Dropped { previous } => {
+                format!("publishes no attestation, and {previous}, published before it, did")
+            }
+            Self::IdentityChanged { previous, from, to } => {
+                format!("built by {to}, and {previous} was built by {from}")
+            }
+        }
+    }
+}
+
+impl Default for Provenance {
+    fn default() -> Self {
+        Self::NOT_VERIFIED
+    }
 }
 
 /// Whether anything was in a position to answer about advisories.
@@ -118,6 +172,7 @@ pub enum Check {
     InstallScripts,
     Yanked,
     Deprecated,
+    Provenance,
 }
 
 impl Check {
@@ -131,12 +186,13 @@ impl Check {
             Self::InstallScripts => "install_scripts",
             Self::Yanked => "yanked",
             Self::Deprecated => "deprecated",
+            Self::Provenance => "provenance",
         }
     }
 
     /// Every check, in the order the flow chart draws them. One list, so a check added to
     /// the engine and not here is a compile error rather than one silently never run.
-    pub const ALL: [Check; 8] = [
+    pub const ALL: [Check; 9] = [
         Self::Denials,
         Self::KnownMalware,
         Self::CooldownDays,
@@ -145,6 +201,7 @@ impl Check {
         Self::InstallScripts,
         Self::Yanked,
         Self::Deprecated,
+        Self::Provenance,
     ];
 
     /// Whether an exception can excuse this check.
@@ -504,6 +561,14 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
                 entry,
             )
         }
+
+        // Anything short of consistent fails, `Unknown` included, in the safe direction.
+        Check::Provenance => on_off(
+            facts.provenance != Provenance::Consistent,
+            policy.provenance,
+            set.and_then(|s| s.provenance),
+            entry,
+        ),
     }
 }
 
@@ -553,6 +618,7 @@ mod tests {
             yanked: None,
             deprecated: None,
             intel: Intel::NotConsulted,
+            provenance: crate::policy::decide::Provenance::Consistent,
         }
     }
 
@@ -1344,6 +1410,6 @@ mod tests {
         for check in Check::ALL {
             assert!(!check.as_str().is_empty());
         }
-        assert_eq!(Check::ALL.len(), 8);
+        assert_eq!(Check::ALL.len(), 9);
     }
 }

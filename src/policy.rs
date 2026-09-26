@@ -280,6 +280,15 @@ pub struct Policy {
     /// npm has no yank, and the check reports not-applicable there.
     #[serde(default = "default_block")]
     pub yanked: Action,
+    /// Whether a version whose attestations contradict it is served. `block` or `allow`.
+    ///
+    /// Refused when an attestation it publishes fails verification, when it publishes none
+    /// and the version published before it did, or when its attestation names a different
+    /// repository or workflow file than the version published before it. A version with
+    /// no attestation after one with none passes: plan §5 does not require provenance.
+    /// See `docs/engineering_decisions/provenance-check.md`.
+    #[serde(default = "default_block")]
+    pub provenance: Action,
 
     #[serde(default)]
     pub denials: Vec<Denial>,
@@ -325,8 +334,8 @@ impl Policy {
         Self::parse(&source)
     }
 
-    /// `install_scripts`, `kev`, `yanked` and `deprecated` take `block` or `allow`, and
-    /// nothing else.
+    /// `install_scripts`, `kev`, `yanked`, `deprecated` and `provenance` take `block` or
+    /// `allow`, and nothing else.
     ///
     /// Refused rather than silently treated as one of the two. `quarantine` means "refused
     /// now, allowed later", and neither of these lapses: waiting does not change whether a
@@ -405,6 +414,7 @@ impl Policy {
             ("kev".to_owned(), self.kev),
             ("yanked".to_owned(), self.yanked),
             ("deprecated".to_owned(), self.deprecated),
+            ("provenance".to_owned(), self.provenance),
         ];
         for (i, entry) in self.packages.iter().enumerate() {
             if let Some(action) = entry.set.install_scripts {
@@ -418,6 +428,9 @@ impl Policy {
             }
             if let Some(action) = entry.set.deprecated {
                 checked.push((format!("packages[{i}].set.deprecated"), action));
+            }
+            if let Some(action) = entry.set.provenance {
+                checked.push((format!("packages[{i}].set.provenance"), action));
             }
         }
         for (at, found) in checked {
@@ -558,8 +571,7 @@ pub struct Denial {
 
 /// What a check decides about a package.
 ///
-/// `allow < quarantine < block`. There is no `warn`: nothing delivers-with-a-concern,
-/// because provenance, the one candidate, is a recorded attribute rather than an action.
+/// `allow < quarantine < block`. There is no `warn`: nothing delivers-with-a-concern.
 #[derive(Debug, Deserialize, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
@@ -666,6 +678,8 @@ pub struct SetBlock {
     pub yanked: Option<Action>,
     #[serde(default)]
     pub deprecated: Option<Action>,
+    #[serde(default)]
+    pub provenance: Option<Action>,
     /// Specific vulnerability advisories to ignore for this package, by id. An id matches an
     /// advisory's own id or any of its aliases, so a CVE id reaches a `GHSA-` advisory.
     ///
@@ -703,6 +717,7 @@ mod tests {
         assert_eq!(policy.install_scripts, Action::Block);
         assert_eq!(policy.kev, Action::Block);
         assert_eq!(policy.yanked, Action::Block);
+        assert_eq!(policy.provenance, Action::Block);
         // npm installs a deprecated version after a warning, and publishers deprecate whole
         // release lines, so this one is a choice an operator makes rather than a default.
         assert_eq!(policy.deprecated, Action::Allow);
@@ -712,7 +727,7 @@ mod tests {
     fn every_setting_can_be_given_a_value() {
         let policy = parse(
             "cooldown_days: 14\nmax_cvss: 3.9\ninstall_scripts: allow\nkev: allow\nyanked: allow\n\
-             deprecated: block\n",
+             deprecated: block\nprovenance: allow\n",
         )
         .unwrap();
         assert_eq!(policy.cooldown_days, 14);
@@ -720,7 +735,7 @@ mod tests {
         assert_eq!(policy.install_scripts, Action::Allow);
         assert_eq!(policy.yanked, Action::Allow);
         assert_eq!(policy.deprecated, Action::Block);
-        assert_eq!(policy.deprecated, Action::Block);
+        assert_eq!(policy.provenance, Action::Allow);
         assert_eq!(policy.kev, Action::Allow);
     }
 
@@ -732,6 +747,7 @@ mod tests {
         for (at, body) in [
             ("install_scripts", "install_scripts: quarantine\n"),
             ("kev", "kev: quarantine\n"),
+            ("provenance", "provenance: quarantine\n"),
         ] {
             let error = parse(body).unwrap_err();
             assert!(
@@ -745,13 +761,20 @@ mod tests {
     /// And so does an exception that sets one.
     #[test]
     fn an_exception_cannot_quarantine_either() {
-        let error = parse(
-            "packages:\n  - match: { ecosystem: npm, name: x }\n    \
-             set: { kev: quarantine }\n    reason: r\n    permanent: true\n",
-        )
-        .unwrap_err();
-        assert!(matches!(error, PolicyError::NotAnOnOffSetting { .. }));
-        assert!(error.to_string().contains("packages[0].set.kev"), "{error}");
+        for key in ["kev", "provenance"] {
+            let error = parse(&format!(
+                "packages:\n  - match: {{ ecosystem: npm, name: x }}\n    \
+                 set: {{ {key}: quarantine }}\n    reason: r\n    permanent: true\n",
+            ))
+            .unwrap_err();
+            assert!(matches!(error, PolicyError::NotAnOnOffSetting { .. }));
+            assert!(
+                error
+                    .to_string()
+                    .contains(&format!("packages[0].set.{key}")),
+                "{error}"
+            );
+        }
     }
 
     /// `cooldown_days` is the one setting that can quarantine, and it is a number rather
@@ -817,6 +840,7 @@ mod tests {
                     "kev",
                     "deprecated",
                     "yanked",
+                    "provenance",
                     "denials",
                     "packages",
                     "advisory_scores",
@@ -867,6 +891,7 @@ mod tests {
                     "install_scripts",
                     "yanked",
                     "deprecated",
+                    "provenance",
                     "vuln_advisory_ids",
                 ],
             ),
@@ -906,7 +931,7 @@ mod tests {
             parse("kev: blcok\n").unwrap_err(),
             PolicyError::Invalid(_)
         ));
-        // `warn` left the lattice when provenance became a recorded attribute.
+        // `warn` left the lattice: nothing delivers-with-a-concern.
         assert!(matches!(
             parse("kev: warn\n").unwrap_err(),
             PolicyError::Invalid(_)
@@ -1158,7 +1183,7 @@ mod tests {
                 "`{key}`: {error}"
             );
         }
-        // `provenance_required` became a recorded attribute rather than a setting.
+        // `provenance_required` was replaced by `provenance`, which does not require any.
         assert!(matches!(
             parse("provenance_required: true\n").unwrap_err(),
             PolicyError::Invalid(_)

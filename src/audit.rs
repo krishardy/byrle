@@ -280,6 +280,7 @@ mod tests {
             yanked: None,
             deprecated: None,
             intel: Intel::NotConsulted,
+            provenance: crate::policy::decide::Provenance::Consistent,
         }
     }
 

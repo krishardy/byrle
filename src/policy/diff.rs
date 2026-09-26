@@ -494,7 +494,13 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
                 }
                 (
                     super::decide::decide(policy, &facts, as_of),
-                    super::enforce::unenforceable(policy, record, times.as_ref(), facts.intel),
+                    super::enforce::unenforceable(
+                        policy,
+                        record,
+                        times.as_ref(),
+                        facts.intel,
+                        &facts.provenance,
+                    ),
                 )
             })
             .collect();
@@ -715,6 +721,7 @@ mod tests {
             intel: Intel::Consulted {
                 exploitation_loaded: true,
             },
+            provenance: crate::policy::decide::Provenance::Consistent,
         }
     }
 

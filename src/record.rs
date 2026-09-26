@@ -178,9 +178,8 @@ pub struct Repository {
 pub struct Provenance {
     /// `dist.attestations.url`, where the attestation bundle can be fetched.
     ///
-    /// Presence means the package *claims* provenance. Plan §3 requires attestations
-    /// "where the package claims to publish them", so nothing here is verified yet:
-    /// fetching and checking the bundle is Stage 4.
+    /// Presence means the package *claims* provenance. The claim is verified by the
+    /// `provenance` check: see `docs/engineering_decisions/provenance-check.md`.
     pub attestation_url: Option<String>,
     /// `dist.attestations.provenance.predicateType`, e.g. the SLSA provenance URI.
     pub predicate_type: Option<String>,

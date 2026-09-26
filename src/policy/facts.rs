@@ -68,7 +68,14 @@ impl Facts {
             yanked: record.yanked.clone(),
             deprecated: record.deprecated.clone(),
             intel: Intel::NotConsulted,
+            provenance: super::decide::Provenance::default(),
         }
+    }
+
+    /// What the version's attestations say, once something has verified them.
+    pub fn with_provenance(mut self, provenance: super::decide::Provenance) -> Self {
+        self.provenance = provenance;
+        self
     }
 
     /// Whether `cooldown_days` can be answered for this record.
@@ -438,7 +445,10 @@ cooldown_days: 0
         let policy = policy("version: 1\ncooldown_days: 7\n");
         let today = jiff::civil::date(2026, 9, 13);
 
-        let decision = decide(&policy, &Facts::from_record(&abbreviated()), today);
+        let consistent = |record: &crate::record::PackageRecord| {
+            Facts::from_record(record).with_provenance(super::super::decide::Provenance::Consistent)
+        };
+        let decision = decide(&policy, &consistent(&abbreviated()), today);
         let cooldown = decision
             .results
             .iter()
@@ -451,7 +461,7 @@ cooldown_days: 0
         assert_eq!(decision.action(), Action::Quarantine);
 
         // Read as the full document, the same version passes.
-        let decision = decide(&policy, &Facts::from_record(&full()), today);
+        let decision = decide(&policy, &consistent(&full()), today);
         assert_eq!(decision.action(), Action::Allow);
     }
 

@@ -11,6 +11,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -30,6 +31,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
@@ -46,6 +48,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
@@ -63,6 +66,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: quarantine
   quarantine lapses on its own; block does not
@@ -81,6 +85,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: quarantine
   quarantine lapses on its own; block does not
@@ -104,6 +109,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -126,6 +132,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: quarantine
   quarantine lapses on its own; block does not
@@ -153,6 +160,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -175,6 +183,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: quarantine
   quarantine lapses on its own; block does not
@@ -193,6 +202,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -211,6 +221,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
@@ -234,6 +245,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -252,6 +264,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -269,6 +282,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
@@ -291,6 +305,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
@@ -313,6 +328,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -335,6 +351,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -357,6 +374,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
@@ -376,6 +394,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
@@ -398,6 +417,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -415,6 +435,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  FAIL block        declares an install script
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
@@ -437,6 +458,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  excepted          would have been block: declares an install script; packages[0] excused it, expires 2026-10-01
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -454,6 +476,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       FAIL block        deprecated by its publisher: no longer supported, use rimraf@4
+  provenance       pass
 
   verdict: block
 
@@ -470,6 +493,7 @@ pkg:pypi/lodash@4.17.21
   install_scripts  pass
   yanked           FAIL block        withdrawn by the registry: Yanked due to conflicts with CVE-2024-35195 mitigation
   deprecated       n/a               no meaning for pypi
+  provenance       pass
 
   verdict: block
 
@@ -486,6 +510,7 @@ pkg:pypi/lodash@4.17.21
   install_scripts  pass
   yanked           FAIL block        withdrawn by the registry
   deprecated       n/a               no meaning for pypi
+  provenance       pass
 
   verdict: block
 
@@ -503,6 +528,80 @@ pkg:go/lodash@4.17.21
   install_scripts  n/a               no meaning for go
   yanked           pass
   deprecated       pass
+  provenance       pass
+
+  verdict: allow
+
+=== provenance: an attestation that does not verify
+  | version: 1
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+  yanked           n/a               no meaning for npm
+  deprecated       pass
+  provenance       FAIL block        an attestation failed verification: artifact hash does not match any subject in attestation
+
+  verdict: block
+
+=== provenance: dropped after the version before it published some
+  | version: 1
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+  yanked           n/a               no meaning for npm
+  deprecated       pass
+  provenance       FAIL block        publishes no attestation, and 4.17.20, published before it, did
+
+  verdict: block
+
+=== provenance: another workflow built it, excepted
+  | version: 1
+  | packages:
+  |   - match: { ecosystem: npm, name: lodash }
+  |     set: { provenance: allow }
+  |     reason: moved to release.yml
+  |     expires: "2026-10-01"
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+  yanked           n/a               no meaning for npm
+  deprecated       pass
+  provenance       excepted          would have been block: built by github.com/lodash/lodash/.github/workflows/release.yml, and 4.17.20 was built by github.com/lodash/lodash/.github/workflows/publish.yml; packages[0] excused it, expires 2026-10-01
+
+  verdict: allow
+
+=== provenance: nothing verified yet
+  | version: 1
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+  yanked           n/a               no meaning for npm
+  deprecated       pass
+  provenance       unenforced        no attestation of it has been verified
 
   verdict: allow
 
@@ -519,6 +618,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: allow
 
@@ -540,6 +640,7 @@ pkg:npm/lodash@4.17.21
   install_scripts  pass
   yanked           n/a               no meaning for npm
   deprecated       pass
+  provenance       pass
 
   verdict: block
 
