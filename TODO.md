@@ -2377,13 +2377,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         skips the log's inclusion proof. `sigstore-verify` 0.13.0, from
         `sigstore/sigstore-rust`, verified all three
         ([sigstore-verifier](docs/engineering_decisions/sigstore-verifier.md)). No cosign.
-- [ ] `[!]` **Declare an analysis cost tier for every content detector.** Since
-      2026-09-26 every detector runs in the background and no request waits for one, so
-      the tier no longer decides whether a request is deferred.
-  - [ ] Short circuit in front of expensive analysis, moved from Stage 2's policy engine:
-        an expensive detector runs only if the cheap decision vector has not already
-        settled the answer. See `docs/engineering_decisions/policy-tier-resolution.md`,
-        "Where the short circuit survives".
+- [x] `[!]` **Declare an analysis cost tier for every content detector.** Deleted instead,
+      2026-09-26: `analysis::Tier` decided whether a request waited for a detector, and
+      none does since every detector runs in the background. The short circuit in front
+      of expensive analysis moves to source diffing, the first expensive detector.
   - [x] The not-ready half is decided and implemented: 503 always, with `Retry-After: 1`
         and `x-waharoa-not-ready` naming the case
         ([deferral-status-codes](docs/engineering_decisions/deferral-status-codes.md)).
@@ -2397,6 +2394,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         `after_ms` when a request finds the analysis stored, which turns the compatibility
         table into evidence. A digest that never returns is a client that gave up.
 - [ ] **Registry tarball vs. git source diffing** — expensive tier (git clone, ~tens of s)
+  - [ ] Short circuit, moved from the cost tier: the job diffs only when the cheap checks
+        have not already refused the version. See
+        `docs/engineering_decisions/policy-tier-resolution.md`, "Where the short circuit
+        survives".
   - [ ] Resolve repo URL and matching tag from package metadata
   - [ ] Normalize for expected build artifacts and packaging noise
   - [ ] Tune until the false-positive rate is publishable

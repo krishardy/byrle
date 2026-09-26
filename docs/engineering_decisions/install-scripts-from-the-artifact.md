@@ -44,11 +44,14 @@ which is ignored by default because it downloads them:
 | `node-gyp-build` 4.8.4, 5,449 bytes | no `hasInstallScript` | a `test` script only |
 | `six` 1.17.0 sdist, 34,031 bytes | an sdist, so pip builds it | `setup.py` |
 
-## Cost tier
+## Cost
 
-`Tier::Cheap`: one gzip stream and one JSON object. It runs in the background on the
-spooled artifact, like every detector. A request waits for it with a 503 only when the
-answer depends on it ([artifact-spool](artifact-spool.md)).
+One gzip stream and one JSON object: 0.4ms for `bufferutil` 4.1.0, 163,631 bytes. It runs
+in the background on the spooled artifact, like every detector. A request waits for it with
+a 503 only when the answer depends on it ([artifact-spool](artifact-spool.md)).
+
+`analysis::Tier`, which labelled this reader cheap, was deleted on 2026-09-26. It decided
+whether a request waited for a detector, and since `c37f16c` none does.
 
 The reader is bounded. A member past `MAX_MEMBER_BYTES`, 4 MiB, is refused rather than read,
 which is what a decompression bomb needs to be refused; a `package.json` is kilobytes. An
