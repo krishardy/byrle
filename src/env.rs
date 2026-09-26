@@ -61,11 +61,12 @@ pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 /// Default ceiling on a metadata document, applied both to the bytes buffered and to the
 /// bytes decompression is allowed to produce.
 ///
-/// The largest packument measured is typescript: 8.7 MB as the abbreviated document,
-/// 15.7 MB as the full one, 2.0 MB gzipped. This is roughly 2x headroom on that. Over
-/// the limit the proxy forwards the response without normalising it, because an install
-/// must not fail on account of what the proxy could not inspect.
-pub const DEFAULT_MAX_METADATA_BYTES: usize = 32 * 1024 * 1024;
+/// The largest packument measured is vite's full document, 38,950,704 bytes on 2026-09-26.
+/// This is 1.7x headroom on that. It was 32 MiB, sized at twice typescript's 15.7 MB, and
+/// vite outgrew it: a cooldown and the provenance check could not read its publish times.
+/// Over the limit the proxy forwards the response without normalising it, because an
+/// install must not fail on account of what the proxy could not inspect.
+pub const DEFAULT_MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 
 /// Default record store budget, in records rather than bytes.
 ///
@@ -90,8 +91,10 @@ pub const DEFAULT_MAX_VERIFIED: usize = 50_000;
 /// aws-sdk), the proxy peaked at 1,348 MB while the encoded bodies totalled 27.6 MB.
 /// That is roughly 56 MB per request in flight, and nothing bounded how many there were.
 ///
-/// Eight keeps the worst case near half a gigabyte. A normal install does not reach it:
-/// npm's own request parallelism held a six-package install with 165 packuments to a
+/// Eight kept the worst case near half a gigabyte when typescript's 15.7 MB was the largest
+/// packument. vite's full document is 38.9 MB: eight requests for it at once peaked the
+/// release build at 916 MB on 2026-09-26, about 113 MB each. A normal install does not reach
+/// it: npm's own request parallelism held a six-package install with 165 packuments to a
 /// 141 MB peak.
 pub const DEFAULT_MAX_CONCURRENT_METADATA: usize = 8;
 
@@ -1200,7 +1203,7 @@ mod tests {
     fn a_default_is_shown_in_the_unit_it_is_read_in() {
         assert_eq!(
             MAX_METADATA_BYTES.default_shown().as_deref(),
-            Some("32 MiB")
+            Some("64 MiB")
         );
         assert_eq!(
             MAX_METADATA_BYTES

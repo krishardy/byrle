@@ -346,7 +346,8 @@ mod tests {
     }
     #[test]
     fn the_ceiling_matches_the_packument_ceiling() {
-        assert_eq!(MAX_INDEX_BYTES, 33_554_432);
+        assert_eq!(MAX_INDEX_BYTES, crate::env::DEFAULT_MAX_METADATA_BYTES);
+        assert_eq!(MAX_INDEX_BYTES, 67_108_864);
         assert_eq!(Kind::Wheel.as_str(), "wheel");
         assert_eq!(Kind::Sdist.as_str(), "sdist");
     }

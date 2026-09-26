@@ -32,7 +32,7 @@ Proxy configuration, all through the environment:
                                     them.
   WAHAROA_CA_BUNDLE                 PEM bundle for the upstream connection
   WAHAROA_CA_BUNDLE_EXCLUSIVE=1     trust only that bundle, not the public roots
-  WAHAROA_MAX_METADATA_BYTES        ceiling on a metadata document (default 32 MiB)
+  WAHAROA_MAX_METADATA_BYTES        ceiling on a metadata document (default 64 MiB)
   WAHAROA_MAX_RECORDS               package records held in memory (default 50000)
   WAHAROA_MAX_VERIFIED              verified artifact digests remembered (default 50000)
   WAHAROA_DATABASE_URL              Postgres holding intel from `waharoa refresh`. With a

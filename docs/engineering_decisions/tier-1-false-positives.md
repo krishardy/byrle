@@ -53,8 +53,7 @@ satisfies `^3.2.0`. A lockfile pinning 3.2.2 fails until a `packages` exception 
 ## Not read
 
 `vite` 8.3.1's publish times could not be read: its full packument is 38,950,704 bytes, over
-`WAHAROA_MAX_METADATA_BYTES`, 32 MiB. That default was sized at twice `typescript`'s 15.7 MB.
-The proxy fetches the same document for the same checks, so for `vite` the cooldown and the
-dropped-provenance check are unenforceable in the proxy too, and reported so. Not changed
-here: raising the default raises the memory a packument in flight can hold, which
-`DEFAULT_MAX_CONCURRENT_METADATA` bounds at 8.
+`WAHAROA_MAX_METADATA_BYTES`, then 32 MiB and sized at twice `typescript`'s 15.7 MB. The
+proxy fetches the same document for the same checks, so for `vite` the cooldown and the
+dropped-provenance check were unenforceable in the proxy too. The default was raised to 64
+MiB the same day.
