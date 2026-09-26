@@ -15,6 +15,7 @@
 //! Every detector declares what it costs. Since 2026-09-26 the tier no longer decides
 //! whether a request waits, because none does.
 
+pub mod attestation;
 pub mod postgres;
 pub mod run;
 pub mod store;

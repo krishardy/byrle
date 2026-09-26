@@ -127,6 +127,11 @@ impl Sri {
         }
     }
 
+    /// The digest the claim expects, as bytes.
+    pub fn digest(&self) -> &[u8] {
+        &self.digest
+    }
+
     pub fn algorithm(&self) -> Algorithm {
         self.algorithm
     }

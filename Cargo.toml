@@ -43,6 +43,12 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 tar = { version = "0.4.46", default-features = false }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
 toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
+# Verifies npm and PyPI attestations against Sigstore's production root, embedded in the
+# crate. Pinned exactly: 0.12.0 and 0.13.0 shipped on one day. Default features off: no TLS
+# stack and no TUF client, since nothing here fetches. `sigstore` 0.14.0 verified none of
+# three real attestations and compiles `rsa`; see
+# docs/engineering_decisions/sigstore-verifier.md.
+sigstore-verify = { version = "=0.13.0", default-features = false }
 
 [lints.rust]
 # `coverage` is set by cargo-llvm-cov, which `make coverage` runs. Declared so the

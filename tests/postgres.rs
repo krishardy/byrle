@@ -1130,6 +1130,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         [
             "advisory.summary",
             "artifact_analysis.unreadable",
+            "artifact_attestation.failure",
             "artifact_install_script.body",
             "intel_ingestion.etag",
             "intel_ingestion.last_modified",
@@ -1156,6 +1157,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "advisory_alias",
         "advisory_range",
         "artifact_analysis",
+        "artifact_attestation",
         "artifact_install_script",
         "exploited_cve",
         "intel_ingestion",
@@ -1717,6 +1719,45 @@ async fn re_analysing_an_artifact_replaces_its_scripts() {
     assert_eq!(
         store.get(&sri(1)).await.expect("the store answers"),
         Some(second)
+    );
+}
+
+/// A verified identity and a failure each come back as written, a later answer replaces
+/// an earlier one, and a digest nothing verified is `None` rather than either.
+#[tokio::test]
+async fn an_attestation_result_is_kept_under_its_digest() {
+    use waharoa::analysis::attestation::Attested;
+    let intel = skip_without_database!("t_attestation");
+    let store = analyses(&intel);
+    let verified = Attested::Verified {
+        identity: "github.com/o/r/.github/workflows/release.yml".to_owned(),
+    };
+    let failed = Attested::Failed {
+        why: "artifact hash does not match any subject in attestation".to_owned(),
+    };
+    assert_eq!(store.attested(&sri(1)).await.expect("answers"), None);
+
+    store
+        .put_attested(&sri(1), &verified)
+        .await
+        .expect("writes");
+    store.put_attested(&sri(2), &failed).await.expect("writes");
+    assert_eq!(
+        store.attested(&sri(1)).await.expect("answers"),
+        Some(verified.clone())
+    );
+    assert_eq!(
+        store.attested(&sri(2)).await.expect("answers"),
+        Some(failed.clone())
+    );
+
+    store
+        .put_attested(&sri(1), &failed)
+        .await
+        .expect("replaces");
+    assert_eq!(
+        store.attested(&sri(1)).await.expect("answers"),
+        Some(failed)
     );
 }
 
