@@ -17,7 +17,10 @@ is, and the two can disagree. A packument that omits `hasInstallScript` for a ta
 about, and the version-level check passed it.
 
 `analysis::Claim` names the three outcomes: `kept`, `undeclared` for an artifact that runs
-what the metadata did not declare, and `overstated` for the reverse. `overstated` is only
+what the metadata did not declare, and `overstated` for the reverse. The artifact adds to the
+claim and never removes it: an `overstated` claim stands, because npm runs `node-gyp
+rebuild` for a `binding.gyp` that `package.json` never names, and an sdist with no
+`setup.py` still runs its PEP 517 backend. `overstated` is only
 reported for a record from a full packument: the abbreviated one writes `hasInstallScript`
 when it is true and omits it otherwise, so a record from one that claims nothing is not
 claiming `false`.

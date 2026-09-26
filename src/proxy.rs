@@ -2211,9 +2211,9 @@ impl NotReady {
 
     /// 503 with a wait and a reason.
     ///
-    /// 503 rather than 429, including for an artifact under analysis, which plan §5 first
-    /// gave 429. Measured over seven clients, a 429 is terminal for yarn 1 and bun, which
-    /// report it and stop, while every one of the seven retries a 503.
+    /// 503 rather than 429, including for an artifact under analysis. Measured over seven
+    /// clients, a 429 is terminal for yarn 1 and bun, which report it and stop, while every
+    /// one of the seven retries a 503.
     fn response(self) -> Response {
         let body = match &self {
             Self::Unanswered => {
@@ -5778,6 +5778,19 @@ mod tests {
         tarball: Vec<u8>,
         yaml: Option<&str>,
     ) -> (String, Arc<Analyser>) {
+        let store = Arc::new(crate::analysis::store::InProcess::new(8));
+        analysing_with(label, version, dist, tarball, yaml, store).await
+    }
+
+    /// [`analysing`], keeping analyses in `store`.
+    async fn analysing_with(
+        label: &str,
+        version: &str,
+        dist: &str,
+        tarball: Vec<u8>,
+        yaml: Option<&str>,
+        store: Arc<dyn crate::analysis::store::Analyses>,
+    ) -> (String, Arc<Analyser>) {
         let packument = format!(
             r#"{{"name":"widget","dist-tags":{{"latest":"1.0.0"}},"versions":{{
                 "1.0.0":{{"version":"1.0.0",{version}"dist":{{{dist}
@@ -5808,7 +5821,7 @@ mod tests {
         let analyser = Arc::new(Analyser::new(
             reqwest::Client::new(),
             Arc::new(spool),
-            Arc::new(crate::analysis::store::InProcess::new(8)),
+            store,
             2,
             8,
         ));
@@ -5903,6 +5916,48 @@ mod tests {
         .await;
         assert_eq!(tarball_request(&base).await.status(), 403);
         assert_eq!(analyser.in_flight(), 0, "no job was started");
+    }
+
+    /// An analysis already stored, by a proxy without a policy or another proxy on the
+    /// same database, says the tarball's `package.json` names no script. The packument
+    /// claims one, and the claim stands under `block`.
+    #[tokio::test]
+    async fn a_stored_analysis_never_removes_a_claimed_script() {
+        use crate::analysis::store::{Analyses, Analysis, InProcess};
+        let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
+        let store = Arc::new(InProcess::new(8));
+        let digest = Sri::parse(&sri_of(&tarball)).expect("parses");
+        let none = Analysis {
+            ecosystem: "npm".to_owned(),
+            name: "widget".to_owned(),
+            version: "1.0.0".to_owned(),
+            scripts: Scripts::Declared(crate::analysis::InstallScripts::default()),
+        };
+        store.put(&digest, &none).await.expect("stores");
+        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+
+        let (base, _) = analysing_with(
+            "analyse-stored-claim",
+            r#""hasInstallScript":true,"#,
+            &integrity(&tarball),
+            tarball.clone(),
+            Some(yaml),
+            store.clone(),
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 403);
+
+        // The same analysis, with no claim, is served: it is the analysis being read.
+        let (base, _) = analysing_with(
+            "analyse-stored-none",
+            "",
+            &integrity(&tarball),
+            tarball,
+            Some(yaml),
+            store,
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 200);
     }
 
     /// Not knowing is not knowing there is no script.

@@ -40,4 +40,4 @@ There is no mid-stream branch. The digest decides up front, before a byte is fet
   not describe; 503 we are not ready, including this artifact is under analysis. No 4xx
   that reads as a block for any not-ready state.
 
-Status-code and client-compatibility detail remains in plan §5 ("Fetch path").
+Client-compatibility measurements are in [deferral-status-codes](deferral-status-codes.md).
