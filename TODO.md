@@ -2405,8 +2405,14 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       change, typosquat distance
 - [ ] Pluggable detector interface for third-party/commercial feeds
   - [ ] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector
-- [ ] Benchmark each control against known 2025–26 incidents (shai-hulud, tinycolor,
+- [x] Benchmark each control against known 2025–26 incidents (shai-hulud, tinycolor,
       chalk, nx, eslint-config-prettier) and publish the results
+      ([incident-benchmark](docs/engineering_decisions/incident-benchmark.md)). A 7-day
+      cooldown covers every incident, whose versions were live for hours.
+      `install_scripts: block` covers Shai-Hulud, Nx and eslint-config-prettier, not chalk
+      or xrpl, which ran on import. `provenance: block` fires only where earlier versions
+      were attested, and as built misses every version after the first in a burst: Nx 6 of
+      19 as built, 17 of 19 comparing against any earlier version.
 
 **Exit:** all Tier 1 controls shipped with measured false-positive rates.
 Measured 2026-09-26 over 311 versions in five dependency sets
