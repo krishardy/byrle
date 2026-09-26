@@ -505,15 +505,19 @@ rather than failing.
 
 There is no `warn`. Nothing delivers-with-a-concern.
 
-### Provenance is recorded, not required
+### Provenance is checked where it is published, not required
 
-`dist.attestations` and the rest are kept on the package record and shown in `explain`.
-Nothing is refused for lacking them.
+`provenance: block` refuses a version whose attestations contradict it: one that fails
+verification, none where the version published before it had one, or a different
+repository or workflow file from the version published before it. A version that publishes
+no attestation after one that published none passes. See
+[provenance-check](engineering_decisions/provenance-check.md).
 
-Measured on the 138 packages of a real `npm install express eslint`: 112 (81%) publish no
-provenance, against 0 that carry an install script. Every other check fires on a minority,
-which is why per-package exceptions work for them. Requiring provenance would forbid the
-majority and the exception list would become the dependency list.
+Requiring provenance was rejected. Measured on the 138 packages of a real `npm install
+express eslint`: 112 (81%) publish no provenance, against 0 that carry an install script.
+Every other check fires on a minority, which is why per-package exceptions work for them.
+Requiring provenance would forbid the majority and the exception list would become the
+dependency list.
 
 It is also the one check that cannot be asked of every ecosystem: npm has
 `dist.attestations`, PyPI has PEP 740 at low coverage, cargo has nothing, Maven has GPG

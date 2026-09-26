@@ -17,19 +17,19 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 
 | Level | Keys |
 |---|---|
-| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `deprecated`, `yanked`, `denials`, `packages`, `advisory_scores` |
+| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `deprecated`, `yanked`, `provenance`, `denials`, `packages`, `advisory_scores` |
 | a `denials` entry | `purl`, `version`, `reason` |
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
-| `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `vuln_advisory_ids` |
+| `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `vuln_advisory_ids` |
 
 | Key | Value | Default |
 |---|---|---|
 | `version` | `1` | required |
 | `cooldown_days` | whole days, 0 or more | 7 |
 | `max_cvss` | a number. At or below is allowed | 6.9 |
-| `install_scripts`, `kev`, `yanked` | `block` or `allow` | `block` |
+| `install_scripts`, `kev`, `yanked`, `provenance` | `block` or `allow` | `block` |
 | `deprecated` | `block` or `allow` | `allow` |
 | `denials[].purl` | a purl, with `@version` unless `version` is set | required |
 | `denials[].version` | a VERS range, when the purl has no `@version` | none |
@@ -71,6 +71,10 @@ the defaults. `the_shipped_example_parses` loads `examples/policy.yaml`.
 alias, `GHSA-` and `MAL-` ids included, so version 1 never carried a name that says CVE.
 
 ## Added after the freeze, before deployment
+
+`provenance` was added to `version: 1`, at the top level and in `set`, on 2026-09-26,
+defaulting to `block`. No version 1 policy had been deployed. See
+[provenance-check](provenance-check.md).
 
 `yanked` was added to `version: 1`, at the top level and in `set`, on 2026-09-20, defaulting
 to `block`, and `deprecated` the same day, defaulting to `allow`. No version 1 policy had

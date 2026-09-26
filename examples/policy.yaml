@@ -34,6 +34,12 @@ deprecated: allow
 # pins that version. npm has no yank, and the check reports not-applicable there.
 yanked: block
 
+# Whether a version whose attestations contradict it is served: one that fails
+# verification, one that publishes none where the version before it did, or one built by
+# a different repository or workflow file than the version before it. A package that has
+# never published provenance is not refused for lacking it.
+provenance: block
+
 # Known malware always blocks. It is not listed here because it cannot be configured and
 # cannot be excepted.
 

@@ -16,6 +16,7 @@ pub enum Rule {
     VulnAdvisoryIds,
     Yanked,
     Deprecated,
+    Provenance,
 }
 
 impl Rule {
@@ -27,18 +28,20 @@ impl Rule {
             Self::VulnAdvisoryIds => "vuln_advisory_ids",
             Self::Yanked => "yanked",
             Self::Deprecated => "deprecated",
+            Self::Provenance => "provenance",
         }
     }
 
     /// Every setting an exception can carry. One list, so a setting added to the schema
     /// and not here is a compile error rather than a silently unchecked field.
-    pub const ALL: [Rule; 6] = [
+    pub const ALL: [Rule; 7] = [
         Self::CooldownDays,
         Self::Kev,
         Self::InstallScripts,
         Self::VulnAdvisoryIds,
         Self::Yanked,
         Self::Deprecated,
+        Self::Provenance,
     ];
 }
 
@@ -76,6 +79,7 @@ pub struct RuleValues<'a> {
     pub vuln_advisory_ids: Option<&'a [String]>,
     pub yanked: Option<Action>,
     pub deprecated: Option<Action>,
+    pub provenance: Option<Action>,
 }
 
 impl<'a> From<&'a SetBlock> for RuleValues<'a> {
@@ -90,6 +94,7 @@ impl<'a> From<&'a SetBlock> for RuleValues<'a> {
                 .then_some(s.vuln_advisory_ids.as_slice()),
             yanked: s.yanked,
             deprecated: s.deprecated,
+            provenance: s.provenance,
         }
     }
 }
@@ -106,6 +111,7 @@ impl From<&Policy> for RuleValues<'_> {
             vuln_advisory_ids: None,
             yanked: Some(p.yanked),
             deprecated: Some(p.deprecated),
+            provenance: Some(p.provenance),
         }
     }
 }
@@ -133,6 +139,7 @@ pub fn compare(
         Rule::InstallScripts => action_strictness(value.install_scripts, baseline.install_scripts),
         Rule::Yanked => action_strictness(value.yanked, baseline.yanked),
         Rule::Deprecated => action_strictness(value.deprecated, baseline.deprecated),
+        Rule::Provenance => action_strictness(value.provenance, baseline.provenance),
         // Ignoring an advisory can only loosen. There is nothing above to compare it to,
         // so naming any is a loosening and naming none is no change at all.
         Rule::VulnAdvisoryIds => match value.vuln_advisory_ids {
@@ -266,6 +273,7 @@ mod tests {
                 "vuln_advisory_ids",
                 "yanked",
                 "deprecated",
+                "provenance",
             ],
             "a name here is the key in the policy file"
         );

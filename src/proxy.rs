@@ -1749,7 +1749,7 @@ fn audit_pinned(
             &facts.name,
             &facts.version,
             &crate::policy::decide::decide(policy, &facts, crate::policy::today()),
-            &enforce::unenforceable(policy, record, times, facts.intel),
+            &enforce::unenforceable(policy, record, times, facts.intel, &facts.provenance),
         )
         .with_intel_snapshot(intel.map(|i| i.snapshot.as_str())),
     );
@@ -2469,6 +2469,7 @@ fn policy_refused_versions(
                     record,
                     None,
                     crate::policy::decide::Intel::of(intel),
+                    &crate::policy::decide::Provenance::default(),
                 )
             })
             .unwrap_or_default();
@@ -3797,6 +3798,11 @@ mod tests {
                 yanked_is_refused_and_filtered().await;
                 continue;
             }
+            // Needs an attestation verified, which the analysis job does:
+            // `the_provenance_check_refuses_on_a_pinned_fetch`.
+            if check == Check::Provenance {
+                continue;
+            }
             let (packument, name, version, intel, yaml): (_, _, _, Option<Arc<dyn Intel>>, _) =
                 match check {
                     Check::Denials => (LODASH, "lodash", "4.17.21", None, DENY_LODASH.to_owned()),
@@ -3861,6 +3867,7 @@ mod tests {
                         format!("{BASE}deprecated: block\n"),
                     ),
                     Check::Yanked => unreachable!("run above, against a PyPI index"),
+                    Check::Provenance => unreachable!("skipped above"),
                 };
             let label = check.as_str();
             let proxy = offline(intel, Some(&yaml));

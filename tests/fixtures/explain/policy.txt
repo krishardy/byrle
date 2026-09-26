@@ -6,6 +6,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
+  provenance       block
   denials          0
   packages         0
   advisory_scores  0
@@ -19,6 +20,7 @@ checks
   install_scripts   enforced
   yanked            enforced
   deprecated        enforced
+  provenance        unenforced, no attestation is verified
 
 === version: 1, cooldown_days: 0, no store
 settings
@@ -28,6 +30,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
+  provenance       block
   denials          0
   packages         0
   advisory_scores  0
@@ -41,6 +44,7 @@ checks
   install_scripts   enforced
   yanked            enforced
   deprecated        enforced
+  provenance        unenforced, no attestation is verified
 
 === examples/policy.yaml, a store without the KEV catalogue
 settings
@@ -50,6 +54,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
+  provenance       block
   denials          2
   packages         3
   advisory_scores  0
@@ -63,6 +68,7 @@ checks
   install_scripts   enforced
   yanked            enforced
   deprecated        enforced
+  provenance        unenforced, no attestation is verified
 
 packages[0]  internal, published by our CI
 
@@ -78,6 +84,7 @@ settings
   kev              block
   yanked           block
   deprecated       allow
+  provenance       block
   denials          2
   packages         3
   advisory_scores  0
@@ -91,6 +98,7 @@ checks
   install_scripts   enforced
   yanked            enforced
   deprecated        enforced
+  provenance        unenforced, no attestation is verified
 
 packages[0]  internal, published by our CI
 

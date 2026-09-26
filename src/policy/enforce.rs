@@ -18,7 +18,7 @@
 //! other version to pick, so it refuses like a block, and says when it lapses. The
 //! difference survives in what the client is told, not in whether it gets bytes.
 
-use super::decide::{Check, Decision, Intel, Outcome};
+use super::decide::{Check, Decision, Intel, Outcome, Provenance};
 use super::{Action, Policy};
 use crate::intel::store::PackageIntel;
 use crate::policy::decide::{Facts, decide};
@@ -92,8 +92,15 @@ pub fn unenforceable(
     record: &PackageRecord,
     times: Option<&super::facts::PublishTimes>,
     intel: Intel,
+    provenance: &Provenance,
 ) -> Vec<Unenforceable> {
     let mut out = Vec::new();
+    if let Provenance::Unknown(why) = provenance {
+        out.push(Unenforceable {
+            check: Check::Provenance,
+            why,
+        });
+    }
     if policy.uses_cooldown()
         && let super::facts::Answerable::Missing(why) = Facts::can_answer_cooldown(record, times)
     {
@@ -161,7 +168,7 @@ pub fn artifact(
     if let Some(intel) = intel {
         facts = facts.with_intel(intel);
     }
-    let dropped = unenforceable(policy, record, times, facts.intel);
+    let dropped = unenforceable(policy, record, times, facts.intel, &facts.provenance);
     verdict(
         policy,
         &facts,
@@ -218,6 +225,7 @@ fn reason(
             _ => format!("{name}: withdrawn by the registry"),
         },
         (Check::Denials, _) => format!("{name}: this exact version is denied"),
+        (Check::Provenance, _) => format!("{name}: {}", facts.provenance.describe()),
         (Check::KnownMalware, _) => format!("{name}: reported as malware"),
         // A quarantine that lapses is worth a date: the client is told when this version
         // becomes installable rather than only that it is too new.
@@ -364,6 +372,7 @@ mod tests {
                 Intel::Consulted {
                     exploitation_loaded,
                 },
+                &Provenance::Consistent,
             )
             .iter()
             .map(|u| u.check)
@@ -541,19 +550,30 @@ mod tests {
     /// Just the cooldown entry. The advisory checks are always unenforceable in this
     /// build, and that is covered on its own below.
     fn cooldown_entry(policy: &Policy, record: &PackageRecord) -> Option<Unenforceable> {
-        unenforceable(policy, record, None, Intel::NotConsulted)
-            .into_iter()
-            .find(|u| u.check == Check::CooldownDays)
+        unenforceable(
+            policy,
+            record,
+            None,
+            Intel::NotConsulted,
+            &Provenance::Consistent,
+        )
+        .into_iter()
+        .find(|u| u.check == Check::CooldownDays)
     }
 
     /// An empty advisory list with nothing to ask is not a clean answer.
     #[test]
     fn the_checks_that_read_advisories_are_unenforceable_with_no_stream() {
-        let reported: Vec<Check> =
-            unenforceable(&loaded("version: 1"), &record(), None, Intel::NotConsulted)
-                .into_iter()
-                .map(|u| u.check)
-                .collect();
+        let reported: Vec<Check> = unenforceable(
+            &loaded("version: 1"),
+            &record(),
+            None,
+            Intel::NotConsulted,
+            &Provenance::Consistent,
+        )
+        .into_iter()
+        .map(|u| u.check)
+        .collect();
 
         assert!(reported.contains(&Check::KnownMalware), "{reported:?}");
         assert!(reported.contains(&Check::Kev), "{reported:?}");

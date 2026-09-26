@@ -174,6 +174,7 @@ fn found(
             Some(reason) if !reason.is_empty() => format!("withdrawn by the registry: {reason}"),
             _ => "withdrawn by the registry".to_owned(),
         },
+        Check::Provenance => facts.provenance.describe(),
     }
 }
 
@@ -207,6 +208,10 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
         "  deprecated       {}\n",
         policy.deprecated.as_str()
     ));
+    out.push_str(&format!(
+        "  provenance       {}\n",
+        policy.provenance.as_str()
+    ));
     out.push_str(&format!("  denials          {}\n", policy.denials.len()));
     out.push_str(&format!("  packages         {}\n", policy.packages.len()));
     out.push_str(&format!(
@@ -228,6 +233,7 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
                 },
             ) => "unenforced, no exploitation stream",
             (Check::CooldownDays, _) if !policy.uses_cooldown() => "off",
+            (Check::Provenance, _) => "unenforced, no attestation is verified",
             _ => "enforced",
         };
         out.push_str(&format!("  {:16}  {state}\n", check.as_str()));
@@ -390,7 +396,13 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
         &policy,
         &facts,
         &crate::policy::decide::decide(&policy, &facts, as_of),
-        &crate::policy::enforce::unenforceable(&policy, package, times.as_ref(), facts.intel),
+        &crate::policy::enforce::unenforceable(
+            &policy,
+            package,
+            times.as_ref(),
+            facts.intel,
+            &facts.provenance,
+        ),
         as_of,
     );
     out
@@ -518,7 +530,7 @@ mod run_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::policy::decide::{Advisory, Intel, decide};
+    use crate::policy::decide::{Advisory, Intel, Provenance, decide};
 
     const TODAY: jiff::civil::Date = jiff::civil::date(2026, 9, 13);
 
@@ -534,6 +546,7 @@ mod tests {
             yanked: None,
             deprecated: None,
             intel: Intel::NotConsulted,
+            provenance: crate::policy::decide::Provenance::Consistent,
         }
     }
 
@@ -1041,6 +1054,52 @@ mod tests {
                     ..consulted()
                 },
             ),
+            case(
+                "provenance: an attestation that does not verify",
+                "version: 1",
+                Facts {
+                    provenance: Provenance::Unverified {
+                        why: "artifact hash does not match any subject in attestation".to_owned(),
+                    },
+                    ..consulted()
+                },
+            ),
+            case(
+                "provenance: dropped after the version before it published some",
+                "version: 1",
+                Facts {
+                    provenance: Provenance::Dropped {
+                        previous: "4.17.20".to_owned(),
+                    },
+                    ..consulted()
+                },
+            ),
+            case(
+                "provenance: another workflow built it, excepted",
+                "version: 1\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { provenance: allow }\n    reason: moved to release.yml\n    expires: \"2026-10-01\"\n",
+                Facts {
+                    provenance: Provenance::IdentityChanged {
+                        previous: "4.17.20".to_owned(),
+                        from: "github.com/lodash/lodash/.github/workflows/publish.yml".to_owned(),
+                        to: "github.com/lodash/lodash/.github/workflows/release.yml".to_owned(),
+                    },
+                    ..consulted()
+                },
+            ),
+            Case {
+                unenforceable: vec![Unenforceable {
+                    check: Check::Provenance,
+                    why: "no attestation of it has been verified",
+                }],
+                ..case(
+                    "provenance: nothing verified yet",
+                    "version: 1",
+                    Facts {
+                        provenance: Provenance::NOT_VERIFIED,
+                        ..consulted()
+                    },
+                )
+            },
             Case {
                 unenforceable: [Check::KnownMalware, Check::Kev, Check::MaxCvss]
                     .map(|check| Unenforceable {
