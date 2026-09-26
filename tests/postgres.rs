@@ -1761,6 +1761,36 @@ async fn an_attestation_result_is_kept_under_its_digest() {
     );
 }
 
+/// A result another verifier wrote is not read back: a failure from an older root or a
+/// verifier bug does not outlive the upgrade that fixes it.
+#[tokio::test]
+async fn an_attestation_result_from_another_verifier_is_not_read() {
+    use waharoa::analysis::attestation::Attested;
+    let intel = skip_without_database!("t_attestation_verifier");
+    let store = analyses(&intel);
+    sqlx::query(
+        "INSERT INTO artifact_attestation (digest, failure, verifier) \
+         VALUES ($1, 'bad root', 'sigstore-verify 0.12.0; root sha256:0000000000000000')",
+    )
+    .bind(sri(1).to_string())
+    .execute(intel.pool())
+    .await
+    .expect("inserts");
+    assert_eq!(store.attested(&sri(1)).await.expect("answers"), None);
+
+    let verified = Attested::Verified {
+        identity: "github.com/o/r/.github/workflows/release.yml".to_owned(),
+    };
+    store
+        .put_attested(&sri(1), &verified)
+        .await
+        .expect("replaces");
+    assert_eq!(
+        store.attested(&sri(1)).await.expect("answers"),
+        Some(verified)
+    );
+}
+
 /// The two answers a bool would collapse. An archive nobody could read is not an archive
 /// that declares no script.
 #[tokio::test]

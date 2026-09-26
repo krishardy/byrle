@@ -46,7 +46,8 @@ reached writes nothing, so a missing row means not yet verified.
   than this version's. On npm the times are in the full packument.
 - **Identity**: the repository and workflow file an attestation names, without the ref.
   `github.com/python-attrs/attrs/.github/workflows/pypi-package.yml`, not
-  `...@refs/tags/26.1.0`: every release is built from a new tag.
+  `...@refs/tags/26.1.0`: every release is built from a new tag. Cut at the first
+  `@refs/`, because a monorepo tags `@scope/pkg@1.2.3`.
 - **Unknown**: nothing verified an attestation this version publishes, or the previous
   version is not known. The check is dropped by `enforce::unenforceable` and reported
   unenforced, as `cooldown_days` is without a publish date.
@@ -65,6 +66,14 @@ analysis job and, under `provenance: block`, answers 503 until the retry finds t
 packument published, so the previous version's tarball is never fetched. A registry that
 answers 5xx or 429, or cannot be reached, stores nothing and the next request tries again.
 A 404, a document that is not one, or a bundle that does not verify is stored as a failure.
+A stored result is read back only by the verifier that wrote it, the `sigstore-verify`
+version and a digest of its embedded root, so a failure a verifier upgrade fixes is not
+kept.
+
+An attestations document is fetched where the artifact would be: npm's registry through the
+upstream, an origin the operator added directly, and any other origin not at all. One the
+proxy will not fetch counts as an attestation that does not verify, naming the origin, so a
+version cannot slip the check by pointing its attestations at a dead host.
 
 The previous version's times come from the full packument. `provenance: block` fetches it
 as a cooldown does (`Policy::needs_publish_times`), so a policy with `cooldown_days: 0` still
@@ -86,4 +95,7 @@ published before it. Identity was read from each SLSA statement's `workflow`, un
 | no attestation, previous had one | 0 |
 | attested, different identity | 0 |
 
-`block` refuses none of them.
+`block` refuses none of them. The 17 attested versions were verified again the same day by
+the code that decides, `ecosystem::npm::attestation::provenance_bundle` then
+`analysis::attestation::verify` against each packument's integrity: all 17 verified, and
+each of the 11 with an attested predecessor names the same identity as it.
