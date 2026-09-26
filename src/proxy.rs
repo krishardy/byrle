@@ -1707,37 +1707,44 @@ async fn analysed(
         provenance,
         state: AnalysisState::Decided,
     };
-    let (Some(reader), Some(analyser)) = (reader, analyser) else {
+    let Some(analyser) = analyser else {
         return decided(record, provenance);
     };
     let Some(digest) = digest else {
-        warn!(
-            path = %path,
-            "no strong digest, so the artifact cannot be analysed; it counts as running install scripts"
-        );
-        record.has_install_scripts = true;
+        if reader.is_some() {
+            warn!(
+                path = %path,
+                "no strong digest, so the artifact cannot be analysed; it counts as running install scripts"
+            );
+            record.has_install_scripts = true;
+        }
         return decided(record, provenance);
     };
-    let reads = match analyser.known(digest).await {
-        Known::Analysed(analysis) => {
-            report_claim(&record, &analysis.scripts, path);
-            // Adds to the claim and never takes from it. The readers see only part of
-            // what runs: an sdist with no `setup.py` still runs its PEP 517 backend, and npm
-            // runs `node-gyp rebuild` for a `binding.gyp` that `package.json` never names.
-            record.has_install_scripts |= analysis
-                .scripts
-                .names()
-                .is_none_or(|names| !names.is_empty());
-            None
-        }
-        Known::Mismatched(mismatch) => {
-            return Analysed {
-                record,
-                provenance,
-                state: AnalysisState::Mismatched(mismatch),
-            };
-        }
-        Known::Unknown => Some(reader),
+    // A file no reader reads, a PyPI wheel, still has attestations to verify.
+    let reads = match reader {
+        None => None,
+        Some(reader) => match analyser.known(digest).await {
+            Known::Analysed(analysis) => {
+                report_claim(&record, &analysis.scripts, path);
+                // Adds to the claim and never takes from it. The readers see only part of
+                // what runs: an sdist with no `setup.py` still runs its PEP 517 backend, and
+                // npm runs `node-gyp rebuild` for a `binding.gyp` that `package.json` never
+                // names.
+                record.has_install_scripts |= analysis
+                    .scripts
+                    .names()
+                    .is_none_or(|names| !names.is_empty());
+                None
+            }
+            Known::Mismatched(mismatch) => {
+                return Analysed {
+                    record,
+                    provenance,
+                    state: AnalysisState::Mismatched(mismatch),
+                };
+            }
+            Known::Unknown => Some(reader),
+        },
     };
     if reads.is_none() && attestations.is_empty() {
         return decided(record, provenance);
@@ -1798,10 +1805,10 @@ async fn attested(
 ) -> (Provenance, Vec<Attestation>) {
     let key = record.package.key();
     // Where each registry serves its attestations and how they are laid out is its
-    // adapter's. Only npm's is read.
+    // adapter's.
     let bundle: fn(&[u8]) -> Result<_, String> = match key.ecosystem() {
         Ecosystem::Npm => npm::attestation::provenance_bundle,
-        Ecosystem::PyPI => return (attestation::PYPI_NOT_VERIFIED, Vec::new()),
+        Ecosystem::PyPI => pypi::attestation::provenance_bundle,
     };
     let previous = proxy.store.lock().expect("record store lock").previous(
         key,
@@ -3585,7 +3592,12 @@ mod tests {
             .with_writer(move || Captured(sink.clone()))
             .with_ansi(false)
             .finish();
-        (tracing::subscriber::set_default(subscriber), buf)
+        let guard = tracing::subscriber::set_default(subscriber);
+        // A callsite first reached on another test's thread, where no subscriber listens, is
+        // cached as never enabled, and this thread's subscriber then misses its lines. Seen
+        // now and then as a missing `deferred:` line under parallel tests.
+        tracing::callsite::rebuild_interest_cache();
+        (guard, buf)
     }
 
     fn text(buf: &Mutex<Vec<u8>>) -> String {
@@ -6452,32 +6464,28 @@ mod tests {
         doc.to_string()
     }
 
-    /// An offline proxy holding `widget_versions(attested)`, whose analyser holds `results`
-    /// and an analysis of 2.0.0's scripts, so only attestations can be pending.
-    async fn provenance_proxy(
+    /// An offline proxy under `yaml` whose analyser holds `results`, each an attestation
+    /// result by digest, and `scripts`, an analysis naming no script for each digest.
+    async fn attesting_proxy(
         label: &str,
         yaml: &str,
-        attested: &[&str],
-        results: &[(&str, crate::analysis::attestation::Attested)],
+        results: &[(Sri, crate::analysis::attestation::Attested)],
+        scripts: &[Sri],
     ) -> (Proxy, Arc<Analyser>) {
         use crate::analysis::store::{Analyses, Analysis, InProcess};
-        let store = Arc::new(InProcess::new(8));
-        for (version, result) in results {
-            store
-                .put_attested(&widget_digest(version), result)
-                .await
-                .expect("stores");
+        let store = Arc::new(InProcess::new(16));
+        for (digest, result) in results {
+            store.put_attested(digest, result).await.expect("stores");
         }
-        let scripts = Analysis {
-            ecosystem: "npm".to_owned(),
-            name: "widget".to_owned(),
-            version: "2.0.0".to_owned(),
-            scripts: Scripts::Declared(crate::analysis::InstallScripts::default()),
-        };
-        store
-            .put(&widget_digest("2.0.0"), &scripts)
-            .await
-            .expect("stores");
+        for digest in scripts {
+            let none = Analysis {
+                ecosystem: "npm".to_owned(),
+                name: "widget".to_owned(),
+                version: "2.0.0".to_owned(),
+                scripts: Scripts::Declared(crate::analysis::InstallScripts::default()),
+            };
+            store.put(digest, &none).await.expect("stores");
+        }
         let (spool, _) =
             Spool::open(&crate::util::test_support::tempdir(label), 1 << 20).expect("opens");
         let analyser = Arc::new(Analyser::new(
@@ -6488,6 +6496,23 @@ mod tests {
             8,
         ));
         let proxy = offline(None, Some(yaml)).with_analyser(Some(analyser.clone()));
+        (proxy, analyser)
+    }
+
+    /// An offline proxy holding `widget_versions(attested)`, whose analyser holds `results`
+    /// and an analysis of 2.0.0's scripts, so only attestations can be pending.
+    async fn provenance_proxy(
+        label: &str,
+        yaml: &str,
+        attested: &[&str],
+        results: &[(&str, crate::analysis::attestation::Attested)],
+    ) -> (Proxy, Arc<Analyser>) {
+        let results: Vec<_> = results
+            .iter()
+            .map(|(version, result)| (widget_digest(version), result.clone()))
+            .collect();
+        let (proxy, analyser) =
+            attesting_proxy(label, yaml, &results, &[widget_digest("2.0.0")]).await;
         hold_document(
             &proxy,
             widget_versions(attested).as_bytes(),
@@ -6696,5 +6721,120 @@ mod tests {
         let (status, body) = refused(pinned(&proxy, WIDGET_2).await).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
         assert!(body.contains("https://elsewhere.example"), "{body}");
+    }
+
+    /// PyPI project `x`: 1.0 then 2.0, each an sdist and a wheel, as a PEP 691 index. A
+    /// version in `attested` publishes provenance for both its files, on pypi.org.
+    fn x_index(attested: &[&str]) -> String {
+        let mut files = Vec::new();
+        for (day, version) in [(1, "1.0"), (2, "2.0")] {
+            for file in [
+                format!("x-{version}.tar.gz"),
+                format!("x-{version}-py3-none-any.whl"),
+            ] {
+                let mut entry = serde_json::json!({
+                    "filename": file,
+                    "url": format!("https://files.pythonhosted.org/packages/aa/bb/{file}"),
+                    "hashes": {"sha256": x_hex(&file)},
+                    "upload-time": format!("2026-01-0{day}T00:00:00Z"),
+                });
+                if attested.contains(&version) {
+                    entry["provenance"] = serde_json::json!(format!(
+                        "https://pypi.org/integrity/x/{version}/{file}/provenance"
+                    ));
+                }
+                files.push(entry);
+            }
+        }
+        serde_json::json!({"meta": {"api-version": "1.1"}, "name": "x", "files": files}).to_string()
+    }
+
+    fn x_hex(file: &str) -> String {
+        use sha2::{Digest, Sha256};
+        Sha256::digest(file.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
+
+    fn x_digest(file: &str) -> Sri {
+        use base64::Engine as _;
+        use sha2::{Digest, Sha256};
+        Sri::parse(&format!(
+            "sha256-{}",
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(file.as_bytes()))
+        ))
+        .expect("parses")
+    }
+
+    const X_WHEEL_2: &str = "/packages/aa/bb/x-2.0-py3-none-any.whl";
+
+    /// A wheel is checked against its own attestation, and against the previous version as
+    /// a whole, whose identity is read from its sdist.
+    #[tokio::test]
+    async fn a_pypi_file_is_checked_against_the_version_before_it() {
+        let cases = [
+            ("pypi-changed", verified("b"), false),
+            ("pypi-same", verified("a"), true),
+        ];
+        for (label, wheel, served) in cases {
+            let results = [
+                (x_digest("x-1.0.tar.gz"), verified("a")),
+                (x_digest("x-2.0-py3-none-any.whl"), wheel),
+            ];
+            let (proxy, _) = attesting_proxy(label, PROVENANCE, &results, &[]).await;
+            served_filenames(&proxy, x_index(&["1.0", "2.0"]).as_bytes()).await;
+            let step = pinned(&proxy, X_WHEEL_2).await;
+            if served {
+                assert!(fetched(&step), "{label}");
+            } else {
+                let (status, body) = refused(step).await;
+                assert_eq!(status, StatusCode::FORBIDDEN, "{label}");
+                assert!(
+                    body.contains("built by b, and 1.0 was built by a"),
+                    "{body}"
+                );
+            }
+        }
+    }
+
+    /// A release with no provenance after one with some is taken out of the index, and a
+    /// pinned fetch of either of its files is refused.
+    #[tokio::test]
+    async fn a_pypi_release_that_drops_provenance_is_filtered_and_refused() {
+        let (proxy, _) = attesting_proxy("pypi-dropped", PROVENANCE, &[], &[]).await;
+        assert_eq!(
+            served_filenames(&proxy, x_index(&["1.0"]).as_bytes()).await,
+            ["x-1.0.tar.gz", "x-1.0-py3-none-any.whl"]
+        );
+        let (status, body) = refused(pinned(&proxy, X_WHEEL_2).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("publishes no attestation"), "{body}");
+    }
+
+    /// A wheel no reader reads still has its attestations verified, and waits for them.
+    #[tokio::test]
+    async fn a_wheel_waits_for_its_attestations() {
+        let (proxy, analyser) = attesting_proxy("pypi-pending", PROVENANCE, &[], &[]).await;
+        served_filenames(&proxy, x_index(&["1.0", "2.0"]).as_bytes()).await;
+        let (status, _) = refused(pinned(&proxy, X_WHEEL_2).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        analyser.ended(1).await;
+    }
+
+    /// PEP 740's attestations are served beside the index, not by the file host.
+    #[test]
+    fn pypi_attestations_are_fetched_from_the_index_host() {
+        let proxy = offline(None, None);
+        assert_eq!(
+            attestation_url(
+                &proxy,
+                Ecosystem::PyPI,
+                "https://pypi.org/integrity/x/1.0/x-1.0.tar.gz/provenance"
+            ),
+            Ok(format!(
+                "{NO_UPSTREAM}/integrity/x/1.0/x-1.0.tar.gz/provenance"
+            ))
+        );
     }
 }

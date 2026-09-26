@@ -1,7 +1,8 @@
 # PyPI provenance: the index says where the bundle is
 
-- **Status:** Implemented 2026-09-21, read only. `wire::File::provenance`,
-  `html`'s `data-provenance`, `record::Provenance::attestation_url`.
+- **Status:** Implemented 2026-09-21, read only; verified since 2026-09-26 by the
+  `provenance` check ([provenance-check](provenance-check.md)). `wire::File::provenance`,
+  `html`'s `data-provenance`, `record::Artifact::attestation_url`.
 - **Related:** [adapter-interface](adapter-interface.md),
   [pep-503-html-index](pep-503-html-index.md)
 

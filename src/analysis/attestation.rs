@@ -124,6 +124,11 @@ pub enum Previous {
 
 /// What the check reads of the version published before: which one it is, where its
 /// attestations are, and the digest they bind.
+///
+/// The version as a whole. It claims attestations when any of its files does, and its
+/// identity is read from its attested sdist, or from its first attested file when it has
+/// no sdist. On PyPI no release was found attesting only some of its files, in 10 projects
+/// measured on 2026-09-26, so which file does not change the answer.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prior {
     pub version: String,
@@ -133,10 +138,19 @@ pub struct Prior {
 
 impl Prior {
     fn of(record: &PackageRecord) -> Self {
+        let attested = || {
+            record
+                .artifacts
+                .iter()
+                .filter(|a| a.attestation_url.is_some())
+        };
+        let file = attested()
+            .find(|a| !a.filename.ends_with(".whl"))
+            .or_else(|| attested().next());
         Self {
             version: record.package.version().to_owned(),
-            attestation_url: record.provenance.attestation_url.clone(),
-            integrity: record.artifact().and_then(|a| a.integrity.clone()),
+            attestation_url: file.and_then(|a| a.attestation_url.clone()),
+            integrity: file.and_then(|a| a.integrity.clone()),
         }
     }
 }
@@ -187,19 +201,11 @@ pub fn predecessors(records: &[PackageRecord], times: Option<&PublishTimes>) -> 
     out
 }
 
-/// What a PyPI version's attestations say, until PEP 740 is read: see
-/// `docs/engineering_decisions/provenance-check.md`.
-pub const PYPI_NOT_VERIFIED: Provenance =
-    Provenance::Unknown("PyPI attestations are not verified yet");
-
 /// The fact as metadata alone answers it, with nothing verified: dropped provenance, or a
 /// version and its predecessor that both publish none. Anything that needs a verification
 /// is [`Provenance::NOT_VERIFIED`]. What the resolution path, `explain` and `policy diff`
 /// decide on.
 pub fn from_metadata(this: &PackageRecord, previous: &Previous) -> Provenance {
-    if this.package.key().ecosystem() == crate::identity::Ecosystem::PyPI {
-        return PYPI_NOT_VERIFIED;
-    }
     match provenance(this, previous, None, None) {
         Answer::Known(fact) => fact,
         Answer::Needs { .. } => Provenance::NOT_VERIFIED,

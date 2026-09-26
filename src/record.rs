@@ -254,6 +254,11 @@ pub struct Artifact {
     /// one invites code that treats them alike.
     pub legacy_sha1: Option<String>,
 
+    /// Where the registry serves this file's attestations, when it claims any. npm's
+    /// `dist.attestations.url`, one per version; PyPI's PEP 740 `provenance`, one per file.
+    /// Per file, so a pinned fetch of a wheel is checked against the wheel's.
+    pub attestation_url: Option<String>,
+
     pub file_count: Option<u64>,
     pub unpacked_size: Option<u64>,
 }
@@ -296,6 +301,10 @@ impl PackageRecord {
         Some(Self {
             has_install_scripts: artifact.runs_install_scripts,
             yanked: artifact.yanked.clone(),
+            provenance: Provenance {
+                attestation_url: artifact.attestation_url.clone(),
+                ..self.provenance.clone()
+            },
             artifacts: vec![artifact],
             ..self.clone()
         })
@@ -341,6 +350,7 @@ mod tests {
                 url: format!("https://registry.npmjs.org/{name}/-/{name}-{version}.tgz"),
                 integrity: Some("sha512-AAAA".into()),
                 legacy_sha1: Some("da39a3ee5e6b4b0d3255bfef95601890afd80709".into()),
+                attestation_url: None,
                 file_count: Some(9),
                 unpacked_size: Some(37893),
             }],
@@ -420,6 +430,37 @@ mod tests {
 
     /// A filename the record does not hold falls back to the version-level answer, which
     /// is what the proxy logs and warns about.
+    /// A PyPI version's files each carry their own attestation. Narrowed to one, the
+    /// record claims that file's, whatever the version's preferred file claimed, and keeps
+    /// the rest of the version's provenance.
+    #[test]
+    fn narrowing_takes_the_files_own_attestation() {
+        let mut record = abbreviated("x", "1.0.0", false);
+        record.provenance.predicate_type = Some("https://slsa.dev/provenance/v1".into());
+        record.provenance.attestation_url = Some("https://example/wheel".into());
+        let mut sdist = record.artifacts[0].clone();
+        sdist.filename = "x-1.0.0.tar.gz".into();
+        sdist.attestation_url = None;
+        let mut wheel = record.artifacts[0].clone();
+        wheel.filename = "x-1.0.0-py3-none-any.whl".into();
+        wheel.attestation_url = Some("https://example/wheel".into());
+        record.artifacts = vec![wheel, sdist];
+
+        let narrowed = record.narrowed_to("x-1.0.0.tar.gz").expect("names a file");
+        assert_eq!(narrowed.provenance.attestation_url, None);
+        assert_eq!(
+            narrowed.provenance.predicate_type.as_deref(),
+            Some("https://slsa.dev/provenance/v1")
+        );
+        let narrowed = record
+            .narrowed_to("x-1.0.0-py3-none-any.whl")
+            .expect("names a file");
+        assert_eq!(
+            narrowed.provenance.attestation_url.as_deref(),
+            Some("https://example/wheel")
+        );
+    }
+
     #[test]
     fn an_unknown_filename_falls_back_to_the_versions_own_answer() {
         let record = abbreviated("lodash", "4.17.21", true);

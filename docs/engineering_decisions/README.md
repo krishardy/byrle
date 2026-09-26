@@ -41,12 +41,12 @@ code, and the file names where.
 | [One library crate and one binary, not a workspace](one-crate.md) | Decided |
 | [waharoa resolves no version ranges](no-range-resolution.md) | Decided |
 | [The PEP 503 HTML index is read, not forwarded](pep-503-html-index.md) | Implemented |
-| [PyPI provenance: the index says where the bundle is](pypi-provenance.md) | Implemented, read only |
+| [PyPI provenance: the index says where the bundle is](pypi-provenance.md) | Implemented, verified by the provenance check |
 | [Install scripts are read from the artifact](install-scripts-from-the-artifact.md) | Implemented, the reader |
 | [An artifact's analysis is kept under the digest of its bytes](artifact-analysis-store.md) | Implemented, the store |
 | [An artifact is analysed in the background, spooled to disk](artifact-spool.md) | Implemented |
-| [Attestations are verified with `sigstore-verify`](sigstore-verifier.md) | Implemented, not yet on the request path |
-| [The provenance check refuses a version its attestations contradict](provenance-check.md) | Decided; the policy engine implemented |
+| [Attestations are verified with `sigstore-verify`](sigstore-verifier.md) | Implemented |
+| [The provenance check refuses a version its attestations contradict](provenance-check.md) | Implemented, npm and PyPI |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

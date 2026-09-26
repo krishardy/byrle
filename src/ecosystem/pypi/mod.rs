@@ -36,6 +36,7 @@
 //!
 //! `crate::ecosystem::npm` has the same files plus `lockfile.rs` and `clients.rs`.
 
+pub mod attestation;
 pub mod clients;
 pub mod error;
 pub mod html;

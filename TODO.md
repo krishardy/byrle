@@ -2358,7 +2358,7 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
             unreadable archive, or one with no strong digest, counts as running scripts;
             a digest mismatch is a 502. An `undeclared` claim is logged whatever the
             policy says ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
-- [~] `[!]` **Provenance enforcement** — sigstore / npm provenance verification.
+- [x] `[!]` **Provenance enforcement** — sigstore / npm provenance verification.
       `provenance: block` refuses a failed verification, dropped provenance, or a changed
       repository or workflow, against the version published before
       ([provenance-check](docs/engineering_decisions/provenance-check.md)).
@@ -2369,7 +2369,9 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         connection stores nothing.
   - [x] Decide dropped provenance on resolution, from metadata alone, and fetch the full
         packument for publish times when `provenance: block`.
-  - [ ] PyPI: PEP 740, reported unenforced until built.
+  - [x] PyPI: PEP 740, rebuilt as a Sigstore bundle by `ecosystem::pypi::attestation` and
+        fetched from `/integrity/` on the index's host. The requested file against its
+        own attestation, and against the previous version as a whole.
   - [x] `[!]` Validate `sigstore-rs` maturity first; cosign shell-out as fallback.
         `sigstore` 0.14.0 verified none of npm's two attestations or a PEP 740 one, and
         skips the log's inclusion proof. `sigstore-verify` 0.13.0, from
