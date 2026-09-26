@@ -15,16 +15,22 @@ the artifact from upstream, writes it to the spool, checks its digest, reads it,
 the analysis under the digest.
 
 The request is answered 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready:
-artifact-analysis`, only when the answer depends on the analysis: the metadata claims no
-install script, and the policy would refuse the version if it ran one. The proxy asks the
-policy both ways. Otherwise the request is served on the claim, and the next fetch of the
-same digest is decided on the analysis.
+artifact-analysis`, only when the answer depends on the analysis: what is known passes, and
+the policy would refuse the version if the pending analysis found the worst, scripts that
+run and an attestation that does not verify. The proxy asks the policy both ways
+(`Analysed::worst`). Otherwise the request is served on what is known, and the next fetch
+of the same digest is decided on the analysis.
+
+The same job verifies the attestations the provenance check needs, this version's and the
+previous version's, each against the digest the packument published for it. See
+[provenance-check](provenance-check.md).
 
 | Policy, for this package | First fetch of an unanalysed artifact |
 |---|---|
 | none, `install_scripts: allow`, or an exception allowing its scripts | served |
 | `install_scripts: block`, claim of a script | refused on the claim |
 | `install_scripts: block`, no claim | 503; the retry is decided on the analysis |
+| `provenance: block`, it or the version before it publishes attestations nothing verified | 503; the retry is decided on the verification |
 
 The retry is fetched from upstream again through `proxy::VerifyingStream`.
 

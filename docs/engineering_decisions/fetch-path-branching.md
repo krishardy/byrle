@@ -34,7 +34,8 @@ There is no mid-stream branch. The digest decides up front, before a byte is fet
 - The registry-supplied hash is a cache key, not a trust anchor. We verify the digest of
   what actually arrives; a mismatch is a finding.
 - Under `install_scripts: block`, the first fetch of a version that claims no script is
-  deferred once. bun, whose total patience is 0.2s, and yarn 1, which gives up on a 503
+  deferred once, and under `provenance: block` so is the first fetch of a version whose
+  attestations, or whose predecessor's, nothing has verified. bun, whose total patience is 0.2s, and yarn 1, which gives up on a 503
   tarball after one retry, fail that first install; the next install is served from the
   stored analysis ([deferral-status-codes](deferral-status-codes.md)).
 - Status codes: 502 upstream unreachable or malformed, or serving bytes its metadata does

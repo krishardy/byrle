@@ -1,8 +1,8 @@
 # The provenance check refuses a version its attestations contradict
 
-- **Status:** Decided 2026-09-26. The policy engine is implemented: `provenance` in
-  `src/policy.rs`, `Check::Provenance` and `decide::Provenance`. Nothing supplies the fact
-  yet, so the check is reported unenforced for every package.
+- **Status:** Implemented 2026-09-26 for npm: `provenance` in `src/policy.rs`,
+  `decide::Provenance`, `analysis::attestation`, `ecosystem::npm::attestation`, and
+  `proxy::attested`. PyPI is reported unenforced.
 - **Related:** [sigstore-verifier](sigstore-verifier.md),
   [pypi-provenance](pypi-provenance.md),
   [policy-schema-v1-frozen](policy-schema-v1-frozen.md),
@@ -50,6 +50,28 @@ reached writes nothing, so a missing row means not yet verified.
 - **Unknown**: nothing verified an attestation this version publishes, or the previous
   version is not known. The check is dropped by `enforce::unenforceable` and reported
   unenforced, as `cooldown_days` is without a publish date.
+
+## Where it is decided
+
+| Path | What it knows | Decides |
+|---|---|---|
+| Resolution, a packument filtered | the document only | dropped provenance, which needs nothing verified |
+| Pinned fetch | the document, and verification results by digest | all three |
+| `waharoa explain` | the document only | dropped provenance |
+
+A pinned fetch whose attestations, or whose predecessor's, nothing has verified starts the
+analysis job and, under `provenance: block`, answers 503 until the retry finds the result
+([artifact-spool](artifact-spool.md)). The job verifies each against the digest the
+packument published, so the previous version's tarball is never fetched. A registry that
+answers 5xx or 429, or cannot be reached, stores nothing and the next request tries again.
+A 404, a document that is not one, or a bundle that does not verify is stored as a failure.
+
+The previous version's times come from the full packument. `provenance: block` fetches it
+as a cooldown does (`Policy::needs_publish_times`), so a policy with `cooldown_days: 0` still
+pays for the full document unless it sets `provenance: allow`.
+
+A predecessor whose attestation does not verify leaves the check unknown for the version
+after it, not refused: that version's own attestation may be sound.
 
 ## Measured
 

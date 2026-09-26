@@ -670,8 +670,9 @@ No 4xx reads as a block for any not-ready state. A 403 from a registry proxy mea
 "policy denied you", and anything else wearing that code is a trust problem. 429 is not
 used: of seven clients measured, two stop on the first one.
 
-The answer depends on the analysis when the metadata claims no install script and the
-policy would refuse the version if it ran one. bun and yarn 1 fail the first fetch of such
+The answer depends on the analysis when what is known passes and the policy would refuse
+the version if the analysis found the worst: a script the metadata did not claim, or an
+attestation that does not verify. bun and yarn 1 fail the first fetch of such
 an artifact; the next install is served from the stored analysis. The measurements, and the decision not to wait inside the
 request, are in [deferral-status-codes](engineering_decisions/deferral-status-codes.md),
 [fetch-path-branching](engineering_decisions/fetch-path-branching.md) and

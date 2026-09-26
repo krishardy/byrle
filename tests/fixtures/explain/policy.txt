@@ -20,7 +20,7 @@ checks
   install_scripts   enforced
   yanked            enforced
   deprecated        enforced
-  provenance        unenforced, no attestation is verified
+  provenance        enforced for npm; PyPI attestations are not verified
 
 === version: 1, cooldown_days: 0, no store
 settings
@@ -44,7 +44,7 @@ checks
   install_scripts   enforced
   yanked            enforced
   deprecated        enforced
-  provenance        unenforced, no attestation is verified
+  provenance        enforced for npm; PyPI attestations are not verified
 
 === examples/policy.yaml, a store without the KEV catalogue
 settings
@@ -68,7 +68,7 @@ checks
   install_scripts   enforced
   yanked            enforced
   deprecated        enforced
-  provenance        unenforced, no attestation is verified
+  provenance        enforced for npm; PyPI attestations are not verified
 
 packages[0]  internal, published by our CI
 
@@ -98,7 +98,7 @@ checks
   install_scripts   enforced
   yanked            enforced
   deprecated        enforced
-  provenance        unenforced, no attestation is verified
+  provenance        enforced for npm; PyPI attestations are not verified
 
 packages[0]  internal, published by our CI
 

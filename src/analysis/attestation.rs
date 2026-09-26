@@ -92,44 +92,94 @@ fn identity(san: &str) -> String {
 }
 
 /// The version published before another.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Previous {
     /// The version has no publish time, so nothing can be said to come before it.
     Unknown,
     /// Nothing was published before it.
     First,
     /// The version with the latest publish time earlier than it.
-    Version(Box<PackageRecord>),
+    Version(Prior),
 }
 
-/// The version of `records` published before `version`.
-///
-/// Times come from `times` when given, the full packument's `time` map, and otherwise from
-/// each record. A record with no time is not a candidate.
+/// What the check reads of the version published before: which one it is, where its
+/// attestations are, and the digest they bind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Prior {
+    pub version: String,
+    pub attestation_url: Option<String>,
+    pub integrity: Option<String>,
+}
+
+impl Prior {
+    fn of(record: &PackageRecord) -> Self {
+        Self {
+            version: record.package.version().to_owned(),
+            attestation_url: record.provenance.attestation_url.clone(),
+            integrity: record.artifact().and_then(|a| a.integrity.clone()),
+        }
+    }
+}
+
+/// When a record was published: from `times` when given, the full packument's `time` map,
+/// and otherwise from the record.
+fn published(record: &PackageRecord, times: Option<&PublishTimes>) -> Option<jiff::Timestamp> {
+    times
+        .and_then(|t| t.get(record.package.version()).copied())
+        .or(record.published_at)
+}
+
+/// The version of `records` published before `version`. A record with no time is not a
+/// candidate.
 pub fn previous(
     records: &[PackageRecord],
     version: &str,
     times: Option<&PublishTimes>,
 ) -> Previous {
-    let time = |record: &PackageRecord| {
-        times
-            .and_then(|t| t.get(record.package.version()).copied())
-            .or(record.published_at)
-    };
-    let Some(published) = records
-        .iter()
-        .find(|r| r.package.version() == version)
-        .and_then(time)
-    else {
+    let Some(index) = records.iter().position(|r| r.package.version() == version) else {
         return Previous::Unknown;
     };
-    records
+    predecessors(records, times).swap_remove(index)
+}
+
+/// The version published before each of `records`, in their order. One sort, rather than a
+/// scan per version, for a document that lists thousands.
+///
+/// Versions published at the same instant are not before one another. Among several
+/// published at the latest earlier instant, the one listed last is taken.
+pub fn predecessors(records: &[PackageRecord], times: Option<&PublishTimes>) -> Vec<Previous> {
+    let mut dated: Vec<(jiff::Timestamp, usize)> = records
         .iter()
-        .filter_map(|r| time(r).filter(|t| *t < published).map(|t| (t, r)))
-        .max_by_key(|(t, _)| *t)
-        .map_or(Previous::First, |(_, r)| {
-            Previous::Version(Box::new(r.clone()))
-        })
+        .enumerate()
+        .filter_map(|(i, r)| published(r, times).map(|t| (t, i)))
+        .collect();
+    dated.sort();
+    let mut out = vec![Previous::Unknown; records.len()];
+    let mut before: Option<usize> = None;
+    for group in dated.chunk_by(|a, b| a.0 == b.0) {
+        for &(_, i) in group {
+            out[i] = before.map_or(Previous::First, |p| {
+                Previous::Version(Prior::of(&records[p]))
+            });
+        }
+        before = group.last().map(|&(_, i)| i);
+    }
+    out
+}
+
+/// What a PyPI version's attestations say, until PEP 740 is read: see
+/// `docs/engineering_decisions/provenance-check.md`.
+pub const PYPI_NOT_VERIFIED: Provenance =
+    Provenance::Unknown("PyPI attestations are not verified yet");
+
+/// The fact as metadata alone answers it, with nothing verified: dropped provenance, or a
+/// version and its predecessor that both publish none. Anything that needs a verification
+/// is [`Provenance::NOT_VERIFIED`]. What the resolution path decides on.
+pub fn from_metadata(this: &PackageRecord, previous: &Previous) -> Provenance {
+    match provenance(this, previous, None, None) {
+        Answer::Known(fact) => fact,
+        Answer::Needs { .. } => Provenance::NOT_VERIFIED,
+    }
 }
 
 /// The provenance fact, or which attestations still have to be verified to reach it.
@@ -154,7 +204,6 @@ pub fn provenance(
     this_result: Option<&Attested>,
     previous_result: Option<&Attested>,
 ) -> Answer {
-    let claims = |record: &PackageRecord| record.provenance.attestation_url.is_some();
     let prior = match previous {
         Previous::Unknown => {
             return Answer::Known(Provenance::Unknown(
@@ -162,13 +211,13 @@ pub fn provenance(
             ));
         }
         Previous::First => None,
-        Previous::Version(record) => Some(record.as_ref()),
+        Previous::Version(prior) => Some(prior),
     };
-    let prior_claims = prior.is_some_and(claims);
-    if !claims(this) {
+    let prior_claims = prior.is_some_and(|p| p.attestation_url.is_some());
+    if this.provenance.attestation_url.is_none() {
         return Answer::Known(match prior {
             Some(prior) if prior_claims => Provenance::Dropped {
-                previous: prior.package.version().to_owned(),
+                previous: prior.version.clone(),
             },
             _ => Provenance::Consistent,
         });
@@ -202,7 +251,7 @@ pub fn provenance(
         }
         Some(Attested::Verified { identity: before }) => {
             Answer::Known(Provenance::IdentityChanged {
-                previous: prior.package.version().to_owned(),
+                previous: prior.version.clone(),
                 from: before.clone(),
                 to: identity.clone(),
             })
@@ -311,7 +360,7 @@ mod tests {
 
     fn version(previous: Previous) -> Option<String> {
         match previous {
-            Previous::Version(record) => Some(record.package.version().to_owned()),
+            Previous::Version(prior) => Some(prior.version),
             _ => None,
         }
     }

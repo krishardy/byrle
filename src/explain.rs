@@ -233,7 +233,7 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
                 },
             ) => "unenforced, no exploitation stream",
             (Check::CooldownDays, _) if !policy.uses_cooldown() => "off",
-            (Check::Provenance, _) => "unenforced, no attestation is verified",
+            (Check::Provenance, _) => "enforced for npm; PyPI attestations are not verified",
             _ => "enforced",
         };
         out.push_str(&format!("  {:16}  {state}\n", check.as_str()));
@@ -366,7 +366,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
 
     // Only when the policy asks for it, the same gate the proxy uses.
     // A cooldown that cannot be judged is an answer `explain` cannot give.
-    let times = if policy.uses_cooldown() {
+    let times = if policy.needs_publish_times() {
         match clients.publish_times(reference.key()).await {
             Ok(times) => times,
             Err(e) => {
@@ -387,7 +387,18 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
             return out.stop(1);
         }
     };
-    let mut facts = crate::policy::decide::Facts::from_record_and_times(package, times.as_ref());
+    // What the document answers without verifying anything, as the proxy's resolution path
+    // decides it: dropped provenance, or nothing to verify.
+    use crate::analysis::attestation;
+    let provenance = match reference.key().ecosystem() {
+        crate::identity::Ecosystem::Npm => attestation::from_metadata(
+            package,
+            &attestation::previous(&metadata.records, reference.version(), times.as_ref()),
+        ),
+        crate::identity::Ecosystem::PyPI => attestation::PYPI_NOT_VERIFIED,
+    };
+    let mut facts = crate::policy::decide::Facts::from_record_and_times(package, times.as_ref())
+        .with_provenance(provenance);
     if let Some(intel) = &intel {
         facts = facts.with_intel(intel);
     }
