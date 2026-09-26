@@ -10,10 +10,10 @@
 //! first time it is fetched. The request is answered 503 only when the answer depends on
 //! the analysis, and the retry is decided on what was stored. See `docs/engineering_decisions/artifact-spool.md`.
 //!
-//! # Cost tiers
-//!
-//! Every detector declares what it costs. Since 2026-09-26 the tier no longer decides
-//! whether a request waits, because none does.
+//! There is no cost tier. It decided whether a request waited for a detector, and none
+//! does. An expensive detector, source diffing, runs only when the cheap checks have not
+//! already refused the version: see `docs/engineering_decisions/policy-tier-resolution.md`,
+//! "Where the short circuit survives".
 
 pub mod attestation;
 pub mod postgres;
@@ -24,16 +24,6 @@ use std::io::Read;
 
 use crate::identity::Ecosystem;
 use crate::record::DocumentDetail;
-
-/// What running a detector costs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Tier {
-    /// Runs on the bytes in hand, in the time it takes to decompress them. Reading
-    /// `package.json` out of a tarball took 0.4ms for `bufferutil` 4.1.0, 163,631 bytes.
-    Cheap,
-    /// Needs a clone, a sandbox or another service.
-    Expensive,
-}
 
 /// The lifecycle scripts an artifact declares, read from the artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -113,7 +103,7 @@ const NPM_INSTALL_SCRIPTS: [&str; 3] = ["preinstall", "install", "postinstall"];
 
 /// The scripts an npm tarball's own `package.json` declares.
 ///
-/// [`Tier::Cheap`]: one gzip stream and one JSON object.
+/// One gzip stream and one JSON object: 0.4ms for `bufferutil` 4.1.0, 163,631 bytes.
 pub fn npm_install_scripts(tarball: impl Read) -> Result<InstallScripts, ReadError> {
     let manifest = member(tarball, |path| path.ends_with("package.json"))?;
     let manifest: serde_json::Value =
