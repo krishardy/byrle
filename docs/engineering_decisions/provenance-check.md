@@ -1,8 +1,8 @@
 # The provenance check refuses a version its attestations contradict
 
-- **Status:** Implemented 2026-09-26 for npm: `provenance` in `src/policy.rs`,
-  `decide::Provenance`, `analysis::attestation`, `ecosystem::npm::attestation`, and
-  `proxy::attested`. PyPI is reported unenforced.
+- **Status:** Implemented 2026-09-26 for npm and PyPI: `provenance` in `src/policy.rs`,
+  `decide::Provenance`, `analysis::attestation`, `ecosystem::npm::attestation`,
+  `ecosystem::pypi::attestation`, and `proxy::attested`.
 - **Related:** [sigstore-verifier](sigstore-verifier.md),
   [pypi-provenance](pypi-provenance.md),
   [policy-schema-v1-frozen](policy-schema-v1-frozen.md),
@@ -30,10 +30,22 @@ expected false positive for each.
 
 Where the attestations are served and how they are laid out is the adapter's:
 `ecosystem::npm::attestation` takes npm's document to the SLSA provenance bundle, and
-leaves npm's publish attestation, which a registry key signs and no build does. PyPI's PEP
-740 document is shaped differently, binds a sha256 rather than a sha512, and a version has
-several files, so which file came before is its own decision. PyPI is reported unenforced
-until that is built.
+leaves npm's publish attestation, which a registry key signs and no build does.
+`ecosystem::pypi::attestation` rebuilds PEP 740's provenance object as a Sigstore bundle:
+its certificate and log entries become the verification material, and its statement and
+signature a DSSE envelope. PyPI serves it at `/integrity/` on the index's host, and the
+statement binds the file's sha256.
+
+A PyPI version has several files, each with its own attestation. The requested file is
+checked against its own. The version before it is read as a whole: it claims attestations
+when any of its files does, and its identity is read from its attested sdist, or its first
+attested file when it has no sdist. In 10 projects measured on 2026-09-26, attrs, requests,
+sigstore, pydantic, cryptography, urllib3, idna, certifi, pip and setuptools, 1,634 versions
+in all, no release attested only some of its files, and none dropped provenance after an
+attested release.
+
+A PEP 503 HTML index carries no upload time, so under one the version before is not known
+and the check is reported unenforced.
 
 Verification, identity, the stored result and the fact are shared:
 `analysis::attestation::verify` takes a Sigstore bundle and the digest the metadata
@@ -58,7 +70,7 @@ reached writes nothing, so a missing row means not yet verified.
 |---|---|---|
 | Resolution, a packument filtered | the document only | dropped provenance, which needs nothing verified |
 | Pinned fetch | the document, and verification results by digest | all three |
-| `waharoa explain` | the document only | dropped provenance |
+| `waharoa explain`, `waharoa policy diff` | the document only | dropped provenance |
 
 A pinned fetch whose attestations, or whose predecessor's, nothing has verified starts the
 analysis job and, under `provenance: block`, answers 503 until the retry finds the result

@@ -20,6 +20,7 @@ fn artifact(file: &File) -> crate::record::Artifact {
         integrity: file.sha256.as_deref().and_then(sri),
         // PyPI's index gives sha256 and nothing weaker.
         legacy_sha1: None,
+        attestation_url: file.provenance.clone(),
         file_count: None,
         unpacked_size: None,
     }

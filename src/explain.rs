@@ -233,7 +233,6 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
                 },
             ) => "unenforced, no exploitation stream",
             (Check::CooldownDays, _) if !policy.uses_cooldown() => "off",
-            (Check::Provenance, _) => "enforced for npm; PyPI attestations are not verified",
             _ => "enforced",
         };
         out.push_str(&format!("  {:16}  {state}\n", check.as_str()));

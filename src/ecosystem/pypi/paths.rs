@@ -114,7 +114,14 @@ pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
 /// `/simple` prefix comes off before the rest is appended. A path under a PyPI prefix that
 /// names no project still goes to PyPI: `/simple/` is the root index, and answering pip
 /// with an npm registry's 404 says nothing useful.
+///
+/// `/integrity/`, PEP 740's attestations, is served by the index's host beside `/simple`:
+/// `https://pypi.org/integrity/attrs/26.1.0/attrs-26.1.0.tar.gz/provenance`.
 pub fn upstream_url(index: &str, path_and_query: &str) -> String {
+    if path_and_query.starts_with("/integrity/") {
+        let host = index.strip_suffix("/simple").unwrap_or(index);
+        return format!("{host}{path_and_query}");
+    }
     match path_and_query.strip_prefix("/simple") {
         Some(rest) => format!("{index}{rest}"),
         None => format!("{FILES}{path_and_query}"),
