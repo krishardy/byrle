@@ -1,9 +1,10 @@
 //! A map that keeps the most recently used entries and drops the rest.
 //!
-//! Two stores need one, and both are bounded by entry count because a proxy left running
-//! accumulates entries for as long as it runs: [`crate::verified`] holds the digests of
-//! artifacts that have been past, and [`crate::analysis::store::InProcess`] holds what was
-//! found in them.
+//! Every map keyed by artifact digest uses one, bounded by entry count because a proxy left
+//! running accumulates entries for as long as it runs: [`crate::verified`] holds the
+//! digests of artifacts that have been past, [`crate::analysis::store::InProcess`] what was
+//! found in them, [`crate::analysis::run::Analyser`] the digests whose last fetch did not
+//! match, and the proxy the artifacts it deferred.
 //!
 //! [`crate::store::RecordStore`] is not one of them. Its budget counts the records inside
 //! an entry rather than the entries, because one packument carries up to 3,822 of them.
@@ -49,6 +50,11 @@ impl<K: Eq + Hash + Clone, V> Lru<K, V> {
         let last_used = self.clock;
         self.entries.insert(key, Entry { value, last_used });
         self.evict_to_budget();
+    }
+
+    /// Take the value held under `key` out of the map.
+    pub fn remove(&mut self, key: &K) -> Option<V> {
+        self.entries.remove(key).map(|entry| entry.value)
     }
 
     pub fn len(&self) -> usize {
@@ -120,6 +126,15 @@ mod tests {
     }
 
     /// A budget of zero would pay for every lookup and hold nothing.
+    #[test]
+    fn a_removed_key_holds_nothing() {
+        let mut lru = Lru::new(4);
+        lru.insert("a", 1);
+        assert_eq!(lru.remove(&"a"), Some(1));
+        assert_eq!(lru.remove(&"a"), None);
+        assert!(lru.is_empty());
+    }
+
     #[test]
     fn a_budget_below_one_is_raised_to_one() {
         let mut lru: Lru<u8, &str> = Lru::new(0);

@@ -72,6 +72,7 @@ use crate::refusal::RefusalStatus;
 use crate::route::{DocumentKind, RequestTarget};
 use crate::spool::Spool;
 use crate::store::{Lookup, RecordStore};
+use crate::util::lru::Lru;
 use crate::verified::VerifiedArtifacts;
 use axum::{
     Router,
@@ -198,6 +199,8 @@ pub struct Proxy {
     metadata_slots: Arc<Semaphore>,
     /// The intel snapshot [`intel_for`] last read coverage from. See [`snapshot_named`].
     coverage: Arc<Mutex<Option<LoadedSnapshot>>>,
+    /// Artifacts answered 503 while their analysis ran. See [`Deferred`].
+    deferred: Arc<Mutex<Deferred>>,
 }
 
 /// What the builders set. Nothing here changes once the proxy is serving.
@@ -288,6 +291,7 @@ impl Proxy {
             store: Arc::new(Mutex::new(RecordStore::new(DEFAULT_MAX_RECORDS))),
             verified: Arc::new(Mutex::new(VerifiedArtifacts::new(DEFAULT_MAX_VERIFIED))),
             coverage: Arc::new(Mutex::new(None)),
+            deferred: Arc::new(Mutex::new(Deferred(Lru::new(DEFAULT_MAX_VERIFIED)))),
             metadata_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_METADATA)),
         };
         proxy.rebuilt()
@@ -1456,6 +1460,11 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     )
     .await;
     let record = &analysed.record;
+    if !matches!(analysed.state, AnalysisState::Pending(_))
+        && let Some(digest) = &fetch.digest
+    {
+        returned(proxy, digest, path, client);
+    }
 
     // A record read from a full document carries its own publish time; only one without
     // it needs the time fetched.
@@ -1552,17 +1561,73 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         AnalysisState::Pending(job) => {
             // Started whatever the answer, so the next fetch of these bytes is decided on
             // the analysis and an undeclared script is reported.
+            let digest = job.digest.clone();
             if let Some(analyser) = &proxy.config.analyser {
                 analyser.start(job);
             }
             if !waits_for_analysis {
                 return ArtifactStep::Fetch(fetch);
             }
-            info!(%method, path = %path, claimed_purl = %purl, client = %client, "deferred: the artifact has not been analysed");
-            ArtifactStep::Answer(NotReady::Analysing(purl).response())
+            let deferrals = proxy.deferred.lock().expect("deferred lock").defer(&digest);
+            info!(
+                %method,
+                path = %path,
+                claimed_purl = %purl,
+                digest = %digest,
+                deferrals,
+                client = %client,
+                "deferred: the artifact has not been analysed"
+            );
+            ArtifactStep::Answer(NotReady::Analysing { purl, digest }.response())
         }
         AnalysisState::Decided => ArtifactStep::Fetch(fetch),
     }
+}
+
+/// The artifacts answered 503 while their analysis ran, by digest.
+///
+/// What turns `docs/engineering_decisions/deferral-status-codes.md`'s client table into
+/// evidence: each deferral is logged, and so is the request that finds the analysis
+/// stored, with how long after the first deferral it came. A digest with a deferral line
+/// and no return line is a client that gave up.
+struct Deferred(Lru<Sri, Deferral>);
+
+struct Deferral {
+    first: Instant,
+    count: u32,
+}
+
+impl Deferred {
+    /// Count a deferral of `digest`, and return how many there have been.
+    fn defer(&mut self, digest: &Sri) -> u32 {
+        let (first, count) = match self.0.get(digest) {
+            Some(held) => (held.first, held.count + 1),
+            None => (Instant::now(), 1),
+        };
+        self.0.insert(digest.clone(), Deferral { first, count });
+        count
+    }
+}
+
+/// Log a request for `digest` that finds its analysis stored, when it was deferred before.
+fn returned(proxy: &Proxy, digest: &Sri, path: &str, client: &str) {
+    let Some(deferral) = proxy
+        .deferred
+        .lock()
+        .expect("deferred lock")
+        .0
+        .remove(digest)
+    else {
+        return;
+    };
+    info!(
+        path = %path,
+        digest = %digest,
+        deferrals = deferral.count,
+        after_ms = deferral.first.elapsed().as_millis() as u64,
+        client = %client,
+        "returned after a deferral"
+    );
 }
 
 /// The record to decide on, with `has_install_scripts` taken from the artifact's own
@@ -2202,6 +2267,10 @@ const RETRY_AFTER_SECONDS: &str = "1";
 /// parsing prose. Neither status code distinguishes them.
 pub const NOT_READY: header::HeaderName = header::HeaderName::from_static("x-waharoa-not-ready");
 
+/// The digest of the artifact a 503 is waiting on, when it waits on an analysis. The same
+/// value the log lines for it carry.
+pub const DEFERRED_DIGEST: header::HeaderName = header::HeaderName::from_static("x-waharoa-digest");
+
 /// Why a request is not decided on yet. Already logged; [`NotReady::response`] is what
 /// the client is sent.
 enum NotReady {
@@ -2211,9 +2280,9 @@ enum NotReady {
     /// so an empty answer would read as "nothing known" about a package nothing was asked
     /// about.
     Uncovered(Ecosystem),
-    /// The artifact, named by its purl, has not been analysed. The analysis has been
-    /// started, and the client's retry is decided on it.
-    Analysing(String),
+    /// The artifact has not been analysed. The analysis has been started, and the client's
+    /// retry is decided on it.
+    Analysing { purl: String, digest: Sri },
 }
 
 impl NotReady {
@@ -2222,7 +2291,7 @@ impl NotReady {
         match self {
             Self::Unanswered => "intel-store",
             Self::Uncovered(_) => "no-stream-for-ecosystem",
-            Self::Analysing(_) => "artifact-analysis",
+            Self::Analysing { .. } => "artifact-analysis",
         }
     }
 
@@ -2241,12 +2310,12 @@ impl NotReady {
                 "waharoa: the intel snapshot has no advisory stream for {ecosystem}, so no \
                  {ecosystem} package is served unchecked\n"
             ),
-            Self::Analysing(purl) => format!(
-                "waharoa: {purl} has not been analysed yet; the analysis has started, ask \
-                 again shortly\n"
+            Self::Analysing { purl, digest } => format!(
+                "waharoa: {purl}, {digest}, has not been analysed yet; the analysis has \
+                 started, ask again shortly\n"
             ),
         };
-        (
+        let mut response = (
             StatusCode::SERVICE_UNAVAILABLE,
             [
                 (header::RETRY_AFTER, RETRY_AFTER_SECONDS),
@@ -2254,7 +2323,13 @@ impl NotReady {
             ],
             body,
         )
-            .into_response()
+            .into_response();
+        if let Self::Analysing { digest, .. } = &self
+            && let Ok(value) = HeaderValue::from_str(&digest.to_string())
+        {
+            response.headers_mut().insert(DEFERRED_DIGEST, value);
+        }
+        response
     }
 }
 
@@ -3896,7 +3971,10 @@ mod tests {
                 "no-stream-for-ecosystem",
             ),
             (
-                NotReady::Analysing("pkg:npm/widget@1.0.0".to_owned()),
+                NotReady::Analysing {
+                    purl: "pkg:npm/widget@1.0.0".to_owned(),
+                    digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+                },
                 "artifact-analysis",
             ),
         ] {
@@ -5880,19 +5958,43 @@ mod tests {
         )
         .await;
 
-        let first = tarball_request(&base).await;
-        assert_eq!(first.status(), 503);
-        assert_eq!(first.headers()[NOT_READY.as_str()], "artifact-analysis");
-        assert_eq!(first.headers()[header::RETRY_AFTER.as_str()], "1");
-        assert!(
-            first.text().await.unwrap().contains("pkg:npm/widget@1.0.0"),
-            "the body names the artifact"
-        );
+        let digest = sri_of(&tarball);
+        let (guard, log) = capture(tracing::Level::INFO);
+        for _ in 0..2 {
+            let deferred = tarball_request(&base).await;
+            assert_eq!(deferred.status(), 503);
+            assert_eq!(deferred.headers()[NOT_READY.as_str()], "artifact-analysis");
+            assert_eq!(
+                deferred.headers()[DEFERRED_DIGEST.as_str()],
+                digest.as_str()
+            );
+            assert_eq!(deferred.headers()[header::RETRY_AFTER.as_str()], "1");
+            let body = deferred.text().await.unwrap();
+            assert!(body.contains("pkg:npm/widget@1.0.0"), "{body}");
+            assert!(body.contains(&digest), "{body}");
+        }
 
         analyser.ended(1).await;
         let retry = tarball_request(&base).await;
         assert_eq!(retry.status(), 200);
         assert_eq!(retry.bytes().await.unwrap().as_ref(), tarball.as_slice());
+        // A later request is not a return: the deferral was already reported.
+        assert_eq!(tarball_request(&base).await.status(), 200);
+        drop(guard);
+
+        let log = text(&log);
+        let returns: Vec<&str> = log
+            .lines()
+            .filter(|line| line.contains("returned after a deferral"))
+            .collect();
+        assert_eq!(returns.len(), 1, "{log}");
+        assert!(returns[0].contains("deferrals=2"), "{}", returns[0]);
+        assert!(returns[0].contains(&digest), "{}", returns[0]);
+        assert!(returns[0].contains("after_ms="), "{}", returns[0]);
+        assert!(
+            log.contains("deferrals=1") && log.contains("deferrals=2"),
+            "{log}"
+        );
     }
 
     /// Without a policy, with `install_scripts: allow`, and under an exception that allows
