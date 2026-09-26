@@ -65,6 +65,9 @@ analysis job and, under `provenance: block`, answers 503 until the retry finds t
 ([artifact-spool](artifact-spool.md)). The job verifies each against the digest the
 packument published, so the previous version's tarball is never fetched. A registry that
 answers 5xx or 429, or cannot be reached, stores nothing and the next request tries again.
+Under `provenance: block` the version answers 503 for as long as that lasts, with no bound
+after which it is served unverified: fail closed, as a cold intel store does. Decided
+2026-09-26, and pinned by `unverified_attestations_are_waited_for_only_when_they_can_refuse`.
 A 404, a document that is not one, or a bundle that does not verify is stored as a failure.
 A stored result is read back only by the verifier that wrote it, the `sigstore-verify`
 version and a digest of its embedded root, so a failure a verifier upgrade fixes is not
