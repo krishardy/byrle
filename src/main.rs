@@ -217,6 +217,15 @@ async fn run_daemon() -> std::process::ExitCode {
         );
     }
 
+    let reporting = proxy.clone();
+    tokio::spawn(async move {
+        let mut every = tokio::time::interval(waharoa::proxy::TRAFFIC_WINDOW);
+        every.tick().await;
+        loop {
+            every.tick().await;
+            reporting.report_traffic();
+        }
+    });
     axum::serve(listener, proxy.router())
         .await
         .expect("server failed");

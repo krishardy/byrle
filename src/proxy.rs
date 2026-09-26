@@ -57,7 +57,7 @@ use crate::ecosystem::{self, Clients, UncoveredMetadata, Upstreams};
 use crate::ecosystem::{npm, pypi};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_METADATA, DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_RECORDS,
-    DEFAULT_MAX_VERIFIED,
+    DEFAULT_MAX_TRAFFIC_CLIENTS, DEFAULT_MAX_VERIFIED,
 };
 use crate::http::{
     RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_conditional,
@@ -189,6 +189,20 @@ pub struct Health {
     /// install makes one per artifact, so this is a count, not a finding.
     #[serde(default)]
     pub artifacts_revalidated: u64,
+    /// Artifact requests since the proxy started for a version that depends on a package
+    /// by URL, git or path. Each is a dependency the client fetched around this proxy.
+    #[serde(default)]
+    pub artifacts_with_direct_dependencies: u64,
+    /// Metadata documents since the proxy started forwarded without being read or
+    /// rewritten, oversized or undecodable. The artifacts they list are fetched from where
+    /// they point, which is a bypass for certain.
+    #[serde(default)]
+    pub documents_uninspected: u64,
+    /// The clients the last window found reading metadata documents and fetching no
+    /// artifact, with the number of documents. A heuristic: see
+    /// [`Proxy::report_traffic`].
+    #[serde(default)]
+    pub clients_without_artifacts: BTreeMap<String, u64>,
 }
 
 #[derive(Clone)]
@@ -211,6 +225,14 @@ pub struct Proxy {
     deferred: Arc<Mutex<Deferred>>,
     /// Artifact requests answered 304, whose bytes the client took from its cache.
     revalidated: Arc<AtomicU64>,
+    /// Artifact requests for a version with a dependency named by URL, git or path.
+    direct: Arc<AtomicU64>,
+    /// Metadata documents forwarded without being read or rewritten. See [`Uninspected`].
+    uninspected: Arc<AtomicU64>,
+    /// Documents and artifacts per client in the current window. See [`Traffic`].
+    traffic: Arc<Mutex<Traffic>>,
+    /// The clients the last closed window found reading documents and fetching no artifact.
+    without_artifacts: Arc<Mutex<Vec<(String, u64)>>>,
 }
 
 /// What the builders set. Nothing here changes once the proxy is serving.
@@ -303,6 +325,10 @@ impl Proxy {
             coverage: Arc::new(Mutex::new(None)),
             deferred: Arc::new(Mutex::new(Deferred(Lru::new(DEFAULT_MAX_VERIFIED)))),
             revalidated: Arc::default(),
+            direct: Arc::default(),
+            uninspected: Arc::default(),
+            traffic: Arc::default(),
+            without_artifacts: Arc::default(),
             metadata_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_METADATA)),
         };
         proxy.rebuilt()
@@ -408,7 +434,33 @@ impl Proxy {
                 .as_ref()
                 .map(|spool| spool.dir().display().to_string()),
             artifacts_revalidated: self.revalidated.load(Ordering::Relaxed),
+            artifacts_with_direct_dependencies: self.direct.load(Ordering::Relaxed),
+            documents_uninspected: self.uninspected.load(Ordering::Relaxed),
+            clients_without_artifacts: self
+                .without_artifacts
+                .lock()
+                .expect("traffic lock")
+                .iter()
+                .cloned()
+                .collect(),
         }
+    }
+
+    /// Close the traffic window: log each client that read metadata documents and fetched
+    /// no artifact in it, keep them for [`HEALTH_PATH`], and open the next. `main` calls
+    /// this every [`TRAFFIC_WINDOW`].
+    pub fn report_traffic(&self) {
+        let quiet = self.traffic.lock().expect("traffic lock").close();
+        for (client, documents) in &quiet {
+            info!(
+                client = %client,
+                documents,
+                window_s = TRAFFIC_WINDOW.as_secs(),
+                "client read metadata documents and fetched no artifact through this proxy: it \
+                 installed nothing new, or takes artifacts from its own cache or another address"
+            );
+        }
+        *self.without_artifacts.lock().expect("traffic lock") = quiet;
     }
 
     /// The store every decision asks, when a policy is there to ask it. See [`intel_for`].
@@ -479,6 +531,13 @@ impl Proxy {
 
     pub fn with_intel(mut self, intel: Option<Arc<dyn Intel>>) -> Self {
         self.config_mut().intel = intel;
+        self
+    }
+
+    /// How many client names a traffic window counts apart. See
+    /// [`crate::env::MAX_TRAFFIC_CLIENTS`].
+    pub fn with_max_traffic_clients(self, limit: usize) -> Self {
+        self.traffic.lock().expect("traffic lock").max_clients = limit.max(1);
         self
     }
 
@@ -1044,6 +1103,7 @@ async fn filtered_document(
     {
         Ok(decoded) => decoded,
         Err(e) => {
+            proxy.uninspected.fetch_add(1, Ordering::Relaxed);
             warn!(path = %path, error = %e, "UNINSPECTED: metadata body could not be decoded");
             return DocumentStep::Forward {
                 body: None,
@@ -1222,20 +1282,25 @@ fn negotiate(
 /// says, which for pnpm, yarn and pip means not through the proxy. They all carry the same
 /// marker so one grep finds them.
 fn report_uninspected(
+    proxy: &Proxy,
     target: &RequestTarget,
     method: &Method,
     negotiation: &Negotiation,
     headers: &HeaderMap,
     path: &str,
 ) {
-    match uninspected(
+    let Some(reason) = uninspected(
         target,
         method,
         negotiation.encoding,
         negotiation.rewrite_base.as_deref(),
         negotiation.rewriting,
-    ) {
-        Some(Uninspected::Unreadable) => warn!(
+    ) else {
+        return;
+    };
+    proxy.uninspected.fetch_add(1, Ordering::Relaxed);
+    match reason {
+        Uninspected::Unreadable => warn!(
             path = %path,
             accept_encoding = headers
                 .get(header::ACCEPT_ENCODING)
@@ -1243,8 +1308,7 @@ fn report_uninspected(
                 .unwrap_or("-"),
             "UNINSPECTED: {}", Uninspected::Unreadable.reason()
         ),
-        Some(reason) => warn!(path = %path, "UNINSPECTED: {}", reason.reason()),
-        None => {}
+        reason => warn!(path = %path, "UNINSPECTED: {}", reason.reason()),
     }
 }
 
@@ -1408,6 +1472,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         deprecated = record.deprecated.as_deref().unwrap_or("-"),
         "artifact requested, digest known"
     );
+    report_direct_dependencies(proxy, record, path, client);
     // Where the packument said the artifact lives, when that is an origin the operator
     // added. Rewriting pointed the client at the proxy, so the proxy has to know where
     // "here" stood for. Everything else goes to the upstream, including artifacts
@@ -1625,6 +1690,89 @@ impl Deferred {
         self.0.insert(digest.clone(), Deferral { first, count });
         count
     }
+}
+
+/// Metadata documents and artifacts each client asked for since the window opened, by
+/// the client name its user-agent gives.
+///
+/// A client that reads documents and fetches no artifact is the signature of one that
+/// takes artifacts from somewhere this proxy is not: pnpm and yarn 1 with rewriting off, or
+/// a cache that skips the proxy. It is also what a client looks like that resolves and
+/// installs nothing new, so it is a heuristic, reported and never refused. Keyed by client
+/// name rather than address: the server does not keep the peer address, and behind a load
+/// balancer it would be the balancer's. See
+/// `docs/engineering_decisions/bypass-self-detection.md`.
+#[derive(Debug)]
+struct Traffic {
+    clients: BTreeMap<String, Counts>,
+    /// [`crate::env::MAX_TRAFFIC_CLIENTS`]: past it, a new name is counted as `other`.
+    max_clients: usize,
+}
+
+impl Default for Traffic {
+    fn default() -> Self {
+        Self {
+            clients: BTreeMap::new(),
+            max_clients: DEFAULT_MAX_TRAFFIC_CLIENTS,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct Counts {
+    documents: u64,
+    artifacts: u64,
+}
+
+impl Traffic {
+    fn count(&mut self, user_agent: &str, target: &RequestTarget) {
+        let name = crate::refusal::client_name(Some(user_agent)).unwrap_or_else(|| "-".into());
+        let name = if self.clients.len() >= self.max_clients && !self.clients.contains_key(&name) {
+            "other".to_owned()
+        } else {
+            name
+        };
+        let counts = self.clients.entry(name).or_default();
+        match target {
+            RequestTarget::Metadata(_) => counts.documents += 1,
+            RequestTarget::Artifact { .. } => counts.artifacts += 1,
+            RequestTarget::Other => {}
+        }
+    }
+
+    /// The clients that read documents and fetched no artifact, and a fresh window.
+    fn close(&mut self) -> Vec<(String, u64)> {
+        std::mem::take(&mut self.clients)
+            .into_iter()
+            .filter(|(_, c)| c.documents > 0 && c.artifacts == 0)
+            .map(|(name, c)| (name, c.documents))
+            .collect()
+    }
+}
+
+/// Say that installing this version fetches dependencies around the proxy.
+///
+/// Once per artifact request rather than per version of a packument, which would repeat it
+/// for every version a document lists. A warning, not a refusal: see
+/// `docs/engineering_decisions/bypass-self-detection.md`.
+fn report_direct_dependencies(proxy: &Proxy, record: &PackageRecord, path: &str, client: &str) {
+    if record.direct_dependencies.is_empty() {
+        return;
+    }
+    proxy.direct.fetch_add(1, Ordering::Relaxed);
+    let named: Vec<String> = record
+        .direct_dependencies
+        .iter()
+        .map(|d| format!("{} {}", d.name, d.spec))
+        .collect();
+    warn!(
+        path = %path,
+        purl = %record.package,
+        dependencies = ?named,
+        client = %client,
+        "BYPASS: this version depends on packages by URL, git or path, which the client \
+         fetches directly and this proxy never examines"
+    );
 }
 
 /// Log a request for `digest` that finds its analysis stored, when it was deferred before.
@@ -1994,12 +2142,20 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 
     let negotiation = negotiate(&proxy, ecosystem, &target, &method, req.headers());
     report_uninspected(
+        &proxy,
         &target,
         &method,
         &negotiation,
         req.headers(),
         &path_and_query,
     );
+    if method == Method::GET && !resolver_probe(ecosystem, &target) {
+        proxy
+            .traffic
+            .lock()
+            .expect("traffic lock")
+            .count(&client_ua, &target);
+    }
 
     // The digest has to be known before the artifact is fetched, not after: that is what
     // decides whether this exact artifact has been analysed (plan §5).
@@ -2137,6 +2293,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let body = match buffer_to_limit(body_stream, proxy.config.max_metadata_bytes).await {
         Buffered::Complete(body) => body,
         Buffered::Oversized { prefix, rest } => {
+            proxy.uninspected.fetch_add(1, Ordering::Relaxed);
             warn!(
                 path = %path_and_query,
                 limit = proxy.config.max_metadata_bytes,
@@ -2467,6 +2624,9 @@ const RETRY_AFTER_SECONDS: &str = "1";
 
 /// The header naming which not-ready case a 503 is, for a client or a log to read without
 /// parsing prose. Neither status code distinguishes them.
+/// How often [`Proxy::report_traffic`] closes the window.
+pub const TRAFFIC_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
+
 pub const NOT_READY: header::HeaderName = header::HeaderName::from_static("x-waharoa-not-ready");
 
 /// The digest of the artifact a 503 is waiting on, when it waits on an analysis. The same
@@ -3148,13 +3308,10 @@ mod tests {
             body.clone(),
         )
         .await;
-        let base = serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, upstream)
-                .with_max_metadata_bytes(16)
-                .router(),
-        )
-        .await;
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, upstream)
+            .with_max_metadata_bytes(16);
+        let base = serve(proxy.clone().router()).await;
 
         let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
         assert_eq!(response.status(), 200);
@@ -3163,6 +3320,7 @@ mod tests {
             body.as_slice(),
             "the whole body has to arrive, including the prefix already buffered"
         );
+        assert_eq!(proxy.health().documents_uninspected, 1);
     }
 
     // -----------------------------------------------------------------------
@@ -3823,6 +3981,7 @@ mod tests {
     /// `make smoke-clients` greps for `UNINSPECTED`, so the line is part of the interface.
     #[test]
     fn a_document_the_proxy_cannot_read_is_logged_as_uninspected() {
+        let proxy = offline(None, None);
         let report = |encoding: &str| {
             let negotiation = negotiated(None, Method::GET, "/lodash", encoding);
             let (_, target) = crate::route::classify("/lodash");
@@ -3831,12 +3990,22 @@ mod tests {
                 header::ACCEPT_ENCODING,
                 HeaderValue::from_str(encoding).unwrap(),
             );
-            logged(|| report_uninspected(&target, &Method::GET, &negotiation, &headers, "/lodash"))
+            logged(|| {
+                report_uninspected(
+                    &proxy,
+                    &target,
+                    &Method::GET,
+                    &negotiation,
+                    &headers,
+                    "/lodash",
+                )
+            })
         };
         let unread = report(UNREADABLE);
         assert!(unread.contains("UNINSPECTED"), "{unread}");
         assert!(unread.contains(UNREADABLE), "{unread}");
         assert_eq!(report("gzip"), "", "a rewritten document is inspected");
+        assert_eq!(proxy.health().documents_uninspected, 1);
     }
 
     /// Whether the packument the client receives offers `version`.
@@ -6995,5 +7164,117 @@ mod tests {
         assert_eq!(artifacts_verified(&base).await, 1);
         // The 404 is not a revalidation.
         assert_eq!(revalidations(&base).await, 1);
+    }
+
+    /// A pinned fetch of a version with a dependency named by URL says so, once, and
+    /// counts it.
+    #[tokio::test]
+    async fn a_version_depending_on_a_url_is_reported_when_fetched() {
+        let proxy = offline(None, None);
+        let packument = br#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0",
+            "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"},
+            "dependencies":{"left":"github:someone/left-pad#main","ok":"^1.0.0"}}}}"#;
+        hold_document(
+            &proxy,
+            packument,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let (guard, log) = capture(tracing::Level::WARN);
+        // Reported, not refused: the artifact is still fetched.
+        let step = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+        assert!(matches!(step, ArtifactStep::Fetch(_)));
+        drop(guard);
+        let log = text(&log);
+        let lines: Vec<&str> = log.lines().filter(|l| l.contains("BYPASS")).collect();
+        assert_eq!(lines.len(), 1, "{log}");
+        assert!(
+            lines[0].contains("left github:someone/left-pad#main"),
+            "{}",
+            lines[0]
+        );
+        assert!(!lines[0].contains("^1.0.0"), "{}", lines[0]);
+        assert_eq!(proxy.health().artifacts_with_direct_dependencies, 1);
+    }
+
+    /// A client that reads documents and fetches no artifact in a window is reported when
+    /// the window closes, and kept in health until the next one. HEAD requests and bun's
+    /// resolver probes are not counted.
+    #[tokio::test]
+    async fn a_client_reading_documents_and_no_artifacts_is_reported() {
+        let proxy = offline(None, None);
+        let (_, packument) = crate::route::classify("/lodash");
+        let (_, tarball) = crate::route::classify("/lodash/-/lodash-4.17.21.tgz");
+        {
+            let mut traffic = proxy.traffic.lock().unwrap();
+            for _ in 0..3 {
+                traffic.count("pnpm/10.0.0 npm/? node/v24", &packument);
+            }
+            traffic.count("npm/11.0.0 node/v24", &packument);
+            traffic.count("npm/11.0.0 node/v24", &tarball);
+            traffic.count("curl/8", &crate::route::RequestTarget::Other);
+        }
+        let log = logged(|| proxy.report_traffic());
+        assert!(
+            log.contains("client=pnpm") && log.contains("documents=3"),
+            "{log}"
+        );
+        assert!(!log.contains("client=npm"), "{log}");
+        assert!(!log.contains("client=curl"), "{log}");
+        assert_eq!(
+            proxy.health().clients_without_artifacts,
+            [("pnpm".to_owned(), 3)].into()
+        );
+        // The next window starts empty.
+        proxy.report_traffic();
+        assert!(proxy.health().clients_without_artifacts.is_empty());
+    }
+
+    /// Past the cap, a new client name is counted as `other`.
+    #[test]
+    fn traffic_keeps_a_bounded_number_of_client_names() {
+        let proxy = offline(None, None).with_max_traffic_clients(4);
+        let mut traffic = proxy.traffic.lock().unwrap();
+        let (_, packument) = crate::route::classify("/lodash");
+        for i in 0..4 + 5 {
+            traffic.count(&format!("client{i}/1"), &packument);
+        }
+        traffic.count("client0/1", &packument);
+        assert_eq!(traffic.clients.len(), 4 + 1);
+        assert_eq!(traffic.clients["other"].documents, 5);
+        assert_eq!(traffic.clients["client0"].documents, 2);
+        traffic.count("", &packument);
+        assert_eq!(traffic.clients["other"].documents, 6);
+    }
+
+    /// Requests through the proxy are counted by client, and a HEAD is not.
+    #[tokio::test]
+    async fn requests_through_the_proxy_are_counted_by_client() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::OK,
+            "application/vnd.npm.install-v1+json",
+            None,
+            fixture("lodash-4.17.21.abbrev.json"),
+        )
+        .await;
+        let proxy = Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, upstream);
+        let base = serve(proxy.clone().router()).await;
+        let client = reqwest::Client::new();
+        client
+            .get(format!("{base}/lodash"))
+            .header(header::USER_AGENT, "pnpm/10.0.0")
+            .send()
+            .await
+            .unwrap();
+        client
+            .head(format!("{base}/lodash"))
+            .header(header::USER_AGENT, "yarn/1.22.22")
+            .send()
+            .await
+            .unwrap();
+        proxy.report_traffic();
+        assert_eq!(
+            proxy.health().clients_without_artifacts,
+            [("pnpm".to_owned(), 1)].into()
+        );
     }
 }

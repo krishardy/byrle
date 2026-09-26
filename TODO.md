@@ -2473,19 +2473,24 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       - [ ] Only tier 5, no direct egress, covers the non-terminal install paths in §7
             (IDE extensions, MCP servers). Tiers 1 to 3 are not in their path at all.
 
-- [ ] Self-detection of bypass: a packument served with no artifact request following it
+- [x] Self-detection of bypass: a packument served with no artifact request following it
       is the signature of the pnpm behaviour, and would have caught it without anyone
       looking. Noisy, since a client may already hold the artifact or resolve a version it
-      does not install, so a heuristic rather than a check.
-      - [ ] A tarball answered 304 is never hashed, because `VerifyingStream` runs over
+      does not install, so a heuristic rather than a check. Counted per client over
+      10-minute windows, logged at INFO and kept in `/-/waharoa/health`, beside the
+      certain signals ([bypass-self-detection](docs/engineering_decisions/bypass-self-detection.md)).
+      - [x] A tarball answered 304 is never hashed, because `VerifyingStream` runs over
             a body and a 304 has none. Safe when the client cached those bytes through
             this proxy, which is the only way it holds a copy it did not fetch directly.
-            Same family as the item above, one layer down.
-      - [ ] A dependency specified as a git or http(s) URL rather than a version range
+            Same family as the item above, one layer down. Logged and counted as
+            `artifacts_revalidated`. It found a defect: a 404 was hashed and cut off.
+      - [x] A dependency specified as a git or http(s) URL rather than a version range
             is fetched from wherever it names, by every client, and never touches a
             packument at all. That is a different path from `dist.tarball` and the origin
             policy does not see it. Not measured; `make offsite-urls` covers the fields
-            inside a packument, not the specifiers in a manifest.
+            inside a packument, not the specifiers in a manifest. Read from the packument's
+            `dependencies`, `optionalDependencies` and `peerDependencies`, reported as
+            `BYPASS` on the artifact request. PyPI refuses such uploads.
       - [x] yarn 2+ and bun tested. Both added to `make dev-setup` as optional, and to
             `make smoke-clients`, which now covers five clients.
             - [x] **Both use `dist.tarball` as written**, like pnpm and yarn 1. npm is the

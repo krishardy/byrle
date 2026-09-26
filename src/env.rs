@@ -103,6 +103,11 @@ pub const DEFAULT_MAX_CONCURRENT_METADATA: usize = 8;
 /// [`DEFAULT_MAX_ARTIFACT_BYTES`] the spool holds at most 8 GiB.
 pub const DEFAULT_MAX_CONCURRENT_ANALYSES: usize = 8;
 
+/// Default ceiling on how many client names a traffic window counts separately. Past it, a
+/// new name is counted as `other`, so a user-agent made up per request cannot grow the map.
+/// A proxy serving a team sees a handful: npm, pnpm, yarn, bun, pip and uv.
+pub const DEFAULT_MAX_TRAFFIC_CLIENTS: usize = 256;
+
 /// Default ceiling on one artifact written to the spool.
 ///
 /// The largest artifact a detector reads measured 81,802,749 bytes, `opencv-python`
@@ -277,6 +282,12 @@ pub const MAX_CONCURRENT_ANALYSES: Var = runtime(
     &["artifacts analysed at once"],
 )
 .with_default(Default::Number(DEFAULT_MAX_CONCURRENT_ANALYSES as u64));
+pub const MAX_TRAFFIC_CLIENTS: Var = runtime(
+    "WAHAROA_MAX_TRAFFIC_CLIENTS",
+    "",
+    &["client names counted apart in a traffic window"],
+)
+.with_default(Default::Number(DEFAULT_MAX_TRAFFIC_CLIENTS as u64));
 pub const REFUSAL_STATUS: Var = runtime(
     "WAHAROA_REFUSAL_STATUS",
     "",
@@ -378,7 +389,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 40] = [
+pub const ALL: [Var; 41] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -402,6 +413,7 @@ pub const ALL: [Var; 40] = [
     SPOOL_DIR,
     MAX_ARTIFACT_BYTES,
     MAX_CONCURRENT_ANALYSES,
+    MAX_TRAFFIC_CLIENTS,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     LOG_FILTER,
@@ -657,6 +669,16 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.count(MAX_CONCURRENT_METADATA, DEFAULT_MAX_CONCURRENT_METADATA)
     }
 
+    /// At least one: a window counting no name apart counts every client as `other`.
+    pub fn max_traffic_clients(&self) -> Result<usize, EnvError> {
+        self.parsed(
+            MAX_TRAFFIC_CLIENTS,
+            DEFAULT_MAX_TRAFFIC_CLIENTS,
+            |v| v.parse().ok().filter(|limit| *limit > 0),
+            "is not a whole number above 0",
+        )
+    }
+
     pub fn max_concurrent_analyses(&self) -> Result<usize, EnvError> {
         self.count(MAX_CONCURRENT_ANALYSES, DEFAULT_MAX_CONCURRENT_ANALYSES)
     }
@@ -884,6 +906,10 @@ mod tests {
             DEFAULT_MAX_CONCURRENT_ANALYSES
         );
         assert_eq!(
+            env.max_traffic_clients().unwrap(),
+            DEFAULT_MAX_TRAFFIC_CLIENTS
+        );
+        assert_eq!(
             env.max_artifact_bytes().unwrap(),
             DEFAULT_MAX_ARTIFACT_BYTES
         );
@@ -941,6 +967,7 @@ mod tests {
             (SPOOL_DIR, "/var/spool/waharoa"),
             (MAX_ARTIFACT_BYTES, "4096"),
             (MAX_CONCURRENT_ANALYSES, "3"),
+            (MAX_TRAFFIC_CLIENTS, "12"),
             (DATABASE_URL, "postgres://db"),
             (SNAPSHOT_DIR, "/var/lib/waharoa"),
             (SNAPSHOT_LIMIT, "7"),
@@ -988,6 +1015,7 @@ mod tests {
         );
         assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
         assert_eq!(env.max_concurrent_analyses().unwrap(), 3);
+        assert_eq!(env.max_traffic_clients().unwrap(), 12);
         assert_eq!(
             env.database_url().unwrap().as_deref(),
             Some("postgres://db")
@@ -1031,8 +1059,9 @@ mod tests {
             (REFUSE_UNSERVABLE, "no"),
             (SNAPSHOT_LIMIT, "0"),
             (MAX_ARTIFACT_BYTES, "0"),
+            (MAX_TRAFFIC_CLIENTS, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 10] = [
+        let cases: [(Result<(), EnvError>, &str); 11] = [
             (
                 env.max_records().map(drop),
                 "WAHAROA_MAX_RECORDS: `5O000` is not a whole number",
@@ -1072,6 +1101,10 @@ mod tests {
             (
                 env.max_artifact_bytes().map(drop),
                 "WAHAROA_MAX_ARTIFACT_BYTES: `0` is not a whole number above 0",
+            ),
+            (
+                env.max_traffic_clients().map(drop),
+                "WAHAROA_MAX_TRAFFIC_CLIENTS: `0` is not a whole number above 0",
             ),
         ];
         for (result, expected) in cases {

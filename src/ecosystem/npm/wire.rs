@@ -57,6 +57,78 @@ pub(super) struct WireVersion {
     pub(super) repository: Option<Repository>,
     #[serde(default, rename = "_npmUser")]
     pub(super) npm_user: Option<WireNpmUser>,
+    /// Only the entries a client fetches from where they point. The rest are dropped as
+    /// they are read, so a packument of thousands of versions keeps no dependency lists.
+    #[serde(default)]
+    pub(super) dependencies: DirectSpecs,
+    #[serde(default, rename = "optionalDependencies")]
+    pub(super) optional_dependencies: DirectSpecs,
+    #[serde(default, rename = "peerDependencies")]
+    pub(super) peer_dependencies: DirectSpecs,
+}
+
+/// A dependency map, keeping only the entries [`is_direct`] accepts.
+#[derive(Debug, Default)]
+pub(super) struct DirectSpecs(pub(super) Vec<(String, String)>);
+
+impl<'de> Deserialize<'de> for DirectSpecs {
+    /// Any shape other than a map keeps nothing: old packuments write an array, `null`, or
+    /// worse here, and a malformed field must not make the whole document unreadable. A
+    /// specifier that is not a string is skipped, as npm skips it.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let serde_json::Value::Object(map) = serde_json::Value::deserialize(deserializer)? else {
+            return Ok(DirectSpecs::default());
+        };
+        Ok(DirectSpecs(
+            map.into_iter()
+                .filter_map(|(name, spec)| match spec {
+                    serde_json::Value::String(spec) if is_direct(&spec) => Some((name, spec)),
+                    _ => None,
+                })
+                .collect(),
+        ))
+    }
+}
+
+/// Whether a dependency specifier names where to fetch from rather than a version range,
+/// as npm's own parser, npm-package-arg, classifies them: a git repository (`git+…`,
+/// `git://`, `github:`, `gitlab:`, `bitbucket:`, `gist:`, or `owner/repo`), a remote
+/// tarball (`http:`, `https:`), or a path (`file:`, `./`, `../`, `/`, `~/`). An `npm:`
+/// alias resolves through the registry and is not one.
+pub fn is_direct(spec: &str) -> bool {
+    const PREFIXES: [&str; 13] = [
+        "git+",
+        "git://",
+        "github:",
+        "gitlab:",
+        "bitbucket:",
+        "gist:",
+        "http://",
+        "https://",
+        "file:",
+        "./",
+        "../",
+        "/",
+        "~/",
+    ];
+    let spec = spec.trim();
+    if PREFIXES.iter().any(|p| spec.starts_with(p)) {
+        return true;
+    }
+    // GitHub's shorthand, `owner/repo` with an optional `#ref`. A range never has a
+    // slash, and an alias starts `npm:`.
+    let path = spec.split('#').next().unwrap_or(spec);
+    match path.split_once('/') {
+        Some((owner, repo)) => {
+            !owner.is_empty()
+                && !repo.is_empty()
+                && !repo.contains('/')
+                && !path.contains(':')
+                && !path.contains(char::is_whitespace)
+                && !owner.starts_with('@')
+        }
+        None => false,
+    }
 }
 
 #[derive(Debug, Deserialize)]

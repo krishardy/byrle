@@ -137,6 +137,13 @@ pub struct PackageRecord {
     /// Attestations and signatures. Present in both documents.
     pub provenance: Provenance,
 
+    /// Dependencies named by a git repository, a URL or a path rather than a version range.
+    /// A client fetches those from where they point, never through this proxy, and no
+    /// packument of theirs passes it. npm's `dependencies`, `optionalDependencies` and
+    /// `peerDependencies`, in both documents; empty for nearly every version. PyPI refuses
+    /// an upload declaring one, so it is always empty there.
+    pub direct_dependencies: Vec<DirectDependency>,
+
     /// The files this version offers, the one a resolver would take first.
     ///
     /// npm holds exactly one: a version resolves to a tarball. PyPI holds one per file
@@ -171,6 +178,14 @@ pub struct Repository {
     /// `packages/babel-traverse`. Source diffing that ignores it compares the package
     /// against the whole repository tree.
     pub directory: Option<String>,
+}
+
+/// A dependency a client fetches from where its specifier points.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectDependency {
+    pub name: String,
+    /// As the manifest wrote it: `github:o/r#v1`, `https://host/x.tgz`, `file:../x`.
+    pub spec: String,
 }
 
 /// Evidence about who produced this artifact.
@@ -343,6 +358,7 @@ mod tests {
             yanked: None,
             install_scripts: None,
             provenance: Provenance::default(),
+            direct_dependencies: Vec::new(),
             artifacts: vec![Artifact {
                 filename: format!("{name}-{version}.tgz"),
                 runs_install_scripts: has_scripts,
