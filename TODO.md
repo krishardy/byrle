@@ -2411,8 +2411,9 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       cooldown covers every incident, whose versions were live for hours.
       `install_scripts: block` covers Shai-Hulud, Nx and eslint-config-prettier, not chalk
       or xrpl, which ran on import. `provenance: block` fires only where earlier versions
-      were attested, and as built misses every version after the first in a burst: Nx 6 of
-      19 as built, 17 of 19 comparing against any earlier version.
+      were attested, and missed every version after the first in a burst: Nx 6 of 19.
+      Decided: compare with the version just before and every version in
+      `provenance_window_days`, 7 by default, which catches 17 of 19.
 
 **Exit:** all Tier 1 controls shipped with measured false-positive rates.
 Measured 2026-09-26 over 311 versions in five dependency sets

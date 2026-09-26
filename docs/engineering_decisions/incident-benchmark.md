@@ -70,7 +70,13 @@ it:
 | eslint-config-prettier and eslint-plugin-prettier | 6 | 2 | 6 |
 
 On the 271 npm versions of [tier-1-false-positives](tier-1-false-positives.md), both rules
-refuse the same one, `why-is-node-running` 3.2.2. Not changed here.
+refuse the same one, `why-is-node-running` 3.2.2.
+
+Decided 2026-09-26: the version just before, and every version in a window,
+`provenance_window_days`, 7 by default. It catches the burst as well as any earlier version
+does, 17 of 19 for Nx, and misses 4 of the 6 eslint-config-prettier versions, whose last
+attested release was more than 7 days earlier and was not the one just before. On the 271
+benign npm versions it refuses the same single one.
 
 ## Sources
 

@@ -17,7 +17,7 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 
 | Level | Keys |
 |---|---|
-| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `deprecated`, `yanked`, `provenance`, `denials`, `packages`, `advisory_scores` |
+| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `deprecated`, `yanked`, `provenance`, `provenance_window_days`, `denials`, `packages`, `advisory_scores` |
 | a `denials` entry | `purl`, `version`, `reason` |
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
@@ -28,6 +28,7 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 |---|---|---|
 | `version` | `1` | required |
 | `cooldown_days` | whole days, 0 or more | 7 |
+| `provenance_window_days` | whole days, 0 or more | 7 |
 | `max_cvss` | a number. At or below is allowed | 6.9 |
 | `install_scripts`, `kev`, `yanked`, `provenance` | `block` or `allow` | `block` |
 | `deprecated` | `block` or `allow` | `allow` |
@@ -73,7 +74,8 @@ alias, `GHSA-` and `MAL-` ids included, so version 1 never carried a name that s
 ## Added after the freeze, before deployment
 
 `provenance` was added to `version: 1`, at the top level and in `set`, on 2026-09-26,
-defaulting to `block`. No version 1 policy had been deployed. See
+defaulting to `block`, and `provenance_window_days` at the top level the same day,
+defaulting to 7. No version 1 policy had been deployed. See
 [provenance-check](provenance-check.md).
 
 `yanked` was added to `version: 1`, at the top level and in `set`, on 2026-09-20, defaulting
