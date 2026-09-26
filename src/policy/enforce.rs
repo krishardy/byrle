@@ -159,12 +159,13 @@ pub fn artifact(
     record: &PackageRecord,
     times: Option<&super::facts::PublishTimes>,
     intel: Option<&PackageIntel>,
+    provenance: &Provenance,
     today: Date,
 ) -> Verdict {
     let Some(policy) = policy else {
         return Verdict::Serve;
     };
-    let mut facts = Facts::from_record_and_times(record, times);
+    let mut facts = Facts::from_record_and_times(record, times).with_provenance(provenance.clone());
     if let Some(intel) = intel {
         facts = facts.with_intel(intel);
     }
@@ -318,6 +319,7 @@ mod tests {
             &record(),
             None,
             Some(&exploited(true)),
+            &Provenance::Consistent,
             TODAY,
         ) else {
             panic!("an exploited advisory must be refused");
@@ -329,6 +331,7 @@ mod tests {
                 &record(),
                 None,
                 Some(&exploited(false)),
+                &Provenance::Consistent,
                 TODAY
             ),
             Verdict::Serve
@@ -343,6 +346,7 @@ mod tests {
             &record(),
             None,
             Some(&malware_everywhere()),
+            &Provenance::Consistent,
             TODAY,
         ) else {
             panic!("known malware must be refused");
@@ -356,7 +360,14 @@ mod tests {
     fn without_a_store_the_malware_check_cannot_refuse() {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
         assert_eq!(
-            artifact(Some(&policy), &record(), None, None, TODAY),
+            artifact(
+                Some(&policy),
+                &record(),
+                None,
+                None,
+                &Provenance::Consistent,
+                TODAY
+            ),
             Verdict::Serve
         );
     }
@@ -388,7 +399,10 @@ mod tests {
 
     #[test]
     fn no_policy_at_all_serves_everything() {
-        assert_eq!(artifact(None, &record(), None, None, TODAY), Verdict::Serve);
+        assert_eq!(
+            artifact(None, &record(), None, None, &Provenance::Consistent, TODAY),
+            Verdict::Serve
+        );
     }
 
     #[test]
@@ -396,7 +410,14 @@ mod tests {
         let policy = loaded("version: 1\ncooldown_days: 0\n");
 
         assert_eq!(
-            artifact(Some(&policy), &record(), None, None, TODAY),
+            artifact(
+                Some(&policy),
+                &record(),
+                None,
+                None,
+                &Provenance::Consistent,
+                TODAY
+            ),
             Verdict::Serve
         );
     }
@@ -408,7 +429,14 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &record(), None, None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&policy),
+            &record(),
+            None,
+            None,
+            &Provenance::Consistent,
+            TODAY,
+        ) else {
             panic!("a denied version must be refused");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -429,7 +457,14 @@ mod tests {
         );
 
         assert_eq!(
-            artifact(Some(&policy), &record(), None, None, TODAY),
+            artifact(
+                Some(&policy),
+                &record(),
+                None,
+                None,
+                &Provenance::Consistent,
+                TODAY
+            ),
             Verdict::Serve
         );
     }
@@ -440,7 +475,14 @@ mod tests {
         r.has_install_scripts = true;
         let policy = loaded("version: 1\ncooldown_days: 0\ninstall_scripts: block\n");
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&policy),
+            &r,
+            None,
+            None,
+            &Provenance::Consistent,
+            TODAY,
+        ) else {
             panic!("install scripts must be refused when the policy blocks them");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -449,7 +491,14 @@ mod tests {
         // The same package passes when the policy allows them.
         let allowing = loaded("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n");
         assert_eq!(
-            artifact(Some(&allowing), &r, None, None, TODAY),
+            artifact(
+                Some(&allowing),
+                &r,
+                None,
+                None,
+                &Provenance::Consistent,
+                TODAY
+            ),
             Verdict::Serve
         );
     }
@@ -466,7 +515,14 @@ mod tests {
         );
         let policy = loaded("version: 1\ncooldown_days: 30\n");
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&policy),
+            &r,
+            None,
+            None,
+            &Provenance::Consistent,
+            TODAY,
+        ) else {
             panic!("a version inside the cooldown must be refused on a pinned fetch");
         };
         assert_eq!(refusal.action, Action::Quarantine);
@@ -489,7 +545,14 @@ mod tests {
              - match: { ecosystem: npm, name: lodash }\n    set: { cooldown_days: 3 }\n    \
              reason: reviewed\n    permanent: true\n",
         );
-        let Verdict::Refuse(refusal) = artifact(Some(&shortened), &r, None, None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&shortened),
+            &r,
+            None,
+            None,
+            &Provenance::Consistent,
+            TODAY,
+        ) else {
             panic!("2026-09-12 plus 3 days is still ahead of 2026-09-13");
         };
         assert_eq!(
@@ -535,7 +598,14 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, None, TODAY) else {
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&policy),
+            &r,
+            None,
+            None,
+            &Provenance::Consistent,
+            TODAY,
+        ) else {
             panic!("must refuse");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -611,7 +681,14 @@ mod tests {
             })
         );
         assert_eq!(
-            artifact(Some(&policy), &abbreviated(), None, None, TODAY),
+            artifact(
+                Some(&policy),
+                &abbreviated(),
+                None,
+                None,
+                &Provenance::Consistent,
+                TODAY
+            ),
             Verdict::Serve
         );
     }
@@ -624,8 +701,14 @@ mod tests {
              denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
         );
 
-        let Verdict::Refuse(refusal) = artifact(Some(&policy), &abbreviated(), None, None, TODAY)
-        else {
+        let Verdict::Refuse(refusal) = artifact(
+            Some(&policy),
+            &abbreviated(),
+            None,
+            None,
+            &Provenance::Consistent,
+            TODAY,
+        ) else {
             panic!("the denial must survive the cooldown being dropped");
         };
         assert_eq!(refusal.action, Action::Block);
@@ -646,7 +729,14 @@ mod tests {
 
         assert_eq!(cooldown_entry(&policy, &r), None);
         assert!(matches!(
-            artifact(Some(&policy), &r, None, None, TODAY),
+            artifact(
+                Some(&policy),
+                &r,
+                None,
+                None,
+                &Provenance::Consistent,
+                TODAY
+            ),
             Verdict::Refuse(_)
         ));
     }
@@ -658,7 +748,14 @@ mod tests {
 
         assert_eq!(cooldown_entry(&policy, &abbreviated()), None);
         assert_eq!(
-            artifact(Some(&policy), &abbreviated(), None, None, TODAY),
+            artifact(
+                Some(&policy),
+                &abbreviated(),
+                None,
+                None,
+                &Provenance::Consistent,
+                TODAY
+            ),
             Verdict::Serve
         );
     }
@@ -689,7 +786,14 @@ mod tests {
                  denials:\n  - purl: {spelling}\n    reason: test\n"
             ));
 
-            let Verdict::Refuse(refusal) = artifact(Some(&policy), &r, None, None, TODAY) else {
+            let Verdict::Refuse(refusal) = artifact(
+                Some(&policy),
+                &r,
+                None,
+                None,
+                &Provenance::Consistent,
+                TODAY,
+            ) else {
                 panic!("a scoped package must be refusable, written as `{spelling}`");
             };
             assert_eq!(refusal.purl, "pkg:npm/@babel/traverse@8.0.5");

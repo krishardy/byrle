@@ -47,7 +47,8 @@
 //! seen.
 
 use crate::analysis::Claim;
-use crate::analysis::run::{Analyser, Job, Known};
+use crate::analysis::attestation;
+use crate::analysis::run::{Analyser, Attestation, Job, Known};
 use crate::analysis::store::Scripts;
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
@@ -66,6 +67,7 @@ use crate::identity::{Ecosystem, PackageKey};
 use crate::integrity::{Sri, Verifier};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
 use crate::origin::{Disposition, OriginPolicy, ReachableOrigins};
+use crate::policy::decide::Provenance;
 use crate::policy::{Policy, enforce, facts};
 use crate::record::{PackageMetadata, PackageRecord};
 use crate::refusal::RefusalStatus;
@@ -1194,7 +1196,7 @@ fn negotiate(
             .config
             .policy
             .as_deref()
-            .is_some_and(Policy::uses_cooldown);
+            .is_some_and(Policy::needs_publish_times);
     Negotiation {
         encoding,
         read_metadata,
@@ -1449,12 +1451,24 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         }
     };
 
+    // A record read from a full document carries its own publish time; only one without
+    // it needs the time fetched.
+    let times = match record.published_at {
+        Some(_) => None,
+        None => match publish_times_for(proxy, key).await {
+            Some(times) => Some(times),
+            // The index gave no date for this version, so the file host is asked for one.
+            None => dated_by_host(proxy, record, path).await,
+        },
+    };
+
     let upstream = upstream_url(proxy, ecosystem, path, fetch.origin.as_deref());
     let analysed = analysed(
         proxy,
         record,
         filename,
         fetch.digest.as_ref(),
+        times.as_ref(),
         &upstream,
         path,
     )
@@ -1466,43 +1480,37 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         returned(proxy, digest, path, client);
     }
 
-    // A record read from a full document carries its own publish time; only one without
-    // it needs the time fetched.
-    let times = match record.published_at {
-        Some(_) => None,
-        None => match publish_times_for(proxy, key).await {
-            Some(times) => Some(times),
-            // The index gave no date for this version, so the file host is asked for one.
-            None => dated_by_host(proxy, record, path).await,
-        },
-    };
     let intel = match intel_for(proxy, key, path).await {
         Ok(intel) => intel,
         Err(unavailable) => return ArtifactStep::Answer(unavailable.response()),
     };
-    audit_pinned(proxy, record, times.as_ref(), intel.as_ref());
+    audit_pinned(
+        proxy,
+        record,
+        times.as_ref(),
+        intel.as_ref(),
+        &analysed.provenance,
+    );
     let today = crate::policy::today();
-    let refused = |record: &PackageRecord| match enforce::artifact(
+    let refused = |record: &PackageRecord, provenance: &Provenance| match enforce::artifact(
         proxy.config.policy.as_deref(),
         record,
         times.as_ref(),
         intel.as_ref(),
+        provenance,
         today,
     ) {
         enforce::Verdict::Refuse(refusal) => Some(refusal),
         _ => None,
     };
-    let policy_refusal = refused(record);
-    // Whether the analysis can change the answer: the claim passes, and the same version
-    // running a script would be refused. Only then does the request wait for it.
-    let waits_for_analysis = matches!(analysed.state, AnalysisState::Pending(_))
-        && policy_refusal.is_none()
-        && !record.has_install_scripts
-        && refused(&PackageRecord {
-            has_install_scripts: true,
-            ..record.clone()
-        })
-        .is_some();
+    let policy_refusal = refused(record, &analysed.provenance);
+    // Whether the analysis can change the answer: what is known passes, and the same
+    // version would be refused if the pending analysis found the worst. Only then does
+    // the request wait for it.
+    let waits_for_analysis = policy_refusal.is_none()
+        && analysed
+            .worst()
+            .is_some_and(|(record, provenance)| refused(&record, &provenance).is_some());
 
     if let Some(refusal) = &policy_refusal {
         let status = refusal_status(proxy, ecosystem, Some(client));
@@ -1634,7 +1642,29 @@ fn returned(proxy: &Proxy, digest: &Sri, path: &str, client: &str) {
 /// bytes where a reader reads it, and whether the artifact can be served yet.
 struct Analysed {
     record: PackageRecord,
+    /// What its attestations say against the version published before it.
+    provenance: Provenance,
     state: AnalysisState,
+}
+
+impl Analysed {
+    /// The record and fact with the pending analysis at its worst: scripts that run, and
+    /// an attestation that does not verify. `None` when nothing is pending.
+    fn worst(&self) -> Option<(PackageRecord, Provenance)> {
+        let AnalysisState::Pending(job) = &self.state else {
+            return None;
+        };
+        let mut record = self.record.clone();
+        record.has_install_scripts |= job.reader.is_some();
+        let provenance = if job.attestations.is_empty() {
+            self.provenance.clone()
+        } else {
+            Provenance::Unverified {
+                why: "not verified yet".to_owned(),
+            }
+        };
+        Some((record, provenance))
+    }
 }
 
 enum AnalysisState {
@@ -1663,17 +1693,22 @@ async fn analysed(
     record: &PackageRecord,
     filename: &str,
     digest: Option<&Sri>,
+    times: Option<&facts::PublishTimes>,
     upstream: &str,
     path: &str,
 ) -> Analysed {
     let mut record = record.clone();
     let key = record.package.key();
+    let analyser = proxy.config.analyser.as_deref();
+    let (provenance, attestations) = attested(proxy, analyser, &record, digest, times).await;
     let reader = crate::analysis::Reader::for_file(key.ecosystem(), filename);
-    let (Some(reader), Some(analyser)) = (reader, &proxy.config.analyser) else {
-        return Analysed {
-            record,
-            state: AnalysisState::Decided,
-        };
+    let decided = |record, provenance| Analysed {
+        record,
+        provenance,
+        state: AnalysisState::Decided,
+    };
+    let (Some(reader), Some(analyser)) = (reader, analyser) else {
+        return decided(record, provenance);
     };
     let Some(digest) = digest else {
         warn!(
@@ -1681,12 +1716,9 @@ async fn analysed(
             "no strong digest, so the artifact cannot be analysed; it counts as running install scripts"
         );
         record.has_install_scripts = true;
-        return Analysed {
-            record,
-            state: AnalysisState::Decided,
-        };
+        return decided(record, provenance);
     };
-    let state = match analyser.known(digest).await {
+    let reads = match analyser.known(digest).await {
         Known::Analysed(analysis) => {
             report_claim(&record, &analysis.scripts, path);
             // Adds to the claim and never takes from it. The readers see only part of
@@ -1696,19 +1728,116 @@ async fn analysed(
                 .scripts
                 .names()
                 .is_none_or(|names| !names.is_empty());
-            AnalysisState::Decided
+            None
         }
-        Known::Mismatched(mismatch) => AnalysisState::Mismatched(mismatch),
-        Known::Unknown => AnalysisState::Pending(Job {
-            digest: digest.clone(),
-            url: upstream.to_owned(),
-            reader,
-            ecosystem: key.ecosystem().as_str().to_owned(),
-            name: key.registry_name(),
-            version: record.package.version().to_owned(),
-        }),
+        Known::Mismatched(mismatch) => {
+            return Analysed {
+                record,
+                provenance,
+                state: AnalysisState::Mismatched(mismatch),
+            };
+        }
+        Known::Unknown => Some(reader),
     };
-    Analysed { record, state }
+    if reads.is_none() && attestations.is_empty() {
+        return decided(record, provenance);
+    }
+    let job = Job {
+        digest: digest.clone(),
+        url: upstream.to_owned(),
+        reader: reads,
+        ecosystem: key.ecosystem().as_str().to_owned(),
+        name: key.registry_name(),
+        version: record.package.version().to_owned(),
+        attestations,
+    };
+    Analysed {
+        record,
+        provenance,
+        state: AnalysisState::Pending(job),
+    }
+}
+
+/// What the version's attestations say against the version published before it, and the
+/// attestations still to verify before that can be said. See
+/// `docs/engineering_decisions/provenance-check.md`.
+async fn attested(
+    proxy: &Proxy,
+    analyser: Option<&Analyser>,
+    record: &PackageRecord,
+    digest: Option<&Sri>,
+    times: Option<&facts::PublishTimes>,
+) -> (Provenance, Vec<Attestation>) {
+    let key = record.package.key();
+    // Where each registry serves its attestations and how they are laid out is its
+    // adapter's. Only npm's is read.
+    let bundle: fn(&[u8]) -> Result<_, String> = match key.ecosystem() {
+        Ecosystem::Npm => npm::attestation::provenance_bundle,
+        Ecosystem::PyPI => return (attestation::PYPI_NOT_VERIFIED, Vec::new()),
+    };
+    let previous = proxy.store.lock().expect("record store lock").previous(
+        key,
+        record.package.version(),
+        times,
+    );
+    // Without an analyser nothing is verified, and only what metadata answers is known.
+    let Some(analyser) = analyser else {
+        return (attestation::from_metadata(record, &previous), Vec::new());
+    };
+    let prior = match &previous {
+        attestation::Previous::Version(prior) => prior.attestation_url.as_ref().map(|url| {
+            (
+                url.clone(),
+                prior.integrity.as_deref().and_then(|i| Sri::parse(i).ok()),
+            )
+        }),
+        _ => None,
+    };
+    let this_result = match (&record.provenance.attestation_url, digest) {
+        (Some(_), Some(digest)) => analyser.attested(digest).await,
+        (Some(_), None) => Some(attestation::Attested::Failed {
+            why: "it publishes no strong digest to verify against".to_owned(),
+        }),
+        (None, _) => None,
+    };
+    let prior_result = match &prior {
+        Some((_, Some(prior_digest))) => analyser.attested(prior_digest).await,
+        // A predecessor with no strong digest cannot be verified.
+        Some((_, None)) => Some(attestation::Attested::Failed {
+            why: "it publishes no strong digest".to_owned(),
+        }),
+        None => None,
+    };
+    match attestation::provenance(
+        record,
+        &previous,
+        this_result.as_ref(),
+        prior_result.as_ref(),
+    ) {
+        attestation::Answer::Known(provenance) => (provenance, Vec::new()),
+        attestation::Answer::Needs {
+            this,
+            previous: needs_prior,
+        } => {
+            let mut work = Vec::new();
+            if this && let (Some(url), Some(digest)) = (&record.provenance.attestation_url, digest)
+            {
+                work.push(Attestation {
+                    digest: digest.clone(),
+                    url: url.clone(),
+                    bundle,
+                });
+            }
+            if needs_prior && let Some((url, Some(prior_digest))) = prior {
+                work.push(Attestation {
+                    digest: prior_digest,
+                    url,
+                    bundle,
+                });
+            }
+            (Provenance::NOT_VERIFIED, work)
+        }
+    }
 }
 
 /// Log what the artifact declares against what the metadata claimed. An `undeclared`
@@ -1735,11 +1864,13 @@ fn audit_pinned(
     record: &PackageRecord,
     times: Option<&facts::PublishTimes>,
     intel: Option<&PackageIntel>,
+    provenance: &Provenance,
 ) {
     let (Some(audit), Some(policy)) = (&proxy.config.audit, proxy.config.policy.as_deref()) else {
         return;
     };
-    let mut facts = crate::policy::decide::Facts::from_record_and_times(record, times);
+    let mut facts = crate::policy::decide::Facts::from_record_and_times(record, times)
+        .with_provenance(provenance.clone());
     if let Some(intel) = intel {
         facts = facts.with_intel(intel);
     }
@@ -2104,15 +2235,15 @@ fn defer_response(
 /// `published_at`, which under a cooldown is an artifact whose document this proxy has not
 /// read: a metadata request under a cooldown reads the full document, whose records carry it.
 ///
-/// `None` when the policy uses no cooldown, and for an ecosystem whose records carry
+/// `None` when no check reads publish times, and for an ecosystem whose records carry
 /// `published_at`, which [`Clients::publish_times`] answers without a request. A fetch that
-/// fails is not fatal: the check it feeds reports itself as unenforceable.
+/// fails is not fatal: the checks it feeds report themselves as unenforceable.
 async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::PublishTimes> {
     if !proxy
         .config
         .policy
         .as_deref()
-        .is_some_and(Policy::uses_cooldown)
+        .is_some_and(Policy::needs_publish_times)
     {
         return None;
     }
@@ -2437,9 +2568,16 @@ fn policy_refused_versions(
     let mut order = Vec::new();
     let mut checks: BTreeSet<String> = BTreeSet::new();
     let mut strongest = crate::policy::Action::Allow;
-    for record in &metadata.records {
+    // Dropped provenance is decided here from the document alone. A change of identity or a
+    // failed verification needs an attestation verified, which the artifact request does.
+    let predecessors = attestation::predecessors(&metadata.records, None);
+    for (record, previous) in metadata.records.iter().zip(&predecessors) {
+        let provenance = match metadata.key.ecosystem() {
+            Ecosystem::Npm => attestation::from_metadata(record, previous),
+            Ecosystem::PyPI => attestation::PYPI_NOT_VERIFIED,
+        };
         let enforce::Verdict::Refuse(refusal) =
-            enforce::artifact(Some(policy), record, None, intel, today)
+            enforce::artifact(Some(policy), record, None, intel, &provenance, today)
         else {
             continue;
         };
@@ -3127,11 +3265,13 @@ mod tests {
     /// The full packument is asked for only where it adds a fact: an npm metadata GET the
     /// proxy reads, under a cooldown.
     #[test]
-    fn only_a_read_npm_document_under_a_cooldown_is_asked_for_in_full() {
-        let cooldown = Some("version: 1\ncooldown_days: 7\n");
-        let none = Some("version: 1\ncooldown_days: 0\n");
+    fn only_a_read_npm_document_a_check_needs_dated_is_asked_for_in_full() {
+        let cooldown = Some("version: 1\ncooldown_days: 7\nprovenance: allow\n");
+        let provenance = Some("version: 1\ncooldown_days: 0\n");
+        let none = Some("version: 1\ncooldown_days: 0\nprovenance: allow\n");
         let cases = [
             (cooldown, Method::GET, "/lodash", "gzip", true),
+            (provenance, Method::GET, "/lodash", "gzip", true),
             (none, Method::GET, "/lodash", "gzip", false),
             (None, Method::GET, "/lodash", "gzip", false),
             (cooldown, Method::HEAD, "/lodash", "gzip", false),
@@ -5881,7 +6021,7 @@ mod tests {
         yaml: Option<&str>,
     ) -> (String, Arc<Analyser>) {
         let store = Arc::new(crate::analysis::store::InProcess::new(8));
-        analysing_with(label, version, dist, tarball, yaml, store).await
+        analysing_with(label, version, dist, tarball, yaml, store, None).await
     }
 
     /// [`analysing`], keeping analyses in `store`.
@@ -5892,6 +6032,7 @@ mod tests {
         tarball: Vec<u8>,
         yaml: Option<&str>,
         store: Arc<dyn crate::analysis::store::Analyses>,
+        gate: Option<Arc<Semaphore>>,
     ) -> (String, Arc<Analyser>) {
         let packument = format!(
             r#"{{"name":"widget","dist-tags":{{"latest":"1.0.0"}},"versions":{{
@@ -5915,7 +6056,14 @@ mod tests {
                 "/widget/-/widget-1.0.0.tgz",
                 get(move || {
                     let tarball = tarball.clone();
-                    async move { tarball }
+                    let gate = gate.clone();
+                    async move {
+                        // Held until the test lets the analysis job's fetch through.
+                        if let Some(gate) = gate {
+                            gate.acquire().await.expect("open").forget();
+                        }
+                        tarball
+                    }
                 }),
             );
         let (spool, _) =
@@ -5956,12 +6104,16 @@ mod tests {
     #[tokio::test]
     async fn an_artifact_the_answer_depends_on_is_deferred_and_its_retry_served() {
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
-        let (base, analyser) = analysing(
+        // The job's fetch waits here, so the second request is deferred too.
+        let gate = Arc::new(Semaphore::new(0));
+        let (base, analyser) = analysing_with(
             "analyse-defer",
             "",
             &integrity(&tarball),
             tarball.clone(),
             Some(BLOCK),
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+            Some(gate.clone()),
         )
         .await;
 
@@ -5981,6 +6133,7 @@ mod tests {
             assert!(body.contains(&digest), "{body}");
         }
 
+        gate.add_permits(Semaphore::MAX_PERMITS);
         analyser.ended(1).await;
         let retry = tarball_request(&base).await;
         assert_eq!(retry.status(), 200);
@@ -5998,10 +6151,22 @@ mod tests {
         assert!(returns[0].contains("deferrals=2"), "{}", returns[0]);
         assert!(returns[0].contains(&digest), "{}", returns[0]);
         assert!(returns[0].contains("after_ms="), "{}", returns[0]);
-        assert!(
-            log.contains("deferrals=1") && log.contains("deferrals=2"),
-            "{log}"
-        );
+    }
+
+    /// Each deferral of a digest is counted from the first, and a return takes the record
+    /// away. Asserted here rather than through captured log lines, which `tracing` drops
+    /// now and then when tests run in parallel.
+    #[test]
+    fn deferrals_of_one_digest_are_counted_until_it_returns() {
+        let digest = Sri::parse(&sri_of(b"widget")).expect("parses");
+        let other = Sri::parse(&sri_of(b"other")).expect("parses");
+        let mut deferred = Deferred(Lru::new(8));
+        assert_eq!(deferred.defer(&digest), 1);
+        assert_eq!(deferred.defer(&digest), 2);
+        assert_eq!(deferred.defer(&other), 1);
+        let first = deferred.0.remove(&digest).expect("held").first;
+        assert!(first.elapsed() < std::time::Duration::from_secs(60));
+        assert_eq!(deferred.defer(&digest), 1);
     }
 
     /// Without a policy, with `install_scripts: allow`, and under an exception that allows
@@ -6101,6 +6266,7 @@ mod tests {
             tarball.clone(),
             Some(yaml),
             store.clone(),
+            None,
         )
         .await;
         assert_eq!(tarball_request(&base).await.status(), 403);
@@ -6113,6 +6279,7 @@ mod tests {
             tarball,
             Some(yaml),
             store,
+            None,
         )
         .await;
         assert_eq!(tarball_request(&base).await.status(), 200);
@@ -6223,5 +6390,236 @@ mod tests {
         .await;
         assert_eq!(tarball_request(&base).await.status(), 403);
         assert_eq!(analyser.in_flight(), 0, "no job was started");
+    }
+
+    // -----------------------------------------------------------------------
+    // Provenance
+    // -----------------------------------------------------------------------
+
+    const PROVENANCE: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n";
+
+    fn widget_digest(version: &str) -> Sri {
+        Sri::parse(&sri_of(version.as_bytes())).expect("parses")
+    }
+
+    /// `widget` 1.0.0 then 2.0.0, as a full packument with publish times. A version in
+    /// `attested` publishes attestations, at an address that refuses connections.
+    fn widget_versions(attested: &[&str]) -> String {
+        let mut doc = serde_json::json!({"name": "widget", "dist-tags": {"latest": "2.0.0"},
+            "versions": {}, "time": {}});
+        for (month, version) in [(1, "1.0.0"), (2, "2.0.0")] {
+            let mut dist = serde_json::json!({
+                "tarball": format!("https://registry.npmjs.org/widget/-/widget-{version}.tgz"),
+                "integrity": sri_of(version.as_bytes()),
+            });
+            if attested.contains(&version) {
+                dist["attestations"] = serde_json::json!({
+                    "url": format!("{NO_UPSTREAM}/-/npm/v1/attestations/widget@{version}"),
+                    "provenance": {"predicateType": "https://slsa.dev/provenance/v1"},
+                });
+            }
+            doc["versions"][version] =
+                serde_json::json!({"name": "widget", "version": version, "dist": dist});
+            doc["time"][version] = serde_json::json!(format!("2026-0{month}-01T00:00:00.000Z"));
+        }
+        doc.to_string()
+    }
+
+    /// An offline proxy holding `widget_versions(attested)`, whose analyser holds `results`
+    /// and an analysis of 2.0.0's scripts, so only attestations can be pending.
+    async fn provenance_proxy(
+        label: &str,
+        yaml: &str,
+        attested: &[&str],
+        results: &[(&str, crate::analysis::attestation::Attested)],
+    ) -> (Proxy, Arc<Analyser>) {
+        use crate::analysis::store::{Analyses, Analysis, InProcess};
+        let store = Arc::new(InProcess::new(8));
+        for (version, result) in results {
+            store
+                .put_attested(&widget_digest(version), result)
+                .await
+                .expect("stores");
+        }
+        let scripts = Analysis {
+            ecosystem: "npm".to_owned(),
+            name: "widget".to_owned(),
+            version: "2.0.0".to_owned(),
+            scripts: Scripts::Declared(crate::analysis::InstallScripts::default()),
+        };
+        store
+            .put(&widget_digest("2.0.0"), &scripts)
+            .await
+            .expect("stores");
+        let (spool, _) =
+            Spool::open(&crate::util::test_support::tempdir(label), 1 << 20).expect("opens");
+        let analyser = Arc::new(Analyser::new(
+            reqwest::Client::new(),
+            Arc::new(spool),
+            store,
+            2,
+            8,
+        ));
+        let proxy = offline(None, Some(yaml)).with_analyser(Some(analyser.clone()));
+        hold_document(
+            &proxy,
+            widget_versions(attested).as_bytes(),
+            crate::record::DocumentDetail::Full,
+        );
+        (proxy, analyser)
+    }
+
+    fn verified(identity: &str) -> crate::analysis::attestation::Attested {
+        crate::analysis::attestation::Attested::Verified {
+            identity: identity.to_owned(),
+        }
+    }
+
+    const WIDGET_2: &str = "/widget/-/widget-2.0.0.tgz";
+
+    /// Each case `docs/engineering_decisions/provenance-check.md` refuses, on a pinned
+    /// fetch, with the case named in the body.
+    #[tokio::test]
+    async fn the_provenance_check_refuses_on_a_pinned_fetch() {
+        let both = &["1.0.0", "2.0.0"];
+        let failed = crate::analysis::attestation::Attested::Failed {
+            why: "artifact hash does not match any subject in attestation".to_owned(),
+        };
+        let cases = [
+            (
+                "provenance-changed",
+                &both[..],
+                vec![("1.0.0", verified("a")), ("2.0.0", verified("b"))],
+                "provenance: built by b, and 1.0.0 was built by a",
+            ),
+            (
+                "provenance-unverified",
+                &both[..],
+                vec![("1.0.0", verified("a")), ("2.0.0", failed.clone())],
+                "provenance: an attestation failed verification",
+            ),
+            (
+                "provenance-dropped",
+                &["1.0.0"][..],
+                vec![],
+                "provenance: publishes no attestation, and 1.0.0, published before it, did",
+            ),
+        ];
+        for (label, attested, results, reason) in cases {
+            let (proxy, _) = provenance_proxy(label, PROVENANCE, attested, &results).await;
+            let (status, body) = refused(pinned(&proxy, WIDGET_2).await).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{label}: {body}");
+            assert!(body.contains(reason), "{label}: {body}");
+        }
+    }
+
+    /// The same identity as the version before it, and a version whose predecessor
+    /// published nothing, are served.
+    #[tokio::test]
+    async fn a_version_its_attestations_agree_with_is_served() {
+        let (proxy, _) = provenance_proxy(
+            "provenance-same",
+            PROVENANCE,
+            &["1.0.0", "2.0.0"],
+            &[("1.0.0", verified("a")), ("2.0.0", verified("a"))],
+        )
+        .await;
+        assert!(fetched(&pinned(&proxy, WIDGET_2).await));
+
+        let (proxy, _) = provenance_proxy(
+            "provenance-first",
+            PROVENANCE,
+            &["2.0.0"],
+            &[("2.0.0", verified("a"))],
+        )
+        .await;
+        assert!(fetched(&pinned(&proxy, WIDGET_2).await));
+    }
+
+    /// `set: { provenance: allow }` releases a changed identity.
+    #[tokio::test]
+    async fn an_exception_releases_a_changed_identity() {
+        let yaml = format!(
+            "{PROVENANCE}packages:\n  - match: {{ ecosystem: npm, name: widget }}\n    \
+             set: {{ provenance: allow }}\n    reason: moved to release.yml\n    \
+             permanent: true\n"
+        );
+        let (proxy, _) = provenance_proxy(
+            "provenance-excepted",
+            &yaml,
+            &["1.0.0", "2.0.0"],
+            &[("1.0.0", verified("a")), ("2.0.0", verified("b"))],
+        )
+        .await;
+        assert!(fetched(&pinned(&proxy, WIDGET_2).await));
+    }
+
+    /// Attestations nothing has verified are waited for under `provenance: block`, and not
+    /// under `allow`. The job is started either way.
+    #[tokio::test]
+    async fn unverified_attestations_are_waited_for_only_when_they_can_refuse() {
+        let (proxy, analyser) =
+            provenance_proxy("provenance-pending", PROVENANCE, &["1.0.0", "2.0.0"], &[]).await;
+        let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        analyser.ended(1).await;
+
+        let allow = format!("{PROVENANCE}provenance: allow\n");
+        let (proxy, analyser) =
+            provenance_proxy("provenance-allowed", &allow, &["1.0.0", "2.0.0"], &[]).await;
+        assert!(fetched(&pinned(&proxy, WIDGET_2).await));
+        analyser.ended(1).await;
+    }
+
+    /// Dropped provenance needs nothing verified, so it is decided from the document: the
+    /// version is filtered on resolution, and refused on a pinned fetch with no analyser.
+    #[tokio::test]
+    async fn dropped_provenance_is_decided_from_metadata_alone() {
+        let packument = widget_versions(&["1.0.0"]);
+        let proxy = offline(None, Some(PROVENANCE));
+        let document =
+            match resolve(&proxy, "/widget", npm::FULL_ACCEPT, packument.as_bytes()).await {
+                DocumentStep::Forward {
+                    body: Some(body), ..
+                } => serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+                _ => panic!("the document is read and filtered"),
+            };
+        assert!(offers(&document, "1.0.0"));
+        assert!(!offers(&document, "2.0.0"));
+
+        hold_document(
+            &proxy,
+            packument.as_bytes(),
+            crate::record::DocumentDetail::Full,
+        );
+        let (status, body) = refused(pinned(&proxy, WIDGET_2).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    }
+
+    /// Holding only the abbreviated packument, which carries no publish times, the proxy
+    /// fetches the full one for them, and dropped provenance is found.
+    #[tokio::test]
+    async fn publish_times_are_fetched_to_find_the_version_before() {
+        let full = widget_versions(&["1.0.0"]);
+        let router = Router::new().route(
+            "/widget",
+            get(move || {
+                let full = full.clone();
+                async move { ([(header::CONTENT_TYPE, "application/json")], full) }
+            }),
+        );
+        let upstream = serve(router).await;
+        let proxy = offline(None, Some(PROVENANCE)).with_upstream(Ecosystem::Npm, upstream);
+        let mut abbreviated: serde_json::Value =
+            serde_json::from_str(&widget_versions(&["1.0.0"])).unwrap();
+        abbreviated.as_object_mut().unwrap().remove("time");
+        hold_document(
+            &proxy,
+            abbreviated.to_string().as_bytes(),
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let (status, body) = refused(pinned(&proxy, WIDGET_2).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+        assert!(body.contains("publishes no attestation"), "{body}");
     }
 }

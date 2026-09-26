@@ -27,7 +27,9 @@
 //! read by the artifact request that follows, for facts that do not change once a version is
 //! published. See `docs/engineering_decisions/no-metadata-cache.md`.
 
+use crate::analysis::attestation::{Previous, previous};
 use crate::identity::PackageKey;
+use crate::policy::facts::PublishTimes;
 use crate::record::{PackageMetadata, PackageRecord};
 use std::collections::HashMap;
 
@@ -123,6 +125,20 @@ impl RecordStore {
             Some(record) => Lookup::Found(Box::new(record.clone())),
             None => Lookup::NoSuchVersion,
         }
+    }
+
+    /// The version of this package published before `version`, from the document held for
+    /// it. [`Previous::Unknown`] when no document is held. Does not count as a use: the
+    /// lookup for `version` just did.
+    pub fn previous(
+        &self,
+        key: &PackageKey,
+        version: &str,
+        times: Option<&PublishTimes>,
+    ) -> Previous {
+        self.entries.get(key).map_or(Previous::Unknown, |entry| {
+            previous(&entry.metadata.records, version, times)
+        })
     }
 
     /// Drop least recently used packages until the budget is met.

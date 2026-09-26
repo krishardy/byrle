@@ -2360,9 +2360,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       ([provenance-check](docs/engineering_decisions/provenance-check.md)).
   - [x] The policy engine: `provenance` in `version: 1`, `Check::Provenance`,
         `decide::Provenance`. Reported unenforced until something supplies the fact.
-  - [ ] Verify attestations in the analysis job with `sigstore-verify`, this version's
-        against its bytes and the previous version's against its published digest.
-  - [ ] Decide dropped provenance on resolution, from metadata alone, and fetch the full
+  - [x] Verify attestations in the analysis job with `sigstore-verify`, this version's and
+        the previous version's, each against its published digest. A 5xx, 429 or refused
+        connection stores nothing.
+  - [x] Decide dropped provenance on resolution, from metadata alone, and fetch the full
         packument for publish times when `provenance: block`.
   - [ ] PyPI: PEP 740, reported unenforced until built.
   - [x] `[!]` Validate `sigstore-rs` maturity first; cosign shell-out as fallback.
@@ -2382,8 +2383,8 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         ([deferral-status-codes](docs/engineering_decisions/deferral-status-codes.md)).
         Of seven clients measured, all seven retry a 503 and two stop on a 429.
   - [x] An artifact under analysis is 503 too, `x-waharoa-not-ready: artifact-analysis`,
-        decided 2026-09-26, when the answer depends on the analysis: no claimed script,
-        and the policy would refuse one. 429 is not used, there is no per-client code and
+        decided 2026-09-26, when the answer depends on the analysis: what is known
+        passes and the worst the analysis could find would be refused. 429 is not used, there is no per-client code and
         no bounded internal wait. yarn 1 and bun fail that first fetch.
   - [x] The artifact digest in the deferral's header and body: `x-waharoa-digest`.
   - [x] Log every deferral, with a count per digest, and `returned after a deferral` with

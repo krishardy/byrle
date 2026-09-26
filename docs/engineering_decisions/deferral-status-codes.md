@@ -165,13 +165,14 @@ The response carries two things it did not before:
 
 An artifact no analysis is stored for is analysed in the background. The request answers
 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis`, when the
-answer depends on the analysis: the metadata claims no install script, and the policy
-would refuse the version if it ran one. Otherwise it is served on the claim. There is no
+answer depends on the analysis: what is known passes, and the policy would refuse the
+version if the analysis found the worst, a script the metadata did not claim or an
+attestation that does not verify. Otherwise it is served on what is known. There is no
 bounded internal wait and no per-client code.
 
-With no policy, `install_scripts: allow`, or an exception allowing the package's scripts,
-nothing is deferred. Under `install_scripts: block`, most npm tarballs are, because most
-claim no script. What the measurements above say that costs, on the first fetch of each
+With no policy, or with `install_scripts: allow` and `provenance: allow`, nothing is
+deferred. Under `install_scripts: block`, most npm tarballs are, because most claim no
+script. What the measurements above say that costs, on the first fetch of each
 one:
 
 | Client | First fetch of an unanalysed tarball |

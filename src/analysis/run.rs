@@ -14,11 +14,13 @@ use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use sigstore_verify::types::Bundle;
 use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use crate::analysis::Reader;
+use crate::analysis::attestation::{Attested, verify};
 use crate::analysis::store::{Analyses, Analysis, Scripts};
 use crate::integrity::{Mismatch, Sri};
 use crate::spool::{Spool, WriteError};
@@ -51,10 +53,27 @@ pub struct Job {
     pub digest: Sri,
     /// Where the proxy fetches the artifact from, as it would for the client.
     pub url: String,
-    pub reader: Reader,
+    /// What reads the artifact for install scripts. `None` when that analysis is already
+    /// stored and only attestations are missing, so the artifact is not fetched.
+    pub reader: Option<Reader>,
     pub ecosystem: String,
     pub name: String,
     pub version: String,
+    /// Attestations to verify: this artifact's, and the version published before it,
+    /// each against the digest the metadata published for its own artifact.
+    pub attestations: Vec<Attestation>,
+}
+
+/// One artifact's attestations to verify.
+#[derive(Debug, Clone)]
+pub struct Attestation {
+    /// The digest the metadata published for the artifact. The result is stored under it.
+    pub digest: Sri,
+    /// Where the registry serves the attestations document.
+    pub url: String,
+    /// The adapter's reader for that document, which is laid out per registry:
+    /// `crate::ecosystem::npm::attestation::provenance_bundle` for npm.
+    pub bundle: fn(&[u8]) -> Result<Bundle, String>,
 }
 
 /// Runs analyses in the background, one per digest at a time.
@@ -129,6 +148,18 @@ impl Analyser {
         self.in_flight.lock().expect("in-flight lock").len()
     }
 
+    /// What verifying the attestations of the artifact with `digest` found. A store that
+    /// cannot answer is `None`, and they are verified again.
+    pub async fn attested(&self, digest: &Sri) -> Option<Attested> {
+        match self.store.attested(digest).await {
+            Ok(attested) => attested,
+            Err(e) => {
+                warn!(digest = %digest, error = %e, "analysis store cannot answer; verifying again");
+                None
+            }
+        }
+    }
+
     /// Wait until `count` jobs have ended since this analyser was made.
     pub async fn ended(&self, count: u64) {
         let _ = self
@@ -169,15 +200,71 @@ impl Analyser {
             .await
             .expect("the semaphore is never closed");
         // Dropping the analysis on expiry drops its spool file too.
-        if tokio::time::timeout(self.deadline, self.analyse(&job))
-            .await
-            .is_err()
-        {
+        let work = async {
+            if let Some(reader) = job.reader {
+                self.analyse(&job, reader).await;
+            }
+            for attestation in &job.attestations {
+                self.attest(attestation).await;
+            }
+        };
+        if tokio::time::timeout(self.deadline, work).await.is_err() {
             warn!(url = %job.url, deadline_s = self.deadline.as_secs(), "artifact analysis: past its deadline, nothing stored");
         }
     }
 
-    async fn analyse(&self, job: &Job) {
+    /// Fetch the attestations document and verify it. A registry that cannot be reached,
+    /// or answers 5xx or 429, stores nothing, so the next request tries again: a flaky
+    /// registry must not refuse a package. Any other answer is stored, a failure included.
+    async fn attest(&self, attestation: &Attestation) {
+        let url = &attestation.url;
+        let response = match self.client.get(url).send().await {
+            Ok(response) => response,
+            Err(e) => {
+                warn!(url = %url, error = %e, "attestations: fetch failed, nothing stored");
+                return;
+            }
+        };
+        let status = response.status();
+        if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            warn!(url = %url, status = status.as_u16(), "attestations: not answered, nothing stored");
+            return;
+        }
+        let attested = if !status.is_success() {
+            Attested::Failed {
+                why: format!("the registry answered {status} for {url}"),
+            }
+        } else {
+            let document = match response.bytes().await {
+                Ok(document) => document,
+                Err(e) => {
+                    warn!(url = %url, error = %e, "attestations: body failed, nothing stored");
+                    return;
+                }
+            };
+            match (attestation.bundle)(&document) {
+                Ok(bundle) => verify(&bundle, &attestation.digest),
+                Err(why) => Attested::Failed { why },
+            }
+        };
+        match &attested {
+            Attested::Verified { identity } => {
+                info!(url = %url, digest = %attestation.digest, identity = %identity, "attestation verified");
+            }
+            Attested::Failed { why } => {
+                warn!(url = %url, digest = %attestation.digest, why = %why, "attestation did not verify");
+            }
+        }
+        if let Err(e) = self
+            .store
+            .put_attested(&attestation.digest, &attested)
+            .await
+        {
+            warn!(url = %url, error = %e, "attestations: not stored");
+        }
+    }
+
+    async fn analyse(&self, job: &Job, reader: Reader) {
         let response = match self
             .client
             .get(&job.url)
@@ -209,7 +296,6 @@ impl Analyser {
                         .insert(job.digest.clone(), mismatch);
                     return;
                 }
-                let reader = job.reader;
                 let read = tokio::task::spawn_blocking(move || {
                     let file = spooled.reader()?;
                     Ok(Scripts::of(reader.read(std::io::BufReader::new(file))))
@@ -320,10 +406,11 @@ mod tests {
         Job {
             digest: digest.clone(),
             url: url.to_owned(),
-            reader: Reader::NpmTarball,
+            reader: Some(Reader::NpmTarball),
             ecosystem: "npm".to_owned(),
             name: "widget".to_owned(),
             version: "1.0.0".to_owned(),
+            attestations: Vec::new(),
         }
     }
 
@@ -468,6 +555,122 @@ mod tests {
             .expect("finishes");
         assert_eq!(analyser.known(&digest).await, Known::Unknown);
         assert_eq!(analyser.in_flight(), 0);
+    }
+
+    /// The attestations document at each path, with its status.
+    async fn registry(routes: Vec<(&'static str, u16, Vec<u8>)>) -> String {
+        let mut router = Router::new();
+        for (path, status, body) in routes {
+            router = router.route(
+                path,
+                get(move || {
+                    let body = body.clone();
+                    async move {
+                        (
+                            axum::http::StatusCode::from_u16(status).expect("a status"),
+                            body,
+                        )
+                    }
+                }),
+            );
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// A real document verifies and its identity is stored. A 404 and a body that is not
+    /// an attestations document are stored as failures. A 503 stores nothing, so the next
+    /// request verifies again: a registry having a bad minute refuses nothing.
+    #[tokio::test]
+    async fn attestations_are_verified_and_only_a_real_answer_is_stored() {
+        let sigstore = std::fs::read(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/npm/attestations/sigstore-5.0.0.json"
+        ))
+        .expect("fixture");
+        let base = registry(vec![
+            ("/sigstore", 200, sigstore),
+            ("/missing", 404, Vec::new()),
+            ("/html", 200, b"<html>".to_vec()),
+            ("/busy", 503, Vec::new()),
+        ])
+        .await;
+        let store = Arc::new(InProcess::new(8));
+        let analyser = analyser("run-attest", 1 << 20, store.clone());
+        let digests: Vec<Sri> = (1..=4).map(crate::analysis::store::tests::sri).collect();
+        let real = Sri::parse(
+            "sha512-hJqJfoG/e4qFQaauQL00c6J6FrHLBGKtkFvW3JbTSIEFOhLrSjdSM/gWd/yUOfYo/gsERehTXGC1VZWX+9X4Dg==",
+        )
+        .expect("parses");
+        let checks = [
+            (real.clone(), "/sigstore"),
+            (digests[1].clone(), "/missing"),
+            (digests[2].clone(), "/html"),
+            (digests[3].clone(), "/busy"),
+        ];
+        let job = Job {
+            reader: None,
+            attestations: checks
+                .iter()
+                .map(|(digest, path)| Attestation {
+                    digest: digest.clone(),
+                    url: format!("{base}{path}"),
+                    bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+                })
+                .collect(),
+            ..job(&digests[0], &format!("{base}/never-fetched"))
+        };
+        analyser
+            .start(job)
+            .expect("starts")
+            .await
+            .expect("finishes");
+
+        assert_eq!(
+            analyser.attested(&real).await,
+            Some(Attested::Verified {
+                identity: "github.com/sigstore/sigstore-js/.github/workflows/release.yml"
+                    .to_owned()
+            })
+        );
+        let Some(Attested::Failed { why }) = analyser.attested(&digests[1]).await else {
+            panic!("a 404 is an answer");
+        };
+        assert!(why.contains("404"), "{why}");
+        assert!(matches!(
+            analyser.attested(&digests[2]).await,
+            Some(Attested::Failed { .. })
+        ));
+        assert_eq!(analyser.attested(&digests[3]).await, None);
+        // The artifact itself was not fetched: its analysis was not asked for.
+        assert_eq!(analyser.known(&digests[0]).await, Known::Unknown);
+    }
+
+    /// A registry that refuses the connection stores nothing either.
+    #[tokio::test]
+    async fn an_attestation_registry_that_cannot_be_reached_stores_nothing() {
+        let store = Arc::new(InProcess::new(8));
+        let analyser = analyser("run-attest-down", 1 << 20, store);
+        let digest = crate::analysis::store::tests::sri(9);
+        let job = Job {
+            reader: None,
+            attestations: vec![Attestation {
+                digest: digest.clone(),
+                url: format!("{}/attestations", crate::util::test_support::NO_UPSTREAM),
+                bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+            }],
+            ..job(&digest, crate::util::test_support::NO_UPSTREAM)
+        };
+        analyser
+            .start(job)
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(analyser.attested(&digest).await, None);
     }
 
     /// A store that answers every read and write with an error.

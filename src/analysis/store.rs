@@ -170,7 +170,7 @@ impl Analyses for InProcess {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     pub fn sri(seed: u8) -> Sri {

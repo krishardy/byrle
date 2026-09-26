@@ -341,16 +341,23 @@ impl Policy {
     /// now, allowed later", and neither of these lapses: waiting does not change whether a
     /// package has an install script or a known-exploited vulnerability.
     /// Whether any cooldown is in force, globally or in a package entry.
-    ///
-    /// Gates the full-packument fetch: publish times are only in the full document, and
-    /// fetching it is 1.7x to 3.6x the bytes plus a request the client never made. An
-    /// operator who has not turned the check on pays none of that.
     pub fn uses_cooldown(&self) -> bool {
         self.cooldown_days > 0
             || self
                 .packages
                 .iter()
                 .any(|entry| entry.set.cooldown_days.is_some_and(|days| days > 0))
+    }
+
+    /// Whether any check reads publish times: a cooldown, or `provenance`, which compares a
+    /// version with the one published before it. An exception can only loosen, so
+    /// `provenance: allow` at the top level means no package is checked.
+    ///
+    /// Gates the full-packument fetch: publish times are only in the full document, and
+    /// fetching it is 1.7x to 3.6x the bytes plus a request the client never made. An
+    /// operator who has turned neither check on pays none of that.
+    pub fn needs_publish_times(&self) -> bool {
+        self.uses_cooldown() || self.provenance == Action::Block
     }
 
     /// Every denial names one version, in its purl, or a VERS range, in `version`, or the

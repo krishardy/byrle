@@ -307,6 +307,7 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
         max_cvss = policy.max_cvss,
         install_scripts = %policy.install_scripts,
         kev = %policy.kev,
+        provenance = %policy.provenance,
         denials = policy.denials.len(),
         exceptions = policy.packages.len(),
         "policy loaded and validated"
@@ -315,9 +316,10 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
     // What is configured and what can actually fire are different things, and the gap
     // has to be said out loud rather than discovered by a package getting through.
     warn!(
-        "ENFORCED: denials, install_scripts, cooldown_days. A refused version is removed \
-         from the metadata document so the resolver picks another, and a pinned fetch of \
-         one is refused"
+        "ENFORCED: denials, install_scripts, cooldown_days, yanked, deprecated, and \
+         provenance for npm only, since PyPI attestations are not verified. A refused version \
+         is removed from the metadata document so the resolver picks another, and a pinned \
+         fetch of one is refused"
     );
     if policy.uses_cooldown() {
         for (ecosystem, cost) in crate::ecosystem::cooldown_costs() {
