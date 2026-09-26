@@ -47,6 +47,7 @@ code, and the file names where.
 | [An artifact is analysed in the background, spooled to disk](artifact-spool.md) | Implemented |
 | [Attestations are verified with `sigstore-verify`](sigstore-verifier.md) | Implemented |
 | [The provenance check refuses a version its attestations contradict](provenance-check.md) | Implemented, npm and PyPI |
+| [Tier 1 false-positive rates](tier-1-false-positives.md) | Measured |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

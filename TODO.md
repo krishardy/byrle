@@ -2409,6 +2409,11 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       chalk, nx, eslint-config-prettier) and publish the results
 
 **Exit:** all Tier 1 controls shipped with measured false-positive rates.
+Measured 2026-09-26 over 311 versions in five dependency sets
+([tier-1-false-positives](docs/engineering_decisions/tier-1-false-positives.md)):
+`cooldown_days: 7` refused 35 (11%), `install_scripts: block` 1, `provenance: block` 1.
+`vite`'s 38.9 MB full packument exceeds `WAHAROA_MAX_METADATA_BYTES`, so its cooldown and
+dropped-provenance checks are unenforceable.
 
 ---
 
