@@ -46,6 +46,9 @@
 //! stays acceptable, because for every client except npm it means the bytes are never
 //! seen.
 
+use crate::analysis::Claim;
+use crate::analysis::run::{Analyser, Job, Known};
+use crate::analysis::store::Scripts;
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
@@ -231,6 +234,9 @@ struct Config {
     /// Where an artifact is written while it is analysed. Its lock is held for as long as
     /// the proxy lives. See [`crate::spool`].
     spool: Option<Arc<Spool>>,
+    /// Analyses an artifact nothing has analysed, in the background. Without one, nothing
+    /// is analysed and the metadata's claim decides. See [`crate::analysis::run`].
+    analyser: Option<Arc<Analyser>>,
     max_metadata_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it. See
     /// [`npm::rewrite_packument`] and [`pypi::rewrite::rewrite_index`].
@@ -270,6 +276,7 @@ impl Proxy {
                 audit: None,
                 intel: None,
                 spool: None,
+                analyser: None,
                 max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
                 rewrite_artifacts: true,
                 public_base: None,
@@ -461,6 +468,11 @@ impl Proxy {
 
     pub fn with_spool(mut self, spool: Option<Arc<Spool>>) -> Self {
         self.config_mut().spool = spool;
+        self
+    }
+
+    pub fn with_analyser(mut self, analyser: Option<Arc<Analyser>>) -> Self {
+        self.config_mut().analyser = analyser;
         self
     }
 
@@ -1058,7 +1070,7 @@ async fn filtered_document(
     let intel = match normalized {
         Some(metadata) => match intel_for(proxy, &metadata.key, path).await {
             Ok(intel) => intel,
-            Err(IntelUnavailable::Uncovered(uncovered))
+            Err(NotReady::Uncovered(uncovered))
                 if ecosystem::of(uncovered).uncovered_metadata
                     == UncoveredMetadata::FilterWithoutIntel =>
             {
@@ -1380,6 +1392,71 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         deprecated = record.deprecated.as_deref().unwrap_or("-"),
         "artifact requested, digest known"
     );
+    // Where the packument said the artifact lives, when that is an origin the operator
+    // added. Rewriting pointed the client at the proxy, so the proxy has to know where
+    // "here" stood for. Everything else goes to the upstream, including artifacts
+    // advertised on the default registry: a private mirror publishes those URLs and is
+    // the reason the proxy was pointed at it.
+    let artifact_url = artifact.map(|a| a.url.as_str()).unwrap_or("");
+    fetch.origin = crate::origin::origin_of_url(artifact_url)
+        .filter(|origin| proxy.config.origins.reachable().routes_directly(origin));
+    let unservable_origin = match proxy.config.origins.disposition(artifact_url) {
+        Disposition::Refused(origin) => Some(origin),
+        _ => None,
+    };
+    fetch.digest = match artifact
+        .and_then(|a| a.integrity.as_deref())
+        .map(Sri::parse)
+    {
+        Some(Ok(sri)) => {
+            // The hit arm still hashes: see `crate::verified`.
+            let seen = proxy
+                .verified
+                .lock()
+                .expect("verified artifacts lock")
+                .lookup(&sri);
+            info!(
+                path = %path,
+                claimed_purl = %purl,
+                digest = %sri,
+                cache = seen.as_str(),
+                "artifact cache consulted"
+            );
+            Some(sri)
+        }
+        Some(Err(e)) => {
+            warn!(
+                path = %path,
+                claimed_purl = %purl,
+                error = %e,
+                "metadata integrity string is unusable; not verifying"
+            );
+            None
+        }
+        // Two versions in 24,852 offer only SHA-1, which is collision-broken and not
+        // verified here.
+        None => {
+            warn!(
+                path = %path,
+                claimed_purl = %purl,
+                "metadata publishes no strong digest; not verifying"
+            );
+            None
+        }
+    };
+
+    let upstream = upstream_url(proxy, ecosystem, path, fetch.origin.as_deref());
+    let analysed = analysed(
+        proxy,
+        record,
+        filename,
+        fetch.digest.as_ref(),
+        &upstream,
+        path,
+    )
+    .await;
+    let record = &analysed.record;
+
     // A record read from a full document carries its own publish time; only one without
     // it needs the time fetched.
     let times = match record.published_at {
@@ -1405,55 +1482,6 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         enforce::Verdict::Refuse(refusal) => Some(refusal),
         _ => None,
     };
-    // Where the packument said the artifact lives, when that is an origin the operator
-    // added. Rewriting pointed the client at the proxy, so the proxy has to know where
-    // "here" stood for. Everything else goes to the upstream, including artifacts
-    // advertised on the default registry: a private mirror publishes those URLs and is
-    // the reason the proxy was pointed at it.
-    let artifact_url = artifact.map(|a| a.url.as_str()).unwrap_or("");
-    fetch.origin = crate::origin::origin_of_url(artifact_url)
-        .filter(|origin| proxy.config.origins.reachable().routes_directly(origin));
-    let unservable_origin = match proxy.config.origins.disposition(artifact_url) {
-        Disposition::Refused(origin) => Some(origin),
-        _ => None,
-    };
-    match artifact
-        .and_then(|a| a.integrity.as_deref())
-        .map(Sri::parse)
-    {
-        Some(Ok(sri)) => {
-            // Plan §5's branch, decided before a byte is fetched. In Stage 1 both arms do
-            // the same thing, because nothing analyses and nothing defers; a hit is where
-            // Stage 5 skips the analysis it already ran, and a miss is where the
-            // novel-artifact branches go. The hit arm still hashes: see `crate::verified`.
-            let seen = proxy
-                .verified
-                .lock()
-                .expect("verified artifacts lock")
-                .lookup(&sri);
-            info!(
-                path = %path,
-                claimed_purl = %purl,
-                digest = %sri,
-                cache = seen.as_str(),
-                "artifact cache consulted"
-            );
-            fetch.digest = Some(sri);
-        }
-        Some(Err(e)) => warn!(
-            path = %path,
-            claimed_purl = %purl,
-            error = %e,
-            "metadata integrity string is unusable; not verifying"
-        ),
-        // Two versions in 24,852 offer only SHA-1, which is collision-broken and not
-        // verified here.
-        None => warn!(
-            path = %path,
-            claimed_purl = %purl,
-            "metadata publishes no strong digest; not verifying"
-        ),
-    }
 
     if let Some(refusal) = &policy_refusal {
         let status = refusal_status(proxy, ecosystem, Some(client));
@@ -1498,7 +1526,122 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         );
     }
 
-    ArtifactStep::Fetch(fetch)
+    match analysed.state {
+        AnalysisState::Mismatched(mismatch) => {
+            warn!(%method, path = %path, claimed_purl = %purl, %mismatch, "refused: the upstream serves bytes its metadata does not describe");
+            ArtifactStep::Answer(
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!("waharoa: the upstream served {purl} as bytes its metadata does not describe: {mismatch}\n"),
+                )
+                    .into_response(),
+            )
+        }
+        AnalysisState::Pending(job) => {
+            if let Some(analyser) = &proxy.config.analyser {
+                analyser.start(job);
+            }
+            info!(%method, path = %path, claimed_purl = %purl, client = %client, "deferred: the artifact has not been analysed");
+            ArtifactStep::Answer(NotReady::Analysing(purl).response())
+        }
+        AnalysisState::Decided => ArtifactStep::Fetch(fetch),
+    }
+}
+
+/// The record to decide on, with `has_install_scripts` taken from the artifact's own
+/// bytes where a reader reads it, and whether the artifact can be served yet.
+struct Analysed {
+    record: PackageRecord,
+    state: AnalysisState,
+}
+
+enum AnalysisState {
+    /// Decide on the record and serve what the policy allows.
+    Decided,
+    /// The last fetch of these bytes did not match their digest. Answered 502.
+    Mismatched(crate::integrity::Mismatch),
+    /// Nothing has analysed these bytes. Answered 503 once the policy has been asked
+    /// whether it refuses the version on what is known already.
+    Pending(Job),
+}
+
+/// What the artifact's own bytes say about install scripts, where a reader reads it.
+///
+/// An analysis stored under the digest adds what the archive declares to the metadata's
+/// claim, and never removes the claim. An archive that could not be read counts as running
+/// scripts: not knowing is not knowing there is none. An artifact a reader reads but that
+/// has no strong digest has no key to store an analysis under, and counts as running
+/// scripts for the same reason. An artifact not analysed yet keeps the claim, so a version
+/// the policy refuses on what is known already is refused rather than deferred.
+///
+/// A wheel is read by nothing, and a proxy started without an analyser analyses nothing.
+/// Both keep the claim.
+async fn analysed(
+    proxy: &Proxy,
+    record: &PackageRecord,
+    filename: &str,
+    digest: Option<&Sri>,
+    upstream: &str,
+    path: &str,
+) -> Analysed {
+    let mut record = record.clone();
+    let key = record.package.key();
+    let reader = crate::analysis::Reader::for_file(key.ecosystem(), filename);
+    let (Some(reader), Some(analyser)) = (reader, &proxy.config.analyser) else {
+        return Analysed {
+            record,
+            state: AnalysisState::Decided,
+        };
+    };
+    let Some(digest) = digest else {
+        warn!(
+            path = %path,
+            "no strong digest, so the artifact cannot be analysed; it counts as running install scripts"
+        );
+        record.has_install_scripts = true;
+        return Analysed {
+            record,
+            state: AnalysisState::Decided,
+        };
+    };
+    let state = match analyser.known(digest).await {
+        Known::Analysed(analysis) => {
+            report_claim(&record, &analysis.scripts, path);
+            // Adds to the claim and never takes from it. The readers see only part of
+            // what runs: an sdist with no `setup.py` still runs its PEP 517 backend, and npm
+            // runs `node-gyp rebuild` for a `binding.gyp` that `package.json` never names.
+            record.has_install_scripts |= analysis
+                .scripts
+                .names()
+                .is_none_or(|names| !names.is_empty());
+            AnalysisState::Decided
+        }
+        Known::Mismatched(mismatch) => AnalysisState::Mismatched(mismatch),
+        Known::Unknown => AnalysisState::Pending(Job {
+            digest: digest.clone(),
+            url: upstream.to_owned(),
+            reader,
+            ecosystem: key.ecosystem().as_str().to_owned(),
+            name: key.registry_name(),
+            version: record.package.version().to_owned(),
+        }),
+    };
+    Analysed { record, state }
+}
+
+/// Log what the artifact declares against what the metadata claimed. An `undeclared`
+/// claim is a warning whatever the policy says: the metadata hid a script.
+fn report_claim(record: &PackageRecord, scripts: &Scripts, path: &str) {
+    let Scripts::Declared(found) = scripts else {
+        warn!(path = %path, scripts = ?scripts, "the artifact could not be read; it counts as running install scripts");
+        return;
+    };
+    let claim = Claim::of(found, record.has_install_scripts, record.detail);
+    if claim == Claim::Undeclared {
+        warn!(path = %path, scripts = ?found.names, claim = claim.as_str(), "the artifact runs install scripts its metadata does not declare");
+    } else {
+        info!(path = %path, scripts = ?found.names, claim = claim.as_str(), "install scripts read from the artifact");
+    }
 }
 
 /// Write the pinned decision to the audit log, when there is a log and a policy.
@@ -2042,34 +2185,37 @@ const RETRY_AFTER_SECONDS: &str = "1";
 /// parsing prose. Neither status code distinguishes them.
 pub const NOT_READY: header::HeaderName = header::HeaderName::from_static("x-waharoa-not-ready");
 
-/// Why a package is not decided on. Already logged; [`IntelUnavailable::response`] is what
+/// Why a request is not decided on yet. Already logged; [`NotReady::response`] is what
 /// the client is sent.
-enum IntelUnavailable {
+enum NotReady {
     /// The store errored, or holds no snapshot.
     Unanswered,
     /// The snapshot has no stream that can report a finding or malware for this ecosystem,
     /// so an empty answer would read as "nothing known" about a package nothing was asked
     /// about.
     Uncovered(Ecosystem),
+    /// The artifact, named by its purl, has not been analysed. The analysis has been
+    /// started, and the client's retry is decided on it.
+    Analysing(String),
 }
 
-impl IntelUnavailable {
+impl NotReady {
     /// What a log and the `x-waharoa-not-ready` header call this case.
     fn reason(&self) -> &'static str {
         match self {
             Self::Unanswered => "intel-store",
             Self::Uncovered(_) => "no-stream-for-ecosystem",
+            Self::Analysing(_) => "artifact-analysis",
         }
     }
 
     /// 503 with a wait and a reason.
     ///
-    /// 503 rather than 429: measured over seven clients, a 429 is terminal for yarn 1 and
-    /// bun, which report it and stop, while every one of the seven retries a 503. 429 says
-    /// "this one artifact is under analysis" and nothing here is, so the code that works
-    /// is also the one that is true.
+    /// 503 rather than 429, including for an artifact under analysis, which plan §5 first
+    /// gave 429. Measured over seven clients, a 429 is terminal for yarn 1 and bun, which
+    /// report it and stop, while every one of the seven retries a 503.
     fn response(self) -> Response {
-        let body = match self {
+        let body = match &self {
             Self::Unanswered => {
                 "waharoa: the intel store cannot answer, so nothing is served unchecked\n"
                     .to_owned()
@@ -2077,6 +2223,10 @@ impl IntelUnavailable {
             Self::Uncovered(ecosystem) => format!(
                 "waharoa: the intel snapshot has no advisory stream for {ecosystem}, so no \
                  {ecosystem} package is served unchecked\n"
+            ),
+            Self::Analysing(purl) => format!(
+                "waharoa: {purl} has not been analysed yet; the analysis has started, ask \
+                 again shortly\n"
             ),
         };
         (
@@ -2135,7 +2285,7 @@ async fn intel_for(
     proxy: &Proxy,
     key: &PackageKey,
     path: &str,
-) -> Result<Option<PackageIntel>, IntelUnavailable> {
+) -> Result<Option<PackageIntel>, NotReady> {
     let Some(store) = proxy.consulted_intel() else {
         return Ok(None);
     };
@@ -2153,7 +2303,7 @@ async fn intel_for(
                 for gap in &gaps {
                     error!(path = %path, snapshot = %snapshot.digest, "{gap}; answering 503");
                 }
-                return Err(IntelUnavailable::Uncovered(ecosystem));
+                return Err(NotReady::Uncovered(ecosystem));
             }
             Ok(None) => "the intel snapshot changed while it was read".to_owned(),
             Err(e) => e.to_string(),
@@ -2167,7 +2317,7 @@ async fn intel_for(
         why = %why,
         "intel store cannot answer; answering 503 rather than serving unchecked"
     );
-    Err(IntelUnavailable::Unanswered)
+    Err(NotReady::Unanswered)
 }
 
 /// The versions in this metadata document the policy refuses.
@@ -3723,10 +3873,14 @@ mod tests {
     #[tokio::test]
     async fn a_request_the_proxy_cannot_decide_says_how_long_to_wait_and_why() {
         for (unavailable, reason) in [
-            (IntelUnavailable::Unanswered, "intel-store"),
+            (NotReady::Unanswered, "intel-store"),
             (
-                IntelUnavailable::Uncovered(Ecosystem::PyPI),
+                NotReady::Uncovered(Ecosystem::PyPI),
                 "no-stream-for-ecosystem",
+            ),
+            (
+                NotReady::Analysing("pkg:npm/widget@1.0.0".to_owned()),
+                "artifact-analysis",
             ),
         ] {
             let response = unavailable.response();
@@ -5604,5 +5758,257 @@ mod tests {
                 assert!(reachable.contains(&origin.to_owned()), "{origin}");
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Artifact analysis
+    // -----------------------------------------------------------------------
+
+    const RUNS_POSTINSTALL: &[u8] =
+        br#"{"name":"widget","version":"1.0.0","scripts":{"postinstall":"node x.js"}}"#;
+    const RUNS_NOTHING: &[u8] = br#"{"name":"widget","version":"1.0.0"}"#;
+
+    /// A registry serving `widget` 1.0.0 behind a proxy with an analyser. `version` is
+    /// written into the version's object and `dist` into its `dist`, each ending in a
+    /// comma. The analyser is returned so a test can wait for its jobs.
+    async fn analysing(
+        label: &str,
+        version: &str,
+        dist: &str,
+        tarball: Vec<u8>,
+        yaml: Option<&str>,
+    ) -> (String, Arc<Analyser>) {
+        let packument = format!(
+            r#"{{"name":"widget","dist-tags":{{"latest":"1.0.0"}},"versions":{{
+                "1.0.0":{{"version":"1.0.0",{version}"dist":{{{dist}
+                    "tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}}}}}}"#
+        );
+        let router = Router::new()
+            .route(
+                "/widget",
+                get(move || {
+                    let packument = packument.clone();
+                    async move {
+                        (
+                            [(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")],
+                            packument,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/widget/-/widget-1.0.0.tgz",
+                get(move || {
+                    let tarball = tarball.clone();
+                    async move { tarball }
+                }),
+            );
+        let (spool, _) =
+            Spool::open(&crate::util::test_support::tempdir(label), 1 << 20).expect("opens");
+        let analyser = Arc::new(Analyser::new(
+            reqwest::Client::new(),
+            Arc::new(spool),
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+            2,
+            8,
+        ));
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, serve(router).await)
+                .with_policy(yaml.map(policy))
+                .with_analyser(Some(analyser.clone()))
+                .router(),
+        )
+        .await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        (base, analyser)
+    }
+
+    fn integrity(tarball: &[u8]) -> String {
+        format!(r#""integrity":"{}","#, sri_of(tarball))
+    }
+
+    async fn tarball_request(base: &str) -> reqwest::Response {
+        reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap()
+    }
+
+    /// No policy, and still deferred: every artifact a reader reads is analysed before it
+    /// is served. The retry is served whole.
+    #[tokio::test]
+    async fn an_artifact_nothing_has_analysed_is_deferred_and_its_retry_served() {
+        let tarball =
+            crate::util::test_support::tarball(&[("package/package.json", RUNS_POSTINSTALL)]);
+        let (base, analyser) = analysing(
+            "analyse-defer",
+            "",
+            &integrity(&tarball),
+            tarball.clone(),
+            None,
+        )
+        .await;
+
+        let first = tarball_request(&base).await;
+        assert_eq!(first.status(), 503);
+        assert_eq!(first.headers()[NOT_READY.as_str()], "artifact-analysis");
+        assert_eq!(first.headers()[header::RETRY_AFTER.as_str()], "1");
+        assert!(
+            first.text().await.unwrap().contains("pkg:npm/widget@1.0.0"),
+            "the body names the artifact"
+        );
+
+        analyser.ended(1).await;
+        let retry = tarball_request(&base).await;
+        assert_eq!(retry.status(), 200);
+        assert_eq!(retry.bytes().await.unwrap().as_ref(), tarball.as_slice());
+    }
+
+    /// The packument claims no script and the tarball runs `postinstall`. The artifact
+    /// decides.
+    #[tokio::test]
+    async fn a_script_the_metadata_did_not_declare_is_refused_under_block() {
+        let tarball =
+            crate::util::test_support::tarball(&[("package/package.json", RUNS_POSTINSTALL)]);
+        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let (base, analyser) = analysing(
+            "analyse-undeclared",
+            "",
+            &integrity(&tarball),
+            tarball,
+            Some(yaml),
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 503);
+        analyser.ended(1).await;
+        let retry = tarball_request(&base).await;
+        assert_eq!(retry.status(), 403);
+        assert!(retry.text().await.unwrap().contains("install_scripts"));
+    }
+
+    /// The packument claims a script and `package.json` names none. The claim stands: npm
+    /// runs `node-gyp rebuild` for a `binding.gyp`, which the reader does not look for. The
+    /// claim alone refuses it, so it is refused without being analysed.
+    #[tokio::test]
+    async fn a_claimed_script_the_artifact_does_not_name_is_still_refused_under_block() {
+        let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
+        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let (base, analyser) = analysing(
+            "analyse-overstated",
+            r#""hasInstallScript":true,"#,
+            &integrity(&tarball),
+            tarball,
+            Some(yaml),
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 403);
+        assert_eq!(analyser.in_flight(), 0, "no job was started");
+    }
+
+    /// Not knowing is not knowing there is no script.
+    #[tokio::test]
+    async fn an_archive_that_cannot_be_read_is_refused_under_block() {
+        let tarball = b"not a gzip stream".to_vec();
+        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let (base, analyser) = analysing(
+            "analyse-unreadable",
+            "",
+            &integrity(&tarball),
+            tarball,
+            Some(yaml),
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 503);
+        analyser.ended(1).await;
+        assert_eq!(tarball_request(&base).await.status(), 403);
+    }
+
+    #[tokio::test]
+    async fn bytes_that_do_not_match_their_digest_are_a_502_on_the_retry() {
+        let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
+        let (base, analyser) = analysing(
+            "analyse-mismatch",
+            "",
+            &integrity(b"other bytes"),
+            tarball,
+            None,
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 503);
+        analyser.ended(1).await;
+        let retry = tarball_request(&base).await;
+        assert_eq!(retry.status(), 502);
+        assert!(retry.text().await.unwrap().contains("does not describe"));
+    }
+
+    /// No strong digest, so nothing can be stored or checked against: refused under
+    /// `block`, and served unanalysed without it.
+    #[tokio::test]
+    async fn an_artifact_with_no_strong_digest_counts_as_running_scripts() {
+        let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
+        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let (base, _) = analysing(
+            "analyse-nodigest-block",
+            "",
+            "",
+            tarball.clone(),
+            Some(yaml),
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 403);
+
+        let (base, _) = analysing("analyse-nodigest", "", "", tarball, None).await;
+        assert_eq!(tarball_request(&base).await.status(), 200);
+    }
+
+    /// A script the artifact runs and the metadata did not declare is a warning whatever
+    /// the policy says. One the metadata did declare, and an unreadable archive, are
+    /// reported without it.
+    #[test]
+    fn a_script_the_metadata_hid_is_a_warning() {
+        let record = &two_versions().records[0];
+        assert!(!record.has_install_scripts);
+        let runs = |names: &[&str]| {
+            Scripts::Declared(crate::analysis::InstallScripts {
+                names: names.iter().map(|n| (*n).to_owned()).collect(),
+                bodies: Vec::new(),
+            })
+        };
+        let said = |scripts: Scripts| {
+            let (guard, buf) = capture(tracing::Level::INFO);
+            report_claim(record, &scripts, "/pkg/-/pkg-1.0.0.tgz");
+            drop(guard);
+            text(&buf)
+        };
+
+        let hidden = said(runs(&["postinstall"]));
+        assert!(hidden.contains("WARN"), "{hidden}");
+        assert!(hidden.contains("does not declare"), "{hidden}");
+        assert!(hidden.contains("undeclared"), "{hidden}");
+
+        let kept = said(runs(&[]));
+        assert!(kept.contains("INFO") && !kept.contains("WARN"), "{kept}");
+        assert!(kept.contains("\"kept\""), "{kept}");
+
+        let unreadable = said(Scripts::Unreadable("not an archive".to_owned()));
+        assert!(unreadable.contains("could not be read"), "{unreadable}");
+    }
+
+    /// A check that needs no analysis refuses at once, without deferring.
+    #[tokio::test]
+    async fn a_denied_version_is_refused_before_it_is_analysed() {
+        let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
+        let yaml = "version: 1\ncooldown_days: 0\n\
+                    denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: test\n";
+        let (base, analyser) = analysing(
+            "analyse-denied",
+            "",
+            &integrity(&tarball),
+            tarball,
+            Some(yaml),
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 403);
+        assert_eq!(analyser.in_flight(), 0, "no job was started");
     }
 }

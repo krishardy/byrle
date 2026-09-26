@@ -10,6 +10,9 @@ use std::sync::Arc;
 
 use tracing::{info, warn};
 
+use crate::analysis::postgres::PgAnalyses;
+use crate::analysis::run::Analyser;
+use crate::analysis::store::{Analyses, InProcess};
 use crate::audit::AuditLog;
 use crate::doctor;
 use crate::env::{self, Env};
@@ -233,6 +236,13 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         ),
         _ => {}
     }
+
+    // What analysing an artifact found is kept in the intel store's database when there is
+    // one, and otherwise in this process only, so a restart analyses each artifact again.
+    let analyses: Arc<dyn Analyses> = match &intel {
+        Some(store) => Arc::new(PgAnalyses::new(store.pool().clone())),
+        None => Arc::new(InProcess::new(max_verified)),
+    };
     let intel = intel.map(|store| Arc::new(store) as Arc<dyn Intel>);
 
     // Refusing to start is right: a second proxy on the same directory would remove the
@@ -247,11 +257,19 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         swept,
         "spool open; files left by an earlier process removed"
     );
+    let spool = Arc::new(spool);
 
-    let proxy = Proxy::new(client)
+    let proxy = Proxy::new(client.clone())
         .with_upstreams(upstreams)
         .with_intel(intel)
-        .with_spool(Some(Arc::new(spool)))
+        .with_spool(Some(spool.clone()))
+        .with_analyser(Some(Arc::new(Analyser::new(
+            client.clone(),
+            spool,
+            analyses,
+            environment.max_concurrent_analyses()?,
+            max_verified,
+        ))))
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
         .with_origin_policy(

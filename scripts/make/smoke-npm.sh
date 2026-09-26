@@ -123,12 +123,15 @@ echo "    ok ($(echo "$expected_purls" | wc -l) purls, $normalized_count packume
 echo "==> 4/6  every tarball digest was known before the fetch and verified"
 # The digest comes from a packument seen earlier in the same run, which is what makes
 # cache-hit-versus-miss decidable before a byte is fetched (plan section 5).
+# A tarball nothing has analysed is deferred once and served on npm's retry. Both
+# requests log the digest; only the served one is proxied.
 known="$(grep -c 'digest known' "$clean_log" || true)"
+deferred="$(grep -c 'deferred: the artifact has not been analysed' "$clean_log" || true)"
 verified="$(grep -c 'artifact digest verified' "$clean_log" || true)"
 tarballs="$(grep -coE 'proxied .*path=/[^ ]+\.tgz' "$clean_log" || true)"
 
-[[ "$known" -eq "$tarballs" ]] \
-    || fail "$tarballs tarballs fetched but only $known had a digest from their packument"
+[[ "$((known - deferred))" -eq "$tarballs" ]] \
+    || fail "$tarballs tarballs fetched but only $((known - deferred)) had a digest from their packument"
 [[ "$verified" -eq "$tarballs" ]] \
     || fail "$tarballs tarballs fetched but only $verified were verified"
 if grep -q 'MISMATCH' "$clean_log"; then
@@ -145,7 +148,7 @@ if grep -q 'PUBLISHED OFF' "$clean_log"; then
     fail "the offsite-artifact check fired against the real registry:
 $(grep 'PUBLISHED OFF' "$clean_log")"
 fi
-echo "    ok ($tarballs tarballs, all with a known digest, all verified, none offsite)"
+echo "    ok ($tarballs tarballs, all with a known digest, all verified, none offsite, $deferred deferred for analysis)"
 stop_proxy
 
 echo "==> 5/6  npm ci verifies every artifact although it requests no packuments"

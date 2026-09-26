@@ -1,8 +1,8 @@
 # An artifact's analysis is kept under the digest of its bytes
 
 - **Status:** Implemented 2026-09-22, the store. `src/analysis/store.rs`,
-  `src/analysis/postgres.rs`, `migrations/0009_artifact_analysis.sql`. Not yet read by the
-  fetch path.
+  `src/analysis/postgres.rs`, `migrations/0009_artifact_analysis.sql`. Read by the fetch
+  path since 2026-09-26, `proxy::analysed`.
 - **Related:** [fetch-path-branching](fetch-path-branching.md),
   [verified-artifact-cache](verified-artifact-cache.md),
   [install-scripts-from-the-artifact](install-scripts-from-the-artifact.md),
@@ -73,9 +73,9 @@ is a script no reader found.
 
 ## How large a buffer the analysis needs
 
-A novel artifact is buffered, because the reader needs the archive and the response cannot
-be refused once its status and headers have gone out (`proxy.rs:522`). What that costs is
-measured rather than picked.
+A novel artifact is written to the spool, because the reader needs the archive. What that
+costs is measured rather than picked. The analysis ran inside the request when this was
+measured; it runs in the background since 2026-09-26 ([artifact-spool](artifact-spool.md)).
 
 `examples/artifact_sizes.py` walks dependency edges from a seed of roots and measures every
 package it reaches, which is the population a proxy serves: a real install is mostly small

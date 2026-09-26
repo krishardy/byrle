@@ -105,7 +105,7 @@ impl PgIntel {
         Self { pool }
     }
 
-    /// The pool, for tests that insert fixtures directly.
+    /// The pool, which the artifact analyses share and tests insert fixtures through.
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }

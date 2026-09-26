@@ -1,8 +1,7 @@
 # Deferral status codes: what a client does when the proxy says "not yet"
 
-- **Status:** Measured Sept 2026. Decided 2026-09-21 for the not-ready case, implemented in
-  `IntelUnavailable::response`. The per-artifact case waits for an analysis that can defer
-  one.
+- **Status:** Measured Sept 2026. Decided 2026-09-21 for the not-ready case and 2026-09-26
+  for an artifact under analysis, implemented in `NotReady::response`.
 - **Plan reference:** §5 status codes, §5 client compatibility
 - **Related:** [fetch-path-branching](fetch-path-branching.md),
   [enforcement-tiers](enforcement-tiers.md)
@@ -153,24 +152,30 @@ Deferral lifting after 8 seconds:
 
 A request the proxy cannot decide on answers 503, whatever the client. Of seven clients
 measured, all seven retry a 503 and two treat a 429 as terminal, reporting it and stopping.
-429 says "this one artifact is under analysis", and nothing here is under analysis, so the
-code that works is also the one that is true.
+The 2026-09-26 decision below gives the per-artifact case the same code.
 
 The response carries two things it did not before:
 
 | Header | Value |
 |---|---|
 | `Retry-After` | `1`. Only yarn 4 and pip read it; the other five run their own backoff. One second is inside both of their budgets, 3.2s and 5.5s |
-| `x-waharoa-not-ready` | `intel-store` when the store cannot answer, `no-stream-for-ecosystem` when the snapshot covers the ecosystem with nothing. Neither status code tells those apart |
+| `x-waharoa-not-ready` | `intel-store` when the store cannot answer, `no-stream-for-ecosystem` when the snapshot covers the ecosystem with nothing, `artifact-analysis` when the artifact has not been analysed. Neither status code tells those apart |
 
-## Still open: the per-artifact case
+## Decided 2026-09-26: an artifact under analysis is 503 too
 
-429 is reserved for "this one artifact is under analysis", which nothing produces yet: no
-detector holds an artifact long enough to defer a request. When one exists, the table below
-is what it has to be written against.
+An artifact no analysis is stored for answers 503 at once, with `Retry-After: 1` and
+`x-waharoa-not-ready: artifact-analysis`, and the analysis runs in the background. There is
+no bounded internal wait and no per-client code: every request for an unanalysed artifact
+gets the same immediate 503, with or without a policy.
 
-| Decision | What the measurement says |
+What the measurements above say that costs, on the first fetch of each artifact:
+
+| Client | First fetch of an unanalysed tarball |
 |---|---|
-| Which code per client | 429 only where a client tolerates it, and never by default. yarn 1 and bun stop on the first one |
-| How the table is keyed | on the user agent as the proxy reads it. `refusal::client_name` takes the first token, so yarn 4 is `got`, not `yarn`: a rule written for the brand never matches it |
-| A bounded internal wait | the mechanism rather than a fallback for bun, whose total patience is 0.2s: no code and no header buys time from it. A wait longer than a client's patience is worse than an immediate deferral, because the client fails and the connection was held too |
+| npm, pnpm | retried; served once the analysis is stored |
+| yarn 4 | retried within about 3s |
+| yarn 1 | fails: it gives up on a 503 tarball after one retry |
+| bun | fails: six retries at 0s, 0.2s in all |
+
+A second install of the same versions is served from the stored analysis. 429 is not used:
+two clients of seven stop on the first one.
