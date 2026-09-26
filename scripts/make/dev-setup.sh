@@ -136,11 +136,14 @@ else
     echo "    See https://semgrep.dev/docs/getting-started/"
 fi
 
-echo "==> kani (formal verification, used by 'make verify')"
-if cargo kani --version >/dev/null 2>&1; then
+# Pinned: kani 0.68.0 panics compiling this crate, at kani-compiler/src/intrinsics.rs:243.
+# See docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md.
+kani_version="0.67.0"
+echo "==> kani $kani_version (formal verification, used by 'make verify')"
+if [[ "$(cargo kani --version 2>/dev/null)" == *"Kani Rust Verifier $kani_version "* ]]; then
     echo "    already installed"
 else
-    cargo install --locked kani-verifier
+    cargo install --locked kani-verifier --version "$kani_version"
     # kani needs a second step to fetch its solver backend.
     cargo kani setup
 fi

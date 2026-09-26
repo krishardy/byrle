@@ -39,11 +39,19 @@ ARGS=--check` still failed on a changed query.
 | Build kani from its `main` branch | `main` pins `nightly-2026-08-21`, which is new enough. Rejected: it tracks an unreleased kani |
 | sqlx optional behind a default feature, `make verify` with `--no-default-features` | Worked: 30 harnesses verified. Rejected: sqlx is not optional |
 
+### kani 0.68.0
+
+kani 0.68.0 bundles `nightly-2026-08-21`, which is new enough for sqlx 0.9. It does not
+compile this crate: on 2026-09-25 `make verify` failed at `HEAD` `cb53416` with an internal
+compiler error, `kani-compiler/src/intrinsics.rs:243:17: assertion failed:
+matches!(output.kind(), TyKind :: RigidTy(RigidTy::Int(IntTy::I32)))`. `dev-setup.sh`
+installs 0.67.0 until a release compiles it.
+
 ### Lifting the hold
 
 When a kani release bundles rustc 1.94 or later:
 
-1. Reinstall kani through `make dev-setup`.
+1. Set `kani_version` in `dev-setup.sh` and reinstall kani through `make dev-setup`.
 2. Set sqlx to `0.9` in `Cargo.toml` and `sqlx_minor="0.9"` in `dev-setup.sh`, then run
    `make dev-setup`.
 3. Wrap the four `format!` calls in `fresh` in `AssertSqlSafe`.
