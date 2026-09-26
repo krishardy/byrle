@@ -3,11 +3,13 @@
 //! One pool, not two. The analyses are written on the request path and the advisories are
 //! read on it, so a second pool would double the connections a proxy holds for one
 //! database. [`crate::intel::postgres::PgIntel::pool`] hands this one over, and
-//! `PgIntel::migrate` applies `migrations/0009_artifact_analysis.sql` with the rest.
+//! `PgIntel::migrate` applies `migrations/0009_artifact_analysis.sql` and
+//! `migrations/0010_artifact_attestation.sql` with the rest.
 //!
 //! Tested by `tests/postgres.rs`, which `make test-integration` runs against a container.
 
 use crate::analysis::InstallScripts;
+use crate::analysis::attestation::Attested;
 use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored};
 use crate::integrity::Sri;
 use sqlx::PgPool;
@@ -159,6 +161,49 @@ fn columns(scripts: &Scripts) -> (Vec<String>, Vec<Option<String>>) {
     (found.names.clone(), bodies)
 }
 
+impl PgAnalyses {
+    async fn write_attested(&self, digest: &Sri, attested: &Attested) -> Result<(), AnalysisError> {
+        let (identity, failure) = match attested {
+            Attested::Verified { identity } => (Some(identity.as_str()), None),
+            Attested::Failed { why } => (None, Some(why.as_str())),
+        };
+        sqlx::query!(
+            r#"
+            INSERT INTO artifact_attestation (digest, identity, failure)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (digest) DO UPDATE SET
+                identity    = EXCLUDED.identity,
+                failure     = EXCLUDED.failure,
+                verified_at = now()
+            "#,
+            digest.to_string(),
+            identity,
+            failure,
+        )
+        .execute(&self.pool)
+        .await
+        .map(drop)
+        .map_err(AnalysisError::Backend)
+    }
+
+    async fn read_attested(&self, digest: &Sri) -> Result<Option<Attested>, AnalysisError> {
+        let row = sqlx::query!(
+            "SELECT identity, failure FROM artifact_attestation WHERE digest = $1",
+            digest.to_string(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        // The table's CHECK sets exactly one of the two.
+        Ok(row.map(|row| match (row.identity, row.failure) {
+            (Some(identity), _) => Attested::Verified { identity },
+            (None, why) => Attested::Failed {
+                why: why.unwrap_or_default(),
+            },
+        }))
+    }
+}
+
 impl Analyses for PgAnalyses {
     fn get<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Analysis>> {
         Box::pin(self.read(digest))
@@ -166,5 +211,13 @@ impl Analyses for PgAnalyses {
 
     fn put<'a>(&'a self, digest: &'a Sri, analysis: &'a Analysis) -> Stored<'a, ()> {
         Box::pin(self.write(digest, analysis))
+    }
+
+    fn attested<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Attested>> {
+        Box::pin(self.read_attested(digest))
+    }
+
+    fn put_attested<'a>(&'a self, digest: &'a Sri, attested: &'a Attested) -> Stored<'a, ()> {
+        Box::pin(self.write_attested(digest, attested))
     }
 }

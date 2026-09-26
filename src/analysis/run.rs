@@ -275,6 +275,7 @@ impl Drop for InFlight {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::analysis::attestation::Attested;
     use crate::analysis::store::{AnalysisError, InProcess, Stored};
     use crate::util::test_support::tarball;
     use crate::util::test_support::tempdir;
@@ -478,6 +479,14 @@ mod tests {
         }
 
         fn put<'a>(&'a self, _: &'a Sri, _: &'a Analysis) -> Stored<'a, ()> {
+            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
+        }
+
+        fn attested<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Attested>> {
+            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
+        }
+
+        fn put_attested<'a>(&'a self, _: &'a Sri, _: &'a Attested) -> Stored<'a, ()> {
             Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
         }
     }

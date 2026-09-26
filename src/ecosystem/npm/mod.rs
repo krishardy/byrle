@@ -63,6 +63,7 @@
 //!
 //! `crate::ecosystem::pypi` has the same files, minus `rewrite.rs`, `inspect.rs`, `lockfile.rs` and `clients.rs`.
 
+pub mod attestation;
 pub mod clients;
 pub mod error;
 pub mod inspect;

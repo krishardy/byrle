@@ -14,6 +14,7 @@
 //! with no database. [`crate::env::DATABASE_URL`] is optional, and a proxy started without one
 //! uses [`InProcess`], which dies with the process.
 
+use crate::analysis::attestation::Attested;
 use crate::analysis::{InstallScripts, ReadError};
 use crate::integrity::Sri;
 use crate::util::lru::Lru;
@@ -95,6 +96,13 @@ pub trait Analyses: Send + Sync {
     /// digest. Two clients can ask for one artifact at once, and each analysed the same
     /// bytes, so a second write is not an error.
     fn put<'a>(&'a self, digest: &'a Sri, analysis: &'a Analysis) -> Stored<'a, ()>;
+
+    /// What verifying the attestations of the artifact with this digest found. `Ok(None)`
+    /// is an artifact whose attestations nothing has verified.
+    fn attested<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Attested>>;
+
+    /// Record what verifying them found, replacing what was held under the same digest.
+    fn put_attested<'a>(&'a self, digest: &'a Sri, attested: &'a Attested) -> Stored<'a, ()>;
 }
 
 /// The analyses this process has made, bounded by count, least recently used evicted
@@ -103,11 +111,15 @@ pub trait Analyses: Send + Sync {
 /// What a proxy started without [`crate::env::DATABASE_URL`] uses. It dies with the process, so
 /// a restarted proxy analyses each artifact once more, and a second proxy shares nothing
 /// with it.
-pub struct InProcess(Mutex<Lru<Sri, Analysis>>);
+pub struct InProcess(Mutex<Lru<Sri, Analysis>>, Mutex<Lru<Sri, Attested>>);
 
 impl InProcess {
+    /// `max_entries` analyses, and as many attestation results.
     pub fn new(max_entries: usize) -> Self {
-        Self(Mutex::new(Lru::new(max_entries)))
+        Self(
+            Mutex::new(Lru::new(max_entries)),
+            Mutex::new(Lru::new(max_entries)),
+        )
     }
 
     pub fn len(&self) -> usize {
@@ -131,6 +143,27 @@ impl Analyses for InProcess {
     fn put<'a>(&'a self, digest: &'a Sri, analysis: &'a Analysis) -> Stored<'a, ()> {
         Box::pin(async move {
             self.held().insert(digest.clone(), analysis.clone());
+            Ok(())
+        })
+    }
+
+    fn attested<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Attested>> {
+        Box::pin(async move {
+            Ok(self
+                .1
+                .lock()
+                .expect("attestation store lock")
+                .get(digest)
+                .cloned())
+        })
+    }
+
+    fn put_attested<'a>(&'a self, digest: &'a Sri, attested: &'a Attested) -> Stored<'a, ()> {
+        Box::pin(async move {
+            self.1
+                .lock()
+                .expect("attestation store lock")
+                .insert(digest.clone(), attested.clone());
             Ok(())
         })
     }
@@ -175,6 +208,7 @@ mod tests {
             store.get(&sri(1)).await.expect("the store answers"),
             Some(found)
         );
+        assert!(!store.is_empty());
         assert_eq!(
             store.get(&sri(2)).await.expect("the store answers"),
             None,

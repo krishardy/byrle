@@ -45,7 +45,7 @@ code, and the file names where.
 | [Install scripts are read from the artifact](install-scripts-from-the-artifact.md) | Implemented, the reader |
 | [An artifact's analysis is kept under the digest of its bytes](artifact-analysis-store.md) | Implemented, the store |
 | [An artifact is analysed in the background, spooled to disk](artifact-spool.md) | Implemented |
-| [Attestations are verified with `sigstore-verify`](sigstore-verifier.md) | Proposed |
+| [Attestations are verified with `sigstore-verify`](sigstore-verifier.md) | Implemented, not yet on the request path |
 | [The provenance check refuses a version its attestations contradict](provenance-check.md) | Decided; the policy engine implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |

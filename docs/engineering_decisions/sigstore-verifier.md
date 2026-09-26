@@ -1,7 +1,8 @@
 # Attestations are verified with `sigstore-verify`, not `sigstore`
 
-- **Status:** Proposed 2026-09-26. Evaluated in a scratch copy of the tree; nothing is
-  added to `Cargo.toml` yet.
+- **Status:** Decided 2026-09-26. `sigstore-verify = "=0.13.0"` with default features off:
+  `src/analysis/attestation.rs` verifies, `src/ecosystem/npm/attestation.rs` reads npm's
+  document.
 - **Related:** [pypi-provenance](pypi-provenance.md),
   [sqlx-0-8-and-rsa-advisory](sqlx-0-8-and-rsa-advisory.md),
   [artifact-spool](artifact-spool.md)

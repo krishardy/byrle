@@ -26,6 +26,20 @@ All three are `block`, and each reason names the case. `set: { provenance: allow
 maintainer who publishes one release by hand, or renames the release workflow, is the
 expected false positive for each.
 
+## Per ecosystem, and not
+
+Where the attestations are served and how they are laid out is the adapter's:
+`ecosystem::npm::attestation` takes npm's document to the SLSA provenance bundle, and
+leaves npm's publish attestation, which a registry key signs and no build does. PyPI's PEP
+740 document is shaped differently, binds a sha256 rather than a sha512, and a version has
+several files, so which file came before is its own decision. PyPI is reported unenforced
+until that is built.
+
+Verification, identity, the stored result and the fact are shared:
+`analysis::attestation::verify` takes a Sigstore bundle and the digest the metadata
+published, and `artifact_attestation` keeps the result by digest. A registry that cannot be
+reached writes nothing, so a missing row means not yet verified.
+
 ## Definitions
 
 - **The version published before it**: the version with the latest publish time earlier
