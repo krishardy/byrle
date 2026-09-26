@@ -2348,12 +2348,12 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
             `WAHAROA_SPOOL_DIR` at startup and removes the spool files left in it
             ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
       - [x] Wire it into the artifact path. An npm tarball or PyPI sdist with no stored
-            analysis is answered 503 `artifact-analysis` at once and analysed in the
-            background (`src/analysis/run.rs`). A script the artifact declares is added to
-            the claim on the retry, and never removed from it; an unreadable archive, or one with no strong
-            digest, counts as running scripts; a digest mismatch is a 502. An `undeclared`
-            claim is logged whatever the policy says
-            ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
+            analysis is analysed in the background (`src/analysis/run.rs`), and answered
+            503 `artifact-analysis` only when the answer depends on it. A script the
+            artifact declares is added to the claim, and never removed from it; an
+            unreadable archive, or one with no strong digest, counts as running scripts;
+            a digest mismatch is a 502. An `undeclared` claim is logged whatever the
+            policy says ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
 - [ ] `[!]` **Provenance enforcement** — sigstore / npm provenance verification
   - [ ] `[!]` Validate `sigstore-rs` maturity first; cosign shell-out as fallback
 - [ ] `[!]` **Declare an analysis cost tier for every content detector.** Since
@@ -2368,8 +2368,9 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         ([deferral-status-codes](docs/engineering_decisions/deferral-status-codes.md)).
         Of seven clients measured, all seven retry a 503 and two stop on a 429.
   - [x] An artifact under analysis is 503 too, `x-waharoa-not-ready: artifact-analysis`,
-        decided 2026-09-26. 429 is not used, there is no per-client code and no bounded
-        internal wait. yarn 1 and bun fail the first fetch of an unanalysed artifact.
+        decided 2026-09-26, when the answer depends on the analysis: no claimed script,
+        and the policy would refuse one. 429 is not used, there is no per-client code and
+        no bounded internal wait. yarn 1 and bun fail that first fetch.
   - [ ] The artifact digest in the deferral's header and body.
   - [ ] Log every deferral and whether the client returned inside the window, which turns
         the compatibility table into evidence.

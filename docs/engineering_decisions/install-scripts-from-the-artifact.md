@@ -47,8 +47,8 @@ which is ignored by default because it downloads them:
 ## Cost tier
 
 `Tier::Cheap`: one gzip stream and one JSON object. It runs in the background on the
-spooled artifact, like every detector: a request for an artifact nothing has analysed is
-answered 503 at once ([artifact-spool](artifact-spool.md)).
+spooled artifact, like every detector. A request waits for it with a 503 only when the
+answer depends on it ([artifact-spool](artifact-spool.md)).
 
 The reader is bounded. A member past `MAX_MEMBER_BYTES`, 4 MiB, is refused rather than read,
 which is what a decompression bomb needs to be refused; a `package.json` is kilobytes. An

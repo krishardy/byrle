@@ -123,8 +123,9 @@ echo "    ok ($(echo "$expected_purls" | wc -l) purls, $normalized_count packume
 echo "==> 4/6  every tarball digest was known before the fetch and verified"
 # The digest comes from a packument seen earlier in the same run, which is what makes
 # cache-hit-versus-miss decidable before a byte is fetched (plan section 5).
-# A tarball nothing has analysed is deferred once and served on npm's retry. Both
-# requests log the digest; only the served one is proxied.
+# Under install_scripts: block, a tarball nothing has analysed is deferred once and served
+# on npm's retry. Both requests log the digest; only the served one is proxied. This run
+# sets no policy, so nothing is deferred and the count is zero.
 known="$(grep -c 'digest known' "$clean_log" || true)"
 deferred="$(grep -c 'deferred: the artifact has not been analysed' "$clean_log" || true)"
 verified="$(grep -c 'artifact digest verified' "$clean_log" || true)"

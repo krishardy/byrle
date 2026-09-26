@@ -1,9 +1,9 @@
 //! Analysing an artifact in the background, so no request waits for it.
 //!
-//! A request for an artifact nothing has analysed is answered 503 at once, and the
-//! analysis runs here: fetch the artifact from upstream, write it to the
-//! [`crate::spool`], check its digest, read it, and store what was read under the digest.
-//! The client's retry finds the analysis and is served. See
+//! The first fetch of an artifact starts a job here: fetch the artifact from upstream,
+//! write it to the [`crate::spool`], check its digest, read it, and store what was read
+//! under the digest. When the answer depends on the analysis the request is answered 503,
+//! and the client's retry is decided on what was stored. See
 //! `docs/engineering_decisions/artifact-spool.md`.
 //!
 //! The retry fetches the artifact from upstream again, and that fetch is checked against

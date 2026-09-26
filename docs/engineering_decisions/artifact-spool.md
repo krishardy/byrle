@@ -1,7 +1,7 @@
 # An artifact is analysed in the background, spooled to disk
 
 - **Status:** Decided 2026-09-22, amended 2026-09-26: the analysis runs in the background
-  and the request is answered 503 at once. Implemented: `src/spool.rs`,
+  and a request waits for it with a 503 only when the answer depends on it. Implemented: `src/spool.rs`,
   `src/analysis/run.rs`, and `proxy::analysed`.
 - **Related:** [artifact-analysis-store](artifact-analysis-store.md),
   [fetch-path-branching](fetch-path-branching.md),
@@ -10,11 +10,23 @@
 
 ## No request waits for an analysis
 
-A request for an artifact that no analysis is stored for is answered 503 at once, with
-`Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis`. The proxy starts a job that
-fetches the artifact from upstream, writes it to the spool, checks its digest, reads it,
-and stores the analysis under the digest. The client's retry finds the analysis, is decided
-on it, and is fetched from upstream again through `proxy::VerifyingStream`.
+The first fetch of an artifact that no analysis is stored for starts a job that fetches
+the artifact from upstream, writes it to the spool, checks its digest, reads it, and stores
+the analysis under the digest.
+
+The request is answered 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready:
+artifact-analysis`, only when the answer depends on the analysis: the metadata claims no
+install script, and the policy would refuse the version if it ran one. The proxy asks the
+policy both ways. Otherwise the request is served on the claim, and the next fetch of the
+same digest is decided on the analysis.
+
+| Policy, for this package | First fetch of an unanalysed artifact |
+|---|---|
+| none, `install_scripts: allow`, or an exception allowing its scripts | served |
+| `install_scripts: block`, claim of a script | refused on the claim |
+| `install_scripts: block`, no claim | 503; the retry is decided on the analysis |
+
+The retry is fetched from upstream again through `proxy::VerifyingStream`.
 
 The second fetch is checked against the same digest. That is what makes the stored
 analysis apply to the bytes the client receives: a registry that serves different bytes
@@ -143,7 +155,8 @@ answered 503, and its retry starts another job. There is no 4xx for it:
 |---|---|
 | Stream the artifact and analyse afterwards | The status and headers have gone; a block is not expressible. `install_scripts: block` would be a silent pass, which is the failure the whole check exists to avoid |
 | Spool and analyse inside the request | The decision as first written. Replaced 2026-09-26: no request waits for an analysis |
-| Wait a bounded time for the analysis before deferring | bun's total patience is 0.2s. Decided against 2026-09-26: every unanalysed artifact is deferred at once |
+| Wait a bounded time for the analysis before deferring | bun's total patience is 0.2s. Decided against 2026-09-26 |
+| Defer every unanalysed artifact | Implemented 2026-09-26 and replaced the same day. The analysis only adds to the claim, so it can change the answer only for a version that claims no script under `block`. Every other deferral cost a retry and changed nothing, and failed bun and yarn 1 with no policy set |
 | Buffer the whole artifact in memory, with a ceiling | The measurement: the ceiling refuses `torch` and `opencv-python`, and nothing bounds the tail |
 | Buffer the prefix in memory up to the manifest | 5 of 78 npm packages need more than 4 MiB of prefix, so the bound is the artifact again |
 | Memory below a threshold, spool above it | Two paths and a threshold to defend. The median artifact is 9,078 bytes and a file that size never reaches the disk |

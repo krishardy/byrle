@@ -1472,16 +1472,28 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Err(unavailable) => return ArtifactStep::Answer(unavailable.response()),
     };
     audit_pinned(proxy, record, times.as_ref(), intel.as_ref());
-    let policy_refusal = match enforce::artifact(
+    let today = crate::policy::today();
+    let refused = |record: &PackageRecord| match enforce::artifact(
         proxy.config.policy.as_deref(),
         record,
         times.as_ref(),
         intel.as_ref(),
-        crate::policy::today(),
+        today,
     ) {
         enforce::Verdict::Refuse(refusal) => Some(refusal),
         _ => None,
     };
+    let policy_refusal = refused(record);
+    // Whether the analysis can change the answer: the claim passes, and the same version
+    // running a script would be refused. Only then does the request wait for it.
+    let waits_for_analysis = matches!(analysed.state, AnalysisState::Pending(_))
+        && policy_refusal.is_none()
+        && !record.has_install_scripts
+        && refused(&PackageRecord {
+            has_install_scripts: true,
+            ..record.clone()
+        })
+        .is_some();
 
     if let Some(refusal) = &policy_refusal {
         let status = refusal_status(proxy, ecosystem, Some(client));
@@ -1538,8 +1550,13 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             )
         }
         AnalysisState::Pending(job) => {
+            // Started whatever the answer, so the next fetch of these bytes is decided on
+            // the analysis and an undeclared script is reported.
             if let Some(analyser) = &proxy.config.analyser {
                 analyser.start(job);
+            }
+            if !waits_for_analysis {
+                return ArtifactStep::Fetch(fetch);
             }
             info!(%method, path = %path, claimed_purl = %purl, client = %client, "deferred: the artifact has not been analysed");
             ArtifactStep::Answer(NotReady::Analysing(purl).response())
@@ -1560,8 +1577,8 @@ enum AnalysisState {
     Decided,
     /// The last fetch of these bytes did not match their digest. Answered 502.
     Mismatched(crate::integrity::Mismatch),
-    /// Nothing has analysed these bytes. Answered 503 once the policy has been asked
-    /// whether it refuses the version on what is known already.
+    /// Nothing has analysed these bytes. The analysis is started, and the request waits
+    /// for it with a 503 only when the answer depends on it.
     Pending(Job),
 }
 
@@ -5847,18 +5864,19 @@ mod tests {
             .unwrap()
     }
 
-    /// No policy, and still deferred: every artifact a reader reads is analysed before it
-    /// is served. The retry is served whole.
+    const BLOCK: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+
+    /// Under `block`, a version whose claim passes waits for the analysis, because the
+    /// analysis can refuse it. The retry is served whole.
     #[tokio::test]
-    async fn an_artifact_nothing_has_analysed_is_deferred_and_its_retry_served() {
-        let tarball =
-            crate::util::test_support::tarball(&[("package/package.json", RUNS_POSTINSTALL)]);
+    async fn an_artifact_the_answer_depends_on_is_deferred_and_its_retry_served() {
+        let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
         let (base, analyser) = analysing(
             "analyse-defer",
             "",
             &integrity(&tarball),
             tarball.clone(),
-            None,
+            Some(BLOCK),
         )
         .await;
 
@@ -5877,13 +5895,44 @@ mod tests {
         assert_eq!(retry.bytes().await.unwrap().as_ref(), tarball.as_slice());
     }
 
+    /// Without a policy, with `install_scripts: allow`, and under an exception that allows
+    /// the package's scripts, nothing the analysis finds changes the answer. The artifact is served at once and analysed anyway, so the
+    /// next fetch is decided on the analysis.
+    #[tokio::test]
+    async fn an_artifact_the_answer_does_not_depend_on_is_served_and_analysed() {
+        let tarball =
+            crate::util::test_support::tarball(&[("package/package.json", RUNS_POSTINSTALL)]);
+        let allow = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n";
+        let excepted = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n\
+                        packages:\n  - match: { ecosystem: npm, name: widget }\n    \
+                        set: { install_scripts: allow }\n    reason: reviewed\n    \
+                        permanent: true\n";
+        for (label, yaml) in [
+            ("analyse-none", None),
+            ("analyse-allow", Some(allow)),
+            ("analyse-excepted", Some(excepted)),
+        ] {
+            let (base, analyser) =
+                analysing(label, "", &integrity(&tarball), tarball.clone(), yaml).await;
+            let first = tarball_request(&base).await;
+            assert_eq!(first.status(), 200, "{label}");
+            assert_eq!(first.bytes().await.unwrap().as_ref(), tarball.as_slice());
+            analyser.ended(1).await;
+            let digest = Sri::parse(&sri_of(&tarball)).expect("parses");
+            assert!(
+                matches!(analyser.known(&digest).await, Known::Analysed(_)),
+                "{label}: analysed although nothing waited for it"
+            );
+        }
+    }
+
     /// The packument claims no script and the tarball runs `postinstall`. The artifact
     /// decides.
     #[tokio::test]
     async fn a_script_the_metadata_did_not_declare_is_refused_under_block() {
         let tarball =
             crate::util::test_support::tarball(&[("package/package.json", RUNS_POSTINSTALL)]);
-        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let yaml = BLOCK;
         let (base, analyser) = analysing(
             "analyse-undeclared",
             "",
@@ -5905,7 +5954,7 @@ mod tests {
     #[tokio::test]
     async fn a_claimed_script_the_artifact_does_not_name_is_still_refused_under_block() {
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
-        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let yaml = BLOCK;
         let (base, analyser) = analysing(
             "analyse-overstated",
             r#""hasInstallScript":true,"#,
@@ -5934,7 +5983,7 @@ mod tests {
             scripts: Scripts::Declared(crate::analysis::InstallScripts::default()),
         };
         store.put(&digest, &none).await.expect("stores");
-        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let yaml = BLOCK;
 
         let (base, _) = analysing_with(
             "analyse-stored-claim",
@@ -5964,7 +6013,7 @@ mod tests {
     #[tokio::test]
     async fn an_archive_that_cannot_be_read_is_refused_under_block() {
         let tarball = b"not a gzip stream".to_vec();
-        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let yaml = BLOCK;
         let (base, analyser) = analysing(
             "analyse-unreadable",
             "",
@@ -5986,7 +6035,7 @@ mod tests {
             "",
             &integrity(b"other bytes"),
             tarball,
-            None,
+            Some(BLOCK),
         )
         .await;
         assert_eq!(tarball_request(&base).await.status(), 503);
@@ -6001,7 +6050,7 @@ mod tests {
     #[tokio::test]
     async fn an_artifact_with_no_strong_digest_counts_as_running_scripts() {
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
-        let yaml = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
+        let yaml = BLOCK;
         let (base, _) = analysing(
             "analyse-nodigest-block",
             "",
