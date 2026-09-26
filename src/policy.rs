@@ -302,9 +302,10 @@ pub struct Policy {
     #[serde(default = "default_block")]
     pub provenance: Action,
     /// How far back `provenance` looks, in days. A version is compared with the version
-    /// published just before it and with every version published in this window before
-    /// it, so a burst of releases is compared with the last attested one before the burst.
-    /// 0 compares with the version just before only.
+    /// published just before it, with every version published in this window before it,
+    /// and with the most recent attested version, however old. The window compares each
+    /// version in a burst with the identities of the others. 0 leaves the version just
+    /// before and the most recent attested one.
     #[serde(default = "default_provenance_window_days")]
     pub provenance_window_days: u32,
 

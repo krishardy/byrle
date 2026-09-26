@@ -72,11 +72,15 @@ it:
 On the 271 npm versions of [tier-1-false-positives](tier-1-false-positives.md), both rules
 refuse the same one, `why-is-node-running` 3.2.2.
 
-Decided 2026-09-26: the version just before, and every version in a window,
-`provenance_window_days`, 7 by default. It catches the burst as well as any earlier version
-does, 17 of 19 for Nx, and misses 4 of the 6 eslint-config-prettier versions, whose last
-attested release was more than 7 days earlier and was not the one just before. On the 271
-benign npm versions it refuses the same single one.
+Decided 2026-09-26: the version just before, every version in a window,
+`provenance_window_days`, 7 by default, and the most recent attested version, however old.
+The window alone caught 17 of 19 for Nx and missed 4 of the 6 eslint-config-prettier
+versions: that package's last attested release, 10.1.5, came 70.5 days before the burst,
+and eslint-plugin-prettier's 5.5.1 23.2 days before. With the most recent attested version
+the check refuses a version with no attestation whenever any earlier version had one, which
+catches all 6. The removed versions are no longer in the packuments, so these counts come
+from the registry's `time` map and the rule, not from the proxy. On the 311 benign
+versions, run through `waharoa policy diff`, it refuses the same single one.
 
 ## Sources
 

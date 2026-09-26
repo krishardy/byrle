@@ -111,10 +111,12 @@ fn identity(san: &str) -> String {
         .to_owned()
 }
 
-/// The versions a version is compared against: the one published just before it, and every
-/// version published in the window before it. The window catches a burst: Nx published 19
-/// malicious versions in two hours, and each one after the first followed another
-/// malicious version. See `docs/engineering_decisions/incident-benchmark.md`.
+/// The versions a version is compared against: the one published just before it, every
+/// version published in the window before it, and the most recent attested version,
+/// however old. The window catches a burst: Nx published 19 malicious versions in two
+/// hours, each after another. The attested version catches a burst long after the last
+/// attested release: eslint-config-prettier's came 70 days after 10.1.5. See
+/// `docs/engineering_decisions/incident-benchmark.md`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Previous {
     /// The version has no publish time, so nothing can be said to come before it.
@@ -197,6 +199,7 @@ pub fn predecessors(
     dated.sort();
     let mut out = vec![Previous::Unknown; records.len()];
     let mut start = 0;
+    let mut anchor: Option<Prior> = None;
     for (group_start, group) in dated.chunk_by(|a, b| a.0 == b.0).scan(0, |at, group| {
         let here = *at;
         *at += group.len();
@@ -209,13 +212,26 @@ pub fn predecessors(
         }
         // The window, and the version just before it when that falls outside the window.
         let from = start.min(group_start.saturating_sub(1));
-        let priors: Vec<Prior> = dated[from..group_start]
+        let mut priors: Vec<Prior> = dated[from..group_start]
             .iter()
             .rev()
             .filter_map(|&(_, i)| Prior::of(&records[i]))
             .collect();
+        // And the most recent attested version, however old, when neither of those is it.
+        if let Some(anchor) = &anchor
+            && !priors.iter().any(|p| p.version == anchor.version)
+        {
+            priors.push(anchor.clone());
+        }
         for &(_, i) in group {
             out[i] = Previous::Known(priors.clone());
+        }
+        if let Some(latest) = group
+            .iter()
+            .rev()
+            .find_map(|&(_, i)| Prior::of(&records[i]))
+        {
+            anchor = Some(latest);
         }
     }
     out
@@ -575,11 +591,52 @@ mod tests {
                 "{version}"
             );
         }
-        // With no window, 3.0.2 is compared with 3.0.1 alone, which the burst defeats.
+        // With no window, 3.0.2 is still compared with 3.0.0, the most recent attested.
         let previous = previous(&records, "3.0.2", None, jiff::SignedDuration::ZERO);
         assert_eq!(
             from_metadata(&find(&records, "3.0.2"), &previous),
-            Provenance::Consistent
+            Provenance::Dropped {
+                previous: "3.0.0".to_owned()
+            }
+        );
+    }
+
+    /// eslint-config-prettier's burst came 70 days after its last attested release, far
+    /// outside the window, and each version after the first followed another malicious one.
+    /// The most recent attested version is compared with however old it is.
+    #[test]
+    fn a_burst_long_after_the_last_attested_release_is_compared_with_it() {
+        let burst = records(SCHEDULE, &["2.0.0"]);
+        for version in ["1.0.1", "3.0.0", "3.0.1", "3.0.2"] {
+            let previous = previous(&burst, version, None, WEEK);
+            assert_eq!(
+                from_metadata(&find(&burst, version), &previous),
+                Provenance::Dropped {
+                    previous: "2.0.0".to_owned()
+                },
+                "{version}"
+            );
+        }
+        // Listed after the window's versions, and only once when it is also in the window.
+        let attested = records(SCHEDULE, &["2.0.0", "3.0.1"]);
+        assert_eq!(
+            versions(previous(&attested, "3.0.2", None, WEEK)),
+            Some(vec!["3.0.1".into()])
+        );
+        let older = records(SCHEDULE, &["2.0.0", "3.0.0"]);
+        assert_eq!(
+            versions(previous(&older, "1.0.1", None, WEEK)),
+            Some(vec!["2.0.0".into()])
+        );
+        let both = records(SCHEDULE, &["1.0.0", "3.0.1"]);
+        assert_eq!(
+            versions(previous(&both, "3.0.2", None, jiff::SignedDuration::ZERO)),
+            Some(vec!["3.0.1".into()])
+        );
+        let far = records(SCHEDULE, &["1.0.0", "3.0.0"]);
+        assert_eq!(
+            versions(previous(&far, "2.0.0", None, WEEK)),
+            Some(vec!["1.0.0".into()])
         );
     }
 
