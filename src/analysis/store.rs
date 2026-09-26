@@ -2,7 +2,7 @@
 //!
 //! [`crate::verified`] answers whether these bytes have been past before. This answers
 //! what was found in them, which is what a cache hit saves:
-//! `docs/engineering_decisions/fetch-path-branching.md` buffers and analyses a novel
+//! `docs/engineering_decisions/fetch-path-branching.md` defers and analyses a novel
 //! artifact, and streams one that was analysed before straight through.
 //!
 //! The key is the artifact's content digest, not the package. A registry that repoints a
@@ -66,7 +66,7 @@ pub struct Analysis {
 #[derive(Debug)]
 pub enum AnalysisError {
     /// The database said no. A caller that reads this as "not analysed before" analyses
-    /// the artifact again, which is the safe direction and costs a buffer per request.
+    /// the artifact again, which is the safe direction and costs a deferral per request.
     Backend(sqlx::Error),
 }
 
@@ -88,7 +88,7 @@ pub type Stored<'a, T> = Pin<Box<dyn Future<Output = Result<T, AnalysisError>> +
 /// database.
 pub trait Analyses: Send + Sync {
     /// What was found in these bytes before. `Ok(None)` is an artifact nothing has
-    /// analysed, which the fetch path buffers and analyses.
+    /// analysed, which the fetch path defers and analyses.
     fn get<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Analysis>>;
 
     /// Record what was found in these bytes, replacing what was held under the same

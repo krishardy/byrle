@@ -156,3 +156,21 @@ pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
     });
     addr
 }
+
+/// A gzipped tar holding `files`, as an npm tarball or an sdist is.
+pub fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
+    let mut builder = tar::Builder::new(Vec::new());
+    for (path, bytes) in files {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, path, *bytes)
+            .expect("appends");
+    }
+    let tar = builder.into_inner().expect("builds");
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
+    std::io::Write::write_all(&mut gz, &tar).expect("compresses");
+    gz.finish().expect("finishes")
+}

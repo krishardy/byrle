@@ -1,19 +1,50 @@
-# An artifact being analysed is spooled to disk, not held in memory
+# An artifact is analysed in the background, spooled to disk
 
-- **Status:** Decided 2026-09-22. The spool is implemented 2026-09-25, `src/spool.rs`, and
-  opened at startup. Not yet used by the artifact path.
+- **Status:** Decided 2026-09-22, amended 2026-09-26: the analysis runs in the background
+  and the request is answered 503 at once. Implemented: `src/spool.rs`,
+  `src/analysis/run.rs`, and `proxy::analysed`.
 - **Related:** [artifact-analysis-store](artifact-analysis-store.md),
   [fetch-path-branching](fetch-path-branching.md),
   [artifact-digest-verification](artifact-digest-verification.md),
   [deferral-status-codes](deferral-status-codes.md)
 
-## Why the bytes have to be held at all
+## No request waits for an analysis
 
-`proxy::VerifyingStream` forwards an artifact while hashing it, holding one chunk back. The
-status and headers leave before the last byte arrives, so nothing decided from the bytes can
-refuse the response once forwarding has begun (`src/proxy.rs:522`). A check that reads the
-artifact therefore has to finish before the response starts, and that means the whole
-artifact is in hand first.
+A request for an artifact that no analysis is stored for is answered 503 at once, with
+`Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis`. The proxy starts a job that
+fetches the artifact from upstream, writes it to the spool, checks its digest, reads it,
+and stores the analysis under the digest. The client's retry finds the analysis, is decided
+on it, and is fetched from upstream again through `proxy::VerifyingStream`.
+
+The second fetch is checked against the same digest. That is what makes the stored
+analysis apply to the bytes the client receives: a registry that serves different bytes
+the second time fails the digest and the body never completes.
+
+Before deferring, the policy is asked on the metadata's claim. A version that a denial, the
+cooldown, an advisory, an unserved origin or a claimed install script refuses is refused at
+once rather than deferred and then refused.
+
+The decision as first written analysed inside the request: the response waited while the
+artifact was spooled and read, because `VerifyingStream` sends the status before the last
+byte arrives and nothing decided from the bytes can refuse after that. A deferred request
+needs neither, and holds no connection open while the analysis runs.
+
+### What the retry is decided on
+
+| The artifact | `install_scripts` decides on |
+|---|---|
+| Analysed, and the archive was read | the metadata's claim, or what the archive declares when it declares a script the claim does not. The archive never removes a claim: an sdist with no `setup.py` still runs its PEP 517 backend, and npm runs `node-gyp rebuild` for a `binding.gyp` that `package.json` never names |
+| Analysed, and the archive could not be read, or was over the ceiling | runs scripts: not knowing is not knowing there is none |
+| Read by a detector, with no strong digest | runs scripts: there is no key to store an analysis under, and nothing ties the job's bytes to the served ones |
+| Its last fetch did not match its digest | not decided: 502, naming the mismatch |
+| A PyPI wheel | the metadata's claim, which for a wheel is none |
+
+A job that fails to fetch, or cannot write the spool, stores nothing, and the next request
+starts another. A job whose bytes do not match the digest stores nothing and is remembered
+in this process only, bounded by `WAHAROA_MAX_VERIFIED`, because a mismatch is about one
+upstream at one time rather than about the bytes.
+
+### Why the reader needs the whole artifact
 
 The reader needs a prefix rather than the whole archive, because `analysis::member` returns
 at the first `package.json`. That prefix is not small enough to bound: of 78 npm packages,
@@ -50,8 +81,7 @@ population, because all 42 PyPI artifacts over 64 MiB are wheels.
 
 ## The bytes are not kept
 
-The file holds one artifact for the duration of one request and is deleted when the request
-ends. What outlives the request is the analysis, keyed by digest, in
+The file holds one artifact for the duration of one job and is deleted when the job ends. What outlives the request is the analysis, keyed by digest, in
 [artifact-analysis-store](artifact-analysis-store.md).
 
 This is the line that keeps the proxy from becoming an artifact store, which README.md
@@ -85,12 +115,12 @@ have emptied `/tmp`.
 ## The ceiling, and what it is for
 
 `Content-Length` is a claim. The write is bounded by `WAHAROA_MAX_ARTIFACT_BYTES`,
-defaulting to 1 GiB, and an artifact past it is refused with the ceiling and the variable
-named.
+defaulting to 1 GiB. An artifact past it is stored as unreadable, with the ceiling and the
+variable named, so the retry is decided rather than deferred again.
 
 The number is a guard against an artifact that claims to be 100 GB, not a size policy. It
 sits an order of magnitude above the largest artifact measured, so it should never fire for
-a package anyone publishes, and a request that trips it is logged at WARN for that reason.
+a package anyone publishes, and a job that trips it is logged at WARN for that reason.
 `analysis::MAX_MEMBER_BYTES`, 4 MiB, is the separate bound on one member inside the archive,
 which is what a decompression bomb needs.
 
@@ -98,19 +128,20 @@ Disk is sized by the ceiling times the concurrency bound. `WAHAROA_MAX_CONCURREN
 defaults to 8, as `WAHAROA_MAX_CONCURRENT_METADATA` does, so a proxy at its bounds holds
 8 GiB.
 
-## A full disk is a 503
+## A full disk stores nothing
 
-A spool the proxy cannot write is a proxy that cannot decide, which is the not-ready case,
-not a refusal. [deferral-status-codes](deferral-status-codes.md) measured that five clients
-of five retry a 503 and two stop on a 429, and its rule is that no not-ready state gets a
-4xx that reads as a block. A failed spool answers 503 with `Retry-After: 1` and
-`x-waharoa-not-ready` naming the case, as a cold intel store already does.
+A job that cannot write the spool stores nothing and logs why. The client has already been
+answered 503, and its retry starts another job. There is no 4xx for it:
+[deferral-status-codes](deferral-status-codes.md)'s rule is that no not-ready state gets a
+4xx that reads as a block.
 
 ## Rejected
 
 | Option | Why not |
 |---|---|
 | Stream the artifact and analyse afterwards | The status and headers have gone; a block is not expressible. `install_scripts: block` would be a silent pass, which is the failure the whole check exists to avoid |
+| Spool and analyse inside the request | The decision as first written. Replaced 2026-09-26: no request waits for an analysis |
+| Wait a bounded time for the analysis before deferring | bun's total patience is 0.2s. Decided against 2026-09-26: every unanalysed artifact is deferred at once |
 | Buffer the whole artifact in memory, with a ceiling | The measurement: the ceiling refuses `torch` and `opencv-python`, and nothing bounds the tail |
 | Buffer the prefix in memory up to the manifest | 5 of 78 npm packages need more than 4 MiB of prefix, so the bound is the artifact again |
 | Memory below a threshold, spool above it | Two paths and a threshold to defend. The median artifact is 9,078 bytes and a file that size never reaches the disk |

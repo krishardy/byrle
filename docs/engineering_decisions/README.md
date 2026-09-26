@@ -44,7 +44,7 @@ code, and the file names where.
 | [PyPI provenance: the index says where the bundle is](pypi-provenance.md) | Implemented, read only |
 | [Install scripts are read from the artifact](install-scripts-from-the-artifact.md) | Implemented, the reader |
 | [An artifact's analysis is kept under the digest of its bytes](artifact-analysis-store.md) | Implemented, the store |
-| [An artifact being analysed is spooled to disk](artifact-spool.md) | Implemented, the spool |
+| [An artifact is analysed in the background, spooled to disk](artifact-spool.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

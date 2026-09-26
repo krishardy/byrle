@@ -2335,7 +2335,7 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       `waharoa policy check --fetch` dates each waiver's version at its registry and lists
       the ones the global wait now admits anyway. Offline without the flag
       ([policy-check](docs/engineering_decisions/policy-check.md)).
-- [~] `[!]` **Lifecycle script policy** — npm pre/postinstall, Python sdist `setup.py`
+- [x] `[!]` **Lifecycle script policy** — npm pre/postinstall, Python sdist `setup.py`
       — cheap tier, buffers inline.
       - [x] The reader: `src/analysis.rs` takes `package.json` out of a tarball and looks
             for a `setup.py` at the root of an sdist, bounded at 4 MiB a member, with
@@ -2347,16 +2347,18 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
             request ends, bounded by `WAHAROA_MAX_ARTIFACT_BYTES`. The proxy locks
             `WAHAROA_SPOOL_DIR` at startup and removes the spool files left in it
             ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
-      - [ ] Wire it into the artifact path: on an analysis miss for an npm tarball or a
-            PyPI sdist, the artifact is spooled, the reader runs on the file, the
-            `install_scripts` check decides on what the artifact declares rather than on
-            the claim, and an `undeclared` claim is logged whatever the policy says.
+      - [x] Wire it into the artifact path. An npm tarball or PyPI sdist with no stored
+            analysis is answered 503 `artifact-analysis` at once and analysed in the
+            background (`src/analysis/run.rs`). A script the artifact declares is added to
+            the claim on the retry, and never removed from it; an unreadable archive, or one with no strong
+            digest, counts as running scripts; a digest mismatch is a 502. An `undeclared`
+            claim is logged whatever the policy says
+            ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
 - [ ] `[!]` **Provenance enforcement** — sigstore / npm provenance verification
   - [ ] `[!]` Validate `sigstore-rs` maturity first; cosign shell-out as fallback
-- [ ] `[!]` **Declare an analysis cost tier for every content detector** — cheap
-      detectors buffer inline (tar listing, ~tens of ms); expensive detectors defer with
-      429. Only expensive ones may produce a retry. The tier is part of the detector
-      contract, not a runtime guess.
+- [ ] `[!]` **Declare an analysis cost tier for every content detector.** Since
+      2026-09-26 every detector runs in the background and no request waits for one, so
+      the tier no longer decides whether a request is deferred.
   - [ ] Short circuit in front of expensive analysis, moved from Stage 2's policy engine:
         an expensive detector runs only if the cheap decision vector has not already
         settled the answer. See `docs/engineering_decisions/policy-tier-resolution.md`,
@@ -2365,24 +2367,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         and `x-waharoa-not-ready` naming the case
         ([deferral-status-codes](docs/engineering_decisions/deferral-status-codes.md)).
         Of seven clients measured, all seven retry a 503 and two stop on a 429.
-  - [ ] Implement **429**, moved from Stage 2. The split was decided in Stage 1 (502
-        upstream unreachable or malformed, 503 we are not ready, 429 this one artifact is
-        under analysis) and 503 landed in Stage 2 on the intel store. 429 had no cause:
-        nothing held an artifact long enough to defer one. This tier is that cause, and
-        only an expensive detector may produce the retry.
-        The unresolved parts are in Stage 2's "Deferral status codes": which code each
-        client is given, the bounded internal wait bun needs, the machine-readable reason
-        and digest, and logging whether a client returned inside the window.
-        See `docs/engineering_decisions/deferral-status-codes.md`.
-  - [ ] Per-client code selection inferred from user-agent (already parsed for dialect);
-        shipped table of known clients, operator-forceable global override. Keyed on the
-        user-agent the proxy sees, which for yarn 4 is
-        `got (https://github.com/sindresorhus/got)` and not yarn at all.
-  - [ ] Unknown user-agent falls back to **503**, the more widely retried code.
-  - [ ] A bounded internal wait is not a fallback but the main mechanism for bun, which no
-        code and no `Retry-After` buys any time from.
-  - [ ] Machine-readable reason and artifact digest in the response header and body.
-        Neither code distinguishes cold-start from per-artifact analysis on its own.
+  - [x] An artifact under analysis is 503 too, `x-waharoa-not-ready: artifact-analysis`,
+        decided 2026-09-26. 429 is not used, there is no per-client code and no bounded
+        internal wait. yarn 1 and bun fail the first fetch of an unanalysed artifact.
+  - [ ] The artifact digest in the deferral's header and body.
   - [ ] Log every deferral and whether the client returned inside the window, which turns
         the compatibility table into evidence.
 - [ ] **Registry tarball vs. git source diffing** — expensive tier (git clone, ~tens of s)

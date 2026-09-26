@@ -1,7 +1,7 @@
 # Install scripts are read from the artifact, not only from the metadata
 
-- **Status:** Implemented 2026-09-21, the reader. `src/analysis.rs`. Not yet wired into the
-  artifact path.
+- **Status:** Implemented 2026-09-21, the reader. `src/analysis.rs`. Read in the background
+  since 2026-09-26: see [artifact-spool](artifact-spool.md).
 - **Related:** [fetch-path-branching](fetch-path-branching.md),
   [artifact-analysis-store](artifact-analysis-store.md),
   [deferral-status-codes](deferral-status-codes.md),
@@ -43,10 +43,9 @@ which is ignored by default because it downloads them:
 
 ## Cost tier
 
-`Tier::Cheap`: one gzip stream and one JSON object, over bytes the proxy already holds
-because it is verifying their digest. A cheap detector runs inline; only a `Tier::Expensive`
-one may defer a request, which is the sole thing allowed to produce a 429. Nothing declares
-`Expensive` yet.
+`Tier::Cheap`: one gzip stream and one JSON object. It runs in the background on the
+spooled artifact, like every detector: a request for an artifact nothing has analysed is
+answered 503 at once ([artifact-spool](artifact-spool.md)).
 
 The reader is bounded. A member past `MAX_MEMBER_BYTES`, 4 MiB, is refused rather than read,
 which is what a decompression bomb needs to be refused; a `package.json` is kilobytes. An
