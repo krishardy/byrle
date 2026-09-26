@@ -2371,9 +2371,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         decided 2026-09-26, when the answer depends on the analysis: no claimed script,
         and the policy would refuse one. 429 is not used, there is no per-client code and
         no bounded internal wait. yarn 1 and bun fail that first fetch.
-  - [ ] The artifact digest in the deferral's header and body.
-  - [ ] Log every deferral and whether the client returned inside the window, which turns
-        the compatibility table into evidence.
+  - [x] The artifact digest in the deferral's header and body: `x-waharoa-digest`.
+  - [x] Log every deferral, with a count per digest, and `returned after a deferral` with
+        `after_ms` when a request finds the analysis stored, which turns the compatibility
+        table into evidence. A digest that never returns is a client that gave up.
 - [ ] **Registry tarball vs. git source diffing** — expensive tier (git clone, ~tens of s)
   - [ ] Resolve repo URL and matching tag from package metadata
   - [ ] Normalize for expected build artifacts and packaging noise
