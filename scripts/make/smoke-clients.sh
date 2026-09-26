@@ -162,8 +162,13 @@ measure yarn yarn add "$package" --registry "$registry" \
 
 # `yarn-berry` is not a binary. The runner is the corepack shim, picked up from PATH, and
 # the project's packageManager field decides the version.
+#
+# NODE_USE_ENV_PROXY=1: corepack downloads yarn itself with node's fetch, which ignores
+# HTTPS_PROXY unless this is set. On a machine whose only route out is an HTTP proxy,
+# corepack failed with `getaddrinfo ENOTFOUND repo.yarnpkg.com` before yarn ran. It changes
+# nothing where no proxy is set, and NO_PROXY keeps the registry on 127.0.0.1 direct.
 measure yarn-berry env "PATH=$workdir/shims:$PATH" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
-    "YARN_NPM_REGISTRY_SERVER=$registry" yarn add "$package"
+    NODE_USE_ENV_PROXY=1 "YARN_NPM_REGISTRY_SERVER=$registry" yarn add "$package"
 
 # --cache-dir, or bun serves from its global cache and never contacts the proxy. Measured:
 # without it, zero packuments and zero artifacts reached the proxy and the install still
