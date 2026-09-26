@@ -6,9 +6,9 @@
 //! disagree: a packument that omits `hasInstallScript` for a tarball whose `package.json`
 //! runs `postinstall` is a package that installs code the metadata said nothing about.
 //!
-//! No request waits for a detector. A request for an artifact nothing has analysed is
-//! answered 503 at once and [`run`] analyses it in the background; the retry is decided on
-//! what was stored. See `docs/engineering_decisions/artifact-spool.md`.
+//! No request waits for a detector. [`run`] analyses an artifact in the background the
+//! first time it is fetched. The request is answered 503 only when the answer depends on
+//! the analysis, and the retry is decided on what was stored. See `docs/engineering_decisions/artifact-spool.md`.
 //!
 //! # Cost tiers
 //!

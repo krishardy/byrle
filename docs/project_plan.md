@@ -648,7 +648,8 @@ byte.
 | Case | Behaviour |
 |---|---|
 | Analysed before | Decide on the analysis, then stream through, verifying the digest |
-| Not analysed | 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis`; the analysis runs in the background and the retry is decided on it |
+| Not analysed, and the answer depends on it | 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis`; the analysis runs in the background and the retry is decided on it |
+| Not analysed, and the answer does not depend on it | Decide on the metadata and stream through; the analysis runs in the background |
 | Read by no detector (a PyPI wheel) | Stream through, decided on the metadata |
 
 The registry-supplied hash is a cache key, not a trust anchor. The digest of what arrives
@@ -665,8 +666,9 @@ No 4xx reads as a block for any not-ready state. A 403 from a registry proxy mea
 "policy denied you", and anything else wearing that code is a trust problem. 429 is not
 used: of seven clients measured, two stop on the first one.
 
-bun and yarn 1 fail the first fetch of an unanalysed artifact; the next install is served
-from the stored analysis. The measurements, and the decision not to wait inside the
+The answer depends on the analysis when the metadata claims no install script and the
+policy would refuse the version if it ran one. bun and yarn 1 fail the first fetch of such
+an artifact; the next install is served from the stored analysis. The measurements, and the decision not to wait inside the
 request, are in [deferral-status-codes](engineering_decisions/deferral-status-codes.md),
 [fetch-path-branching](engineering_decisions/fetch-path-branching.md) and
 [artifact-spool](engineering_decisions/artifact-spool.md).
