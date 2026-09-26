@@ -41,8 +41,8 @@ yanked: block
 provenance: block
 
 # How far back that comparison looks: the version just before, and every version published
-# this many days before it. Nx published 19 malicious versions in two hours, each after
-# another; the window compares each with the last attested release before them.
+# this many days before it. The most recent attested version is compared with too, however
+# old: eslint-config-prettier's malicious versions came 70 days after its last attested one.
 provenance_window_days: 7
 
 # Known malware always blocks. It is not listed here because it cannot be configured and

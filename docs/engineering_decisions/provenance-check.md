@@ -18,11 +18,19 @@
 | It publishes none, and a version before it did | a release published from a laptop after a stolen token, instead of from CI |
 | Its attestation names a different repository or workflow file than a version before it | a fork, or a workflow added to the repository by an attacker |
 
-The versions before it are the one published just before it, and every version published in
-`provenance_window_days`, 7 by default, before it. Only the one just before was compared
-until 2026-09-26: a burst of malicious releases then made each one after the first the
-predecessor of the next. Nx published 19 in two hours, and the check caught 6; with the
-window it catches 17 ([incident-benchmark](incident-benchmark.md)).
+The versions before it are the one published just before it, every version published in
+`provenance_window_days`, 7 by default, before it, and the most recent attested version,
+however old. Only the one just before was compared until 2026-09-26: a burst of malicious
+releases then made each one after the first the predecessor of the next. Nx published 19 in
+two hours, and the check caught 6; the window catches 17. eslint-config-prettier's burst
+came 70.5 days after its last attested release, which no window of days reaches; the most
+recent attested version catches all 6 ([incident-benchmark](incident-benchmark.md)).
+
+Once a package has published provenance, every later version that publishes none is
+refused, however long ago the last attested one was, until a `packages` exception releases
+it. That is the answer after a stolen token, and the false positive when a maintainer stops
+publishing from CI on purpose: `why-is-node-running` 3.2.2, the one version it refuses in
+[tier-1-false-positives](tier-1-false-positives.md).
 
 A version with no attestation after one with none passes. Plan §5 does not require
 provenance: 81% of 138 packages publish none.
@@ -61,8 +69,9 @@ reached writes nothing, so a missing row means not yet verified.
 ## Definitions
 
 - **The versions before it**: the version with the latest publish time earlier than this
-  version's, however old, and every version published in the window before it. Only those
-  claiming attestations are compared. On npm the times are in the full packument.
+  version's, however old, every version published in the window before it, and the most
+  recent attested version, however old. Only those claiming attestations are compared. On
+  npm the times are in the full packument.
 - **Identity**: the repository and workflow file an attestation names, without the ref.
   `github.com/python-attrs/attrs/.github/workflows/pypi-package.yml`, not
   `...@refs/tags/26.1.0`: every release is built from a new tag. Cut at the first
