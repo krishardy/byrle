@@ -55,6 +55,7 @@ Proxy configuration, all through the environment:
                                     at startup (default waharoa-spool in the OS temp dir)
   WAHAROA_MAX_ARTIFACT_BYTES        ceiling on an artifact written to the spool (default 1024 MiB)
   WAHAROA_MAX_CONCURRENT_ANALYSES   artifacts analysed at once (default 8)
+  WAHAROA_MAX_TRAFFIC_CLIENTS       client names counted apart in a traffic window (default 256)
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
                                     "default=403,npm/pnpm=451" (default 403)
   WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot

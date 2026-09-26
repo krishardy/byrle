@@ -6,8 +6,8 @@ use serde::Deserialize;
 
 use crate::identity::{Ecosystem, PackageKey};
 use crate::record::{
-    Artifact, DocumentDetail, Maintainer, PackageMetadata, PackageRecord, Provenance,
-    RegistrySignature, SkippedVersion, TrustedPublisher,
+    Artifact, DirectDependency, DocumentDetail, Maintainer, PackageMetadata, PackageRecord,
+    Provenance, RegistrySignature, SkippedVersion, TrustedPublisher,
 };
 
 use super::error::NormalizeError;
@@ -115,6 +115,18 @@ fn version_record(
         yanked: None,
         install_scripts: entry.scripts.as_ref().map(install_scripts),
         provenance: provenance(entry, dist),
+        direct_dependencies: [
+            &entry.dependencies,
+            &entry.optional_dependencies,
+            &entry.peer_dependencies,
+        ]
+        .into_iter()
+        .flat_map(|specs| &specs.0)
+        .map(|(name, spec)| DirectDependency {
+            name: name.clone(),
+            spec: spec.clone(),
+        })
+        .collect(),
         // One file. An npm version resolves to one tarball, so the version-level
         // install-scripts answer and the file's own are the same answer.
         artifacts: vec![Artifact {
@@ -246,6 +258,87 @@ mod tests {
     use super::super::{fixture, normalized};
     use super::*;
     use crate::record::Repository;
+
+    /// The specifier forms npm-package-arg treats as fetched from where they point, and
+    /// the near-misses it resolves through the registry.
+    #[test]
+    fn a_specifier_naming_where_to_fetch_is_direct() {
+        use super::super::wire::is_direct;
+        for direct in [
+            "git+https://github.com/o/r.git",
+            "git://github.com/o/r.git",
+            "github:o/r#v1",
+            "gitlab:o/r",
+            "bitbucket:o/r",
+            "gist:abc123",
+            "https://host/x.tgz",
+            "http://host/x.tgz",
+            "file:../x",
+            "./x",
+            "../x",
+            "/abs/x",
+            "~/x",
+            "o/r",
+            "o/r#v1.0.0",
+            " o/r ",
+        ] {
+            assert!(is_direct(direct), "{direct}");
+        }
+        for registry in [
+            "^1.0.0",
+            "1.x",
+            "latest",
+            "*",
+            "",
+            ">=1 <2",
+            "npm:other@1",
+            "npm:@s/p@1",
+            "@scope/pkg",
+            "o/r/extra",
+            "a /b",
+        ] {
+            assert!(!is_direct(registry), "{registry}");
+        }
+    }
+
+    /// Kept from the three maps a client installs from, and nothing else: a dependency's
+    /// `devDependencies` are never installed.
+    #[test]
+    fn only_installed_dependency_maps_are_read_for_direct_specifiers() {
+        let doc = br#"{"name":"x","versions":{"1.0.0":{"version":"1.0.0",
+            "dist":{"tarball":"https://registry.npmjs.org/x/-/x-1.0.0.tgz"},
+            "dependencies":{"a":"^1.0.0","b":"github:o/r#v1","c":"npm:d@1","e":"file:../x"},
+            "optionalDependencies":{"f":"https://host/f.tgz","n":7},
+            "peerDependencies":{"g":"o/r"},
+            "devDependencies":{"h":"git+https://host/h.git"}},
+          "2.0.0":{"version":"2.0.0",
+            "dist":{"tarball":"https://registry.npmjs.org/x/-/x-2.0.0.tgz"},
+            "dependencies":["legacy"],"peerDependencies":null,"optionalDependencies":5}}}"#;
+        let metadata = normalize_packument(doc, DocumentDetail::Abbreviated).expect("reads");
+        let named: Vec<(String, String)> = metadata
+            .version("1.0.0")
+            .expect("listed")
+            .direct_dependencies
+            .iter()
+            .map(|d| (d.name.clone(), d.spec.clone()))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                ("b".to_owned(), "github:o/r#v1".to_owned()),
+                ("e".to_owned(), "file:../x".to_owned()),
+                ("f".to_owned(), "https://host/f.tgz".to_owned()),
+                ("g".to_owned(), "o/r".to_owned()),
+            ]
+        );
+        assert!(
+            metadata
+                .version("2.0.0")
+                .expect("listed")
+                .direct_dependencies
+                .is_empty()
+        );
+    }
 
     // The corpus run below is the only caller, and it is compiled out under `cfg(coverage)`.
     #[cfg(not(coverage))]

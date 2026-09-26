@@ -280,6 +280,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         // dropped would leave them believing those artifacts are covered.
         .map_err(|e| StartupError::Unusable(format!("origin configuration: {e}")))?
         .with_max_concurrent_documents(max_concurrent)
+        .with_max_traffic_clients(environment.max_traffic_clients()?)
         .with_policy(policy)
         .with_audit_log(audit)
         .with_max_metadata_bytes(max_metadata_bytes)

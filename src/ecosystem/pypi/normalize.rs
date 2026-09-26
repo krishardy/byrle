@@ -122,6 +122,9 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
                 attestation_url: file.provenance.clone(),
                 ..Provenance::default()
             },
+            // PyPI refuses an upload whose metadata names a dependency by URL: warehouse's
+            // `forklift/metadata.py`, "Can't have direct dependency".
+            direct_dependencies: Vec::new(),
             artifacts,
         });
     }
