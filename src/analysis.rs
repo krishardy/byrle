@@ -194,8 +194,9 @@ pub enum Claim {
     Kept,
     /// The artifact runs scripts and the metadata did not say so.
     Undeclared,
-    /// The metadata said so and the artifact runs none. Harmless, and worth knowing: it
-    /// is what a package looks like after it stops running one.
+    /// The metadata said so and the reader found none. Not a reason to drop the claim:
+    /// npm runs `node-gyp rebuild` for a `binding.gyp` that `package.json` never names,
+    /// and an sdist with no `setup.py` still runs its PEP 517 backend.
     Overstated,
 }
 

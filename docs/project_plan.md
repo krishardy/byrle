@@ -639,74 +639,41 @@ axum server-side, reqwest upstream, with no fetch trait in Stage 1. See
 YAML, loaded by `serde-saphyr`. Decided by spike against the real policy; see
 [docs/engineering_decisions/config-format-yaml-serde-saphyr.md](engineering_decisions/config-format-yaml-serde-saphyr.md).
 The spike harness is kept runnable as `make spike-config`.
-### Fetch path: streaming, buffering, and deferral
+### Fetch path: deferral and background analysis
 
-Not a global stream-vs-buffer mode. The packument publishes an artifact digest
-(`dist.integrity` on npm), so on a tarball request we already know whether that exact
-artifact has been analyzed — **before fetching a byte.**
+The packument publishes an artifact digest (`dist.integrity` on npm), so on a tarball
+request the proxy knows whether that exact artifact has been analysed before fetching a
+byte.
 
-| Case | Behavior |
+| Case | Behaviour |
 |---|---|
-| Analyzed before (cache hit) | **Stream through.** Flat memory, no added latency. |
-| Novel + cheap analysis | **Buffer, analyze, forward.** Tar listing is tens of ms; invisible. |
-| Novel + expensive analysis | **Defer with `429` + `Retry-After`.** Git clone is tens of seconds. |
+| Analysed before | Decide on the analysis, then stream through, verifying the digest |
+| Not analysed | 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis`; the analysis runs in the background and the retry is decided on it |
+| Read by no detector (a PyPI wheel) | Stream through, decided on the metadata |
 
-The registry-supplied hash is a **cache key, not a trust anchor.** We verify the digest
-of what actually arrives; a mismatch against the packument's claim is itself a finding.
-
-**Analysis cost is part of the detector contract**, declared per detector, not guessed
-at runtime. Only expensive-tier detectors can produce a deferral, so the common path
-never retries.
+The registry-supplied hash is a cache key, not a trust anchor. The digest of what arrives
+is verified; a mismatch is answered 502.
 
 #### Status codes
 
-| Code | Meaning | Scope |
-|---|---|---|
-| **502** | Upstream registry unreachable or malformed | Not our fault; nothing to retry against us |
-| **503** | *We* are not ready — intel mirror warming | All requests, indiscriminately |
-| **429** | We are ready; **this artifact** is under analysis | One artifact; everything else serves normally |
+| Code | Meaning |
+|---|---|
+| 502 | The upstream is unreachable, malformed, or serves bytes its metadata does not describe |
+| 503 | The proxy is not ready: the intel store cannot answer, or this artifact is under analysis. `x-waharoa-not-ready` names which |
 
-503 at cold start is correct not because it is the proxy convention — that is 502 — but
-because we are the service that is not ready. The registry is healthy; our mirror has
-not loaded. Describing ourselves is exactly accurate, and `Retry-After` is native to it.
+No 4xx reads as a block for any not-ready state. A 403 from a registry proxy means
+"policy denied you", and anything else wearing that code is a trust problem. 429 is not
+used: of seven clients measured, two stop on the first one.
 
-429 for deferral, because 503 would imply a whole-service outage for a single-artifact
-condition and send an operator debugging in the wrong direction. Client retry behavior
-is the secondary argument, not the primary one.
-
-**No 4xx that reads as a block** for any not-ready state — the same rule that put 503
-rather than 403 at cold start. A 403 from a registry proxy means "policy denied you,"
-and anything else wearing that code is a trust problem.
-
-#### Client compatibility
-
-Package managers bucket status codes rather than reading them semantically: 4xx is
-generally terminal, 5xx and 429 retryable. So the choice is constrained by observed
-client behavior, not by protocol elegance.
-
-- **Per-client selection inferred from user-agent**, which the transport already parses
-  to pick a metadata dialect. Shipped table of known clients; operator-forceable global
-  override so a client's behavior change between versions does not wait on our release.
-- **Unknown user-agent → 503.** An unknown client is likely a library or CI tool with
-  unknown retry behavior; fail toward the more widely retried code.
-- **Machine-readable reason and artifact digest in a response header and body**, since
-  neither code distinguishes cold start from per-artifact analysis on its own.
-- **Log every deferral and whether the client returned inside the window.** Turns the
-  compatibility table from guesswork into evidence — and into the case we bring to
-  package-manager maintainers.
-- **Upstream work, filed early:** ask npm / pip / uv / cargo to honor `429` +
-  `Retry-After` where they do not. This argues on its own merits — a registry proxy
-  legitimately rate-limiting is a real scenario independent of this tool — so it is a
-  small, uncontroversial patch with a long lead time.
-
-⚠ **Known risk:** npm may apply its own backoff and fail the install rather than waiting
-politely. Needs testing against real clients in Stage 1. Mitigations: `Retry-After`
-short enough to land inside npm's own retry window, plus a bounded internal wait as a
-fallback for clients that give up.
+bun and yarn 1 fail the first fetch of an unanalysed artifact; the next install is served
+from the stored analysis. The measurements, and the decision not to wait inside the
+request, are in [deferral-status-codes](engineering_decisions/deferral-status-codes.md),
+[fetch-path-branching](engineering_decisions/fetch-path-branching.md) and
+[artifact-spool](engineering_decisions/artifact-spool.md).
 
 **Cooldown hides most of this in practice.** A seven-day quarantine means an artifact
-has almost always been analyzed long before anyone is permitted to install it. The
-genuinely exposed case is a pinned install of a brand-new version under a waiver —
+has almost always been analysed long before anyone is permitted to install it. The
+genuinely exposed case is a pinned install of a brand-new version under a waiver:
 rare, and arguably correct, since a waiver is an explicit acceptance of risk.
 
 ### Fail closed

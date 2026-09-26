@@ -12,6 +12,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinHandle;
@@ -22,6 +23,13 @@ use crate::analysis::store::{Analyses, Analysis, Scripts};
 use crate::integrity::{Mismatch, Sri};
 use crate::spool::{Spool, WriteError};
 use crate::util::lru::Lru;
+
+/// How long one job may take, from its fetch starting to its analysis being stored.
+///
+/// The upstream client sets no timeout, so without this an upstream that stops sending
+/// holds a slot, and its digest is answered 503 for as long as the process lives. Ten
+/// minutes is a [`crate::env::DEFAULT_MAX_ARTIFACT_BYTES`] artifact at under 2 MB/s.
+pub const DEADLINE: Duration = Duration::from_secs(600);
 
 /// What is known about the artifact with a digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +74,8 @@ pub struct Analyser {
     mismatched: Arc<Mutex<Lru<Sri, Mismatch>>>,
     /// How many jobs have ended, however they ended. What a test waits on.
     ended: Arc<watch::Sender<u64>>,
+    /// [`DEADLINE`], unless a test shortens it.
+    deadline: Duration,
 }
 
 impl Analyser {
@@ -84,7 +94,13 @@ impl Analyser {
             in_flight: Arc::default(),
             mismatched: Arc::new(Mutex::new(Lru::new(max_mismatches))),
             ended: Arc::new(watch::Sender::new(0)),
+            deadline: DEADLINE,
         }
+    }
+
+    pub fn with_deadline(mut self, deadline: Duration) -> Self {
+        self.deadline = deadline;
+        self
     }
 
     /// What is known about `digest`.
@@ -152,6 +168,16 @@ impl Analyser {
             .acquire_owned()
             .await
             .expect("the semaphore is never closed");
+        // Dropping the analysis on expiry drops its spool file too.
+        if tokio::time::timeout(self.deadline, self.analyse(&job))
+            .await
+            .is_err()
+        {
+            warn!(url = %job.url, deadline_s = self.deadline.as_secs(), "artifact analysis: past its deadline, nothing stored");
+        }
+    }
+
+    async fn analyse(&self, job: &Job) {
         let response = match self
             .client
             .get(&job.url)
@@ -211,9 +237,9 @@ impl Analyser {
             }
         };
         let analysis = Analysis {
-            ecosystem: job.ecosystem,
-            name: job.name,
-            version: job.version,
+            ecosystem: job.ecosystem.clone(),
+            name: job.name.clone(),
+            version: job.version.clone(),
             scripts,
         };
         if let Err(e) = self.store.put(&job.digest, &analysis).await {
@@ -417,6 +443,30 @@ mod tests {
             .await
             .expect("finishes");
         assert!(store.is_empty());
+    }
+
+    /// An upstream that accepts the connection and never answers. The job ends at its
+    /// deadline, stores nothing, and releases the digest for the next request.
+    #[tokio::test]
+    async fn a_job_past_its_deadline_ends_and_stores_nothing() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((stream, _)) = listener.accept().await {
+                held.push(stream);
+            }
+        });
+        let digest = sri_of(b"never sent");
+        let analyser = analyser("run-deadline", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_deadline(Duration::from_millis(100));
+        analyser
+            .start(job(&digest, &format!("http://{addr}/widget.tgz")))
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(analyser.known(&digest).await, Known::Unknown);
+        assert_eq!(analyser.in_flight(), 0);
     }
 
     /// A store that answers every read and write with an error.

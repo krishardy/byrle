@@ -39,8 +39,10 @@ needs neither, and holds no connection open while the analysis runs.
 | Its last fetch did not match its digest | not decided: 502, naming the mismatch |
 | A PyPI wheel | the metadata's claim, which for a wheel is none |
 
-A job that fails to fetch, or cannot write the spool, stores nothing, and the next request
-starts another. A job whose bytes do not match the digest stores nothing and is remembered
+A job that fails to fetch, cannot write the spool, or runs past its ten-minute deadline
+stores nothing, and the next request starts another. The deadline is there because the
+upstream client sets no timeout: an upstream that stops sending would otherwise hold a job
+slot, and its digest would be answered 503 for as long as the process lives. A job whose bytes do not match the digest stores nothing and is remembered
 in this process only, bounded by `WAHAROA_MAX_VERIFIED`, because a mismatch is about one
 upstream at one time rather than about the bytes.
 
