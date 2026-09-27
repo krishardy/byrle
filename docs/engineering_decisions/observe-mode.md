@@ -17,6 +17,11 @@ whole proxy.
 | `enforce` | as now | as now |
 | `observe` | as now | what the upstream sent. Each refusal it did not make is logged at WARN and audited with the action decided |
 
+An ecosystem this build does not cover is refused in both modes, decided 2026-09-27. The
+proxy has no way to read its metadata or its artifacts, so nothing about a dependency
+from it can be decided or logged as a refusal not made
+([uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md)).
+
 The policy file does not change. `warn` stays out of the lattice
 ([policy-tier-resolution](policy-tier-resolution.md) §"`warn` is not in the lattice").
 
@@ -35,6 +40,5 @@ The policy file does not change. `warn` stays out of the lattice
 | a quarantined or blocked version in a metadata document | left in. The removal is audited as a resolution line, as now |
 | an artifact whose analysis has not finished, answered 503 now | served. The analysis still runs, and the audit line records `served` |
 | an artifact whose bytes do not match the published digest, answered 502 now | still refused. It is an integrity failure of the transfer, not a policy verdict |
-| an ecosystem this build does not cover, refused now | open. [uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md) refuses it before any policy is read |
 | how the audit line says the refusal was not made | open. `answered: served` with a `block` action already says it; a separate field may read more plainly |
 | `/-/waharoa/health` and `waharoa status` | report the mode |
