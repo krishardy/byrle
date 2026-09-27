@@ -1,0 +1,10 @@
+Decide each pinned line again from the inputs it recorded, and report any that decide differently. Exits 1 if one does
+
+Usage: waharoa audit verify --policy <POLICY> <LOG>
+
+Arguments:
+  <LOG>  The audit log
+
+Options:
+      --policy <POLICY>  A policy file a line may have been decided under, matched by digest
+  -h, --help             Print help

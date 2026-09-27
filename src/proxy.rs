@@ -2109,7 +2109,8 @@ fn audit_pinned(
             &enforce::unenforceable(policy, record, times, facts.intel, &facts.provenance),
         )
         .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
-        .answered(answered),
+        .answered(answered)
+        .with_inputs(audit::Inputs::of(policy, &facts, today)),
     );
 }
 
@@ -7355,6 +7356,18 @@ mod tests {
                 ("block".to_owned(), Some(audit::Answered::Refused)),
                 ("allow".to_owned(), Some(audit::Answered::Served)),
             ]
+        );
+        // `waharoa audit verify` decides each line again from what it recorded.
+        let replayed = audit::replay(
+            &std::fs::read_to_string(&path).unwrap(),
+            &[Policy::parse(PROVENANCE).unwrap()],
+        );
+        assert_eq!(
+            replayed,
+            audit::Replay {
+                reproduced: 3,
+                ..audit::Replay::default()
+            }
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -94,6 +94,30 @@ pub fn unenforceable(
     intel: Intel,
     provenance: &Provenance,
 ) -> Vec<Unenforceable> {
+    let cooldown = match Facts::can_answer_cooldown(record, times) {
+        super::facts::Answerable::Missing(why) => Some(why),
+        super::facts::Answerable::Yes => None,
+    };
+    unenforceable_given(policy, cooldown, intel, provenance)
+}
+
+/// [`unenforceable`] from facts alone, as `waharoa audit verify` has them. The same checks:
+/// a record only changes why a cooldown has no date, not whether it has one.
+pub fn unenforceable_of(policy: &Policy, facts: &Facts) -> Vec<Unenforceable> {
+    let cooldown = facts
+        .published
+        .is_none()
+        .then_some("no publish date was recorded for this version");
+    unenforceable_given(policy, cooldown, facts.intel, &facts.provenance)
+}
+
+/// The checks that cannot be answered, given why the cooldown has no date when it has none.
+fn unenforceable_given(
+    policy: &Policy,
+    cooldown: Option<&'static str>,
+    intel: Intel,
+    provenance: &Provenance,
+) -> Vec<Unenforceable> {
     let mut out = Vec::new();
     if let Provenance::Unknown(why) = provenance {
         out.push(Unenforceable {
@@ -102,7 +126,7 @@ pub fn unenforceable(
         });
     }
     if policy.uses_cooldown()
-        && let super::facts::Answerable::Missing(why) = Facts::can_answer_cooldown(record, times)
+        && let Some(why) = cooldown
     {
         out.push(Unenforceable {
             check: Check::CooldownDays,
@@ -293,6 +317,54 @@ mod tests {
             },
             false,
         )
+    }
+
+    /// `waharoa audit verify` has the facts and not the record. Every way a record can have
+    /// or lack a publish date gives the same checks from either.
+    #[test]
+    fn the_facts_alone_give_the_same_unenforced_checks_as_the_record() {
+        let policy = loaded("version: 1\ncooldown_days: 7\nkev: block\n");
+        let dated = record();
+        let undated = PackageRecord {
+            published_at: None,
+            ..record()
+        };
+        let times: super::super::facts::PublishTimes =
+            [("4.17.21".to_owned(), jiff::Timestamp::UNIX_EPOCH)].into();
+        let names = |found: Vec<Unenforceable>| -> Vec<&'static str> {
+            found.iter().map(|u| u.check.as_str()).collect()
+        };
+        for (record, times) in [
+            (&dated, None),
+            (&undated, None),
+            (&undated, Some(&times)),
+            (&undated, Some(&super::super::facts::PublishTimes::new())),
+        ] {
+            let facts =
+                Facts::from_record_and_times(record, times).with_provenance(Provenance::Consistent);
+            let from_record = names(unenforceable(
+                &policy,
+                record,
+                times,
+                Intel::NotConsulted,
+                &Provenance::Consistent,
+            ));
+
+            assert_eq!(from_record, names(unenforceable_of(&policy, &facts)));
+        }
+        assert_eq!(
+            names(unenforceable_of(
+                &policy,
+                &Facts::from_record_and_times(&undated, None)
+            )),
+            [
+                "provenance",
+                "cooldown_days",
+                "known_malware",
+                "kev",
+                "max_cvss"
+            ]
+        );
     }
 
     /// Exploited, and scored under the default `max_cvss`, so only `kev` can refuse it.
