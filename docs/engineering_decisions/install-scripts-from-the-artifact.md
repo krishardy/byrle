@@ -29,8 +29,14 @@ claiming `false`.
 
 | Ecosystem | Read from | Counted as running on install |
 |---|---|---|
-| npm | `package.json` in the tarball | `preinstall`, `install`, `postinstall`, in the order npm runs them |
+| npm | `<top>/package.json`, the manifest directly under the tarball's top directory, as npm unpacks it | `preinstall`, `install`, `postinstall`, in the order npm runs them |
 | PyPI | the sdist | a `setup.py` at the root of its directory, which pip runs to build it |
+
+Until 2026-09-27 the npm reader took the first member whose path ended in `package.json`.
+`package/node_modules/x/package.json`, a bundled dependency's manifest listed before the
+package's own, then stood in for it, and so did `package/notpackage.json`: a tarball could
+hide its own install script behind either. Found by the golden test that holds
+`analysis::READER` to the readers' answers, and fixed as `install-scripts 2`.
 
 A `pyproject.toml` alone is not this. A PEP 517 build runs the backend the file names, which
 is its own question and its own detector.

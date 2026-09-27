@@ -1,0 +1,17 @@
+reader: install-scripts 2
+
+npm, every install lifecycle script and two others: runs ["preinstall", "install", "postinstall"], bodies [("preinstall", "a"), ("install", "b"), ("postinstall", "c")]
+npm, only scripts that do not run on install: runs [], bodies []
+npm, no scripts key: runs [], bodies []
+npm, scripts not an object: runs [], bodies []
+npm, an install script that is not a string: runs [], bodies []
+npm, a nested package.json listed first: runs ["install"], bodies [("install", "top")]
+npm, top package.json written with a leading ./: runs ["install"], bodies [("install", "dot")]
+npm, a file whose name only ends in package.json: error: the archive holds no manifest to read
+npm, no package.json: error: the archive holds no manifest to read
+npm, not gzip: error: not readable as an archive: unexpected end of file
+npm, package.json not JSON: error: not readable as an archive: EOF while parsing an object at line 1 column 1
+sdist, setup.py at its root: runs ["setup.py"], bodies []
+sdist, setup.py only deeper: runs [], bodies []
+sdist, pyproject.toml only: runs [], bodies []
+sdist, not gzip: error: not readable as an archive: unexpected end of file
