@@ -417,6 +417,12 @@ pub struct Replay {
 }
 
 impl Replay {
+    /// [`DIFFERS`] and [`NOT_REPLAYABLE`], each set when a line is.
+    pub fn code(&self) -> u8 {
+        let bit = |set: bool, bit: u8| if set { bit } else { 0 };
+        bit(!self.differ.is_empty(), DIFFERS) | bit(!self.not_replayable.is_empty(), NOT_REPLAYABLE)
+    }
+
     pub fn render(&self) -> String {
         let mut out = String::new();
         for (line, what) in &self.differ {
@@ -443,14 +449,21 @@ impl Replay {
     }
 }
 
+/// Exit bit: a pinned line decides differently.
+pub const DIFFERS: u8 = 1;
+/// Exit bit: a pinned line could not be decided again, so it was not verified.
+pub const NOT_REPLAYABLE: u8 = 2;
+/// Exit code, on its own: a policy or the log does not read.
+pub const UNREAD: u8 = 4;
+
 /// What `waharoa audit verify` prints, and its exit code.
 #[derive(Debug, PartialEq)]
 pub struct Verified {
     /// For stderr: why nothing was replayed.
     pub notes: Vec<String>,
     pub report: String,
-    /// 0 when every replayable line reproduced, 1 when one differs, 2 when a policy or the
-    /// log does not read.
+    /// The OR of [`DIFFERS`] and [`NOT_REPLAYABLE`], or [`UNREAD`] on its own: the bits
+    /// `waharoa policy diff` uses.
     pub code: u8,
 }
 
@@ -459,7 +472,7 @@ pub fn verify(log: &std::path::Path, policies: &[std::path::PathBuf]) -> Verifie
     let unread = |note: String| Verified {
         notes: vec![note],
         report: String::new(),
-        code: 2,
+        code: UNREAD,
     };
     let mut loaded = Vec::new();
     for path in policies {
@@ -476,7 +489,7 @@ pub fn verify(log: &std::path::Path, policies: &[std::path::PathBuf]) -> Verifie
     Verified {
         notes: Vec::new(),
         report: replayed.render(),
-        code: u8::from(!replayed.differ.is_empty()),
+        code: replayed.code(),
     }
 }
 
@@ -1282,7 +1295,7 @@ not json
     }
 
     #[test]
-    fn verify_exits_1_only_when_a_line_differs() {
+    fn verify_sets_a_bit_for_a_line_that_differs_and_one_that_is_not_replayable() {
         let dir = tempdir("audit-verify");
         let (policy_path, log_path) = (dir.join("p.yaml"), dir.join("audit.jsonl"));
         std::fs::write(&policy_path, REPLAYED).unwrap();
@@ -1300,9 +1313,15 @@ not json
                 code: 0,
             }
         );
-        assert_eq!(run("not json").code, 0);
+        assert_eq!(run("not json").code, NOT_REPLAYABLE);
         let differs = run(&line.replace("\"action\":\"block\"", "\"action\":\"allow\""));
-        assert_eq!(differs.code, 1);
+        assert_eq!(differs.code, DIFFERS);
+        let both = format!(
+            "{}\nnot json\n",
+            line.replace("\"action\":\"block\"", "\"action\":\"allow\"")
+        );
+        assert_eq!(run(&both).code, DIFFERS | NOT_REPLAYABLE);
+        assert_eq!(run("").code, 0, "an empty log has nothing unverified");
         assert!(
             differs.report.starts_with("line 1: differs: "),
             "{}",
@@ -1312,7 +1331,7 @@ not json
     }
 
     #[test]
-    fn verify_exits_2_when_a_policy_or_the_log_does_not_read() {
+    fn verify_exits_4_when_a_policy_or_the_log_does_not_read() {
         let dir = tempdir("audit-verify-unread");
         let (policy_path, log_path) = (dir.join("p.yaml"), dir.join("audit.jsonl"));
         std::fs::write(&policy_path, REPLAYED).unwrap();
@@ -1320,7 +1339,7 @@ not json
         let no_log = verify(&log_path, std::slice::from_ref(&policy_path));
         let no_policy = verify(&log_path, &[dir.join("missing.yaml")]);
 
-        assert_eq!((no_log.code, no_policy.code), (2, 2));
+        assert_eq!((no_log.code, no_policy.code), (UNREAD, UNREAD));
         assert!(no_log.notes[0].starts_with(&log_path.display().to_string()));
         assert!(
             no_policy.notes[0].contains("missing.yaml"),
