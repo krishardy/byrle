@@ -40,6 +40,21 @@ pub enum DecisionPath {
     Pinned,
 }
 
+/// What a pinned request was answered. The policy's action is one input to it; a deferral
+/// or a digest mismatch answers a request the policy would have served.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Answered {
+    /// The artifact was fetched for the client.
+    Served,
+    /// Refused: by the policy, or because its origin is not served.
+    Refused,
+    /// 503 while the artifact is analysed. The retry is audited again.
+    Deferred,
+    /// 502: the upstream's last bytes for it did not match their digest.
+    UpstreamMismatch,
+}
+
 /// One decision, as written.
 ///
 /// `Default` exists for `#[serde(default)]`, so a line written by an older build that
@@ -83,6 +98,10 @@ pub struct Event {
     /// reached without intel cannot be read as one reached against an empty snapshot.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intel_snapshot: Option<String>,
+    /// What the request was answered. Pinned events only; absent on a line written before
+    /// it was recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub answered: Option<Answered>,
 }
 
 impl Default for Event {
@@ -99,6 +118,7 @@ impl Default for Event {
             exceptions_used: Vec::new(),
             unenforceable: Vec::new(),
             intel_snapshot: None,
+            answered: None,
         }
     }
 }
@@ -129,7 +149,14 @@ impl Event {
                 .map(|u| u.check.as_str().to_owned())
                 .collect(),
             intel_snapshot: None,
+            answered: None,
         }
+    }
+
+    /// Say what the request was answered.
+    pub fn answered(mut self, answered: Answered) -> Self {
+        self.answered = Some(answered);
+        self
     }
 
     /// Name the intel snapshot the decision was reached against.
@@ -162,6 +189,7 @@ impl Event {
                 .map(|u| u.check.as_str().to_owned())
                 .collect(),
             intel_snapshot: None,
+            answered: None,
         }
     }
 }

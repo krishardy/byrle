@@ -1559,13 +1559,8 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Ok(intel) => intel,
         Err(unavailable) => return ArtifactStep::Answer(unavailable.response()),
     };
-    audit_pinned(
-        proxy,
-        record,
-        times.as_ref(),
-        intel.as_ref(),
-        &analysed.provenance,
-    );
+    // One date for the whole request: the decision enforced and the one audited are the same
+    // decision only when they were made on the same day.
     let today = crate::policy::today();
     let refused = |record: &PackageRecord, provenance: &Provenance| match enforce::artifact(
         proxy.config.policy.as_deref(),
@@ -1587,84 +1582,110 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             .worst()
             .is_some_and(|(record, provenance)| refused(&record, &provenance).is_some());
 
-    if let Some(refusal) = &policy_refusal {
-        let status = refusal_status(proxy, ecosystem, Some(client));
-        info!(
-            %method,
-            path = %path,
-            status = status.as_u16(),
-            claimed_purl = %purl,
-            action = refusal.action.as_str(),
-            reasons = ?refusal.reasons,
-            client = %client,
-            "refused by policy"
-        );
-        return ArtifactStep::Answer((status, refusal.message()).into_response());
-    }
-
-    // A pinned fetch of a version the packument filter removes. Decision #4: filter on
-    // resolution, hard fail on a pinned fetch, because there is no resolution step left
-    // to influence.
-    if let Some(origin) = &unservable_origin
-        && proxy.config.refuse_unservable
-    {
-        let status = refusal_status(proxy, ecosystem, Some(client));
-        info!(
-            %method,
-            path = %path,
-            status = status.as_u16(),
-            claimed_purl = %purl,
-            origin = %origin,
-            client = %client,
-            "refused: this artifact is published on an origin the proxy does not serve"
-        );
-        return ArtifactStep::Answer(
-            (
-                status,
-                format!(
-                    "waharoa: {purl} is published at {origin}, which this proxy does not \
-                     serve, so it cannot be examined\n"
-                ),
-            )
-                .into_response(),
-        );
-    }
-
-    match analysed.state {
-        AnalysisState::Mismatched(mismatch) => {
-            warn!(%method, path = %path, claimed_purl = %purl, %mismatch, "refused: the upstream serves bytes its metadata does not describe");
-            ArtifactStep::Answer(
-                (
-                    StatusCode::BAD_GATEWAY,
-                    format!("waharoa: the upstream served {purl} as bytes its metadata does not describe: {mismatch}\n"),
-                )
-                    .into_response(),
-            )
-        }
-        AnalysisState::Pending(job) => {
-            // Started whatever the answer, so the next fetch of these bytes is decided on
-            // the analysis and an undeclared script is reported.
-            let digest = job.digest.clone();
-            if let Some(analyser) = &proxy.config.analyser {
-                analyser.start(job);
-            }
-            if !waits_for_analysis {
-                return ArtifactStep::Fetch(fetch);
-            }
-            let deferrals = proxy.deferred.lock().expect("deferred lock").defer(&digest);
+    let (answered, step) = 'answer: {
+        if let Some(refusal) = &policy_refusal {
+            let status = refusal_status(proxy, ecosystem, Some(client));
             info!(
                 %method,
                 path = %path,
+                status = status.as_u16(),
                 claimed_purl = %purl,
-                digest = %digest,
-                deferrals,
+                action = refusal.action.as_str(),
+                reasons = ?refusal.reasons,
                 client = %client,
-                "deferred: the artifact has not been analysed"
+                "refused by policy"
             );
-            ArtifactStep::Answer(NotReady::Analysing { purl, digest }.response())
+            break 'answer (
+                audit::Answered::Refused,
+                ArtifactStep::Answer((status, refusal.message()).into_response()),
+            );
         }
-        AnalysisState::Decided => ArtifactStep::Fetch(fetch),
-    }
+
+        // A pinned fetch of a version the packument filter removes. Decision #4: filter on
+        // resolution, hard fail on a pinned fetch, because there is no resolution step left
+        // to influence.
+        if let Some(origin) = &unservable_origin
+            && proxy.config.refuse_unservable
+        {
+            let status = refusal_status(proxy, ecosystem, Some(client));
+            info!(
+                %method,
+                path = %path,
+                status = status.as_u16(),
+                claimed_purl = %purl,
+                origin = %origin,
+                client = %client,
+                "refused: this artifact is published on an origin the proxy does not serve"
+            );
+            break 'answer (
+                audit::Answered::Refused,
+                ArtifactStep::Answer(
+                    (
+                        status,
+                        format!(
+                            "waharoa: {purl} is published at {origin}, which this proxy does not \
+                             serve, so it cannot be examined\n"
+                        ),
+                    )
+                        .into_response(),
+                ),
+            );
+        }
+
+        match analysed.state {
+            AnalysisState::Mismatched(mismatch) => {
+                warn!(%method, path = %path, claimed_purl = %purl, %mismatch, "refused: the upstream serves bytes its metadata does not describe");
+                (
+                    audit::Answered::UpstreamMismatch,
+                    ArtifactStep::Answer(
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            format!("waharoa: the upstream served {purl} as bytes its metadata does not describe: {mismatch}\n"),
+                        )
+                            .into_response(),
+                    ),
+                )
+            }
+            AnalysisState::Pending(job) => {
+                // Started whatever the answer, so the next fetch of these bytes is decided on
+                // the analysis and an undeclared script is reported.
+                let digest = job.digest.clone();
+                if let Some(analyser) = &proxy.config.analyser {
+                    analyser.start(job);
+                }
+                if !waits_for_analysis {
+                    break 'answer (audit::Answered::Served, ArtifactStep::Fetch(fetch));
+                }
+                let deferrals = proxy.deferred.lock().expect("deferred lock").defer(&digest);
+                info!(
+                    %method,
+                    path = %path,
+                    claimed_purl = %purl,
+                    digest = %digest,
+                    deferrals,
+                    client = %client,
+                    "deferred: the artifact has not been analysed"
+                );
+                (
+                    audit::Answered::Deferred,
+                    ArtifactStep::Answer(NotReady::Analysing { purl, digest }.response()),
+                )
+            }
+            AnalysisState::Decided => (audit::Answered::Served, ArtifactStep::Fetch(fetch)),
+        }
+    };
+    // Written once the answer is known, so a request deferred or refused for a mismatch is
+    // not recorded as served.
+    audit_pinned(
+        proxy,
+        record,
+        times.as_ref(),
+        intel.as_ref(),
+        &analysed.provenance,
+        today,
+        answered,
+    );
+    step
 }
 
 /// The artifacts answered 503 while their analysis ran, by digest.
@@ -2068,6 +2089,8 @@ fn audit_pinned(
     times: Option<&facts::PublishTimes>,
     intel: Option<&PackageIntel>,
     provenance: &Provenance,
+    today: jiff::civil::Date,
+    answered: audit::Answered,
 ) {
     let (Some(audit), Some(policy)) = (&proxy.config.audit, proxy.config.policy.as_deref()) else {
         return;
@@ -2082,10 +2105,11 @@ fn audit_pinned(
             &facts.ecosystem,
             &facts.name,
             &facts.version,
-            &crate::policy::decide::decide(policy, &facts, crate::policy::today()),
+            &crate::policy::decide::decide(policy, &facts, today),
             &enforce::unenforceable(policy, record, times, facts.intel, &facts.provenance),
         )
-        .with_intel_snapshot(intel.map(|i| i.snapshot.as_str())),
+        .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
+        .answered(answered),
     );
 }
 
@@ -7276,5 +7300,62 @@ mod tests {
             proxy.health().clients_without_artifacts,
             [("pnpm".to_owned(), 1)].into()
         );
+    }
+
+    /// A pinned line says what the request was answered, written once that is known: a
+    /// request deferred for its analysis is not recorded as served.
+    #[tokio::test]
+    async fn the_audit_line_records_what_the_request_was_answered() {
+        let dir = crate::util::test_support::tempdir("audit-answered");
+        let path = dir.join("audit.jsonl");
+        let log = Arc::new(AuditLog::open(&path).expect("opens"));
+        let lines = |path: &std::path::Path| -> Vec<audit::Event> {
+            std::fs::read_to_string(path)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect()
+        };
+
+        let (proxy, _) =
+            provenance_proxy("audit-deferred", PROVENANCE, &["1.0.0", "2.0.0"], &[]).await;
+        let proxy = proxy.with_audit_log(Some(log.clone()));
+        let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+        let (proxy, _) = provenance_proxy(
+            "audit-refused",
+            PROVENANCE,
+            &["1.0.0", "2.0.0"],
+            &[("1.0.0", verified("a")), ("2.0.0", verified("b"))],
+        )
+        .await;
+        let proxy = proxy.with_audit_log(Some(log.clone()));
+        let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let (proxy, _) = provenance_proxy(
+            "audit-served",
+            PROVENANCE,
+            &["1.0.0", "2.0.0"],
+            &[("1.0.0", verified("a")), ("2.0.0", verified("a"))],
+        )
+        .await;
+        let proxy = proxy.with_audit_log(Some(log));
+        assert!(fetched(&pinned(&proxy, WIDGET_2).await));
+
+        let answered: Vec<_> = lines(&path)
+            .iter()
+            .map(|e| (e.action.clone(), e.answered))
+            .collect();
+        assert_eq!(
+            answered,
+            [
+                ("allow".to_owned(), Some(audit::Answered::Deferred)),
+                ("block".to_owned(), Some(audit::Answered::Refused)),
+                ("allow".to_owned(), Some(audit::Answered::Served)),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
