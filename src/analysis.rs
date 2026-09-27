@@ -74,7 +74,12 @@ pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 /// back only when it matches, so this changes whenever a reader would find something it did
 /// not before, and every artifact is read again under the new one.
 /// `migrations/0011_artifact_analysis_reader.sql`.
-pub const READER: &str = "install-scripts 1";
+///
+/// | Version | Change |
+/// |---|---|
+/// | `install-scripts 1` | the first reader |
+/// | `install-scripts 2` | npm reads `<top>/package.json` only, not the first `package.json` anywhere |
+pub const READER: &str = "install-scripts 2";
 
 /// Which reader an artifact is read by. A file no reader reads is never analysed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,7 +116,13 @@ const NPM_INSTALL_SCRIPTS: [&str; 3] = ["preinstall", "install", "postinstall"];
 ///
 /// One gzip stream and one JSON object: 0.4ms for `bufferutil` 4.1.0, 163,631 bytes.
 pub fn npm_install_scripts(tarball: impl Read) -> Result<InstallScripts, ReadError> {
-    let manifest = member(tarball, |path| path.ends_with("package.json"))?;
+    // `<top>/package.json` and nothing deeper: npm strips the top directory when it unpacks
+    // a tarball, so a `package.json` under `node_modules/` belongs to a bundled dependency,
+    // and taking the first one listed let an earlier one stand in for the package's own.
+    let manifest = member(tarball, |path| {
+        let path = path.strip_prefix("./").unwrap_or(path);
+        matches!(path.split_once('/'), Some((top, "package.json")) if !top.is_empty())
+    })?;
     let manifest: serde_json::Value =
         serde_json::from_slice(&manifest).map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
     let Some(scripts) = manifest.get("scripts").and_then(|s| s.as_object()) else {
@@ -221,6 +232,102 @@ impl Claim {
 mod tests {
     use super::*;
     use crate::util::test_support::tarball;
+
+    /// What each reader finds on a fixed set of archives, one line each.
+    fn answers() -> String {
+        let npm = |files: &[(&str, &[u8])]| npm_install_scripts(&*tarball(files));
+        let sdist = |files: &[(&str, &[u8])]| sdist_install_scripts(&*tarball(files));
+        let cases: Vec<(&str, Result<InstallScripts, ReadError>)> = vec![
+            (
+                "npm, every install lifecycle script and two others",
+                npm(&[(
+                    "package/package.json",
+                    br#"{"scripts":{"preinstall":"a","install":"b","postinstall":"c","test":"d","prepare":"e"}}"#,
+                )]),
+            ),
+            (
+                "npm, only scripts that do not run on install",
+                npm(&[("package/package.json", br#"{"scripts":{"test":"t","build":"b"}}"#)]),
+            ),
+            ("npm, no scripts key", npm(&[("package/package.json", b"{}")])),
+            (
+                "npm, scripts not an object",
+                npm(&[("package/package.json", br#"{"scripts":"install"}"#)]),
+            ),
+            (
+                "npm, an install script that is not a string",
+                npm(&[("package/package.json", br#"{"scripts":{"install":5}}"#)]),
+            ),
+            (
+                "npm, a nested package.json listed first",
+                npm(&[
+                    (
+                        "package/node_modules/x/package.json",
+                        br#"{"scripts":{"postinstall":"nested"}}"#,
+                    ),
+                    ("package/package.json", br#"{"scripts":{"install":"top"}}"#),
+                ]),
+            ),
+            (
+                "npm, top package.json written with a leading ./",
+                npm(&[("./package/package.json", br#"{"scripts":{"install":"dot"}}"#)]),
+            ),
+            (
+                "npm, a file whose name only ends in package.json",
+                npm(&[("package/notpackage.json", br#"{"scripts":{"install":"no"}}"#)]),
+            ),
+            ("npm, no package.json", npm(&[("package/index.js", b"")])),
+            ("npm, not gzip", npm_install_scripts(&b"plain"[..])),
+            ("npm, package.json not JSON", npm(&[("package/package.json", b"{")])),
+            ("sdist, setup.py at its root", sdist(&[("x-1.0/setup.py", b"")])),
+            ("sdist, setup.py only deeper", sdist(&[("x-1.0/sub/setup.py", b"")])),
+            ("sdist, pyproject.toml only", sdist(&[("x-1.0/pyproject.toml", b"")])),
+            ("sdist, not gzip", sdist_install_scripts(&b"plain"[..])),
+        ];
+        cases
+            .into_iter()
+            .map(|(case, answer)| match answer {
+                Ok(found) => format!(
+                    "{case}: runs {:?}, bodies {:?}\n",
+                    found.names, found.bodies
+                ),
+                Err(e) => format!("{case}: error: {e}\n"),
+            })
+            .collect()
+    }
+
+    /// A reader that answers differently must bump [`READER`], or the analyses its old
+    /// answers wrote keep being read back. The golden file records both, and blessing
+    /// rewrites it only when [`READER`] changed, so a changed answer with an unchanged
+    /// version fails even with [`crate::env::BLESS`] set.
+    #[test]
+    fn a_reader_that_answers_differently_bumps_its_version() {
+        let path = format!(
+            "{}/tests/fixtures/analysis/readers.txt",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let actual = answers();
+        let recorded = std::fs::read_to_string(&path).unwrap_or_default();
+        let (reader, answered) = recorded
+            .strip_prefix("reader: ")
+            .and_then(|rest| rest.split_once("\n\n"))
+            .unwrap_or(("", ""));
+        if reader == READER {
+            assert!(
+                answered == actual,
+                "a reader answers differently and READER is still `{READER}`: bump \
+                 analysis::READER, then rerun with {}=1. The answers now:\n{actual}",
+                crate::env::BLESS
+            );
+            return;
+        }
+        assert!(
+            crate::env::process().bless(),
+            "READER is `{READER}` and the golden file records `{reader}`: rerun with {}=1",
+            crate::env::BLESS
+        );
+        std::fs::write(&path, format!("reader: {READER}\n\n{actual}")).expect("writes");
+    }
 
     /// A wheel runs nothing on install, so nothing reads it. Every other file is read.
     #[test]

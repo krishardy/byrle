@@ -29,12 +29,17 @@ are hashed on the way past either way, which is [no-metadata-cache](no-metadata-
 and [verified-artifact-cache](verified-artifact-cache.md): a hit never skips the hash.
 
 An analysis is permanently valid for its bytes and for the reader that wrote it, not for
-its bytes alone. Each row records `analysis::READER`, `install-scripts 1`, and is read back
-only by that reader, so a reader that finds something an older one missed reads every
+its bytes alone. Each row records `analysis::READER`, `install-scripts 2` since 2026-09-27,
+and is read back only by that reader, so a reader that finds something an older one missed reads every
 artifact again rather than keep the older answer. Rows written before the column existed
 read as the empty reader and are analysed again
 (`migrations/0011_artifact_analysis_reader.sql`). Attestation results carry their verifier
 the same way ([provenance-check](provenance-check.md)).
+
+`READER` is set by hand, so a test holds it to the readers' behaviour.
+`tests/fixtures/analysis/readers.txt` records `READER` and what each reader finds on 15
+archives built in the test. When the answers change and `READER` does not, the test fails,
+with `WAHAROA_BLESS` set too: blessing rewrites the file only once `READER` has changed.
 
 ## Two stores, one key
 
