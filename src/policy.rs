@@ -72,6 +72,16 @@ fn default_provenance_window_days() -> u32 {
 fn default_max_cvss() -> f64 {
     DEFAULT_MAX_CVSS
 }
+/// `sha256:` and the hex digest of a policy file's bytes. See [`Policy::digest`].
+pub fn digest_of(source: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hex: String = Sha256::digest(source.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    format!("sha256:{hex}")
+}
+
 /// A window of `days`, which the proxy uses under no policy with
 /// [`DEFAULT_PROVENANCE_WINDOW_DAYS`].
 pub fn window_of(days: u32) -> jiff::SignedDuration {
@@ -317,6 +327,12 @@ pub struct Policy {
     /// advisory until an entry here names it.
     #[serde(default)]
     pub advisory_scores: Vec<AdvisoryScore>,
+
+    /// `sha256:` and the hex digest of the file's bytes, as loaded. The audit log records it
+    /// with every pinned decision, so a replay can find the policy a verdict was reached
+    /// under. Not a key in the file.
+    #[serde(skip)]
+    pub digest: String,
 }
 
 impl Policy {
@@ -334,8 +350,9 @@ impl Policy {
             }
         }
 
-        let policy: Self =
+        let mut policy: Self =
             serde_saphyr::from_str(source).map_err(|e| PolicyError::Invalid(e.to_string()))?;
+        policy.digest = digest_of(source);
         policy.check_on_off_settings()?;
         policy.check_package_expiry_shape()?;
         policy.check_selectors()?;

@@ -50,6 +50,7 @@ code, and the file names where.
 | [Tier 1 false-positive rates](tier-1-false-positives.md) | Measured |
 | [The Tier 1 controls against the 2025 npm incidents](incident-benchmark.md) | Measured |
 | [The proxy reports where it is being bypassed](bypass-self-detection.md) | Implemented |
+| [A pinned verdict records its inputs, and `audit verify` decides it again](reproducible-verdicts.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

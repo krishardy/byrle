@@ -32,6 +32,9 @@ pub enum Command {
     Status,
     /// Why a package is allowed or refused
     Explain(Explain),
+    /// Work with the audit log
+    #[command(subcommand)]
+    Audit(AuditCommand),
     /// Read what the intel store records
     #[command(subcommand)]
     Intel(IntelCommand),
@@ -43,6 +46,22 @@ pub enum Command {
         crate::env::DATABASE_URL
     ))]
     Refresh,
+}
+
+#[derive(Debug, PartialEq, Subcommand)]
+pub enum AuditCommand {
+    /// Decide each pinned line again from the inputs it recorded, and report any that
+    /// decide differently. Exits 1 if one does
+    Verify(Verify),
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct Verify {
+    /// The audit log
+    pub log: PathBuf,
+    /// A policy file a line may have been decided under, matched by digest
+    #[arg(long, required = true)]
+    pub policy: Vec<PathBuf>,
 }
 
 #[derive(Debug, PartialEq, Subcommand)]
@@ -277,6 +296,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn audit_verify_takes_a_log_and_one_or_more_policies() {
+        assert_eq!(
+            parse(&[
+                "audit", "verify", "a.jsonl", "--policy", "p.yaml", "--policy", "q.yaml"
+            ])
+            .expect("parses")
+            .command,
+            Command::Audit(AuditCommand::Verify(Verify {
+                log: "a.jsonl".into(),
+                policy: vec!["p.yaml".into(), "q.yaml".into()],
+            }))
+        );
+        assert!(parse(&["audit", "verify", "a.jsonl"]).is_err());
+    }
+
     /// The hand-written parser answered `--as-of 2026-01-01` with a usage error, although its
     /// usage line spelled it that way, and read only `--as-of=2026-01-01`.
     #[test]
@@ -478,6 +513,7 @@ mod tests {
         for (args, name) in [
             (["--help"].as_slice(), "help.txt"),
             (&["explain", "--help"], "explain.txt"),
+            (&["audit", "verify", "--help"], "audit-verify.txt"),
             (&["intel", "history", "--help"], "intel-history.txt"),
             (&["policy", "check", "--help"], "policy-check.txt"),
             (&["policy", "diff", "--help"], "policy-diff.txt"),

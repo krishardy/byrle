@@ -75,6 +75,16 @@ async fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
 /// The package set is the audit log's versions, which record what this proxy has actually
 /// been asked about, and each lockfile's. The exit code is the OR of `diff::LOOSENED` and
 /// `diff::TIGHTENED`, or `diff::ERROR` alone.
+/// `waharoa audit verify`: decide each pinned line of an audit log again.
+fn run_audit_verify(args: cli::Verify) -> std::process::ExitCode {
+    let verified = waharoa::audit::verify(&args.log, &args.policy);
+    for note in &verified.notes {
+        eprintln!("waharoa audit verify: {note}");
+    }
+    print!("{}", verified.report);
+    std::process::ExitCode::from(verified.code)
+}
+
 async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
     let outcome = diff::run(&args, &env::process()).await;
     for note in &outcome.notes {
@@ -253,6 +263,7 @@ async fn main() -> std::process::ExitCode {
         cli::Command::Doctor => run_doctor().await,
         cli::Command::Status => run_status().await,
         cli::Command::Explain(target) => run_explain(target).await,
+        cli::Command::Audit(cli::AuditCommand::Verify(args)) => run_audit_verify(args),
         cli::Command::Policy(cli::PolicyCommand::Check(args)) => run_policy_check(args).await,
         cli::Command::Policy(cli::PolicyCommand::Diff(args)) => run_policy_diff(args).await,
         cli::Command::Intel(cli::IntelCommand::History(args)) => run_intel_history(args).await,

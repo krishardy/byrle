@@ -260,6 +260,9 @@ Items that I've added that are not stage-bound.
     `Cargo.toml`, so a build carries only the ecosystems it serves. Raised 2026-09-26 while
     `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
     well as its metadata formats.
+22. [ ] `proxy::tests::a_document_with_every_version_refused_is_reported` failed once in about
+    50 runs on 2026-09-27: the captured log was empty. `capture()` rebuilds the tracing
+    callsite interest cache, which fixed the other log-capture tests; this one still races.
 
 ## Architecture Refactor
 
@@ -2571,7 +2574,11 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       is read back only by the reader or verifier that wrote it, so "permanently valid"
       holds per reader ([artifact-analysis-store](docs/engineering_decisions/artifact-analysis-store.md)).
       Source diff and capability analysis will be stored the same way when they exist.
-- [ ] `[!]` Reproducible verdicts: same policy + same intel snapshot = same result
+- [x] `[!]` Reproducible verdicts: same policy + same intel snapshot = same result
+      Done 2026-09-27. Each pinned audit line records the date, the policy digest, the
+      build, the reader, the verifier and every fact the engine read. `waharoa audit verify`
+      decides each line again and exits 1 when one differs. Resolution lines are not
+      replayed ([reproducible-verdicts](docs/engineering_decisions/reproducible-verdicts.md)).
 - [ ] `[!]` Offline / air-gapped mode with pinnable intel snapshots
 - [ ] `[!]` `waharoa policy check --strict` — nonzero exit on unacknowledged loosening
 - [ ] `[!]` Warn mode as the shipped default

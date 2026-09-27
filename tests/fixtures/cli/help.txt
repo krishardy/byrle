@@ -7,6 +7,7 @@ Commands:
   doctor   Check whether this machine installs through the proxy
   status   What this build does for each ecosystem, and which streams cover it
   explain  Why a package is allowed or refused
+  audit    Work with the audit log
   intel    Read what the intel store records
   policy   Work with policy files
   refresh  Load OSV, CISA KEV and Datadog intel into the Postgres at WAHAROA_DATABASE_URL
