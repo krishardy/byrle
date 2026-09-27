@@ -79,7 +79,7 @@ lookups never leak your dependency graph upstream.
 
 **A policy engine you can read.** `waharoa explain` (planned) shows the effective merged
 policy and the exact rule that produced a verdict. Policy engines nobody can inspect
-stay stuck in warn mode forever.
+stay stuck in observe mode forever.
 
 ## Ecosystem support
 
@@ -99,23 +99,26 @@ far less security than the ecosystem count implies.
 
 ## Policy
 
-A single YAML file: global defaults, per-ecosystem overrides, package-level rules, and a
-non-overridable floor.
+A single YAML file: global settings, and per-package exceptions to them.
 
 ```yaml
 version: 1
 
-defaults:
-  known_malware: block
-  cooldown:
-    action: quarantine
-    days: 7
-  install_scripts: warn
-  provenance_required: false
+cooldown_days: 7
+install_scripts: block
+provenance: block
+kev: block
+max_cvss: 9.0
+
+packages:
+  - match: { ecosystem: npm, name: esbuild }
+    set: { install_scripts: allow }
+    reason: downloads its platform binary on install
+    permanent: true
 ```
 
-Warn mode is the default. One blocked legitimate build and the tool gets disabled
-permanently, so adopters ratchet from observe to enforce on their own schedule.
+The proxy enforces by default. Observe mode, planned, serves what the policy would refuse
+and logs it, so adopters can move from observe to enforce on their own schedule.
 Exceptions are cheap to add and expire by default. The full schema, merge semantics, and
 evaluation order are in [docs/project_plan.md](docs/project_plan.md).
 

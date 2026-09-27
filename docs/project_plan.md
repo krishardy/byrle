@@ -693,8 +693,10 @@ rare, and arguably correct, since a waiver is an explicit acceptance of risk.
 
 ## 6. UX principles
 
-**Warn mode is the default.** One blocked legitimate build and the tool is disabled
-permanently. Adopters ratchet from observe to enforce on their own schedule.
+**Observe mode is one switch for the whole proxy, and enforce is the default.** One
+blocked legitimate build and the tool is disabled permanently, so adopters can run in
+observe mode first and move to enforce on their own schedule. See
+[observe-mode](engineering_decisions/observe-mode.md).
 
 **Exceptions are cheap to add and expire by default.** `reason` and `expires` are
 mandatory fields. This is what stops the allowlist from quietly becoming a permanent
@@ -702,11 +704,14 @@ bypass.
 
 **`waharoa explain` is a first-class command.** Shows the effective merged policy for an
 ecosystem, and the resolved verdict for a given package with the rule that fired.
-Policy engines nobody can inspect stay stuck in warn mode forever. It doubles as the
+Policy engines nobody can inspect stay stuck in observe mode forever. It doubles as the
 regression test surface.
 
-**`waharoa policy check --strict`** exits nonzero on any unacknowledged loosening, so an
-org can gate its policy repo in CI and require sign-off on weakening changes.
+**A policy repository's CI can require sign-off on weakening changes.** Schema v1 refuses
+a loosening entry with neither `expires` nor `permanent: true`, so none is unacknowledged.
+`waharoa policy diff old.yaml new.yaml` sets exit bit 1 on any loosening. `policy check
+--strict` exits 1 on an entry that changes nothing or never wins
+([policy-check](engineering_decisions/policy-check.md)).
 
 **Audit log** is JSON Lines: package, version, ecosystem, verdict, rule that fired,
 requester, timestamp. Developers and security read the same log.
@@ -782,7 +787,7 @@ introduction, and an approval-request flow instead of a hard block.
 | **M2** Decision layer | Policy engine, merge semantics, package tier, OSV + intel store, audit log, `explain` | npm enforcing; a real package blocked for a real reason; policy spec frozen |
 | **M3** Second ecosystem | PyPI adapter | Adapter interface survives a second protocol unchanged |
 | **M4** Differentiators | Cooldown, lifecycle scripts, provenance, source diffing | Tier 1 controls shipped; this is the launch story |
-| **M5** Hardening | Analysis cache, offline mode, `--strict`, perf | Real team runs it in blocking mode |
+| **M5** Hardening | Analysis cache, reproducible verdicts, observe mode, perf | Real team runs it in blocking mode |
 | **M6** Third ecosystem | cargo | Three protocols; adapter interface documented as stable |
 | **M7** Public launch | Docs, maturity tiers, security policy | External adopters |
 
