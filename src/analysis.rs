@@ -70,6 +70,12 @@ impl std::fmt::Display for ReadError {
 /// past this is not one, and decompressing it is what a bomb wants.
 pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 
+/// The readers' version, stored with every analysis they write. A stored analysis is read
+/// back only when it matches, so this changes whenever a reader would find something it did
+/// not before, and every artifact is read again under the new one.
+/// `migrations/0011_artifact_analysis_reader.sql`.
+pub const READER: &str = "install-scripts 1";
+
 /// Which reader an artifact is read by. A file no reader reads is never analysed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reader {

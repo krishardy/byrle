@@ -40,13 +40,14 @@ impl PgAnalyses {
         // answer unless the reader itself changed.
         let id = sqlx::query_scalar!(
             r#"
-            INSERT INTO artifact_analysis (digest, ecosystem, name, version, unreadable)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO artifact_analysis (digest, ecosystem, name, version, unreadable, reader)
+            VALUES ($1, $2, $3, $4, $5, $6)
             ON CONFLICT (digest) DO UPDATE SET
                 ecosystem   = EXCLUDED.ecosystem,
                 name        = EXCLUDED.name,
                 version     = EXCLUDED.version,
                 unreadable  = EXCLUDED.unreadable,
+                reader      = EXCLUDED.reader,
                 analysed_at = now()
             RETURNING id
             "#,
@@ -55,6 +56,7 @@ impl PgAnalyses {
             analysis.name,
             analysis.version,
             unreadable,
+            crate::analysis::READER,
         )
         .fetch_one(&mut *tx)
         .await
@@ -102,10 +104,11 @@ impl PgAnalyses {
                 s.body      AS "body?"
             FROM artifact_analysis a
             LEFT JOIN artifact_install_script s ON s.analysis_id = a.id
-            WHERE a.digest = $1
+            WHERE a.digest = $1 AND a.reader = $2
             ORDER BY s.ordinal
             "#,
             digest.to_string(),
+            crate::analysis::READER,
         )
         .fetch_all(&self.pool)
         .await
