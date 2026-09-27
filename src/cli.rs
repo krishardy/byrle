@@ -50,8 +50,9 @@ pub enum Command {
 
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum AuditCommand {
-    /// Decide each pinned line again from the inputs it recorded, and report any that
-    /// decide differently. Exits 1 if one does
+    /// Decide each pinned line again from the inputs it recorded. The exit code is the OR of
+    /// 1 for a line that decides differently, 2 for one that cannot be decided again, and 4
+    /// on its own for an error
     Verify(Verify),
 }
 

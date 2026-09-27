@@ -22,9 +22,16 @@ line 7: differs: pkg:npm/widget@2.0.0: action allow now block
 5 reproduced, 1 differ, 1 not replayable
 ```
 
-It exits 1 when a line differs and 2 when a policy or the log cannot be read. A line it
-cannot replay does not change the exit code: a log whose every line names a policy not
-given exits 0.
+The exit code uses the bits of `waharoa policy diff`:
+
+| Code | Meaning |
+|---|---|
+| 0 | every pinned line reproduced, or there were none |
+| 1 bit | a line decides differently |
+| 2 bit | a line could not be decided again, so it was not verified |
+| 4, on its own | a policy or the log does not read |
+
+A log whose every line names a policy not given exits 2.
 
 ## What a pinned line records
 
@@ -93,9 +100,10 @@ build, and each provenance and intel state read back. `the_order_of_the_advisori
 reverses the advisories and expects the same checks and exceptions.
 `proxy::tests::the_audit_line_records_what_the_request_was_answered` sends a deferred, a
 refused and a served request through the proxy, then replays its log: 3 reproduced.
-`verify_exits_1_only_when_a_line_differs` and
-`verify_exits_2_when_a_policy_or_the_log_does_not_read` cover the exit codes.
+`verify_sets_a_bit_for_a_line_that_differs_and_one_that_is_not_replayable` and
+`verify_exits_4_when_a_policy_or_the_log_does_not_read` cover the exit codes.
 
 cargo-mutants over `replay`, `render`, `Inputs`, `RecordedFacts`, `unenforceable_of` and
 `digest_of`: 33 mutants, 26 caught, 7 unviable, none missed. Over `verify`: 5, 2 caught, 3
-unviable. `unenforceable_of`'s `is_none()` turned to `is_some()` by hand fails two tests.
+unviable. Over `Replay::code`: 6, 5 caught, and `|` replaced with `^` missed. The two
+bits never overlap, so both give the same code. `unenforceable_of`'s `is_none()` turned to `is_some()` by hand fails two tests.
