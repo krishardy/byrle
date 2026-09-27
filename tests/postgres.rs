@@ -1761,6 +1761,39 @@ async fn an_attestation_result_is_kept_under_its_digest() {
     );
 }
 
+/// An analysis another reader wrote, or one written before readers were recorded, is not
+/// read back: the artifact is read again by the reader this build has.
+#[tokio::test]
+async fn an_analysis_from_another_reader_is_not_read() {
+    let intel = skip_without_database!("t_analysis_reader");
+    let store = analyses(&intel);
+    let found = analysis(Scripts::Declared(InstallScripts {
+        names: vec!["install".to_owned()],
+        bodies: vec![("install".to_owned(), "node-gyp rebuild".to_owned())],
+    }));
+    store.put(&sri(1), &found).await.expect("writes");
+    assert_eq!(
+        store.get(&sri(1)).await.expect("answers"),
+        Some(found.clone())
+    );
+
+    for older in ["", "install-scripts 0"] {
+        sqlx::query("UPDATE artifact_analysis SET reader = $1")
+            .bind(older)
+            .execute(intel.pool())
+            .await
+            .expect("updates");
+        assert_eq!(
+            store.get(&sri(1)).await.expect("answers"),
+            None,
+            "{older:?}"
+        );
+    }
+
+    store.put(&sri(1), &found).await.expect("replaces");
+    assert_eq!(store.get(&sri(1)).await.expect("answers"), Some(found));
+}
+
 /// A result another verifier wrote is not read back: a failure from an older root or a
 /// verifier bug does not outlive the upgrade that fixes it.
 #[tokio::test]

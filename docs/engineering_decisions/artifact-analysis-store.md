@@ -28,6 +28,14 @@ The digest comes from the metadata, so the branch is decided before the fetch. T
 are hashed on the way past either way, which is [no-metadata-cache](no-metadata-cache.md)
 and [verified-artifact-cache](verified-artifact-cache.md): a hit never skips the hash.
 
+An analysis is permanently valid for its bytes and for the reader that wrote it, not for
+its bytes alone. Each row records `analysis::READER`, `install-scripts 1`, and is read back
+only by that reader, so a reader that finds something an older one missed reads every
+artifact again rather than keep the older answer. Rows written before the column existed
+read as the empty reader and are analysed again
+(`migrations/0011_artifact_analysis_reader.sql`). Attestation results carry their verifier
+the same way ([provenance-check](provenance-check.md)).
+
 ## Two stores, one key
 
 | Store | Answers | Lives |
@@ -130,7 +138,8 @@ closure walk above shows: its median artifact is 9,078 bytes.
 The Postgres store shares the pool the advisory mirror already holds, because the analyses
 are written on the request path and the advisories are read on it, and a second pool would
 double the connections a proxy holds for one database.
-`migrations/0009_artifact_analysis.sql` is applied by the same `PgIntel::migrate`.
+`migrations/0009_artifact_analysis.sql`, `0010_artifact_attestation.sql` and
+`0011_artifact_analysis_reader.sql` are applied by the same `PgIntel::migrate`.
 
 [`crate::env::DATABASE_URL`] is optional, and a proxy started without one is the
 configuration the smoke tests run. That proxy uses `InProcess`, a bounded map that dies

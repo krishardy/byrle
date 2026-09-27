@@ -2558,13 +2558,19 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       waits on an upstream release, and RUSTSEC-2023-0071 is accepted meanwhile only while
       `rsa` is not compiled.
 
-- [ ] `[!]` Analysis cache keyed by **tarball content digest** (install-script presence,
+- [x] `[!]` Analysis cache keyed by **tarball content digest** (install-script presence,
       source diff, capability analysis — permanently valid). Metadata always passes
       through to upstream; no binary caching.
       The key and the hit/miss branch landed in Stage 1 (`src/verified.rs`), which records
       which digests have been fetched and verified. What is left here is the analysis the
       entry carries, and persistence: the Stage 1 cache is per-process and holds a digest
       and nothing else.
+      Done 2026-09-27. `artifact_analysis` carries the install scripts and
+      `artifact_attestation` the verified identity, both by digest, in Postgres with
+      `WAHAROA_DATABASE_URL` and shared between proxies; without it, in process. Each row
+      is read back only by the reader or verifier that wrote it, so "permanently valid"
+      holds per reader ([artifact-analysis-store](docs/engineering_decisions/artifact-analysis-store.md)).
+      Source diff and capability analysis will be stored the same way when they exist.
 - [ ] `[!]` Reproducible verdicts: same policy + same intel snapshot = same result
 - [ ] `[!]` Offline / air-gapped mode with pinnable intel snapshots
 - [ ] `[!]` `waharoa policy check --strict` — nonzero exit on unacknowledged loosening
