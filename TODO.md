@@ -2579,9 +2579,14 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       build, the reader, the verifier and every fact the engine read. `waharoa audit verify`
       decides each line again and exits 1 when one differs. Resolution lines are not
       replayed ([reproducible-verdicts](docs/engineering_decisions/reproducible-verdicts.md)).
-- [ ] `[!]` Offline / air-gapped mode with pinnable intel snapshots
-- [ ] `[!]` `waharoa policy check --strict` — nonzero exit on unacknowledged loosening
-- [ ] `[!]` Warn mode as the shipped default
+- [x] `[!]` `waharoa policy check --strict`: nonzero exit on unacknowledged loosening
+      Closed 2026-09-27 without new code. Schema v1 refuses a loosening entry with neither
+      `expires` nor `permanent: true`, so none is unacknowledged. `policy diff` sets exit
+      bit 1 on a loosening, which is the CI gate for a weakening change. `--strict` exits 1
+      on dead entries ([policy-check](docs/engineering_decisions/policy-check.md)).
+- [ ] `[!]` Observe mode: one environment variable switches the whole proxy between enforce
+      and observe. Enforce is the default. Decided 2026-09-27, replacing "warn mode as the
+      shipped default" ([observe-mode](docs/engineering_decisions/observe-mode.md)).
 - [ ] Latency budget and benchmarks on a large lockfile (cold and warm cache)
 - [ ] ACME / Let's Encrypt support; document fronting with Caddy/nginx
 - [ ] Honor `HTTPS_PROXY` for upstream traffic
@@ -2676,6 +2681,11 @@ a malware or critical/high advisory for the version they installed.
 ---
 
 ## Deferred / post-v1
+
+- [ ] `[!]` Offline / air-gapped mode with pinnable intel snapshots. Moved from Stage 5 on
+      2026-09-27. A pinned verdict already records every advisory it read, so
+      `waharoa audit verify` does not need a kept snapshot
+      ([reproducible-verdicts](docs/engineering_decisions/reproducible-verdicts.md)).
 
 - [ ] **Everything that needs a policy surface beyond schema v1.** Five Stage 2 items with
       one cause: the v1 key set is closed and held by `the_version_1_key_set_is_closed`, so
