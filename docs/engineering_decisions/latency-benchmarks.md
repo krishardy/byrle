@@ -53,6 +53,22 @@ proxy, measured in one run each from the proxy's log:
 | metadata | 128 documents fetched by the proxy on its own behalf, all within 2.2 s | 207 documents served to warm as a client's, over 40 s. `next`'s, 4.4 MB, took 21 s |
 | analyses | every artifact returned about 10 s after its deferral | returns spread over 57 s |
 
+The `analysis job timed` lines of one warm run over the npm set, 206 jobs, in
+milliseconds:
+
+| Phase | Median | p90 | Max | Sum |
+|---|---|---|---|---|
+| queued for one of 8 slots | 63,754 | 70,915 | 71,285 | |
+| fetch, to the headers | 57 | 238 | 546 | 24,266 |
+| download | 109 | 6,365 | 24,725 | 498,316 |
+| read | 0 | 2,707 | 7,394 | 122,107 |
+| store | 0 | 0 | 6,703 | 20,109 |
+| total, from the slot | 175 | 11,395 | 26,134 | 665,008 |
+
+The jobs downloaded 721,192,626 bytes. The largest were `next`'s platform binaries,
+33 to 35 MB and 23 to 25 s each. 665 s of work over 8 slots is most of warm's run: its
+cost is the analysis of every platform's binaries, which `npm ci` does not fetch.
+
 Warm was first measured at 194.5 s, fetching each version's metadata in turn. Fetching
 them 16 at a time brought it to 102.2 s. Asking for every artifact once before asking any
 again, which starts every analysis at once as npm does, left it at 105.6 s.

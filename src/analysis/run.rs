@@ -12,7 +12,7 @@
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use sigstore_verify::types::Bundle;
 use tokio::sync::{Semaphore, watch};
@@ -23,7 +23,7 @@ use crate::analysis::Reader;
 use crate::analysis::attestation::{Attested, verify};
 use crate::analysis::store::{Analyses, Analysis, Scripts};
 use crate::integrity::{Mismatch, Sri};
-use crate::spool::{Spool, WriteError};
+use crate::spool::{Spool, Spooled, WriteError};
 use crate::util::lru::Lru;
 
 /// How long one job may take, from its fetch starting to its analysis being stored.
@@ -172,7 +172,7 @@ impl Analyser {
 
     /// Start analysing `job` unless its digest is already being analysed. The handle is
     /// for a test to wait on. The proxy drops it.
-    pub fn start(&self, job: Job) -> Option<JoinHandle<()>> {
+    pub fn start(&self, job: Job) -> Option<JoinHandle<Timings>> {
         if !self
             .in_flight
             .lock()
@@ -187,98 +187,180 @@ impl Analyser {
             ended: self.ended.clone(),
         };
         let analyser = self.clone();
+        let started = Instant::now();
         Some(tokio::spawn(async move {
             let _guard = guard;
-            analyser.run(job).await;
+            analyser.run(job, started).await
         }))
     }
 
-    async fn run(&self, job: Job) {
+    /// Analyse `job` once a slot is free, within the deadline, and log how long each
+    /// phase took. `started` is when the job was asked for.
+    /// Returns the times it logged.
+    async fn run(&self, job: Job, started: Instant) -> Timings {
         let _slot = self
             .slots
             .clone()
             .acquire_owned()
             .await
             .expect("the semaphore is never closed");
+        let mut timings = Timings {
+            queued_ms: ms(started),
+            ..Timings::default()
+        };
+        let running = Instant::now();
         // Dropping the analysis on expiry drops its spool file too.
         let work = async {
             if let Some(reader) = job.reader {
-                self.analyse(&job, reader).await;
+                self.analyse(&job, reader, &mut timings).await;
             }
             for attestation in &job.attestations {
-                self.attest(attestation).await;
+                timings.attest_ms += self.attest(attestation).await;
             }
         };
-        if tokio::time::timeout(self.deadline, work).await.is_err() {
+        timings.completed = tokio::time::timeout(self.deadline, work).await.is_ok();
+        timings.attestations = job.attestations.len();
+        timings.total_ms = ms(running);
+        if !timings.completed {
             warn!(url = %job.url, deadline_s = self.deadline.as_secs(), "artifact analysis: past its deadline, nothing stored");
         }
+        info!(
+            url = %job.url,
+            digest = %job.digest,
+            completed = timings.completed,
+            queued_ms = timings.queued_ms,
+            fetch_ms = timings.fetch_ms,
+            download_ms = timings.download_ms,
+            bytes = timings.bytes,
+            read_ms = timings.read_ms,
+            store_ms = timings.store_ms,
+            attestations = timings.attestations,
+            attest_ms = timings.attest_ms,
+            total_ms = timings.total_ms,
+            "analysis job timed"
+        );
+        timings
     }
 
     /// Fetch the attestations document and verify it. A registry that cannot be reached,
     /// or answers 5xx or 429, stores nothing, so the next request tries again: a flaky
     /// registry must not refuse a package. Any other answer is stored, a failure included.
-    async fn attest(&self, attestation: &Attestation) {
-        let url = &attestation.url;
-        let response = match self.client.get(url).send().await {
-            Ok(response) => response,
-            Err(e) => {
-                warn!(url = %url, error = %e, "attestations: fetch failed, nothing stored");
-                return;
-            }
+    /// Returns the milliseconds it took.
+    async fn attest(&self, attestation: &Attestation) -> u64 {
+        let started = Instant::now();
+        let Some(answer) = self.attestation_document(attestation).await else {
+            return ms(started);
         };
-        let status = response.status();
-        if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            warn!(url = %url, status = status.as_u16(), "attestations: not answered, nothing stored");
-            return;
-        }
-        let attested = if !status.is_success() {
-            Attested::Failed {
-                why: format!("the registry answered {status} for {url}"),
-            }
-        } else {
-            let document = match response.bytes().await {
-                Ok(document) => document,
-                Err(e) => {
-                    warn!(url = %url, error = %e, "attestations: body failed, nothing stored");
-                    return;
-                }
-            };
-            match (attestation.bundle)(&document) {
+        let fetch_ms = ms(started);
+        let verifying = Instant::now();
+        let attested = match answer {
+            Ok(document) => match (attestation.bundle)(&document) {
                 Ok(bundle) => verify(&bundle, &attestation.digest),
                 Err(why) => Attested::Failed { why },
-            }
+            },
+            Err(failed) => failed,
         };
-        match &attested {
-            Attested::Verified { identity } => {
-                info!(url = %url, digest = %attestation.digest, identity = %identity, "attestation verified");
-            }
-            Attested::Failed { why } => {
-                warn!(url = %url, digest = %attestation.digest, why = %why, "attestation did not verify");
-            }
-        }
+        log_attested(attestation, &attested, fetch_ms, ms(verifying));
         if let Err(e) = self
             .store
             .put_attested(&attestation.digest, &attested)
             .await
         {
-            warn!(url = %url, error = %e, "attestations: not stored");
+            warn!(url = %attestation.url, error = %e, "attestations: not stored");
         }
+        ms(started)
     }
 
-    async fn analyse(&self, job: &Job, reader: Reader) {
-        let response = match self
+    /// The attestations document, or the failure a registry's 4xx answer is.
+    /// Returns `None` when nothing should be stored: no answer, a 5xx or a 429, or a body
+    /// that failed.
+    async fn attestation_document(
+        &self,
+        attestation: &Attestation,
+    ) -> Option<Result<bytes::Bytes, Attested>> {
+        let url = &attestation.url;
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(
+                |e| warn!(url = %url, error = %e, "attestations: fetch failed, nothing stored"),
+            )
+            .ok()?;
+        let status = response.status();
+        if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            warn!(url = %url, status = status.as_u16(), "attestations: not answered, nothing stored");
+            return None;
+        }
+        if !status.is_success() {
+            return Some(Err(Attested::Failed {
+                why: format!("the registry answered {status} for {url}"),
+            }));
+        }
+        let document = response
+            .bytes()
+            .await
+            .map_err(|e| warn!(url = %url, error = %e, "attestations: body failed, nothing stored"))
+            .ok()?;
+        Some(Ok(document))
+    }
+
+    /// Fetch, spool, read and store `job`'s artifact, adding each phase to `timings`.
+    async fn analyse(&self, job: &Job, reader: Reader, timings: &mut Timings) {
+        let phase = Instant::now();
+        let Some(response) = self.fetch(job).await else {
+            return;
+        };
+        timings.fetch_ms = ms(phase);
+        let phase = Instant::now();
+        let spooled = self.spool_verified(job, response).await;
+        timings.download_ms = ms(phase);
+        let scripts = match spooled {
+            None => return,
+            Some(Err(unreadable)) => unreadable,
+            Some(Ok(spooled)) => {
+                timings.bytes = spooled.len();
+                let phase = Instant::now();
+                let read = read(job, spooled, reader).await;
+                timings.read_ms = ms(phase);
+                let Some(scripts) = read else {
+                    return;
+                };
+                scripts
+            }
+        };
+        let phase = Instant::now();
+        self.put(job, scripts).await;
+        timings.store_ms = ms(phase);
+    }
+
+    /// The upstream's 2xx answer for `job`'s artifact. `None` when there is none.
+    async fn fetch(&self, job: &Job) -> Option<reqwest::Response> {
+        match self
             .client
             .get(&job.url)
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
         {
-            Ok(response) => response,
+            Ok(response) => Some(response),
             Err(e) => {
                 warn!(url = %job.url, error = %e, "artifact analysis: fetch failed, nothing stored");
-                return;
+                None
             }
-        };
+        }
+    }
+
+    /// The artifact written to the spool and checked against the digest, or `Unreadable`
+    /// for one over the spool's ceiling.
+    /// Returns `None` when nothing should be stored: a mismatch, remembered, or a spool
+    /// that failed.
+    async fn spool_verified(
+        &self,
+        job: &Job,
+        response: reqwest::Response,
+    ) -> Option<Result<Spooled, Scripts>> {
         let claimed = response.content_length();
         let mut verifier = job.digest.verifier();
         let written = self
@@ -287,42 +369,33 @@ impl Analyser {
                 verifier.update(chunk)
             })
             .await;
-        let scripts = match written {
-            Ok(spooled) => {
-                if let Err(mismatch) = verifier.finish(spooled.len()) {
+        match written {
+            Ok(spooled) => match verifier.finish(spooled.len()) {
+                Ok(()) => Some(Ok(spooled)),
+                Err(mismatch) => {
                     warn!(url = %job.url, %mismatch, "artifact analysis: digest mismatch");
                     self.mismatched
                         .lock()
                         .expect("mismatch lock")
                         .insert(job.digest.clone(), mismatch);
-                    return;
+                    None
                 }
-                let read = tokio::task::spawn_blocking(move || {
-                    let file = spooled.reader()?;
-                    Ok(Scripts::of(reader.read(std::io::BufReader::new(file))))
-                })
-                .await
-                .map_err(std::io::Error::other)
-                .and_then(|read: std::io::Result<Scripts>| read);
-                match read {
-                    Ok(scripts) => scripts,
-                    Err(e) => {
-                        warn!(url = %job.url, error = %e, "artifact analysis: the spool file could not be read, nothing stored");
-                        return;
-                    }
-                }
-            }
+            },
             // Stored, so the retry is decided rather than deferred again. An artifact
             // nothing read is `Unreadable`, which `install_scripts: block` refuses.
             Err(too_large @ WriteError::TooLarge { .. }) => {
                 warn!(url = %job.url, error = %too_large, "artifact analysis: over the ceiling");
-                Scripts::Unreadable(too_large.to_string())
+                Some(Err(Scripts::Unreadable(too_large.to_string())))
             }
             Err(e) => {
                 warn!(url = %job.url, error = %e, "artifact analysis: not spooled, nothing stored");
-                return;
+                None
             }
-        };
+        }
+    }
+
+    /// Store what was read of `job`'s artifact under its digest.
+    async fn put(&self, job: &Job, scripts: Scripts) {
         let analysis = Analysis {
             ecosystem: job.ecosystem.clone(),
             name: job.name.clone(),
@@ -340,6 +413,63 @@ impl Analyser {
             "artifact analysed"
         );
     }
+}
+
+/// Log an attestation's result with how long fetching and verifying it took.
+fn log_attested(attestation: &Attestation, attested: &Attested, fetch_ms: u64, verify_ms: u64) {
+    let (url, digest) = (&attestation.url, &attestation.digest);
+    match attested {
+        Attested::Verified { identity } => {
+            info!(url = %url, digest = %digest, identity = %identity, fetch_ms, verify_ms, "attestation verified");
+        }
+        Attested::Failed { why } => {
+            warn!(url = %url, digest = %digest, why = %why, fetch_ms, verify_ms, "attestation did not verify");
+        }
+    }
+}
+
+/// What `reader` reads from the spooled artifact. `None` when the file cannot be read.
+async fn read(job: &Job, spooled: Spooled, reader: Reader) -> Option<Scripts> {
+    let read = tokio::task::spawn_blocking(move || {
+        let file = spooled.reader()?;
+        Ok(Scripts::of(reader.read(std::io::BufReader::new(file))))
+    })
+    .await
+    .map_err(std::io::Error::other)
+    .and_then(|read: std::io::Result<Scripts>| read);
+    match read {
+        Ok(scripts) => Some(scripts),
+        Err(e) => {
+            warn!(url = %job.url, error = %e, "artifact analysis: the spool file could not be read, nothing stored");
+            None
+        }
+    }
+}
+
+/// How long each phase of one job took, as its `analysis job timed` line logs it.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Timings {
+    /// Whether the job ended before its deadline.
+    pub completed: bool,
+    /// From the job being asked for to a slot being free.
+    pub queued_ms: u64,
+    /// To the upstream's response headers.
+    pub fetch_ms: u64,
+    /// Writing the body to the spool, hashing it as it arrives.
+    pub download_ms: u64,
+    pub bytes: u64,
+    pub read_ms: u64,
+    pub store_ms: u64,
+    /// Every attestation: fetching, verifying and storing it.
+    pub attest_ms: u64,
+    pub attestations: usize,
+    /// From the slot being free to the job ending.
+    pub total_ms: u64,
+}
+
+/// Milliseconds since `since`.
+fn ms(since: Instant) -> u64 {
+    since.elapsed().as_millis() as u64
 }
 
 /// Takes a digest out of the in-flight set when its job ends, however it ends, and counts
@@ -451,6 +581,27 @@ mod tests {
 
     /// A retry arriving while the first job runs starts nothing. Once the job ends, the
     /// digest can be analysed again.
+    /// A job returns how long each phase took, as it logs them.
+    #[tokio::test]
+    async fn a_job_logs_how_long_each_phase_took() {
+        let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
+        let digest = sri_of(&tarball);
+        let size = tarball.len();
+        let url = upstream(200, tarball).await;
+        let analyser = analyser("run-timed", 1 << 20, Arc::new(InProcess::new(8)));
+        let timings = analyser
+            .start(job(&digest, &url))
+            .expect("starts")
+            .await
+            .expect("finishes");
+
+        assert!(timings.completed);
+        assert_eq!(timings.bytes, size as u64);
+        assert_eq!((timings.attestations, timings.attest_ms), (0, 0));
+        let phases = timings.fetch_ms + timings.download_ms + timings.read_ms + timings.store_ms;
+        assert!(phases <= timings.total_ms + 4, "{timings:?}");
+    }
+
     #[tokio::test]
     async fn one_digest_is_analysed_once_at_a_time() {
         let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
@@ -583,6 +734,60 @@ mod tests {
         format!("http://{addr}")
     }
 
+    /// Each phase that takes time is timed: an upstream that answers 150 ms late, an
+    /// attestations document 100 ms late, and a second job waiting for the only slot.
+    #[tokio::test]
+    async fn each_phase_is_timed() {
+        let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
+        let late = |millis: u64, status: u16, body: Vec<u8>| {
+            get(move || {
+                let body = body.clone();
+                async move {
+                    tokio::time::sleep(Duration::from_millis(millis)).await;
+                    (axum::http::StatusCode::from_u16(status).unwrap(), body)
+                }
+            })
+        };
+        let router = Router::new()
+            .route("/artifact", late(150, 200, tarball.clone()))
+            .route("/attestations", late(100, 404, Vec::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let (spool, _) = Spool::open(&tempdir("run-phases"), 1 << 20).expect("opens");
+        let one_slot = Analyser::new(
+            reqwest::Client::new(),
+            Arc::new(spool),
+            Arc::new(InProcess::new(8)),
+            1,
+            16,
+        );
+        let digest = sri_of(&tarball);
+        let first = Job {
+            attestations: vec![Attestation {
+                digest: digest.clone(),
+                url: format!("{base}/attestations"),
+                bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+            }],
+            ..job(&digest, &format!("{base}/artifact"))
+        };
+        let second = job(
+            &crate::analysis::store::tests::sri(9),
+            &format!("{base}/artifact"),
+        );
+
+        let first = one_slot.start(first).expect("starts");
+        let second = one_slot.start(second).expect("starts");
+        let (first, second) = (first.await.unwrap(), second.await.unwrap());
+
+        assert!(first.fetch_ms >= 140, "{first:?}");
+        assert_eq!(first.attestations, 1);
+        assert!(first.attest_ms >= 90, "{first:?}");
+        assert!(second.queued_ms >= 230, "{second:?}");
+    }
+
     /// A real document verifies and its identity is stored. A 404 and a body that is not
     /// an attestations document are stored as failures. A 503 stores nothing, so the next
     /// request verifies again: a registry having a bad minute refuses nothing.
@@ -625,11 +830,16 @@ mod tests {
                 .collect(),
             ..job(&digests[0], &format!("{base}/never-fetched"))
         };
-        analyser
+        let timings = analyser
             .start(job)
             .expect("starts")
             .await
             .expect("finishes");
+        assert_eq!(timings.attestations, 4);
+        assert_eq!(
+            timings.fetch_ms, 0,
+            "no reader, so the artifact is not fetched"
+        );
 
         assert_eq!(
             analyser.attested(&real).await,

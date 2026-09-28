@@ -285,8 +285,8 @@ Items that I've added that are not stage-bound.
     |---|---|---|
     | `startup::proxy` | 102 | 170 |
     | `proxy::decide_artifact`: done 2026-09-28, now 7 and 41, split into `Deciding` | 82 | 252 |
-    | `analysis::run::Analyser::analyse` | 57 | |
-    | `analysis::run::Analyser::attest` | 52 | |
+    | `analysis::run::Analyser::analyse`: done 2026-09-28, split by timed phase | 57 | |
+    | `analysis::run::Analyser::attest`: done 2026-09-28, split by timed phase | 52 | |
     | `ecosystem::npm::rewrite::rewrite_packument` | 49 | |
     | `proxy::handle`: done 2026-09-28, now 7 and 47, split into `Exchange` | 44 | 224 |
     | `startup::report_policy` | 40 | |
@@ -303,6 +303,15 @@ Items that I've added that are not stage-bound.
     Measured with `cargo clippy --lib -- -A clippy::all -W clippy::cognitive_complexity -W
     clippy::too_many_lines`. Pairs with item 23: a comment explaining non-obvious behaviour
     is the same signal.
+
+25. [ ] Make every log line structured. Raised 2026-09-28.
+    - The daemon writes human-readable text (`tracing_subscriber::fmt()` in `main.rs`).
+      Add machine-readable output, JSON Lines, with every field a key.
+    - Put each value in a field, not in the message. On 2026-09-28, 13 of 93 log calls
+      with a message interpolated a value into it, 6 of them in `startup.rs` and 5 in
+      `proxy.rs`: `"upstream traffic goes through a forward proxy: {proxied}"` is one.
+    - Keep each message a fixed string, so a log search matches one event whatever its
+      values.
 
 ## Architecture Refactor
 

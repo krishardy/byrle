@@ -3139,6 +3139,7 @@ mod tests {
     use crate::defer::DeferTest;
     use crate::identity::Ecosystem;
     use crate::util::test_support::NO_UPSTREAM;
+    use crate::util::test_support::{capture, text};
     use axum::routing::{any, get};
     use std::io::Write;
     use std::sync::{Arc, Mutex};
@@ -4013,40 +4014,6 @@ mod tests {
             expected.insert(name, HeaderValue::from_static(value));
         }
         assert_eq!(sent, expected);
-    }
-
-    /// A log sink a test can read back.
-    struct Captured(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Captured {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    /// Route this thread's logs at `level` and above into a buffer, until the guard drops.
-    fn capture(level: tracing::Level) -> (tracing::subscriber::DefaultGuard, Arc<Mutex<Vec<u8>>>) {
-        let buf = Arc::new(Mutex::new(Vec::new()));
-        let sink = buf.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_max_level(level)
-            .with_writer(move || Captured(sink.clone()))
-            .with_ansi(false)
-            .finish();
-        let guard = tracing::subscriber::set_default(subscriber);
-        // A callsite first reached on another test's thread, where no subscriber listens, is
-        // cached as never enabled, and this thread's subscriber then misses its lines. Seen
-        // now and then as a missing `deferred:` line under parallel tests.
-        tracing::callsite::rebuild_interest_cache();
-        (guard, buf)
-    }
-
-    fn text(buf: &Mutex<Vec<u8>>) -> String {
-        String::from_utf8(buf.lock().unwrap().clone()).unwrap()
     }
 
     /// What `f` logs at INFO and above.
