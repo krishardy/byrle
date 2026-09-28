@@ -217,6 +217,8 @@ tooling, and adapter contributions are the scarce resource.
 
 * [docs/project_plan.md](docs/project_plan.md) covers detection strategy, policy
   semantics, the threat model, and milestones.
+* [docs/request-flow.md](docs/request-flow.md) charts how the proxy answers a request,
+  and when it returns each status code.
 * [docs/engineering_decisions/](docs/engineering_decisions/) holds one file per
   decision: what was chosen, what was rejected, and what it costs.
 * [TODO.md](TODO.md) is the staged, sequential task list with exit criteria.

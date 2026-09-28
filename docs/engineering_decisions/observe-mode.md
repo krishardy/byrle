@@ -22,7 +22,7 @@ assess, decided 2026-09-27:
 
 | Case | Both modes |
 |---|---|
-| an ecosystem this build does not cover | refused ([uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md)) |
+| an ecosystem no intel stream covers | 503 ([uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md)) |
 | an artifact whose analysis has not finished | 503 until it has |
 | an artifact with no strong digest | refused |
 | an artifact whose metadata names neither its version nor its file | refused |
