@@ -6343,7 +6343,26 @@ mod tests {
         yaml: Option<&str>,
     ) -> (String, Arc<Analyser>) {
         let store = Arc::new(crate::analysis::store::InProcess::new(8));
-        analysing_with(label, version, dist, tarball, yaml, store, None).await
+        analysing_with(
+            label,
+            version,
+            dist,
+            tarball,
+            yaml,
+            store,
+            Extras::default(),
+        )
+        .await
+    }
+
+    const ALLOW_ALL: &str = "version: 1\ncooldown_days: 0\n";
+
+    /// What [`analysing_with`] adds to the proxy it builds.
+    #[derive(Default)]
+    struct Extras {
+        /// Holds the tarball route until the test adds permits.
+        gate: Option<Arc<Semaphore>>,
+        audit: Option<Arc<AuditLog>>,
     }
 
     /// [`analysing`], keeping analyses in `store`.
@@ -6354,8 +6373,9 @@ mod tests {
         tarball: Vec<u8>,
         yaml: Option<&str>,
         store: Arc<dyn crate::analysis::store::Analyses>,
-        gate: Option<Arc<Semaphore>>,
+        extras: Extras,
     ) -> (String, Arc<Analyser>) {
+        let gate = extras.gate;
         let packument = format!(
             r#"{{"name":"widget","dist-tags":{{"latest":"1.0.0"}},"versions":{{
                 "1.0.0":{{"version":"1.0.0",{version}"dist":{{{dist}
@@ -6402,6 +6422,7 @@ mod tests {
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .with_policy(yaml.map(policy))
                 .with_analyser(Some(analyser.clone()))
+                .with_audit_log(extras.audit)
                 .router(),
         )
         .await;
@@ -6484,7 +6505,10 @@ mod tests {
             tarball.clone(),
             Some(BLOCK),
             Arc::new(crate::analysis::store::InProcess::new(8)),
-            Some(gate.clone()),
+            Extras {
+                gate: Some(gate.clone()),
+                ..Extras::default()
+            },
         )
         .await;
 
@@ -6638,7 +6662,7 @@ mod tests {
             tarball.clone(),
             Some(yaml),
             store.clone(),
-            None,
+            Extras::default(),
         )
         .await;
         assert_eq!(tarball_request(&base).await.status(), 403);
@@ -6651,7 +6675,7 @@ mod tests {
             tarball,
             Some(yaml),
             store,
-            None,
+            Extras::default(),
         )
         .await;
         assert_eq!(tarball_request(&base).await.status(), 200);
@@ -7417,6 +7441,77 @@ mod tests {
             proxy.health().clients_without_artifacts,
             [("pnpm".to_owned(), 1)].into()
         );
+    }
+
+    /// Each answer `decide_artifact` reaches after the lookup writes one audit line saying
+    /// what it was. A request answered before a record is found writes none, and so does
+    /// a proxy with no policy.
+    #[tokio::test]
+    async fn every_pinned_answer_after_the_lookup_is_audited_once() {
+        let dir = crate::util::test_support::tempdir("audit-every-answer");
+        let path = dir.join("audit.jsonl");
+        let log = Arc::new(AuditLog::open(&path).expect("opens"));
+
+        let unservable = offline(None, Some(ALLOW_ALL))
+            .with_refuse_unservable(true)
+            .with_audit_log(Some(log.clone()));
+        hold_document(
+            &unservable,
+            OFFSITE_PACKUMENT.as_bytes(),
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let (status, _) = refused(pinned(&unservable, "/widget/-/widget-1.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let undigested = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log.clone()));
+        hold_document(
+            &undigested,
+            br#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0",
+                "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let (status, _) = refused(pinned(&undigested, "/widget/-/widget-1.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (status, _) = refused(pinned(&undigested, "/widget/-/widget-2.0.0.tgz").await).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "not listed, so no audit line"
+        );
+
+        let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
+        let (base, analyser) = analysing_with(
+            "audit-mismatch",
+            "",
+            &integrity(b"other bytes"),
+            tarball,
+            Some(ALLOW_ALL),
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+            Extras {
+                audit: Some(log),
+                ..Extras::default()
+            },
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 503);
+        analyser.ended(1).await;
+        assert_eq!(tarball_request(&base).await.status(), 502);
+
+        let answered: Vec<_> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<audit::Event>(l).unwrap().answered)
+            .collect();
+        assert_eq!(
+            answered,
+            [
+                Some(audit::Answered::Refused),
+                Some(audit::Answered::Refused),
+                Some(audit::Answered::Deferred),
+                Some(audit::Answered::UpstreamMismatch),
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A pinned line says what the request was answered, written once that is known: a
