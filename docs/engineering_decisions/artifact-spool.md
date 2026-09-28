@@ -54,6 +54,13 @@ needs neither, and holds no connection open while the analysis runs.
 | Its last fetch did not match its digest | not decided: 502, naming the mismatch |
 | A PyPI wheel | the metadata's claim, which for a wheel is none |
 
+Each job ends with one INFO line, `analysis job timed`, giving milliseconds for each
+phase: `queued_ms` waiting for one of `WAHAROA_MAX_CONCURRENT_ANALYSES` slots, `fetch_ms`
+to the upstream's headers, `download_ms` spooling and hashing the body, with `bytes`,
+`read_ms`, `store_ms`, and `attest_ms` for its `attestations`, then `total_ms` and
+whether it `completed` before the deadline. Each attestation's own line adds `fetch_ms`
+and `verify_ms`.
+
 A job that fails to fetch, cannot write the spool, or runs past its ten-minute deadline
 stores nothing, and the next request starts another. That includes an upstream that
 answers the artifact 404: nothing remembers the status, so every request for it is
