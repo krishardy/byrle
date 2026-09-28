@@ -1,7 +1,8 @@
 # Request flow
 
 How the proxy answers one request, and where each status code comes from. Read from
-`handle`, `decide_artifact` and `filtered_document` in `src/proxy.rs` at `d631fe7`.
+`handle` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document` in
+`src/proxy.rs`, on 2026-09-28.
 
 "Refusal status" is `WAHAROA_REFUSAL_STATUS`: 403 by default, settable per ecosystem and
 client to any code from 400 to 599. Every 503 carries `Retry-After: 1` and

@@ -1404,324 +1404,389 @@ struct ArtifactFetch {
     origin: Option<String>,
 }
 
-/// Look up the record for an artifact, decide on it, and say how to fetch it.
-///
-/// Decision #4's pinned half. This is the first point where the exact version and its
-/// record are both in hand, and it is still before a byte is fetched.
+/// Look up the record for an artifact GET, decide on it before a byte is fetched, and
+/// audit the answer.
+/// `request`: the artifact the client asked for.
+/// Returns the answer to send, or how to fetch and verify the artifact.
 async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> ArtifactStep {
-    let ArtifactRequest {
-        ecosystem,
-        method,
-        key,
-        claimed_version,
-        filename,
-        path,
-        client,
-    } = request;
-    let purl = key
-        .at_version(claimed_version)
-        .map(|r| r.to_string())
-        .unwrap_or_else(|_| format!("{key}@{claimed_version}"));
-    let mut fetch = ArtifactFetch {
-        purl: purl.clone(),
-        ..ArtifactFetch::default()
+    let deciding = Deciding::new(proxy, request);
+    let record = match deciding.locate().await {
+        Ok(record) => record,
+        Err(answer) => return *answer,
     };
-    let found = match lookup_or_fetch(proxy, key, claimed_version, filename, path).await {
-        Lookup::Found(found) => found,
-        // The document was read and names neither this version nor this file. A
-        // filename that spells the version differently, `express-3.0.0rc1.tgz` for
-        // `3.0.0-rc1`, is found by the file and does not land here.
-        Lookup::NoSuchVersion => {
-            return unassessable(
-                refusal_status(proxy, ecosystem, Some(client)),
-                client,
-                path,
-                &purl,
-                "its metadata does not list this version",
-            );
-        }
-        // Nothing was observed for this package, and fetching its packument did not
-        // help either. The registry did not answer as it should, so this is a 502, not a
-        // refusal.
-        Lookup::Unknown => {
-            return unassessable(
-                StatusCode::BAD_GATEWAY,
-                client,
-                path,
-                &purl,
-                "the registry gave no metadata for it",
-            );
-        }
-    };
-
-    // The lookup is by version; the request is for a file. On npm those are the same
-    // thing. On PyPI one version offers a wheel and an sdist, with different digests and
-    // different install behaviour, so everything below decides about the file that was
-    // asked for rather than the version.
-    let narrowed = found.narrowed_to(filename);
-    if narrowed.is_none() {
-        warn!(
-            path = %path,
-            claimed_purl = %purl,
-            filename = %filename,
-            "the record names no file by this name; deciding on the version's first file"
-        );
-    }
-    let record: &PackageRecord = narrowed.as_ref().unwrap_or(&found);
-    let artifact = record.artifact();
-    info!(
-        path = %path,
-        claimed_purl = %purl,
-        integrity = artifact
-            .and_then(|a| a.integrity.as_deref())
-            .unwrap_or("-"),
-        has_install_scripts = record.has_install_scripts,
-        // Reported, not refused: see docs/engineering_decisions/yanked-files.md.
-        deprecated = record.deprecated.as_deref().unwrap_or("-"),
-        "artifact requested, digest known"
-    );
-    report_direct_dependencies(proxy, record, path, client);
-    // Where the packument said the artifact lives, when that is an origin the operator
-    // added. Rewriting pointed the client at the proxy, so the proxy has to know where
-    // "here" stood for. Everything else goes to the upstream, including artifacts
-    // advertised on the default registry: a private mirror publishes those URLs and is
-    // the reason the proxy was pointed at it.
-    let artifact_url = artifact.map(|a| a.url.as_str()).unwrap_or("");
-    fetch.origin = crate::origin::origin_of_url(artifact_url)
-        .filter(|origin| proxy.config.origins.reachable().routes_directly(origin));
-    let unservable_origin = match proxy.config.origins.disposition(artifact_url) {
-        Disposition::Refused(origin) => Some(origin),
-        _ => None,
-    };
-    fetch.digest = match artifact
-        .and_then(|a| a.integrity.as_deref())
-        .map(Sri::parse)
-    {
-        Some(Ok(sri)) => {
-            // The hit arm still hashes: see `crate::verified`.
-            let seen = proxy
-                .verified
-                .lock()
-                .expect("verified artifacts lock")
-                .lookup(&sri);
-            info!(
-                path = %path,
-                claimed_purl = %purl,
-                digest = %sri,
-                cache = seen.as_str(),
-                "artifact cache consulted"
-            );
-            Some(sri)
-        }
-        Some(Err(e)) => {
-            warn!(
-                path = %path,
-                claimed_purl = %purl,
-                error = %e,
-                "metadata integrity string is unusable; not verifying"
-            );
-            None
-        }
-        // Two versions in 24,852 offer only SHA-1, which is collision-broken and not
-        // verified here.
-        None => {
-            warn!(
-                path = %path,
-                claimed_purl = %purl,
-                "metadata publishes no strong digest; not verifying"
-            );
-            None
-        }
-    };
-
-    // A record read from a full document carries its own publish time; only one without
-    // it needs the time fetched.
-    let times = match record.published_at {
-        Some(_) => None,
-        None => match publish_times_for(proxy, key).await {
-            Some(times) => Some(times),
-            // The index gave no date for this version, so the file host is asked for one.
-            None => dated_by_host(proxy, record, path).await,
-        },
-    };
-
-    let upstream = upstream_url(proxy, ecosystem, path, fetch.origin.as_deref());
-    let analysed = analysed(
-        proxy,
+    let (fetch, unservable) = deciding.fetch_plan(&record);
+    let times = deciding.publish_times(&record).await;
+    let Analysed {
         record,
-        filename,
-        fetch.digest.as_ref(),
-        times.as_ref(),
-        &upstream,
-        path,
-    )
-    .await;
-    let record = &analysed.record;
-    if !matches!(analysed.state, AnalysisState::Pending(_))
-        && let Some(digest) = &fetch.digest
-    {
-        returned(proxy, digest, path, client);
-    }
-
-    let intel = match intel_for(proxy, key, path).await {
+        provenance,
+        state,
+    } = deciding.analysed(&record, &fetch, times.as_ref()).await;
+    let intel = match intel_for(proxy, deciding.request.key, deciding.request.path).await {
         Ok(intel) => intel,
         Err(unavailable) => return ArtifactStep::Answer(unavailable.response()),
     };
-    // One date for the whole request: the decision enforced and the one audited are the same
-    // decision only when they were made on the same day.
     let today = crate::policy::today();
-    let refused = |record: &PackageRecord, provenance: &Provenance| match enforce::artifact(
+    let refusal = match enforce::artifact(
         proxy.config.policy.as_deref(),
-        record,
+        &record,
         times.as_ref(),
         intel.as_ref(),
-        provenance,
+        &provenance,
         today,
     ) {
         enforce::Verdict::Refuse(refusal) => Some(refusal),
-        _ => None,
+        enforce::Verdict::Serve => None,
     };
-    let policy_refusal = refused(record, &analysed.provenance);
-
-    let (answered, step) = 'answer: {
-        if let Some(refusal) = &policy_refusal {
-            let status = refusal_status(proxy, ecosystem, Some(client));
-            info!(
-                %method,
-                path = %path,
-                status = status.as_u16(),
-                claimed_purl = %purl,
-                action = refusal.action.as_str(),
-                reasons = ?refusal.reasons,
-                client = %client,
-                "refused by policy"
-            );
-            break 'answer (
-                audit::Answered::Refused,
-                ArtifactStep::Answer((status, refusal.message()).into_response()),
-            );
-        }
-
-        // A pinned fetch of a version the packument filter removes. Decision #4: filter on
-        // resolution, hard fail on a pinned fetch, because there is no resolution step left
-        // to influence.
-        if let Some(origin) = &unservable_origin
-            && proxy.config.refuse_unservable
-        {
-            let status = refusal_status(proxy, ecosystem, Some(client));
-            info!(
-                %method,
-                path = %path,
-                status = status.as_u16(),
-                claimed_purl = %purl,
-                origin = %origin,
-                client = %client,
-                "refused: this artifact is published on an origin the proxy does not serve"
-            );
-            break 'answer (
-                audit::Answered::Refused,
-                ArtifactStep::Answer(
-                    (
-                        status,
-                        format!(
-                            "waharoa: {purl} is published at {origin}, which this proxy does not \
-                             serve, so it cannot be examined\n"
-                        ),
-                    )
-                        .into_response(),
-                ),
-            );
-        }
-
-        if fetch.digest.is_none() {
-            break 'answer (
-                audit::Answered::Refused,
-                unassessable(
-                    refusal_status(proxy, ecosystem, Some(client)),
-                    client,
-                    path,
-                    &purl,
-                    "its metadata publishes no strong digest, so its bytes can be neither \
-                     verified nor analysed",
-                ),
-            );
-        }
-
-        match analysed.state {
-            AnalysisState::Mismatched(mismatch) => {
-                warn!(%method, path = %path, claimed_purl = %purl, %mismatch, "refused: the upstream serves bytes its metadata does not describe");
-                (
-                    audit::Answered::UpstreamMismatch,
-                    ArtifactStep::Answer(
-                        (
-                            StatusCode::BAD_GATEWAY,
-                            format!("waharoa: the upstream served {purl} as bytes its metadata does not describe: {mismatch}\n"),
-                        )
-                            .into_response(),
-                    ),
-                )
-            }
-            AnalysisState::Pending(job) => {
-                // Nothing is served until its analysis has finished.
-                let digest = job.digest.clone();
-                if let Some(analyser) = &proxy.config.analyser {
-                    analyser.start(job);
-                }
-                let deferrals = proxy.deferred.lock().expect("deferred lock").defer(&digest);
-                info!(
-                    %method,
-                    path = %path,
-                    claimed_purl = %purl,
-                    digest = %digest,
-                    deferrals,
-                    client = %client,
-                    "deferred: the artifact has not been analysed"
-                );
-                (
-                    audit::Answered::Deferred,
-                    ArtifactStep::Answer(NotReady::Analysing { purl, digest }.response()),
-                )
-            }
-            AnalysisState::Decided => (audit::Answered::Served, ArtifactStep::Fetch(fetch)),
-        }
-    };
-    // Written once the answer is known, so a request deferred or refused for a mismatch is
-    // not recorded as served.
+    let (answered, step) = deciding.answer(refusal.as_ref(), unservable, fetch, state);
     audit_pinned(
         proxy,
-        record,
+        &record,
         times.as_ref(),
         intel.as_ref(),
-        &analysed.provenance,
+        &provenance,
         today,
         answered,
     );
     step
 }
 
-/// Answer `status` for an artifact the proxy cannot assess, saying `why`. Nothing is served
-/// that could not have been decided on.
-fn unassessable(
-    status: StatusCode,
-    client: &str,
-    path: &str,
-    purl: &str,
-    why: &str,
-) -> ArtifactStep {
-    warn!(
-        path = %path,
-        status = status.as_u16(),
-        claimed_purl = %purl,
-        client = %client,
-        "not served: {why}"
-    );
-    ArtifactStep::Answer(
-        (
-            status,
-            format!("waharoa: {purl} cannot be assessed: {why}\n"),
+/// One artifact GET while [`decide_artifact`] decides it.
+struct Deciding<'a> {
+    proxy: &'a Proxy,
+    request: ArtifactRequest<'a>,
+    /// The purl the request claims, as the log lines and answers name it.
+    purl: String,
+}
+
+impl<'a> Deciding<'a> {
+    fn new(proxy: &'a Proxy, request: ArtifactRequest<'a>) -> Self {
+        let key = request.key;
+        let version = request.claimed_version;
+        let purl = key
+            .at_version(version)
+            .map(|r| r.to_string())
+            .unwrap_or_else(|_| format!("{key}@{version}"));
+        Self {
+            proxy,
+            request,
+            purl,
+        }
+    }
+
+    /// The record for the requested file, from the metadata held or fetched now.
+    /// Errors with the answer when the registry gave no metadata or it names neither the
+    /// version nor the file.
+    async fn locate(&self) -> Result<PackageRecord, Box<ArtifactStep>> {
+        let ArtifactRequest {
+            key,
+            claimed_version,
+            filename,
+            path,
+            client,
+            ..
+        } = self.request;
+        let found = match lookup_or_fetch(self.proxy, key, claimed_version, filename, path).await {
+            Lookup::Found(found) => found,
+            Lookup::NoSuchVersion => {
+                return Err(Box::new(self.unassessable(
+                    self.refusal_status(),
+                    "its metadata does not list this version",
+                )));
+            }
+            Lookup::Unknown => {
+                return Err(Box::new(self.unassessable(
+                    StatusCode::BAD_GATEWAY,
+                    "the registry gave no metadata for it",
+                )));
+            }
+        };
+        let record = found.narrowed_to(filename).unwrap_or_else(|| {
+            warn!(
+                path = %path,
+                claimed_purl = %self.purl,
+                filename = %filename,
+                "the record names no file by this name; deciding on the version's first file"
+            );
+            *found
+        });
+        info!(
+            path = %path,
+            claimed_purl = %self.purl,
+            integrity = record
+                .artifact()
+                .and_then(|a| a.integrity.as_deref())
+                .unwrap_or("-"),
+            has_install_scripts = record.has_install_scripts,
+            deprecated = record.deprecated.as_deref().unwrap_or("-"),
+            "artifact requested, digest known"
+        );
+        report_direct_dependencies(self.proxy, &record, path, client);
+        Ok(record)
+    }
+
+    /// Where to fetch the artifact and the digest to verify it against.
+    /// Returns the fetch, and the origin it is published on when the proxy does not serve
+    /// that origin.
+    fn fetch_plan(&self, record: &PackageRecord) -> (ArtifactFetch, Option<String>) {
+        let artifact = record.artifact();
+        let url = artifact.map(|a| a.url.as_str()).unwrap_or("");
+        let origins = &self.proxy.config.origins;
+        let unservable = match origins.disposition(url) {
+            Disposition::Refused(origin) => Some(origin),
+            _ => None,
+        };
+        let fetch = ArtifactFetch {
+            purl: self.purl.clone(),
+            digest: self.digest(artifact.and_then(|a| a.integrity.as_deref())),
+            origin: crate::origin::origin_of_url(url)
+                .filter(|origin| origins.reachable().routes_directly(origin)),
+        };
+        (fetch, unservable)
+    }
+
+    /// The strong digest `integrity` publishes, logged with whether it was verified before.
+    /// Returns `None` for no integrity, SHA-1 only, or one that does not parse.
+    fn digest(&self, integrity: Option<&str>) -> Option<Sri> {
+        let path = self.request.path;
+        match integrity.map(Sri::parse) {
+            Some(Ok(sri)) => {
+                let seen = self
+                    .proxy
+                    .verified
+                    .lock()
+                    .expect("verified artifacts lock")
+                    .lookup(&sri);
+                info!(
+                    path = %path,
+                    claimed_purl = %self.purl,
+                    digest = %sri,
+                    cache = seen.as_str(),
+                    "artifact cache consulted"
+                );
+                Some(sri)
+            }
+            Some(Err(e)) => {
+                warn!(
+                    path = %path,
+                    claimed_purl = %self.purl,
+                    error = %e,
+                    "metadata integrity string is unusable; not verifying"
+                );
+                None
+            }
+            None => {
+                warn!(
+                    path = %path,
+                    claimed_purl = %self.purl,
+                    "metadata publishes no strong digest; not verifying"
+                );
+                None
+            }
+        }
+    }
+
+    /// Publish times for a record whose document carried none: the full document's, or
+    /// the file host's `Last-Modified`.
+    async fn publish_times(&self, record: &PackageRecord) -> Option<facts::PublishTimes> {
+        if record.published_at.is_some() {
+            return None;
+        }
+        match publish_times_for(self.proxy, self.request.key).await {
+            Some(times) => Some(times),
+            None => dated_by_host(self.proxy, record, self.request.path).await,
+        }
+    }
+
+    /// [`analysed`] for this request, logging a return after a deferral once the
+    /// analysis is stored.
+    async fn analysed(
+        &self,
+        record: &PackageRecord,
+        fetch: &ArtifactFetch,
+        times: Option<&facts::PublishTimes>,
+    ) -> Analysed {
+        let ArtifactRequest {
+            ecosystem,
+            filename,
+            path,
+            client,
+            ..
+        } = self.request;
+        let upstream = upstream_url(self.proxy, ecosystem, path, fetch.origin.as_deref());
+        let analysed = analysed(
+            self.proxy,
+            record,
+            filename,
+            fetch.digest.as_ref(),
+            times,
+            &upstream,
+            path,
         )
-            .into_response(),
-    )
+        .await;
+        if !matches!(analysed.state, AnalysisState::Pending(_))
+            && let Some(digest) = &fetch.digest
+        {
+            returned(self.proxy, digest, path, client);
+        }
+        analysed
+    }
+
+    /// What to answer, in order: the policy's refusal, an origin the proxy does not
+    /// serve, no strong digest, then the analysis.
+    /// Returns what the audit line records, and the answer.
+    fn answer(
+        &self,
+        refusal: Option<&enforce::Refusal>,
+        unservable: Option<String>,
+        fetch: ArtifactFetch,
+        state: AnalysisState,
+    ) -> (audit::Answered, ArtifactStep) {
+        if let Some(refusal) = refusal {
+            return (audit::Answered::Refused, self.refused_by_policy(refusal));
+        }
+        if let Some(origin) = unservable.filter(|_| self.proxy.config.refuse_unservable) {
+            return (audit::Answered::Refused, self.unservable(&origin));
+        }
+        if fetch.digest.is_none() {
+            return (
+                audit::Answered::Refused,
+                self.unassessable(
+                    self.refusal_status(),
+                    "its metadata publishes no strong digest, so its bytes can be neither \
+                     verified nor analysed",
+                ),
+            );
+        }
+        match state {
+            AnalysisState::Mismatched(mismatch) => (
+                audit::Answered::UpstreamMismatch,
+                self.mismatched(&mismatch),
+            ),
+            AnalysisState::Pending(job) => (audit::Answered::Deferred, self.defer(job)),
+            AnalysisState::Decided => (audit::Answered::Served, ArtifactStep::Fetch(fetch)),
+        }
+    }
+
+    fn refusal_status(&self) -> StatusCode {
+        refusal_status(
+            self.proxy,
+            self.request.ecosystem,
+            Some(self.request.client),
+        )
+    }
+
+    /// The refusal status with the policy's reasons.
+    fn refused_by_policy(&self, refusal: &enforce::Refusal) -> ArtifactStep {
+        let status = self.refusal_status();
+        info!(
+            method = %self.request.method,
+            path = %self.request.path,
+            status = status.as_u16(),
+            claimed_purl = %self.purl,
+            action = refusal.action.as_str(),
+            reasons = ?refusal.reasons,
+            client = %self.request.client,
+            "refused by policy"
+        );
+        ArtifactStep::Answer((status, refusal.message()).into_response())
+    }
+
+    /// The refusal status for an artifact published on `origin`, which the proxy does not
+    /// serve.
+    fn unservable(&self, origin: &str) -> ArtifactStep {
+        let status = self.refusal_status();
+        info!(
+            method = %self.request.method,
+            path = %self.request.path,
+            status = status.as_u16(),
+            claimed_purl = %self.purl,
+            origin = %origin,
+            client = %self.request.client,
+            "refused: this artifact is published on an origin the proxy does not serve"
+        );
+        let purl = &self.purl;
+        ArtifactStep::Answer(
+            (
+                status,
+                format!(
+                    "waharoa: {purl} is published at {origin}, which this proxy does not \
+                     serve, so it cannot be examined\n"
+                ),
+            )
+                .into_response(),
+        )
+    }
+
+    /// 502 for bytes that did not match their digest when the analysis fetched them.
+    fn mismatched(&self, mismatch: &crate::integrity::Mismatch) -> ArtifactStep {
+        warn!(
+            method = %self.request.method,
+            path = %self.request.path,
+            claimed_purl = %self.purl,
+            %mismatch,
+            "refused: the upstream serves bytes its metadata does not describe"
+        );
+        let purl = &self.purl;
+        ArtifactStep::Answer(
+            (
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "waharoa: the upstream served {purl} as bytes its metadata does not \
+                     describe: {mismatch}\n"
+                ),
+            )
+                .into_response(),
+        )
+    }
+
+    /// 503 until `job`, started here, has analysed the artifact.
+    fn defer(&self, job: Job) -> ArtifactStep {
+        let digest = job.digest.clone();
+        if let Some(analyser) = &self.proxy.config.analyser {
+            analyser.start(job);
+        }
+        let deferrals = self
+            .proxy
+            .deferred
+            .lock()
+            .expect("deferred lock")
+            .defer(&digest);
+        info!(
+            method = %self.request.method,
+            path = %self.request.path,
+            claimed_purl = %self.purl,
+            digest = %digest,
+            deferrals,
+            client = %self.request.client,
+            "deferred: the artifact has not been analysed"
+        );
+        ArtifactStep::Answer(
+            NotReady::Analysing {
+                purl: self.purl.clone(),
+                digest,
+            }
+            .response(),
+        )
+    }
+
+    /// `status` for an artifact the proxy cannot assess, saying `why`.
+    fn unassessable(&self, status: StatusCode, why: &str) -> ArtifactStep {
+        let purl = &self.purl;
+        warn!(
+            path = %self.request.path,
+            status = status.as_u16(),
+            claimed_purl = %purl,
+            client = %self.request.client,
+            "not served: {why}"
+        );
+        ArtifactStep::Answer(
+            (
+                status,
+                format!("waharoa: {purl} cannot be assessed: {why}\n"),
+            )
+                .into_response(),
+        )
+    }
 }
 
 /// The artifacts answered 503 while their analysis ran, by digest.
@@ -2124,29 +2189,61 @@ fn audit_pinned(
     );
 }
 
+/// Answer one request: the proxy's own endpoints, or the upstream's answer once an
+/// artifact is decided and a metadata document filtered.
 async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let started = Instant::now();
     let method = req.method().clone();
-    let path_and_query = req
+    let path = req
         .uri()
         .path_and_query()
         .map(|p| p.as_str())
         .unwrap_or("/")
         .to_string();
-
-    // The client's own user-agent tells us which package manager is talking, which is
-    // what the status-code table in §5 will key off later.
-    let client_ua = req
+    let client = req
         .headers()
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("-")
         .to_string();
+    if let Some(response) = own_endpoint(&proxy, &path).await {
+        return response;
+    }
+    let (ecosystem, target) = crate::route::classify(&path);
+    #[cfg(debug_assertions)]
+    if let Some((deferral, since)) = &proxy.config.defer_test
+        && let Some((status, retry_after)) = deferral.applies_to(&target, since.elapsed())
+    {
+        return defer_response(status, retry_after, &method, &path, &client, started);
+    }
+    let negotiation = negotiate(&proxy, ecosystem, &target, &method, req.headers());
+    let exchange = Exchange {
+        proxy: &proxy,
+        method,
+        path,
+        client,
+        started,
+        ecosystem,
+        target,
+        negotiation,
+    };
+    exchange.observe(req.headers());
+    let artifact = match exchange.artifact_fetch().await {
+        ArtifactStep::Answer(response) => return response,
+        ArtifactStep::Fetch(fetch) => fetch,
+    };
+    let upstream = match exchange.send(req.headers(), &artifact).await {
+        Ok(upstream) => upstream,
+        Err(response) => return *response,
+    };
+    exchange.respond(upstream, artifact).await
+}
 
-    // Answered here rather than forwarded. `/-/` is the registry's own namespace and a
-    // package name can never live there, so this collides with nothing a client asks for.
-    match path_and_query.split('?').next() {
-        Some(HEALTH_PATH) => return uncached_json(StatusCode::OK, proxy.health()),
+/// `/-/waharoa/health` and `/-/waharoa/ready`, answered by the proxy. `None` for any other
+/// `path`.
+async fn own_endpoint(proxy: &Proxy, path: &str) -> Option<Response> {
+    match path.split('?').next() {
+        Some(HEALTH_PATH) => Some(uncached_json(StatusCode::OK, proxy.health())),
         Some(READY_PATH) => {
             let readiness = proxy.readiness().await;
             let status = if readiness.ready {
@@ -2154,229 +2251,286 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
             } else {
                 StatusCode::SERVICE_UNAVAILABLE
             };
-            return uncached_json(status, readiness);
+            Some(uncached_json(status, readiness))
         }
-        _ => {}
+        _ => None,
     }
+}
 
-    let (ecosystem, target) = crate::route::classify(&path_and_query);
+/// One request forwarded upstream, and what [`handle`] knows about it.
+struct Exchange<'a> {
+    proxy: &'a Proxy,
+    method: Method,
+    /// The path and query the client asked for.
+    path: String,
+    /// The client's user agent, `-` when it sent none.
+    client: String,
+    started: Instant,
+    ecosystem: Ecosystem,
+    target: RequestTarget,
+    negotiation: Negotiation,
+}
 
-    #[cfg(debug_assertions)]
-    if let Some((deferral, since)) = &proxy.config.defer_test
-        && let Some((status, retry_after)) = deferral.applies_to(&target, since.elapsed())
-    {
-        return defer_response(
-            status,
-            retry_after,
-            &method,
-            &path_and_query,
-            &client_ua,
-            started,
+/// The upstream's answer, before its body is read.
+struct Upstream {
+    status: reqwest::StatusCode,
+    /// `status` as the client is sent it.
+    forward_status: StatusCode,
+    headers: HeaderMap,
+    content_encoding: Option<String>,
+    /// The metadata document the body is, when the proxy reads it.
+    document: Option<DocumentKind>,
+    length: Option<u64>,
+    body: ByteStream,
+}
+
+impl Exchange<'_> {
+    /// Report what the proxy will not inspect, and count the request for the traffic
+    /// report.
+    fn observe(&self, headers: &HeaderMap) {
+        report_uninspected(
+            self.proxy,
+            &self.target,
+            &self.method,
+            &self.negotiation,
+            headers,
+            &self.path,
         );
+        if self.method == Method::GET && !resolver_probe(self.ecosystem, &self.target) {
+            self.proxy
+                .traffic
+                .lock()
+                .expect("traffic lock")
+                .count(&self.client, &self.target);
+        }
     }
 
-    let negotiation = negotiate(&proxy, ecosystem, &target, &method, req.headers());
-    report_uninspected(
-        &proxy,
-        &target,
-        &method,
-        &negotiation,
-        req.headers(),
-        &path_and_query,
-    );
-    if method == Method::GET && !resolver_probe(ecosystem, &target) {
-        proxy
-            .traffic
-            .lock()
-            .expect("traffic lock")
-            .count(&client_ua, &target);
-    }
-
-    // The digest has to be known before the artifact is fetched, not after: that is what
-    // decides whether this exact artifact has been analysed (plan §5).
-    let artifact = match &target {
-        RequestTarget::Artifact {
+    /// [`decide_artifact`] for an artifact GET. Any other request is fetched with no
+    /// digest.
+    async fn artifact_fetch(&self) -> ArtifactStep {
+        let RequestTarget::Artifact {
             key,
             claimed_version,
             filename,
-        } if method == Method::GET => {
-            let request = ArtifactRequest {
-                ecosystem,
-                method: &method,
-                key,
-                claimed_version,
-                filename,
-                path: &path_and_query,
-                client: &client_ua,
-            };
-            match decide_artifact(&proxy, request).await {
-                ArtifactStep::Answer(response) => return response,
-                ArtifactStep::Fetch(fetch) => fetch,
-            }
+        } = &self.target
+        else {
+            return ArtifactStep::Fetch(ArtifactFetch::default());
+        };
+        if self.method != Method::GET {
+            return ArtifactStep::Fetch(ArtifactFetch::default());
         }
-        _ => ArtifactFetch::default(),
-    };
-
-    let url = upstream_url(
-        &proxy,
-        ecosystem,
-        &path_and_query,
-        artifact.origin.as_deref(),
-    );
-    let outbound = proxy
-        .config
-        .client
-        .request(method.clone(), &url)
-        .headers(upstream_headers(
-            req.headers(),
-            &negotiation,
-            &path_and_query,
-        ));
-
-    let upstream_response = match outbound.send().await {
-        Ok(r) => r,
-        Err(e) => {
-            // §5: upstream unreachable or malformed is 502. Never a 4xx, which from a
-            // registry proxy reads as "policy denied you".
-            error!(%method, path = %path_and_query, error = %e, "upstream request failed");
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("waharoa: upstream request failed: {e}\n"),
-            )
-                .into_response();
-        }
-    };
-
-    let status = upstream_response.status();
-    let upstream_len = upstream_response.content_length();
-
-    let mut headers = upstream_response_headers(upstream_response.headers());
-    let content_encoding = headers
-        .get(header::CONTENT_ENCODING)
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_owned);
-    let content_type = headers
-        .get(header::CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok());
-    let document = crate::ecosystem::of(ecosystem).document(content_type);
-
-    if status == reqwest::StatusCode::NOT_MODIFIED {
-        revalidated(&proxy, &target, &negotiation, &mut headers, &path_and_query).await;
+        let request = ArtifactRequest {
+            ecosystem: self.ecosystem,
+            method: &self.method,
+            key,
+            claimed_version,
+            filename,
+            path: &self.path,
+            client: &self.client,
+        };
+        decide_artifact(self.proxy, request).await
     }
 
-    let forward_status = StatusCode::from_u16(status.as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+    /// Send the request upstream with the client's headers, less those that stop here.
+    /// Errors with a 502 when no answer arrives.
+    async fn send(
+        &self,
+        headers: &HeaderMap,
+        artifact: &ArtifactFetch,
+    ) -> Result<Upstream, Box<Response>> {
+        let url = upstream_url(
+            self.proxy,
+            self.ecosystem,
+            &self.path,
+            artifact.origin.as_deref(),
+        );
+        let response = self
+            .proxy
+            .config
+            .client
+            .request(self.method.clone(), &url)
+            .headers(upstream_headers(headers, &self.negotiation, &self.path))
+            .send()
+            .await
+            .map_err(|e| {
+                error!(method = %self.method, path = %self.path, error = %e, "upstream request failed");
+                Box::new(
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        format!("waharoa: upstream request failed: {e}\n"),
+                    )
+                        .into_response(),
+                )
+            })?;
+        let status = response.status();
+        let headers = upstream_response_headers(response.headers());
+        let content_encoding = headers
+            .get(header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned);
+        let content_type = headers
+            .get(header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok());
+        let document = crate::ecosystem::of(self.ecosystem).document(content_type);
+        Ok(Upstream {
+            status,
+            forward_status: StatusCode::from_u16(status.as_u16())
+                .unwrap_or(StatusCode::BAD_GATEWAY),
+            headers,
+            content_encoding,
+            document,
+            length: response.content_length(),
+            body: Box::pin(response.bytes_stream()),
+        })
+    }
 
-    let resolver_probe = resolver_probe(ecosystem, &target);
-    let log_proxied = |bytes: u64| {
-        if resolver_probe {
-            debug!(
-                %method,
-                path = %path_and_query,
-                status = status.as_u16(),
-                bytes,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                client = %client_ua,
-                "proxied"
-            );
-        } else {
-            info!(
-                %method,
-                path = %path_and_query,
-                status = status.as_u16(),
-                bytes,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                client = %client_ua,
-                "proxied"
-            );
+    /// The upstream's answer as the client is sent it: a metadata document filtered, an
+    /// artifact verified, anything else as it came.
+    async fn respond(&self, mut upstream: Upstream, artifact: ArtifactFetch) -> Response {
+        if upstream.status == reqwest::StatusCode::NOT_MODIFIED {
+            revalidated(
+                self.proxy,
+                &self.target,
+                &self.negotiation,
+                &mut upstream.headers,
+                &self.path,
+            )
+            .await;
         }
-    };
+        let read = self.negotiation.read_metadata && upstream.status.is_success();
+        match upstream.document.filter(|_| read) {
+            Some(document) => self.forward_document(document, upstream).await,
+            None => self.forward_artifact(upstream, artifact),
+        }
+    }
 
-    let body_stream: ByteStream = Box::pin(upstream_response.bytes_stream());
-
-    let Some(document) = document.filter(|_| negotiation.read_metadata && status.is_success())
-    else {
-        log_proxied(upstream_len.unwrap_or(0));
+    /// Forward a body the proxy does not read, verifying a 200 against `artifact`'s digest
+    /// when it has one.
+    fn forward_artifact(&self, upstream: Upstream, artifact: ArtifactFetch) -> Response {
+        let Upstream {
+            status,
+            forward_status,
+            headers,
+            length,
+            body,
+            ..
+        } = upstream;
+        self.log_proxied(status, length.unwrap_or(0));
         let Some(sri) = artifact.digest else {
-            return (forward_status, headers, Body::from_stream(body_stream)).into_response();
+            return (forward_status, headers, Body::from_stream(body)).into_response();
         };
-        // Only a 200 carries the artifact. A 404's body is an error page, and a 206's is a
-        // part; hashing either reported a mismatch and cut the response off, so a missing
-        // tarball reached the client as a broken connection rather than a 404.
         if status != reqwest::StatusCode::OK {
             if status == reqwest::StatusCode::NOT_MODIFIED {
-                proxy.revalidated.fetch_add(1, Ordering::Relaxed);
+                self.proxy.revalidated.fetch_add(1, Ordering::Relaxed);
                 info!(
-                    path = %path_and_query,
+                    path = %self.path,
                     purl = %artifact.purl,
-                    client = %client_ua,
+                    client = %self.client,
                     "artifact revalidated with a 304: the client installs its cached bytes, \
                      which this proxy did not hash on this request"
                 );
             }
-            return (forward_status, headers, Body::from_stream(body_stream)).into_response();
+            return (forward_status, headers, Body::from_stream(body)).into_response();
         }
         let verified = VerifyingStream::new(
-            body_stream,
+            body,
             &sri,
-            path_and_query.clone(),
+            self.path.clone(),
             artifact.purl,
-            proxy.verified.clone(),
+            self.proxy.verified.clone(),
         );
-        return (forward_status, headers, Body::from_stream(verified)).into_response();
-    };
+        (forward_status, headers, Body::from_stream(verified)).into_response()
+    }
 
-    let body = match buffer_to_limit(body_stream, proxy.config.max_metadata_bytes).await {
-        Buffered::Complete(body) => body,
-        Buffered::Oversized { prefix, rest } => {
-            proxy.uninspected.fetch_add(1, Ordering::Relaxed);
-            warn!(
-                path = %path_and_query,
-                limit = proxy.config.max_metadata_bytes,
-                "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
+    /// Read a metadata document, filter it by policy and rewrite it. One over
+    /// `max_metadata_bytes` is forwarded as it came.
+    async fn forward_document(&self, document: DocumentKind, upstream: Upstream) -> Response {
+        let Upstream {
+            status,
+            forward_status,
+            mut headers,
+            content_encoding,
+            length,
+            body,
+            ..
+        } = upstream;
+        let limit = self.proxy.config.max_metadata_bytes;
+        let body = match buffer_to_limit(body, limit).await {
+            Buffered::Complete(body) => body,
+            Buffered::Oversized { prefix, rest } => {
+                self.proxy.uninspected.fetch_add(1, Ordering::Relaxed);
+                warn!(
+                    path = %self.path,
+                    limit,
+                    "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
+                );
+                self.log_proxied(status, length.unwrap_or(0));
+                let spliced = stream::iter(std::iter::once(Ok(prefix))).chain(rest);
+                return (forward_status, headers, Body::from_stream(spliced)).into_response();
+            }
+            Buffered::Failed(e) => {
+                error!(method = %self.method, path = %self.path, error = %e, "upstream body failed mid-stream");
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    format!("waharoa: upstream body failed: {e}\n"),
+                )
+                    .into_response();
+            }
+        };
+        let _slot = metadata_slot(self.proxy, &self.path).await;
+        let forwarded = match filtered_document(
+            self.proxy,
+            document,
+            &body,
+            content_encoding.as_deref(),
+            &self.negotiation,
+            &self.path,
+        )
+        .await
+        {
+            DocumentStep::Answer(response) => return response,
+            DocumentStep::Forward { body, refused } => {
+                mark_filtered(&mut headers, &refused);
+                body
+            }
+        };
+        finish(
+            forwarded,
+            body,
+            headers,
+            forward_status,
+            self.negotiation.encoding,
+            self.negotiation.rewrite_base.as_deref(),
+            &self.path,
+            |bytes| self.log_proxied(status, bytes),
+        )
+    }
+
+    /// Log the answer sent, at debug for a resolver's probe and at info otherwise.
+    fn log_proxied(&self, status: reqwest::StatusCode, bytes: u64) {
+        let elapsed_ms = self.started.elapsed().as_millis() as u64;
+        if resolver_probe(self.ecosystem, &self.target) {
+            debug!(
+                method = %self.method,
+                path = %self.path,
+                status = status.as_u16(),
+                bytes,
+                elapsed_ms,
+                client = %self.client,
+                "proxied"
             );
-            log_proxied(upstream_len.unwrap_or(0));
-            let spliced = stream::iter(std::iter::once(Ok(prefix))).chain(rest);
-            return (forward_status, headers, Body::from_stream(spliced)).into_response();
+        } else {
+            info!(
+                method = %self.method,
+                path = %self.path,
+                status = status.as_u16(),
+                bytes,
+                elapsed_ms,
+                client = %self.client,
+                "proxied"
+            );
         }
-        Buffered::Failed(e) => {
-            error!(%method, path = %path_and_query, error = %e, "upstream body failed mid-stream");
-            return (
-                StatusCode::BAD_GATEWAY,
-                format!("waharoa: upstream body failed: {e}\n"),
-            )
-                .into_response();
-        }
-    };
-
-    let _slot = metadata_slot(&proxy, &path_and_query).await;
-
-    let forwarded = match filtered_document(
-        &proxy,
-        document,
-        &body,
-        content_encoding.as_deref(),
-        &negotiation,
-        &path_and_query,
-    )
-    .await
-    {
-        DocumentStep::Answer(response) => return response,
-        DocumentStep::Forward { body, refused } => {
-            mark_filtered(&mut headers, &refused);
-            body
-        }
-    };
-
-    finish(
-        forwarded,
-        body,
-        headers,
-        forward_status,
-        negotiation.encoding,
-        negotiation.rewrite_base.as_deref(),
-        &path_and_query,
-        log_proxied,
-    )
+    }
 }
 
 /// Say what the policy took out of this document, on the response that carries it.
@@ -5712,6 +5866,114 @@ mod tests {
                 body.len()
             );
         }
+    }
+
+    /// Every answer forwarded from upstream is logged once as `proxied`, with its status
+    /// and the client.
+    #[tokio::test]
+    async fn a_forwarded_answer_is_logged_as_proxied() {
+        let (upstream, _) = upstream_serving(
+            StatusCode::NOT_FOUND,
+            "application/json",
+            None,
+            b"{}".to_vec(),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, upstream)
+                .router(),
+        )
+        .await;
+        let (guard, log) = capture(tracing::Level::INFO);
+
+        let response = reqwest::Client::new()
+            .get(format!("{base}/-/v1/search?text=x"))
+            .header(header::USER_AGENT, "npm/10.0.0")
+            .send()
+            .await
+            .unwrap();
+        drop(guard);
+
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let log = text(&log);
+        let proxied: Vec<&str> = log.lines().filter(|l| l.contains("proxied")).collect();
+        assert_eq!(proxied.len(), 1, "{log}");
+        assert!(proxied[0].contains("status=404"), "{}", proxied[0]);
+        assert!(proxied[0].contains("client=npm/10.0.0"), "{}", proxied[0]);
+    }
+
+    /// A resolver's probe, PyPI's root index here, is logged as `proxied` at debug, not
+    /// info.
+    #[tokio::test]
+    async fn a_resolver_probe_is_logged_at_debug() {
+        let (upstream, _) =
+            upstream_serving(StatusCode::OK, "text/html", None, b"<html></html>".to_vec()).await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::PyPI, upstream)
+                .router(),
+        )
+        .await;
+        let proxied = |level| {
+            let base = base.clone();
+            async move {
+                let (guard, log) = capture(level);
+                reqwest::get(format!("{base}/simple/")).await.unwrap();
+                drop(guard);
+                text(&log).lines().filter(|l| l.contains("proxied")).count()
+            }
+        };
+
+        assert_eq!(proxied(tracing::Level::INFO).await, 0);
+        assert_eq!(proxied(tracing::Level::DEBUG).await, 1);
+    }
+
+    /// A metadata body that ends before its declared length is a 502, not a document
+    /// forwarded short.
+    #[tokio::test]
+    async fn a_metadata_body_that_fails_mid_stream_is_a_502() {
+        use crate::util::test_support::{Answer, scripted};
+        let addr = scripted(vec![Answer::Body {
+            bytes: b"{\"name\":".to_vec(),
+            declared: Some(100),
+        }])
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, format!("http://{addr}"))
+                .router(),
+        )
+        .await;
+
+        let response = reqwest::get(format!("{base}/widget")).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("upstream body failed"), "{body}");
+    }
+
+    /// A file the record does not name, for a version it does, is decided on the version's
+    /// first file, and says so.
+    #[tokio::test]
+    async fn a_file_the_record_does_not_name_is_decided_on_the_first_file() {
+        let proxy = offline(None, None);
+        let index = format!(
+            r#"{{"name":"x","files":[{{"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/x-1.0.tar.gz","hashes":{{"sha256":"{}"}}}}]}}"#,
+            "a".repeat(64)
+        );
+        resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, index.as_bytes()).await;
+        let (guard, log) = capture(tracing::Level::WARN);
+
+        let step = pinned(&proxy, "/packages/x-1.0.zip").await;
+        drop(guard);
+
+        assert!(fetched(&step));
+        assert!(
+            text(&log).contains("the record names no file by this name"),
+            "{}",
+            text(&log)
+        );
     }
 
     /// An upstream that sends headers and then stops ends the request after the read
