@@ -8,6 +8,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * docs/project_plan.md - Deeper project plan
 * docs/request-flow.md - How the proxy answers a request, and each status code
 * docs/break-glass.md - Installing when the proxy is down, and releasing a refused package
+* docs/threat-model.md - What waharoa defends against, what it trusts, and its bypasses
 
 ## Standards
 

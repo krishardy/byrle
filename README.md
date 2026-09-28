@@ -221,6 +221,8 @@ tooling, and adapter contributions are the scarce resource.
   and when it returns each status code.
 * [docs/break-glass.md](docs/break-glass.md) says how to install when the proxy is down,
   and how to release a package it refuses without a restart.
+* [docs/threat-model.md](docs/threat-model.md) says what waharoa defends against, what it
+  trusts, and the known ways around it.
 * [docs/engineering_decisions/](docs/engineering_decisions/) holds one file per
   decision: what was chosen, what was rejected, and what it costs.
 * [TODO.md](TODO.md) is the staged, sequential task list with exit criteria.

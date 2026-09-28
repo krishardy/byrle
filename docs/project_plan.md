@@ -720,7 +720,8 @@ requester, timestamp. Developers and security read the same log.
 ## 7. Trust and threat model
 
 A tool that intercepts every dependency install is itself a supply-chain risk and a
-single point of failure.
+single point of failure. The threat model as built, with each control and bypass, is
+[threat-model](threat-model.md).
 
 - Fully self-hostable, no mandatory outbound calls to us
 - Local OSV mirror so the dependency graph never leaks
