@@ -665,6 +665,8 @@ is verified; a mismatch is answered 502.
 | 502 | The upstream is unreachable, malformed, gives no metadata for the package, or serves bytes its metadata does not describe |
 | 503 | The proxy is not ready: the intel store cannot answer, or this artifact is under analysis. `x-waharoa-not-ready` names which |
 
+[request-flow](request-flow.md) charts where each of these is returned.
+
 No 4xx reads as a block for any not-ready state. A 403 from a registry proxy means
 "policy denied you", and anything else wearing that code is a trust problem. 429 is not
 used: of seven clients measured, two stop on the first one.
