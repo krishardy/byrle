@@ -43,7 +43,7 @@ pub fn read_index(
     let project = match read {
         Ok(project) => project,
         Err(e) => {
-            warn!(url.path = %path, error.message = %e, "UNINSPECTED: simple index did not parse");
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: simple index did not parse");
             return None;
         }
     };
@@ -67,7 +67,7 @@ pub fn read_index(
                 (store.len(), store.records())
             };
             info!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 waharoa.package.files = project.files.len(),
                 waharoa.package.versions = versions,
                 waharoa.package.artifacts = artifacts,
@@ -87,7 +87,7 @@ pub fn read_index(
             Some(Box::new(metadata))
         }
         Err(e) => {
-            warn!(url.path = %path, error.message = %e, "UNINSPECTED: simple index did not normalize");
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: simple index did not normalize");
             None
         }
     };

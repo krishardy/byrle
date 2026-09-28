@@ -67,7 +67,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
         match remove_versions(decoded, format, project, refused_by_policy) {
             Ok(body) => {
                 warn!(
-                    url.path = %path,
+                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                     waharoa.package.removed_files = project.files.len() - kept.len(),
                     waharoa.package.kept_files = kept.len(),
                     waharoa.package.removed_by_policy = refused_by_policy.len(),
@@ -77,7 +77,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
                 Some(body)
             }
             Err(e) => {
-                warn!(url.path = %path, error.message = %e, "UNINSPECTED: simple index could not be filtered");
+                warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: simple index could not be filtered");
                 return None;
             }
         }
@@ -86,7 +86,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
 
     let Some(base) = base else {
         warn!(
-            url.path = %path,
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             waharoa.package.files = kept.len(),
             "UNINSPECTED: the simple index is forwarded as written, so its files are \
              fetched from the index's own host rather than through the proxy"
@@ -97,7 +97,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
     match rewrite_artifact_origins(body, kept, reachable, base) {
         Ok(out) => {
             info!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 waharoa.package.files = files,
                 waharoa.package.rewritten_files = out.rewritten,
                 waharoa.package.left_alone_files = out.left_alone,
@@ -110,7 +110,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
             }
         }
         Err(e) => {
-            warn!(url.path = %path, error.message = %e, "UNINSPECTED: simple index could not be rewritten");
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: simple index could not be rewritten");
             filtered
         }
     }

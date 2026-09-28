@@ -38,7 +38,8 @@ Where a semantic convention fits:
 
 | Before | After | Uses |
 |---|---|---|
-| `path` | `url.path` | 65 |
+| `path`, a request target | `url.path`, and `url.query` when there is a query | 60 |
+| `path`, a spool file | `file.path` | 2 |
 | `error` | `error.message` | 28 |
 | `url` | `url.full` | 15 |
 | `client`, the user agent | `user_agent.original` | 13 |
@@ -48,9 +49,9 @@ Where a semantic convention fits:
 | `accept_encoding`, `etag`, `retry_after` | `http.request.header.accept-encoding`, `http.response.header.etag`, `http.response.header.retry-after` | 3 |
 | `listen` | `server.address` and `server.port` | 1 |
 
-`url.path` carries the request's query too, as the proxy logged it. OpenTelemetry puts the
-query in `url.query`; splitting it would change 65 log calls for a field that is almost
-always empty on a registry request.
+A request target is split by `http::url_path` and `http::url_query`. `url.query` is an
+`Option`, and tracing records nothing for `None`, so a line for a request with no query has
+no `url.query` at all.
 
 Every other field is under `waharoa.`, grouped by what it describes: `waharoa.package.*`,
 `waharoa.artifact.*`, `waharoa.analysis.*`, `waharoa.attestation.*`, `waharoa.policy.*`,

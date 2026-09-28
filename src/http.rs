@@ -7,6 +7,20 @@
 use std::io::{Read, Write};
 use std::time::Duration;
 
+/// A request target's path, without its query: `url.path` in a log line.
+pub fn url_path(target: &str) -> &str {
+    target.split_once('?').map_or(target, |(path, _)| path)
+}
+
+/// A request target's query, without the `?`: `url.query` in a log line. `None` when it
+/// has none, so the field is left out.
+pub fn url_query(target: &str) -> Option<&str> {
+    target
+        .split_once('?')
+        .map(|(_, query)| query)
+        .filter(|query| !query.is_empty())
+}
+
 /// Past this, a host is not answering at all.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -355,6 +369,15 @@ fn base_tag(base: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_request_target_splits_into_path_and_query() {
+        assert_eq!(url_path("/-/v1/search?text=x"), "/-/v1/search");
+        assert_eq!(url_query("/-/v1/search?text=x"), Some("text=x"));
+        assert_eq!(url_path("/lodash"), "/lodash");
+        assert_eq!(url_query("/lodash"), None);
+        assert_eq!(url_query("/lodash?"), None);
+    }
+
     /// A proxy URL's user and password never reach the log; its host does.
     #[test]
     fn a_forward_proxy_is_described_without_its_credentials() {

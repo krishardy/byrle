@@ -150,7 +150,7 @@ pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
     // reason it was added.
     if !allowed_direct.is_empty() {
         warn!(
-            url.path = %path,
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             waharoa.package.versions = allowed_direct.values().sum::<usize>(),
             waharoa.package.origins = ?allowed_direct.keys().collect::<Vec<_>>(),
             "UNINSPECTED: artifacts fetched directly by the client, allowed by configuration"
@@ -175,7 +175,7 @@ pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
         ) {
             Ok(filtered) => {
                 warn!(
-                    url.path = %path,
+                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                     waharoa.package.removed = filtered.removed.len(),
                     waharoa.package.removed_by_policy = refused_by_policy.len(),
                     waharoa.package.kept = filtered.rewritten,
@@ -190,7 +190,7 @@ pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
                 Some(filtered.body)
             }
             Err(e) => {
-                warn!(url.path = %path, error.message = %e, "UNINSPECTED: packument could not be filtered");
+                warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: packument could not be filtered");
                 None
             }
         };
@@ -204,7 +204,7 @@ pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
         // off-origin, and it is the shape someone would construct.
         if versions == packument.records.len() {
             warn!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 waharoa.package.versions = versions,
                 waharoa.package.origins = ?origins,
                 "UNINSPECTED: every artifact in this packument is on an origin the proxy \
@@ -212,7 +212,7 @@ pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
             );
         } else {
             warn!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 waharoa.package.versions = versions,
                 waharoa.package.origins = ?origins,
                 "UNINSPECTED: some artifacts left on an origin the proxy does not front"
@@ -230,7 +230,7 @@ pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
     match rewrite_artifact_origins(decoded, artifacts, policy.reachable(), base) {
         Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
         Err(e) => {
-            warn!(url.path = %path, error.message = %e, "UNINSPECTED: packument could not be rewritten");
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: packument could not be rewritten");
             None
         }
     }
