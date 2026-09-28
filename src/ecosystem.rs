@@ -76,6 +76,17 @@ impl Clients {
         }
     }
 
+    /// The record for `version` of `key`, from its registry's metadata document.
+    /// Errors when the document cannot be fetched or read.
+    /// Returns `None` when the document does not list the version.
+    pub async fn record(
+        &self,
+        key: &PackageKey,
+        version: &str,
+    ) -> Result<Option<crate::record::PackageRecord>, String> {
+        Ok(fetched(self.metadata(key).await)?.version(version).cloned())
+    }
+
     /// Publish times fetched separately from the records. `Ok(None)` for an ecosystem
     /// whose records carry `published_at`, which asks nothing.
     pub async fn publish_times(&self, key: &PackageKey) -> Result<Option<PublishTimes>, String> {

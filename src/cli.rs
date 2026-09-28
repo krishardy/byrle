@@ -41,6 +41,10 @@ pub enum Command {
     /// Work with policy files
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Ask a running proxy for every artifact a lockfile locks, so each is analysed before
+    /// a client asks for it. The exit code is the OR of 1 for a failure and 2 for an
+    /// artifact still being analysed, and 4 on its own for an error
+    Warm(Warm),
     #[command(about = format!(
         "Load OSV, CISA KEV and Datadog intel into the Postgres at {}",
         crate::env::DATABASE_URL
@@ -63,6 +67,19 @@ pub struct Verify {
     /// A policy file a line may have been decided under, matched by digest
     #[arg(long, required = true)]
     pub policy: Vec<PathBuf>,
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct Warm {
+    /// A lockfile whose artifacts to ask for. Repeatable
+    #[arg(long, value_name = "PATH", required = true)]
+    pub lockfile: Vec<PathBuf>,
+    /// The proxy to ask [default: the public URL, or the listen address]
+    #[arg(long, value_name = "URL")]
+    pub proxy: Option<String>,
+    /// Stop asking for an artifact still being analysed after this long
+    #[arg(long, value_name = "SECONDS", default_value_t = crate::warm::DEFAULT_DEADLINE.as_secs())]
+    pub deadline: u64,
 }
 
 #[derive(Debug, PartialEq, Subcommand)]
@@ -518,6 +535,7 @@ mod tests {
             (&["intel", "history", "--help"], "intel-history.txt"),
             (&["policy", "check", "--help"], "policy-check.txt"),
             (&["policy", "diff", "--help"], "policy-diff.txt"),
+            (&["warm", "--help"], "warm.txt"),
         ] {
             let help = stops(args, ErrorKind::DisplayHelp);
             crate::golden::assert_matches("cli", name, &help.render().to_string());

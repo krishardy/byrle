@@ -15,6 +15,23 @@ use crate::ecosystem::TABLE;
 /// Ecosystem, name and version, as `audit::packages` gives them.
 pub type Locked = (String, String, String);
 
+/// One locked version: its purl, the package it names, and the version.
+pub type Reference = (String, crate::identity::PackageRef, String);
+
+/// `listed`, each version once, with its purl. A name that makes no purl is left out.
+pub fn references(listed: impl IntoIterator<Item = Locked>) -> Vec<Reference> {
+    let mut seen = std::collections::HashSet::new();
+    listed
+        .into_iter()
+        .filter(|package| seen.insert(package.clone()))
+        .filter_map(|(ecosystem, name, version)| {
+            let purl = format!("pkg:{ecosystem}/{name}@{version}");
+            let reference = purl.parse::<crate::identity::PackageRef>().ok()?;
+            Some((purl, reference, version))
+        })
+        .collect()
+}
+
 /// Every registry package version one lockfile's text locks, or why it cannot be read.
 pub type Reader = fn(&str) -> Result<BTreeSet<Locked>, String>;
 
