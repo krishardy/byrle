@@ -1,7 +1,7 @@
 # The proxy reports where it is being bypassed
 
 - **Status:** Implemented 2026-09-26. `proxy::report_direct_dependencies`,
-  `proxy::Traffic` and `Proxy::report_traffic`, the 304 branch of `handle`, and five
+  `proxy::Traffic` and `Proxy::report_traffic`, the 304 branch of `Exchange::forward_artifact`, and five
   counters in `/-/waharoa/health`.
 - **Related:** [packument-body-inspection](packument-body-inspection.md),
   [packument-tarball-url-rewriting](packument-tarball-url-rewriting.md),

@@ -130,7 +130,7 @@ does not load leaves the others loading.
 |---|---|---|
 | where does this request go upstream | `proxy::upstream_url` | picks `Proxy`'s per-ecosystem upstream field; each arm is one call to `<ecosystem>::upstream_url` |
 | what is fetched without a document | `ecosystem::Clients::metadata` | picks the ecosystem's client; each arm is one call to `Client::metadata`, which is `async` |
-| how is that document read | `proxy::handle`'s `match document` | the arms need different things: PyPI's calls `pypi::read_index` and returns, npm's calls `npm::read_packument` and goes on to publish times, intel and `npm::rewrite_packument` |
+| how is that document read | `proxy::filtered_document`'s `match document` | the arms need different things: PyPI's calls `pypi::read_index` and returns, npm's calls `npm::read_packument` and goes on to publish times, intel and `npm::rewrite_packument` |
 
 All three are `match` expressions, not tests with a fall-through, so a third ecosystem is a
 compile error at each. Two of them were not, and a third ecosystem would have been given

@@ -284,11 +284,11 @@ Items that I've added that are not stage-bound.
     | Function | Cognitive complexity | Lines |
     |---|---|---|
     | `startup::proxy` | 102 | 170 |
-    | `proxy::decide_artifact` | 82 | 252 |
+    | `proxy::decide_artifact`: done 2026-09-28, now 7 and 41, split into `Deciding` | 82 | 252 |
     | `analysis::run::Analyser::analyse` | 57 | |
     | `analysis::run::Analyser::attest` | 52 | |
     | `ecosystem::npm::rewrite::rewrite_packument` | 49 | |
-    | `proxy::handle` | 44 | 224 |
+    | `proxy::handle`: done 2026-09-28, now 7 and 47, split into `Exchange` | 44 | 224 |
     | `startup::report_policy` | 40 | |
     | `ecosystem::pypi::rewrite::rewrite_index` | 39 | |
     | `intel::postgres::PgIntel::replace` | 30 | 108 |
