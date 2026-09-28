@@ -13,20 +13,32 @@ client's own.
 A lockfile written through the proxy records the proxy's address, and some clients fetch
 from what the lockfile records rather than from the registry they are given.
 
-| Client | Command | Measured 2026-09-28 |
-|---|---|---|
-| npm, with a lockfile | `npm ci --registry=https://registry.npmjs.org/ --replace-registry-host=always` | npm 11.20.0: without `--replace-registry-host=always` it fetched the lockfile's proxy URLs and failed `ECONNREFUSED`; with it, installed |
-| npm, without a lockfile | `npm install --registry=https://registry.npmjs.org/` | not measured |
-| pnpm | `pnpm install --registry=https://registry.npmjs.org/` | not measured |
-| yarn 1 | `yarn install --registry https://registry.npmjs.org/` | not measured |
-| yarn 4 | `YARN_NPM_REGISTRY_SERVER=https://registry.npmjs.org yarn install` | not measured |
-| bun | `bun install --registry https://registry.npmjs.org/` | not measured |
-| pip | `pip install --index-url https://pypi.org/simple -r requirements.txt` | not measured |
-| uv | `uv sync --default-index https://pypi.org/simple` | uv 0.12.19: installed, and rewrote `uv.lock` to name `https://pypi.org/simple`. `uv sync --frozen` with the same flag fetched the lockfile's proxy URLs and failed |
+Measured 2026-09-28 with `ms@2.1.3` or `six==1.17.0` locked through the proxy, the proxy
+then stopped, and each command run with an empty cache:
 
-Do not commit a lockfile the bypass changed. It records the public registry, and every
-later install from it goes around the proxy while the proxy is up. `git checkout` the
-lockfile once the proxy is back.
+| Client | Lockfile records the proxy's URL | Command | Result |
+|---|---|---|---|
+| npm 11.20.0 | yes, `resolved` | `npm ci --registry=https://registry.npmjs.org/ --replace-registry-host=always` | installed. Without `--replace-registry-host=always` it fetched the proxy URL and failed `ECONNREFUSED` |
+| pnpm 10.34.5 | no | `pnpm install --frozen-lockfile --registry=https://registry.npmjs.org/` | installed |
+| yarn 1.22.22 | yes, `resolved` | rewrite the address in `yarn.lock` (below), then `yarn install --frozen-lockfile` | installed. `--registry` alone fetched the proxy URL and failed `ECONNREFUSED`, with or without `--frozen-lockfile` |
+| yarn 4.9.1 | no | `YARN_NPM_REGISTRY_SERVER=https://registry.npmjs.org yarn install --immutable` | installed |
+| bun 1.4.2 | yes, the tarball URL | rewrite the address in `bun.lock` (below), then `bun install --frozen-lockfile` | installed. `--registry` alone failed `ConnectionRefused downloading tarball`, with or without `--frozen-lockfile` |
+| pip 26.2.1 | no, in a `pip freeze` requirements file | `pip install --index-url https://pypi.org/simple -r requirements.txt` | installed |
+| uv 0.12.19 | yes, `source` and each file's `url` | `uv sync --default-index https://pypi.org/simple` | installed, and rewrote `uv.lock` to name `https://pypi.org/simple`. `uv sync --frozen` with the same flag fetched the proxy URLs and failed |
+
+Rewriting the lockfile, for yarn 1 and bun, with the proxy's address as the lockfile
+records it:
+
+```
+sed -i 's#https://waharoa.example.com/#https://registry.npmjs.org/#g' yarn.lock
+```
+
+The lockfile's integrity hash still checks the bytes: yarn 1's `#sha1` fragment and bun's
+`sha512` are unchanged by the rewrite.
+
+Do not commit a lockfile the bypass changed, by hand or by uv. It records the public
+registry, and every later install from it goes around the proxy while the proxy is up.
+`git checkout` the lockfile once the proxy is back.
 
 ## The proxy refuses something needed now
 
