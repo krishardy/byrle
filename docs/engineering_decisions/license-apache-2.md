@@ -1,6 +1,7 @@
 # License: Apache-2.0
 
-- **Status:** Decided
+- **Status:** Implemented 2026-09-28. `LICENSE`, `CONTRIBUTING.md`, `license` in
+  `Cargo.toml`.
 - **Plan reference:** decision #5
 
 ## Decision
@@ -16,4 +17,6 @@ scarce resource.
 
 ## Consequences
 
-No `LICENSE` file exists in the repository yet.
+`LICENSE` is the Apache License 2.0 text unchanged, its appendix included. `CONTRIBUTING.md`
+asks for `Signed-off-by` on every commit and carries the Developer's Certificate of Origin
+1.1. No check enforces the sign-off yet. The trademark note is not written.
