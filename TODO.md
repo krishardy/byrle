@@ -274,6 +274,34 @@ Items that I've added that are not stage-bound.
     function to refactor until the behaviour is obvious from the code. Measured
     2026-09-28 over `src/`, 50,873 lines: 866 `//` lines, 5,148 `///` lines and 1,189 `//!`
     lines. The reasoning those comments carry belongs in `docs/engineering_decisions/`.
+24. [ ] Set a maximum code complexity, enforce it in `make lint`, and refactor every function
+    over it. Raised 2026-09-28. clippy has two lints for it:
+    `clippy::cognitive_complexity`, threshold `cognitive-complexity-threshold` in
+    `clippy.toml`, default 25; and `clippy::too_many_lines`, `too-many-lines-threshold`,
+    default 100. The thresholds are to be chosen. Over the defaults on 2026-09-28:
+
+    | Function | Cognitive complexity | Lines |
+    |---|---|---|
+    | `startup::proxy` | 102 | 170 |
+    | `proxy::decide_artifact` | 82 | 252 |
+    | `analysis::run::Analyser::analyse` | 57 | |
+    | `analysis::run::Analyser::attest` | 52 | |
+    | `ecosystem::npm::rewrite::rewrite_packument` | 49 | |
+    | `proxy::handle` | 44 | 224 |
+    | `startup::report_policy` | 40 | |
+    | `ecosystem::pypi::rewrite::rewrite_index` | 39 | |
+    | `intel::postgres::PgIntel::replace` | 30 | 108 |
+    | `proxy::dated_by_host` | 26 | |
+    | `policy::diff::run` | | 199 |
+    | `explain::run` | | 125 |
+    | `intel::refresh::run::run` | | 121 |
+    | `doctor::run` | | 115 |
+    | `policy::vers::vers` | | 112 |
+    | `policy::decide::run` | | 112 |
+
+    Measured with `cargo clippy --lib -- -A clippy::all -W clippy::cognitive_complexity -W
+    clippy::too_many_lines`. Pairs with item 23: a comment explaining non-obvious behaviour
+    is the same signal.
 
 ## Architecture Refactor
 
