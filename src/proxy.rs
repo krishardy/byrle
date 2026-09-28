@@ -492,9 +492,9 @@ impl Proxy {
         let quiet = self.traffic.lock().expect("traffic lock").close();
         for (client, documents) in &quiet {
             info!(
-                client = %client,
-                documents,
-                window_s = TRAFFIC_WINDOW.as_secs(),
+                user_agent.original = %client,
+                waharoa.traffic.documents = documents,
+                waharoa.traffic.window_s = TRAFFIC_WINDOW.as_secs(),
                 "client read metadata documents and fetched no artifact through this proxy: it \
                  installed nothing new, or takes artifacts from its own cache or another address"
             );
@@ -522,7 +522,7 @@ impl Proxy {
             Ok(None) => (IntelState::Empty, None),
             Err(e) => {
                 // Logged, not sent, as in `intel_for`.
-                error!(why = %e, "intel store cannot answer; not ready");
+                error!(waharoa.reason = %e, "intel store cannot answer; not ready");
                 (IntelState::Unavailable, None)
             }
         };
@@ -730,9 +730,9 @@ impl VerifyingStream {
                     .expect("verified artifacts lock")
                     .record(self.sri.clone());
                 info!(
-                    path = %self.path,
-                    purl = %self.purl,
-                    bytes = self.bytes,
+                    url.path = %self.path,
+                    waharoa.package.purl = %self.purl,
+                    waharoa.artifact.bytes = self.bytes,
                     "artifact digest verified"
                 );
                 Poll::Ready(self.held.take().map(Ok))
@@ -742,11 +742,11 @@ impl VerifyingStream {
             // never receives a complete body that failed the check.
             Err(mismatch) => {
                 error!(
-                    path = %self.path,
-                    purl = %self.purl,
-                    expected = %mismatch.expected,
-                    actual = %mismatch.actual,
-                    bytes = mismatch.bytes,
+                    url.path = %self.path,
+                    waharoa.package.purl = %self.purl,
+                    waharoa.artifact.digest_expected = %mismatch.expected,
+                    waharoa.artifact.digest_actual = %mismatch.actual,
+                    waharoa.artifact.bytes = mismatch.bytes,
                     "ARTIFACT DIGEST MISMATCH"
                 );
                 self.held = None;
@@ -911,17 +911,19 @@ async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
                 .expect("record store lock")
                 .insert(metadata);
             info!(
-                path = %path,
-                purl = %key,
-                versions,
-                elapsed_ms = started.elapsed().as_millis() as u64,
+                url.path = %path,
+                waharoa.package.purl = %key,
+                waharoa.package.versions = versions,
+                waharoa.duration_ms = started.elapsed().as_millis() as u64,
                 "fetched metadata on our own behalf, which the client never requested"
             );
         }
         Ok(Err(e)) => {
-            warn!(path = %path, purl = %key, error = %e, "metadata fetched but did not normalize")
+            warn!(url.path = %path, waharoa.package.purl = %key, error.message = %e, "metadata fetched but did not normalize")
         }
-        Err(e) => warn!(path = %path, purl = %key, error = %e, "could not fetch metadata"),
+        Err(e) => {
+            warn!(url.path = %path, waharoa.package.purl = %key, error.message = %e, "could not fetch metadata")
+        }
     }
 }
 
@@ -1048,10 +1050,10 @@ async fn revalidated(
     if let RequestTarget::Metadata(key) = target {
         let held = proxy.store.lock().expect("record store lock").holds(key);
         info!(
-            path = %path,
-            purl = %key,
-            etag = headers.get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("-"),
-            held,
+            url.path = %path,
+            waharoa.package.purl = %key,
+            "http.response.header.etag" = headers.get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("-"),
+            waharoa.store.held = held,
             "metadata not modified, nothing to normalize"
         );
         if !held {
@@ -1101,8 +1103,8 @@ async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphore
     let waited = queued.elapsed();
     if waited.as_millis() > 0 {
         debug!(
-            path = %path,
-            waited_ms = waited.as_millis() as u64,
+            url.path = %path,
+            waharoa.metadata.slot_wait_ms = waited.as_millis() as u64,
             "waited for a metadata slot"
         );
     }
@@ -1148,7 +1150,7 @@ async fn filtered_document(
         Ok(decoded) => decoded,
         Err(e) => {
             proxy.uninspected.fetch_add(1, Ordering::Relaxed);
-            warn!(path = %path, error = %e, "UNINSPECTED: metadata body could not be decoded");
+            warn!(url.path = %path, error.message = %e, "UNINSPECTED: metadata body could not be decoded");
             return DocumentStep::Forward {
                 body: None,
                 refused: Refused::default(),
@@ -1195,7 +1197,7 @@ async fn filtered_document(
                     == UncoveredMetadata::FilterWithoutIntel =>
             {
                 warn!(
-                    path = %path,
+                    url.path = %path,
                     "filtering without intel; the artifact request answers 503"
                 );
                 None
@@ -1346,15 +1348,15 @@ fn report_uninspected(
     proxy.uninspected.fetch_add(1, Ordering::Relaxed);
     match reason {
         Uninspected::Unreadable => warn!(
-            path = %path,
-            accept_encoding = headers
+            url.path = %path,
+            "http.request.header.accept-encoding" = headers
                 .get(header::ACCEPT_ENCODING)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("-"),
-            reason = Uninspected::Unreadable.reason(),
+            waharoa.reason = Uninspected::Unreadable.reason(),
             "UNINSPECTED"
         ),
-        reason => warn!(path = %path, reason = reason.reason(), "UNINSPECTED"),
+        reason => warn!(url.path = %path, waharoa.reason = reason.reason(), "UNINSPECTED"),
     }
 }
 
@@ -1404,7 +1406,7 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
             // whose artifact URLs were never pointed at it. Dropping the header makes the
             // registry send a body to rewrite afresh.
             _ => info!(
-                path = %path,
+                url.path = %path,
                 "dropped a conditional request for a body this proxy did not rewrite"
             ),
         }
@@ -1543,22 +1545,22 @@ impl<'a> Deciding<'a> {
         };
         let record = found.narrowed_to(filename).unwrap_or_else(|| {
             warn!(
-                path = %path,
-                claimed_purl = %self.purl,
-                filename = %filename,
+                url.path = %path,
+                waharoa.package.claimed_purl = %self.purl,
+                waharoa.artifact.filename = %filename,
                 "the record names no file by this name; deciding on the version's first file"
             );
             *found
         });
         info!(
-            path = %path,
-            claimed_purl = %self.purl,
-            integrity = record
+            url.path = %path,
+            waharoa.package.claimed_purl = %self.purl,
+            waharoa.artifact.integrity = record
                 .artifact()
                 .and_then(|a| a.integrity.as_deref())
                 .unwrap_or("-"),
-            has_install_scripts = record.has_install_scripts,
-            deprecated = record.deprecated.as_deref().unwrap_or("-"),
+            waharoa.package.has_install_scripts = record.has_install_scripts,
+            waharoa.package.deprecated = record.deprecated.as_deref().unwrap_or("-"),
             "artifact requested, digest known"
         );
         report_direct_dependencies(self.proxy, &record, path, client);
@@ -1598,27 +1600,27 @@ impl<'a> Deciding<'a> {
                     .expect("verified artifacts lock")
                     .lookup(&sri);
                 info!(
-                    path = %path,
-                    claimed_purl = %self.purl,
-                    digest = %sri,
-                    cache = seen.as_str(),
+                    url.path = %path,
+                    waharoa.package.claimed_purl = %self.purl,
+                    waharoa.artifact.digest = %sri,
+                    waharoa.artifact.cache = seen.as_str(),
                     "artifact cache consulted"
                 );
                 Some(sri)
             }
             Some(Err(e)) => {
                 warn!(
-                    path = %path,
-                    claimed_purl = %self.purl,
-                    error = %e,
+                    url.path = %path,
+                    waharoa.package.claimed_purl = %self.purl,
+                    error.message = %e,
                     "metadata integrity string is unusable; not verifying"
                 );
                 None
             }
             None => {
                 warn!(
-                    path = %path,
-                    claimed_purl = %self.purl,
+                    url.path = %path,
+                    waharoa.package.claimed_purl = %self.purl,
                     "metadata publishes no strong digest; not verifying"
                 );
                 None
@@ -1723,13 +1725,13 @@ impl<'a> Deciding<'a> {
     fn refused_by_policy(&self, refusal: &enforce::Refusal) -> ArtifactStep {
         let status = self.refusal_status();
         info!(
-            method = %self.request.method,
-            path = %self.request.path,
-            status = status.as_u16(),
-            claimed_purl = %self.purl,
-            action = refusal.action.as_str(),
-            reasons = ?refusal.reasons,
-            client = %self.request.client,
+            http.request.method = %self.request.method,
+            url.path = %self.request.path,
+            http.response.status_code = status.as_u16(),
+            waharoa.package.claimed_purl = %self.purl,
+            waharoa.policy.action = refusal.action.as_str(),
+            waharoa.policy.reasons = ?refusal.reasons,
+            user_agent.original = %self.request.client,
             "refused by policy"
         );
         ArtifactStep::Answer((status, refusal.message()).into_response())
@@ -1738,12 +1740,12 @@ impl<'a> Deciding<'a> {
     /// Log the refusal observe mode does not make.
     fn observed(&self, refusal: &enforce::Refusal) {
         warn!(
-            method = %self.request.method,
-            path = %self.request.path,
-            claimed_purl = %self.purl,
-            action = refusal.action.as_str(),
-            reasons = ?refusal.reasons,
-            client = %self.request.client,
+            http.request.method = %self.request.method,
+            url.path = %self.request.path,
+            waharoa.package.claimed_purl = %self.purl,
+            waharoa.policy.action = refusal.action.as_str(),
+            waharoa.policy.reasons = ?refusal.reasons,
+            user_agent.original = %self.request.client,
             "observe: the policy refuses this artifact; not refused"
         );
     }
@@ -1753,12 +1755,12 @@ impl<'a> Deciding<'a> {
     fn unservable(&self, origin: &str) -> ArtifactStep {
         let status = self.refusal_status();
         info!(
-            method = %self.request.method,
-            path = %self.request.path,
-            status = status.as_u16(),
-            claimed_purl = %self.purl,
-            origin = %origin,
-            client = %self.request.client,
+            http.request.method = %self.request.method,
+            url.path = %self.request.path,
+            http.response.status_code = status.as_u16(),
+            waharoa.package.claimed_purl = %self.purl,
+            waharoa.artifact.origin = %origin,
+            user_agent.original = %self.request.client,
             "refused: this artifact is published on an origin the proxy does not serve"
         );
         let purl = &self.purl;
@@ -1777,10 +1779,10 @@ impl<'a> Deciding<'a> {
     /// 502 for bytes that did not match their digest when the analysis fetched them.
     fn mismatched(&self, mismatch: &crate::integrity::Mismatch) -> ArtifactStep {
         warn!(
-            method = %self.request.method,
-            path = %self.request.path,
-            claimed_purl = %self.purl,
-            %mismatch,
+            http.request.method = %self.request.method,
+            url.path = %self.request.path,
+            waharoa.package.claimed_purl = %self.purl,
+            waharoa.artifact.digest_mismatch = %mismatch,
             "refused: the upstream serves bytes its metadata does not describe"
         );
         let purl = &self.purl;
@@ -1809,12 +1811,12 @@ impl<'a> Deciding<'a> {
             .expect("deferred lock")
             .defer(&digest);
         info!(
-            method = %self.request.method,
-            path = %self.request.path,
-            claimed_purl = %self.purl,
-            digest = %digest,
-            deferrals,
-            client = %self.request.client,
+            http.request.method = %self.request.method,
+            url.path = %self.request.path,
+            waharoa.package.claimed_purl = %self.purl,
+            waharoa.artifact.digest = %digest,
+            waharoa.deferral.count = deferrals,
+            user_agent.original = %self.request.client,
             "deferred: the artifact has not been analysed"
         );
         ArtifactStep::Answer(
@@ -1830,11 +1832,11 @@ impl<'a> Deciding<'a> {
     fn unassessable(&self, status: StatusCode, why: &str) -> ArtifactStep {
         let purl = &self.purl;
         warn!(
-            path = %self.request.path,
-            status = status.as_u16(),
-            claimed_purl = %purl,
-            client = %self.request.client,
-            why,
+            url.path = %self.request.path,
+            http.response.status_code = status.as_u16(),
+            waharoa.package.claimed_purl = %purl,
+            user_agent.original = %self.request.client,
+            waharoa.reason = why,
             "not served"
         );
         ArtifactStep::Answer(
@@ -1946,10 +1948,10 @@ fn report_direct_dependencies(proxy: &Proxy, record: &PackageRecord, path: &str,
         .map(|d| format!("{} {}", d.name, d.spec))
         .collect();
     warn!(
-        path = %path,
-        purl = %record.package,
-        dependencies = ?named,
-        client = %client,
+        url.path = %path,
+        waharoa.package.purl = %record.package,
+        waharoa.package.direct_dependencies = ?named,
+        user_agent.original = %client,
         "BYPASS: this version depends on packages by URL, git or path, which the client \
          fetches directly and this proxy never examines"
     );
@@ -1967,11 +1969,11 @@ fn returned(proxy: &Proxy, digest: &Sri, path: &str, client: &str) {
         return;
     };
     info!(
-        path = %path,
-        digest = %digest,
-        deferrals = deferral.count,
-        after_ms = deferral.first.elapsed().as_millis() as u64,
-        client = %client,
+        url.path = %path,
+        waharoa.artifact.digest = %digest,
+        waharoa.deferral.count = deferral.count,
+        waharoa.deferral.after_ms = deferral.first.elapsed().as_millis() as u64,
+        user_agent.original = %client,
         "returned after a deferral"
     );
 }
@@ -2201,14 +2203,14 @@ async fn attested(
 /// claim is a warning whatever the policy says: the metadata hid a script.
 fn report_claim(record: &PackageRecord, scripts: &Scripts, path: &str) {
     let Scripts::Declared(found) = scripts else {
-        warn!(path = %path, scripts = ?scripts, "the artifact could not be read; it counts as running install scripts");
+        warn!(url.path = %path, waharoa.artifact.scripts = ?scripts, "the artifact could not be read; it counts as running install scripts");
         return;
     };
     let claim = Claim::of(found, record.has_install_scripts, record.detail);
     if claim == Claim::Undeclared {
-        warn!(path = %path, scripts = ?found.names, claim = claim.as_str(), "the artifact runs install scripts its metadata does not declare");
+        warn!(url.path = %path, waharoa.artifact.scripts = ?found.names, waharoa.artifact.scripts_claimed = claim.as_str(), "the artifact runs install scripts its metadata does not declare");
     } else {
-        info!(path = %path, scripts = ?found.names, claim = claim.as_str(), "install scripts read from the artifact");
+        info!(url.path = %path, waharoa.artifact.scripts = ?found.names, waharoa.artifact.scripts_claimed = claim.as_str(), "install scripts read from the artifact");
     }
 }
 
@@ -2412,7 +2414,7 @@ impl Exchange<'_> {
             .send()
             .await
             .map_err(|e| {
-                error!(method = %self.method, path = %self.path, error = %e, "upstream request failed");
+                error!(http.request.method = %self.method, url.path = %self.path, error.message = %e, "upstream request failed");
                 Box::new(
                     (
                         StatusCode::BAD_GATEWAY,
@@ -2482,9 +2484,9 @@ impl Exchange<'_> {
             if status == reqwest::StatusCode::NOT_MODIFIED {
                 self.proxy.revalidated.fetch_add(1, Ordering::Relaxed);
                 info!(
-                    path = %self.path,
-                    purl = %artifact.purl,
-                    client = %self.client,
+                    url.path = %self.path,
+                    waharoa.package.purl = %artifact.purl,
+                    user_agent.original = %self.client,
                     "artifact revalidated with a 304: the client installs its cached bytes, \
                      which this proxy did not hash on this request"
                 );
@@ -2519,8 +2521,8 @@ impl Exchange<'_> {
             Buffered::Oversized { prefix, rest } => {
                 self.proxy.uninspected.fetch_add(1, Ordering::Relaxed);
                 warn!(
-                    path = %self.path,
-                    limit,
+                    url.path = %self.path,
+                    waharoa.metadata.limit = limit,
                     "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
                 );
                 self.log_proxied(status, length.unwrap_or(0));
@@ -2528,7 +2530,7 @@ impl Exchange<'_> {
                 return (forward_status, headers, Body::from_stream(spliced)).into_response();
             }
             Buffered::Failed(e) => {
-                error!(method = %self.method, path = %self.path, error = %e, "upstream body failed mid-stream");
+                error!(http.request.method = %self.method, url.path = %self.path, error.message = %e, "upstream body failed mid-stream");
                 return (
                     StatusCode::BAD_GATEWAY,
                     format!("waharoa: upstream body failed: {e}\n"),
@@ -2570,22 +2572,22 @@ impl Exchange<'_> {
         let elapsed_ms = self.started.elapsed().as_millis() as u64;
         if resolver_probe(self.ecosystem, &self.target) {
             debug!(
-                method = %self.method,
-                path = %self.path,
-                status = status.as_u16(),
-                bytes,
-                elapsed_ms,
-                client = %self.client,
+                http.request.method = %self.method,
+                url.path = %self.path,
+                http.response.status_code = status.as_u16(),
+                http.response.body.size = bytes,
+                waharoa.duration_ms = elapsed_ms,
+                user_agent.original = %self.client,
                 "proxied"
             );
         } else {
             info!(
-                method = %self.method,
-                path = %self.path,
-                status = status.as_u16(),
-                bytes,
-                elapsed_ms,
-                client = %self.client,
+                http.request.method = %self.method,
+                url.path = %self.path,
+                http.response.status_code = status.as_u16(),
+                http.response.body.size = bytes,
+                waharoa.duration_ms = elapsed_ms,
+                user_agent.original = %self.client,
                 "proxied"
             );
         }
@@ -2634,7 +2636,7 @@ fn finish(
                         encoded
                     }
                     Err(e) => {
-                        warn!(path = %path_and_query, error = %e, "could not re-compress; sending identity");
+                        warn!(url.path = %path_and_query, error.message = %e, "could not re-compress; sending identity");
                         headers.remove(header::CONTENT_ENCODING);
                         rewritten
                     }
@@ -2686,13 +2688,13 @@ fn defer_response(
         headers.insert(header::RETRY_AFTER, value);
     }
     info!(
-        %method,
-        path = %path_and_query,
-        status,
-        retry_after = retry_after.map(|s| s.to_string()).unwrap_or_else(|| "-".to_owned()),
-        client = %client_ua,
-        elapsed_ms = started.elapsed().as_millis() as u64,
-        variable = %crate::env::DEFER_TEST,
+        http.request.method = %method,
+        url.path = %path_and_query,
+        http.response.status_code = status,
+        "http.response.header.retry-after" = retry_after.map(|s| s.to_string()).unwrap_or_else(|| "-".to_owned()),
+        user_agent.original = %client_ua,
+        waharoa.duration_ms = started.elapsed().as_millis() as u64,
+        waharoa.config.variable = %crate::env::DEFER_TEST,
         "deferred by the defer test"
     );
     (
@@ -2728,14 +2730,14 @@ async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::Pub
         Ok(Some(times)) => times,
         Ok(None) => return None,
         Err(e) => {
-            warn!(purl = %key, error = %e, "no publish times for this package");
+            warn!(waharoa.package.purl = %key, error.message = %e, "no publish times for this package");
             return None;
         }
     };
     info!(
-        purl = %key,
-        versions = times.len(),
-        fetch_ms = started.elapsed().as_millis() as u64,
+        waharoa.package.purl = %key,
+        waharoa.package.versions = times.len(),
+        waharoa.metadata.fetch_ms = started.elapsed().as_millis() as u64,
         "publish times read from the full packument"
     );
     Some(times)
@@ -2768,9 +2770,9 @@ fn report_undated(proxy: &Proxy, read: &Read, path: &str) {
         return;
     }
     warn!(
-        path = %path,
-        undated,
-        versions = metadata.records.len(),
+        url.path = %path,
+        waharoa.package.undated_versions = undated,
+        waharoa.package.versions = metadata.records.len(),
         "cooldown_days cannot be answered while filtering this document; a pinned fetch of \
          one of these versions is decided on the file's own date"
     );
@@ -2809,11 +2811,11 @@ async fn dated_by_host(
     let response = match proxy.config.client.head(url).send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            warn!(path = %path, status = response.status().as_u16(), "no publish time: the file host refused a HEAD");
+            warn!(url.path = %path, http.response.status_code = response.status().as_u16(), "no publish time: the file host refused a HEAD");
             return None;
         }
         Err(e) => {
-            warn!(path = %path, error = %e, "no publish time: the file host could not be asked");
+            warn!(url.path = %path, error.message = %e, "no publish time: the file host could not be asked");
             return None;
         }
     };
@@ -2823,9 +2825,9 @@ async fn dated_by_host(
         .and_then(|value| value.to_str().ok())
         .and_then(crate::http::http_date)?;
     info!(
-        path = %path,
-        published = %last_modified,
-        fetch_ms = started.elapsed().as_millis() as u64,
+        url.path = %path,
+        waharoa.package.published = %last_modified,
+        waharoa.metadata.fetch_ms = started.elapsed().as_millis() as u64,
         "publish time read from the file's Last-Modified"
     );
     Some(
@@ -3003,7 +3005,7 @@ async fn intel_for(
                     return Ok(Some(found));
                 }
                 for gap in &gaps {
-                    error!(path = %path, snapshot = %snapshot.digest, %gap, "the intel snapshot has a gap for this ecosystem; answering 503");
+                    error!(url.path = %path, waharoa.intel.snapshot = %snapshot.digest, waharoa.intel.gap = %gap, "the intel snapshot has a gap for this ecosystem; answering 503");
                 }
                 return Err(NotReady::Uncovered(ecosystem));
             }
@@ -3015,8 +3017,8 @@ async fn intel_for(
     };
     // Logged, not sent: a database error can carry the database's address.
     error!(
-        path = %path,
-        why = %why,
+        url.path = %path,
+        waharoa.reason = %why,
         "intel store cannot answer; answering 503 rather than serving unchecked"
     );
     Err(NotReady::Unanswered)
@@ -3107,9 +3109,9 @@ fn policy_refused_versions(
     if mode == Mode::Observe {
         if !refused.is_empty() {
             warn!(
-                path = %path,
-                versions = refused.len(),
-                checks = ?checks,
+                url.path = %path,
+                waharoa.package.versions = refused.len(),
+                waharoa.policy.checks = ?checks,
                 "observe: the policy refuses these versions; left in the document"
             );
         }
@@ -3120,8 +3122,8 @@ fn policy_refused_versions(
         // with the registry's own "no matching version" rather than anything this proxy
         // said. Worth saying out loud, because it reads as a broken registry.
         warn!(
-            path = %path,
-            versions = refused.len(),
+            url.path = %path,
+            waharoa.package.versions = refused.len(),
             "policy refuses every version of this package, so nothing is left to resolve to"
         );
     }
@@ -4067,7 +4069,10 @@ mod tests {
             warned.contains("cooldown_days cannot be answered"),
             "{warned}"
         );
-        assert!(warned.contains("undated=1"), "{warned}");
+        assert!(
+            warned.contains("waharoa.package.undated_versions=1"),
+            "{warned}"
+        );
         assert!(
             !said(NO_POLICY)
                 .await
@@ -6080,8 +6085,16 @@ mod tests {
         let log = text(&log);
         let proxied: Vec<&str> = log.lines().filter(|l| l.contains("proxied")).collect();
         assert_eq!(proxied.len(), 1, "{log}");
-        assert!(proxied[0].contains("status=404"), "{}", proxied[0]);
-        assert!(proxied[0].contains("client=npm/10.0.0"), "{}", proxied[0]);
+        assert!(
+            proxied[0].contains("http.response.status_code=404"),
+            "{}",
+            proxied[0]
+        );
+        assert!(
+            proxied[0].contains("user_agent.original=npm/10.0.0"),
+            "{}",
+            proxied[0]
+        );
     }
 
     /// A resolver's probe, PyPI's root index here, is logged as `proxied` at debug, not
@@ -6878,9 +6891,17 @@ mod tests {
             .filter(|line| line.contains("returned after a deferral"))
             .collect();
         assert_eq!(returns.len(), 1, "{log}");
-        assert!(returns[0].contains("deferrals=2"), "{}", returns[0]);
+        assert!(
+            returns[0].contains("waharoa.deferral.count=2"),
+            "{}",
+            returns[0]
+        );
         assert!(returns[0].contains(&digest), "{}", returns[0]);
-        assert!(returns[0].contains("after_ms="), "{}", returns[0]);
+        assert!(
+            returns[0].contains("waharoa.deferral.after_ms="),
+            "{}",
+            returns[0]
+        );
     }
 
     /// Each deferral of a digest is counted from the first, and a return takes the record
@@ -7715,11 +7736,11 @@ mod tests {
         }
         let log = logged(|| proxy.report_traffic());
         assert!(
-            log.contains("client=pnpm") && log.contains("documents=3"),
+            log.contains("user_agent.original=pnpm") && log.contains("waharoa.traffic.documents=3"),
             "{log}"
         );
-        assert!(!log.contains("client=npm"), "{log}");
-        assert!(!log.contains("client=curl"), "{log}");
+        assert!(!log.contains("user_agent.original=npm"), "{log}");
+        assert!(!log.contains("user_agent.original=curl"), "{log}");
         assert_eq!(
             proxy.health().clients_without_artifacts,
             [("pnpm".to_owned(), 3)].into()

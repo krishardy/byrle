@@ -177,13 +177,13 @@ run_cell() {
 
     local served ua
     served="$(count 'proxied' "$log")"
-    ua="$(grep -oE 'client=[^ ]+( \([^)]*\))?' "$log" | head -1 | sed 's/^client=//')"
+    ua="$(grep -oE 'user_agent.original=[^ ]+( \([^)]*\))?' "$log" | head -1 | sed 's/^user_agent.original=//')"
 
     # Per path, because npm asks for `/npm` as well as the package on every round. See
     # scripts/make/lib/retry_gaps.py.
     local measured attempts gaps
     measured="$(grep 'deferred by the defer test' "$log" \
-        | sed -E 's/^([^ ]+) .*path=([^ ]+) .*/\1 \2/' \
+        | sed -E 's/^([^ ]+) .*url.path=([^ ]+) .*/\1 \2/' \
         | python3 "$repo_root/scripts/make/lib/retry_gaps.py")"
     attempts="${measured%% *}"
     gaps="${measured#* }"

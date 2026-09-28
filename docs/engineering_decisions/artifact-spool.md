@@ -55,11 +55,12 @@ needs neither, and holds no connection open while the analysis runs.
 | A PyPI wheel | the metadata's claim, which for a wheel is none |
 
 Each job ends with one INFO line, `analysis job timed`, giving milliseconds for each
-phase: `queued_ms` waiting for one of `WAHAROA_MAX_CONCURRENT_ANALYSES` slots, `fetch_ms`
-to the upstream's headers, `download_ms` spooling and hashing the body, with `bytes`,
-`read_ms`, `store_ms`, and `attest_ms` for its `attestations`, then `total_ms` and
-whether it `completed` before the deadline. Each attestation's own line adds `fetch_ms`
-and `verify_ms`.
+phase under `waharoa.analysis.`: `queued_ms` waiting for one of
+`WAHAROA_MAX_CONCURRENT_ANALYSES` slots, `fetch_ms` to the upstream's headers,
+`download_ms` spooling and hashing the body, with `bytes`, `read_ms`, `store_ms`, and
+`attest_ms` for its `attestations`, then `total_ms` and whether it `completed` before the
+deadline. Each attestation's own line adds `waharoa.attestation.fetch_ms` and
+`waharoa.attestation.verify_ms`.
 
 A job that fails to fetch, cannot write the spool, or runs past its ten-minute deadline
 stores nothing, and the next request starts another. That includes an upstream that

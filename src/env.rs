@@ -341,7 +341,7 @@ pub const NO_PROXY_LOWER: Var = other(Kind::External, "no_proxy", &["as NO_PROXY
 pub const LOG_FORMAT: Var = runtime(
     "WAHAROA_LOG_FORMAT",
     "",
-    &["\"json\" writes one JSON object per line"],
+    &["\"json\" writes one OpenTelemetry log record per line"],
 )
 .with_default(Default::Text("text"));
 pub const LOG_FILTER: Var = runtime("RUST_LOG", "", &["log filter, in tracing's syntax"])

@@ -138,7 +138,7 @@ impl Analyser {
             Ok(Some(analysis)) => Known::Analysed(analysis),
             Ok(None) => Known::Unknown,
             Err(e) => {
-                warn!(digest = %digest, error = %e, "analysis store cannot answer; analysing again");
+                warn!(waharoa.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; analysing again");
                 Known::Unknown
             }
         }
@@ -155,7 +155,7 @@ impl Analyser {
         match self.store.attested(digest).await {
             Ok(attested) => attested,
             Err(e) => {
-                warn!(digest = %digest, error = %e, "analysis store cannot answer; verifying again");
+                warn!(waharoa.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; verifying again");
                 None
             }
         }
@@ -222,21 +222,21 @@ impl Analyser {
         timings.attestations = job.attestations.len();
         timings.total_ms = ms(running);
         if !timings.completed {
-            warn!(url = %job.url, deadline_s = self.deadline.as_secs(), "artifact analysis: past its deadline, nothing stored");
+            warn!(url.full = %job.url, waharoa.analysis.deadline_s = self.deadline.as_secs(), "artifact analysis: past its deadline, nothing stored");
         }
         info!(
-            url = %job.url,
-            digest = %job.digest,
-            completed = timings.completed,
-            queued_ms = timings.queued_ms,
-            fetch_ms = timings.fetch_ms,
-            download_ms = timings.download_ms,
-            bytes = timings.bytes,
-            read_ms = timings.read_ms,
-            store_ms = timings.store_ms,
-            attestations = timings.attestations,
-            attest_ms = timings.attest_ms,
-            total_ms = timings.total_ms,
+            url.full = %job.url,
+            waharoa.artifact.digest = %job.digest,
+            waharoa.analysis.completed = timings.completed,
+            waharoa.analysis.queued_ms = timings.queued_ms,
+            waharoa.analysis.fetch_ms = timings.fetch_ms,
+            waharoa.analysis.download_ms = timings.download_ms,
+            waharoa.analysis.bytes = timings.bytes,
+            waharoa.analysis.read_ms = timings.read_ms,
+            waharoa.analysis.store_ms = timings.store_ms,
+            waharoa.analysis.attestations = timings.attestations,
+            waharoa.analysis.attest_ms = timings.attest_ms,
+            waharoa.analysis.total_ms = timings.total_ms,
             "analysis job timed"
         );
         timings
@@ -266,7 +266,7 @@ impl Analyser {
             .put_attested(&attestation.digest, &attested)
             .await
         {
-            warn!(url = %attestation.url, error = %e, "attestations: not stored");
+            warn!(url.full = %attestation.url, error.message = %e, "attestations: not stored");
         }
         ms(started)
     }
@@ -285,12 +285,12 @@ impl Analyser {
             .send()
             .await
             .map_err(
-                |e| warn!(url = %url, error = %e, "attestations: fetch failed, nothing stored"),
+                |e| warn!(url.full = %url, error.message = %e, "attestations: fetch failed, nothing stored"),
             )
             .ok()?;
         let status = response.status();
         if status.is_server_error() || status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            warn!(url = %url, status = status.as_u16(), "attestations: not answered, nothing stored");
+            warn!(url.full = %url, http.response.status_code = status.as_u16(), "attestations: not answered, nothing stored");
             return None;
         }
         if !status.is_success() {
@@ -301,7 +301,7 @@ impl Analyser {
         let document = response
             .bytes()
             .await
-            .map_err(|e| warn!(url = %url, error = %e, "attestations: body failed, nothing stored"))
+            .map_err(|e| warn!(url.full = %url, error.message = %e, "attestations: body failed, nothing stored"))
             .ok()?;
         Some(Ok(document))
     }
@@ -346,7 +346,7 @@ impl Analyser {
         {
             Ok(response) => Some(response),
             Err(e) => {
-                warn!(url = %job.url, error = %e, "artifact analysis: fetch failed, nothing stored");
+                warn!(url.full = %job.url, error.message = %e, "artifact analysis: fetch failed, nothing stored");
                 None
             }
         }
@@ -373,7 +373,7 @@ impl Analyser {
             Ok(spooled) => match verifier.finish(spooled.len()) {
                 Ok(()) => Some(Ok(spooled)),
                 Err(mismatch) => {
-                    warn!(url = %job.url, %mismatch, "artifact analysis: digest mismatch");
+                    warn!(url.full = %job.url, waharoa.artifact.digest_mismatch = %mismatch, "artifact analysis: digest mismatch");
                     self.mismatched
                         .lock()
                         .expect("mismatch lock")
@@ -384,11 +384,11 @@ impl Analyser {
             // Stored, so the retry is decided rather than deferred again. An artifact
             // nothing read is `Unreadable`, which `install_scripts: block` refuses.
             Err(too_large @ WriteError::TooLarge { .. }) => {
-                warn!(url = %job.url, error = %too_large, "artifact analysis: over the ceiling");
+                warn!(url.full = %job.url, error.message = %too_large, "artifact analysis: over the ceiling");
                 Some(Err(Scripts::Unreadable(too_large.to_string())))
             }
             Err(e) => {
-                warn!(url = %job.url, error = %e, "artifact analysis: not spooled, nothing stored");
+                warn!(url.full = %job.url, error.message = %e, "artifact analysis: not spooled, nothing stored");
                 None
             }
         }
@@ -403,13 +403,13 @@ impl Analyser {
             scripts,
         };
         if let Err(e) = self.store.put(&job.digest, &analysis).await {
-            warn!(url = %job.url, error = %e, "artifact analysis: not stored");
+            warn!(url.full = %job.url, error.message = %e, "artifact analysis: not stored");
             return;
         }
         info!(
-            url = %job.url,
-            digest = %job.digest,
-            scripts = ?analysis.scripts.names(),
+            url.full = %job.url,
+            waharoa.artifact.digest = %job.digest,
+            waharoa.artifact.scripts = ?analysis.scripts.names(),
             "artifact analysed"
         );
     }
@@ -420,10 +420,10 @@ fn log_attested(attestation: &Attestation, attested: &Attested, fetch_ms: u64, v
     let (url, digest) = (&attestation.url, &attestation.digest);
     match attested {
         Attested::Verified { identity } => {
-            info!(url = %url, digest = %digest, identity = %identity, fetch_ms, verify_ms, "attestation verified");
+            info!(url.full = %url, waharoa.artifact.digest = %digest, waharoa.attestation.identity = %identity, waharoa.attestation.fetch_ms = fetch_ms, waharoa.attestation.verify_ms = verify_ms, "attestation verified");
         }
         Attested::Failed { why } => {
-            warn!(url = %url, digest = %digest, why = %why, fetch_ms, verify_ms, "attestation did not verify");
+            warn!(url.full = %url, waharoa.artifact.digest = %digest, waharoa.reason = %why, waharoa.attestation.fetch_ms = fetch_ms, waharoa.attestation.verify_ms = verify_ms, "attestation did not verify");
         }
     }
 }
@@ -440,7 +440,7 @@ async fn read(job: &Job, spooled: Spooled, reader: Reader) -> Option<Scripts> {
     match read {
         Ok(scripts) => Some(scripts),
         Err(e) => {
-            warn!(url = %job.url, error = %e, "artifact analysis: the spool file could not be read, nothing stored");
+            warn!(url.full = %job.url, error.message = %e, "artifact analysis: the spool file could not be read, nothing stored");
             None
         }
     }

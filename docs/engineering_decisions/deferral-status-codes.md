@@ -188,6 +188,6 @@ two clients of seven stop on the first one.
 The 503 carries `x-waharoa-digest` with the artifact's digest, and the body names the purl
 and the digest. The proxy logs each deferral with the digest and how many times that digest
 has been deferred, and logs `returned after a deferral` on the first request that finds the
-analysis stored, with the deferral count and `after_ms` since the first one. A digest with
+analysis stored, with the deferral count, `waharoa.deferral.count`, and `waharoa.deferral.after_ms` since the first one. A digest with
 deferral lines and no return line is a client that gave up. Those lines are what the table
 above can be checked against in a real install.
