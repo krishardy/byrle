@@ -62,6 +62,12 @@ Proxy configuration, all through the environment:
   WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot
                                     see, instead of removing them from the metadata
   WAHAROA_MODE                      "observe" serves what the policy refuses and logs it (default enforce)
+  HTTPS_PROXY                       forward proxy for upstream https; the lowercase name
+                                    is read too
+  HTTP_PROXY                        forward proxy for upstream http; the lowercase name
+                                    is read too
+  NO_PROXY                          hosts fetched without the forward proxy, comma-separated;
+                                    the lowercase name is read too
   RUST_LOG                          log filter, in tracing's syntax (default waharoa=info)
   WAHAROA_DEFER_TEST                DEBUG BUILDS ONLY: answer every matching request with
                                     a deferral instead of fetching, so client retry

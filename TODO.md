@@ -2641,7 +2641,10 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       WARN, and audits it with `answered: served`.
 - [ ] Latency budget and benchmarks on a large lockfile (cold and warm cache)
 - [ ] ACME / Let's Encrypt support; document fronting with Caddy/nginx
-- [ ] Honor `HTTPS_PROXY` for upstream traffic
+- [x] Honor `HTTPS_PROXY` for upstream traffic
+      Done 2026-09-28. reqwest already read it, and `HTTP_PROXY` and `NO_PROXY`. Added:
+      the variables in `--help`, the proxy in effect in the startup log, and `make
+      smoke-proxy` ([upstream-forward-proxy](docs/engineering_decisions/upstream-forward-proxy.md)).
 - [ ] Proxy-unavailable behavior + documented break-glass path
 - [ ] Our own releases published with provenance attestations
 - [ ] `SECURITY.md`, disclosure policy, threat model doc

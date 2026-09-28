@@ -18,6 +18,46 @@ pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// minutes to allow it, and would then let a stall run that long.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The forward proxy settings reqwest applies to every client, as the environment gives
+/// them: [`crate::env::Env::upstream_proxy`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UpstreamProxy {
+    pub https: Option<String>,
+    pub http: Option<String>,
+    /// Hosts fetched without the forward proxy.
+    pub direct: Option<String>,
+}
+
+impl UpstreamProxy {
+    /// One line for the startup log, with any user and password in a proxy URL replaced.
+    /// Returns `None` when no forward proxy is set.
+    pub fn describe(&self) -> Option<String> {
+        if self.https.is_none() && self.http.is_none() {
+            return None;
+        }
+        let shown = |url: &Option<String>| url.as_deref().map_or("none".to_owned(), redacted);
+        Some(format!(
+            "https via {}, http via {}, direct for {}",
+            shown(&self.https),
+            shown(&self.http),
+            self.direct.as_deref().unwrap_or("nothing")
+        ))
+    }
+}
+
+/// `url` with its user and password replaced by `***`. A value that is not a URL is
+/// replaced whole, since it cannot be told apart from a credential.
+fn redacted(url: &str) -> String {
+    let Ok(mut parsed) = reqwest::Url::parse(url) else {
+        return "***".to_owned();
+    };
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        let _ = parsed.set_username("***");
+        let _ = parsed.set_password(None);
+    }
+    parsed.to_string()
+}
+
 /// Every client this build fetches with: the proxy's upstream client and the intel
 /// refresh's. `read_timeout` is [`READ_TIMEOUT`] in the binary; a test passes a short one.
 /// There is no total timeout: see [`READ_TIMEOUT`].
@@ -316,6 +356,43 @@ fn base_tag(base: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A proxy URL's user and password never reach the log; its host does.
+    #[test]
+    fn a_forward_proxy_is_described_without_its_credentials() {
+        let proxy = UpstreamProxy {
+            https: Some("http://alice:s3cret@egress.example:3128".to_owned()),
+            http: Some("not a url".to_owned()),
+            direct: None,
+        };
+        let described = proxy.describe().expect("a proxy is set");
+        assert_eq!(
+            described,
+            "https via http://***@egress.example:3128/, http via ***, direct for nothing"
+        );
+        assert_eq!(UpstreamProxy::default().describe(), None);
+        for (url, shown) in [
+            ("http://alice@egress.example/", "http://***@egress.example/"),
+            (
+                "http://:s3cret@egress.example/",
+                "http://***@egress.example/",
+            ),
+        ] {
+            assert_eq!(redacted(url), shown, "{url}");
+        }
+        assert_eq!(
+            UpstreamProxy {
+                http: Some("http://egress.example:3128".to_owned()),
+                direct: Some("internal.example".to_owned()),
+                ..UpstreamProxy::default()
+            }
+            .describe()
+            .as_deref(),
+            Some(
+                "https via none, http via http://egress.example:3128/, direct for internal.example"
+            )
+        );
+    }
+
     use super::*;
 
     /// The real encoder, so the tests exercise what the proxy emits.
