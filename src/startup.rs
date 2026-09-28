@@ -68,8 +68,10 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     //
     // The `gzip` feature is off, so reqwest never decompresses behind our back and
     // bodies can be forwarded with their `Content-Encoding` intact.
-    let mut builder =
-        reqwest::Client::builder().user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")));
+    //
+    // A connect timeout and a read timeout, and no total one: an upstream that stops
+    // sending ends the request it holds, and a slow download that keeps arriving does not.
+    let mut builder = crate::http::client_builder(crate::http::READ_TIMEOUT);
     let mut bundle_path: Option<PathBuf> = None;
 
     // A private registry with an internal CA, or a corporate TLS-inspecting middlebox,

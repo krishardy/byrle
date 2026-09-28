@@ -15,11 +15,10 @@ the artifact from upstream, writes it to the spool, checks its digest, reads it,
 the analysis under the digest.
 
 The request is answered 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready:
-artifact-analysis`, only when the answer depends on the analysis: what is known passes, and
-the policy would refuse the version if the pending analysis found the worst, scripts that
-run and an attestation that does not verify. The proxy asks the policy both ways
-(`Analysed::worst`). Otherwise the request is served on what is known, and the next fetch
-of the same digest is decided on the analysis.
+artifact-analysis`, under any policy and with none. Nothing is served until its analysis
+has finished. Decided 2026-09-27, replacing a 503 only when the answer depended on the
+analysis: an artifact the proxy has not assessed is never served. The retry is decided on
+the analysis.
 
 The same job verifies the attestations the provenance check needs, this version's and the
 previous version's, each against the digest the packument published for it. See
@@ -27,10 +26,8 @@ previous version's, each against the digest the packument published for it. See
 
 | Policy, for this package | First fetch of an unanalysed artifact |
 |---|---|
-| none, `install_scripts: allow`, or an exception allowing its scripts | served |
-| `install_scripts: block`, claim of a script | refused on the claim |
-| `install_scripts: block`, no claim | 503; the retry is decided on the analysis |
-| `provenance: block`, it or the version before it publishes attestations nothing verified | 503; the retry is decided on the verification |
+| any, when what is known already refuses it (a claimed script under `block`, a denial, the cooldown) | refused on what is known |
+| any other, or none | 503; the retry is decided on the analysis and the verification |
 
 The retry is fetched from upstream again through `proxy::VerifyingStream`.
 
@@ -58,9 +55,11 @@ needs neither, and holds no connection open while the analysis runs.
 | A PyPI wheel | the metadata's claim, which for a wheel is none |
 
 A job that fails to fetch, cannot write the spool, or runs past its ten-minute deadline
-stores nothing, and the next request starts another. The deadline is there because the
-upstream client sets no timeout: an upstream that stops sending would otherwise hold a job
-slot, and its digest would be answered 503 for as long as the process lives. A job whose bytes do not match the digest stores nothing and is remembered
+stores nothing, and the next request starts another. The upstream client ends a
+connection after 10s without connecting or 30s without a byte, `http::CONNECT_TIMEOUT` and
+`http::READ_TIMEOUT`, since 2026-09-28. It sets no total timeout, so an upstream that
+trickles would otherwise hold a job slot, and its digest would be answered 503 for as long
+as it trickles. The deadline bounds that. A job whose bytes do not match the digest stores nothing and is remembered
 in this process only, bounded by `WAHAROA_MAX_VERIFIED`, because a mismatch is about one
 upstream at one time rather than about the bytes.
 
@@ -162,7 +161,7 @@ answered 503, and its retry starts another job. There is no 4xx for it:
 | Stream the artifact and analyse afterwards | The status and headers have gone; a block is not expressible. `install_scripts: block` would be a silent pass, which is the failure the whole check exists to avoid |
 | Spool and analyse inside the request | The decision as first written. Replaced 2026-09-26: no request waits for an analysis |
 | Wait a bounded time for the analysis before deferring | bun's total patience is 0.2s. Decided against 2026-09-26 |
-| Defer every unanalysed artifact | Implemented 2026-09-26 and replaced the same day. The analysis only adds to the claim, so it can change the answer only for a version that claims no script under `block`. Every other deferral cost a retry and changed nothing, and failed bun and yarn 1 with no policy set |
+| Defer only when the answer depends on the analysis | Built 2026-09-26 and replaced 2026-09-27. It served an artifact the proxy had not assessed whenever the policy would pass it at the worst the analysis could find. It saved a retry per novel artifact, and bun and yarn 1 their first fetch |
 | Buffer the whole artifact in memory, with a ceiling | The measurement: the ceiling refuses `torch` and `opencv-python`, and nothing bounds the tail |
 | Buffer the prefix in memory up to the manifest | 5 of 78 npm packages need more than 4 MiB of prefix, so the bound is the artifact again |
 | Memory below a threshold, spool above it | Two paths and a threshold to defend. The median artifact is 9,078 bytes and a file that size never reaches the disk |

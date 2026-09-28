@@ -123,9 +123,9 @@ echo "    ok ($(echo "$expected_purls" | wc -l) purls, $normalized_count packume
 echo "==> 4/6  every tarball digest was known before the fetch and verified"
 # The digest comes from a packument seen earlier in the same run, which is what makes
 # cache-hit-versus-miss decidable before a byte is fetched (plan section 5).
-# Under install_scripts: block, a tarball nothing has analysed is deferred once and served
-# on npm's retry. Both requests log the digest; only the served one is proxied. This run
-# sets no policy, so nothing is deferred and the count is zero.
+# A tarball nothing has analysed is deferred with a 503 until its analysis has finished,
+# under any policy, and served on npm's retry. Every request logs the digest; only the
+# served one is proxied.
 known="$(grep -c 'digest known' "$clean_log" || true)"
 deferred="$(grep -c 'deferred: the artifact has not been analysed' "$clean_log" || true)"
 verified="$(grep -c 'artifact digest verified' "$clean_log" || true)"
@@ -139,8 +139,8 @@ if grep -q 'MISMATCH' "$clean_log"; then
     fail "a tarball did not match the digest its packument published:
 $(grep 'MISMATCH' "$clean_log")"
 fi
-grep -q 'no metadata seen' "$clean_log" \
-    && fail "a tarball was fetched with no packument observed for its package"
+grep -q 'not served:' "$clean_log" \
+    && fail "a tarball could not be assessed: $(grep 'not served:' "$clean_log" | head -1)"
 
 # No false positives on the real registry: every artifact it publishes has to look like
 # one the proxy will see. A warning here against registry.npmjs.org is a bug in the

@@ -91,8 +91,8 @@ Every ecosystem carries a published maturity tier: `enforcing`, `observe-only`, 
 | npm | registry URL | planned, first |
 | PyPI | `--index-url`, PEP 503 | planned, second |
 | cargo | source replacement, sparse index | planned, third |
-| Go | `GOPROXY` | deferred |
-| Maven | mirror in `settings.xml` | deferred |
+| Go | `GOPROXY` | planned, after cargo |
+| Maven | mirror in `settings.xml` | planned, after cargo |
 
 npm and PyPI carry effectively all the malware volume, so they ship first. Breadth buys
 far less security than the ecosystem count implies.

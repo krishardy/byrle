@@ -2389,9 +2389,15 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         ([deferral-status-codes](docs/engineering_decisions/deferral-status-codes.md)).
         Of seven clients measured, all seven retry a 503 and two stop on a 429.
   - [x] An artifact under analysis is 503 too, `x-waharoa-not-ready: artifact-analysis`,
-        decided 2026-09-26, when the answer depends on the analysis: what is known
-        passes and the worst the analysis could find would be refused. 429 is not used, there is no per-client code and
-        no bounded internal wait. yarn 1 and bun fail that first fetch.
+        decided 2026-09-26. Since 2026-09-27 under any policy: nothing is served until
+        its analysis has finished. An artifact with no strong digest, or whose metadata
+        does not list its version, is refused; one whose metadata the registry did not
+        give is a 502. 429 is not used, there is no per-client code and no bounded
+        internal wait. yarn 1 and bun fail the first fetch of every novel artifact.
+  - [ ] A separate process watches each upstream registry for newly published versions
+        and starts their analysis, so the artifact is analysed before a client asks for
+        it. The artifact analysis is the slowest step, and every novel artifact is
+        deferred until it finishes. Raised 2026-09-27.
   - [x] The artifact digest in the deferral's header and body: `x-waharoa-digest`.
   - [x] Log every deferral, with a count per digest, and `returned after a deferral` with
         `after_ms` when a request finds the analysis stored, which turns the compatibility
@@ -2599,14 +2605,17 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 
 ---
 
-## Stage 6 — Third ecosystem (cargo)
+## Stage 6 — More ecosystems (cargo, Go, Maven)
 
-- [ ] Sparse index transport adapter
-- [ ] Source replacement configuration + onboarding docs
-- [ ] `build.rs` mapped to install-script semantics
+- [ ] cargo: sparse index transport adapter
+- [ ] cargo: source replacement configuration + onboarding docs
+- [ ] cargo: `build.rs` mapped to install-script semantics
+- [ ] Go adapter (`GOPROXY`). Moved from Deferred / post-v1 on 2026-09-27. The checksum DB
+      already covers tamper-evidence.
+- [ ] Maven adapter (`settings.xml` mirror). Moved from Deferred / post-v1 on 2026-09-27.
 - [ ] Declare the adapter interface stable and document it for contributors
 
-**Exit:** three protocols on one unchanged interface.
+**Exit:** five protocols on one unchanged interface.
 
 ---
 
@@ -2707,12 +2716,10 @@ a malware or critical/high advisory for the version they installed.
       keyed by CPE and cannot be asked about a package.
       [nvd-role-and-stream-capabilities](docs/engineering_decisions/nvd-role-and-stream-capabilities.md).
   - [ ] Its enrichment runs as a background job, never on the hot path.
-  - [ ] Revisit the `match` capability if and when the Maven adapter is scoped, where CPE
+  - [ ] Revisit the `match` capability when the Stage 6 Maven adapter is scoped, where CPE
         coverage is stronger.
   - [ ] Deferred rather than staged: `enrich` has no implemented producer, so NVD would be
         the first, and CISA's KEV catalogue already exercises the same seam at lower cost.
-- [ ] Go adapter (`GOPROXY`) — low marginal value, checksum DB already covers tamper-evidence
-- [ ] Maven adapter (`settings.xml` mirror)
 - [ ] **AI agent profiles** — stricter policy for agent-initiated installs
 - [ ] Rate limiting on novel package introduction
 - [ ] Approval-request flow as an alternative to hard block

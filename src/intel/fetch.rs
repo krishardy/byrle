@@ -399,7 +399,7 @@ mod tests {
 
     /// The stream is fetched again after a transient failure, and the notice says so.
     /// This waits `RETRY_WAIT` for real: under `start_paused` the auto-advanced clock
-    /// fires `CONNECT_TIMEOUT` before a local connection completes.
+    /// fires `crate::http::CONNECT_TIMEOUT` before a local connection completes.
     #[tokio::test]
     async fn a_transient_failure_is_fetched_again() {
         let addr = scripted(vec![Answer::Close, Answer::body("{}")]).await;

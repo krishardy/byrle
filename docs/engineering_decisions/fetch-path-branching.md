@@ -12,14 +12,15 @@ npm):
 | Case | Behaviour |
 |---|---|
 | Analysed before (cache hit) | Decide on the analysis, then stream through. Flat memory, no added latency. |
-| Novel, and the answer depends on the analysis | Answer `503` with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis` at once, and analyse in the background. The client's retry is a cache hit. |
-| Novel, and it does not | Decide on the metadata and stream through, and analyse in the background. |
+| Novel | Answer `503` with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis` at once, and analyse in the background. The client's retry is a cache hit. Refused at once instead when the metadata already refuses it. |
+| No strong digest, or no metadata listing the version | Not served: refused, or 502 when the registry gave no metadata. Nothing can be assessed. |
 | Read by no detector (a PyPI wheel) | Stream through, decided on the metadata. |
 
 Amended 2026-09-26: a novel artifact was buffered and analysed inside the request when the
 analysis was cheap, and deferred with `429` only when it was expensive. No request now
 waits for an analysis, whatever it costs. See [artifact-spool](artifact-spool.md) and
-[deferral-status-codes](deferral-status-codes.md).
+[deferral-status-codes](deferral-status-codes.md). Amended 2026-09-27: a novel artifact is
+deferred under any policy, and one with no strong digest or no metadata is not served.
 
 ## Rationale
 

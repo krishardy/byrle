@@ -9,8 +9,9 @@
 use std::ffi::OsString;
 use std::fmt::Write as _;
 
-use super::{Kept, READ_TIMEOUT, http_client};
+use super::{Kept, http_client};
 use crate::env::{self, Env};
+use crate::http::READ_TIMEOUT;
 use crate::intel::fetch::Notice;
 use crate::intel::history::{self, NotLoaded};
 use crate::intel::postgres::{self, PgIntel, Replacement};

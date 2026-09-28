@@ -853,9 +853,8 @@ async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &
 /// Each ecosystem asks its own registry: npm the abbreviated packument, PyPI the simple
 /// index. `key` carries the ecosystem, and [`Clients::metadata`] chooses by it.
 ///
-/// Failure is not fatal and is not propagated. The artifact is forwarded unverified and
-/// said to be unverified, which is Stage 1 behaviour; Stage 2 has to decide whether that
-/// stays allowed.
+/// Failure is logged here and not propagated. The artifact request finds no record and is
+/// answered 502.
 async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     let started = Instant::now();
     match proxy.config.clients.metadata(key).await {
@@ -1427,22 +1426,25 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         // that spells the version differently lands here: `express@3.0.0-rc1` is
         // served at `express-3.0.0rc1.tgz`.
         Lookup::NoSuchVersion => {
-            warn!(
-                path = %path,
-                claimed_purl = %purl,
-                "artifact requested, but its metadata does not list this version"
+            return unassessable(
+                refusal_status(proxy, ecosystem, Some(client)),
+                client,
+                path,
+                &purl,
+                "its metadata does not list this version",
             );
-            return ArtifactStep::Fetch(fetch);
         }
         // Nothing was observed for this package, and fetching its packument did not
-        // help either.
+        // help either. The registry did not answer as it should, so this is a 502, not a
+        // refusal.
         Lookup::Unknown => {
-            warn!(
-                path = %path,
-                claimed_purl = %purl,
-                "artifact requested, no metadata seen for it"
+            return unassessable(
+                StatusCode::BAD_GATEWAY,
+                client,
+                path,
+                &purl,
+                "the registry gave no metadata for it",
             );
-            return ArtifactStep::Fetch(fetch);
         }
     };
 
@@ -1574,13 +1576,6 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         _ => None,
     };
     let policy_refusal = refused(record, &analysed.provenance);
-    // Whether the analysis can change the answer: what is known passes, and the same
-    // version would be refused if the pending analysis found the worst. Only then does
-    // the request wait for it.
-    let waits_for_analysis = policy_refusal.is_none()
-        && analysed
-            .worst()
-            .is_some_and(|(record, provenance)| refused(&record, &provenance).is_some());
 
     let (answered, step) = 'answer: {
         if let Some(refusal) = &policy_refusal {
@@ -1632,6 +1627,20 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             );
         }
 
+        if fetch.digest.is_none() {
+            break 'answer (
+                audit::Answered::Refused,
+                unassessable(
+                    refusal_status(proxy, ecosystem, Some(client)),
+                    client,
+                    path,
+                    &purl,
+                    "its metadata publishes no strong digest, so its bytes can be neither \
+                     verified nor analysed",
+                ),
+            );
+        }
+
         match analysed.state {
             AnalysisState::Mismatched(mismatch) => {
                 warn!(%method, path = %path, claimed_purl = %purl, %mismatch, "refused: the upstream serves bytes its metadata does not describe");
@@ -1647,14 +1656,10 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
                 )
             }
             AnalysisState::Pending(job) => {
-                // Started whatever the answer, so the next fetch of these bytes is decided on
-                // the analysis and an undeclared script is reported.
+                // Nothing is served until its analysis has finished.
                 let digest = job.digest.clone();
                 if let Some(analyser) = &proxy.config.analyser {
                     analyser.start(job);
-                }
-                if !waits_for_analysis {
-                    break 'answer (audit::Answered::Served, ArtifactStep::Fetch(fetch));
                 }
                 let deferrals = proxy.deferred.lock().expect("deferred lock").defer(&digest);
                 info!(
@@ -1686,6 +1691,31 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         answered,
     );
     step
+}
+
+/// Answer `status` for an artifact the proxy cannot assess, saying `why`. Nothing is served
+/// that could not have been decided on.
+fn unassessable(
+    status: StatusCode,
+    client: &str,
+    path: &str,
+    purl: &str,
+    why: &str,
+) -> ArtifactStep {
+    warn!(
+        path = %path,
+        status = status.as_u16(),
+        claimed_purl = %purl,
+        client = %client,
+        "not served: {why}"
+    );
+    ArtifactStep::Answer(
+        (
+            status,
+            format!("waharoa: {purl} cannot be assessed: {why}\n"),
+        )
+            .into_response(),
+    )
 }
 
 /// The artifacts answered 503 while their analysis ran, by digest.
@@ -1826,33 +1856,13 @@ struct Analysed {
     state: AnalysisState,
 }
 
-impl Analysed {
-    /// The record and fact with the pending analysis at its worst: scripts that run, and
-    /// an attestation that does not verify. `None` when nothing is pending.
-    fn worst(&self) -> Option<(PackageRecord, Provenance)> {
-        let AnalysisState::Pending(job) = &self.state else {
-            return None;
-        };
-        let mut record = self.record.clone();
-        record.has_install_scripts |= job.reader.is_some();
-        let provenance = if job.attestations.is_empty() {
-            self.provenance.clone()
-        } else {
-            Provenance::Unverified {
-                why: "not verified yet".to_owned(),
-            }
-        };
-        Some((record, provenance))
-    }
-}
-
 enum AnalysisState {
     /// Decide on the record and serve what the policy allows.
     Decided,
     /// The last fetch of these bytes did not match their digest. Answered 502.
     Mismatched(crate::integrity::Mismatch),
-    /// Nothing has analysed these bytes. The analysis is started, and the request waits
-    /// for it with a 503 only when the answer depends on it.
+    /// Nothing has analysed these bytes. The analysis is started, and the request is
+    /// answered 503 until it has finished.
     Pending(Job),
 }
 
@@ -1860,10 +1870,10 @@ enum AnalysisState {
 ///
 /// An analysis stored under the digest adds what the archive declares to the metadata's
 /// claim, and never removes the claim. An archive that could not be read counts as running
-/// scripts: not knowing is not knowing there is none. An artifact a reader reads but that
-/// has no strong digest has no key to store an analysis under, and counts as running
-/// scripts for the same reason. An artifact not analysed yet keeps the claim, so a version
-/// the policy refuses on what is known already is refused rather than deferred.
+/// scripts: not knowing is not knowing there is none. An artifact with no strong digest has
+/// no key to store an analysis under, and the caller refuses it. An artifact not analysed
+/// yet keeps the claim, so a version the policy refuses on what is known already is
+/// refused rather than deferred.
 ///
 /// A wheel is read by nothing, and a proxy started without an analyser analyses nothing.
 /// Both keep the claim.
@@ -1889,14 +1899,8 @@ async fn analysed(
     let Some(analyser) = analyser else {
         return decided(record, provenance);
     };
+    // Refused by the caller: there is no key to store an analysis under.
     let Some(digest) = digest else {
-        if reader.is_some() {
-            warn!(
-                path = %path,
-                "no strong digest, so the artifact cannot be analysed; it counts as running install scripts"
-            );
-            record.has_install_scripts = true;
-        }
         return decided(record, provenance);
     };
     // A file no reader reads, a PyPI wheel, still has attestations to verify.
@@ -3928,7 +3932,8 @@ mod tests {
                 .with_origin_policy([host.as_str()], [])
                 .expect("the host is an origin");
             let index = format!(
-                r#"{{"name":"x","files":[{{"filename":"x-1.0.tar.gz","url":"{host}/x-1.0.tar.gz","hashes":{{}}}}]}}"#
+                r#"{{"name":"x","files":[{{"filename":"x-1.0.tar.gz","url":"{host}/x-1.0.tar.gz","hashes":{{"sha256":"{}"}}}}]}}"#,
+                "a".repeat(64)
             );
             resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, index.as_bytes()).await;
             let step = pinned(&proxy, "/packages/x-1.0.tar.gz").await;
@@ -4128,8 +4133,7 @@ mod tests {
     }
 
     /// Fetched and verified against a digest from a record the store held. A store that
-    /// missed would fetch too, unverified, after its metadata fetch to [`NO_UPSTREAM`]
-    /// failed.
+    /// missed would answer 502, after its metadata fetch to [`NO_UPSTREAM`] failed.
     fn fetched(step: &ArtifactStep) -> bool {
         matches!(step, ArtifactStep::Fetch(fetch) if fetch.digest.is_some())
     }
@@ -5704,10 +5708,36 @@ mod tests {
         }
     }
 
-    /// When the packument cannot be fetched either, the artifact is forwarded and said to
-    /// be unverified. Stage 1 does not fail an install over what it could not inspect.
+    /// An upstream that sends headers and then stops ends the request after the read
+    /// timeout, rather than holding it for as long as the connection stays open.
     #[tokio::test]
-    async fn an_artifact_whose_packument_cannot_be_fetched_is_forwarded() {
+    async fn a_stalled_upstream_ends_the_request_it_holds() {
+        let stalled = crate::util::test_support::stalling_server().await;
+        let client = crate::http::client_builder(std::time::Duration::from_millis(100))
+            .build()
+            .expect("a client");
+        let base = serve(
+            Proxy::new(client)
+                .with_upstream(Ecosystem::Npm, format!("http://{stalled}"))
+                .router(),
+        )
+        .await;
+
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz")),
+        )
+        .await
+        .expect("the read timeout ends it well inside 5 s")
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    }
+
+    /// When the packument cannot be fetched either, nothing about the artifact can be
+    /// assessed. The registry did not answer as it should, so it is a 502, not a refusal.
+    #[tokio::test]
+    async fn an_artifact_whose_packument_cannot_be_fetched_is_not_served() {
         let tarball = vec![4u8; 300];
         let body = tarball.clone();
         let router = Router::new().route(
@@ -5728,8 +5758,10 @@ mod tests {
         let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
-        assert_eq!(response.status(), 200);
-        assert_eq!(response.bytes().await.unwrap().as_ref(), tarball.as_slice());
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("the registry gave no metadata"), "{body}");
+        assert!(!body.as_bytes().windows(tarball.len()).any(|w| w == tarball));
     }
 
     /// An empty body still has to terminate and still has to be checked. reqwest ends a
@@ -5748,9 +5780,10 @@ mod tests {
     }
 
     /// Two versions in 24,852 publish only SHA-1, which is collision-broken. Those
-    /// artifacts are forwarded without a digest check rather than being checked weakly.
+    /// artifacts are refused rather than checked weakly: their bytes can be neither
+    /// verified nor analysed.
     #[tokio::test]
-    async fn a_version_with_no_strong_digest_is_forwarded_unverified() {
+    async fn a_version_with_only_a_sha1_digest_is_refused() {
         let tarball = vec![3u8; 500];
         let base = registry_with("sha1-2KoFEwbCVDvbCxC5dXgvFkSlpwc=", tarball.clone()).await;
         reqwest::get(format!("{base}/widget")).await.unwrap();
@@ -5758,7 +5791,10 @@ mod tests {
         let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
-        assert_eq!(response.bytes().await.unwrap().as_ref(), tarball.as_slice());
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = response.text().await.unwrap();
+        assert!(body.contains("no strong digest"), "{body}");
+        assert!(!body.as_bytes().windows(tarball.len()).any(|w| w == tarball));
     }
 
     /// A packument stored on one request answers the tarball request that follows it.
@@ -6371,10 +6407,15 @@ mod tests {
         format!(r#""integrity":"{}","#, sri_of(tarball))
     }
 
+    /// Bounded, so a proxy that forwards to an upstream a test holds shut fails the test
+    /// rather than hanging it.
     async fn tarball_request(base: &str) -> reqwest::Response {
-        reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        reqwest::Client::new()
+            .get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .timeout(std::time::Duration::from_secs(10))
+            .send()
             .await
-            .unwrap()
+            .expect("answered within 10 s")
     }
 
     const BLOCK: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
@@ -6450,10 +6491,10 @@ mod tests {
     }
 
     /// Without a policy, with `install_scripts: allow`, and under an exception that allows
-    /// the package's scripts, nothing the analysis finds changes the answer. The artifact is served at once and analysed anyway, so the
-    /// next fetch is decided on the analysis.
+    /// the package's scripts, nothing the analysis finds changes the answer. The artifact
+    /// is still answered 503 until its analysis has finished, and served after.
     #[tokio::test]
-    async fn an_artifact_the_answer_does_not_depend_on_is_served_and_analysed() {
+    async fn an_artifact_is_deferred_until_its_analysis_has_finished_under_any_policy() {
         let tarball =
             crate::util::test_support::tarball(&[("package/package.json", RUNS_POSTINSTALL)]);
         let allow = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n";
@@ -6468,15 +6509,16 @@ mod tests {
         ] {
             let (base, analyser) =
                 analysing(label, "", &integrity(&tarball), tarball.clone(), yaml).await;
-            let first = tarball_request(&base).await;
-            assert_eq!(first.status(), 200, "{label}");
-            assert_eq!(first.bytes().await.unwrap().as_ref(), tarball.as_slice());
+            assert_eq!(tarball_request(&base).await.status(), 503, "{label}");
             analyser.ended(1).await;
             let digest = Sri::parse(&sri_of(&tarball)).expect("parses");
             assert!(
                 matches!(analyser.known(&digest).await, Known::Analysed(_)),
-                "{label}: analysed although nothing waited for it"
+                "{label}"
             );
+            let retry = tarball_request(&base).await;
+            assert_eq!(retry.status(), 200, "{label}");
+            assert_eq!(retry.bytes().await.unwrap().as_ref(), tarball.as_slice());
         }
     }
 
@@ -6601,10 +6643,10 @@ mod tests {
         assert!(retry.text().await.unwrap().contains("does not describe"));
     }
 
-    /// No strong digest, so nothing can be stored or checked against: refused under
-    /// `block`, and served unanalysed without it.
+    /// No strong digest, so nothing can be stored or checked against: refused under any
+    /// policy, and with none.
     #[tokio::test]
-    async fn an_artifact_with_no_strong_digest_counts_as_running_scripts() {
+    async fn an_artifact_with_no_strong_digest_is_refused_under_any_policy() {
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
         let yaml = BLOCK;
         let (base, _) = analysing(
@@ -6618,7 +6660,7 @@ mod tests {
         assert_eq!(tarball_request(&base).await.status(), 403);
 
         let (base, _) = analysing("analyse-nodigest", "", "", tarball, None).await;
-        assert_eq!(tarball_request(&base).await.status(), 200);
+        assert_eq!(tarball_request(&base).await.status(), 403);
     }
 
     /// A script the artifact runs and the metadata did not declare is a warning whatever
@@ -6848,10 +6890,10 @@ mod tests {
         assert!(fetched(&pinned(&proxy, WIDGET_2).await));
     }
 
-    /// Attestations nothing has verified are waited for under `provenance: block`, and not
-    /// under `allow`. The job is started either way.
+    /// Attestations nothing has verified are waited for under `provenance: block` and under
+    /// `allow`: nothing is served until its analysis has finished.
     #[tokio::test]
-    async fn unverified_attestations_are_waited_for_only_when_they_can_refuse() {
+    async fn unverified_attestations_are_waited_for_under_any_policy() {
         let (proxy, analyser) =
             provenance_proxy("provenance-pending", PROVENANCE, &["1.0.0", "2.0.0"], &[]).await;
         let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
@@ -6866,7 +6908,8 @@ mod tests {
         let allow = format!("{PROVENANCE}provenance: allow\n");
         let (proxy, analyser) =
             provenance_proxy("provenance-allowed", &allow, &["1.0.0", "2.0.0"], &[]).await;
-        assert!(fetched(&pinned(&proxy, WIDGET_2).await));
+        let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         analyser.ended(1).await;
     }
 
@@ -7191,13 +7234,36 @@ mod tests {
         assert_eq!(revalidations(&base).await, 1);
     }
 
+    /// A packument that does not list the version asked for says nothing about its
+    /// artifact, so the artifact is refused.
+    #[tokio::test]
+    async fn an_artifact_for_a_version_its_metadata_does_not_list_is_refused() {
+        let proxy = offline(None, None);
+        hold_document(
+            &proxy,
+            br#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0",
+                "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+
+        let (status, body) = refused(pinned(&proxy, "/widget/-/widget-2.0.0.tgz").await).await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(
+            body,
+            "waharoa: pkg:npm/widget@2.0.0 cannot be assessed: its metadata does not list this \
+             version\n"
+        );
+    }
+
     /// A pinned fetch of a version with a dependency named by URL says so, once, and
     /// counts it.
     #[tokio::test]
     async fn a_version_depending_on_a_url_is_reported_when_fetched() {
         let proxy = offline(None, None);
         let packument = br#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0",
-            "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"},
+            "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz",
+            "integrity":"sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="},
             "dependencies":{"left":"github:someone/left-pad#main","ok":"^1.0.0"}}}}"#;
         hold_document(
             &proxy,
