@@ -223,6 +223,10 @@ tooling, and adapter contributions are the scarce resource.
   and how to release a package it refuses without a restart.
 * [docs/threat-model.md](docs/threat-model.md) says what waharoa defends against, what it
   trusts, and the known ways around it.
+* [docs/policy-reference.md](docs/policy-reference.md) lists every policy key, its default,
+  and which way it loosens.
+* [CONTRIBUTING.md](CONTRIBUTING.md) asks for a DCO sign-off on every commit. waharoa is
+  Apache-2.0: [LICENSE](LICENSE).
 * [docs/engineering_decisions/](docs/engineering_decisions/) holds one file per
   decision: what was chosen, what was rejected, and what it costs.
 * [TODO.md](TODO.md) is the staged, sequential task list with exit criteria.

@@ -2704,9 +2704,14 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 
 - [ ] `[!]` README with per-ecosystem maturity tiers stated prominently
 - [ ] `[!]` Quickstart per ecosystem (npm, PyPI, cargo)
-- [ ] `[!]` Policy reference doc with every rule and its monotonicity direction
+- [x] `[!]` Policy reference doc with every rule and its monotonicity direction
+      Done 2026-09-28: `docs/policy-reference.md`, its example checked by `policy check`.
 - [x] License: **Apache-2.0** (decided)
 - [ ] `[!]` Add LICENSE, DCO sign-off in CONTRIBUTING, trademark note
+  - [x] `LICENSE`, Apache-2.0, and `license` in `Cargo.toml`. 2026-09-28.
+  - [x] `CONTRIBUTING.md` with the DCO 1.1 and `git commit -s`. 2026-09-28.
+  - [ ] A check that every commit is signed off.
+  - [ ] The trademark note.
 - [ ] `[!]` README: document known bypass vectors honestly (plan §7)
 - [x] Name availability check across npm, PyPI, crates.io, GitHub. Done in Stage 1: all
       four exact-name lookups return 404, with known-existing controls returning 200 in
