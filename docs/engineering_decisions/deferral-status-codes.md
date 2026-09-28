@@ -180,7 +180,9 @@ one:
 | yarn 1 | fails: it gives up on a 503 tarball after one retry |
 | bun | fails: six retries at 0s, 0.2s in all |
 
-A second install of the same versions is served from the stored analysis. 429 is not used:
+A second install of the same versions is served from the stored analysis. `waharoa warm
+--lockfile` asks for a lockfile's artifacts ahead of the first install
+([warm](warm.md)). 429 is not used:
 two clients of seven stop on the first one.
 
 The 503 carries `x-waharoa-digest` with the artifact's digest, and the body names the purl

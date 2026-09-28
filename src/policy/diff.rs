@@ -36,7 +36,6 @@ use super::strictness::Strictness;
 use super::{Action, Policy, today};
 use crate::ecosystem::Clients;
 use crate::env::Env;
-use crate::identity::PackageRef;
 use crate::intel::snapshot_intel;
 use crate::intel::store::{self, Intel};
 
@@ -379,17 +378,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
         }
     }
 
-    // The package versions the log and the lockfiles list, each once, with its purl.
-    let mut seen = std::collections::HashSet::new();
-    let versions: Vec<(String, PackageRef, String)> = listed
-        .into_iter()
-        .filter(|package| seen.insert(package.clone()))
-        .filter_map(|(ecosystem, name, version)| {
-            let purl = format!("pkg:{ecosystem}/{name}@{version}");
-            let reference = purl.parse::<PackageRef>().ok()?;
-            Some((purl, reference, version))
-        })
-        .collect();
+    let versions = crate::lockfile::references(listed);
 
     // A kept snapshot when one is named, so a changed result is the policy's and not an
     // advisory published since. It is read for the packages above only.

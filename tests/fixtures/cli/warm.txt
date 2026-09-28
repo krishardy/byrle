@@ -1,0 +1,9 @@
+Ask a running proxy for every artifact a lockfile locks, so each is analysed before a client asks for it. The exit code is the OR of 1 for a failure and 2 for an artifact still being analysed, and 4 on its own for an error
+
+Usage: waharoa warm [OPTIONS] --lockfile <PATH>
+
+Options:
+      --lockfile <PATH>     A lockfile whose artifacts to ask for. Repeatable
+      --proxy <URL>         The proxy to ask [default: the public URL, or the listen address]
+      --deadline <SECONDS>  Stop asking for an artifact still being analysed after this long [default: 900]
+  -h, --help                Print help

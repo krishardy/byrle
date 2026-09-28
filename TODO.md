@@ -2438,6 +2438,9 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         policy decided and `answered: refused`, and no reason. A request refused because
         the metadata names neither its version nor its file, or answered 502 because the
         registry gave none, has no audit line. Settle with observe mode's audit field.
+  - [x] `waharoa warm --lockfile` asks a running proxy for every artifact a lockfile
+        locks, so bun and yarn 1 install them on the first try. Done 2026-09-28
+        ([warm](docs/engineering_decisions/warm.md)).
   - [ ] A separate process watches each upstream registry for newly published versions
         and starts their analysis, so the artifact is analysed before a client asks for
         it. The artifact analysis is the slowest step, and every novel artifact is
