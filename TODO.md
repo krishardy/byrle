@@ -2634,9 +2634,11 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       `expires` nor `permanent: true`, so none is unacknowledged. `policy diff` sets exit
       bit 1 on a loosening, which is the CI gate for a weakening change. `--strict` exits 1
       on dead entries ([policy-check](docs/engineering_decisions/policy-check.md)).
-- [ ] `[!]` Observe mode: one environment variable switches the whole proxy between enforce
+- [x] `[!]` Observe mode: one environment variable switches the whole proxy between enforce
       and observe. Enforce is the default. Decided 2026-09-27, replacing "warn mode as the
       shipped default" ([observe-mode](docs/engineering_decisions/observe-mode.md)).
+      Done 2026-09-28: `WAHAROA_MODE=observe` serves what the policy refuses, logs it at
+      WARN, and audits it with `answered: served`.
 - [ ] Latency budget and benchmarks on a large lockfile (cold and warm cache)
 - [ ] ACME / Let's Encrypt support; document fronting with Caddy/nginx
 - [ ] Honor `HTTPS_PROXY` for upstream traffic

@@ -1,7 +1,8 @@
 # Observe mode is one switch for the whole proxy, and enforce is the default
 
-- **Status:** Decided 2026-09-27, not implemented. Replaces the plan's "warn mode is the
-  default" (§6).
+- **Status:** Implemented 2026-09-28. `refusal::Mode`, `env::MODE`, `Deciding::answer` and
+  `Deciding::observed`, `policy_refused_versions`, and `mode` in `/-/waharoa/health`.
+  Replaces the plan's "warn mode is the default" (§6).
 - **Related:** [policy-tier-resolution](policy-tier-resolution.md),
   [quarantine-filter-metadata](quarantine-filter-metadata.md),
   [reproducible-verdicts](reproducible-verdicts.md),
@@ -39,11 +40,28 @@ The policy file does not change. `warn` stays out of the lattice
 | no observe mode | `policy diff --lockfile` previews a policy over a lockfile. It does not show what live traffic would hit, such as a transitive dependency no lockfile in the repository names |
 | observe as the shipped default | a proxy installed and left alone would refuse nothing. The plan's reason for it, "one blocked legitimate build and the tool is disabled", is met by making observe one variable away |
 
-## To settle when it is built
+## What observe mode changes
 
-| Case | Proposed |
-|---|---|
-| a quarantined or blocked version in a metadata document | left in. The removal is audited as a resolution line, as now |
-| an artifact whose bytes do not match the published digest, answered 502 now | still refused. It is an integrity failure of the transfer, not a policy verdict |
-| how the audit line says the refusal was not made | open. `answered: served` with a `block` action already says it; a separate field may read more plainly |
-| `/-/waharoa/health` and `waharoa status` | report the mode |
+A metadata document:
+
+| Step | Enforce | Observe |
+|---|---|---|
+| decide every version | yes | yes |
+| resolution audit line | written | written, with `answered: served` |
+| remove versions the policy refuses | yes | no, and WARN `observe: the policy refuses these versions; left in the document` |
+| remove versions on an origin the proxy does not serve | yes | yes: left in, the client would fetch them without the proxy |
+| `x-waharoa-filtered-versions` and `x-waharoa-filtered-checks` | sent when a version was removed | not sent |
+| rewrite artifact URLs to the proxy | yes | yes |
+
+An artifact request: the policy's refusal is logged at WARN, `observe: the policy refuses
+this artifact; not refused`, and the request goes on to the checks after it. Its pinned
+audit line keeps the action decided, `block` or `quarantine`, with `answered: served`. An
+artifact whose analysis stored a digest mismatch is still a 502: that is the transfer
+failing, not the policy.
+
+`answered: served` beside a refusing action is how a line says the refusal was not made.
+No separate field was added.
+
+`/-/waharoa/health` reports `mode`, and `waharoa doctor` warns when it is `observe`.
+`waharoa status` reports what the build does, not how a proxy is configured, so it does
+not.

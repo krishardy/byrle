@@ -4,6 +4,11 @@ How the proxy answers one request, and where each status code comes from. Read f
 `handle` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document` in
 `src/proxy.rs`, on 2026-09-28.
 
+With `WAHAROA_MODE=observe`, a refusal by policy is logged at WARN and the request goes on
+to the next check, and a metadata document keeps the versions the policy refuses. Every
+other answer is the same in both modes
+([observe-mode](engineering_decisions/observe-mode.md)).
+
 "Refusal status" is `WAHAROA_REFUSAL_STATUS`: 403 by default, settable per ecosystem and
 client to any code from 400 to 599. Every 503 carries `Retry-After: 1` and
 `x-waharoa-not-ready` naming the case.

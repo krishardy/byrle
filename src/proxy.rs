@@ -70,7 +70,7 @@ use crate::origin::{Disposition, OriginPolicy, ReachableOrigins};
 use crate::policy::decide::Provenance;
 use crate::policy::{Policy, enforce, facts};
 use crate::record::{PackageMetadata, PackageRecord};
-use crate::refusal::RefusalStatus;
+use crate::refusal::{Mode, RefusalStatus};
 use crate::route::{DocumentKind, RequestTarget};
 use crate::spool::Spool;
 use crate::store::{Lookup, RecordStore};
@@ -172,6 +172,9 @@ pub struct Health {
     pub rewrite_artifacts: bool,
     /// Whether versions whose artifacts this proxy cannot serve are removed.
     pub refuse_unservable: bool,
+    /// `enforce` or `observe`.
+    #[serde(default)]
+    pub mode: String,
     /// Origins whose artifacts this proxy serves.
     pub served_origins: Vec<String>,
     /// Origins it does not serve and permits a client to fetch directly.
@@ -248,6 +251,7 @@ struct Config {
     refusal: RefusalStatus,
     /// Whether to drop versions whose artifacts this proxy cannot serve.
     refuse_unservable: bool,
+    mode: Mode,
     /// Origins the operator added, beyond the upstreams, as `with_origin_policy` accepted
     /// them. Kept so a later upstream change rebuilds `origins` without losing them.
     served_origins: Vec<String>,
@@ -317,6 +321,7 @@ impl Proxy {
                 public_base: None,
                 refusal: RefusalStatus::default(),
                 refuse_unservable: true,
+                mode: Mode::Enforce,
                 #[cfg(debug_assertions)]
                 defer_test: None,
             }),
@@ -376,6 +381,11 @@ impl Proxy {
         self
     }
 
+    pub fn with_mode(mut self, mode: Mode) -> Self {
+        self.config_mut().mode = mode;
+        self
+    }
+
     pub fn with_max_concurrent_documents(mut self, limit: usize) -> Self {
         self.metadata_slots = Arc::new(Semaphore::new(limit.max(1)));
         self
@@ -423,6 +433,7 @@ impl Proxy {
             public_base: self.config.public_base.clone(),
             rewrite_artifacts: self.config.rewrite_artifacts,
             refuse_unservable: self.config.refuse_unservable,
+            mode: self.config.mode.as_str().to_owned(),
             served_origins: self.config.origins.reachable().as_slice().to_vec(),
             allowed_direct_origins: self.config.origins.allowed_direct().to_vec(),
             packages_held,
@@ -1183,6 +1194,7 @@ async fn filtered_document(
             intel.as_ref(),
             path,
             proxy.config.audit.as_deref(),
+            proxy.config.mode,
         ),
         None => Refused::default(),
     };
@@ -1631,8 +1643,8 @@ impl<'a> Deciding<'a> {
         analysed
     }
 
-    /// What to answer, in order: the policy's refusal, an origin the proxy does not
-    /// serve, no strong digest, then the analysis.
+    /// What to answer, in order: the policy's refusal, unless observing, an origin the
+    /// proxy does not serve, no strong digest, then the analysis.
     /// Returns what the audit line records, and the answer.
     fn answer(
         &self,
@@ -1642,7 +1654,10 @@ impl<'a> Deciding<'a> {
         state: AnalysisState,
     ) -> (audit::Answered, ArtifactStep) {
         if let Some(refusal) = refusal {
-            return (audit::Answered::Refused, self.refused_by_policy(refusal));
+            if self.proxy.config.mode == Mode::Enforce {
+                return (audit::Answered::Refused, self.refused_by_policy(refusal));
+            }
+            self.observed(refusal);
         }
         if let Some(origin) = unservable.filter(|_| self.proxy.config.refuse_unservable) {
             return (audit::Answered::Refused, self.unservable(&origin));
@@ -1689,6 +1704,19 @@ impl<'a> Deciding<'a> {
             "refused by policy"
         );
         ArtifactStep::Answer((status, refusal.message()).into_response())
+    }
+
+    /// Log the refusal observe mode does not make.
+    fn observed(&self, refusal: &enforce::Refusal) {
+        warn!(
+            method = %self.request.method,
+            path = %self.request.path,
+            claimed_purl = %self.purl,
+            action = refusal.action.as_str(),
+            reasons = ?refusal.reasons,
+            client = %self.request.client,
+            "observe: the policy refuses this artifact; not refused"
+        );
     }
 
     /// The refusal status for an artifact published on `origin`, which the proxy does not
@@ -2979,6 +3007,7 @@ fn policy_refused_versions(
     intel: Option<&PackageIntel>,
     path: &str,
     audit: Option<&AuditLog>,
+    mode: Mode,
 ) -> Refused {
     let Some(policy) = policy else {
         return Refused::default();
@@ -3029,19 +3058,32 @@ fn policy_refused_versions(
                 )
             })
             .unwrap_or_default();
-        audit.write(
-            &audit::Event::resolution(
-                metadata.key.ecosystem().as_str(),
-                &metadata.key.registry_name(),
-                strongest.as_str(),
-                order,
-                checks.iter().cloned().collect(),
-                &unenforceable,
-            )
-            .with_intel_snapshot(intel.map(|i| i.snapshot.as_str())),
-        );
+        let event = audit::Event::resolution(
+            metadata.key.ecosystem().as_str(),
+            &metadata.key.registry_name(),
+            strongest.as_str(),
+            order,
+            checks.iter().cloned().collect(),
+            &unenforceable,
+        )
+        .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()));
+        audit.write(&match mode {
+            Mode::Enforce => event,
+            Mode::Observe => event.answered(audit::Answered::Served),
+        });
     }
 
+    if mode == Mode::Observe {
+        if !refused.is_empty() {
+            warn!(
+                path = %path,
+                versions = refused.len(),
+                checks = ?checks,
+                "observe: the policy refuses these versions; left in the document"
+            );
+        }
+        return Refused::default();
+    }
     if refused.len() == metadata.records.len() && !refused.is_empty() {
         // Every version gone leaves the resolver nothing to pick, so the install fails
         // with the registry's own "no matching version" rather than anything this proxy
@@ -4621,6 +4663,121 @@ mod tests {
         assert_eq!(pinned["action"], "block");
     }
 
+    /// Observe mode serves what the policy refuses. The version stays in the document, the
+    /// artifact is fetched, and both are logged at WARN and audited as served.
+    #[tokio::test]
+    async fn observe_mode_serves_what_the_policy_refuses_and_records_it() {
+        let path = crate::util::test_support::tempdir("proxy-observe").join("audit.jsonl");
+        let log = Arc::new(AuditLog::open(&path).expect("should open"));
+        let proxy = offline(None, Some(DENY_LODASH))
+            .with_mode(Mode::Observe)
+            .with_audit_log(Some(log));
+        let (guard, captured) = capture(tracing::Level::WARN);
+
+        let DocumentStep::Forward {
+            body: Some(body),
+            refused,
+        } = resolve_npm(&proxy, "lodash", LODASH).await
+        else {
+            panic!("the packument is rewritten");
+        };
+        let step = pinned(&proxy, LODASH_TARBALL).await;
+        drop(guard);
+
+        let document: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(offers(&document, "4.17.21"));
+        assert!(refused.versions.is_empty(), "nothing to name in a header");
+        assert!(fetched(&step));
+        let captured = text(&captured);
+        assert!(
+            captured.contains("observe: the policy refuses these versions; left in the document"),
+            "{captured}"
+        );
+        assert!(
+            captured.contains("observe: the policy refuses this artifact; not refused"),
+            "{captured}"
+        );
+        let events: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let answered: Vec<_> = events
+            .iter()
+            .map(|e| {
+                (
+                    e["path"].clone(),
+                    e["action"].clone(),
+                    e["answered"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            answered,
+            [
+                ("resolution".into(), "block".into(), "served".into()),
+                ("pinned".into(), "block".into(), "served".into()),
+            ]
+        );
+        assert_eq!(events[0]["removed"], serde_json::json!(["4.17.21"]));
+    }
+
+    /// Observe mode never serves what the proxy cannot assess: an artifact on an origin it
+    /// does not serve, one with no strong digest, or one whose analysis has not finished.
+    #[tokio::test]
+    async fn observe_mode_still_refuses_what_cannot_be_assessed() {
+        let unservable = offline(None, Some(ALLOW_ALL))
+            .with_refuse_unservable(true)
+            .with_mode(Mode::Observe);
+        let DocumentStep::Forward {
+            body: Some(body), ..
+        } = resolve(
+            &unservable,
+            "/widget",
+            npm::ABBREVIATED_ACCEPT,
+            OFFSITE_PACKUMENT.as_bytes(),
+        )
+        .await
+        else {
+            panic!("the packument is rewritten");
+        };
+        let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(served["versions"].as_object().unwrap().is_empty());
+        let (status, _) = refused(pinned(&unservable, "/widget/-/widget-1.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let undigested = offline(None, Some(ALLOW_ALL)).with_mode(Mode::Observe);
+        hold_document(
+            &undigested,
+            br#"{"name":"widget","versions":{"1.0.0":{"version":"1.0.0",
+                "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let (status, _) = refused(pinned(&undigested, "/widget/-/widget-1.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+
+        let tarball =
+            crate::util::test_support::tarball(&[("package/package.json", RUNS_POSTINSTALL)]);
+        let (base, analyser) = analysing_with(
+            "observe-pending",
+            "",
+            &integrity(&tarball),
+            tarball.clone(),
+            Some(BLOCK),
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+            Extras {
+                mode: Mode::Observe,
+                ..Extras::default()
+            },
+        )
+        .await;
+        assert_eq!(tarball_request(&base).await.status(), 503);
+        analyser.ended(1).await;
+        let retry = tarball_request(&base).await;
+        assert_eq!(retry.status(), 200, "install_scripts refuses it; observed");
+        assert_eq!(retry.bytes().await.unwrap().as_ref(), tarball.as_slice());
+    }
+
     /// `pkg` with 1.0.0, published in 2020, and 2.0.0, published now.
     fn two_versions() -> PackageMetadata {
         let version = |v: &str| {
@@ -4654,8 +4811,14 @@ mod tests {
         let path = crate::util::test_support::tempdir("proxy-strongest").join("audit.jsonl");
         let log = AuditLog::open(&path).expect("should open");
         let policy = policy(COOLDOWN_AND_DENIAL);
-        let refused =
-            policy_refused_versions(&two_versions(), Some(&policy), None, "/pkg", Some(&log));
+        let refused = policy_refused_versions(
+            &two_versions(),
+            Some(&policy),
+            None,
+            "/pkg",
+            Some(&log),
+            Mode::Enforce,
+        );
         assert_eq!(refused.versions.len(), 2);
         assert_eq!(refused.checks, ["cooldown_days", "denials"]);
         let written = std::fs::read_to_string(&path).expect("should read");
@@ -4674,7 +4837,14 @@ mod tests {
         let refusing = |yaml: &str| {
             let policy = policy(yaml);
             logged(|| {
-                policy_refused_versions(&two_versions(), Some(&policy), None, "/pkg", None);
+                policy_refused_versions(
+                    &two_versions(),
+                    Some(&policy),
+                    None,
+                    "/pkg",
+                    None,
+                    Mode::Enforce,
+                );
             })
         };
         let every = refusing(COOLDOWN_AND_DENIAL);
@@ -6625,6 +6795,7 @@ mod tests {
         /// Holds the tarball route until the test adds permits.
         gate: Option<Arc<Semaphore>>,
         audit: Option<Arc<AuditLog>>,
+        mode: Mode,
     }
 
     /// [`analysing`], keeping analyses in `store`.
@@ -6685,6 +6856,7 @@ mod tests {
                 .with_policy(yaml.map(policy))
                 .with_analyser(Some(analyser.clone()))
                 .with_audit_log(extras.audit)
+                .with_mode(extras.mode)
                 .router(),
         )
         .await;

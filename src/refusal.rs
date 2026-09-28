@@ -28,6 +28,33 @@ use crate::identity::Ecosystem;
 use std::collections::BTreeMap;
 use std::fmt;
 
+/// Whether the proxy refuses what the policy refuses: [`crate::env::MODE`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    Enforce,
+    /// Serves what the policy refuses and logs it. Never serves what cannot be assessed.
+    Observe,
+}
+
+impl Mode {
+    /// `enforce` or `observe`. `None` for anything else.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "enforce" => Some(Self::Enforce),
+            "observe" => Some(Self::Observe),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforce => "enforce",
+            Self::Observe => "observe",
+        }
+    }
+}
+
 /// The client that sent a request, by the first token of its user-agent.
 ///
 /// `None` when there is no user-agent or it is empty. Lowercased, because the table is
@@ -227,6 +254,18 @@ mod proofs {
 
 #[cfg(test)]
 mod tests {
+    use super::Mode;
+
+    /// Each mode reads back from the name it prints, and nothing else is a mode.
+    #[test]
+    fn a_mode_parses_from_its_own_name() {
+        for mode in [Mode::Enforce, Mode::Observe] {
+            assert_eq!(Mode::parse(mode.as_str()), Some(mode));
+        }
+        assert_eq!(Mode::parse("warn"), None);
+        assert_eq!(Mode::default(), Mode::Enforce);
+    }
+
     use super::*;
 
     /// The measured user-agents. pnpm and yarn both carry `npm/` further along, so the

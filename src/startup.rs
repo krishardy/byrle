@@ -162,6 +162,13 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     // Versions whose artifacts are published where this proxy cannot see them are removed
     // from the packument, so a resolver picks one that can be examined. Setting this to 0
     // forwards them instead, and the client then fetches those artifacts directly.
+    let mode = environment.mode()?;
+    if mode == crate::refusal::Mode::Observe {
+        warn!(
+            "{}=observe: what the policy refuses is served and logged, not refused",
+            env::MODE
+        );
+    }
     let refuse_unservable = environment.refuse_unservable()?;
     if !refuse_unservable {
         warn!(
@@ -274,6 +281,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         ))))
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
+        .with_mode(mode)
         .with_origin_policy(
             served_origins.iter().map(String::as_str),
             allowed_direct.iter().map(String::as_str),
@@ -400,6 +408,7 @@ mod tests {
         );
         assert!(health.rewrite_artifacts);
         assert!(health.refuse_unservable);
+        assert_eq!(health.mode, "enforce");
         assert_eq!(health.public_base, None);
         assert_eq!(health.allowed_direct_origins, Vec::<String>::new());
         assert_eq!(
@@ -442,6 +451,7 @@ mod tests {
                 (env::ALLOW_DIRECT_ORIGINS, "https://direct.example"),
                 (env::REWRITE_ARTIFACTS, "0"),
                 (env::REFUSE_UNSERVABLE, "0"),
+                (env::MODE, "observe"),
             ],
         );
         let started = proxy(&environment).await.expect("every value is usable");
@@ -464,6 +474,7 @@ mod tests {
             Some("http://waharoa.corp.example")
         );
         assert!(!health.rewrite_artifacts && !health.refuse_unservable);
+        assert_eq!(health.mode, "observe");
         assert!(
             health
                 .served_origins
