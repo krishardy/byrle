@@ -87,9 +87,15 @@ fn run_audit_verify(args: cli::Verify) -> std::process::ExitCode {
 
 /// `waharoa warm`: ask the proxy for every artifact the lockfiles lock.
 async fn run_warm(args: cli::Warm) -> std::process::ExitCode {
+    let targets = match (args.all_platforms, args.platform.is_empty()) {
+        (true, _) => None,
+        (false, true) => Some(vec![waharoa::lockfile::Target::this_machine()]),
+        (false, false) => Some(args.platform),
+    };
     let warmed = waharoa::warm::run(
         &args.lockfile,
         args.proxy.as_deref(),
+        targets.as_deref(),
         std::time::Duration::from_secs(args.deadline),
         &env::process(),
     )

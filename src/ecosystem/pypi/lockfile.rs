@@ -35,6 +35,7 @@ pub const LOCKFILES: &[Lockfile] = &[
     Lockfile {
         name: "uv.lock",
         read: uv,
+        artifacts: None,
         pins: Some(Pins {
             key: "url",
             when_absent: "records no artifact URLs",
@@ -44,6 +45,7 @@ pub const LOCKFILES: &[Lockfile] = &[
     Lockfile {
         name: "poetry.lock",
         read: poetry,
+        artifacts: None,
         // poetry records each file's name and hash and no URL at all: it rebuilds the URL
         // from the index it is configured with.
         pins: None,
@@ -51,11 +53,13 @@ pub const LOCKFILES: &[Lockfile] = &[
     Lockfile {
         name: "requirements.txt",
         read: requirements,
+        artifacts: None,
         pins: None,
     },
     Lockfile {
         name: "Pipfile.lock",
         read: pipenv,
+        artifacts: None,
         // pipenv records each file's hash and the index's name, never a URL.
         pins: None,
     },

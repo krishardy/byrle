@@ -11,7 +11,7 @@ use futures_util::StreamExt;
 use crate::ecosystem::{Clients, Upstreams};
 use crate::env::{Env, EnvError};
 use crate::identity::Ecosystem;
-use crate::lockfile::Reference;
+use crate::lockfile::{Locked, LockfileError, Target};
 
 /// How long one artifact may stay deferred for its analysis before warm stops asking.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(900);
@@ -55,10 +55,12 @@ pub struct Warmed {
 }
 
 /// `waharoa warm`: read `lockfiles` and ask the proxy at `proxy`, or the environment's, for
-/// each artifact they lock, waiting up to `deadline` for each analysis.
+/// each artifact they lock that installs on one of `targets`, or on any platform when
+/// `targets` is `None`, waiting up to `deadline` for each analysis.
 pub async fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
     lockfiles: &[PathBuf],
     proxy: Option<&str>,
+    targets: Option<&[Target]>,
     deadline: Duration,
     environment: &Env<L>,
 ) -> Warmed {
@@ -74,19 +76,56 @@ pub async fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
         Ok(base) => base.trim_end_matches('/').to_owned(),
         Err(e) => return unread(e.to_string()),
     };
-    let mut listed = Vec::new();
-    for path in lockfiles {
-        match crate::lockfile::read(path) {
-            Ok(locked) => listed.extend(locked),
-            Err(e) => return unread(e.to_string()),
-        }
-    }
-    let outcomes = warm(&base, &crate::lockfile::references(listed), deadline).await;
+    let plan = match plan(lockfiles, targets) {
+        Ok(plan) => plan,
+        Err(e) => return unread(e.to_string()),
+    };
+    let outcomes = warm(&base, &plan, deadline).await;
     Warmed {
         notes: Vec::new(),
-        report: render(&outcomes),
+        report: render(&outcomes, plan.skipped),
         code: code(&outcomes),
     }
+}
+
+/// What warm asks the proxy for.
+#[derive(Debug, Default, PartialEq)]
+struct Plan {
+    /// Labelled artifact paths, from a lockfile that records them.
+    direct: Vec<(String, String)>,
+    /// Versions whose artifacts are found through the proxy's metadata.
+    versions: Vec<Locked>,
+    /// Artifacts left out because they install on none of the targets.
+    skipped: usize,
+}
+
+/// The artifacts `lockfiles` lock that install on `targets`, each path once, and the
+/// versions of lockfiles with no artifact reader.
+fn plan(lockfiles: &[PathBuf], targets: Option<&[Target]>) -> Result<Plan, LockfileError> {
+    let mut plan = Plan::default();
+    let mut seen = std::collections::HashSet::new();
+    for path in lockfiles {
+        let Some(artifacts) = crate::lockfile::artifacts(path)? else {
+            plan.versions.extend(crate::lockfile::read(path)?);
+            continue;
+        };
+        for artifact in artifacts {
+            let installs = targets.is_none_or(|targets| {
+                targets
+                    .iter()
+                    .any(|target| artifact.platform.allows(target))
+            });
+            if !installs {
+                plan.skipped += 1;
+            } else if seen.insert(artifact.path.clone()) {
+                let (ecosystem, name, version) = &artifact.locked;
+                let file = artifact.path.rsplit('/').next().unwrap_or_default();
+                let label = format!("pkg:{ecosystem}/{name}@{version} {file}");
+                plan.direct.push((label, artifact.path));
+            }
+        }
+    }
+    Ok(plan)
 }
 
 /// The proxy's own address: [`crate::env::PUBLIC_URL`] when set, otherwise where it
@@ -100,9 +139,9 @@ fn proxy_base<L: Fn(&str) -> Option<std::ffi::OsString>>(
     }
 }
 
-/// Each locked version's artifacts asked of the proxy at `base`, labelled. Every artifact
-/// is asked for once, which starts each analysis, before any is asked for again.
-async fn warm(base: &str, versions: &[Reference], deadline: Duration) -> Vec<(String, Outcome)> {
+/// `plan`'s artifacts asked of the proxy at `base`, labelled. Every artifact is asked for
+/// once, which starts each analysis, before any is asked for again.
+async fn warm(base: &str, plan: &Plan, deadline: Duration) -> Vec<(String, Outcome)> {
     let http = crate::http::client_builder(crate::http::READ_TIMEOUT)
         .build()
         .expect("a client with no TLS settings of its own builds");
@@ -118,7 +157,8 @@ async fn warm(base: &str, versions: &[Reference], deadline: Duration) -> Vec<(St
         &upstreams,
         crate::env::DEFAULT_MAX_METADATA_BYTES,
     );
-    let asks: Vec<Vec<(String, Ask)>> = futures_util::stream::iter(versions)
+    let versions = crate::lockfile::references(plan.versions.iter().cloned());
+    let found: Vec<Vec<(String, Ask)>> = futures_util::stream::iter(&versions)
         .map(|(purl, reference, version)| {
             let clients = &clients;
             async move { asks_for(base, purl, clients.record(reference.key(), version).await) }
@@ -126,20 +166,24 @@ async fn warm(base: &str, versions: &[Reference], deadline: Duration) -> Vec<(St
         .buffered(IN_FLIGHT)
         .collect()
         .await;
-    let first: Vec<(String, Answer, Option<String>)> =
-        futures_util::stream::iter(asks.into_iter().flatten())
-            .map(|(label, ask)| {
-                let http = http.clone();
-                async move {
-                    match ask {
-                        Ask::Known(outcome) => (label, Answer::Final(outcome), None),
-                        Ask::Fetch(url) => (label, ask_once(&http, &url).await, Some(url)),
-                    }
+    let direct = plan
+        .direct
+        .iter()
+        .map(|(label, path)| (label.clone(), Ask::Fetch(format!("{base}{path}"))));
+    let asks: Vec<(String, Ask)> = direct.chain(found.into_iter().flatten()).collect();
+    let first: Vec<(String, Answer, Option<String>)> = futures_util::stream::iter(asks)
+        .map(|(label, ask)| {
+            let http = http.clone();
+            async move {
+                match ask {
+                    Ask::Known(outcome) => (label, Answer::Final(outcome), None),
+                    Ask::Fetch(url) => (label, ask_once(&http, &url).await, Some(url)),
                 }
-            })
-            .buffered(IN_FLIGHT)
-            .collect()
-            .await;
+            }
+        })
+        .buffered(IN_FLIGHT)
+        .collect()
+        .await;
     futures_util::stream::iter(first)
         .map(|(label, answer, url)| {
             let http = http.clone();
@@ -244,8 +288,9 @@ async fn ask_until_analysed(
     }
 }
 
-/// One line per artifact not warmed, then the counts.
-fn render(outcomes: &[(String, Outcome)]) -> String {
+/// One line per artifact not warmed, then the counts, with the artifacts `skipped` for
+/// other platforms.
+fn render(outcomes: &[(String, Outcome)], skipped: usize) -> String {
     let mut out = String::new();
     let mut counts = [0usize; 6];
     for (label, outcome) in outcomes {
@@ -265,7 +310,8 @@ fn render(outcomes: &[(String, Outcome)]) -> String {
     let [warmed, refused, not_listed, not_ready, deferred, failed] = counts;
     out.push_str(&format!(
         "{warmed} warmed, {refused} refused, {not_listed} not listed, {not_ready} not ready, \
-         {deferred} still being analysed, {failed} failed\n"
+         {deferred} still being analysed, {failed} failed; {skipped} skipped for other \
+         platforms\n"
     ));
     out
 }
@@ -308,7 +354,7 @@ mod tests {
     }
 
     async fn warmed(label: &str, base: &str, deadline: Duration) -> Warmed {
-        run(&[lockfile(label)], Some(base), deadline, &with(&[])).await
+        run(&[lockfile(label)], Some(base), None, deadline, &with(&[])).await
     }
 
     fn tarball() -> Vec<u8> {
@@ -324,7 +370,8 @@ mod tests {
 
         assert_eq!(
             warmed.report,
-            "1 warmed, 0 refused, 0 not listed, 0 not ready, 0 still being analysed, 0 failed\n"
+            "1 warmed, 0 refused, 0 not listed, 0 not ready, 0 still being analysed, 0 failed; \
+             0 skipped for other platforms\n"
         );
         assert_eq!(warmed.code, 0);
     }
@@ -356,8 +403,9 @@ mod tests {
         assert_eq!(warmed.code, 0);
     }
 
+    /// A denied version's artifact is asked for by the path the lockfile gives, and refused.
     #[tokio::test]
-    async fn a_version_the_proxy_does_not_list_is_reported_and_not_asked_for() {
+    async fn a_denied_version_is_refused_at_its_artifact() {
         let tarball = tarball();
         let deny = "version: 1\ncooldown_days: 0\n\
                     denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: t\n";
@@ -375,7 +423,7 @@ mod tests {
         assert!(
             warmed
                 .report
-                .starts_with("pkg:npm/widget@1.0.0: not listed by the proxy\n"),
+                .starts_with("pkg:npm/widget@1.0.0 widget-1.0.0.tgz: refused 403\n"),
             "{}",
             warmed.report
         );
@@ -419,7 +467,7 @@ mod tests {
         assert!(
             warmed
                 .report
-                .starts_with("pkg:npm/widget@1.0.0: failed: metadata could not be fetched"),
+                .starts_with("pkg:npm/widget@1.0.0 widget-1.0.0.tgz: failed: "),
             "{}",
             warmed.report
         );
@@ -474,6 +522,81 @@ mod tests {
         assert_eq!(ask("/missing").await, Outcome::Refused(404));
     }
 
+    /// A lockfile with no artifact reader is warmed through the proxy's metadata: a
+    /// listed version's files are asked for, and an unlisted version is reported.
+    #[tokio::test]
+    async fn a_lockfile_without_artifact_paths_is_warmed_through_the_metadata() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let index = format!(
+            r#"{{"meta":{{"api-version":"1.0"}},"name":"x","files":[{{"filename":"x-1.0.tar.gz",
+                "url":"https://waharoa.example/packages/x-1.0.tar.gz",
+                "hashes":{{"sha256":"{}"}}}}]}}"#,
+            "a".repeat(64)
+        );
+        let router = Router::new()
+            .route(
+                "/simple/x/",
+                get(move || {
+                    let index = index.clone();
+                    async move {
+                        (
+                            [(
+                                axum::http::header::CONTENT_TYPE,
+                                crate::ecosystem::pypi::SIMPLE_JSON,
+                            )],
+                            index,
+                        )
+                    }
+                }),
+            )
+            .route("/packages/x-1.0.tar.gz", get(|| async { "bytes" }));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let path = crate::util::test_support::tempdir("warm-pypi").join("requirements.txt");
+        std::fs::write(&path, "x==1.0\nx==2.0\n").unwrap();
+
+        let warmed = run(&[path], Some(&base), None, SHORT, &with(&[])).await;
+
+        assert_eq!(
+            warmed.report,
+            "pkg:pypi/x@2.0: not listed by the proxy\n\
+             1 warmed, 0 refused, 1 not listed, 0 not ready, 0 still being analysed, 0 failed; \
+             0 skipped for other platforms\n"
+        );
+    }
+
+    /// Only artifacts that install on a target are asked for, each path once.
+    #[test]
+    fn the_plan_keeps_what_installs_on_a_target() {
+        let dir = crate::util::test_support::tempdir("warm-plan");
+        let path = dir.join("package-lock.json");
+        std::fs::write(
+            &path,
+            r#"{"lockfileVersion": 3, "packages": {"": {"name": "app"},
+                "node_modules/a": {"version": "1.0.0"},
+                "node_modules/b/node_modules/a": {"version": "1.0.0"},
+                "node_modules/@x/mac": {"version": "2.0.0", "os": ["darwin"], "cpu": ["arm64"]},
+                "node_modules/@x/musl": {"version": "2.0.0", "os": ["linux"], "cpu": ["x64"],
+                    "libc": ["musl"]}}}"#,
+        )
+        .unwrap();
+        let linux = Target::parse("linux-x64").unwrap();
+
+        let plan = super::plan(std::slice::from_ref(&path), Some(&[linux])).unwrap();
+
+        assert_eq!(
+            plan.direct,
+            [(
+                "pkg:npm/a@1.0.0 a-1.0.0.tgz".to_owned(),
+                "/a/-/a-1.0.0.tgz".to_owned()
+            )]
+        );
+        assert_eq!(plan.skipped, 2);
+        assert_eq!(super::plan(&[path], None).unwrap().direct.len(), 3);
+    }
+
     #[test]
     fn every_outcome_is_counted_and_sets_its_exit_bit() {
         let outcomes: Vec<(String, Outcome)> = [
@@ -490,10 +613,11 @@ mod tests {
         .collect();
 
         assert_eq!(
-            render(&outcomes),
+            render(&outcomes, 2),
             "p1: refused 403\np2: not listed by the proxy\np3: not ready: intel-store\n\
              p4: still being analysed\np5: failed: x\n\
-             1 warmed, 1 refused, 1 not listed, 1 not ready, 1 still being analysed, 1 failed\n"
+             1 warmed, 1 refused, 1 not listed, 1 not ready, 1 still being analysed, 1 failed; \
+             2 skipped for other platforms\n"
         );
         assert_eq!(code(&outcomes), FAILED | STILL_DEFERRED);
         assert_eq!(code(&outcomes[..3]), 0);
@@ -504,7 +628,14 @@ mod tests {
     async fn a_lockfile_that_does_not_read_is_an_error_on_its_own() {
         let missing = PathBuf::from("/nonexistent/package-lock.json");
 
-        let warmed = run(&[missing], Some("http://127.0.0.1:1"), SHORT, &with(&[])).await;
+        let warmed = run(
+            &[missing],
+            Some("http://127.0.0.1:1"),
+            None,
+            SHORT,
+            &with(&[]),
+        )
+        .await;
 
         assert_eq!(warmed.code, UNREAD);
         assert!(warmed.report.is_empty());

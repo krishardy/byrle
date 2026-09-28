@@ -2659,9 +2659,11 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
         same install direct, for an analysed proxy and for a cold one, and whether
         `make bench` fails over it. Not set on 2026-09-28. Measured then: analysed, npm
         +0.3 s and PyPI +2.6 s; cold, npm +10.7 s and PyPI +4.9 s.
-  - [ ] `waharoa warm` took 100.8 s where a cold `npm ci` took 20.1 s: it warms every
-        platform's optional packages, and fetches every metadata document through the
-        client path.
+  - [x] `waharoa warm` took 100.8 s where a cold `npm ci` took 20.1 s: it warmed every
+        platform's optional packages, and fetched every metadata document through the
+        client path. Done 2026-09-28: npm artifacts are asked for by the lockfile's path,
+        for this machine's platform by default, in 16.9 s
+        ([warm](docs/engineering_decisions/warm.md)).
 - [ ] ACME / Let's Encrypt support; document fronting with Caddy/nginx
 - [x] Honor `HTTPS_PROXY` for upstream traffic
       Done 2026-09-28. reqwest already read it, and `HTTP_PROXY` and `NO_PROXY`. Added:

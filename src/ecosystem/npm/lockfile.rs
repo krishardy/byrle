@@ -23,7 +23,7 @@ use serde::de::IgnoredAny;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::identity::Ecosystem;
-use crate::lockfile::{Locked, Lockfile, Pins, Unread};
+use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Platform, Unread};
 
 const REINSTALL: &str =
     "delete the lockfile and node_modules, then install again through the proxy";
@@ -44,21 +44,25 @@ pub const LOCKFILES: &[Lockfile] = &[
     Lockfile {
         name: "package-lock.json",
         read: npm,
+        artifacts: Some(npm_artifacts),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "npm-shrinkwrap.json",
         read: npm,
+        artifacts: Some(npm_artifacts),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "yarn.lock",
         read: yarn,
+        artifacts: Some(yarn_artifacts),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "pnpm-lock.yaml",
         read: pnpm,
+        artifacts: Some(pnpm_artifacts),
         // pnpm omits `resolution.tarball` when the URL matches the configured registry and
         // derives it at install time.
         pins: Some(Pins {
@@ -72,6 +76,7 @@ pub const LOCKFILES: &[Lockfile] = &[
     Lockfile {
         name: "bun.lock",
         read: bun,
+        artifacts: Some(bun_artifacts),
         pins: None,
     },
 ];
@@ -81,6 +86,75 @@ pub const UNREAD: &[Unread] = &[Unread {
     name: "bun.lockb",
     reason: "bun.lockb is binary; `bun install --save-text-lockfile` writes bun.lock",
 }];
+
+/// The packages `artifacts` lock, for `policy diff`.
+fn locked_set(artifacts: Vec<LockedArtifact>) -> BTreeSet<Locked> {
+    artifacts.into_iter().map(|a| a.locked).collect()
+}
+
+/// One registry artifact: fetched from `resolved`'s path when it is an HTTP URL, otherwise
+/// from the registry's own path for the package.
+fn artifact(
+    name: &str,
+    version: &str,
+    resolved: Option<&str>,
+    platform: Platform,
+) -> LockedArtifact {
+    let path = resolved
+        .and_then(|r| reqwest::Url::parse(r).ok())
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .map(|url| url.path().to_owned())
+        .unwrap_or_else(|| {
+            let file = name.rsplit('/').next().unwrap_or(name);
+            format!("/{name}/-/{file}-{version}.tgz")
+        });
+    LockedArtifact {
+        locked: locked(name, version),
+        path,
+        platform,
+    }
+}
+
+/// A lockfile's `os`, `cpu` or `libc`: a list, or one value.
+#[derive(Deserialize, Default)]
+#[serde(untagged)]
+enum Values {
+    #[default]
+    None,
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Values {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::None => Vec::new(),
+            Self::One(value) => vec![value],
+            Self::Many(values) => values,
+        }
+    }
+}
+
+/// The platform fields npm, pnpm and bun write on a package.
+#[derive(Deserialize, Default)]
+struct Platforms {
+    #[serde(default)]
+    os: Values,
+    #[serde(default)]
+    cpu: Values,
+    #[serde(default)]
+    libc: Values,
+}
+
+impl Platforms {
+    fn platform(self) -> Platform {
+        Platform {
+            os: self.os.into_vec(),
+            cpu: self.cpu.into_vec(),
+            libc: self.libc.into_vec(),
+        }
+    }
+}
 
 fn locked(name: &str, version: &str) -> Locked {
     (
@@ -117,9 +191,15 @@ struct NpmEntry {
     resolved: Option<String>,
     #[serde(default)]
     link: bool,
+    #[serde(flatten)]
+    platforms: Platforms,
 }
 
 fn npm(text: &str) -> Result<BTreeSet<Locked>, String> {
+    npm_artifacts(text).map(locked_set)
+}
+
+fn npm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     let lock: NpmLock = serde_json::from_str(text).map_err(|e| e.to_string())?;
     if !matches!(lock.version, 2 | 3) {
         return Err(format!(
@@ -128,7 +208,7 @@ fn npm(text: &str) -> Result<BTreeSet<Locked>, String> {
         ));
     }
     let packages = lock.packages.ok_or("`packages` is missing")?;
-    let mut out = BTreeSet::new();
+    let mut out = Vec::new();
     for (key, entry) in packages {
         // The project and its workspaces sit outside `node_modules`, and a link points at one.
         let (Some((_, installed)), Some(version)) =
@@ -137,7 +217,14 @@ fn npm(text: &str) -> Result<BTreeSet<Locked>, String> {
             continue;
         };
         if !entry.link && registry(&version, entry.resolved.as_deref()) {
-            out.insert(locked(entry.name.as_deref().unwrap_or(installed), &version));
+            let name = entry.name.as_deref().unwrap_or(installed);
+            let platform = entry.platforms.platform();
+            out.push(artifact(
+                name,
+                &version,
+                entry.resolved.as_deref(),
+                platform,
+            ));
         }
     }
     Ok(out)
@@ -152,10 +239,15 @@ struct YarnEntry<'a> {
 }
 
 fn yarn(text: &str) -> Result<BTreeSet<Locked>, String> {
+    yarn_artifacts(text).map(locked_set)
+}
+
+/// yarn 1 records no platform, so every entry allows every platform.
+fn yarn_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     if !text.lines().any(|line| line == "# yarn lockfile v1") {
         return Err("not a yarn 1 lockfile: `# yarn lockfile v1` is missing".to_owned());
     }
-    let mut out = BTreeSet::new();
+    let mut out = Vec::new();
     let mut entry: Option<YarnEntry> = None;
     for (i, line) in (1..).zip(text.lines()) {
         if line.is_empty() || line.starts_with('#') {
@@ -202,7 +294,7 @@ fn unquote(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-fn yarn_entry(out: &mut BTreeSet<Locked>, entry: Option<YarnEntry>) -> Result<(), String> {
+fn yarn_entry(out: &mut Vec<LockedArtifact>, entry: Option<YarnEntry>) -> Result<(), String> {
     let Some(entry) = entry else {
         return Ok(());
     };
@@ -210,7 +302,12 @@ fn yarn_entry(out: &mut BTreeSet<Locked>, entry: Option<YarnEntry>) -> Result<()
         .version
         .ok_or_else(|| format!("line {}: the entry has no version", entry.line))?;
     if registry(version, Some(entry.resolved.unwrap_or_default())) {
-        out.insert(locked(entry.name, version));
+        out.push(artifact(
+            entry.name,
+            version,
+            entry.resolved,
+            Platform::default(),
+        ));
     }
     Ok(())
 }
@@ -220,10 +317,24 @@ struct PnpmLock {
     #[serde(rename = "lockfileVersion")]
     version: String,
     #[serde(default)]
-    packages: BTreeMap<String, IgnoredAny>,
+    packages: BTreeMap<String, PnpmPackage>,
+}
+
+#[derive(Deserialize)]
+struct PnpmPackage {
+    #[serde(flatten)]
+    platforms: Platforms,
+    #[serde(flatten)]
+    _rest: BTreeMap<String, IgnoredAny>,
 }
 
 fn pnpm(text: &str) -> Result<BTreeSet<Locked>, String> {
+    pnpm_artifacts(text).map(locked_set)
+}
+
+/// pnpm omits the tarball URL for the configured registry, so each path is the registry's
+/// own for the package.
+fn pnpm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     let lock: PnpmLock = serde_saphyr::from_str(text).map_err(|e| e.to_string())?;
     if lock.version.split('.').next() != Some("9") {
         return Err(format!(
@@ -233,10 +344,12 @@ fn pnpm(text: &str) -> Result<BTreeSet<Locked>, String> {
     }
     Ok(lock
         .packages
-        .keys()
-        .filter_map(|key| split(key))
-        .filter(|(_, version)| registry(version, None))
-        .map(|(name, version)| locked(name, version))
+        .into_iter()
+        .filter_map(|(key, package)| {
+            let (name, version) = split(&key)?;
+            registry(version, None)
+                .then(|| artifact(name, version, None, package.platforms.platform()))
+        })
         .collect())
 }
 
@@ -249,6 +362,12 @@ struct BunLock {
 }
 
 fn bun(text: &str) -> Result<BTreeSet<Locked>, String> {
+    bun_artifacts(text).map(locked_set)
+}
+
+/// bun records an empty URL for the configured registry, so each path is the registry's own
+/// for the package. The platform is in the entry's third element.
+fn bun_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     let lock: BunLock = serde_saphyr::from_str(text).map_err(|e| e.to_string())?;
     if lock.version > 1 {
         return Err(format!(
@@ -256,7 +375,7 @@ fn bun(text: &str) -> Result<BTreeSet<Locked>, String> {
             lock.version
         ));
     }
-    let mut out = BTreeSet::new();
+    let mut out = Vec::new();
     for (key, entry) in &lock.packages {
         let (name, version) = entry
             .first()
@@ -264,7 +383,12 @@ fn bun(text: &str) -> Result<BTreeSet<Locked>, String> {
             .and_then(split)
             .ok_or_else(|| format!("packages.{key}: the first element is not `name@version`"))?;
         if registry(version, None) {
-            out.insert(locked(name, version));
+            let platform = entry
+                .get(2)
+                .and_then(|meta| Platforms::deserialize(meta).ok())
+                .unwrap_or_default()
+                .platform();
+            out.push(artifact(name, version, None, platform));
         }
     }
     Ok(out)
@@ -273,6 +397,56 @@ fn bun(text: &str) -> Result<BTreeSet<Locked>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Each format's artifacts: the recorded path where there is one, the registry's own
+    /// path otherwise, and the platform where the format writes it.
+    #[test]
+    fn each_format_gives_each_artifact_its_path_and_platform() {
+        let npm = npm_artifacts(
+            r#"{"lockfileVersion": 3, "packages": {"": {},
+                "node_modules/@s/b": {"version": "1.0.0",
+                    "resolved": "http://127.0.0.1:8080/@s/b/-/b-1.0.0.tgz"},
+                "node_modules/c": {"version": "2.0.0", "os": ["darwin"], "cpu": ["arm64"]}}}"#,
+        )
+        .unwrap();
+        assert_eq!(npm[0].path, "/@s/b/-/b-1.0.0.tgz");
+        assert_eq!(npm[1].path, "/c/-/c-2.0.0.tgz");
+        assert_eq!(npm[1].platform.os, ["darwin"]);
+        assert_eq!(npm[1].platform.cpu, ["arm64"]);
+
+        let yarn = yarn_artifacts(
+            "# yarn lockfile v1\n\nms@^2.1.3:\n  version \"2.1.3\"\n  resolved \
+             \"https://registry.yarnpkg.com/ms/-/ms-2.1.3.tgz#abc\"\n",
+        )
+        .unwrap();
+        assert_eq!(yarn[0].path, "/ms/-/ms-2.1.3.tgz");
+        assert_eq!(yarn[0].platform, Platform::default());
+
+        let pnpm = pnpm_artifacts(
+            "lockfileVersion: '9.0'\npackages:\n  '@esbuild/linux-x64@0.25.0':\n    \
+             resolution: {integrity: sha512-x}\n    os: [linux]\n    cpu: [x64]\n  \
+             ms@2.1.3:\n    resolution: {integrity: sha512-y}\n",
+        )
+        .unwrap();
+        assert_eq!(pnpm[0].path, "/@esbuild/linux-x64/-/linux-x64-0.25.0.tgz");
+        assert_eq!(pnpm[0].platform.os, ["linux"]);
+        assert_eq!(pnpm[1].platform, Platform::default());
+
+        let bun = bun_artifacts(
+            r#"{"lockfileVersion": 1, "packages": {
+                "@esbuild/darwin-arm64": ["@esbuild/darwin-arm64@0.25.0", "",
+                    {"os": "darwin", "cpu": "arm64"}, "sha512-x"],
+                "ms": ["ms@2.1.3", "", {}, "sha512-y"]}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            bun[0].path,
+            "/@esbuild/darwin-arm64/-/darwin-arm64-0.25.0.tgz"
+        );
+        assert_eq!(bun[0].platform.os, ["darwin"]);
+        assert_eq!(bun[0].platform.cpu, ["arm64"]);
+        assert_eq!(bun[1].platform, Platform::default());
+    }
 
     fn set(packages: &[(&str, &str)]) -> BTreeSet<Locked> {
         packages

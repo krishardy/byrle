@@ -20,9 +20,21 @@ and a fresh proxy:
 
 ## Decision
 
-`waharoa warm --lockfile <PATH>... [--proxy <URL>] [--deadline <SECONDS>]` reads each
-lockfile `policy diff` reads, and asks the proxy for each locked version's metadata, then
-for each artifact it lists. A 503 with `x-waharoa-not-ready: artifact-analysis` is asked
+`waharoa warm --lockfile <PATH>... [--proxy <URL>] [--platform <PLATFORM>...]
+[--all-platforms] [--deadline <SECONDS>]` reads each lockfile `policy diff` reads, and asks
+the proxy for each locked artifact.
+
+| Lockfile | Where warm asks | Platform |
+|---|---|---|
+| `package-lock.json`, `npm-shrinkwrap.json` | `resolved`'s path | `os`, `cpu`, `libc` |
+| `yarn.lock` | `resolved`'s path | not recorded: every entry is asked for |
+| `pnpm-lock.yaml`, `bun.lock` | `/<name>/-/<file>-<version>.tgz`, the registry's own path | `os`, `cpu`, `libc` |
+| PyPI lockfiles | each file the proxy's index lists for the version | not read: every file is asked for |
+
+An npm artifact is asked for only when it installs on a target, by npm's rules: a listed
+value is required, `!` excludes, and `libc` is read on Linux only. The target is the
+machine warm runs on, or each `--platform`, such as `linux-x64` or `linux-x64-musl`, or
+every platform with `--all-platforms`. The report counts what was skipped. A 503 with `x-waharoa-not-ready: artifact-analysis` is asked
 again each second, until the answer changes or `--deadline`, 900 s by default, passes
 from the first 503.
 
@@ -52,10 +64,18 @@ the proxy does not serve.
 - An artifact URL is asked of `--proxy` with the path and query the proxy wrote. The proxy
   writes `WAHAROA_PUBLIC_URL` into its documents, which the machine running warm may not
   reach. Measured with `WAHAROA_PUBLIC_URL=http://waharoa.invalid`: 8 of 8 warmed.
-- Sixteen metadata documents, then sixteen artifacts, are asked for at once. Every
-  artifact is asked for once before any is asked again, so every analysis starts at
-  once. On 207 npm packages it took 100.8 s:
-  [latency-benchmarks](latency-benchmarks.md) says why.
+- Sixteen artifacts are asked for at once. Every artifact is asked for once before any
+  is asked again, so every analysis starts at once.
+- Measured on the 207-package npm set of [latency-benchmarks](latency-benchmarks.md),
+  one run each against a fresh proxy:
+
+  | Warm | Artifacts | Skipped | Seconds |
+  |---|---|---|---|
+  | through the metadata, every platform, the first version | 207 | | 100.8 |
+  | by lockfile path, this machine, `linux-x64-glibc` | 133 | 74 | 16.9 |
+  | by lockfile path, `--all-platforms` | 207 | | 65.9 |
+
+  `npm ci` run after the 16.9 s warm exited 0.
 - For PyPI, every file of a locked version is asked for, each platform's wheel included.
   A wheel is read by nothing, but its attestations are verified, and the served GET is
   its only full download.

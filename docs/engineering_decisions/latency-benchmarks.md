@@ -69,6 +69,9 @@ The jobs downloaded 721,192,626 bytes. The largest were `next`'s platform binari
 33 to 35 MB and 23 to 25 s each. 665 s of work over 8 slots is most of warm's run: its
 cost is the analysis of every platform's binaries, which `npm ci` does not fetch.
 
+Since then warm asks for npm artifacts by the lockfile's path, for the platforms it is
+given, and took 16.9 s for this machine's 133 of the 207: see [warm](warm.md).
+
 Warm was first measured at 194.5 s, fetching each version's metadata in turn. Fetching
 them 16 at a time brought it to 102.2 s. Asking for every artifact once before asking any
 again, which starts every analysis at once as npm does, left it at 105.6 s.

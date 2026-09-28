@@ -77,6 +77,18 @@ pub struct Warm {
     /// The proxy to ask [default: the public URL, or the listen address]
     #[arg(long, value_name = "URL")]
     pub proxy: Option<String>,
+    #[arg(
+        long,
+        value_name = "PLATFORM",
+        value_parser = crate::lockfile::Target::parse,
+        help = "Ask only for artifacts that install on this platform, <os>-<cpu> or \
+                <os>-<cpu>-<libc> in npm's names, such as linux-x64. Repeatable [default: \
+                this machine's]"
+    )]
+    pub platform: Vec<crate::lockfile::Target>,
+    /// Ask for every platform's artifacts
+    #[arg(long, conflicts_with = "platform")]
+    pub all_platforms: bool,
     /// Stop asking for an artifact still being analysed after this long
     #[arg(long, value_name = "SECONDS", default_value_t = crate::warm::DEFAULT_DEADLINE.as_secs())]
     pub deadline: u64,
