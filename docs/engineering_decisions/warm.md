@@ -52,7 +52,10 @@ the proxy does not serve.
 - An artifact URL is asked of `--proxy` with the path and query the proxy wrote. The proxy
   writes `WAHAROA_PUBLIC_URL` into its documents, which the machine running warm may not
   reach. Measured with `WAHAROA_PUBLIC_URL=http://waharoa.invalid`: 8 of 8 warmed.
-- Eight artifacts are asked for at once.
+- Sixteen metadata documents, then sixteen artifacts, are asked for at once. Every
+  artifact is asked for once before any is asked again, so every analysis starts at
+  once. On 207 npm packages it took 100.8 s:
+  [latency-benchmarks](latency-benchmarks.md) says why.
 - For PyPI, every file of a locked version is asked for, each platform's wheel included.
   A wheel is read by nothing, but its attestations are verified, and the served GET is
   its only full download.

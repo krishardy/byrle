@@ -2643,6 +2643,13 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       Done 2026-09-28: `WAHAROA_MODE=observe` serves what the policy refuses, logs it at
       WARN, and audits it with `answered: served`.
 - [ ] Latency budget and benchmarks on a large lockfile (cold and warm cache)
+  - [x] Benchmarks: `make bench`. Measured 2026-09-28: through an analysed proxy, npm
+        207 packages 9.7 s against 9.4 s direct, PyPI 18 packages 11.6 s against 9.0 s
+        ([latency-benchmarks](docs/engineering_decisions/latency-benchmarks.md)).
+  - [ ] The budget.
+  - [ ] `waharoa warm` took 100.8 s where a cold `npm ci` took 20.1 s: it warms every
+        platform's optional packages, and fetches every metadata document through the
+        client path.
 - [ ] ACME / Let's Encrypt support; document fronting with Caddy/nginx
 - [x] Honor `HTTPS_PROXY` for upstream traffic
       Done 2026-09-28. reqwest already read it, and `HTTP_PROXY` and `NO_PROXY`. Added:

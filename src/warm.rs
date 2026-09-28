@@ -16,8 +16,8 @@ use crate::lockfile::Reference;
 /// How long one artifact may stay deferred for its analysis before warm stops asking.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(900);
 
-/// Artifacts asked for at once.
-const IN_FLIGHT: usize = 8;
+/// Metadata documents, and then artifacts, asked for at once.
+const IN_FLIGHT: usize = 16;
 
 /// Exit bit: an artifact or a package's metadata could not be fetched.
 pub const FAILED: u8 = 1;
@@ -100,7 +100,8 @@ fn proxy_base<L: Fn(&str) -> Option<std::ffi::OsString>>(
     }
 }
 
-/// Each locked version's artifacts asked of the proxy at `base`, labelled.
+/// Each locked version's artifacts asked of the proxy at `base`, labelled. Every artifact
+/// is asked for once, which starts each analysis, before any is asked for again.
 async fn warm(base: &str, versions: &[Reference], deadline: Duration) -> Vec<(String, Outcome)> {
     let http = crate::http::client_builder(crate::http::READ_TIMEOUT)
         .build()
@@ -117,26 +118,38 @@ async fn warm(base: &str, versions: &[Reference], deadline: Duration) -> Vec<(St
         &upstreams,
         crate::env::DEFAULT_MAX_METADATA_BYTES,
     );
-    let mut asks = Vec::new();
-    for (purl, reference, version) in versions {
-        match clients.record(reference.key(), version).await {
-            Err(e) => asks.push((purl.clone(), Ask::Known(Outcome::Failed(e)))),
-            Ok(None) => asks.push((purl.clone(), Ask::Known(Outcome::NotListed))),
-            Ok(Some(record)) => {
-                for artifact in &record.artifacts {
-                    let url = on_proxy(base, &artifact.url);
-                    asks.push((format!("{purl} {}", artifact.filename), Ask::Fetch(url)));
+    let asks: Vec<Vec<(String, Ask)>> = futures_util::stream::iter(versions)
+        .map(|(purl, reference, version)| {
+            let clients = &clients;
+            async move { asks_for(base, purl, clients.record(reference.key(), version).await) }
+        })
+        .buffered(IN_FLIGHT)
+        .collect()
+        .await;
+    let first: Vec<(String, Answer, Option<String>)> =
+        futures_util::stream::iter(asks.into_iter().flatten())
+            .map(|(label, ask)| {
+                let http = http.clone();
+                async move {
+                    match ask {
+                        Ask::Known(outcome) => (label, Answer::Final(outcome), None),
+                        Ask::Fetch(url) => (label, ask_once(&http, &url).await, Some(url)),
+                    }
                 }
-            }
-        }
-    }
-    futures_util::stream::iter(asks)
-        .map(|(label, ask)| {
+            })
+            .buffered(IN_FLIGHT)
+            .collect()
+            .await;
+    futures_util::stream::iter(first)
+        .map(|(label, answer, url)| {
             let http = http.clone();
             async move {
-                let outcome = match ask {
-                    Ask::Known(outcome) => outcome,
-                    Ask::Fetch(url) => ask_until_analysed(&http, &url, deadline).await,
+                let outcome = match answer {
+                    Answer::Final(outcome) => outcome,
+                    Answer::Deferred(since) => {
+                        let url = url.expect("only a fetched artifact is deferred");
+                        ask_until_analysed(&http, &url, since, deadline).await
+                    }
                 };
                 (label, outcome)
             }
@@ -144,6 +157,26 @@ async fn warm(base: &str, versions: &[Reference], deadline: Duration) -> Vec<(St
         .buffered(IN_FLIGHT)
         .collect()
         .await
+}
+
+/// What to ask for one locked version, given its record from the proxy.
+fn asks_for(
+    base: &str,
+    purl: &str,
+    record: Result<Option<crate::record::PackageRecord>, String>,
+) -> Vec<(String, Ask)> {
+    match record {
+        Err(e) => vec![(purl.to_owned(), Ask::Known(Outcome::Failed(e)))],
+        Ok(None) => vec![(purl.to_owned(), Ask::Known(Outcome::NotListed))],
+        Ok(Some(record)) => record
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                let label = format!("{purl} {}", artifact.filename);
+                (label, Ask::Fetch(on_proxy(base, &artifact.url)))
+            })
+            .collect(),
+    }
 }
 
 /// What to do for one label: an answer already known, or an artifact URL to ask for.
@@ -164,34 +197,49 @@ fn on_proxy(base: &str, url: &str) -> String {
     }
 }
 
-/// Ask for `url` until the answer is not a 503 for its analysis, or `deadline` has passed
-/// since the first one. The body is never read.
-async fn ask_until_analysed(http: &reqwest::Client, url: &str, deadline: Duration) -> Outcome {
-    let mut first_deferral: Option<Instant> = None;
+/// One answer for an artifact: its outcome, or deferred for its analysis since then.
+enum Answer {
+    Final(Outcome),
+    Deferred(Instant),
+}
+
+/// Ask for `url` once. The body is never read.
+async fn ask_once(http: &reqwest::Client, url: &str) -> Answer {
+    let response = match http.get(url).send().await {
+        Ok(response) => response,
+        Err(e) => return Answer::Final(Outcome::Failed(e.to_string())),
+    };
+    let status = response.status().as_u16();
+    let not_ready = response
+        .headers()
+        .get(crate::proxy::NOT_READY)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    drop(response);
+    Answer::Final(match (status, not_ready.as_deref()) {
+        (200..=299 | 304, _) => Outcome::Warmed,
+        (503, Some("artifact-analysis")) => return Answer::Deferred(Instant::now()),
+        (503, reason) => Outcome::NotReady(reason.unwrap_or("503").to_owned()),
+        (400..=499, _) => Outcome::Refused(status),
+        _ => Outcome::Failed(format!("answered {status}")),
+    })
+}
+
+/// Ask for `url` each second until the answer is not a 503 for its analysis, or
+/// `deadline` has passed `since` its first one.
+async fn ask_until_analysed(
+    http: &reqwest::Client,
+    url: &str,
+    since: Instant,
+    deadline: Duration,
+) -> Outcome {
     loop {
-        let response = match http.get(url).send().await {
-            Ok(response) => response,
-            Err(e) => return Outcome::Failed(e.to_string()),
-        };
-        let status = response.status().as_u16();
-        let not_ready = response
-            .headers()
-            .get(crate::proxy::NOT_READY)
-            .and_then(|v| v.to_str().ok())
-            .map(str::to_owned);
-        drop(response);
-        match (status, not_ready.as_deref()) {
-            (200..=299 | 304, _) => return Outcome::Warmed,
-            (503, Some("artifact-analysis")) => {
-                let since = *first_deferral.get_or_insert_with(Instant::now);
-                if since.elapsed() >= deadline {
-                    return Outcome::StillDeferred;
-                }
-                tokio::time::sleep(Duration::from_secs(1).min(deadline)).await;
-            }
-            (503, reason) => return Outcome::NotReady(reason.unwrap_or("503").to_owned()),
-            (400..=499, _) => return Outcome::Refused(status),
-            _ => return Outcome::Failed(format!("answered {status}")),
+        if since.elapsed() >= deadline {
+            return Outcome::StillDeferred;
+        }
+        tokio::time::sleep(Duration::from_secs(1).min(deadline)).await;
+        if let Answer::Final(outcome) = ask_once(http, url).await {
+            return outcome;
         }
     }
 }
@@ -405,7 +453,12 @@ mod tests {
         let ask = |path: &str| {
             let url = format!("{base}{path}");
             let http = http.clone();
-            async move { ask_until_analysed(&http, &url, SHORT).await }
+            async move {
+                match ask_once(&http, &url).await {
+                    Answer::Final(outcome) => outcome,
+                    Answer::Deferred(_) => panic!("{url} is not deferred"),
+                }
+            }
         };
 
         assert_eq!(
