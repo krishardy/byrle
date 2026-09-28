@@ -19,7 +19,7 @@ What was added is visibility:
 | Where | What |
 |---|---|
 | `waharoa --help` | the three variables, with a note that the lowercase names are read too |
-| startup log | `upstream traffic goes through a forward proxy: https via <url>, http via <url>, direct for <hosts>`, with any user and password in a URL replaced by `***` |
+| startup log | `upstream traffic goes through a forward proxy`, with fields `https`, `http` and `direct`, any user and password in a URL replaced by `***` |
 | `make smoke-proxy` | the binary against a local registry and a local recording forward proxy |
 
 ## Measured

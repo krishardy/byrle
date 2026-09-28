@@ -29,19 +29,18 @@ pub struct UpstreamProxy {
 }
 
 impl UpstreamProxy {
-    /// One line for the startup log, with any user and password in a proxy URL replaced.
-    /// Returns `None` when no forward proxy is set.
-    pub fn describe(&self) -> Option<String> {
+    /// `https`, `http` and `direct` for the startup log, with any user and password in a
+    /// proxy URL replaced. Returns `None` when no forward proxy is set.
+    pub fn fields(&self) -> Option<[String; 3]> {
         if self.https.is_none() && self.http.is_none() {
             return None;
         }
         let shown = |url: &Option<String>| url.as_deref().map_or("none".to_owned(), redacted);
-        Some(format!(
-            "https via {}, http via {}, direct for {}",
+        Some([
             shown(&self.https),
             shown(&self.http),
-            self.direct.as_deref().unwrap_or("nothing")
-        ))
+            self.direct.clone().unwrap_or_else(|| "nothing".to_owned()),
+        ])
     }
 }
 
@@ -364,12 +363,15 @@ mod tests {
             http: Some("not a url".to_owned()),
             direct: None,
         };
-        let described = proxy.describe().expect("a proxy is set");
         assert_eq!(
-            described,
-            "https via http://***@egress.example:3128/, http via ***, direct for nothing"
+            proxy.fields(),
+            Some([
+                "http://***@egress.example:3128/".to_owned(),
+                "***".to_owned(),
+                "nothing".to_owned(),
+            ])
         );
-        assert_eq!(UpstreamProxy::default().describe(), None);
+        assert_eq!(UpstreamProxy::default().fields(), None);
         for (url, shown) in [
             ("http://alice@egress.example/", "http://***@egress.example/"),
             (
@@ -385,11 +387,12 @@ mod tests {
                 direct: Some("internal.example".to_owned()),
                 ..UpstreamProxy::default()
             }
-            .describe()
-            .as_deref(),
-            Some(
-                "https via none, http via http://egress.example:3128/, direct for internal.example"
-            )
+            .fields(),
+            Some([
+                "none".to_owned(),
+                "http://egress.example:3128/".to_owned(),
+                "internal.example".to_owned(),
+            ])
         );
     }
 

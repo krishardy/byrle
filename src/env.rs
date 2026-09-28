@@ -338,6 +338,12 @@ pub const NO_PROXY: Var = runtime(
 pub const HTTPS_PROXY_LOWER: Var = other(Kind::External, "https_proxy", &["as HTTPS_PROXY"]);
 pub const HTTP_PROXY_LOWER: Var = other(Kind::External, "http_proxy", &["as HTTP_PROXY"]);
 pub const NO_PROXY_LOWER: Var = other(Kind::External, "no_proxy", &["as NO_PROXY"]);
+pub const LOG_FORMAT: Var = runtime(
+    "WAHAROA_LOG_FORMAT",
+    "",
+    &["\"json\" writes one JSON object per line"],
+)
+.with_default(Default::Text("text"));
 pub const LOG_FILTER: Var = runtime("RUST_LOG", "", &["log filter, in tracing's syntax"])
     .with_default(Default::Text(DEFAULT_LOG_FILTER));
 pub const DEFER_TEST: Var = Var {
@@ -422,7 +428,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 48] = [
+pub const ALL: [Var; 49] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -456,6 +462,7 @@ pub const ALL: [Var; 48] = [
     HTTPS_PROXY_LOWER,
     HTTP_PROXY_LOWER,
     NO_PROXY_LOWER,
+    LOG_FORMAT,
     LOG_FILTER,
     DEFER_TEST,
     BLESS,
@@ -810,6 +817,15 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         })
     }
 
+    pub fn log_format(&self) -> Result<crate::logging::Format, EnvError> {
+        self.parsed(
+            LOG_FORMAT,
+            crate::logging::Format::Text,
+            crate::logging::Format::parse,
+            "is not `text` or `json`",
+        )
+    }
+
     pub fn log_filter(&self) -> Result<String, EnvError> {
         self.text_or(LOG_FILTER, DEFAULT_LOG_FILTER)
     }
@@ -989,6 +1005,7 @@ mod tests {
         );
         assert!(env.refuse_unservable().unwrap());
         assert_eq!(env.mode().unwrap(), crate::refusal::Mode::Enforce);
+        assert_eq!(env.log_format().unwrap(), crate::logging::Format::Text);
         assert_eq!(env.log_filter().unwrap(), DEFAULT_LOG_FILTER);
         #[cfg(debug_assertions)]
         assert_eq!(env.defer_test().unwrap(), None);
@@ -1039,6 +1056,7 @@ mod tests {
             (REFUSAL_STATUS, "default=451"),
             (REFUSE_UNSERVABLE, "0"),
             (MODE, "observe"),
+            (LOG_FORMAT, "json"),
             (LOG_FILTER, "debug"),
             (BLESS, "1"),
             (NPM_CORPUS, "abbrev"),
@@ -1094,6 +1112,7 @@ mod tests {
         assert_eq!(env.refusal_status().unwrap().default_status(), 451);
         assert!(!env.refuse_unservable().unwrap());
         assert_eq!(env.mode().unwrap(), crate::refusal::Mode::Observe);
+        assert_eq!(env.log_format().unwrap(), crate::logging::Format::Json);
         assert_eq!(env.log_filter().unwrap(), "debug");
         assert!(env.bless());
         assert_eq!(env.npm_corpus().unwrap(), Some(PathBuf::from("abbrev")));
@@ -1146,11 +1165,12 @@ mod tests {
             (REWRITE_ARTIFACTS, "false"),
             (REFUSE_UNSERVABLE, "no"),
             (MODE, "warn"),
+            (LOG_FORMAT, "logfmt"),
             (SNAPSHOT_LIMIT, "0"),
             (MAX_ARTIFACT_BYTES, "0"),
             (MAX_TRAFFIC_CLIENTS, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 12] = [
+        let cases: [(Result<(), EnvError>, &str); 13] = [
             (
                 env.max_records().map(drop),
                 "WAHAROA_MAX_RECORDS: `5O000` is not a whole number",
@@ -1186,6 +1206,10 @@ mod tests {
             (
                 env.mode().map(drop),
                 "WAHAROA_MODE: `warn` is not `enforce` or `observe`",
+            ),
+            (
+                env.log_format().map(drop),
+                "WAHAROA_LOG_FORMAT: `logfmt` is not `text` or `json`",
             ),
             (
                 env.snapshot_limit().map(drop),

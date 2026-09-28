@@ -306,14 +306,12 @@ Items that I've added that are not stage-bound.
     clippy::too_many_lines`. Pairs with item 23: a comment explaining non-obvious behaviour
     is the same signal.
 
-25. [ ] Make every log line structured. Raised 2026-09-28.
-    - The daemon writes human-readable text (`tracing_subscriber::fmt()` in `main.rs`).
-      Add machine-readable output, JSON Lines, with every field a key.
-    - Put each value in a field, not in the message. On 2026-09-28, 13 of 93 log calls
-      with a message interpolated a value into it, 6 of them in `startup.rs` and 5 in
-      `proxy.rs`: `"upstream traffic goes through a forward proxy: {proxied}"` is one.
-    - Keep each message a fixed string, so a log search matches one event whatever its
-      values.
+25. [x] Make every log line structured. Raised 2026-09-28, done the same day
+    ([structured-logs](docs/engineering_decisions/structured-logs.md)).
+    - `WAHAROA_LOG_FORMAT=json` writes JSON Lines, every field a key.
+    - Every message is a fixed string. 19 of 114 log calls with a message had put a value
+      into it, 11 of them in `startup.rs`; none do now. The first count, 13 of 93, missed
+      messages split across lines.
 
 ## Architecture Refactor
 
