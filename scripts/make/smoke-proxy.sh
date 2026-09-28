@@ -63,8 +63,9 @@ echo "==> 1/4  HTTP_PROXY set: the request goes through the forward proxy"
 ask through HTTP_PROXY="$forward"
 [[ "$status" == 200 ]] || fail "answered $status"
 [[ "$(carried)" == 1 ]] || fail "the forward proxy carried $(carried) requests, not 1"
-grep -q "upstream traffic goes through a forward proxy: https via none, http via $forward/" \
-    "$workdir/proxy-through.log" || fail "startup did not name the forward proxy"
+sed -E 's/\x1b\[[0-9;]*m//g' "$workdir/proxy-through.log" \
+    | grep -q "upstream traffic goes through a forward proxy https=\"none\" http=\"$forward/\"" \
+    || fail "startup did not name the forward proxy"
 echo "    ok (200, carried by the forward proxy, named at startup)"
 
 echo "==> 2/4  HTTP_PROXY pointing at nothing: 502"

@@ -1351,9 +1351,10 @@ fn report_uninspected(
                 .get(header::ACCEPT_ENCODING)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("-"),
-            "UNINSPECTED: {}", Uninspected::Unreadable.reason()
+            reason = Uninspected::Unreadable.reason(),
+            "UNINSPECTED"
         ),
-        reason => warn!(path = %path, "UNINSPECTED: {}", reason.reason()),
+        reason => warn!(path = %path, reason = reason.reason(), "UNINSPECTED"),
     }
 }
 
@@ -1833,7 +1834,8 @@ impl<'a> Deciding<'a> {
             status = status.as_u16(),
             claimed_purl = %purl,
             client = %self.request.client,
-            "not served: {why}"
+            why,
+            "not served"
         );
         ArtifactStep::Answer(
             (
@@ -2690,8 +2692,8 @@ fn defer_response(
         retry_after = retry_after.map(|s| s.to_string()).unwrap_or_else(|| "-".to_owned()),
         client = %client_ua,
         elapsed_ms = started.elapsed().as_millis() as u64,
-        "deferred ({})",
-        crate::env::DEFER_TEST
+        variable = %crate::env::DEFER_TEST,
+        "deferred by the defer test"
     );
     (
         code,
@@ -3001,7 +3003,7 @@ async fn intel_for(
                     return Ok(Some(found));
                 }
                 for gap in &gaps {
-                    error!(path = %path, snapshot = %snapshot.digest, "{gap}; answering 503");
+                    error!(path = %path, snapshot = %snapshot.digest, %gap, "the intel snapshot has a gap for this ecosystem; answering 503");
                 }
                 return Err(NotReady::Uncovered(ecosystem));
             }

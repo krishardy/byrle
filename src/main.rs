@@ -206,15 +206,17 @@ async fn run_refresh() -> std::process::ExitCode {
 async fn run_daemon() -> std::process::ExitCode {
     let environment = env::process();
     let filter = or_exit(environment.log_filter());
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|e| {
-                eprintln!("waharoa: {}: `{filter}` {e}", env::LOG_FILTER);
-                std::process::exit(2)
-            }),
-        )
-        .with_target(false)
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|e| {
+        eprintln!("waharoa: {}: `{filter}` {e}", env::LOG_FILTER);
+        std::process::exit(2)
+    });
+    let format = or_exit(environment.log_format());
+    tracing::subscriber::set_global_default(waharoa::logging::subscriber(
+        filter,
+        format,
+        std::io::stdout,
+    ))
+    .expect("the daemon sets its subscriber once");
 
     let started = match startup::proxy(&environment).await {
         Ok(started) => started,
@@ -243,9 +245,9 @@ async fn run_daemon() -> std::process::ExitCode {
     for registry in waharoa::ecosystem::TABLE {
         let setup = &registry.setup;
         info!(
-            "point {} at it with:  {}",
-            setup.client,
-            setup.command_line(&listen)
+            client = setup.client,
+            command = %setup.command_line(&listen),
+            "point a client at the proxy"
         );
     }
 

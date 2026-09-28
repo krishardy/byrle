@@ -55,8 +55,9 @@ proxy starts with upstream `https://registry.npmjs.org/some/path`. Each mutation
 `WAHAROA_CA_BUNDLE_EXCLUSIVE` is read only when `WAHAROA_CA_BUNDLE` is set, as before, so a bad
 value is refused only then.
 
-The log line `deferred (WAHAROA_DEFER_TEST)`, which `scripts/make/retry-matrix.sh` counts, is
-unchanged: it is formatted from `env::DEFER_TEST`.
+The log line `deferred by the defer test`, which `scripts/make/retry-matrix.sh` counts,
+names the variable in its `variable` field, from `env::DEFER_TEST`. It read
+`deferred (WAHAROA_DEFER_TEST)` until 2026-09-28, when log values moved into fields.
 
 ## Credentials
 

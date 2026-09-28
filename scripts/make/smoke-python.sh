@@ -155,9 +155,9 @@ if grep -q 'MISMATCH' "$clean_log"; then
     fail "a file did not match the digest its index published:
 $(grep 'MISMATCH' "$clean_log")"
 fi
-if grep -q 'not served:' "$clean_log"; then
+if grep -q 'not served' "$clean_log"; then
     fail "a file could not be assessed:
-$(grep 'not served:' "$clean_log")"
+$(grep 'not served' "$clean_log")"
 fi
 # A rewritten index is what makes the above possible. Nothing may be left pointing away.
 if grep -qE 'simple index rewritten.*left_alone=[1-9]' "$clean_log"; then

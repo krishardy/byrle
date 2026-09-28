@@ -129,10 +129,10 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         // longer reachable, `npm ci` fails outright. It does not fall back to the
         // registry it was given on the command line.
         warn!(
-            "{} is not set, so {}. `npm ci` fails if that address later becomes unreachable. \
-             Set it to a stable name.",
-            env::PUBLIC_URL,
-            doctor::WITHOUT_PUBLIC_URL
+            variable = %env::PUBLIC_URL,
+            consequence = doctor::WITHOUT_PUBLIC_URL,
+            "not set: `npm ci` fails if the address lockfiles record later becomes \
+             unreachable. Set it to a stable name"
         );
     }
 
@@ -154,30 +154,33 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     for status in refusal.misleading() {
         warn!(
             status,
-            "a refusal configured to answer {status} will read as the proxy being broken \
-             rather than as policy denying the request (plan §5 reserves 5xx for not-ready)"
+            "a refusal configured with this status will read as the proxy being broken rather \
+             than as policy denying the request (plan §5 reserves 5xx for not-ready)"
         );
     }
 
     // Versions whose artifacts are published where this proxy cannot see them are removed
     // from the packument, so a resolver picks one that can be examined. Setting this to 0
     // forwards them instead, and the client then fetches those artifacts directly.
-    if let Some(proxied) = environment.upstream_proxy()?.describe() {
-        info!("upstream traffic goes through a forward proxy: {proxied}");
+    if let Some([https, http, direct]) = environment.upstream_proxy()?.fields() {
+        info!(
+            https,
+            http, direct, "upstream traffic goes through a forward proxy"
+        );
     }
     let mode = environment.mode()?;
     if mode == crate::refusal::Mode::Observe {
         warn!(
-            "{}=observe: what the policy refuses is served and logged, not refused",
-            env::MODE
+            variable = %env::MODE,
+            "observe mode: what the policy refuses is served and logged, not refused"
         );
     }
     let refuse_unservable = environment.refuse_unservable()?;
     if !refuse_unservable {
         warn!(
-            "{}=0: artifacts published off this registry are forwarded, and the client \
-             fetches them without the proxy seeing them",
-            env::REFUSE_UNSERVABLE
+            variable = %env::REFUSE_UNSERVABLE,
+            "set to 0: artifacts published off this registry are forwarded, and the client \
+             fetches them without the proxy seeing them"
         );
     }
 
@@ -188,9 +191,9 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let defer_test = environment.defer_test()?.inspect(|deferral| {
         warn!(
             %deferral,
-            "{} is set: matching requests are answered with a deferral and never fetched. \
-             This is a measurement harness, not a feature.",
-            env::DEFER_TEST
+            variable = %env::DEFER_TEST,
+            "set: matching requests are answered with a deferral and never fetched. This is \
+             a measurement harness, not a feature"
         );
     });
 
@@ -216,8 +219,8 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     };
     if audit.is_none() && policy.is_some() {
         warn!(
-            "no audit log configured; set {} to record policy decisions",
-            env::AUDIT_LOG
+            variable = %env::AUDIT_LOG,
+            "no audit log configured, so policy decisions are not recorded"
         );
     }
 
@@ -229,22 +232,22 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     match (&intel, &policy) {
         (Some(store), Some(_)) => {
             warn!(
-                "ENFORCED: known_malware and max_cvss, from the intel store at {}, and kev once \
-                 the store has loaded the KEV catalogue. A store that cannot answer, or holds no \
-                 snapshot, is a 503 for every package",
-                env::DATABASE_URL
+                variable = %env::DATABASE_URL,
+                "ENFORCED: known_malware and max_cvss, from the intel store, and kev once the \
+                 store has loaded the KEV catalogue. A store that cannot answer, or holds no \
+                 snapshot, is a 503 for every package"
             );
             // The snapshot loaded now. `waharoa doctor` reports the same for a later one.
             if let Ok(Some(snapshot)) = store.snapshot().await {
                 for gap in snapshot.gaps() {
-                    warn!("{gap}");
+                    warn!(%gap, "the intel snapshot has a gap");
                 }
             }
         }
         (None, Some(_)) => warn!(
-            "NOT ENFORCED: known_malware, max_cvss and kev. {} is not set, so there is no \
-             intel store to ask",
-            env::DATABASE_URL
+            variable = %env::DATABASE_URL,
+            "NOT ENFORCED: known_malware, max_cvss and kev. The variable is not set, so there \
+             is no intel store to ask"
         ),
         _ => {}
     }
@@ -339,7 +342,8 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
             warn!(
                 cooldown_days = policy.cooldown_days,
                 %ecosystem,
-                "cooldown_days is enforced, and for {ecosystem} costs {cost}"
+                cost,
+                "cooldown_days is enforced, at a cost to the ecosystem"
             );
         }
     }
@@ -355,8 +359,8 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
     for shadowed in report.never_wins() {
         warn!(
             at = packages::label(shadowed.index),
-            "policy exception never wins: {}",
-            shadowed.cover()
+            cover = %shadowed.cover(),
+            "policy exception never wins"
         );
     }
 

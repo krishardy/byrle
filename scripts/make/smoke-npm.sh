@@ -139,8 +139,8 @@ if grep -q 'MISMATCH' "$clean_log"; then
     fail "a tarball did not match the digest its packument published:
 $(grep 'MISMATCH' "$clean_log")"
 fi
-grep -q 'not served:' "$clean_log" \
-    && fail "a tarball could not be assessed: $(grep 'not served:' "$clean_log" | head -1)"
+grep -q 'not served' "$clean_log" \
+    && fail "a tarball could not be assessed: $(grep 'not served' "$clean_log" | head -1)"
 
 # No false positives on the real registry: every artifact it publishes has to look like
 # one the proxy will see. A warning here against registry.npmjs.org is a bug in the

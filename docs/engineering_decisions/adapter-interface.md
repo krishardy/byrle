@@ -160,7 +160,7 @@ produces. A PyPI record is `Full` and `may_be_incomplete()` is false. The record
 
 Code that serves both ecosystems says "metadata" where it said "packument": `Proxy`'s
 `max_metadata_bytes` and `metadata_slots`, and the log lines on the shared request path,
-such as `not served: the registry gave no metadata for it`. "Packument" stays where only npm is
+such as `not served` with `why="the registry gave no metadata for it"`. "Packument" stays where only npm is
 meant: `DocumentKind::Packument`, the npm arm of `handle`, and `publish_times_for`'s
 full-packument fetch.
 

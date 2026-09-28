@@ -22,6 +22,7 @@ pub mod identity;
 pub mod integrity;
 pub mod intel;
 pub mod lockfile;
+pub mod logging;
 pub mod origin;
 pub mod policy;
 pub mod proxy;

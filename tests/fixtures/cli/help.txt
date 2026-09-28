@@ -69,6 +69,7 @@ Proxy configuration, all through the environment:
                                     is read too
   NO_PROXY                          hosts fetched without the forward proxy, comma-separated;
                                     the lowercase name is read too
+  WAHAROA_LOG_FORMAT                "json" writes one JSON object per line (default text)
   RUST_LOG                          log filter, in tracing's syntax (default waharoa=info)
   WAHAROA_DEFER_TEST                DEBUG BUILDS ONLY: answer every matching request with
                                     a deferral instead of fetching, so client retry

@@ -182,7 +182,7 @@ run_cell() {
     # Per path, because npm asks for `/npm` as well as the package on every round. See
     # scripts/make/lib/retry_gaps.py.
     local measured attempts gaps
-    measured="$(grep 'deferred (WAHAROA_DEFER_TEST)' "$log" \
+    measured="$(grep 'deferred by the defer test' "$log" \
         | sed -E 's/^([^ ]+) .*path=([^ ]+) .*/\1 \2/' \
         | python3 "$repo_root/scripts/make/lib/retry_gaps.py")"
     attempts="${measured%% *}"

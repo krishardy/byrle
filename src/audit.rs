@@ -669,7 +669,7 @@ impl AuditLog {
 
     fn warn_once(&self, message: &str) {
         if !self.warned.swap(true, Ordering::Relaxed) {
-            warn!("{message}; the audit log is incomplete from here on");
+            warn!(reason = message, "the audit log is incomplete from here on");
         }
     }
 }
