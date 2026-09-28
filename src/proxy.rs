@@ -828,13 +828,19 @@ fn public_base(headers: &HeaderMap, configured: Option<&str>) -> Option<String> 
 ///
 /// It happens once per package per proxy lifetime, on the request path rather than in the
 /// background, because the digest has to be in hand before the artifact is forwarded.
-async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &str) -> Lookup {
+async fn lookup_or_fetch(
+    proxy: &Proxy,
+    key: &PackageKey,
+    version: &str,
+    filename: &str,
+    path: &str,
+) -> Lookup {
     // The guard is dropped before the await: nothing holds the lock across a fetch.
     let first = proxy
         .store
         .lock()
         .expect("record store lock")
-        .lookup(key, version);
+        .lookup(key, version, filename);
     if first != Lookup::Unknown {
         return first;
     }
@@ -845,7 +851,7 @@ async fn lookup_or_fetch(proxy: &Proxy, key: &PackageKey, version: &str, path: &
         .store
         .lock()
         .expect("record store lock")
-        .lookup(key, version)
+        .lookup(key, version, filename)
 }
 
 /// Fetch the metadata document the client did not ask for, and keep its records.
@@ -1420,11 +1426,11 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         purl: purl.clone(),
         ..ArtifactFetch::default()
     };
-    let found = match lookup_or_fetch(proxy, key, claimed_version, path).await {
+    let found = match lookup_or_fetch(proxy, key, claimed_version, filename, path).await {
         Lookup::Found(found) => found,
-        // The packument was read and does not name this version. A tarball filename
-        // that spells the version differently lands here: `express@3.0.0-rc1` is
-        // served at `express-3.0.0rc1.tgz`.
+        // The document was read and names neither this version nor this file. A
+        // filename that spells the version differently, `express-3.0.0rc1.tgz` for
+        // `3.0.0-rc1`, is found by the file and does not land here.
         Lookup::NoSuchVersion => {
             return unassessable(
                 refusal_status(proxy, ecosystem, Some(client)),
@@ -6420,10 +6426,10 @@ mod tests {
 
     const BLOCK: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: block\n";
 
-    /// Under `block`, a version whose claim passes waits for the analysis, because the
-    /// analysis can refuse it. The retry is served whole.
+    /// A version whose claim passes waits for the analysis, and each deferral names the
+    /// digest. The retry is served whole.
     #[tokio::test]
-    async fn an_artifact_the_answer_depends_on_is_deferred_and_its_retry_served() {
+    async fn a_deferred_artifact_is_served_on_its_retry_after_the_analysis() {
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
         // The job's fetch waits here, so the second request is deferred too.
         let gate = Arc::new(Semaphore::new(0));

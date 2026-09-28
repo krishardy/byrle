@@ -261,7 +261,9 @@ Items that I've added that are not stage-bound.
     `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
     well as its metadata formats.
 22. [ ] `proxy::tests::a_document_with_every_version_refused_is_reported` failed once in about
-    50 runs on 2026-09-27: the captured log was empty. `capture()` rebuilds the tracing
+    50 runs on 2026-09-27: the captured log was empty. So did
+    `proxy::tests::a_deferred_artifact_is_served_on_its_retry_after_the_analysis`, which
+    passed 30 of 30 reruns. `capture()` rebuilds the tracing
     callsite interest cache, which fixed the other log-capture tests; this one still races.
 
 ## Architecture Refactor
@@ -2394,6 +2396,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         does not list its version, is refused; one whose metadata the registry did not
         give is a 502. 429 is not used, there is no per-client code and no bounded
         internal wait. yarn 1 and bun fail the first fetch of every novel artifact.
+  - [ ] An artifact refused for having no strong digest is audited with the action the
+        policy decided and `answered: refused`, and no reason. A request refused because
+        the metadata names neither its version nor its file, or answered 502 because the
+        registry gave none, has no audit line. Settle with observe mode's audit field.
   - [ ] A separate process watches each upstream registry for newly published versions
         and starts their analysis, so the artifact is analysed before a client asks for
         it. The artifact analysis is the slowest step, and every novel artifact is

@@ -114,14 +114,23 @@ impl RecordStore {
     }
 
     /// Find the record for one version, marking its package as recently used.
-    pub fn lookup(&mut self, key: &PackageKey, version: &str) -> Lookup {
+    ///
+    /// A version the document does not list is found by `filename` instead, when a record
+    /// names that file: 38 of 24,852 npm tarball URLs spell the version differently from
+    /// the packument, `express-3.0.0rc1.tgz` for `3.0.0-rc1`.
+    pub fn lookup(&mut self, key: &PackageKey, version: &str, filename: &str) -> Lookup {
         self.clock += 1;
         let clock = self.clock;
         let Some(entry) = self.entries.get_mut(key) else {
             return Lookup::Unknown;
         };
         entry.last_used = clock;
-        match entry.metadata.version(version) {
+        let records = &entry.metadata.records;
+        match entry.metadata.version(version).or_else(|| {
+            records
+                .iter()
+                .find(|r| r.artifact_named(filename).is_some())
+        }) {
             Some(record) => Lookup::Found(Box::new(record.clone())),
             None => Lookup::NoSuchVersion,
         }
@@ -202,7 +211,8 @@ mod tests {
 
         assert_eq!(store.len(), 1);
         assert_eq!(store.records(), 2);
-        let Lookup::Found(record) = store.lookup(&key("lodash"), "4.17.21") else {
+        let Lookup::Found(record) = store.lookup(&key("lodash"), "4.17.21", "lodash-4.17.21.tgz")
+        else {
             panic!("the packument names this version");
         };
         assert_eq!(
@@ -211,21 +221,41 @@ mod tests {
         );
     }
 
-    /// Three outcomes, not two. A version the packument does not name is a different
-    /// situation from a package never seen, and the fetch path has to tell them apart:
-    /// one means the filename disagrees with the document, the other means nothing was
-    /// observed at all.
+    /// `express-3.0.0rc1.tgz` is `3.0.0-rc1`'s tarball. The path's spelling is not in the
+    /// packument, and the file is.
+    #[test]
+    fn a_version_spelled_differently_by_its_filename_is_found_by_the_file() {
+        let mut store = RecordStore::new(100);
+        let body = r#"{"name":"express","versions":{"3.0.0-rc1":{"version":"3.0.0-rc1",
+            "dist":{"tarball":"https://r/express/-/express-3.0.0rc1.tgz","integrity":"sha512-x"}}}}"#;
+        store.insert(normalize_packument(body.as_bytes(), DocumentDetail::Abbreviated).unwrap());
+
+        let Lookup::Found(record) =
+            store.lookup(&key("express"), "3.0.0rc1", "express-3.0.0rc1.tgz")
+        else {
+            panic!("found by its file");
+        };
+        assert_eq!(record.package.version(), "3.0.0-rc1");
+    }
+
+    /// Three outcomes, not two. A version the document names neither by version nor by
+    /// file is a different situation from a package never seen, and the fetch path has
+    /// to tell them apart: one means the request names nothing the document holds, the
+    /// other means nothing was observed at all.
     #[test]
     fn a_missing_version_and_a_missing_package_are_different_answers() {
         let mut store = RecordStore::new(100);
         store.insert(packument("express", &["3.0.0-rc1"]));
 
         assert_eq!(
-            store.lookup(&key("express"), "3.0.0rc1"),
+            store.lookup(&key("express"), "3.0.0rc2", "express-3.0.0rc2.tgz"),
             Lookup::NoSuchVersion,
-            "this is the spelling the tarball path uses, and the packument does not"
+            "neither the version nor the file is in the document"
         );
-        assert_eq!(store.lookup(&key("lodash"), "4.17.21"), Lookup::Unknown);
+        assert_eq!(
+            store.lookup(&key("lodash"), "4.17.21", "lodash-4.17.21.tgz"),
+            Lookup::Unknown
+        );
     }
 
     #[test]
@@ -251,11 +281,14 @@ mod tests {
 
         assert!(store.records() <= 5, "budget exceeded: {}", store.records());
         assert_eq!(
-            store.lookup(&key("a"), "1.0.0"),
+            store.lookup(&key("a"), "1.0.0", "a-1.0.0.tgz"),
             Lookup::Unknown,
             "`a` was least recently used"
         );
-        assert!(matches!(store.lookup(&key("c"), "1.0.0"), Lookup::Found(_)));
+        assert!(matches!(
+            store.lookup(&key("c"), "1.0.0", "c-1.0.0.tgz"),
+            Lookup::Found(_)
+        ));
     }
 
     /// A lookup is a use. Without that, a package read on every install would be evicted
@@ -280,14 +313,23 @@ mod tests {
         let mut store = RecordStore::new(4);
         store.insert(packument("a", &["1.0.0", "1.0.1"]));
         store.insert(packument("b", &["1.0.0", "1.0.1"]));
-        assert!(matches!(store.lookup(&key("a"), "1.0.0"), Lookup::Found(_)));
+        assert!(matches!(
+            store.lookup(&key("a"), "1.0.0", "a-1.0.0.tgz"),
+            Lookup::Found(_)
+        ));
 
         store.insert(packument("c", &["1.0.0", "1.0.1"]));
         assert!(
-            matches!(store.lookup(&key("a"), "1.0.0"), Lookup::Found(_)),
+            matches!(
+                store.lookup(&key("a"), "1.0.0", "a-1.0.0.tgz"),
+                Lookup::Found(_)
+            ),
             "`a` was used more recently than `b`"
         );
-        assert_eq!(store.lookup(&key("b"), "1.0.0"), Lookup::Unknown);
+        assert_eq!(
+            store.lookup(&key("b"), "1.0.0", "b-1.0.0.tgz"),
+            Lookup::Unknown
+        );
     }
 
     /// typescript is 3,822 versions. A packument over the whole budget is still kept,
@@ -299,7 +341,7 @@ mod tests {
 
         assert_eq!(store.len(), 1);
         assert!(matches!(
-            store.lookup(&key("big"), "1.0.3"),
+            store.lookup(&key("big"), "1.0.3", "big-1.0.3.tgz"),
             Lookup::Found(_)
         ));
         assert!(
