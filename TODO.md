@@ -279,7 +279,7 @@ Items that I've added that are not stage-bound.
     over it. Raised 2026-09-28. clippy has two lints for it:
     `clippy::cognitive_complexity`, threshold `cognitive-complexity-threshold` in
     `clippy.toml`, default 25; and `clippy::too_many_lines`, `too-many-lines-threshold`,
-    default 100. The thresholds are to be chosen. Over the defaults on 2026-09-28:
+    default 100. The defaults are the thresholds, decided 2026-09-28. Over them that day:
 
     | Function | Cognitive complexity | Lines |
     |---|---|---|
