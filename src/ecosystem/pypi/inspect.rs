@@ -134,7 +134,7 @@ mod tests {
         let key = PackageKey::from_registry_name(Ecosystem::PyPI, "x").unwrap();
         let mut store = store.lock().unwrap();
         assert_eq!(store.records(), 1, "one version, two files");
-        let Lookup::Found(record) = store.lookup(&key, "1.0") else {
+        let Lookup::Found(record) = store.lookup(&key, "1.0", "x-1.0-py3-none-any.whl") else {
             panic!("the index named 1.0");
         };
         assert_eq!(
