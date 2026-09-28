@@ -730,7 +730,7 @@ impl VerifyingStream {
                     .expect("verified artifacts lock")
                     .record(self.sri.clone());
                 info!(
-                    url.path = %self.path,
+                    url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
                     waharoa.package.purl = %self.purl,
                     waharoa.artifact.bytes = self.bytes,
                     "artifact digest verified"
@@ -742,7 +742,7 @@ impl VerifyingStream {
             // never receives a complete body that failed the check.
             Err(mismatch) => {
                 error!(
-                    url.path = %self.path,
+                    url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
                     waharoa.package.purl = %self.purl,
                     waharoa.artifact.digest_expected = %mismatch.expected,
                     waharoa.artifact.digest_actual = %mismatch.actual,
@@ -911,7 +911,7 @@ async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
                 .expect("record store lock")
                 .insert(metadata);
             info!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 waharoa.package.purl = %key,
                 waharoa.package.versions = versions,
                 waharoa.duration_ms = started.elapsed().as_millis() as u64,
@@ -919,10 +919,10 @@ async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
             );
         }
         Ok(Err(e)) => {
-            warn!(url.path = %path, waharoa.package.purl = %key, error.message = %e, "metadata fetched but did not normalize")
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.package.purl = %key, error.message = %e, "metadata fetched but did not normalize")
         }
         Err(e) => {
-            warn!(url.path = %path, waharoa.package.purl = %key, error.message = %e, "could not fetch metadata")
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.package.purl = %key, error.message = %e, "could not fetch metadata")
         }
     }
 }
@@ -1050,7 +1050,7 @@ async fn revalidated(
     if let RequestTarget::Metadata(key) = target {
         let held = proxy.store.lock().expect("record store lock").holds(key);
         info!(
-            url.path = %path,
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             waharoa.package.purl = %key,
             "http.response.header.etag" = headers.get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("-"),
             waharoa.store.held = held,
@@ -1103,7 +1103,7 @@ async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphore
     let waited = queued.elapsed();
     if waited.as_millis() > 0 {
         debug!(
-            url.path = %path,
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             waharoa.metadata.slot_wait_ms = waited.as_millis() as u64,
             "waited for a metadata slot"
         );
@@ -1150,7 +1150,7 @@ async fn filtered_document(
         Ok(decoded) => decoded,
         Err(e) => {
             proxy.uninspected.fetch_add(1, Ordering::Relaxed);
-            warn!(url.path = %path, error.message = %e, "UNINSPECTED: metadata body could not be decoded");
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: metadata body could not be decoded");
             return DocumentStep::Forward {
                 body: None,
                 refused: Refused::default(),
@@ -1197,7 +1197,7 @@ async fn filtered_document(
                     == UncoveredMetadata::FilterWithoutIntel =>
             {
                 warn!(
-                    url.path = %path,
+                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                     "filtering without intel; the artifact request answers 503"
                 );
                 None
@@ -1348,7 +1348,7 @@ fn report_uninspected(
     proxy.uninspected.fetch_add(1, Ordering::Relaxed);
     match reason {
         Uninspected::Unreadable => warn!(
-            url.path = %path,
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             "http.request.header.accept-encoding" = headers
                 .get(header::ACCEPT_ENCODING)
                 .and_then(|v| v.to_str().ok())
@@ -1356,7 +1356,9 @@ fn report_uninspected(
             waharoa.reason = Uninspected::Unreadable.reason(),
             "UNINSPECTED"
         ),
-        reason => warn!(url.path = %path, waharoa.reason = reason.reason(), "UNINSPECTED"),
+        reason => {
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.reason = reason.reason(), "UNINSPECTED")
+        }
     }
 }
 
@@ -1406,7 +1408,7 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
             // whose artifact URLs were never pointed at it. Dropping the header makes the
             // registry send a body to rewrite afresh.
             _ => info!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 "dropped a conditional request for a body this proxy did not rewrite"
             ),
         }
@@ -1545,7 +1547,7 @@ impl<'a> Deciding<'a> {
         };
         let record = found.narrowed_to(filename).unwrap_or_else(|| {
             warn!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 waharoa.package.claimed_purl = %self.purl,
                 waharoa.artifact.filename = %filename,
                 "the record names no file by this name; deciding on the version's first file"
@@ -1553,7 +1555,7 @@ impl<'a> Deciding<'a> {
             *found
         });
         info!(
-            url.path = %path,
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             waharoa.package.claimed_purl = %self.purl,
             waharoa.artifact.integrity = record
                 .artifact()
@@ -1600,7 +1602,7 @@ impl<'a> Deciding<'a> {
                     .expect("verified artifacts lock")
                     .lookup(&sri);
                 info!(
-                    url.path = %path,
+                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                     waharoa.package.claimed_purl = %self.purl,
                     waharoa.artifact.digest = %sri,
                     waharoa.artifact.cache = seen.as_str(),
@@ -1610,7 +1612,7 @@ impl<'a> Deciding<'a> {
             }
             Some(Err(e)) => {
                 warn!(
-                    url.path = %path,
+                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                     waharoa.package.claimed_purl = %self.purl,
                     error.message = %e,
                     "metadata integrity string is unusable; not verifying"
@@ -1619,7 +1621,7 @@ impl<'a> Deciding<'a> {
             }
             None => {
                 warn!(
-                    url.path = %path,
+                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                     waharoa.package.claimed_purl = %self.purl,
                     "metadata publishes no strong digest; not verifying"
                 );
@@ -1726,7 +1728,7 @@ impl<'a> Deciding<'a> {
         let status = self.refusal_status();
         info!(
             http.request.method = %self.request.method,
-            url.path = %self.request.path,
+            url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             http.response.status_code = status.as_u16(),
             waharoa.package.claimed_purl = %self.purl,
             waharoa.policy.action = refusal.action.as_str(),
@@ -1741,7 +1743,7 @@ impl<'a> Deciding<'a> {
     fn observed(&self, refusal: &enforce::Refusal) {
         warn!(
             http.request.method = %self.request.method,
-            url.path = %self.request.path,
+            url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             waharoa.package.claimed_purl = %self.purl,
             waharoa.policy.action = refusal.action.as_str(),
             waharoa.policy.reasons = ?refusal.reasons,
@@ -1756,7 +1758,7 @@ impl<'a> Deciding<'a> {
         let status = self.refusal_status();
         info!(
             http.request.method = %self.request.method,
-            url.path = %self.request.path,
+            url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             http.response.status_code = status.as_u16(),
             waharoa.package.claimed_purl = %self.purl,
             waharoa.artifact.origin = %origin,
@@ -1780,7 +1782,7 @@ impl<'a> Deciding<'a> {
     fn mismatched(&self, mismatch: &crate::integrity::Mismatch) -> ArtifactStep {
         warn!(
             http.request.method = %self.request.method,
-            url.path = %self.request.path,
+            url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             waharoa.package.claimed_purl = %self.purl,
             waharoa.artifact.digest_mismatch = %mismatch,
             "refused: the upstream serves bytes its metadata does not describe"
@@ -1812,7 +1814,7 @@ impl<'a> Deciding<'a> {
             .defer(&digest);
         info!(
             http.request.method = %self.request.method,
-            url.path = %self.request.path,
+            url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             waharoa.package.claimed_purl = %self.purl,
             waharoa.artifact.digest = %digest,
             waharoa.deferral.count = deferrals,
@@ -1832,7 +1834,7 @@ impl<'a> Deciding<'a> {
     fn unassessable(&self, status: StatusCode, why: &str) -> ArtifactStep {
         let purl = &self.purl;
         warn!(
-            url.path = %self.request.path,
+            url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             http.response.status_code = status.as_u16(),
             waharoa.package.claimed_purl = %purl,
             user_agent.original = %self.request.client,
@@ -1948,7 +1950,7 @@ fn report_direct_dependencies(proxy: &Proxy, record: &PackageRecord, path: &str,
         .map(|d| format!("{} {}", d.name, d.spec))
         .collect();
     warn!(
-        url.path = %path,
+        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
         waharoa.package.purl = %record.package,
         waharoa.package.direct_dependencies = ?named,
         user_agent.original = %client,
@@ -1969,7 +1971,7 @@ fn returned(proxy: &Proxy, digest: &Sri, path: &str, client: &str) {
         return;
     };
     info!(
-        url.path = %path,
+        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
         waharoa.artifact.digest = %digest,
         waharoa.deferral.count = deferral.count,
         waharoa.deferral.after_ms = deferral.first.elapsed().as_millis() as u64,
@@ -2203,14 +2205,14 @@ async fn attested(
 /// claim is a warning whatever the policy says: the metadata hid a script.
 fn report_claim(record: &PackageRecord, scripts: &Scripts, path: &str) {
     let Scripts::Declared(found) = scripts else {
-        warn!(url.path = %path, waharoa.artifact.scripts = ?scripts, "the artifact could not be read; it counts as running install scripts");
+        warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.artifact.scripts = ?scripts, "the artifact could not be read; it counts as running install scripts");
         return;
     };
     let claim = Claim::of(found, record.has_install_scripts, record.detail);
     if claim == Claim::Undeclared {
-        warn!(url.path = %path, waharoa.artifact.scripts = ?found.names, waharoa.artifact.scripts_claimed = claim.as_str(), "the artifact runs install scripts its metadata does not declare");
+        warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.artifact.scripts = ?found.names, waharoa.artifact.scripts_claimed = claim.as_str(), "the artifact runs install scripts its metadata does not declare");
     } else {
-        info!(url.path = %path, waharoa.artifact.scripts = ?found.names, waharoa.artifact.scripts_claimed = claim.as_str(), "install scripts read from the artifact");
+        info!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.artifact.scripts = ?found.names, waharoa.artifact.scripts_claimed = claim.as_str(), "install scripts read from the artifact");
     }
 }
 
@@ -2414,7 +2416,7 @@ impl Exchange<'_> {
             .send()
             .await
             .map_err(|e| {
-                error!(http.request.method = %self.method, url.path = %self.path, error.message = %e, "upstream request failed");
+                error!(http.request.method = %self.method, url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path), error.message = %e, "upstream request failed");
                 Box::new(
                     (
                         StatusCode::BAD_GATEWAY,
@@ -2484,7 +2486,7 @@ impl Exchange<'_> {
             if status == reqwest::StatusCode::NOT_MODIFIED {
                 self.proxy.revalidated.fetch_add(1, Ordering::Relaxed);
                 info!(
-                    url.path = %self.path,
+                    url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
                     waharoa.package.purl = %artifact.purl,
                     user_agent.original = %self.client,
                     "artifact revalidated with a 304: the client installs its cached bytes, \
@@ -2521,7 +2523,7 @@ impl Exchange<'_> {
             Buffered::Oversized { prefix, rest } => {
                 self.proxy.uninspected.fetch_add(1, Ordering::Relaxed);
                 warn!(
-                    url.path = %self.path,
+                    url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
                     waharoa.metadata.limit = limit,
                     "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
                 );
@@ -2530,7 +2532,7 @@ impl Exchange<'_> {
                 return (forward_status, headers, Body::from_stream(spliced)).into_response();
             }
             Buffered::Failed(e) => {
-                error!(http.request.method = %self.method, url.path = %self.path, error.message = %e, "upstream body failed mid-stream");
+                error!(http.request.method = %self.method, url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path), error.message = %e, "upstream body failed mid-stream");
                 return (
                     StatusCode::BAD_GATEWAY,
                     format!("waharoa: upstream body failed: {e}\n"),
@@ -2573,7 +2575,7 @@ impl Exchange<'_> {
         if resolver_probe(self.ecosystem, &self.target) {
             debug!(
                 http.request.method = %self.method,
-                url.path = %self.path,
+                url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
                 http.response.status_code = status.as_u16(),
                 http.response.body.size = bytes,
                 waharoa.duration_ms = elapsed_ms,
@@ -2583,7 +2585,7 @@ impl Exchange<'_> {
         } else {
             info!(
                 http.request.method = %self.method,
-                url.path = %self.path,
+                url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
                 http.response.status_code = status.as_u16(),
                 http.response.body.size = bytes,
                 waharoa.duration_ms = elapsed_ms,
@@ -2636,7 +2638,7 @@ fn finish(
                         encoded
                     }
                     Err(e) => {
-                        warn!(url.path = %path_and_query, error.message = %e, "could not re-compress; sending identity");
+                        warn!(url.path = %crate::http::url_path(path_and_query), url.query = crate::http::url_query(path_and_query), error.message = %e, "could not re-compress; sending identity");
                         headers.remove(header::CONTENT_ENCODING);
                         rewritten
                     }
@@ -2689,7 +2691,7 @@ fn defer_response(
     }
     info!(
         http.request.method = %method,
-        url.path = %path_and_query,
+        url.path = %crate::http::url_path(path_and_query), url.query = crate::http::url_query(path_and_query),
         http.response.status_code = status,
         "http.response.header.retry-after" = retry_after.map(|s| s.to_string()).unwrap_or_else(|| "-".to_owned()),
         user_agent.original = %client_ua,
@@ -2770,7 +2772,7 @@ fn report_undated(proxy: &Proxy, read: &Read, path: &str) {
         return;
     }
     warn!(
-        url.path = %path,
+        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
         waharoa.package.undated_versions = undated,
         waharoa.package.versions = metadata.records.len(),
         "cooldown_days cannot be answered while filtering this document; a pinned fetch of \
@@ -2811,11 +2813,11 @@ async fn dated_by_host(
     let response = match proxy.config.client.head(url).send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
-            warn!(url.path = %path, http.response.status_code = response.status().as_u16(), "no publish time: the file host refused a HEAD");
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), http.response.status_code = response.status().as_u16(), "no publish time: the file host refused a HEAD");
             return None;
         }
         Err(e) => {
-            warn!(url.path = %path, error.message = %e, "no publish time: the file host could not be asked");
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "no publish time: the file host could not be asked");
             return None;
         }
     };
@@ -2825,7 +2827,7 @@ async fn dated_by_host(
         .and_then(|value| value.to_str().ok())
         .and_then(crate::http::http_date)?;
     info!(
-        url.path = %path,
+        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
         waharoa.package.published = %last_modified,
         waharoa.metadata.fetch_ms = started.elapsed().as_millis() as u64,
         "publish time read from the file's Last-Modified"
@@ -3005,7 +3007,7 @@ async fn intel_for(
                     return Ok(Some(found));
                 }
                 for gap in &gaps {
-                    error!(url.path = %path, waharoa.intel.snapshot = %snapshot.digest, waharoa.intel.gap = %gap, "the intel snapshot has a gap for this ecosystem; answering 503");
+                    error!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.intel.snapshot = %snapshot.digest, waharoa.intel.gap = %gap, "the intel snapshot has a gap for this ecosystem; answering 503");
                 }
                 return Err(NotReady::Uncovered(ecosystem));
             }
@@ -3017,7 +3019,7 @@ async fn intel_for(
     };
     // Logged, not sent: a database error can carry the database's address.
     error!(
-        url.path = %path,
+        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
         waharoa.reason = %why,
         "intel store cannot answer; answering 503 rather than serving unchecked"
     );
@@ -3109,7 +3111,7 @@ fn policy_refused_versions(
     if mode == Mode::Observe {
         if !refused.is_empty() {
             warn!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 waharoa.package.versions = refused.len(),
                 waharoa.policy.checks = ?checks,
                 "observe: the policy refuses these versions; left in the document"
@@ -3122,7 +3124,7 @@ fn policy_refused_versions(
         // with the registry's own "no matching version" rather than anything this proxy
         // said. Worth saying out loud, because it reads as a broken registry.
         warn!(
-            url.path = %path,
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             waharoa.package.versions = refused.len(),
             "policy refuses every version of this package, so nothing is left to resolve to"
         );
@@ -6092,6 +6094,11 @@ mod tests {
         );
         assert!(
             proxied[0].contains("user_agent.original=npm/10.0.0"),
+            "{}",
+            proxied[0]
+        );
+        assert!(
+            proxied[0].contains("url.path=/-/v1/search url.query=\"text=x\""),
             "{}",
             proxied[0]
         );

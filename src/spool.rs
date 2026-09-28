@@ -186,7 +186,7 @@ impl Spool {
             .mode(0o600)
             .open(&path)
             .map_err(WriteError::Io)?;
-        debug!(url.path = %path.display(), "spooling an artifact");
+        debug!(file.path = %path.display(), "spooling an artifact");
         let mut spooled = Spooled { path, len: 0 };
         let mut file = tokio::fs::File::from_std(file);
         let mut body = std::pin::pin!(body);
@@ -233,7 +233,7 @@ impl Spooled {
 impl Drop for Spooled {
     fn drop(&mut self) {
         if let Err(e) = fs::remove_file(&self.path) {
-            tracing::warn!(url.path = %self.path.display(), error.message = %e, "a spool file was not deleted");
+            tracing::warn!(file.path = %self.path.display(), error.message = %e, "a spool file was not deleted");
         }
     }
 }

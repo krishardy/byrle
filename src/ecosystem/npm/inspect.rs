@@ -64,7 +64,7 @@ pub fn read_packument(
                 (store.len(), store.records())
             };
             info!(
-                url.path = %path,
+                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 waharoa.package.purl = %p.key,
                 waharoa.package.detail = ?detail,
                 waharoa.package.versions = p.records.len(),
@@ -85,7 +85,7 @@ pub fn read_packument(
             Some(p)
         }
         PackumentOutcome::Unreadable(e) => {
-            warn!(url.path = %path, error.message = %e, "UNINSPECTED: packument did not normalize");
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: packument did not normalize");
             None
         }
         // `inspect_decoded` never decodes, so it never reports this.
