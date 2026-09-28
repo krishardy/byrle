@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients retry-matrix offsite-urls inspect spike-config duplicates
+.PHONY: help dev-setup build lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy retry-matrix offsite-urls inspect spike-config duplicates
 
 help:
 	@echo "waharoa targets:"
@@ -20,6 +20,7 @@ help:
 	@echo "  smoke-npm      what the proxy does, checked with npm"
 	@echo "  smoke-python   what the proxy does for PyPI, checked with pip and uv"
 	@echo "  smoke-clients  whether npm's other four clients route artifacts through it"
+	@echo "  smoke-proxy    whether upstream traffic honours HTTP_PROXY, HTTPS_PROXY and NO_PROXY"
 	@echo "  retry-matrix   what each client does when the proxy defers a request"
 	@echo "  offsite-urls   which packument URLs each client fetches as written"
 	@echo "  inspect        show one request per client, for looking at by eye"
@@ -87,6 +88,9 @@ smoke-python:
 
 smoke-clients:
 	@scripts/make/smoke-clients.sh
+
+smoke-proxy:
+	@scripts/make/smoke-proxy.sh
 
 retry-matrix:
 	@scripts/make/retry-matrix.sh

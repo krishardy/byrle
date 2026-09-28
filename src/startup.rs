@@ -162,6 +162,9 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     // Versions whose artifacts are published where this proxy cannot see them are removed
     // from the packument, so a resolver picks one that can be examined. Setting this to 0
     // forwards them instead, and the client then fetches those artifacts directly.
+    if let Some(proxied) = environment.upstream_proxy()?.describe() {
+        info!("upstream traffic goes through a forward proxy: {proxied}");
+    }
     let mode = environment.mode()?;
     if mode == crate::refusal::Mode::Observe {
         warn!(

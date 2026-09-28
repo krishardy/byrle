@@ -311,6 +311,33 @@ pub const MODE: Var = runtime(
     &["\"observe\" serves what the policy refuses and logs it"],
 )
 .with_default(Default::Text("enforce"));
+pub const HTTPS_PROXY: Var = runtime(
+    "HTTPS_PROXY",
+    "",
+    &[
+        "forward proxy for upstream https; the lowercase name",
+        "is read too",
+    ],
+);
+pub const HTTP_PROXY: Var = runtime(
+    "HTTP_PROXY",
+    "",
+    &[
+        "forward proxy for upstream http; the lowercase name",
+        "is read too",
+    ],
+);
+pub const NO_PROXY: Var = runtime(
+    "NO_PROXY",
+    "",
+    &[
+        "hosts fetched without the forward proxy, comma-separated;",
+        "the lowercase name is read too",
+    ],
+);
+pub const HTTPS_PROXY_LOWER: Var = other(Kind::External, "https_proxy", &["as HTTPS_PROXY"]);
+pub const HTTP_PROXY_LOWER: Var = other(Kind::External, "http_proxy", &["as HTTP_PROXY"]);
+pub const NO_PROXY_LOWER: Var = other(Kind::External, "no_proxy", &["as NO_PROXY"]);
 pub const LOG_FILTER: Var = runtime("RUST_LOG", "", &["log filter, in tracing's syntax"])
     .with_default(Default::Text(DEFAULT_LOG_FILTER));
 pub const DEFER_TEST: Var = Var {
@@ -395,7 +422,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 42] = [
+pub const ALL: [Var; 48] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -423,6 +450,12 @@ pub const ALL: [Var; 42] = [
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     MODE,
+    HTTPS_PROXY,
+    HTTP_PROXY,
+    NO_PROXY,
+    HTTPS_PROXY_LOWER,
+    HTTP_PROXY_LOWER,
+    NO_PROXY_LOWER,
     LOG_FILTER,
     DEFER_TEST,
     BLESS,
@@ -765,6 +798,18 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         )
     }
 
+    /// The forward proxy settings reqwest reads, each name before its lowercase form.
+    pub fn upstream_proxy(&self) -> Result<crate::http::UpstreamProxy, EnvError> {
+        let first = |upper: Var, lower: Var| -> Result<Option<String>, EnvError> {
+            Ok(self.text(upper)?.or(self.text(lower)?))
+        };
+        Ok(crate::http::UpstreamProxy {
+            https: first(HTTPS_PROXY, HTTPS_PROXY_LOWER)?,
+            http: first(HTTP_PROXY, HTTP_PROXY_LOWER)?,
+            direct: first(NO_PROXY, NO_PROXY_LOWER)?,
+        })
+    }
+
     pub fn log_filter(&self) -> Result<String, EnvError> {
         self.text_or(LOG_FILTER, DEFAULT_LOG_FILTER)
     }
@@ -1065,6 +1110,30 @@ mod tests {
     }
 
     /// Each of these fell back to its default without a word before this module.
+    /// Each name is read before its lowercase form, which is used when it is unset: the
+    /// order reqwest reads them in.
+    #[test]
+    fn the_forward_proxy_is_read_uppercase_first() {
+        let env = with(&[
+            (HTTPS_PROXY, "http://upper:3128"),
+            (HTTPS_PROXY_LOWER, "http://lower:3128"),
+            (HTTP_PROXY_LOWER, "http://lower:8080"),
+            (NO_PROXY_LOWER, "internal.example"),
+        ]);
+        assert_eq!(
+            env.upstream_proxy().unwrap(),
+            crate::http::UpstreamProxy {
+                https: Some("http://upper:3128".to_owned()),
+                http: Some("http://lower:8080".to_owned()),
+                direct: Some("internal.example".to_owned()),
+            }
+        );
+        assert_eq!(
+            with(&[]).upstream_proxy().unwrap(),
+            crate::http::UpstreamProxy::default()
+        );
+    }
+
     #[test]
     fn a_value_that_does_not_parse_is_an_error_naming_the_variable_and_the_value() {
         let env = with(&[
