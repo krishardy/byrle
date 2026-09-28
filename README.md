@@ -117,7 +117,7 @@ packages:
     permanent: true
 ```
 
-The proxy enforces by default. Observe mode, planned, serves what the policy would refuse
+The proxy enforces by default. `WAHAROA_MODE=observe` serves what the policy would refuse
 and logs it, so adopters can move from observe to enforce on their own schedule.
 Exceptions are cheap to add and expire by default. The full schema, merge semantics, and
 evaluation order are in [docs/project_plan.md](docs/project_plan.md).

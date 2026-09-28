@@ -61,6 +61,7 @@ Proxy configuration, all through the environment:
                                     "default=403,npm/pnpm=451" (default 403)
   WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot
                                     see, instead of removing them from the metadata
+  WAHAROA_MODE                      "observe" serves what the policy refuses and logs it (default enforce)
   RUST_LOG                          log filter, in tracing's syntax (default waharoa=info)
   WAHAROA_DEFER_TEST                DEBUG BUILDS ONLY: answer every matching request with
                                     a deferral instead of fetching, so client retry

@@ -305,6 +305,12 @@ pub const REFUSE_UNSERVABLE: Var = runtime(
         "see, instead of removing them from the metadata",
     ],
 );
+pub const MODE: Var = runtime(
+    "WAHAROA_MODE",
+    "",
+    &["\"observe\" serves what the policy refuses and logs it"],
+)
+.with_default(Default::Text("enforce"));
 pub const LOG_FILTER: Var = runtime("RUST_LOG", "", &["log filter, in tracing's syntax"])
     .with_default(Default::Text(DEFAULT_LOG_FILTER));
 pub const DEFER_TEST: Var = Var {
@@ -389,7 +395,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 41] = [
+pub const ALL: [Var; 42] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -416,6 +422,7 @@ pub const ALL: [Var; 41] = [
     MAX_TRAFFIC_CLIENTS,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
+    MODE,
     LOG_FILTER,
     DEFER_TEST,
     BLESS,
@@ -749,6 +756,15 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.flag(REFUSE_UNSERVABLE, true)
     }
 
+    pub fn mode(&self) -> Result<crate::refusal::Mode, EnvError> {
+        self.parsed(
+            MODE,
+            crate::refusal::Mode::Enforce,
+            crate::refusal::Mode::parse,
+            "is not `enforce` or `observe`",
+        )
+    }
+
     pub fn log_filter(&self) -> Result<String, EnvError> {
         self.text_or(LOG_FILTER, DEFAULT_LOG_FILTER)
     }
@@ -927,6 +943,7 @@ mod tests {
             DEFAULT_REFUSAL_STATUS
         );
         assert!(env.refuse_unservable().unwrap());
+        assert_eq!(env.mode().unwrap(), crate::refusal::Mode::Enforce);
         assert_eq!(env.log_filter().unwrap(), DEFAULT_LOG_FILTER);
         #[cfg(debug_assertions)]
         assert_eq!(env.defer_test().unwrap(), None);
@@ -976,6 +993,7 @@ mod tests {
             (EXPIRY_CEILING_DAYS, "30"),
             (REFUSAL_STATUS, "default=451"),
             (REFUSE_UNSERVABLE, "0"),
+            (MODE, "observe"),
             (LOG_FILTER, "debug"),
             (BLESS, "1"),
             (NPM_CORPUS, "abbrev"),
@@ -1030,6 +1048,7 @@ mod tests {
         assert_eq!(env.expiry_ceiling_days().unwrap(), 30);
         assert_eq!(env.refusal_status().unwrap().default_status(), 451);
         assert!(!env.refuse_unservable().unwrap());
+        assert_eq!(env.mode().unwrap(), crate::refusal::Mode::Observe);
         assert_eq!(env.log_filter().unwrap(), "debug");
         assert!(env.bless());
         assert_eq!(env.npm_corpus().unwrap(), Some(PathBuf::from("abbrev")));
@@ -1057,11 +1076,12 @@ mod tests {
             (CA_BUNDLE_EXCLUSIVE, "yes"),
             (REWRITE_ARTIFACTS, "false"),
             (REFUSE_UNSERVABLE, "no"),
+            (MODE, "warn"),
             (SNAPSHOT_LIMIT, "0"),
             (MAX_ARTIFACT_BYTES, "0"),
             (MAX_TRAFFIC_CLIENTS, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 11] = [
+        let cases: [(Result<(), EnvError>, &str); 12] = [
             (
                 env.max_records().map(drop),
                 "WAHAROA_MAX_RECORDS: `5O000` is not a whole number",
@@ -1093,6 +1113,10 @@ mod tests {
             (
                 env.refuse_unservable().map(drop),
                 "WAHAROA_REFUSE_UNSERVABLE: `no` is not 0 or 1",
+            ),
+            (
+                env.mode().map(drop),
+                "WAHAROA_MODE: `warn` is not `enforce` or `observe`",
             ),
             (
                 env.snapshot_limit().map(drop),

@@ -530,6 +530,16 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
              removed",
         ));
     }
+    if health.mode == crate::refusal::Mode::Observe.as_str() {
+        findings.push(
+            Finding::new(
+                Severity::Warn,
+                "proxy mode",
+                "observe, so what the policy refuses is served and logged",
+            )
+            .with_fix(format!("unset {} on the proxy", env::MODE)),
+        );
+    }
     if !health.allowed_direct_origins.is_empty() {
         findings.push(Finding::new(
             Severity::Warn,
@@ -1534,6 +1544,7 @@ mod tests {
             public_base: Some(PROXY.into()),
             rewrite_artifacts: true,
             refuse_unservable: true,
+            mode: "enforce".into(),
             served_origins: vec!["https://registry.npmjs.org".into()],
             allowed_direct_origins: vec![],
             packages_held: 0,
@@ -1718,6 +1729,7 @@ mod tests {
         let mut h = health();
         h.rewrite_artifacts = false;
         h.refuse_unservable = false;
+        h.mode = "observe".into();
         h.allowed_direct_origins = vec!["https://cdn.example".into()];
 
         let findings = check_proxy(Some(&h), PROXY);
@@ -1725,6 +1737,7 @@ mod tests {
         let text: String = findings.iter().map(|f| f.detail.clone()).collect();
         assert!(text.contains("every client except npm"), "{text}");
         assert!(text.contains("rather than removed"), "{text}");
+        assert!(text.contains("served and logged"), "{text}");
         assert!(text.contains("cdn.example"), "{text}");
     }
 
