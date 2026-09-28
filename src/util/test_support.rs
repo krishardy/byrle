@@ -175,41 +175,130 @@ pub fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
     gz.finish().expect("finishes")
 }
 
-/// A log sink a test can read back.
-struct Captured(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+/// Each thread capturing logs: the most verbose level it keeps, and its buffer.
+type Captures = std::sync::Mutex<
+    std::collections::HashMap<
+        std::thread::ThreadId,
+        (tracing::Level, std::sync::Arc<std::sync::Mutex<Vec<u8>>>),
+    >,
+>;
 
-impl std::io::Write for Captured {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().unwrap().extend_from_slice(buf);
-        Ok(buf.len())
+fn captures() -> &'static Captures {
+    static CAPTURES: std::sync::OnceLock<Captures> = std::sync::OnceLock::new();
+    CAPTURES.get_or_init(Captures::default)
+}
+
+/// This thread's buffer, when it is capturing at `level` or more verbosely.
+fn capturing(level: &tracing::Level) -> Option<std::sync::Arc<std::sync::Mutex<Vec<u8>>>> {
+    let captures = captures().lock().unwrap();
+    let (keeps, buf) = captures.get(&std::thread::current().id())?;
+    (level <= keeps).then(|| buf.clone())
+}
+
+/// One subscriber for the whole test process, installed once. Its filter is dynamic: it
+/// asks per event, so no callsite's interest is cached from the thread that first reached
+/// it. A per-thread default subscriber, and a cacheable `filter_fn`, both did that.
+fn install() {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        use tracing_subscriber::Layer as _;
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let routed = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(RoutedWriter)
+            .with_filter(tracing_subscriber::filter::dynamic_filter_fn(|meta, _| {
+                capturing(meta.level()).is_some()
+            }));
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(routed))
+            .expect("no other test sets a global subscriber");
+        tracing::callsite::rebuild_interest_cache();
+    });
+}
+
+/// Writes each event to the buffer of the thread that logged it.
+struct RoutedWriter;
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for RoutedWriter {
+    type Writer = Routed;
+
+    fn make_writer(&'a self) -> Routed {
+        Routed(None)
     }
+
+    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Routed {
+        Routed(capturing(meta.level()))
+    }
+}
+
+struct Routed(Option<std::sync::Arc<std::sync::Mutex<Vec<u8>>>>);
+
+impl std::io::Write for Routed {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        if let Some(buf) = &self.0 {
+            buf.lock().unwrap().extend_from_slice(bytes);
+        }
+        Ok(bytes.len())
+    }
+
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
 }
 
-/// Route this thread's logs at `level` and above into a buffer, until the guard drops.
-pub fn capture(
-    level: tracing::Level,
-) -> (
-    tracing::subscriber::DefaultGuard,
-    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
-) {
-    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let sink = buf.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(level)
-        .with_writer(move || Captured(sink.clone()))
-        .with_ansi(false)
-        .finish();
-    let guard = tracing::subscriber::set_default(subscriber);
-    // A callsite first reached on another test's thread, where no subscriber listens, is
-    // cached as never enabled, and this thread's subscriber then misses its lines. Seen
-    // now and then as a missing `deferred:` line under parallel tests.
+/// Stops this thread's capture when dropped.
+pub struct Capture(std::thread::ThreadId);
+
+impl Drop for Capture {
+    fn drop(&mut self) {
+        captures().lock().unwrap().remove(&self.0);
+    }
+}
+
+/// Keep this thread's logs at `level` and above in the returned buffer, until the
+/// [`Capture`] drops.
+pub fn capture(level: tracing::Level) -> (Capture, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
+    install();
+    // A callsite another thread registered while the subscriber was being installed can be
+    // cached as never enabled. The subscriber is in place now, so a rebuild settles it.
     tracing::callsite::rebuild_interest_cache();
-    (guard, buf)
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let thread = std::thread::current().id();
+    captures()
+        .lock()
+        .unwrap()
+        .insert(thread, (level, buf.clone()));
+    (Capture(thread), buf)
 }
 
 pub fn text(buf: &std::sync::Mutex<Vec<u8>>) -> String {
     String::from_utf8(buf.lock().unwrap().clone()).unwrap()
+}
+
+#[cfg(test)]
+mod capture_tests {
+    use super::{capture, text};
+
+    /// A capture keeps its own thread's events at its level or less verbose, and nothing
+    /// from another thread or after it stops.
+    #[test]
+    fn a_capture_keeps_its_own_threads_events_at_its_level() {
+        let (guard, buf) = capture(tracing::Level::INFO);
+        tracing::info!("kept here");
+        tracing::warn!("kept too");
+        tracing::debug!("too verbose");
+        std::thread::spawn(|| tracing::info!("another thread"))
+            .join()
+            .unwrap();
+        drop(guard);
+        tracing::info!("after the capture");
+
+        let log = text(&buf);
+        assert!(
+            log.contains("kept here") && log.contains("kept too"),
+            "{log}"
+        );
+        for absent in ["too verbose", "another thread", "after the capture"] {
+            assert!(!log.contains(absent), "{absent}: {log}");
+        }
+    }
 }
