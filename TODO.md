@@ -260,11 +260,13 @@ Items that I've added that are not stage-bound.
     `Cargo.toml`, so a build carries only the ecosystems it serves. Raised 2026-09-26 while
     `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
     well as its metadata formats.
-22. [ ] `proxy::tests::a_document_with_every_version_refused_is_reported` failed once in about
-    50 runs on 2026-09-27: the captured log was empty. So did
-    `proxy::tests::a_deferred_artifact_is_served_on_its_retry_after_the_analysis`, which
-    passed 30 of 30 reruns. `capture()` rebuilds the tracing
-    callsite interest cache, which fixed the other log-capture tests; this one still races.
+22. [x] Log-capture tests failed now and then: `a_document_with_every_version_refused_is_reported`
+    about once in 50 runs, and two new timing tests on 4 of 8 full-suite runs. Each test
+    set a per-thread default subscriber, and tracing caches a callsite's interest for the
+    whole process from the thread that first reaches it. Fixed 2026-09-28: one global
+    subscriber with a dynamic filter routes each event to the capturing thread's buffer.
+    A `filter_fn` was tried first and failed 6 tests on every run: it is cacheable, and
+    caches "never" the same way. 50 of 50 full-suite runs passed after the fix.
 23. [ ] Keep only three kinds of source comment. Raised 2026-09-28.
     - Function signature documentation: up to 2 lines on what the function does, 1 line
       per parameter, 1 line per error type, and 1 line for the return value.
