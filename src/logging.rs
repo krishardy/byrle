@@ -1,15 +1,19 @@
 //! How the daemon writes its log: text for a terminal, or JSON Lines for a collector.
 //! [`crate::env::LOG_FORMAT`] chooses.
 
+use tracing::field::{Field, Visit};
 use tracing_subscriber::EnvFilter;
-use tracing_subscriber::fmt::MakeWriter;
+use tracing_subscriber::fmt::format::Writer;
+use tracing_subscriber::fmt::{FmtContext, FormatEvent, FormatFields, MakeWriter};
+use tracing_subscriber::registry::LookupSpan;
 
 /// The log's format.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Format {
     #[default]
     Text,
-    /// One JSON object per line, each field a key, the message under `message`.
+    /// One JSON object per line in OpenTelemetry's log record shape: `timestamp`,
+    /// `severity_text`, `severity_number`, `body` and `attributes`.
     Json,
 }
 
@@ -39,14 +43,89 @@ where
         .with_writer(writer);
     match format {
         Format::Text => Box::new(builder.finish()),
-        Format::Json => Box::new(
-            builder
-                .json()
-                .flatten_event(true)
-                .with_current_span(false)
-                .with_span_list(false)
-                .finish(),
-        ),
+        Format::Json => Box::new(builder.event_format(OtelRecord).finish()),
+    }
+}
+
+/// Formats an event as an OpenTelemetry log record.
+struct OtelRecord;
+
+impl<S, N> FormatEvent<S, N> for OtelRecord
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+    N: for<'a> FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        _: &FmtContext<'_, S, N>,
+        mut writer: Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        let mut fields = Fields::default();
+        event.record(&mut fields);
+        let level = event.metadata().level();
+        let record = serde_json::json!({
+            "timestamp": jiff::Timestamp::now().to_string(),
+            "severity_text": level.as_str(),
+            "severity_number": severity_number(level),
+            "body": fields.body,
+            "attributes": fields.attributes,
+        });
+        writeln!(writer, "{record}")
+    }
+}
+
+/// OpenTelemetry's `SeverityNumber` for a level: the first number of its range.
+fn severity_number(level: &tracing::Level) -> u8 {
+    match *level {
+        tracing::Level::TRACE => 1,
+        tracing::Level::DEBUG => 5,
+        tracing::Level::INFO => 9,
+        tracing::Level::WARN => 13,
+        tracing::Level::ERROR => 17,
+    }
+}
+
+/// An event's message, as the record's body, and its other fields, as attributes.
+#[derive(Default)]
+struct Fields {
+    body: serde_json::Value,
+    attributes: serde_json::Map<String, serde_json::Value>,
+}
+
+impl Fields {
+    fn put(&mut self, field: &Field, value: serde_json::Value) {
+        if field.name() == "message" {
+            self.body = value;
+        } else {
+            self.attributes.insert(field.name().to_owned(), value);
+        }
+    }
+}
+
+impl Visit for Fields {
+    fn record_str(&mut self, field: &Field, value: &str) {
+        self.put(field, value.into());
+    }
+
+    fn record_i64(&mut self, field: &Field, value: i64) {
+        self.put(field, value.into());
+    }
+
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        self.put(field, value.into());
+    }
+
+    fn record_f64(&mut self, field: &Field, value: f64) {
+        self.put(field, value.into());
+    }
+
+    fn record_bool(&mut self, field: &Field, value: bool) {
+        self.put(field, value.into());
+    }
+
+    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+        self.put(field, format!("{value:?}").into());
     }
 }
 
@@ -62,7 +141,11 @@ mod tests {
         let writer = move || Sink(sink.clone());
         let subscriber = subscriber(EnvFilter::new("info"), format, writer);
         tracing::subscriber::with_default(subscriber, || {
-            tracing::info!(path = "/lodash", status = 403_u16, "refused by policy");
+            tracing::info!(
+                url.path = "/lodash",
+                http.response.status_code = 403_u16,
+                "refused by policy"
+            );
             tracing::debug!("filtered out");
         });
         String::from_utf8(buf.lock().unwrap().clone()).unwrap()
@@ -82,17 +165,75 @@ mod tests {
     }
 
     #[test]
-    fn json_is_one_object_per_line_with_each_field_a_key() {
+    fn json_is_an_opentelemetry_log_record_per_line() {
         let written = written(Format::Json);
         let lines: Vec<&str> = written.lines().collect();
         assert_eq!(lines.len(), 1, "the debug line is filtered: {written}");
-        let event: serde_json::Value = serde_json::from_str(lines[0]).expect("one JSON object");
-        assert_eq!(event["level"], "INFO");
-        assert_eq!(event["message"], "refused by policy");
-        assert_eq!(event["path"], "/lodash");
-        assert_eq!(event["status"], 403);
-        assert!(event["timestamp"].is_string(), "{event}");
-        assert!(event.get("target").is_none(), "{event}");
+        let record: serde_json::Value = serde_json::from_str(lines[0]).expect("one JSON object");
+        assert_eq!(record["severity_text"], "INFO");
+        assert_eq!(record["severity_number"], 9);
+        assert_eq!(record["body"], "refused by policy");
+        assert_eq!(
+            record["attributes"],
+            serde_json::json!({"url.path": "/lodash", "http.response.status_code": 403})
+        );
+        let at = record["timestamp"].as_str().expect("a timestamp");
+        assert!(at.parse::<jiff::Timestamp>().is_ok(), "{at}");
+        let keys: Vec<&String> = record.as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            [
+                "attributes",
+                "body",
+                "severity_number",
+                "severity_text",
+                "timestamp"
+            ]
+        );
+    }
+
+    /// Each level's number starts its OpenTelemetry range, and a value that is not text or a
+    /// number is written as its debug form.
+    #[test]
+    fn severity_numbers_and_debug_values() {
+        let numbers: Vec<u8> = [
+            tracing::Level::TRACE,
+            tracing::Level::DEBUG,
+            tracing::Level::INFO,
+            tracing::Level::WARN,
+            tracing::Level::ERROR,
+        ]
+        .iter()
+        .map(severity_number)
+        .collect();
+        assert_eq!(numbers, [1, 5, 9, 13, 17]);
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = buf.clone();
+        let subscriber = subscriber(EnvFilter::new("warn"), Format::Json, move || {
+            Sink(sink.clone())
+        });
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::warn!(
+                waharoa.package.versions = ?["1.0.0"],
+                waharoa.analysis.completed = true,
+                waharoa.duration_ms = -1_i64,
+                waharoa.ratio = 0.5,
+                "every kind"
+            );
+        });
+        let written = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let record: serde_json::Value = serde_json::from_str(written.trim()).unwrap();
+        assert_eq!(record["severity_number"], 13);
+        assert_eq!(
+            record["attributes"],
+            serde_json::json!({
+                "waharoa.package.versions": "[\"1.0.0\"]",
+                "waharoa.analysis.completed": true,
+                "waharoa.duration_ms": -1,
+                "waharoa.ratio": 0.5,
+            })
+        );
     }
 
     /// `text` without its ANSI colour codes, which text output keeps.
@@ -114,7 +255,8 @@ mod tests {
         let written = plain(&written(Format::Text));
         assert_eq!(written.lines().count(), 1, "{written}");
         assert!(
-            written.contains("refused by policy path=\"/lodash\" status=403"),
+            written
+                .contains("refused by policy url.path=\"/lodash\" http.response.status_code=403"),
             "{written}"
         );
     }

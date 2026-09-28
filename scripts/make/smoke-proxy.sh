@@ -64,7 +64,7 @@ ask through HTTP_PROXY="$forward"
 [[ "$status" == 200 ]] || fail "answered $status"
 [[ "$(carried)" == 1 ]] || fail "the forward proxy carried $(carried) requests, not 1"
 sed -E 's/\x1b\[[0-9;]*m//g' "$workdir/proxy-through.log" \
-    | grep -q "upstream traffic goes through a forward proxy https=\"none\" http=\"$forward/\"" \
+    | grep -q "upstream traffic goes through a forward proxy waharoa.forward_proxy.https=\"none\" waharoa.forward_proxy.http=\"$forward/\"" \
     || fail "startup did not name the forward proxy"
 echo "    ok (200, carried by the forward proxy, named at startup)"
 

@@ -56,7 +56,7 @@ code, and the file names where.
 | [The policy reloads on SIGHUP, and each request keeps the policy it started with](policy-reload.md) | Implemented |
 | [`waharoa warm` asks a running proxy for what a lockfile locks](warm.md) | Implemented |
 | [Install latency through the proxy, measured](latency-benchmarks.md) | Measured, budget not set |
-| [Every log value is a field, and the daemon can write JSON Lines](structured-logs.md) | Implemented |
+| [Every log value is a field with an OpenTelemetry name, and the daemon can write OpenTelemetry log records](structured-logs.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |

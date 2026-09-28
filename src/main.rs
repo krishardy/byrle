@@ -235,18 +235,20 @@ async fn run_daemon() -> std::process::ExitCode {
         .await
         .unwrap_or_else(|e| panic!("cannot bind {listen}: {e}"));
 
+    let (address, port) = listen.rsplit_once(':').unwrap_or((listen.as_str(), ""));
     info!(
-        listen = %listen,
-        upstreams = %proxy.upstreams(),
-        artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
-        allowed_direct = ?proxy.origin_policy().allowed_direct(),
+        server.address = address,
+        server.port = port.parse::<u16>().unwrap_or_default(),
+        waharoa.upstreams = %proxy.upstreams(),
+        waharoa.artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
+        waharoa.allowed_direct_origins = ?proxy.origin_policy().allowed_direct(),
         "waharoa listening"
     );
     for registry in waharoa::ecosystem::TABLE {
         let setup = &registry.setup;
         info!(
-            client = setup.client,
-            command = %setup.command_line(&listen),
+            waharoa.client.name = setup.client,
+            waharoa.client.command = %setup.command_line(&listen),
             "point a client at the proxy"
         );
     }

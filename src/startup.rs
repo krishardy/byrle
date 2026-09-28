@@ -89,9 +89,9 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         let certificates =
             tls::load_bundle(&path).map_err(|e| StartupError::Unusable(e.to_string()))?;
         info!(
-            bundle = %path.display(),
-            certificates = certificates.len(),
-            mode = ?mode,
+            waharoa.tls.bundle = %path.display(),
+            waharoa.tls.certificates = certificates.len(),
+            waharoa.tls.mode = ?mode,
             "upstream CA bundle loaded"
         );
         if exclusive {
@@ -129,8 +129,8 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         // longer reachable, `npm ci` fails outright. It does not fall back to the
         // registry it was given on the command line.
         warn!(
-            variable = %env::PUBLIC_URL,
-            consequence = doctor::WITHOUT_PUBLIC_URL,
+            waharoa.config.variable = %env::PUBLIC_URL,
+            waharoa.config.consequence = doctor::WITHOUT_PUBLIC_URL,
             "not set: `npm ci` fails if the address lockfiles record later becomes \
              unreachable. Set it to a stable name"
         );
@@ -153,7 +153,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let refusal = environment.refusal_status()?;
     for status in refusal.misleading() {
         warn!(
-            status,
+            waharoa.refusal.status = status,
             "a refusal configured with this status will read as the proxy being broken rather \
              than as policy denying the request (plan §5 reserves 5xx for not-ready)"
         );
@@ -164,21 +164,23 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     // forwards them instead, and the client then fetches those artifacts directly.
     if let Some([https, http, direct]) = environment.upstream_proxy()?.fields() {
         info!(
-            https,
-            http, direct, "upstream traffic goes through a forward proxy"
+            waharoa.forward_proxy.https = https,
+            waharoa.forward_proxy.http = http,
+            waharoa.forward_proxy.direct = direct,
+            "upstream traffic goes through a forward proxy"
         );
     }
     let mode = environment.mode()?;
     if mode == crate::refusal::Mode::Observe {
         warn!(
-            variable = %env::MODE,
+            waharoa.config.variable = %env::MODE,
             "observe mode: what the policy refuses is served and logged, not refused"
         );
     }
     let refuse_unservable = environment.refuse_unservable()?;
     if !refuse_unservable {
         warn!(
-            variable = %env::REFUSE_UNSERVABLE,
+            waharoa.config.variable = %env::REFUSE_UNSERVABLE,
             "set to 0: artifacts published off this registry are forwarded, and the client \
              fetches them without the proxy seeing them"
         );
@@ -190,8 +192,8 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     #[cfg(debug_assertions)]
     let defer_test = environment.defer_test()?.inspect(|deferral| {
         warn!(
-            %deferral,
-            variable = %env::DEFER_TEST,
+            waharoa.defer_test = %deferral,
+            waharoa.config.variable = %env::DEFER_TEST,
             "set: matching requests are answered with a deferral and never fetched. This is \
              a measurement harness, not a feature"
         );
@@ -212,14 +214,14 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
             let log = AuditLog::open(&path).map_err(|e| {
                 StartupError::Unusable(format!("{} {}: {e}", env::AUDIT_LOG, path.display()))
             })?;
-            info!(path = %path.display(), "audit log open");
+            info!(waharoa.audit.path = %path.display(), "audit log open");
             Some(Arc::new(log))
         }
         None => None,
     };
     if audit.is_none() && policy.is_some() {
         warn!(
-            variable = %env::AUDIT_LOG,
+            waharoa.config.variable = %env::AUDIT_LOG,
             "no audit log configured, so policy decisions are not recorded"
         );
     }
@@ -232,7 +234,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     match (&intel, &policy) {
         (Some(store), Some(_)) => {
             warn!(
-                variable = %env::DATABASE_URL,
+                waharoa.config.variable = %env::DATABASE_URL,
                 "ENFORCED: known_malware and max_cvss, from the intel store, and kev once the \
                  store has loaded the KEV catalogue. A store that cannot answer, or holds no \
                  snapshot, is a 503 for every package"
@@ -240,12 +242,12 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
             // The snapshot loaded now. `waharoa doctor` reports the same for a later one.
             if let Ok(Some(snapshot)) = store.snapshot().await {
                 for gap in snapshot.gaps() {
-                    warn!(%gap, "the intel snapshot has a gap");
+                    warn!(waharoa.intel.gap = %gap, "the intel snapshot has a gap");
                 }
             }
         }
         (None, Some(_)) => warn!(
-            variable = %env::DATABASE_URL,
+            waharoa.config.variable = %env::DATABASE_URL,
             "NOT ENFORCED: known_malware, max_cvss and kev. The variable is not set, so there \
              is no intel store to ask"
         ),
@@ -267,9 +269,9 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let (spool, swept) = Spool::open(&spool_dir, environment.max_artifact_bytes()?)
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::SPOOL_DIR)))?;
     info!(
-        path = %spool_dir.display(),
-        ceiling = spool.ceiling(),
-        swept,
+        waharoa.spool.path = %spool_dir.display(),
+        waharoa.spool.ceiling = spool.ceiling(),
+        waharoa.spool.swept = swept,
         "spool open; files left by an earlier process removed"
     );
     let spool = Arc::new(spool);
@@ -319,14 +321,14 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::POLICY)))?;
 
     info!(
-        path = %path.display(),
-        cooldown_days = policy.cooldown_days,
-        max_cvss = policy.max_cvss,
-        install_scripts = %policy.install_scripts,
-        kev = %policy.kev,
-        provenance = %policy.provenance,
-        denials = policy.denials.len(),
-        exceptions = policy.packages.len(),
+        waharoa.policy.path = %path.display(),
+        waharoa.policy.cooldown_days = policy.cooldown_days,
+        waharoa.policy.max_cvss = policy.max_cvss,
+        waharoa.policy.install_scripts = %policy.install_scripts,
+        waharoa.policy.kev = %policy.kev,
+        waharoa.policy.provenance = %policy.provenance,
+        waharoa.policy.denials = policy.denials.len(),
+        waharoa.policy.exceptions = policy.packages.len(),
         "policy loaded and validated"
     );
 
@@ -340,9 +342,9 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
     if policy.uses_cooldown() {
         for (ecosystem, cost) in crate::ecosystem::cooldown_costs() {
             warn!(
-                cooldown_days = policy.cooldown_days,
-                %ecosystem,
-                cost,
+                waharoa.policy.cooldown_days = policy.cooldown_days,
+                waharoa.ecosystem = %ecosystem,
+                waharoa.cooldown.cost = cost,
                 "cooldown_days is enforced, at a cost to the ecosystem"
             );
         }
@@ -351,15 +353,15 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
     // and `doctor` report the same entries.
     for &index in &report.unchanged {
         warn!(
-            at = packages::label(index),
-            reason = %policy.packages[index].reason,
+            waharoa.policy.exception = packages::label(index),
+            waharoa.policy.exception_reason = %policy.packages[index].reason,
             "policy exception changes nothing, so nothing it matches is affected by it"
         );
     }
     for shadowed in report.never_wins() {
         warn!(
-            at = packages::label(shadowed.index),
-            cover = %shadowed.cover(),
+            waharoa.policy.exception = packages::label(shadowed.index),
+            waharoa.policy.exception_cover = %shadowed.cover(),
             "policy exception never wins"
         );
     }
@@ -384,9 +386,11 @@ pub fn reload_policy<L: Fn(&str) -> Option<OsString>>(proxy: &Proxy, environment
         Ok(policy) => {
             let new = digest(Some(&policy));
             proxy.replace_policy(Some(policy));
-            info!(from = %old, to = %new, "policy reloaded");
+            info!(waharoa.policy.digest_from = %old, waharoa.policy.digest_to = %new, "policy reloaded");
         }
-        Err(why) => error!(keeping = %old, why = %why, "policy not reloaded"),
+        Err(why) => {
+            error!(waharoa.policy.digest = %old, waharoa.reason = %why, "policy not reloaded")
+        }
     }
 }
 
@@ -396,7 +400,7 @@ pub async fn reload_on_hangup<L: Fn(&str) -> Option<OsString>>(proxy: Proxy, env
     let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
         Ok(hangups) => hangups,
         Err(e) => {
-            error!(error = %e, "SIGHUP cannot be listened for, so the policy is never reloaded");
+            error!(error.message = %e, "SIGHUP cannot be listened for, so the policy is never reloaded");
             return;
         }
     };

@@ -130,7 +130,7 @@ measure() {
 
     local packuments artifacts verified
     packuments="$(count 'packument normalized' "$log")"
-    artifacts="$(grep -coE 'proxied .*path=/[^ ]+\.tgz' "$log" 2>/dev/null || true)"
+    artifacts="$(grep -coE 'proxied .*url.path=/[^ ]+\.tgz' "$log" 2>/dev/null || true)"
     verified="$(count 'artifact digest verified' "$log")"
 
     printf '  %-10s exit=%-2s packuments=%-4s artifacts=%-4s verified=%-4s failed-on-503=%s\n' \

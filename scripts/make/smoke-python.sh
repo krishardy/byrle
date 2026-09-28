@@ -111,7 +111,7 @@ on_disk="$(installed_purls "$workdir/basic" | sed 's|^pkg:pypi/||; s|@.*||' | so
 # The index page the resolver read, which is the normalised project name in the path.
 # `|| true` on every one of these: under `set -e` a grep that matches nothing exits 1
 # and kills the script with no diagnosis, which is the case each check exists to report.
-indexed="$(grep -oE 'simple index normalized path=/simple/[^/ ]+' "$clean_log" \
+indexed="$(grep -oE 'simple index normalized url.path=/simple/[^/ ]+' "$clean_log" \
     | sed -E 's|.*/simple/||' | sort -u || true)"
 missed="$(comm -23 <(echo "$on_disk") <(echo "$indexed") || true)"
 [[ -z "$missed" ]] || fail "these projects never had an index read: $(echo "$missed" | tr '\n' ' ')"
@@ -120,7 +120,7 @@ echo "    ok ($(echo "$on_disk" | wc -l) projects, all intercepted)"
 echo "==> 3/6  every installed distribution was normalized to a PURL at the version on disk"
 expected_purls="$(installed_purls "$workdir/basic" | sort -u)"
 [[ -n "$expected_purls" ]] || fail "could not read any installed versions"
-observed_purls="$(grep -oE 'claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u || true)"
+observed_purls="$(grep -oE 'waharoa.package.claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u || true)"
 unnormalized="$(comm -23 <(echo "$expected_purls") <(echo "$observed_purls") || true)"
 [[ -z "$unnormalized" ]] \
     || fail "installed but never normalized to a purl: $(echo "$unnormalized" | tr '\n' ' ')"
@@ -160,9 +160,9 @@ if grep -q 'not served' "$clean_log"; then
 $(grep 'not served' "$clean_log")"
 fi
 # A rewritten index is what makes the above possible. Nothing may be left pointing away.
-if grep -qE 'simple index rewritten.*left_alone=[1-9]' "$clean_log"; then
+if grep -qE 'simple index rewritten.*waharoa.package.left_alone_files=[1-9]' "$clean_log"; then
     fail "an index kept files on an origin the proxy does not front:
-$(grep -E 'simple index rewritten.*left_alone=[1-9]' "$clean_log")"
+$(grep -E 'simple index rewritten.*waharoa.package.left_alone_files=[1-9]' "$clean_log")"
 fi
 echo "    ok ($files files, all with a known digest, all verified, none left offsite, $deferred deferred for analysis)"
 stop_proxy
@@ -202,9 +202,9 @@ grep -qE "refused by policy.*idna-$idna\.tar\.gz" "$clean_log" \
     || fail "the refusal does not name the sdist it refused"
 grep -qE "refused by policy.*idna-$idna-py3-none-any\.whl" "$clean_log" \
     && fail "the wheel was refused; only the sdist runs the package's own code"
-grep -qE "proxied.*idna-$idna-py3-none-any\.whl status=200" "$clean_log" \
+grep -qE "proxied.*idna-$idna-py3-none-any\.whl http.response.status_code=200" "$clean_log" \
     || fail "the wheel was not served"
-if grep -qE "proxied.*idna-$idna\.tar\.gz status=200" "$clean_log"; then
+if grep -qE "proxied.*idna-$idna\.tar\.gz http.response.status_code=200" "$clean_log"; then
     fail "the refused sdist was fetched upstream; the refusal came too late"
 fi
 echo "    ok (sdist refused 403, wheel of the same version served, sdist never fetched)"
@@ -226,8 +226,8 @@ else
     [[ "$uv_files" -gt 0 ]] || fail "uv fetched no files through the proxy"
     [[ "$uv_verified" -eq "$uv_files" ]] \
         || fail "uv fetched $uv_files files but only $uv_verified were verified"
-    grep -q 'client=uv/' "$clean_log" || fail "uv did not identify itself to the proxy"
-    echo "    ok ($uv_files files, all verified, client=$(grep -oE 'client=uv/[^ ]+' "$clean_log" | head -1 | cut -d= -f2))"
+    grep -q 'user_agent.original=uv/' "$clean_log" || fail "uv did not identify itself to the proxy"
+    echo "    ok ($uv_files files, all verified, client=$(grep -oE 'user_agent.original=uv/[^ ]+' "$clean_log" | head -1 | cut -d= -f2))"
     stop_proxy
 fi
 

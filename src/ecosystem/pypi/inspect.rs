@@ -43,7 +43,7 @@ pub fn read_index(
     let project = match read {
         Ok(project) => project,
         Err(e) => {
-            warn!(path = %path, error = %e, "UNINSPECTED: simple index did not parse");
+            warn!(url.path = %path, error.message = %e, "UNINSPECTED: simple index did not parse");
             return None;
         }
     };
@@ -67,12 +67,12 @@ pub fn read_index(
                 (store.len(), store.records())
             };
             info!(
-                path = %path,
-                files = project.files.len(),
-                versions,
-                artifacts,
-                skipped,
-                sdist_only_versions_listed = sdist_only,
+                url.path = %path,
+                waharoa.package.files = project.files.len(),
+                waharoa.package.versions = versions,
+                waharoa.package.artifacts = artifacts,
+                waharoa.package.skipped_versions = skipped,
+                waharoa.package.sdist_only_versions = sdist_only,
                 // PEP 740, counted over the files the index lists: `attrs` published 12 of
                 // 72 with one on 2026-09-21 and `ruff` none of 7,134.
                 provenance_files_listed = project
@@ -80,14 +80,14 @@ pub fn read_index(
                     .iter()
                     .filter(|file| file.provenance.is_some())
                     .count(),
-                held_packages,
-                held_records,
+                waharoa.store.packages = held_packages,
+                waharoa.store.records = held_records,
                 "simple index normalized"
             );
             Some(Box::new(metadata))
         }
         Err(e) => {
-            warn!(path = %path, error = %e, "UNINSPECTED: simple index did not normalize");
+            warn!(url.path = %path, error.message = %e, "UNINSPECTED: simple index did not normalize");
             None
         }
     };

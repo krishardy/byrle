@@ -1,13 +1,16 @@
-# Every log value is a field, and the daemon can write JSON Lines
+# Every log value is a field with an OpenTelemetry name, and the daemon can write OpenTelemetry log records
 
 - **Status:** Implemented 2026-09-28. `src/logging.rs`, `env::LOG_FORMAT`.
 - **Related:** [environment-variables](environment-variables.md)
 
 ## Decision
 
-- `WAHAROA_LOG_FORMAT=json` writes one JSON object per line: `timestamp`, `level`,
-  `message`, and each field as a key. `text`, the default, is the format the daemon wrote
-  before, colour codes included.
+- `WAHAROA_LOG_FORMAT=json` writes one JSON object per line in OpenTelemetry's log record
+  shape: `timestamp`, `severity_text`, `severity_number`, `body`, and `attributes` holding
+  every field. `text`, the default, is the format the daemon wrote before, colour codes
+  included.
+- A field is named by OpenTelemetry's semantic conventions where one fits, and under
+  `waharoa.` otherwise, as the conventions advise for an application's own attributes.
 - Every log message is a fixed string. A value goes in a field, so a search for a message
   finds every occurrence of that event, whatever its values. An environment variable a
   line is about is in the `variable` field.
@@ -28,3 +31,31 @@ The scripts that match log text were updated with them.
 | `point npm at it with:  <command>` | `point a client at the proxy`, with `client` and `command` |
 
 The other 14 are startup and snapshot-gap warnings, each with its value moved to a field.
+
+## Field names
+
+Where a semantic convention fits:
+
+| Before | After | Uses |
+|---|---|---|
+| `path` | `url.path` | 65 |
+| `error` | `error.message` | 28 |
+| `url` | `url.full` | 15 |
+| `client`, the user agent | `user_agent.original` | 13 |
+| `method` | `http.request.method` | 10 |
+| `status`, an HTTP status | `http.response.status_code` | 9 |
+| `bytes` of a proxied answer | `http.response.body.size` | 2 |
+| `accept_encoding`, `etag`, `retry_after` | `http.request.header.accept-encoding`, `http.response.header.etag`, `http.response.header.retry-after` | 3 |
+| `listen` | `server.address` and `server.port` | 1 |
+
+`url.path` carries the request's query too, as the proxy logged it. OpenTelemetry puts the
+query in `url.query`; splitting it would change 65 log calls for a field that is almost
+always empty on a registry request.
+
+Every other field is under `waharoa.`, grouped by what it describes: `waharoa.package.*`,
+`waharoa.artifact.*`, `waharoa.analysis.*`, `waharoa.attestation.*`, `waharoa.policy.*`,
+`waharoa.deferral.*`, `waharoa.intel.*`, `waharoa.config.*` and a few others. 323 fields in
+114 log calls were renamed. The scripts and tests that match log text use the full names.
+
+`severity_number` is the first number of each level's OpenTelemetry range: TRACE 1, DEBUG
+5, INFO 9, WARN 13, ERROR 17.

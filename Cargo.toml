@@ -36,7 +36,7 @@ semver = "1.0.28"
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "macros", "migrate"] }
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # Reads OSV's per-ecosystem bundle, `npm/all.zip`. All 228,951 entries are deflate. `deflate-flate2`
 # reads it through flate2, already in the tree. `deflate` would add zopfli, which only compresses,
 # and the default features add aes-crypto, bzip2, lzma, ppmd, xz and zstd.

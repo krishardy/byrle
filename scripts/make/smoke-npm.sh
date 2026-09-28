@@ -85,7 +85,7 @@ on_disk="$(find "$workdir/deps/node_modules" -maxdepth 1 -mindepth 1 -not -name 
 scoped="$(find "$workdir/deps/node_modules" -maxdepth 2 -mindepth 2 -path '*/@*' -printf '%P\n' 2>/dev/null | sort)"
 on_disk="$(printf '%s\n%s\n' "$on_disk" "$scoped" | grep -v '^$' | sort)"
 fetched="$(sed -E 's/\x1b\[[0-9;]*m//g' "$log" \
-    | grep -oE 'path=/[^ ]+\.tgz' | sed -E 's|path=/||; s|/-/.*||' | sort -u)"
+    | grep -oE 'url.path=/[^ ]+\.tgz' | sed -E 's|url.path=/||; s|/-/.*||' | sort -u)"
 missed="$(comm -23 <(echo "$on_disk") <(echo "$fetched") || true)"
 [[ -z "$missed" ]] || fail "these packages never came through the proxy: $(echo "$missed" | tr '\n' ' ')"
 echo "    ok ($(echo "$on_disk" | wc -l) packages, all intercepted)"
@@ -104,14 +104,14 @@ expected_purls="$(
 )"
 [[ -n "$expected_purls" ]] || fail "could not read any installed package versions"
 
-observed_purls="$(grep -oE 'claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u)"
+observed_purls="$(grep -oE 'waharoa.package.claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u)"
 unnormalized="$(comm -23 <(echo "$expected_purls") <(echo "$observed_purls") || true)"
 [[ -z "$unnormalized" ]] \
     || fail "installed but never normalized to a purl: $(echo "$unnormalized" | tr '\n' ' ')"
 
 # The packument side: every package had its document parsed, and no version inside any
 # of those documents was skipped. A skip means a shape the normalizer cannot read.
-grep -q 'packument normalized.*purl=pkg:npm/%40babel/code-frame' "$clean_log" \
+grep -q 'packument normalized.*waharoa.package.purl=pkg:npm/%40babel/code-frame' "$clean_log" \
     || fail "the scoped packument was never normalized"
 if grep -oE 'packument normalized.*skipped=[0-9]+' "$clean_log" | grep -qv 'skipped=0'; then
     fail "a packument had versions the normalizer could not read:
@@ -129,7 +129,7 @@ echo "==> 4/6  every tarball digest was known before the fetch and verified"
 known="$(grep -c 'digest known' "$clean_log" || true)"
 deferred="$(grep -c 'deferred: the artifact has not been analysed' "$clean_log" || true)"
 verified="$(grep -c 'artifact digest verified' "$clean_log" || true)"
-tarballs="$(grep -coE 'proxied .*path=/[^ ]+\.tgz' "$clean_log" || true)"
+tarballs="$(grep -coE 'proxied .*url.path=/[^ ]+\.tgz' "$clean_log" || true)"
 
 [[ "$((known - deferred))" -eq "$tarballs" ]] \
     || fail "$tarballs tarballs fetched but only $((known - deferred)) had a digest from their packument"
@@ -166,7 +166,7 @@ start_proxy ""
     --no-audit --no-fund --loglevel=error) >/dev/null 2>&1 || fail "npm ci failed"
 
 sed -E 's/\x1b\[[0-9;]*m//g' "$log" >"$clean_log"
-ci_tarballs="$(grep -coE 'proxied .*path=/[^ ]+\.tgz' "$clean_log" || true)"
+ci_tarballs="$(grep -coE 'proxied .*url.path=/[^ ]+\.tgz' "$clean_log" || true)"
 ci_verified="$(grep -c 'artifact digest verified' "$clean_log" || true)"
 ci_fetched="$(grep -c 'on our own behalf' "$clean_log" || true)"
 [[ "$ci_tarballs" -gt 0 ]] || fail "npm ci fetched no tarballs through the proxy"
@@ -208,7 +208,7 @@ grep -q 'pkg:npm/ms@2.1.3' "$workdir/ms.out" \
     || fail "the refusal does not name the package it refused"
 grep -q 'denials' "$workdir/ms.out" || fail "the refusal does not say which check fired"
 
-if sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -qE 'proxied.*path=/ms/-/ms-2\.1\.3\.tgz'; then
+if sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -qE 'proxied.*url.path=/ms/-/ms-2\.1\.3\.tgz'; then
     fail "the denied artifact was fetched upstream; the refusal came too late"
 fi
 echo "    ok (filtered on resolution, 403 on the pinned fetch, artifact never fetched)"

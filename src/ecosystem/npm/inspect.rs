@@ -64,30 +64,28 @@ pub fn read_packument(
                 (store.len(), store.records())
             };
             info!(
-                path = %path,
-                purl = %p.key,
-                detail = ?detail,
-                versions = p.records.len(),
-                skipped = p.skipped.len(),
+                url.path = %path,
+                waharoa.package.purl = %p.key,
+                waharoa.package.detail = ?detail,
+                waharoa.package.versions = p.records.len(),
+                waharoa.package.skipped_versions = p.skipped.len(),
                 // Every version in the document, not the one being installed, which the
                 // artifact request's own line answers.
                 install_script_versions_listed =
                     p.records.iter().filter(|r| r.has_install_scripts).count(),
-                deprecated_versions_listed =
-                    p.records.iter().filter(|r| r.deprecated.is_some()).count(),
-                latest = %p.latest.as_deref().unwrap_or("-"),
-                encoded_bytes,
-                parse_ms = parse_started.elapsed().as_millis() as u64,
-                offsite_versions =
-                    refused.values().sum::<usize>() + allowed_direct.values().sum::<usize>(),
-                held_packages,
-                held_records,
+                waharoa.package.deprecated_versions = p.records.iter().filter(|r| r.deprecated.is_some()).count(),
+                waharoa.package.latest = %p.latest.as_deref().unwrap_or("-"),
+                waharoa.metadata.bytes = encoded_bytes,
+                waharoa.metadata.parse_ms = parse_started.elapsed().as_millis() as u64,
+                waharoa.package.offsite_versions = refused.values().sum::<usize>() + allowed_direct.values().sum::<usize>(),
+                waharoa.store.packages = held_packages,
+                waharoa.store.records = held_records,
                 "packument normalized"
             );
             Some(p)
         }
         PackumentOutcome::Unreadable(e) => {
-            warn!(path = %path, error = %e, "UNINSPECTED: packument did not normalize");
+            warn!(url.path = %path, error.message = %e, "UNINSPECTED: packument did not normalize");
             None
         }
         // `inspect_decoded` never decodes, so it never reports this.
