@@ -2646,7 +2646,10 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
   - [x] Benchmarks: `make bench`. Measured 2026-09-28: through an analysed proxy, npm
         207 packages 9.7 s against 9.4 s direct, PyPI 18 packages 11.6 s against 9.0 s
         ([latency-benchmarks](docs/engineering_decisions/latency-benchmarks.md)).
-  - [ ] The budget.
+  - [ ] Set a latency budget: how much an install through the proxy may add over the
+        same install direct, for an analysed proxy and for a cold one, and whether
+        `make bench` fails over it. Not set on 2026-09-28. Measured then: analysed, npm
+        +0.3 s and PyPI +2.6 s; cold, npm +10.7 s and PyPI +4.9 s.
   - [ ] `waharoa warm` took 100.8 s where a cold `npm ci` took 20.1 s: it warms every
         platform's optional packages, and fetches every metadata document through the
         client path.
