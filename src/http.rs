@@ -5,6 +5,28 @@
 //! into bytes something can parse.
 
 use std::io::{Read, Write};
+use std::time::Duration;
+
+/// Past this, a host is not answering at all.
+pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// No bytes for this long is a stalled connection rather than a slow one.
+///
+/// Per read, reset by each one, so a download that keeps arriving is never cut off: OSV's
+/// 215,141,389-byte npm bundle took 9 s on 2026-09-17 and would take 36 minutes at 100 kB/s,
+/// both without a 30 s gap. A total timeout would have to be longer than that whole 36
+/// minutes to allow it, and would then let a stall run that long.
+pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Every client this build fetches with: the proxy's upstream client and the intel
+/// refresh's. `read_timeout` is [`READ_TIMEOUT`] in the binary; a test passes a short one.
+/// There is no total timeout: see [`READ_TIMEOUT`].
+pub fn client_builder(read_timeout: Duration) -> reqwest::ClientBuilder {
+    reqwest::Client::builder()
+        .user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(read_timeout)
+}
 
 /// Headers that describe a single hop and must not be forwarded to the next one.
 ///

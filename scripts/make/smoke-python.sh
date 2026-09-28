@@ -133,10 +133,19 @@ fi
 indexes="$(count 'simple index normalized')"
 echo "    ok ($(echo "$expected_purls" | wc -l) purls, $indexes indexes, 0 versions skipped)"
 
+# A file nothing has analysed is deferred with a 503 until its analysis has finished, and
+# served on the client's retry. Every request logs `artifact requested`; only the served
+# one is a file fetched.
+DEFERRED='deferred: the artifact has not been analysed'
+served() {
+    echo "$(( $(count 'artifact requested') - $(count "$DEFERRED") ))"
+}
+
 echo "==> 4/6  every file digest was known before the fetch and verified"
-known="$(count 'digest known')"
+deferred="$(count "$DEFERRED")"
+known="$(( $(count 'digest known') - deferred ))"
 verified="$(count 'artifact digest verified')"
-files="$(count 'artifact requested')"
+files="$(served)"
 [[ "$files" -gt 0 ]] || fail "no files were fetched through the proxy"
 [[ "$known" -eq "$files" ]] \
     || fail "$files files fetched but only $known had a digest from their index"
@@ -146,16 +155,16 @@ if grep -q 'MISMATCH' "$clean_log"; then
     fail "a file did not match the digest its index published:
 $(grep 'MISMATCH' "$clean_log")"
 fi
-if grep -q 'no metadata seen' "$clean_log"; then
-    fail "a file was fetched with no index observed for its project:
-$(grep 'no metadata seen' "$clean_log")"
+if grep -q 'not served:' "$clean_log"; then
+    fail "a file could not be assessed:
+$(grep 'not served:' "$clean_log")"
 fi
 # A rewritten index is what makes the above possible. Nothing may be left pointing away.
 if grep -qE 'simple index rewritten.*left_alone=[1-9]' "$clean_log"; then
     fail "an index kept files on an origin the proxy does not front:
 $(grep -E 'simple index rewritten.*left_alone=[1-9]' "$clean_log")"
 fi
-echo "    ok ($files files, all with a known digest, all verified, none left offsite)"
+echo "    ok ($files files, all with a known digest, all verified, none left offsite, $deferred deferred for analysis)"
 stop_proxy
 
 echo "==> 5/6  one version's wheel and sdist get different answers"
@@ -212,7 +221,7 @@ else
     "${uv_cmd[@]}" || fail "uv pip install requests failed"
 
     clean
-    uv_files="$(count 'artifact requested')"
+    uv_files="$(served)"
     uv_verified="$(count 'artifact digest verified')"
     [[ "$uv_files" -gt 0 ]] || fail "uv fetched no files through the proxy"
     [[ "$uv_verified" -eq "$uv_files" ]] \

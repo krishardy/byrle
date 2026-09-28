@@ -2,8 +2,8 @@
 //!
 //! The first fetch of an artifact starts a job here: fetch the artifact from upstream,
 //! write it to the [`crate::spool`], check its digest, read it, and store what was read
-//! under the digest. When the answer depends on the analysis the request is answered 503,
-//! and the client's retry is decided on what was stored. See
+//! under the digest. The request is answered 503 until the job has finished, and the
+//! client's retry is decided on what was stored. See
 //! `docs/engineering_decisions/artifact-spool.md`.
 //!
 //! The retry fetches the artifact from upstream again, and that fetch is checked against
@@ -28,9 +28,10 @@ use crate::util::lru::Lru;
 
 /// How long one job may take, from its fetch starting to its analysis being stored.
 ///
-/// The upstream client sets no timeout, so without this an upstream that stops sending
-/// holds a slot, and its digest is answered 503 for as long as the process lives. Ten
-/// minutes is a [`crate::env::DEFAULT_MAX_ARTIFACT_BYTES`] artifact at under 2 MB/s.
+/// The upstream client ends a stall after [`crate::http::READ_TIMEOUT`] with no bytes, and
+/// sets no total timeout, so without this an upstream that trickles holds a slot, and its
+/// digest is answered 503 for as long as it trickles. Ten minutes is a
+/// [`crate::env::DEFAULT_MAX_ARTIFACT_BYTES`] artifact at under 2 MB/s.
 pub const DEADLINE: Duration = Duration::from_secs(600);
 
 /// What is known about the artifact with a digest.

@@ -378,9 +378,8 @@ is neither the configured upstream nor the default registry. Not implemented; se
 
 npm and PyPI carry effectively all the malware volume, so they ship first and ship
 **enforcing**. cargo is third because the sparse index is easy and it proves the
-adapter interface against a third protocol. Go and Maven are deferred — breadth buys
-far less security than the ecosystem count implies, and the cost is an issue tracker
-that is 80% protocol plumbing instead of detection work.
+adapter interface against a third protocol. Go and Maven follow in the same stage. Each
+adds protocol work rather than detection work, and malware volume in both is low.
 
 **The failure mode to avoid:** five half-working proxies, none trusted enough to run
 in blocking mode. Every ecosystem carries a published maturity tier
@@ -663,17 +662,17 @@ is verified; a mismatch is answered 502.
 
 | Code | Meaning |
 |---|---|
-| 502 | The upstream is unreachable, malformed, or serves bytes its metadata does not describe |
+| 502 | The upstream is unreachable, malformed, gives no metadata for the package, or serves bytes its metadata does not describe |
 | 503 | The proxy is not ready: the intel store cannot answer, or this artifact is under analysis. `x-waharoa-not-ready` names which |
 
 No 4xx reads as a block for any not-ready state. A 403 from a registry proxy means
 "policy denied you", and anything else wearing that code is a trust problem. 429 is not
 used: of seven clients measured, two stop on the first one.
 
-The answer depends on the analysis when what is known passes and the policy would refuse
-the version if the analysis found the worst: a script the metadata did not claim, or an
-attestation that does not verify. bun and yarn 1 fail the first fetch of such
-an artifact; the next install is served from the stored analysis. The measurements, and the decision not to wait inside the
+Nothing is served until its analysis has finished, under any policy. An artifact with no
+strong digest, or whose metadata does not list its version, cannot be assessed and is
+refused. bun and yarn 1 fail the first fetch of every novel artifact; the next install is
+served from the stored analysis. The measurements, and the decision not to wait inside the
 request, are in [deferral-status-codes](engineering_decisions/deferral-status-codes.md),
 [fetch-path-branching](engineering_decisions/fetch-path-branching.md) and
 [artifact-spool](engineering_decisions/artifact-spool.md).
@@ -788,7 +787,7 @@ introduction, and an approval-request flow instead of a hard block.
 | **M3** Second ecosystem | PyPI adapter | Adapter interface survives a second protocol unchanged |
 | **M4** Differentiators | Cooldown, lifecycle scripts, provenance, source diffing | Tier 1 controls shipped; this is the launch story |
 | **M5** Hardening | Analysis cache, reproducible verdicts, observe mode, perf | Real team runs it in blocking mode |
-| **M6** Third ecosystem | cargo | Three protocols; adapter interface documented as stable |
+| **M6** More ecosystems | cargo, Go, Maven | Five protocols; adapter interface documented as stable |
 | **M7** Public launch | Docs, maturity tiers, security policy | External adopters |
 
 The former M0 spike is dissolved. Its interception proof lives inside M1, whose exit

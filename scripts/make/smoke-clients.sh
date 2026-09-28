@@ -110,8 +110,21 @@ measure() {
         fi
     fi
     start_proxy "$log"
-    local rc=0
+    local rc=0 retried="no"
     (cd "$dir" && "$@") >"$dir/out" 2>&1 || rc=$?
+    # Every novel artifact is answered 503 until its analysis has finished. yarn 1 and bun
+    # give up on a 503 artifact, so their first install fails and a second one, once the
+    # analysis is stored, is what shows the proxy serves them. See
+    # docs/engineering_decisions/deferral-status-codes.md.
+    if [[ "$rc" -ne 0 ]] && grep -q 'deferred: the artifact has not been analysed' "$log"; then
+        retried="yes"
+        for _ in 1 2 3 4 5; do
+            sleep 1
+            rc=0
+            (cd "$dir" && "$@") >"$dir/out" 2>&1 || rc=$?
+            [[ "$rc" -eq 0 ]] && break
+        done
+    fi
     stop_proxy
     sed -i -E 's/\x1b\[[0-9;]*m//g' "$log"
 
@@ -120,8 +133,8 @@ measure() {
     artifacts="$(grep -coE 'proxied .*path=/[^ ]+\.tgz' "$log" 2>/dev/null || true)"
     verified="$(count 'artifact digest verified' "$log")"
 
-    printf '  %-10s exit=%-2s packuments=%-4s artifacts=%-4s verified=%-4s\n' \
-        "$client" "$rc" "$packuments" "$artifacts" "$verified"
+    printf '  %-10s exit=%-2s packuments=%-4s artifacts=%-4s verified=%-4s failed-on-503=%s\n' \
+        "$client" "$rc" "$packuments" "$artifacts" "$verified" "$retried"
 
     if [[ "$rc" -ne 0 ]]; then
         echo "FAIL: $client could not install through the proxy"

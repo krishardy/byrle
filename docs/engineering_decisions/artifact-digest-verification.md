@@ -40,8 +40,8 @@ It fails closed, and takes about 70 seconds to do it.
 
 **Why not SHA-1.** Two versions in 24,852 publish only `dist.shasum`. SHA-1 is
 collision-broken, and a passing SHA-1 check logged beside a passing SHA-512 check invites
-reading them as the same evidence. Those artifacts are forwarded unverified and said to
-be unverified.
+reading them as the same evidence. Those artifacts are refused: their bytes can be
+neither verified nor analysed. Amended 2026-09-27; they were forwarded unverified before.
 
 **Why the store is bounded by records, not entries.** A packument carries every version
 ever published, not the one being installed. Measured over an

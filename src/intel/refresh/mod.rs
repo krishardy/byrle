@@ -9,17 +9,6 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-/// Past this, a stream's host is not answering at all.
-pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// No bytes for this long is a stalled connection rather than a slow one.
-///
-/// Per read, reset by each one, so a download that keeps arriving is never cut off: OSV's
-/// 215,141,389-byte npm bundle took 9 s on 2026-09-17 and would take 36 minutes at 100 kB/s,
-/// both without a 30 s gap. A total timeout would have to be longer than that whole 36
-/// minutes to allow it, and would then let a stall run that long.
-pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
-
 /// Fetches of one stream's bundle before a refresh gives up on it.
 pub const ATTEMPTS: u32 = 3;
 
@@ -132,16 +121,9 @@ pub fn report(
     out
 }
 
-/// The client a refresh fetches every stream with.
-///
-/// `read_timeout` is [`READ_TIMEOUT`] in the binary; a test passes a short one. There is no
-/// total timeout: see [`READ_TIMEOUT`].
+/// The client a refresh fetches every stream with: [`crate::http::client_builder`].
 pub fn http_client(read_timeout: Duration) -> reqwest::Result<reqwest::Client> {
-    reqwest::Client::builder()
-        .user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")))
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(read_timeout)
-        .build()
+    crate::http::client_builder(read_timeout).build()
 }
 
 /// Whether `failure` on attempt `attempt`, counted from 1, is followed by another.
@@ -334,8 +316,8 @@ mod tests {
     /// One read at a time, so a download that keeps arriving is never cut off.
     #[test]
     fn the_read_timeout_is_a_gap_rather_than_a_deadline() {
-        assert_eq!(READ_TIMEOUT, Duration::from_secs(30));
-        assert_eq!(CONNECT_TIMEOUT, Duration::from_secs(10));
+        assert_eq!(crate::http::READ_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(crate::http::CONNECT_TIMEOUT, Duration::from_secs(10));
         assert_eq!(RETRY_WAIT, Duration::from_secs(2));
     }
 
