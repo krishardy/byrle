@@ -728,7 +728,8 @@ single point of failure.
   air-gappable
 - Own releases published with provenance attestations; we hold ourselves to the policy
   we ship
-- Fail-closed default on proxy unavailability, with a documented break-glass path
+- Fail-closed default on proxy unavailability, with a documented break-glass path:
+  [break-glass](break-glass.md)
 
 **How requests are made to reach the proxy at all** is a stack of mechanisms, not one
 choice. The tiers, what each costs, and what each fails to cover are in

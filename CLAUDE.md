@@ -7,6 +7,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * README.md - Top-level description of the project
 * docs/project_plan.md - Deeper project plan
 * docs/request-flow.md - How the proxy answers a request, and each status code
+* docs/break-glass.md - Installing when the proxy is down, and releasing a refused package
 
 ## Standards
 

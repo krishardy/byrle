@@ -2645,7 +2645,11 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       Done 2026-09-28. reqwest already read it, and `HTTP_PROXY` and `NO_PROXY`. Added:
       the variables in `--help`, the proxy in effect in the startup log, and `make
       smoke-proxy` ([upstream-forward-proxy](docs/engineering_decisions/upstream-forward-proxy.md)).
-- [ ] Proxy-unavailable behavior + documented break-glass path
+- [x] Proxy-unavailable behavior + documented break-glass path
+      Done 2026-09-28. `docs/break-glass.md`: per-client commands for installing past a
+      proxy that is down, measured for npm and uv, and releasing a refused package with a
+      policy exception and `SIGHUP`, which now reloads the policy
+      ([policy-reload](docs/engineering_decisions/policy-reload.md)).
 - [ ] Our own releases published with provenance attestations
 - [ ] `SECURITY.md`, disclosure policy, threat model doc
 - [ ] Get one external team running it in blocking mode; fix what they hit

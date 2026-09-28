@@ -8,7 +8,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 use crate::analysis::postgres::PgAnalyses;
 use crate::analysis::run::Analyser;
@@ -363,6 +363,44 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
     Ok(Arc::new(policy))
 }
 
+/// Load the policy file again and put it in force, as startup loads it. The policy in
+/// force stays when the file is unset, unreadable or refused.
+pub fn reload_policy<L: Fn(&str) -> Option<OsString>>(proxy: &Proxy, environment: &Env<L>) {
+    let digest = |policy: Option<&Policy>| policy.map_or("none".to_owned(), |p| p.digest.clone());
+    let old = digest(proxy.policy().as_deref());
+    let loaded = match environment.policy() {
+        Err(e) => Err(e.to_string()),
+        Ok(None) => Err(format!("{} is not set", env::POLICY)),
+        Ok(Some(path)) => environment
+            .expiry_ceiling_days()
+            .map_err(|e| e.to_string())
+            .and_then(|ceiling| report_policy(&path, ceiling).map_err(|e| e.to_string())),
+    };
+    match loaded {
+        Ok(policy) => {
+            let new = digest(Some(&policy));
+            proxy.replace_policy(Some(policy));
+            info!(from = %old, to = %new, "policy reloaded");
+        }
+        Err(why) => error!(keeping = %old, why = %why, "policy not reloaded"),
+    }
+}
+
+/// [`reload_policy`] on each `SIGHUP`, for as long as the process runs.
+#[cfg(unix)]
+pub async fn reload_on_hangup<L: Fn(&str) -> Option<OsString>>(proxy: Proxy, environment: Env<L>) {
+    let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+        Ok(hangups) => hangups,
+        Err(e) => {
+            error!(error = %e, "SIGHUP cannot be listened for, so the policy is never reloaded");
+            return;
+        }
+    };
+    while hangups.recv().await.is_some() {
+        reload_policy(&proxy, &environment);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,6 +475,96 @@ mod tests {
                 .starts_with(&format!("{}: ", env::SPOOL_DIR)),
             "{second}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const DENY: &str = "version: 1\ncooldown_days: 0\n\
+                        denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n";
+    const ALLOW: &str = "version: 1\ncooldown_days: 0\n";
+
+    fn digest(proxy: &Proxy) -> Option<String> {
+        proxy.policy().map(|p| p.digest.clone())
+    }
+
+    /// A policy that loads replaces the one in force. One that does not, or no file,
+    /// leaves it in force.
+    #[test]
+    fn a_reload_keeps_the_policy_in_force_unless_the_new_one_loads() {
+        let dir = crate::util::test_support::tempdir("startup-reload");
+        let path = dir.join("policy.yaml");
+        let file = path.to_str().unwrap();
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_policy(Some(Arc::new(Policy::parse(DENY).unwrap())));
+
+        std::fs::write(&path, ALLOW).unwrap();
+        reload_policy(&proxy, &with(&[(env::POLICY, file)]));
+        assert_eq!(digest(&proxy), Some(crate::policy::digest_of(ALLOW)));
+
+        std::fs::write(&path, "version: 2\n").unwrap();
+        reload_policy(&proxy, &with(&[(env::POLICY, file)]));
+        assert_eq!(
+            digest(&proxy),
+            Some(crate::policy::digest_of(ALLOW)),
+            "refused"
+        );
+
+        reload_policy(&proxy, &with(&[]));
+        assert_eq!(
+            digest(&proxy),
+            Some(crate::policy::digest_of(ALLOW)),
+            "no file"
+        );
+
+        reload_policy(
+            &proxy,
+            &with(&[(env::POLICY, file), (env::EXPIRY_CEILING_DAYS, "x")]),
+        );
+        assert_eq!(
+            digest(&proxy),
+            Some(crate::policy::digest_of(ALLOW)),
+            "bad ceiling"
+        );
+
+        use std::os::unix::ffi::OsStringExt;
+        let unreadable = Env::from_lookup(|_: &str| Some(OsString::from_vec(vec![0x66, 0xff])));
+        reload_policy(&proxy, &unreadable);
+        assert_eq!(
+            digest(&proxy),
+            Some(crate::policy::digest_of(ALLOW)),
+            "not UTF-8"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `SIGHUP` reloads the policy. The handler is registered before the signal is sent,
+    /// so the signal never reaches the default action of ending the test process.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_hangup_reloads_the_policy() {
+        let _registered =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()).unwrap();
+        let dir = crate::util::test_support::tempdir("startup-hangup");
+        let path = dir.join("policy.yaml");
+        std::fs::write(&path, ALLOW).unwrap();
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_policy(Some(Arc::new(Policy::parse(DENY).unwrap())));
+        tokio::spawn(reload_on_hangup(
+            proxy.clone(),
+            with(&[(env::POLICY, path.to_str().unwrap())]),
+        ));
+
+        let reloaded = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while digest(&proxy) != Some(crate::policy::digest_of(ALLOW)) {
+                std::process::Command::new("kill")
+                    .args(["-HUP", &std::process::id().to_string()])
+                    .status()
+                    .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await;
+
+        assert!(reloaded.is_ok(), "SIGHUP did not reload the policy");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
