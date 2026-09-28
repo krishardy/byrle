@@ -55,7 +55,9 @@ needs neither, and holds no connection open while the analysis runs.
 | A PyPI wheel | the metadata's claim, which for a wheel is none |
 
 A job that fails to fetch, cannot write the spool, or runs past its ten-minute deadline
-stores nothing, and the next request starts another. The upstream client ends a
+stores nothing, and the next request starts another. That includes an upstream that
+answers the artifact 404: nothing remembers the status, so every request for it is
+answered 503. Decided 2026-09-28. The upstream client ends a
 connection after 10s without connecting or 30s without a byte, `http::CONNECT_TIMEOUT` and
 `http::READ_TIMEOUT`, since 2026-09-28. It sets no total timeout, so an upstream that
 trickles would otherwise hold a job slot, and its digest would be answered 503 for as long
