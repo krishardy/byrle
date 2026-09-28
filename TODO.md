@@ -265,10 +265,11 @@ Items that I've added that are not stage-bound.
     `proxy::tests::a_deferred_artifact_is_served_on_its_retry_after_the_analysis`, which
     passed 30 of 30 reruns. `capture()` rebuilds the tracing
     callsite interest cache, which fixed the other log-capture tests; this one still races.
-23. [ ] Keep only two kinds of source comment. Raised 2026-09-28.
+23. [ ] Keep only three kinds of source comment. Raised 2026-09-28.
     - Function signature documentation: up to 2 lines on what the function does, 1 line
       per parameter, 1 line per error type, and 1 line for the return value.
     - Environment variable documentation, 1 line each.
+    - Module documentation (`//!`), up to 4 lines per module.
 
     Every other comment goes. A comment that explains non-obvious behaviour marks a
     function to refactor until the behaviour is obvious from the code. Measured
