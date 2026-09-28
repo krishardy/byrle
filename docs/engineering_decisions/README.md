@@ -55,6 +55,7 @@ code, and the file names where.
 | [Upstream traffic honours the forward proxy variables, as reqwest reads them](upstream-forward-proxy.md) | Implemented |
 | [The policy reloads on SIGHUP, and each request keeps the policy it started with](policy-reload.md) | Implemented |
 | [`waharoa warm` asks a running proxy for what a lockfile locks](warm.md) | Implemented |
+| [Install latency through the proxy, measured](latency-benchmarks.md) | Measured, budget not set |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
