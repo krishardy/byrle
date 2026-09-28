@@ -2676,6 +2676,10 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       ([policy-reload](docs/engineering_decisions/policy-reload.md)).
 - [ ] Our own releases published with provenance attestations
 - [ ] `SECURITY.md`, disclosure policy, threat model doc
+  - [x] Threat model: `docs/threat-model.md`, 2026-09-28.
+  - [ ] `SECURITY.md`: drafted 2026-09-28. Reports go to GitHub private vulnerability
+        reporting and an email address still to be chosen. No fixed response time,
+        disclosure when a fix ships, latest release only.
 - [ ] Get one external team running it in blocking mode; fix what they hit
 
 **Exit:** an external team runs it enforcing for two weeks without disabling it.
