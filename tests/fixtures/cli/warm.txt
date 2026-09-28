@@ -3,7 +3,9 @@ Ask a running proxy for every artifact a lockfile locks, so each is analysed bef
 Usage: waharoa warm [OPTIONS] --lockfile <PATH>
 
 Options:
-      --lockfile <PATH>     A lockfile whose artifacts to ask for. Repeatable
-      --proxy <URL>         The proxy to ask [default: the public URL, or the listen address]
-      --deadline <SECONDS>  Stop asking for an artifact still being analysed after this long [default: 900]
-  -h, --help                Print help
+      --lockfile <PATH>      A lockfile whose artifacts to ask for. Repeatable
+      --proxy <URL>          The proxy to ask [default: the public URL, or the listen address]
+      --platform <PLATFORM>  Ask only for artifacts that install on this platform, <os>-<cpu> or <os>-<cpu>-<libc> in npm's names, such as linux-x64. Repeatable [default: this machine's]
+      --all-platforms        Ask for every platform's artifacts
+      --deadline <SECONDS>   Stop asking for an artifact still being analysed after this long [default: 900]
+  -h, --help                 Print help

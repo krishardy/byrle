@@ -35,10 +35,107 @@ pub fn references(listed: impl IntoIterator<Item = Locked>) -> Vec<Reference> {
 /// Every registry package version one lockfile's text locks, or why it cannot be read.
 pub type Reader = fn(&str) -> Result<BTreeSet<Locked>, String>;
 
+/// Every registry artifact one lockfile's text locks, with where each is fetched and the
+/// platforms it installs on, or why it cannot be read.
+pub type ArtifactReader = fn(&str) -> Result<Vec<LockedArtifact>, String>;
+
+/// One artifact a lockfile locks, for `waharoa warm`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockedArtifact {
+    pub locked: Locked,
+    /// The artifact's path on a registry, which the proxy serves at the same path.
+    pub path: String,
+    pub platform: Platform,
+}
+
+/// The platforms a locked package installs on, as npm records them. An empty list allows
+/// every value; a value starting `!` excludes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Platform {
+    pub os: Vec<String>,
+    pub cpu: Vec<String>,
+    pub libc: Vec<String>,
+}
+
+/// One platform an install runs on, in npm's names: `linux`, `x64`, `glibc`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub os: String,
+    pub cpu: String,
+    /// `None` off Linux, where npm does not check it.
+    pub libc: Option<String>,
+}
+
+impl Platform {
+    /// Whether a package with this platform installs on `target`.
+    pub fn allows(&self, target: &Target) -> bool {
+        let allows = |values: &[String], value: &str| {
+            let excluded = values.iter().any(|v| v.strip_prefix('!') == Some(value));
+            let listed: Vec<&String> = values.iter().filter(|v| !v.starts_with('!')).collect();
+            !excluded && (listed.is_empty() || listed.iter().any(|v| *v == value))
+        };
+        allows(&self.os, &target.os)
+            && allows(&self.cpu, &target.cpu)
+            && target
+                .libc
+                .as_deref()
+                .is_none_or(|libc| allows(&self.libc, libc))
+    }
+}
+
+impl Target {
+    /// The platform this build runs on.
+    pub fn this_machine() -> Self {
+        let os = match std::env::consts::OS {
+            "macos" => "darwin",
+            "windows" => "win32",
+            other => other,
+        };
+        let cpu = match std::env::consts::ARCH {
+            "x86_64" => "x64",
+            "aarch64" => "arm64",
+            "x86" => "ia32",
+            other => other,
+        };
+        let libc = if cfg!(target_env = "musl") {
+            "musl"
+        } else {
+            "glibc"
+        };
+        let libc = (os == "linux").then_some(libc);
+        Self {
+            os: os.to_owned(),
+            cpu: cpu.to_owned(),
+            libc: libc.map(str::to_owned),
+        }
+    }
+
+    /// `<os>-<cpu>` or `<os>-<cpu>-<libc>`, such as `linux-x64-musl`.
+    pub fn parse(value: &str) -> Result<Self, String> {
+        let parts: Vec<&str> = value.split('-').collect();
+        let (os, cpu, libc) = match parts.as_slice() {
+            [os, cpu] => (*os, *cpu, None),
+            [os, cpu, libc] => (*os, *cpu, Some(*libc)),
+            _ => return Err(format!("`{value}` is not <os>-<cpu> or <os>-<cpu>-<libc>")),
+        };
+        let libc = libc
+            .map(str::to_owned)
+            .or_else(|| (os == "linux").then(|| "glibc".to_owned()));
+        Ok(Self {
+            os: os.to_owned(),
+            cpu: cpu.to_owned(),
+            libc,
+        })
+    }
+}
+
 /// One lockfile a client writes: its file name and the reader for it.
 pub struct Lockfile {
     pub name: &'static str,
     pub read: Reader,
+    /// Where each locked artifact is fetched and the platforms it installs on. `None` for
+    /// a format that records neither.
+    pub artifacts: Option<ArtifactReader>,
     /// How the file records artifact URLs, for `waharoa doctor`. `None` for a file doctor
     /// does not check.
     pub pins: Option<Pins>,
@@ -118,15 +215,38 @@ fn unread(path: &Path) -> Option<&'static Unread> {
 }
 
 /// Every registry package version the lockfile at `path` locks, each once, sorted.
-pub fn read(path: &Path) -> Result<Vec<Locked>, LockfileError> {
-    let name = path.file_name().and_then(|n| n.to_str());
-    let Some(lockfile) = lockfiles().find(|lockfile| Some(lockfile.name) == name) else {
-        return Err(LockfileError::Unknown(path.to_owned()));
+/// The artifacts the lockfile at `path` locks. `None` for a format with no artifact
+/// reader.
+pub fn artifacts(path: &Path) -> Result<Option<Vec<LockedArtifact>>, LockfileError> {
+    let lockfile = lockfile_for(path)?;
+    let Some(artifacts) = lockfile.artifacts else {
+        return Ok(None);
     };
-    let text = std::fs::read_to_string(path).map_err(|error| LockfileError::Io {
+    artifacts(&text_of(path)?)
+        .map(Some)
+        .map_err(|reason| LockfileError::Invalid {
+            path: path.to_owned(),
+            reason,
+        })
+}
+
+fn lockfile_for(path: &Path) -> Result<&'static Lockfile, LockfileError> {
+    let name = path.file_name().and_then(|n| n.to_str());
+    lockfiles()
+        .find(|lockfile| Some(lockfile.name) == name)
+        .ok_or_else(|| LockfileError::Unknown(path.to_owned()))
+}
+
+fn text_of(path: &Path) -> Result<String, LockfileError> {
+    std::fs::read_to_string(path).map_err(|error| LockfileError::Io {
         path: path.to_owned(),
         error,
-    })?;
+    })
+}
+
+pub fn read(path: &Path) -> Result<Vec<Locked>, LockfileError> {
+    let lockfile = lockfile_for(path)?;
+    let text = text_of(path)?;
     (lockfile.read)(&text)
         .map(|locked| locked.into_iter().collect())
         .map_err(|reason| LockfileError::Invalid {
@@ -139,6 +259,82 @@ pub fn read(path: &Path) -> Result<Vec<Locked>, LockfileError> {
 mod tests {
     use super::*;
     use crate::util::test_support::tempdir;
+
+    fn platform(os: &[&str], cpu: &[&str], libc: &[&str]) -> Platform {
+        let owned = |values: &[&str]| values.iter().map(|v| (*v).to_owned()).collect();
+        Platform {
+            os: owned(os),
+            cpu: owned(cpu),
+            libc: owned(libc),
+        }
+    }
+
+    /// npm's rules: an empty list allows all, a listed value is required, `!` excludes, and
+    /// libc is read only on Linux.
+    #[test]
+    fn a_platform_allows_a_target_as_npm_does() {
+        let linux = Target::parse("linux-x64").unwrap();
+        let musl = Target::parse("linux-x64-musl").unwrap();
+        let mac = Target::parse("darwin-arm64").unwrap();
+
+        assert!(Platform::default().allows(&linux));
+        assert!(platform(&["linux"], &["x64"], &[]).allows(&linux));
+        assert!(!platform(&["darwin"], &[], &[]).allows(&linux));
+        assert!(!platform(&[], &["arm64"], &[]).allows(&linux));
+        assert!(platform(&["!win32"], &[], &[]).allows(&linux));
+        assert!(!platform(&["!linux"], &[], &[]).allows(&linux));
+        assert!(!platform(&["linux"], &[], &["musl"]).allows(&linux));
+        assert!(platform(&["linux"], &[], &["musl"]).allows(&musl));
+        assert!(
+            platform(&[], &[], &["glibc"]).allows(&mac),
+            "libc is Linux's only"
+        );
+    }
+
+    #[test]
+    fn a_target_is_os_cpu_and_on_linux_libc() {
+        assert_eq!(
+            Target::parse("linux-x64").unwrap(),
+            Target {
+                os: "linux".to_owned(),
+                cpu: "x64".to_owned(),
+                libc: Some("glibc".to_owned()),
+            }
+        );
+        assert_eq!(Target::parse("darwin-arm64").unwrap().libc, None);
+        assert_eq!(
+            Target::parse("linux-arm64-musl").unwrap().libc.as_deref(),
+            Some("musl")
+        );
+        assert!(Target::parse("linux").is_err());
+        assert!(Target::parse("a-b-c-d").is_err());
+        let here = Target::this_machine();
+        assert_eq!(here.libc.is_some(), here.os == "linux");
+        assert!(!here.os.is_empty() && !here.cpu.is_empty());
+    }
+
+    /// A format with no artifact reader answers `None`, and an unknown one an error.
+    #[test]
+    fn artifacts_are_read_only_where_a_format_records_them() {
+        let dir = tempdir("lockfile-artifacts");
+        let requirements = dir.join("requirements.txt");
+        std::fs::write(&requirements, "six==1.17.0\n").unwrap();
+        assert_eq!(artifacts(&requirements).unwrap(), None);
+        assert!(matches!(
+            artifacts(&dir.join("Gemfile.lock")),
+            Err(LockfileError::Unknown(_))
+        ));
+        let broken = dir.join("package-lock.json");
+        std::fs::write(&broken, "{").unwrap();
+        assert!(matches!(
+            artifacts(&broken),
+            Err(LockfileError::Invalid { .. })
+        ));
+        assert!(matches!(
+            artifacts(&dir.join("missing").join("package-lock.json")),
+            Err(LockfileError::Io { .. })
+        ));
+    }
 
     fn npm(name: &str, version: &str) -> Locked {
         ("npm".to_owned(), name.to_owned(), version.to_owned())
