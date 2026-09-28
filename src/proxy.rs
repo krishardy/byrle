@@ -6409,6 +6409,50 @@ mod tests {
         (base, analyser)
     }
 
+    /// A listed version whose tarball the upstream answers 404 stores no analysis, and
+    /// nothing remembers the 404, so every request for it is answered 503. Decided
+    /// 2026-09-28.
+    #[tokio::test]
+    async fn an_artifact_the_upstream_does_not_have_stays_deferred() {
+        let packument = format!(
+            r#"{{"name":"widget","versions":{{"1.0.0":{{"version":"1.0.0","dist":{{{}
+                "tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}}}}}}"#,
+            integrity(b"gone")
+        );
+        let router = Router::new().route(
+            "/widget",
+            get(move || {
+                let packument = packument.clone();
+                async move { ([(header::CONTENT_TYPE, "application/json")], packument) }
+            }),
+        );
+        let (spool, _) = Spool::open(&crate::util::test_support::tempdir("analyse-404"), 1 << 20)
+            .expect("opens");
+        let analyser = Arc::new(Analyser::new(
+            reqwest::Client::new(),
+            Arc::new(spool),
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+            2,
+            8,
+        ));
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, serve(router).await)
+                .with_analyser(Some(analyser.clone()))
+                .router(),
+        )
+        .await;
+
+        for attempt in 1..=3 {
+            assert_eq!(
+                tarball_request(&base).await.status(),
+                503,
+                "attempt {attempt}"
+            );
+            analyser.ended(attempt).await;
+        }
+    }
+
     fn integrity(tarball: &[u8]) -> String {
         format!(r#""integrity":"{}","#, sri_of(tarball))
     }
