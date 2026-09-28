@@ -89,7 +89,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
 use std::time::Instant;
 use tokio::sync::Semaphore;
@@ -222,6 +222,9 @@ pub struct Proxy {
     /// Bounds how many packuments are decoded and rewritten at once. See
     /// [`DEFAULT_MAX_CONCURRENT_METADATA`].
     metadata_slots: Arc<Semaphore>,
+    /// The configuration after a policy reload, which each request reads from then on.
+    /// `None` until the first reload. See [`Proxy::replace_policy`].
+    reloaded: Arc<RwLock<Option<Arc<Config>>>>,
     /// The intel snapshot [`intel_for`] last read coverage from. See [`snapshot_named`].
     coverage: Arc<Mutex<Option<LoadedSnapshot>>>,
     /// Artifacts answered 503 while their analysis ran. See [`Deferred`].
@@ -335,6 +338,7 @@ impl Proxy {
             traffic: Arc::default(),
             without_artifacts: Arc::default(),
             metadata_slots: Arc::new(Semaphore::new(DEFAULT_MAX_CONCURRENT_METADATA)),
+            reloaded: Arc::default(),
         };
         proxy.rebuilt()
     }
@@ -406,9 +410,33 @@ impl Proxy {
         Ok(self)
     }
 
-    /// The policy every decision reads, when one is configured.
-    pub fn policy(&self) -> Option<&Policy> {
-        self.config.policy.as_deref()
+    /// The policy in force, when one is configured: the last one reloaded, or the one
+    /// built with.
+    pub fn policy(&self) -> Option<Arc<Policy>> {
+        self.current().config.policy.clone()
+    }
+
+    /// Put `policy` in force for every request from now on. A request already being
+    /// decided keeps the policy it started with.
+    /// Returns the policy it replaced.
+    pub fn replace_policy(&self, policy: Option<Arc<Policy>>) -> Option<Arc<Policy>> {
+        let mut reloaded = self.reloaded.write().expect("reloaded lock");
+        let base = reloaded.clone().unwrap_or_else(|| self.config.clone());
+        let mut config = (*base).clone();
+        let replaced = std::mem::replace(&mut config.policy, policy);
+        *reloaded = Some(Arc::new(config));
+        replaced
+    }
+
+    /// This proxy with the configuration in force now, for one request to read throughout.
+    fn current(&self) -> Proxy {
+        match self.reloaded.read().expect("reloaded lock").clone() {
+            Some(config) => Proxy {
+                config,
+                ..self.clone()
+            },
+            None => self.clone(),
+        }
     }
 
     pub fn origin_policy(&self) -> &OriginPolicy {
@@ -2220,6 +2248,7 @@ fn audit_pinned(
 /// Answer one request: the proxy's own endpoints, or the upstream's answer once an
 /// artifact is decided and a metadata document filtered.
 async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
+    let proxy = proxy.current();
     let started = Instant::now();
     let method = req.method().clone();
     let path = req
@@ -4661,6 +4690,37 @@ mod tests {
             .expect("the artifact request is recorded");
         assert_eq!(pinned["version"], "4.17.21");
         assert_eq!(pinned["action"], "block");
+    }
+
+    /// A policy put in force after the router is built decides the next request.
+    #[tokio::test]
+    async fn a_replaced_policy_decides_the_next_request() {
+        let proxy = offline(None, Some(DENY_LODASH));
+        hold(&proxy, LODASH);
+        let base = serve(proxy.clone().router()).await;
+        let status = || async {
+            reqwest::get(format!("{base}{LODASH_TARBALL}"))
+                .await
+                .unwrap()
+                .status()
+        };
+        assert_eq!(status().await, StatusCode::FORBIDDEN);
+
+        let replaced = proxy.replace_policy(Some(policy(ALLOW_ALL)));
+
+        assert_eq!(
+            replaced.map(|p| p.digest.clone()),
+            Some(crate::policy::digest_of(DENY_LODASH))
+        );
+        assert_eq!(
+            status().await,
+            StatusCode::BAD_GATEWAY,
+            "fetched, not refused"
+        );
+        assert_eq!(
+            proxy.policy().map(|p| p.digest.clone()),
+            Some(crate::policy::digest_of(ALLOW_ALL))
+        );
     }
 
     /// Observe mode serves what the policy refuses. The version stays in the document, the

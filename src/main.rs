@@ -227,6 +227,8 @@ async fn run_daemon() -> std::process::ExitCode {
         );
     }
 
+    #[cfg(unix)]
+    tokio::spawn(startup::reload_on_hangup(proxy.clone(), env::process()));
     let reporting = proxy.clone();
     tokio::spawn(async move {
         let mut every = tokio::time::interval(waharoa::proxy::TRAFFIC_WINDOW);

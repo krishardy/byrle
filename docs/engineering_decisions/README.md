@@ -53,6 +53,7 @@ code, and the file names where.
 | [A pinned verdict records its inputs, and `audit verify` decides it again](reproducible-verdicts.md) | Implemented |
 | [Observe mode is one switch for the whole proxy, and enforce is the default](observe-mode.md) | Implemented |
 | [Upstream traffic honours the forward proxy variables, as reqwest reads them](upstream-forward-proxy.md) | Implemented |
+| [The policy reloads on SIGHUP, and each request keeps the policy it started with](policy-reload.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
