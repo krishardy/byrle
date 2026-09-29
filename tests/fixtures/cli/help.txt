@@ -11,7 +11,7 @@ Commands:
   intel    Read what the intel store records
   policy   Work with policy files
   warm     Ask a running proxy for every artifact a lockfile locks, so each is analysed before a client asks for it. The exit code is the OR of 1 for a failure and 2 for an artifact still being analysed, and 4 on its own for an error
-  refresh  Load OSV, CISA KEV and Datadog intel into the Postgres at WAHAROA_DATABASE_URL
+  refresh  Load OSV, GitHub, CISA KEV and Datadog intel into the Postgres at WAHAROA_DATABASE_URL
   help     Print this message or the help of the given subcommand(s)
 
 Options:

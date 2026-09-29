@@ -46,7 +46,7 @@ pub enum Command {
     /// artifact still being analysed, and 4 on its own for an error
     Warm(Warm),
     #[command(about = format!(
-        "Load OSV, CISA KEV and Datadog intel into the Postgres at {}",
+        "Load OSV, GitHub, CISA KEV and Datadog intel into the Postgres at {}",
         crate::env::DATABASE_URL
     ))]
     Refresh,

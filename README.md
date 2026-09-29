@@ -21,9 +21,29 @@ does nothing is worse than no tool at all. Rationale and the evidence behind it 
 
 ## Status
 
-**Pre-implementation.** There is no working proxy yet, no binary, and nothing to
-install. The design is settled enough to build against; the code is not written.
-See [TODO.md](TODO.md) for the staged plan and current position.
+**Pre-release, enforcing for npm and PyPI.** The proxy runs, decides on every metadata
+document and artifact, and refuses what its policy refuses. No outside team has run it
+yet: that is the exit criterion of the current stage. There is no published release;
+build it with `cargo build --release`. See [TODO.md](TODO.md) for the staged plan and
+current position.
+
+| Ecosystem | Tier | Clients measured through it |
+|---|---|---|
+| npm | **enforcing** | npm, pnpm, yarn 1, yarn 4, bun |
+| PyPI | **enforcing** | pip, uv |
+| cargo, Go, Maven | not built | |
+
+A tier is what the proxy does for the ecosystem today:
+
+| Tier | Meaning |
+|---|---|
+| `enforcing` | every policy check runs; a refused version is removed from the metadata and its artifact refused; an artifact is served only after its analysis has finished, and only when its bytes match its published digest |
+| `observe-only` | checks run and are logged; nothing is refused |
+| `experimental` | some checks run; what is missing is listed |
+
+`WAHAROA_MODE=observe` runs an enforcing ecosystem in observe mode, for the whole proxy.
+`waharoa status` lists what the build does for each ecosystem and which intel streams
+cover it.
 
 ## Problem
 
@@ -58,7 +78,7 @@ package manager
 [ analysis cache ]      keyed by tarball digest, permanently valid, offline-capable
       |
       v
-upstream registry (allow) | HTTP 403 + audit log (block)
+upstream registry (allow) | refusal status, 403 by default, + audit log (block)
 ```
 
 Only the first two layers are rewritten per ecosystem. Package identity is PURL
@@ -71,28 +91,25 @@ published versions, lifecycle script policy, provenance enforcement, and
 registry-versus-source diffing all cover the publish-to-detection gap that feed-driven
 tools cannot see into.
 
-**Pluggable advisory streams, from day one.** OSV, GitHub Advisory, OSSF Malicious
-Packages, CISA KEV, and NVD are all free and public, and between them carry 221,548 npm
-malware records. No commercial vendor will aggregate every free feed, because each is
-selling their own. Every stream is mirrored locally, so
-lookups never leak your dependency graph upstream.
+**Pluggable advisory streams.** OSV (which carries the OSSF malicious-packages records),
+GitHub advisories, Datadog's malicious-packages dataset and CISA KEV are all free and
+public. `waharoa refresh` loads them into a local Postgres store, and the proxy asks only
+that store, so a lookup never tells an upstream which packages you use. No commercial
+vendor will aggregate every free feed, because each is selling their own.
 
-**A policy engine you can read.** `waharoa explain` (planned) shows the effective merged
-policy and the exact rule that produced a verdict. Policy engines nobody can inspect
+**A policy engine you can read.** `waharoa explain` shows the policy in force, and for a
+package, the verdict and each check that produced it. Policy engines nobody can inspect
 stay stuck in observe mode forever.
 
 ## Ecosystem support
 
-Every ecosystem carries a published maturity tier: `enforcing`, `observe-only`, or
-`experimental`. Nothing has reached one yet.
-
-| Ecosystem | Interception mechanism | Maturity |
+| Ecosystem | Interception mechanism | Tier |
 |---|---|---|
-| npm | registry URL | planned, first |
-| PyPI | `--index-url`, PEP 503 | planned, second |
-| cargo | source replacement, sparse index | planned, third |
-| Go | `GOPROXY` | planned, after cargo |
-| Maven | mirror in `settings.xml` | planned, after cargo |
+| npm | registry URL; artifact URLs rewritten to the proxy | enforcing |
+| PyPI | `--index-url`, PEP 691 and PEP 503 | enforcing |
+| cargo | source replacement, sparse index | not built |
+| Go | `GOPROXY` | not built |
+| Maven | mirror in `settings.xml` | not built |
 
 npm and PyPI carry effectively all the malware volume, so they ship first. Breadth buys
 far less security than the ecosystem count implies.
@@ -119,8 +136,8 @@ packages:
 
 The proxy enforces by default. `WAHAROA_MODE=observe` serves what the policy would refuse
 and logs it, so adopters can move from observe to enforce on their own schedule.
-Exceptions are cheap to add and expire by default. The full schema, merge semantics, and
-evaluation order are in [docs/project_plan.md](docs/project_plan.md).
+Exceptions are cheap to add and expire by default. Every key, its default and which way
+it loosens are in [docs/policy-reference.md](docs/policy-reference.md).
 
 ## Non-goals
 
@@ -132,26 +149,21 @@ evaluation order are in [docs/project_plan.md](docs/project_plan.md).
 ## Known bypass vectors
 
 A tool that intercepts every dependency install is itself a supply-chain risk, and it
-has honest limits:
+has honest limits. Each way a package can be installed without waharoa deciding on it is
+listed, with its mitigation, in [docs/threat-model.md](docs/threat-model.md). The ones that
+matter most:
 
-* **Reverse proxy mode is advisory, not mandatory.** A developer who resets their
-  registry URL defeats it entirely.
-* **Non-terminal install paths are invisible.** IDE extensions, browser extensions, and
-  MCP servers install packages without going through a configured package manager.
-  A registry proxy cannot see any of it.
-* **npm serves from its local cache without consulting the registry**, so a pre-existing
-  cache silently skips enforcement. Artifacts that do arrive are still checked: when a
-  client asks for a tarball without having requested its packument, as `npm ci` always
-  does, the proxy fetches the packument itself. What it cannot see is an install served
-  entirely from cache, where no request reaches it at all.
-* **A registry can publish artifacts on a host the proxy does not sit in front of.**
-  Those versions are removed from the packument, so a resolver picks one that can be
-  examined, and a pinned fetch of one is refused. Removal is the only control that works:
-  the client fetches that URL from whatever host it names, so the proxy never sees the
-  request. Name the host in `WAHAROA_ARTIFACT_ORIGINS` to have the proxy serve it, or in
-  `WAHAROA_ALLOW_DIRECT_ORIGINS` to accept that it is fetched unexamined. The second is
-  reported on every packument that uses it, because an accepted gap that stops being
-  reported outlives the reason it was added.
+* **Pointing at the proxy is advisory.** A developer who resets their registry URL, or a
+  client that installs from its own cache, never asks the proxy. `waharoa doctor` checks
+  both. An npm or yarn lockfile records the proxy's address, so CI can check it; pnpm's
+  records none.
+* **Installs outside a package manager are invisible.** IDE extensions, browser
+  extensions and MCP servers install packages without a configured registry. Only
+  egress control reaches them.
+* **Operator settings can open gaps**: `WAHAROA_ALLOW_DIRECT_ORIGINS`,
+  `WAHAROA_REFUSE_UNSERVABLE=0` and `WAHAROA_MODE=observe`. Each is warned about at
+  startup and reported by `waharoa doctor`.
+* **Code that runs on import, not install**, is not seen by the install-script check.
 
 We do not stop an attacker who already controls the developer's machine, and we do not
 claim to detect novel malware ahead of the research community.
@@ -210,8 +222,9 @@ something CI depends on being reachable.
 
 ## License
 
-Apache-2.0, with DCO sign-off rather than a CLA. The patent grant matters for security
-tooling, and adapter contributions are the scarce resource.
+Apache-2.0 ([LICENSE](LICENSE)), with DCO sign-off rather than a CLA
+([CONTRIBUTING.md](CONTRIBUTING.md)). The patent grant matters for security tooling, and
+adapter contributions are the scarce resource.
 
 ## Documentation
 
