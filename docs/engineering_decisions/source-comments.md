@@ -1,7 +1,7 @@
 # Three kinds of source comment
 
-- **Status:** Implemented 2026-09-29 for the checker; files leave the baseline as they are
-  brought under it. `scripts/make/comments.py`, `scripts/make/comments-baseline.txt`.
+- **Status:** Implemented 2026-09-29. Every file in `src/` and `tests/` passes
+  `scripts/make/comments.py`, which `make lint` runs.
 - **Related:** TODO item 23
 
 ## Decision
@@ -34,9 +34,19 @@ a comment is not checked against the code it describes.
 with a small lexer that skips strings, raw strings and character literals, and finds the
 item a `///` block documents by looking past `#[..]` attributes.
 
-Files that do not pass yet are listed in `comments-baseline.txt` and are not checked. A
-listed file that passes is an error, so the list only shrinks, and the rule applies to a
-file from the commit that removes it from the list.
+Files were brought under the rule one batch per commit, from `4b8618b` to the commit that
+deleted `comments-baseline.txt`, the list of files not yet checked.
+
+| Comment lines in `src/` | At `4b8618b` | After |
+|---|---|---|
+| `//` | 756 | 1, a `// nosemgrep:` directive |
+| `///` | 5,719 | 3,819 |
+| `//!` | 1,190 | 270 |
+
+What the removed comments recorded moved into the records here. New records written for
+it: `audit-log.md`, `client-caches.md`, `default-ceilings.md`, `doctor-lockfile-urls.md`,
+`explain-output.md`, `npm-packument-shapes.md`, `refusal-status.md`,
+`strictness-comparison.md` and `upstream-ca-bundle.md`.
 
 `src/cli.rs` is the one file where a doc comment is behaviour: clap reads `///` on a command
 or argument as its `--help` text. Help text longer than the limit moves into

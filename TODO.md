@@ -271,7 +271,8 @@ Items that I've added that are not stage-bound.
     the `log` records `test_support` routes to the capturing thread.
     A `filter_fn` was tried first and failed 6 tests on every run: it is cacheable, and
     caches "never" the same way. 50 of 50 full-suite runs passed after the fix.
-23. [ ] Keep only three kinds of source comment. Raised 2026-09-28.
+23. [x] Keep only three kinds of source comment. Raised 2026-09-28. Done 2026-09-29: see
+    `docs/engineering_decisions/source-comments.md`.
     - Function signature documentation: up to 2 lines on what the function does, 1 line
       per parameter, 1 line per error type, and 1 line for the return value.
     - Environment variable documentation, 1 line each.
