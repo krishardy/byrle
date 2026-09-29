@@ -12,6 +12,10 @@
 #   4. every file's digest was known before the fetch and verified on the way past
 #   5. one version's wheel and sdist get different answers under `install_scripts: block`
 #   6. uv, which has its own resolver, installs and verifies the same way
+#   7. `install_scripts: block` refuses docopt 0.6.2, sdist only, and `allow` installs it
+#   8. test-eicar 0.1.0, which holds the EICAR test string, is served and verified
+# The packages in 7 and 8 are in docs/engineering_decisions/live-test-packages.md. No PyPI
+# project still exists that a MAL record covers, so `known_malware` is not run here.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -97,7 +101,7 @@ for dist in md.distributions():
 PY
 }
 
-echo "==> 1/6  install completes through the proxy"
+echo "==> 1/8  install completes through the proxy"
 start_proxy ""
 make_venv "$workdir/basic"
 pip_install "$workdir/basic" requests || fail "pip install requests failed"
@@ -105,7 +109,7 @@ installed_purls "$workdir/basic" | grep -q '^pkg:pypi/requests@' \
     || fail "requests was not installed"
 echo "    ok"
 
-echo "==> 2/6  every distribution, transitive included, came through the proxy"
+echo "==> 2/8  every distribution, transitive included, came through the proxy"
 clean
 on_disk="$(installed_purls "$workdir/basic" | sed 's|^pkg:pypi/||; s|@.*||' | sort -u)"
 # The index page the resolver read, which is the normalised project name in the path.
@@ -117,7 +121,7 @@ missed="$(comm -23 <(echo "$on_disk") <(echo "$indexed") || true)"
 [[ -z "$missed" ]] || fail "these projects never had an index read: $(echo "$missed" | tr '\n' ' ')"
 echo "    ok ($(echo "$on_disk" | wc -l) projects, all intercepted)"
 
-echo "==> 3/6  every installed distribution was normalized to a PURL at the version on disk"
+echo "==> 3/8  every installed distribution was normalized to a PURL at the version on disk"
 expected_purls="$(installed_purls "$workdir/basic" | sort -u)"
 [[ -n "$expected_purls" ]] || fail "could not read any installed versions"
 observed_purls="$(grep -oE 'waharoa.package.claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u || true)"
@@ -141,7 +145,7 @@ served() {
     echo "$(( $(count 'artifact requested') - $(count "$DEFERRED") ))"
 }
 
-echo "==> 4/6  every file digest was known before the fetch and verified"
+echo "==> 4/8  every file digest was known before the fetch and verified"
 deferred="$(count "$DEFERRED")"
 known="$(( $(count 'digest known') - deferred ))"
 verified="$(count 'artifact digest verified')"
@@ -167,7 +171,7 @@ fi
 echo "    ok ($files files, all with a known digest, all verified, none left offsite, $deferred deferred for analysis)"
 stop_proxy
 
-echo "==> 5/6  one version's wheel and sdist get different answers"
+echo "==> 5/8  one version's wheel and sdist get different answers"
 # A PyPI version is several files. `idna` 3.20 ships a wheel and an sdist; installing the
 # wheel runs nothing and installing the sdist runs setup.py, so a policy that blocks
 # install scripts has to answer them differently. The version-level record says false,
@@ -210,7 +214,7 @@ fi
 echo "    ok (sdist refused 403, wheel of the same version served, sdist never fetched)"
 stop_proxy
 
-echo "==> 6/6  uv, with its own resolver, installs and verifies the same way"
+echo "==> 6/8  uv, with its own resolver, installs and verifies the same way"
 if ! command -v uv >/dev/null; then
     echo "    skipped (uv is not installed)"
 else
@@ -230,6 +234,45 @@ else
     echo "    ok ($uv_files files, all verified, client=$(grep -oE 'user_agent.original=uv/[^ ]+' "$clean_log" | head -1 | cut -d= -f2))"
     stop_proxy
 fi
+
+echo "==> 7/8  install_scripts refuses a version offering only an sdist, and allow installs it"
+docopt_file="/packages/a2/55/8f8cab2afd404cf578136ef2cc5dfb50baa1761b68c9da1fb1e4eed343c9/docopt-0.6.2.tar.gz"
+printf 'version: 1\ncooldown_days: 0\ninstall_scripts: %s\n' block >"$workdir/block.yaml"
+printf 'version: 1\ncooldown_days: 0\ninstall_scripts: %s\n' allow >"$workdir/allow.yaml"
+start_proxy "$workdir/block.yaml"
+status=$(curl -s -o "$workdir/docopt.json" -w '%{http_code}' \
+    -H 'Accept: application/vnd.pypi.simple.v1+json' "${index}docopt/")
+[[ "$status" == "200" ]] || fail "the docopt index answered $status; it has to be a 200"
+if python3 -c "import json,sys; sys.exit(0 if any(f['filename'] == 'docopt-0.6.2.tar.gz' for f in json.load(open(sys.argv[1]))['files']) else 1)" \
+    "$workdir/docopt.json"; then
+    fail "docopt 0.6.2 is still offered, so pip can still pick it"
+fi
+status=$(curl -s -o "$workdir/docopt.out" -w '%{http_code}' "http://127.0.0.1:${port}${docopt_file}")
+[[ "$status" == "403" ]] || fail "a pinned fetch of docopt-0.6.2.tar.gz answered $status"
+grep -q install_scripts "$workdir/docopt.out" || fail "the refusal of docopt does not name install_scripts"
+clean
+if grep -qE "proxied.*docopt-0\.6\.2\.tar\.gz http.response.status_code=200" "$clean_log"; then
+    fail "the refused sdist was fetched upstream"
+fi
+stop_proxy
+start_proxy "$workdir/allow.yaml"
+make_venv "$workdir/docopt"
+pip_install "$workdir/docopt" "docopt==0.6.2" || fail "docopt 0.6.2 was not installed under allow"
+installed_purls "$workdir/docopt" | grep -q '^pkg:pypi/docopt@0.6.2$' || fail "docopt was not installed"
+echo "    ok (block: filtered and 403; allow: built and installed)"
+stop_proxy
+
+echo "==> 8/8  a package holding the EICAR test string is served and verified"
+start_proxy ""
+make_venv "$workdir/eicar"
+pip_install "$workdir/eicar" "test-eicar==0.1.0" || fail "pip install test-eicar failed"
+grep -rq 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE' "$workdir/eicar/venv/lib" \
+    || fail "the installed test-eicar does not hold the EICAR string"
+clean
+grep -q 'artifact digest verified.*pkg:pypi/test-eicar@0.1.0' "$clean_log" \
+    || fail "the test-eicar wheel was not verified"
+echo "    ok (installed, digest verified)"
+stop_proxy
 
 echo
 echo "PASS: the proxy serves PyPI as Stage 3 requires."
