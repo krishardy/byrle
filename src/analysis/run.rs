@@ -313,26 +313,37 @@ impl Analyser {
             return;
         };
         timings.fetch_ms = ms(phase);
-        let phase = Instant::now();
-        let spooled = self.spool_verified(job, response).await;
-        timings.download_ms = ms(phase);
-        let scripts = match spooled {
-            None => return,
-            Some(Err(unreadable)) => unreadable,
-            Some(Ok(spooled)) => {
-                timings.bytes = spooled.len();
-                let phase = Instant::now();
-                let read = read(job, spooled, reader).await;
-                timings.read_ms = ms(phase);
-                let Some(scripts) = read else {
-                    return;
-                };
-                scripts
-            }
+        let Some(scripts) = self.scripts(job, response, reader, timings).await else {
+            return;
         };
         let phase = Instant::now();
         self.put(job, scripts).await;
         timings.store_ms = ms(phase);
+    }
+
+    /// What `reader` finds in `response`'s body, spooled and checked against the digest, or
+    /// `Unreadable` for one over the spool's ceiling. `None` when nothing should be stored:
+    /// a mismatch, a spool that failed, or a spooled file that could not be read.
+    async fn scripts(
+        &self,
+        job: &Job,
+        response: reqwest::Response,
+        reader: Reader,
+        timings: &mut Timings,
+    ) -> Option<Scripts> {
+        let phase = Instant::now();
+        let spooled = self.spool_verified(job, response).await;
+        timings.download_ms = ms(phase);
+        match spooled? {
+            Err(unreadable) => Some(unreadable),
+            Ok(spooled) => {
+                timings.bytes = spooled.len();
+                let phase = Instant::now();
+                let read = read(job, spooled, reader).await;
+                timings.read_ms = ms(phase);
+                read
+            }
+        }
     }
 
     /// The upstream's 2xx answer for `job`'s artifact. `None` when there is none.

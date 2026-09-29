@@ -409,25 +409,29 @@ pub fn reload_policy<L: Fn(&str) -> Option<OsString>>(proxy: &Proxy, environment
 
 /// [`reload_policy`] on each `SIGHUP`, for as long as the process runs.
 #[cfg(unix)]
-pub async fn reload_on_hangup<L: Fn(&str) -> Option<OsString>>(proxy: Proxy, environment: Env<L>) {
+pub fn reload_on_hangup<L: Fn(&str) -> Option<OsString> + Send + Sync>(
+    proxy: Proxy,
+    environment: Env<L>,
+) -> impl std::future::Future<Output = ()> + Send {
     // Registering fails only for a signal that cannot be caught, and SIGHUP can be.
     let hangups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         .expect("SIGHUP can be listened for");
     let hangups = futures_util::stream::unfold(hangups, |mut hangups| async move {
         hangups.recv().await.map(|()| ((), hangups))
     });
-    reload_each(&proxy, &environment, std::pin::pin!(hangups)).await;
+    reload_each(proxy, environment, hangups)
 }
 
 /// [`reload_policy`] once for each item of `hangups`, until it ends.
 async fn reload_each<L: Fn(&str) -> Option<OsString>>(
-    proxy: &Proxy,
-    environment: &Env<L>,
-    mut hangups: std::pin::Pin<&mut (dyn futures_util::Stream<Item = ()> + Send)>,
+    proxy: Proxy,
+    environment: Env<L>,
+    hangups: impl futures_util::Stream<Item = ()>,
 ) {
     use futures_util::StreamExt as _;
+    let mut hangups = std::pin::pin!(hangups);
     while hangups.next().await.is_some() {
-        reload_policy(proxy, environment);
+        reload_policy(&proxy, &environment);
     }
 }
 
@@ -960,8 +964,7 @@ mod tests {
         std::fs::write(&path, ALLOW).unwrap();
         let proxy = Proxy::new(reqwest::Client::new());
         let environment = with(&[(env::POLICY, path.to_str().unwrap())]);
-        let hangups = futures_util::stream::iter([()]);
-        reload_each(&proxy, &environment, std::pin::pin!(hangups)).await;
+        reload_each(proxy.clone(), environment, futures_util::stream::iter([()])).await;
         assert_eq!(digest(&proxy), Some(crate::policy::digest_of(ALLOW)));
         let _ = std::fs::remove_dir_all(&dir);
     }

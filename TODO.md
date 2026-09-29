@@ -314,7 +314,7 @@ Items that I've added that are not stage-bound.
       into it, 11 of them in `startup.rs`; none do now. The first count, 13 of 93, missed
       messages split across lines.
 
-26. [ ] Reach the 100% unit coverage floor. Raised 2026-09-29, when `make coverage` moved
+26. [x] Reach the 100% unit coverage floor. Raised 2026-09-29, when `make coverage` moved
     from 95 to 100. The library was then at 96.42% of regions (1,796 missed), 96.96% of
     functions (116) and 97.67% of lines (747). The largest gaps are in `proxy.rs`,
     `doctor.rs`, `startup.rs`, `policy/diff.rs` and `env.rs`. `doctor::run` had no test.
@@ -323,6 +323,10 @@ Items that I've added that are not stage-bound.
     ([coverage-counts-library-code-only](docs/engineering_decisions/coverage-counts-library-code-only.md)).
     Counting library code only, after `doctor`, `env`, `explain` and `policy diff` reached
     100%: 92.53% of regions (962 missed), 96.99% of functions (55), 95.46% of lines (553).
+    Done 2026-09-29: 12,855 regions, 1,855 functions and 12,268 lines, none missed. Two
+    arrangements were needed beyond tests, both in the decision record: test logs are
+    captured through `log` so every log call's `log` branch runs, and a generic function
+    with branches has one non-generic core.
 
 ## Architecture Refactor
 

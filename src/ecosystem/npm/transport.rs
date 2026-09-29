@@ -231,7 +231,7 @@ mod tests {
     async fn the_client_asks_for_gzip_and_decodes_it() {
         use axum::routing::get;
         let body = fixture("lodash-4.17.21.abbrev.json");
-        let compressed = crate::http::gzip(&body).unwrap();
+        let compressed = crate::http::gzip(&body);
         let seen: std::sync::Arc<std::sync::Mutex<Option<String>>> = Default::default();
         let recorder = seen.clone();
 
