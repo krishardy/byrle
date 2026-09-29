@@ -146,6 +146,9 @@ pub struct LoadedSnapshot {
     pub sources: Vec<String>,
     /// Each stream the sources' rows were read from, sorted by name.
     pub streams: Vec<StreamDigest>,
+    /// Each stream whose latest refresh did not read it because it is not configured.
+    #[serde(default)]
+    pub unconfigured: Vec<String>,
 }
 
 impl LoadedSnapshot {
@@ -174,7 +177,31 @@ impl LoadedSnapshot {
         let capabilities = crate::intel::capabilities_of(&self.streams);
         let mut gaps = capabilities.gaps(ecosystems);
         gaps.extend(capabilities.uncovered_by(ecosystems, crate::intel::Capability::Malware));
+        gaps.extend(self.unloaded(ecosystems));
         gaps
+    }
+
+    /// Each stream an ecosystem in `ecosystems` lists that this snapshot neither holds nor
+    /// records as unconfigured. Returns one gap per stream.
+    fn unloaded(&self, ecosystems: &[&str]) -> Vec<crate::intel::Gap> {
+        let held = |stream: &str| {
+            self.streams.iter().any(|s| s.stream == stream)
+                || self.unconfigured.iter().any(|s| s == stream)
+        };
+        crate::ecosystem::TABLE
+            .iter()
+            .filter(|registry| ecosystems.contains(&registry.ecosystem.as_str()))
+            .flat_map(|registry| {
+                registry
+                    .streams
+                    .iter()
+                    .filter(|listed| !held(listed.stream))
+                    .map(|listed| crate::intel::Gap {
+                        ecosystem: registry.ecosystem.as_str().to_owned(),
+                        missing: crate::intel::Missing::Stream(listed.stream.to_owned()),
+                    })
+            })
+            .collect()
     }
 }
 
@@ -342,12 +369,17 @@ pub mod testing {
                     digest: p.snapshot,
                     taken_at: "2026-09-13T00:00:00Z".to_owned(),
                     sources: Vec::new(),
-                    streams: vec![StreamDigest {
-                        stream: crate::intel::providers::osv::bundle::NPM_STREAM.to_owned(),
-                        sha256: "aa".to_owned(),
-                        etag: None,
-                        last_modified: None,
-                    }],
+                    streams: crate::ecosystem::of(crate::identity::Ecosystem::Npm)
+                        .streams
+                        .iter()
+                        .map(|listed| StreamDigest {
+                            stream: listed.stream.to_owned(),
+                            sha256: "aa".to_owned(),
+                            etag: None,
+                            last_modified: None,
+                        })
+                        .collect(),
+                    unconfigured: Vec::new(),
                 }))
             })
         }
@@ -595,6 +627,62 @@ mod tests {
         );
     }
 
+    /// The gaps a snapshot has for want of a capability, leaving out missing streams.
+    fn capability_gaps(snapshot: &LoadedSnapshot) -> Vec<crate::intel::Gap> {
+        snapshot
+            .gaps()
+            .into_iter()
+            .filter(|gap| capability_of(&gap.missing).is_some())
+            .collect()
+    }
+
+    fn capability_of(missing: &crate::intel::Missing) -> Option<crate::intel::Capability> {
+        match missing {
+            crate::intel::Missing::Capability(capability) => Some(*capability),
+            crate::intel::Missing::Stream(_) => None,
+        }
+    }
+
+    /// A listed stream the snapshot does not hold is a gap, unless its latest refresh
+    /// recorded it as unconfigured. An older load of it counts as held.
+    #[test]
+    fn a_listed_stream_the_snapshot_does_not_hold_is_a_gap_unless_unconfigured() {
+        let stream_gaps = |snapshot: &LoadedSnapshot| -> Vec<(String, String)> {
+            snapshot
+                .gaps()
+                .into_iter()
+                .filter_map(|gap| match gap.missing {
+                    crate::intel::Missing::Stream(stream) => Some((gap.ecosystem, stream)),
+                    crate::intel::Missing::Capability(_) => None,
+                })
+                .collect()
+        };
+        let without_osv = recording(&["datadog/npm", "datadog/pypi", "osv/pypi"]);
+        assert_eq!(
+            stream_gaps(&without_osv),
+            [
+                ("npm".to_owned(), "osv/npm".to_owned()),
+                ("npm".to_owned(), "github/npm".to_owned()),
+                ("pypi".to_owned(), "github/pypi".to_owned()),
+            ]
+        );
+        let unconfigured = LoadedSnapshot {
+            unconfigured: vec!["github/npm".to_owned(), "github/pypi".to_owned()],
+            ..without_osv
+        };
+        assert_eq!(
+            stream_gaps(&unconfigured),
+            [("npm".to_owned(), "osv/npm".to_owned())],
+            "only the stream that was configured and did not load is missing"
+        );
+        assert!(
+            unconfigured.uncovered("npm")[0]
+                .to_string()
+                .contains("lists `osv/npm`"),
+            "the gap names the stream"
+        );
+    }
+
     fn recording(streams: &[&str]) -> LoadedSnapshot {
         LoadedSnapshot {
             digest: "s1".to_owned(),
@@ -609,31 +697,32 @@ mod tests {
                     last_modified: None,
                 })
                 .collect(),
+            unconfigured: Vec::new(),
         }
     }
 
     #[test]
     fn a_snapshot_covers_an_ecosystem_only_when_it_records_that_ecosystems_osv_stream() {
-        let without = |ecosystem: &str, missing| crate::intel::Gap {
+        let without = |ecosystem: &str, capability| crate::intel::Gap {
             ecosystem: ecosystem.to_owned(),
-            missing,
+            missing: crate::intel::Missing::Capability(capability),
         };
         let (matching, malware) = (
             crate::intel::Capability::Match,
             crate::intel::Capability::Malware,
         );
         assert_eq!(
-            recording(&["cisa/kev", "osv/npm"]).gaps(),
+            capability_gaps(&recording(&["cisa/kev", "osv/npm"])),
             [without("pypi", matching), without("pypi", malware)]
         );
         assert_eq!(
-            recording(&["osv/pypi"]).gaps(),
+            capability_gaps(&recording(&["osv/pypi"])),
             [without("npm", matching), without("npm", malware)]
         );
-        assert!(recording(&["osv/npm", "osv/pypi"]).gaps().is_empty());
+        assert!(capability_gaps(&recording(&["osv/npm", "osv/pypi"])).is_empty());
         for streams in [&[][..], &["cisa/kev"]] {
             assert_eq!(
-                recording(streams).gaps(),
+                capability_gaps(&recording(streams)),
                 [
                     without("npm", matching),
                     without("pypi", matching),
@@ -738,11 +827,13 @@ mod tests {
     /// One ecosystem's gaps are the served gaps for that ecosystem and no other.
     #[test]
     fn an_ecosystem_is_uncovered_by_what_it_lacks_and_not_by_another_ecosystem() {
-        let covered = recording(&["cisa/kev", "osv/npm"]);
+        let covered = recording(&["cisa/kev", "osv/npm", "datadog/npm", "github/npm"]);
         assert_eq!(covered.uncovered("npm"), []);
         let pypi = covered.uncovered("pypi");
         assert_eq!(
-            pypi.iter().map(|gap| gap.missing).collect::<Vec<_>>(),
+            pypi.iter()
+                .filter_map(|gap| capability_of(&gap.missing))
+                .collect::<Vec<_>>(),
             [
                 crate::intel::Capability::Match,
                 crate::intel::Capability::Malware
@@ -754,7 +845,7 @@ mod tests {
             github_only
                 .uncovered("npm")
                 .iter()
-                .map(|gap| gap.missing)
+                .filter_map(|gap| capability_of(&gap.missing))
                 .collect::<Vec<_>>(),
             [crate::intel::Capability::Malware],
             "a match stream without malware still leaves known_malware unable to fire"

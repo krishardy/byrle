@@ -37,6 +37,7 @@ impl SnapshotIntel {
             taken_at,
             sources: sources.iter().map(|(source, _)| source.clone()).collect(),
             streams: Vec::new(),
+            unconfigured: Vec::new(),
         };
         let exploitation_loaded = snapshot.exploitation_loaded();
         let mut found = HashMap::new();

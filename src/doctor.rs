@@ -545,19 +545,21 @@ const READINESS_TITLE: &str = "proxy readiness";
 /// The fix for a snapshot that is missing or cannot match a served ecosystem.
 const REFRESH_FIX: &str = "run `waharoa refresh` on the proxy's database";
 
-/// A loaded snapshot's finding: `Ok` with no gaps, else a warning listing each.
-///
-/// Separate from [`check_readiness`] because every served ecosystem needs a stream that
-/// lists it before a snapshot has no gaps, and PyPI has none yet.
-fn ready_using(using: String, gaps: &[crate::intel::Gap]) -> Finding {
+/// A loaded snapshot's finding: ready with no gaps, else not ready, listing each gap.
+/// `snapshot` names the snapshot, and the proxy answers 503 for an ecosystem with `gaps`.
+fn ready_using(snapshot: String, gaps: &[crate::intel::Gap]) -> Finding {
     if gaps.is_empty() {
-        return Finding::new(Severity::Ok, READINESS_TITLE, using);
+        return Finding::new(
+            Severity::Ok,
+            READINESS_TITLE,
+            format!("ready, using {snapshot}"),
+        );
     }
     let gaps: Vec<String> = gaps.iter().map(ToString::to_string).collect();
     Finding::new(
-        Severity::Warn,
+        Severity::Problem,
         READINESS_TITLE,
-        format!("{using}, but {}", gaps.join("; ")),
+        format!("not ready, using {snapshot}: {}", gaps.join("; ")),
     )
     .with_fix(REFRESH_FIX)
 }
@@ -581,11 +583,11 @@ pub fn check_readiness(readiness: Option<&Readiness>, proxy: &str) -> Finding {
             let Some(snapshot) = readiness.snapshot.as_ref() else {
                 return Finding::new(Severity::Ok, READINESS_TITLE, "ready");
             };
-            let using = format!(
-                "ready, using intel snapshot {}, taken {}",
+            let named = format!(
+                "intel snapshot {}, taken {}",
                 snapshot.digest, snapshot.taken_at
             );
-            ready_using(using, &snapshot.gaps())
+            ready_using(named, &snapshot.gaps())
         }
         IntelState::NotConsulted => Finding::new(
             Severity::Warn,
@@ -1726,26 +1728,33 @@ mod tests {
     fn readiness(intel: IntelState) -> Readiness {
         Readiness {
             ready: matches!(intel, IntelState::Loaded | IntelState::NotConsulted),
+            gaps: Vec::new(),
             intel,
             snapshot: (intel == IntelState::Loaded).then(|| crate::intel::store::LoadedSnapshot {
                 digest: "sha256:ab".into(),
                 taken_at: "2026-09-13T01:02:03Z".into(),
                 sources: ["cisa/kev", "osv"].map(str::to_owned).to_vec(),
-                streams: ["cisa/kev", "osv/npm"]
+                streams: std::iter::once("cisa/kev")
+                    .chain(
+                        crate::ecosystem::TABLE
+                            .iter()
+                            .flat_map(|registry| registry.streams.iter().map(|s| s.stream)),
+                    )
                     .map(|stream| crate::intel::refresh::StreamDigest {
                         stream: stream.to_owned(),
                         sha256: "aa".to_owned(),
                         etag: None,
                         last_modified: None,
                     })
-                    .to_vec(),
+                    .collect(),
+                unconfigured: Vec::new(),
             }),
         }
     }
 
-    /// A snapshot with no stream able to originate a finding for npm serves every package.
+    /// A snapshot with no stream an ecosystem needs leaves the proxy not ready.
     #[test]
-    fn a_ready_proxy_whose_snapshot_cannot_match_npm_warns() {
+    fn a_snapshot_with_a_gap_is_not_ready() {
         let mut ready = readiness(IntelState::Loaded);
         ready
             .snapshot
@@ -1754,17 +1763,23 @@ mod tests {
             .streams
             .retain(|s| s.stream == "cisa/kev");
         let finding = check_readiness(Some(&ready), PROXY);
-        assert_eq!(finding.severity, Severity::Warn);
-        assert_eq!(
-            finding.detail,
-            format!(
-                "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but {}; {}; \
-                 {}; {}",
+        assert_eq!(finding.severity, Severity::Problem);
+        assert!(
+            finding.detail.starts_with(&format!(
+                "not ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z: {}; {}; \
+                 {}; {}; ",
                 gap("npm", MATCH),
                 gap("pypi", MATCH),
                 gap("npm", MALWARE),
                 gap("pypi", MALWARE),
-            )
+            )),
+            "{}",
+            finding.detail
+        );
+        assert!(
+            finding.detail.contains("`npm` lists `osv/npm`"),
+            "a missing stream is named: {}",
+            finding.detail
         );
         assert!(finding.fix.is_some());
 
@@ -1795,24 +1810,20 @@ mod tests {
 
     #[test]
     fn a_snapshot_with_no_gaps_is_ok() {
-        let finding = ready_using("ready, using intel snapshot s1".to_owned(), &[]);
+        let finding = ready_using("intel snapshot s1".to_owned(), &[]);
         assert_eq!(finding.severity, Severity::Ok);
         assert_eq!(finding.detail, "ready, using intel snapshot s1");
         assert!(finding.fix.is_none());
     }
 
-    /// No stream lists PyPI yet, so a snapshot covering npm still warns about PyPI.
+    /// A snapshot holding every listed stream reports the snapshot it uses.
     #[test]
-    fn a_ready_proxy_reports_the_snapshot_it_uses_and_that_pypi_is_uncovered() {
+    fn a_ready_proxy_reports_the_snapshot_it_uses() {
         let finding = check_readiness(Some(&readiness(IntelState::Loaded)), PROXY);
-        assert_eq!(finding.severity, Severity::Warn);
+        assert_eq!(finding.severity, Severity::Ok);
         assert_eq!(
             finding.detail,
-            format!(
-                "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z, but {}; {}",
-                gap("pypi", MATCH),
-                gap("pypi", MALWARE),
-            )
+            "ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z"
         );
     }
 
@@ -2121,6 +2132,7 @@ mod tests {
             ready: true,
             intel: IntelState::Loaded,
             snapshot: None,
+            gaps: Vec::new(),
         };
         let url = fake_proxy(true, ready).await;
         let index = format!("{url}/simple/");

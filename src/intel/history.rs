@@ -15,6 +15,8 @@ pub struct NotLoaded {
     /// The bundle, when it was fetched.
     pub bundle: Option<StreamDigest>,
     pub error: String,
+    /// Whether it was not read because it is not configured, such as GitHub's with no token.
+    pub unconfigured: bool,
 }
 
 /// Every stream a write was to load, as not loaded for `error`, beside those that already
@@ -35,6 +37,7 @@ pub fn none_loaded(
                 stream: bundle.stream.clone(),
                 bundle: Some(bundle.clone()),
                 error: error.to_owned(),
+                unconfigured: false,
             })
         })
         .chain(already.iter().cloned())
@@ -58,6 +61,8 @@ pub struct Ingestion {
     pub snapshot: Option<String>,
     /// Why the stream did not load. `None` when it loaded.
     pub error: Option<String>,
+    /// Whether it was not read because it is not configured.
+    pub unconfigured: bool,
 }
 
 impl Ingestion {
@@ -79,6 +84,7 @@ impl Ingestion {
             rows: Some(rows.to_owned()),
             snapshot: Some(snapshot.to_owned()),
             error: None,
+            unconfigured: false,
         }
     }
 
@@ -95,6 +101,7 @@ impl Ingestion {
             rows: None,
             snapshot: snapshot.map(str::to_owned),
             error: Some(stream.error.clone()),
+            unconfigured: stream.unconfigured,
         }
     }
 }
@@ -173,6 +180,7 @@ mod tests {
             stream: "github/npm".to_owned(),
             bundle: None,
             error: "no token".to_owned(),
+            unconfigured: true,
         }];
         let all = none_loaded(&sources, &already, "the transaction failed");
         assert_eq!(
@@ -199,6 +207,7 @@ mod tests {
             stream: "datadog/npm".to_owned(),
             bundle: None,
             error: "fetching: refused".to_owned(),
+            unconfigured: false,
         };
         let unread = NotLoaded {
             source: "osv".to_owned(),
@@ -208,6 +217,7 @@ mod tests {
                 ..bundle.clone()
             }),
             error: "a record did not read".to_owned(),
+            unconfigured: false,
         };
         let entries = [
             Ingestion::not_loaded("2026-09-15T15:14:02Z", &fetch_failed, Some("sha256:7796")),

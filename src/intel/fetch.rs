@@ -173,6 +173,8 @@ pub async fn read_streams(
                     stream: declared.stream.to_owned(),
                     bundle,
                     error,
+                    unconfigured: matches!(declared.transport, Transport::GithubGraphql { .. })
+                        && github_token.is_none(),
                 });
                 continue;
             }
@@ -596,6 +598,10 @@ mod tests {
         assert_eq!(read.not_loaded.len(), 1);
         assert!(read.not_loaded[0].bundle.is_none(), "nothing was fetched");
         assert!(
+            !read.not_loaded[0].unconfigured,
+            "a stream that failed was configured"
+        );
+        assert!(
             printed
                 .lines()
                 .iter()
@@ -619,6 +625,16 @@ mod tests {
             "{why}"
         );
         assert!(printed.lines().is_empty(), "nothing was fetched");
+    }
+
+    /// A stream not read for want of its token is recorded as unconfigured.
+    #[tokio::test]
+    async fn a_stream_not_read_for_want_of_a_token_is_recorded_as_unconfigured() {
+        const GITHUB: &[Stream] = &[crate::intel::stream::GITHUB_NPM];
+        let printed = Printed::default();
+        let read = read_streams(&client(), GITHUB, None, &printed.notice()).await;
+        assert_eq!(read.not_loaded.len(), 1);
+        assert!(read.not_loaded[0].unconfigured);
     }
 
     /// With a token, GitHub's stream is read page by page, a page naming no cursor is the
