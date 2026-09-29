@@ -21,6 +21,9 @@ pub struct Index {
     pub metadata: Option<Box<PackageMetadata>>,
 }
 
+/// No project name for the parsers: every message here names the project by its path.
+const UNNAMED: &str = "";
+
 /// Parse a forwarded simple index and keep its records.
 ///
 /// `None` when it did not parse: the body is then forwarded as it arrived.
@@ -31,14 +34,9 @@ pub fn read_index(
     store: &Mutex<RecordStore>,
     path: &str,
 ) -> Option<Index> {
-    // The project name is not read from here: `pypi::parse` takes one as the fallback for
-    // an index that does not name itself, and every message below says `path`, which
-    // identifies the project already.
-    // An HTML page's hrefs may be relative, so it is read against the URL it came from:
-    // piwheels writes `/simple/idna/idna-3.20-py3-none-any.whl#sha256=...`.
     let read = match format {
-        IndexFormat::Json => parse("", decoded),
-        IndexFormat::Html => super::html::parse("", page, decoded),
+        IndexFormat::Json => parse(UNNAMED, decoded),
+        IndexFormat::Html => super::html::parse(UNNAMED, page, decoded),
     };
     let project = match read {
         Ok(project) => project,
@@ -48,9 +46,6 @@ pub fn read_index(
         }
     };
 
-    // Stored before the rewrite, and built from the bytes that arrived. Records built
-    // from the rewritten document would name the proxy's own origin as every artifact's
-    // upstream, which is the wrong thing to hold as the index's claim.
     let metadata = match normalize(&project) {
         Ok(metadata) => {
             let versions = metadata.records.len();
@@ -73,8 +68,6 @@ pub fn read_index(
                 waharoa.package.artifacts = artifacts,
                 waharoa.package.skipped_versions = skipped,
                 waharoa.package.sdist_only_versions = sdist_only,
-                // PEP 740, counted over the files the index lists: `attrs` published 12 of
-                // 72 with one on 2026-09-21 and `ruff` none of 7,134.
                 provenance_files_listed = project
                     .files
                     .iter()

@@ -1,26 +1,7 @@
 //! PEP 503's HTML simple index, read into the same [`Project`] PEP 691 JSON reads into.
 //!
-//! An index that serves only HTML is common: measured 2026-09-21, `download.pytorch.org`,
-//! `pypi.nvidia.com`, `www.piwheels.org` and `data.pyg.org` answer `text/html` even when
-//! asked for `application/vnd.pypi.simple.v1+json` and nothing else. Reading it is what
-//! lets the policy filter those indexes and the rewrite point their files at the proxy.
-//!
-//! # What this reads, and what it does not
-//!
-//! A PEP 503 page is a flat list of anchors, and this reads exactly that: `<a href=...>`
-//! elements with their attributes and their text. It is not an HTML parser. A page it
-//! cannot read is an error rather than a page read as no files, so the proxy forwards it
-//! and says `UNINSPECTED` instead of reporting a project with nothing in it.
-//!
-//! | Written as | Read as |
-//! |---|---|
-//! | `href` | the file's URL, resolved against the page's own URL: piwheels writes `/simple/idna/idna-3.20-py3-none-any.whl#sha256=...` |
-//! | the fragment, `#sha256=<hex>` | the digest, the way PEP 503 carries one |
-//! | the anchor's text | the filename |
-//! | `data-yanked` | PEP 592: the reason, empty when the attribute has no value |
-//! | `data-requires-python` | as written, with `&gt;` and friends turned back |
-//! | `data-upload-time` | the publish time, which PEP 503 has no field for. `download.pytorch.org` writes it; PyPI's HTML does not |
-//! | `data-provenance` | PEP 740: where the file's attestation bundle is |
+//! A scanner over `<a>` elements, not an HTML parser.
+//! See docs/engineering_decisions/pep-503-html-index.md.
 
 use super::error::PypiError;
 use super::paths::{filename_parts, normalise};
@@ -45,8 +26,6 @@ pub fn parse(name: &str, page: &str, bytes: &[u8]) -> Result<Project, PypiError>
             .map_err(|_| PypiError::NotHtml("an href that is not a URL"))?;
         let filename = unescape(anchor.text.trim());
         let Some((_, version, kind)) = filename_parts(&filename) else {
-            // An index lists eggs, installers and its own navigation. `wire::parse` skips
-            // the same filenames rather than refusing the document.
             continue;
         };
         files.push(File {
@@ -54,13 +33,10 @@ pub fn parse(name: &str, page: &str, bytes: &[u8]) -> Result<Project, PypiError>
             version,
             kind,
             sha256: digest(url.fragment()),
-            // The fragment is kept: pip checks the bytes it downloads against it, and
-            // `origin::reachable_path` carries it through the rewrite.
             url: url.to_string(),
             upload_time: anchor.attribute("data-upload-time"),
             yanked: anchor.attribute("data-yanked"),
             requires_python: anchor.attribute("data-requires-python"),
-            // PEP 740 writes it as an attribute here and as a key in the JSON form.
             provenance: anchor.attribute("data-provenance"),
         });
     }
@@ -69,8 +45,6 @@ pub fn parse(name: &str, page: &str, bytes: &[u8]) -> Result<Project, PypiError>
     }
     let name = match normalise(name) {
         name if !name.is_empty() => name,
-        // `/simple/idna/` is the project pip asked for. A page served from somewhere with
-        // no name in its path leaves the filenames, which all carry one.
         _ => named_by(&page).unwrap_or_else(|| named_by_file(&files)),
     };
     Ok(Project { name, files })
@@ -100,8 +74,7 @@ fn digest(fragment: Option<&str>) -> Option<String> {
 
 /// One `<a>` element: where it is on the page, its attributes as written, and its text.
 struct Anchor<'a> {
-    /// Where `<a` starts, and where the element ends: after `</a>`, and after the `<br>`
-    /// an index writes between entries, so removing one leaves no orphan separator.
+    /// Where `<a` starts. `end` is after `</a>` and any `<br>` that follows it.
     start: usize,
     end: usize,
     attributes: Vec<(String, Option<String>)>,
@@ -189,7 +162,6 @@ fn find_anchor(text: &str) -> Option<usize> {
         let at = from + at;
         match text[at + 2..].chars().next() {
             Some(c) if c.is_whitespace() || c == '>' => return Some(at),
-            // `<abbr>`, `<address>`: a tag whose name starts with an a.
             Some(_) => from = at + 2,
             None => return None,
         }
@@ -312,10 +284,12 @@ mod tests {
         .expect("the page reads");
         assert_eq!(project.name, "idna");
 
-        // A page whose URL has no name in it: every filename carries one.
         let page = r#"<a href="a-1.0.tar.gz">a-1.0.tar.gz</a>"#;
         let project = parse("", "https://example.test/", page.as_bytes()).expect("reads");
-        assert_eq!(project.name, "a");
+        assert_eq!(
+            project.name, "a",
+            "a page with no name in its URL is named by its files"
+        );
     }
 
     /// PEP 592 in HTML: the reason is the attribute's value, and a valueless attribute is

@@ -1,19 +1,5 @@
-//! Snapshots kept as files, so one can be read after Postgres has replaced it.
-//!
-//! Postgres keeps the latest load only. `waharoa refresh` also writes each load to the
-//! snapshot directory, and every file there is named by the digest of what it contains:
-//!
-//! | File | Contains | Named by |
-//! |---|---|---|
-//! | `<hex>.rows.gz` | one source's [`load::encode`] output, gzipped | its digest, `intel_source.digest` |
-//! | `<hex>.snapshot` | [`load::manifest`]: one `source digest` line per source | its digest, the snapshot id |
-//!
-//! A source whose rows did not change between two snapshots is one rows file. Reading a file
-//! checks what it contains against its name.
-//!
-//! [`SnapshotDir::open`] locks `.lock` in the directory until the value is dropped. `waharoa
-//! refresh` holds it from before it writes rows until it has written the snapshot and pruned,
-//! so a prune never removes rows another refresh has written and not yet named in a snapshot.
+//! Snapshots kept as files, each named by the digest of what it contains, so one can be
+//! read after Postgres has replaced it. [`SnapshotDir::open`] locks the directory.
 //!
 //! See docs/engineering_decisions/snapshot-identity.md.
 
@@ -33,8 +19,7 @@ const LOCK: &str = ".lock";
 #[derive(Debug)]
 pub struct SnapshotDir {
     path: PathBuf,
-    /// Held for its lock, which is released when the file is closed. `None` from
-    /// [`SnapshotDir::open_to_read`].
+    /// Held for its lock. `None` from [`SnapshotDir::open_to_read`].
     _lock: Option<File>,
 }
 
@@ -137,10 +122,7 @@ impl SnapshotDir {
     }
 
     /// `path`, for reading only, without the lock.
-    ///
-    /// A refresh never changes a file in place, and every read is checked against its digest,
-    /// so a read cannot see a file half written. A prune can remove a file between two reads,
-    /// which fails the second. Writing and pruning go through [`SnapshotDir::open`].
+    /// A prune can remove a file between two reads, which fails the second.
     pub fn open_to_read(path: &Path) -> Self {
         Self {
             path: path.to_owned(),
@@ -207,10 +189,6 @@ impl SnapshotDir {
     fn rows(&self, digest: &str) -> Result<(PathBuf, Vec<u8>), KeptError> {
         let path = self.file(digest, ROWS)?;
         let mut file = File::open(&path).map_err(at(&path))?;
-        // A gzip file ends with the length of what it contains, modulo 2^32. It is read before
-        // the contents are checked, so it is used only as a capacity, at most 16 times the
-        // file: a wrong one costs a reallocation, and a right one saves growing to twice the
-        // 35 MB npm's rows are, which gzip to 5.6 MB.
         let mut length = [0; 4];
         let capacity = file
             .seek(SeekFrom::End(-4))
@@ -266,8 +244,6 @@ impl SnapshotDir {
         let modified = fs::metadata(&path)
             .and_then(|m| m.modified())
             .map_err(at(&path))?;
-        // A time past jiff's range, years -9999 to 9999, reads as the end of it. The
-        // filesystems this runs on store neither end.
         let written = jiff::Timestamp::try_from(modified).unwrap_or(jiff::Timestamp::MAX);
         Ok(jiff::Timestamp::from_second(written.as_second())
             .unwrap_or(written)
@@ -298,7 +274,6 @@ impl SnapshotDir {
                 fs::remove_file(&path).map_err(at(&path))?;
             }
         }
-        // Newest first. The name breaks a tie, so two prunes of one directory agree.
         snapshots.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
         let removed = snapshots.split_off(limit.min(snapshots.len()));
 
@@ -664,7 +639,6 @@ mod tests {
         expected.sort();
         assert_eq!(listing(&path), expected);
 
-        // Keeping more than there are removes nothing.
         assert_eq!(
             dir.prune(10).expect("prunes"),
             Pruned {

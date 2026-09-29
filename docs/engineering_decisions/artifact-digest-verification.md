@@ -43,6 +43,14 @@ collision-broken, and a passing SHA-1 check logged beside a passing SHA-512 chec
 reading them as the same evidence. Those artifacts are refused: their bytes can be
 neither verified nor analysed. Amended 2026-09-27; they were forwarded unverified before.
 
+**Reading `dist.integrity`.** Of 24,852 npm versions measured, 24,850 carry an SRI string,
+and every one is a single `sha512-<base64>`. The SRI format also allows several
+whitespace-separated entries and a `?options` suffix on each. Neither appears in the
+measured set. `Sri::parse` handles both, because a registry can start writing them without
+notice. The options are not part of the digest. When several supported algorithms appear,
+the strongest is used: `Algorithm`'s variants are declared weakest to strongest, and
+`ordering_is_by_strength` checks that order against digest length.
+
 **Why the store is bounded by records, not entries.** A packument carries every version
 ever published, not the one being installed. Measured over an
 `express + @babel/code-frame + typescript + eslint` install: 167 packuments, 9,690

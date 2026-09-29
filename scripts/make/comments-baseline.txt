@@ -9,8 +9,6 @@ src/ecosystem/npm/normalize.rs
 src/ecosystem/npm/rewrite.rs
 src/ecosystem/npm/transport.rs
 src/ecosystem/npm/wire.rs
-src/ecosystem/pypi/html.rs
-src/ecosystem/pypi/inspect.rs
 src/ecosystem/pypi/normalize.rs
 src/ecosystem/pypi/paths.rs
 src/ecosystem/pypi/transport.rs
@@ -20,13 +18,10 @@ src/env.rs
 src/explain.rs
 src/http.rs
 src/identity.rs
-src/integrity.rs
 src/intel/load.rs
 src/intel/postgres.rs
 src/intel/providers/github.rs
-src/intel/providers/osv/mod.rs
 src/intel/range.rs
-src/intel/snapshot_dir.rs
 src/intel/store.rs
 src/intel.rs
 src/main.rs

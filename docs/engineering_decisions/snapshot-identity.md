@@ -157,6 +157,11 @@ One row is decoded at a time, and only the records of the packages asked for are
 `policy diff` reads its audit log before the snapshot and asks for the packages the log lists.
 A package the snapshot was not read for is `IntelError::Unread`, not an empty answer.
 
+A gzip file ends with the length of its contents, modulo 2^32. The reader uses it only as
+the starting capacity, at most 16 times the file size, because it is read before the
+contents are checked. npm's rows are 35 MB and gzip to 5.6 MB, so the capacity saves
+growing the buffer to twice that.
+
 The reader takes no lock. A refresh writes a new file under `.partial` and renames it, and
 never changes a file in place, so a read cannot see half a file, and a file that does not hash
 to its name is refused. A prune can remove a file while `policy diff` reads, which fails the
@@ -167,6 +172,9 @@ A kept snapshot records no streams, and its `taken_at` is when the manifest was 
 
 `WAHAROA_SNAPSHOT_LIMIT`, default 30, is the most manifests the directory keeps. A prune
 keeps the newest by modification time and removes the rest. A manifest loaded again is written again, so it counts as the newest.
+Two manifests with the same time are ordered by name, so two prunes of one directory agree.
+A modification time outside jiff's range, years -9999 to 9999, reads as the end of the
+range.
 Rows files that no kept manifest names are removed. Other files are left alone.
 
 ## Migration

@@ -1,36 +1,7 @@
 //! OSV records, as rows for the intel store, one ecosystem's bundle at a time.
 //!
-//! The publishers read, by id prefix. Non-withdrawn counts from `npm/all.zip` fetched
-//! 2026-09-13 and `PyPI/all.zip` fetched 2026-09-18:
-//!
-//! | Prefix | Publisher | npm | PyPI | `malware` |
-//! |---|---|---|---|---|
-//! | `MAL-` | OpenSSF Malicious Packages | 221,217 | 11,732 | true |
-//! | `GHSA-` | GitHub Advisory Database | 7,052 | 6,070 | false |
-//! | `PYSEC-` | PyPI Advisory Database | 0 | 7,253 | false |
-//! | `OSV-` | OSS-Fuzz | 0 | 7 | false |
-//!
-//! Every other prefix is skipped as [`Skipped::OtherPublisher`]. npm had two such records,
-//! `EEF-CVE-2026-56812` from the Erlang Ecosystem Foundation CNA and `GSD-2022-1000008` from
-//! the Global Security Database. `GHSA-63mc-hw7g-86rr` has the EEF record's npm ranges, and
-//! the GSD record lists no version or range.
-//!
-//! Each `affected` entry for the ecosystem becomes rows, its versions read by the
-//! ecosystem's [`range::VersionOrder`]:
-//!
-//! | Entry shape | Stored as |
-//! |---|---|
-//! | a range that is every version, such as `introduced: "0"` alone | one `advisory_affected` row, `version` NULL, and nothing else from the entry |
-//! | otherwise, a `versions` list | one `advisory_affected` row per version |
-//! | otherwise, and beside a list, other ranges | one `advisory_range` row per interval; see [`crate::intel::range`] |
-//!
-//! A list and a range are both stored because the list is what OSV enumerated when the
-//! record was last modified. `MAL-2025-3661` lists 2 versions beside `introduced: "99.9.1"`,
-//! and a version published into that range afterwards is only in the range.
-//!
-//! `GHSA-`, `PYSEC-` and `OSV-` text is CC-BY-4.0, which owes attribution wherever it is
-//! shown. `summary` is stored and nothing displays it. See
-//! `docs/engineering_decisions/advisory-stream-licences.md`.
+//! See docs/engineering_decisions/osv-ranges-and-scores.md and
+//! docs/engineering_decisions/advisory-stream-licences.md.
 
 pub mod bundle;
 
@@ -87,8 +58,7 @@ struct Record {
     aliases: Vec<String>,
     #[serde(default)]
     severity: Vec<Severity>,
-    /// Read only for `severity`, a GitHub band. Any shape is accepted, so a publisher's other
-    /// fields cannot refuse the record.
+    /// Read only for `severity`, a GitHub band. Any shape is accepted.
     database_specific: Option<serde_json::Value>,
     #[serde(default)]
     affected: Vec<Entry>,
@@ -124,16 +94,10 @@ struct Range {
     events: Vec<BTreeMap<String, String>>,
 }
 
-/// The score, the band it was read from, and how many CVSS vectors did not parse.
-///
-/// The base score of the newest CVSS version the record carries. Newest rather than highest.
-/// v3 and v4 are different scoring systems, and taking the larger of the two would compare
-/// them as one. On 2026-09-13, 809 GHSA records carried both. Only `CVSS_V3` and `CVSS_V4`
-/// entries are read; no npm record carried another type.
-///
-/// A record with no CVSS vector at all is scored at the top of its `band`, as
-/// [`band_ceiling`] gives it: 689 npm `GHSA-` records on 2026-09-15. A vector that did not parse
-/// is not replaced by the band, so it stays counted and the record unscored.
+/// The base score of the newest CVSS version in `severity`, or with no vector at all, the
+/// top of `band`. See docs/engineering_decisions/osv-ranges-and-scores.md.
+/// `severity` is the record's entries. `band` is its GitHub severity band.
+/// Returns the score, the band it was read from, and how many vectors did not parse.
 fn score(severity: &[Severity], band: Option<&str>) -> (Option<f64>, Option<String>, usize) {
     let (cvss, unread) = vector_score(severity);
     match (cvss, band.and_then(|b| Some((b, band_ceiling(b)?)))) {
@@ -168,11 +132,8 @@ const V4_BASE: [&str; 11] = [
 ];
 
 /// The vector with only its base metrics, or `None` when one appears twice.
-///
-/// The score compared is the base score. GHSA vectors also carry threat and temporal
-/// metrics, such as `E:U` for an exploit nobody has reported, which lower a score. `cvss`
-/// 2.2.0 counts them in a v4 score and refuses a v3 vector that carries them. A vector with
-/// an unknown prefix is returned whole, for `cvss` to refuse.
+/// `vector` is returned whole when its prefix is unknown, for `cvss` to refuse.
+/// Returns the base vector.
 fn base_vector(vector: &str) -> Option<String> {
     let mut parts = vector.split('/');
     let prefix = parts.next().unwrap_or_default();
@@ -271,7 +232,6 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, serde_json::E
 
         let row =
             |version: Option<&String>| Affected::new(purl_type, &package.name, version.cloned());
-        // Every version subsumes everything else the entry says, a refused range included.
         if every {
             affected.insert(row(None));
             continue;
@@ -416,7 +376,6 @@ mod tests {
     #[test]
     fn every_version_subsumes_a_list_beside_it() {
         assert_eq!(versions(&rows("MAL-2022-1122")), vec![None]);
-        // Here the zero range is the second of two.
         let rows = rows("MAL-2025-3605");
         assert_eq!(versions(&rows), vec![None]);
         assert!(rows.ranges.is_empty());
@@ -535,8 +494,11 @@ mod tests {
                {"package": {"ecosystem": "npm", "name": "b"},
                 "ranges": [{"type": "ECOSYSTEM", "events": [{"introduced": "v2026.4.1"}]}]}"#,
         ));
-        // The repeated version is one row, or the unique index refuses the load.
-        assert_eq!(rows.affected.len(), 1);
+        assert_eq!(
+            rows.affected.len(),
+            1,
+            "a repeated version is one row, or the unique index refuses the load"
+        );
         assert_eq!(rows.unexpressed, 1);
     }
 
@@ -577,8 +539,7 @@ mod tests {
         let v4 = severity("CVSS_V4", V40_CONFIDENTIALITY_LOW);
         for order in [format!("{v3}, {v4}"), format!("{v4}, {v3}")] {
             let rows = scored(&order);
-            // Lower than the v3 score, so this is not the larger of the two.
-            assert_eq!(rows.cvss, Some(6.9), "{order}");
+            assert_eq!(rows.cvss, Some(6.9), "the lower v4 score, in {order}");
             assert!(!rows.malware);
         }
     }
@@ -598,7 +559,6 @@ mod tests {
 
     #[test]
     fn a_vector_that_does_not_parse_is_counted_and_scores_nothing() {
-        // Each missing one base metric. `cvss` scores the v3 ones 0.0 if asked.
         for incomplete in [
             "CVSS:3.1/AV:N",
             "CVSS:3.1/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
@@ -732,9 +692,8 @@ mod tests {
         assert!(parse(Ecosystem::Npm, b"{\"id\": ").is_err());
     }
 
-    /// A PyPI record is read by PyPI's rules: OSV's `PyPI` ecosystem name, the purl type
-    /// `pypi`, a PEP 503 name and PEP 440 versions. `PYSEC-` and `OSV-` records are
-    /// vulnerabilities, and the same record read for npm has no package.
+    /// A PyPI record is read by PyPI's rules: its ecosystem name, purl type, PEP 503 name
+    /// and PEP 440 versions. The same record read for npm has no package.
     #[test]
     fn a_pypi_record_is_read_by_pypis_rules() {
         let record = |id: &str| {

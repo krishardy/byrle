@@ -1,26 +1,13 @@
 //! Subresource Integrity: parsing what a registry claims, and checking what arrives.
 //!
-//! npm publishes `dist.integrity` as an SRI string, in practice `sha512-<base64>`. Of
-//! 24,852 versions measured, 24,850 carry one and every one of those is sha512; the two
-//! without are from 2012 and offer only SHA-1.
-//!
-//! Plan §5: the registry's digest is a **cache key, not a trust anchor**. It says whether
-//! this exact artifact has been analysed before. Checking it proves the bytes are the
-//! ones the packument described, which is not the same as proving they are honest. A
-//! mismatch is a finding, not a cache error.
-//!
-//! SHA-1 is deliberately not verifiable through this module. It is collision-broken, and
-//! a passing SHA-1 check reported beside a passing SHA-512 check invites treating them as
-//! the same evidence.
+//! SHA-1 is not verifiable here. See docs/engineering_decisions/artifact-digest-verification.md.
 
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::fmt;
 
-/// Hash algorithms SRI names that are worth checking.
+/// Hash algorithms SRI names that are worth checking, declared weakest to strongest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Algorithm {
-    // Ordered weakest to strongest: `Ord` is how the strongest is picked when an
-    // integrity string names several.
     Sha256,
     Sha384,
     Sha512,
@@ -60,9 +47,6 @@ impl fmt::Display for Algorithm {
 }
 
 /// One integrity claim: an algorithm and the digest it expects.
-///
-/// `Hash`, because it is the key plan §5 branches the fetch path on: see
-/// [`crate::verified`].
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Sri {
     algorithm: Algorithm,
@@ -91,18 +75,14 @@ impl fmt::Display for SriError {
 impl std::error::Error for SriError {}
 
 impl Sri {
-    /// Parse an SRI metadata string.
-    ///
-    /// The format allows whitespace-separated entries and a `?options` suffix on each.
-    /// Neither appears in any of the 24,852 npm versions measured, so neither would ever
-    /// be exercised by a fixture; both are handled because a registry can start emitting
-    /// them without notice. When several supported algorithms appear, the strongest wins.
+    /// Parse an SRI metadata string. When several supported algorithms appear, the
+    /// strongest wins. `integrity` may hold whitespace-separated entries with `?options`.
+    /// Returns the claim, or why none could be read.
     pub fn parse(integrity: &str) -> Result<Self, SriError> {
         let mut best: Option<Sri> = None;
         let mut malformed: Option<String> = None;
 
         for entry in integrity.split_whitespace() {
-            // `sha512-<base64>?foo=bar`: options are advisory and not part of the digest.
             let entry = entry.split('?').next().unwrap_or(entry);
             let Some((name, encoded)) = entry.split_once('-') else {
                 continue;
@@ -262,8 +242,7 @@ impl Verifier {
 mod tests {
     use super::*;
 
-    /// The claim npm publishes for lodash 4.17.21, and the digest of the tarball the
-    /// registry actually serves for it.
+    /// The claim npm publishes for lodash 4.17.21, which its served tarball matches.
     pub(super) const LODASH_SRI: &str = "sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg==";
 
     fn sri_of(algorithm: Algorithm, data: &[u8]) -> String {
@@ -438,11 +417,8 @@ mod tests {
 mod live_tests {
     use super::*;
 
-    /// Against the real artifact, not a synthetic one. Fetches
-    /// lodash 4.17.21 and checks it against the `dist.integrity` npm publishes for it.
-    ///
-    /// Ignored by default, and compiled out of coverage builds: `cargo test` must not
-    /// depend on the network.
+    /// Fetches lodash 4.17.21 and checks it against the `dist.integrity` npm publishes.
+    /// Ignored by default, because it uses the network.
     #[cfg(not(coverage))]
     #[tokio::test]
     #[ignore = "hits registry.npmjs.org"]
@@ -481,12 +457,8 @@ mod proofs {
         ALL[i]
     }
 
-    /// `Ord` on `Algorithm` is how `Sri::parse` picks the strongest when an integrity
-    /// string names several, and the enum's ordering is the only thing that makes that
-    /// correct. Reordering the variants would silently make the parser prefer the weakest
-    /// hash on offer, which every test using a single-algorithm fixture would still pass.
-    ///
-    /// Digest length is the independent statement of strength: 32, 48, 64 bytes.
+    /// `Algorithm`'s order, which `Sri::parse` picks the strongest by, is the order of
+    /// digest length.
     #[kani::proof]
     fn ordering_is_by_strength() {
         let a = any_algorithm();
@@ -495,9 +467,7 @@ mod proofs {
         assert_eq!(a == b, a.digest_len() == b.digest_len());
     }
 
-    /// The two directions of the name mapping agree, so an algorithm this can parse is one
-    /// it can also print. `Display` is used in the mismatch message a digest failure
-    /// reports, which is the one place an operator reads it.
+    /// An algorithm's printed name parses back to it.
     #[kani::proof]
     fn parsing_a_name_this_prints_gives_it_back() {
         let a = any_algorithm();
