@@ -449,5 +449,8 @@ mod tests {
         let out: Value = serde_json::from_slice(&out).expect("json");
         assert_eq!(out["files"].as_array().map(Vec::len), Some(1));
         assert!(out.get("versions").is_none());
+        let no_files = remove_from_json(br#"{"name":"x"}"#, &removed, &HashSet::new())
+            .expect("nothing to filter");
+        assert_eq!(no_files, br#"{"name":"x"}"#);
     }
 }

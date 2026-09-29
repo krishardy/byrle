@@ -211,11 +211,17 @@ fn pinned_version(selector: &crate::policy::Selector) -> Option<crate::identity:
     if version.starts_with(super::selector::VERS) {
         return None;
     }
-    let ecosystem = selector.ecosystem.parse().ok()?;
-    crate::identity::PackageKey::from_registry_name(ecosystem, name)
-        .ok()?
-        .at_version(version)
-        .ok()
+    // A policy loads a version only for an ecosystem this build orders, and only one that
+    // is not empty, so the ecosystem parses and the version attaches.
+    let ecosystem = selector
+        .ecosystem
+        .parse()
+        .expect("a version is loaded only for an ecosystem this build serves");
+    let key = crate::identity::PackageKey::from_registry_name(ecosystem, name).ok()?;
+    Some(
+        key.at_version(version)
+            .expect("a policy loads no empty version"),
+    )
 }
 
 impl Waiver {
@@ -459,6 +465,11 @@ mod tests {
         let waiver = &cooldown_waivers(&policy)[0];
         let published = date(2026, 9, 1);
         assert_eq!(waiver.outlived(published, date(2026, 9, 30)), None);
+        assert_eq!(
+            waiver.outlived(Date::MAX, Date::MAX),
+            None,
+            "a wait past the last date is never over"
+        );
         let outlived = waiver
             .outlived(published, date(2026, 10, 1))
             .expect("30 days after 2026-09-01");
@@ -738,5 +749,12 @@ mod tests {
     #[test]
     fn an_entry_naming_no_package_is_no_waiver() {
         assert!(cooldown_waivers(&waiving("ecosystem: npm, has_install_scripts: true")).is_empty());
+        assert!(
+            cooldown_waivers(&waiving(
+                "ecosystem: npm, name: \"@scope/\", version: \"1.0.0\""
+            ))
+            .is_empty(),
+            "a name that makes no package key"
+        );
     }
 }

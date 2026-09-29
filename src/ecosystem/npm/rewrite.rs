@@ -80,9 +80,9 @@ fn filter_listed(
             }
             match policy.disposition(&url) {
                 Disposition::Served => {
-                    let Some(path) = reachable_path(&url, policy.reachable()) else {
-                        continue;
-                    };
+                    // `disposition` answers `Served` only for a URL on a reachable origin.
+                    let path = reachable_path(&url, policy.reachable())
+                        .expect("a served URL has a reachable path");
                     if let Some(tarball) = versions
                         .get_mut(&version)
                         .and_then(|entry| entry.get_mut("dist"))
@@ -116,7 +116,7 @@ fn filter_listed(
 
     removed.sort();
     Ok(Filtered {
-        body: serde_json::to_vec(&document).map_err(RewriteError::NotJson)?,
+        body: serde_json::to_vec(&document).expect("a JSON value serialises"),
         removed,
         rewritten,
         allowed,
@@ -506,10 +506,13 @@ mod tests {
     }
 
     /// What rewriting `json` warns about.
+    ///
+    /// Rewritten once more uncaptured, where each warning goes to `log` instead.
     fn warned(json: &str, origins: &OriginPolicy) -> String {
         let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
         rewrite_document(json, origins, Some(PROXY), &HashSet::new(), false);
         drop(guard);
+        rewrite_document(json, origins, Some(PROXY), &HashSet::new(), false);
         crate::util::test_support::text(&buf)
     }
 
@@ -973,5 +976,87 @@ mod tests {
                 filename: "core-7.0.0.tgz".into()
             }
         );
+    }
+
+    /// A record with no file is skipped, and a body that cannot be filtered or rewritten
+    /// is forwarded as it came.
+    #[test]
+    fn records_with_no_file_and_bodies_that_cannot_be_changed() {
+        let mut packument =
+            normalize_packument(ON_REGISTRY.as_bytes(), DocumentDetail::Abbreviated)
+                .expect("should normalise");
+        packument.records[0].artifacts.clear();
+        let origins = policy(&[], &[]);
+        let refused = refusing(&["9.9.9"]);
+        let none = HashSet::new();
+        let rewrite = |decoded: &[u8], refused_by_policy| {
+            rewrite_packument(Rewrite {
+                decoded,
+                packument: &packument,
+                base: Some(PROXY),
+                origins: &origins,
+                refused_by_policy,
+                refuse_unservable: true,
+                path: "/w",
+            })
+        };
+        assert!(
+            rewrite(ON_REGISTRY.as_bytes(), &refused).is_some(),
+            "filtered"
+        );
+        assert_eq!(
+            rewrite(ON_REGISTRY.as_bytes(), &none),
+            None,
+            "nothing to point"
+        );
+        assert_eq!(rewrite(b"not json", &refused), None, "cannot be filtered");
+        assert_eq!(
+            rewrite(b"\xff", &HashSet::new()),
+            None,
+            "cannot be rewritten"
+        );
+        let packument = normalize_packument(ON_REGISTRY.as_bytes(), DocumentDetail::Abbreviated)
+            .expect("should normalise");
+        let rewritten = rewrite_packument(Rewrite {
+            decoded: b"\xff",
+            packument: &packument,
+            base: Some(PROXY),
+            origins: &origins,
+            refused_by_policy: &HashSet::new(),
+            refuse_unservable: true,
+            path: "/w",
+        });
+        assert_eq!(rewritten, None, "not UTF-8");
+    }
+
+    /// A listed version the document does not carry, and a document with no versions,
+    /// change nothing.
+    #[test]
+    fn a_version_or_versions_the_document_lacks_change_nothing() {
+        let origins = policy(&[], &[]);
+        let absent = vec![(
+            "9.9.9".to_owned(),
+            "https://registry.npmjs.org/w/-/w-9.9.9.tgz".to_owned(),
+        )];
+        let out = filter_unservable_versions(
+            ON_REGISTRY.as_bytes(),
+            absent.clone(),
+            &origins,
+            &HashSet::new(),
+            true,
+            PROXY,
+        )
+        .expect("filters");
+        assert_eq!(out.rewritten, 0);
+        let out = filter_unservable_versions(
+            br#"{"name":"w"}"#,
+            absent,
+            &origins,
+            &HashSet::new(),
+            true,
+            PROXY,
+        )
+        .expect("filters");
+        assert!(out.removed.is_empty());
     }
 }
