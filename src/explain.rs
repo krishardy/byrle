@@ -348,14 +348,13 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         ));
     };
 
-    let times = if policy.needs_publish_times() {
-        clients
-            .publish_times(reference.key())
-            .await
-            .map_err(|e| stopped(1, e))?
-    } else {
-        None
+    let full = clients.full_document(reference.key()).await;
+    let times = match (full.as_ref(), policy.needs_publish_times()) {
+        (Err(e), true) => return Err(stopped(1, e)),
+        (Ok(Some(full)), _) => Some(full.times.clone()),
+        _ => None,
     };
+    let full = full.ok().flatten().and_then(|full| full.metadata.ok());
 
     let (ecosystem, name) = crate::intel::snapshot_intel::key_of(reference.key());
     let intel = crate::intel::store::for_command(store, &ecosystem, &name, true)
@@ -386,14 +385,15 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
     answer.push_str(&signals(&crate::heuristics::signals(
         &metadata.records,
         package,
+        full.as_ref(),
         [],
         jiff::Timestamp::now(),
     )));
     Ok(answer)
 }
 
-/// The heuristics' signals, which refuse nothing, under the verdict. `explain` holds no
-/// served names, so near name is never among them.
+/// The heuristics' signals, which refuse nothing, under the verdict, read from the full
+/// packument when there is one. `explain` holds no served names, so no near name.
 fn signals(signals: &[crate::heuristics::Signal]) -> String {
     if signals.is_empty() {
         return "  signals: none\n".to_owned();
@@ -480,8 +480,23 @@ mod run_tests {
     #[tokio::test]
     async fn a_version_the_registry_publishes_is_judged() {
         let packument = crate::ecosystem::npm::fixture("lodash-4.17.21.abbrev.json");
-        let addr = scripted(vec![Answer::body(packument)]).await;
-        let path = written("explain-version", "version: 1\ncooldown_days: 0\n");
+        let published = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24 * 2);
+        let full = serde_json::json!({
+            "name": "lodash",
+            "time": {"4.17.21": published.to_string()},
+            "versions": {"4.17.21": {
+                "version": "4.17.21",
+                "repository": {"type": "git", "url": "git+https://github.com/lodash/lodash.git"},
+                "dist": {"tarball": "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz",
+                    "integrity": "sha512-AAAA"},
+            }},
+        });
+        let addr = scripted(vec![
+            Answer::body(packument),
+            Answer::body(full.to_string().into_bytes()),
+        ])
+        .await;
+        let path = written("explain-version", "version: 1\ncooldown_days: 7\n");
         let answered = run(
             &asked(Some("pkg:npm/lodash@4.17.21")),
             &with(&[
@@ -497,13 +512,15 @@ mod run_tests {
             answered.answer
         );
         assert!(
-            answered.answer.contains("verdict: allow"),
-            "{}",
+            answered.answer.contains("verdict: quarantine"),
+            "the full packument's publish time, 2 days ago: {}",
             answered.answer
         );
         assert!(
-            answered.answer.ends_with("  signals: none\n"),
-            "{}",
+            answered.answer.ends_with(
+                "  signals, which refuse nothing:\n    new package: first published 2 days ago\n"
+            ),
+            "the full packument's publish time: {}",
             answered.answer
         );
     }
@@ -511,9 +528,36 @@ mod run_tests {
     #[test]
     fn each_signal_gets_a_line_under_the_verdict() {
         use crate::heuristics::Signal;
+        assert_eq!(signals(&[]), "  signals: none\n");
         assert_eq!(
             signals(&[Signal::NoRepository, Signal::NewPackage { days: 1 }]),
             "  signals, which refuse nothing:\n    no repository: the metadata names none\n    new package: first published 1 day ago\n"
+        );
+    }
+
+    /// With no check reading publish times, a full packument that cannot be fetched stops
+    /// nothing, and the signals read the abbreviated one.
+    #[tokio::test]
+    async fn a_full_packument_no_check_needs_may_fail() {
+        let packument = crate::ecosystem::npm::fixture("lodash-4.17.21.abbrev.json");
+        let addr = scripted(vec![Answer::body(packument), Answer::cut_short()]).await;
+        let path = written(
+            "explain-no-full",
+            "version: 1\ncooldown_days: 0\nprovenance: allow\n",
+        );
+        let answered = run(
+            &asked(Some("pkg:npm/lodash@4.17.21")),
+            &with(&[
+                (crate::env::POLICY, &path.display().to_string()),
+                (crate::env::UPSTREAM_NPM, &format!("http://{addr}")),
+            ]),
+        )
+        .await;
+        assert_eq!(answered.code, 0, "{:?}", answered.notes);
+        assert!(
+            answered.answer.ends_with("  signals: none\n"),
+            "{}",
+            answered.answer
         );
     }
 

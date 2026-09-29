@@ -10,6 +10,7 @@ use crate::analysis::store::Scripts;
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
+use crate::ecosystem::npm::transport::FullDocument;
 use crate::ecosystem::{self, Clients, UncoveredMetadata, Upstreams};
 use crate::ecosystem::{npm, pypi};
 use crate::env::{
@@ -1061,7 +1062,7 @@ struct Negotiation {
     rewrite_base: Option<String>,
     /// Artifact URLs are pointed at the proxy.
     rewriting: bool,
-    /// Under a cooldown, the full packument is asked for and served, for its publish times.
+    /// The full packument is asked for and served, for its publish times and the heuristics.
     full_document: bool,
 }
 
@@ -1083,12 +1084,7 @@ fn negotiate(
     let rewrite_base = public_base(headers, proxy.config.public_base.as_deref());
     let rewriting = read_metadata && proxy.config.rewrite_artifacts && rewrite_base.is_some();
     let full_document = read_metadata
-        && ecosystem::of(ecosystem).publish_times == ecosystem::PublishTimeSource::FullPackument
-        && proxy
-            .config
-            .policy
-            .as_deref()
-            .is_some_and(Policy::needs_publish_times);
+        && ecosystem::of(ecosystem).publish_times == ecosystem::PublishTimeSource::FullPackument;
     Negotiation {
         encoding,
         read_metadata,
@@ -1223,9 +1219,9 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Ok(record) => record,
         Err(answer) => return *answer,
     };
-    let signals = deciding.signals(&record);
     let (fetch, unservable) = deciding.fetch_plan(&record);
-    let times = deciding.publish_times(&record).await;
+    let Dated { times, full } = deciding.dated(&record).await;
+    let signals = deciding.signals(&record, full.as_ref());
     let Analysed {
         record,
         provenance,
@@ -1263,6 +1259,15 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     step
 }
 
+/// What [`Deciding::dated`] found for a record whose document carried no publish time.
+#[derive(Default)]
+struct Dated {
+    /// The publish times, which the policy reads when it needs them.
+    times: Option<facts::PublishTimes>,
+    /// The full document's records, for the heuristics.
+    full: Option<PackageMetadata>,
+}
+
 /// One artifact GET while [`decide_artifact`] decides it.
 struct Deciding<'a> {
     proxy: &'a Proxy,
@@ -1288,13 +1293,13 @@ impl<'a> Deciding<'a> {
 
     /// What the metadata heuristics report for `record`, logged when there is any.
     /// See docs/engineering_decisions/metadata-heuristics.md.
-    fn signals(&self, record: &PackageRecord) -> Vec<Signal> {
-        let signals = self
-            .proxy
-            .store
-            .lock()
-            .expect("record store lock")
-            .signals(record, jiff::Timestamp::now());
+    /// `full` is the full document, when one was fetched for this request.
+    fn signals(&self, record: &PackageRecord, full: Option<&PackageMetadata>) -> Vec<Signal> {
+        let signals = self.proxy.store.lock().expect("record store lock").signals(
+            record,
+            full,
+            jiff::Timestamp::now(),
+        );
         if !signals.is_empty() {
             let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
             warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, "metadata heuristics reported signals; they refuse nothing");
@@ -1431,16 +1436,21 @@ impl<'a> Deciding<'a> {
         }
     }
 
-    /// Publish times for a record whose document carried none: the full document's, or
-    /// the file host's `Last-Modified`.
-    async fn publish_times(&self, record: &PackageRecord) -> Option<facts::PublishTimes> {
+    /// For a record whose document carried no publish time: the full document, and the
+    /// publish times from it or from the file host's `Last-Modified`.
+    async fn dated(&self, record: &PackageRecord) -> Dated {
         if record.published_at.is_some() {
-            return None;
+            return Dated::default();
         }
-        match publish_times_for(self.proxy, self.request.key).await {
+        let (times, full) = match full_document(self.proxy, self.request.key).await {
+            Some(FullDocument { times, metadata }) => (Some(times), metadata.ok()),
+            None => (None, None),
+        };
+        let times = match times {
             Some(times) => Some(times),
             None => dated_by_host(self.proxy, record, self.request.path).await,
-        }
+        };
+        Dated { times, full }
     }
 
     /// [`analysed`] for this request, logging a return after a deferral once the
@@ -2482,34 +2492,29 @@ fn defer_response(
         .into_response()
 }
 
-/// Publish times for this package, fetched from the registry now and never kept.
-/// See docs/engineering_decisions/no-metadata-cache.md.
-/// Returns `None` when no check reads them, or the registry could not be asked.
-async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::PublishTimes> {
-    if !proxy
-        .config
-        .policy
-        .as_deref()
-        .is_some_and(Policy::needs_publish_times)
-    {
-        return None;
-    }
+/// The full packument for a package whose client asked for less, logged either way.
+/// Fetched now and never kept: see docs/engineering_decisions/no-metadata-cache.md.
+/// `None` for an ecosystem whose records carry publish times, or when it cannot be read.
+async fn full_document(proxy: &Proxy, key: &PackageKey) -> Option<FullDocument> {
     let started = Instant::now();
-    let times = match proxy.config.clients.publish_times(key).await {
-        Ok(Some(times)) => times,
+    let full = match proxy.config.clients.full_document(key).await {
+        Ok(Some(full)) => full,
         Ok(None) => return None,
         Err(e) => {
-            warn!(waharoa.package.purl = %key, error.message = %e, "no publish times for this package");
+            warn!(waharoa.package.purl = %key, error.message = %e, "no full packument for this package");
             return None;
         }
     };
+    if let Err(e) = &full.metadata {
+        warn!(waharoa.package.purl = %key, error.message = %e, "the full packument's records did not normalize; the heuristics read the held document");
+    }
     info!(
         waharoa.package.purl = %key,
-        waharoa.package.versions = times.len(),
+        waharoa.package.versions = full.times.len(),
         waharoa.metadata.fetch_ms = started.elapsed().as_millis() as u64,
-        "publish times read from the full packument"
+        "full packument read"
     );
-    Some(times)
+    Some(full)
 }
 
 /// Say when a cooldown cannot be answered while filtering this document, because a PEP 503
@@ -2717,7 +2722,7 @@ impl Proxy {
             },
         );
         let (fetch, _) = deciding.fetch_plan(record);
-        let times = deciding.publish_times(record).await;
+        let times = deciding.dated(record).await.times;
         let analysed = deciding.analysed(record, &fetch, times.as_ref()).await;
         let (AnalysisState::Pending(job), Some(analyser)) = (analysed.state, &self.config.analyser)
         else {
@@ -3548,15 +3553,13 @@ mod tests {
     /// The full packument is asked for only where it adds a fact: an npm metadata GET the
     /// proxy reads, under a cooldown.
     #[test]
-    fn only_a_read_npm_document_a_check_needs_dated_is_asked_for_in_full() {
+    fn only_a_read_npm_document_is_asked_for_in_full() {
         let cooldown = Some("version: 1\ncooldown_days: 7\nprovenance: allow\n");
-        let provenance = Some("version: 1\ncooldown_days: 0\n");
         let none = Some("version: 1\ncooldown_days: 0\nprovenance: allow\n");
         let cases = [
             (cooldown, Method::GET, "/lodash", "gzip", true),
-            (provenance, Method::GET, "/lodash", "gzip", true),
-            (none, Method::GET, "/lodash", "gzip", false),
-            (None, Method::GET, "/lodash", "gzip", false),
+            (none, Method::GET, "/lodash", "gzip", true),
+            (None, Method::GET, "/lodash", "gzip", true),
             (cooldown, Method::HEAD, "/lodash", "gzip", false),
             (cooldown, Method::GET, "/lodash", UNREADABLE, false),
             (cooldown, Method::GET, "/simple/requests/", "gzip", false),
@@ -3587,7 +3590,7 @@ mod tests {
                 read_metadata: true,
                 rewrite_base: Some("http://proxy.test".to_owned()),
                 rewriting: true,
-                full_document: false,
+                full_document: true,
             }
         );
         let unread = negotiated(None, Method::GET, "/lodash", UNREADABLE);
@@ -3709,12 +3712,12 @@ mod tests {
                 None,
             ),
             (
-                "the client's Accept, without a cooldown",
+                "the full packument, without a policy",
                 None,
                 PACKUMENT,
                 &[(header::ACCEPT, npm::ABBREVIATED_ACCEPT)],
                 header::ACCEPT,
-                Some(npm::ABBREVIATED_ACCEPT),
+                Some(npm::FULL_ACCEPT),
             ),
             (
                 "the full packument, under a cooldown",
@@ -5540,18 +5543,25 @@ mod tests {
             "the fake registry serves no tarball"
         );
 
-        let conditional = seen
+        let mut asked: Vec<(bool, bool)> = seen
             .lock()
             .unwrap()
             .headers
             .iter()
-            .filter(|h| h.contains_key(header::IF_NONE_MATCH))
-            .count();
-        let unconditional = seen.lock().unwrap().headers.len() - conditional;
-        assert_eq!(conditional, 1, "the client's revalidation");
+            .map(|h| {
+                (
+                    h.contains_key(header::IF_NONE_MATCH),
+                    h.get(header::ACCEPT)
+                        .is_some_and(|accept| accept == crate::ecosystem::npm::FULL_ACCEPT),
+                )
+            })
+            .collect();
+        asked.sort_unstable();
         assert_eq!(
-            unconditional, 1,
-            "one unconditional fetch by the proxy, and not a second one for the artifact"
+            asked,
+            [(false, false), (false, true), (true, true)],
+            "the client's revalidation, one abbreviated fetch for the record and not a second \
+             for the artifact, and the full packument, for its times and the heuristics"
         );
     }
 
@@ -7798,6 +7808,94 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One full packument request serves the heuristics and a cooldown, a held full one
+    /// asks nothing, and records that do not normalise leave the heuristics the held one.
+    #[tokio::test]
+    async fn the_signals_read_the_full_packument() {
+        use crate::record::DocumentDetail::{Abbreviated, Full};
+        let published =
+            (jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24 * 2)).to_string();
+        let full = serde_json::json!({
+            "name": "pkg",
+            "time": {"1.0.0": published},
+            "versions": {"1.0.0": {"name": "pkg", "version": "1.0.0", "dist": {
+                "tarball": "https://registry.npmjs.org/pkg/-/pkg-1.0.0.tgz",
+                "integrity": "sha512-AAAA"}}},
+        });
+        let mut abbreviated = full.clone();
+        abbreviated.as_object_mut().unwrap().remove("time");
+        let mut unnamed = full.clone();
+        unnamed["name"] = "".into();
+        let signals = vec![
+            "new package: first published 2 days ago".to_owned(),
+            "no repository: the metadata names none".to_owned(),
+        ];
+        let one = || vec![Some(HeaderValue::from_static(npm::FULL_ACCEPT))];
+        let (off, cooldown) = (
+            "version: 1\ncooldown_days: 0\n",
+            "version: 1\ncooldown_days: 7\n",
+        );
+        let cases = [
+            (
+                &abbreviated,
+                Abbreviated,
+                &full,
+                off,
+                "allow",
+                &signals,
+                one(),
+            ),
+            (
+                &abbreviated,
+                Abbreviated,
+                &full,
+                cooldown,
+                "quarantine",
+                &signals,
+                one(),
+            ),
+            (&full, Full, &full, cooldown, "quarantine", &signals, vec![]),
+            (
+                &abbreviated,
+                Abbreviated,
+                &unnamed,
+                cooldown,
+                "quarantine",
+                &vec![],
+                one(),
+            ),
+        ];
+        for (held, detail, served, yaml, action, expected, asked) in cases {
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let recorder = requests.clone();
+            let body = served.to_string();
+            let router = Router::new().fallback(any(move |req: Request| {
+                recorder
+                    .lock()
+                    .unwrap()
+                    .push(req.headers().get(header::ACCEPT).cloned());
+                let body = body.clone();
+                async move { body }
+            }));
+            let dir = crate::util::test_support::tempdir("signals-full");
+            let path = dir.join("audit.jsonl");
+            let proxy = Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, serve(router).await)
+                .with_policy(Some(policy(yaml)))
+                .with_audit_log(Some(Arc::new(AuditLog::open(&path).expect("opens"))));
+            hold_document(&proxy, held.to_string().as_bytes(), detail);
+            let _ = pinned(&proxy, "/pkg/-/pkg-1.0.0.tgz").await;
+
+            let line: audit::Event =
+                serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
+            assert_eq!(line.action, action, "{yaml}");
+            assert_eq!(&line.signals, expected, "{yaml}");
+            let accepts = requests.lock().unwrap().clone();
+            assert_eq!(accepts, asked, "one full packument serves both: {yaml}");
+            let _ = std::fs::remove_dir_all(&dir);
+        }
     }
 
     /// A pinned line says what the request was answered, written once that is known: a

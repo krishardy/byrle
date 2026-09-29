@@ -108,9 +108,8 @@ upstream, an origin the operator added directly, and any other origin not at all
 proxy will not fetch counts as an attestation that does not verify, naming the origin, so a
 version cannot slip the check by pointing its attestations at a dead host.
 
-The previous version's times come from the full packument. `provenance: block` fetches it
-as a cooldown does (`Policy::needs_publish_times`), so a policy with `cooldown_days: 0` still
-pays for the full document unless it sets `provenance: allow`.
+The previous version's times come from the full packument, which every npm metadata request
+asks for ([no-metadata-cache](no-metadata-cache.md)).
 
 A version before it whose attestation does not verify is left out of the identity
 comparison, and when every one of them fails the check is unknown for this version, not

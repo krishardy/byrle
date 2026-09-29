@@ -147,10 +147,16 @@ impl RecordStore {
         })
     }
 
-    /// What the metadata heuristics report for `record`, against the document held for its
-    /// package and the names of the other packages held in its ecosystem.
-    /// `now` is when they are asked for. Does not count as a use.
-    pub fn signals(&self, record: &PackageRecord, now: jiff::Timestamp) -> Vec<Signal> {
+    /// What the metadata heuristics report for `record`, against `full`, the full document,
+    /// when it lists the version, else the document held, and the names of the other
+    /// packages held in its ecosystem. `now` is when they are asked for.
+    /// Does not count as a use.
+    pub fn signals(
+        &self,
+        record: &PackageRecord,
+        full: Option<&PackageMetadata>,
+        now: jiff::Timestamp,
+    ) -> Vec<Signal> {
         let key = record.package.key();
         let records = self
             .entries
@@ -164,7 +170,13 @@ impl RecordStore {
             .filter(|held| held.ecosystem() == key.ecosystem())
             .map(PackageKey::registry_name)
             .collect();
-        signals(records, record, served.iter().map(String::as_str), now)
+        signals(
+            records,
+            record,
+            full,
+            served.iter().map(String::as_str),
+            now,
+        )
     }
 
     /// Drop least recently used packages until the budget is met, keeping the most recent,
@@ -416,13 +428,13 @@ mod tests {
         let now = jiff::Timestamp::now();
         let expres = packument("expres", &["1.0.0"]).records.remove(0);
         assert_eq!(
-            store.signals(&expres, now),
+            store.signals(&expres, None, now),
             [Signal::NearName {
                 served: "express".to_owned()
             }]
         );
         let unheld = packument("lodash", &["1.0.0"]).records.remove(0);
-        assert_eq!(store.signals(&unheld, now), []);
+        assert_eq!(store.signals(&unheld, None, now), []);
 
         let mut taken = packument("taken", &["1.0.0", "1.0.1"]);
         for (record, (days, publisher)) in taken.records.iter_mut().zip([(400, "ana"), (1, "eve")])
@@ -433,7 +445,7 @@ mod tests {
         let latest = taken.records[1].clone();
         store.insert(taken);
         assert_eq!(
-            store.signals(&latest, now),
+            store.signals(&latest, None, now),
             [Signal::NewPublisher {
                 publisher: "eve".to_owned()
             }],

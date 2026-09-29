@@ -1,6 +1,6 @@
 # Metadata is fetched from upstream on every request
 
-- **Status:** Implemented 2026-09-19. `proxy::handle`, `publish_times_for`.
+- **Status:** Implemented 2026-09-19. `proxy::handle`, `proxy::full_document`.
 - **Related:** [adapter-interface](adapter-interface.md),
   [verified-artifact-cache](verified-artifact-cache.md),
   [quarantine-filter-metadata](quarantine-filter-metadata.md)
@@ -10,12 +10,14 @@
 The proxy answers every metadata request from a fresh upstream response, filtered by policy.
 It keeps no copy of a metadata document to answer a later request from.
 
-Under a policy with `cooldown_days`, an npm metadata request asks upstream for the full
-packument (`Accept: application/json`) in place of the client's `Accept`. The full packument
-has the `time` map, so every record carries `published_at`, and the cooldown is decided from
-the same response the client receives. One upstream request per client request.
+An npm metadata request asks upstream for the full packument (`Accept: application/json`)
+in place of the client's `Accept`. The full packument has the `time` map, `_npmUser` and
+`repository`, so the cooldown, the provenance check and the
+[metadata heuristics](metadata-heuristics.md) read the same response the client receives.
+One upstream request per client request.
 
-Without a cooldown, the client's `Accept` goes upstream unchanged.
+Until 2026-09-29 the full packument was asked for only when the policy read publish times
+(`Policy::needs_publish_times`). The metadata heuristics read it for every package.
 
 ## What was removed
 
@@ -69,4 +71,3 @@ package's first request.
 |---|---|
 | Cache documents with a TTL, in memory or Postgres | A version published inside the TTL is not seen, and a cooldown or advisory decision is made on a stale document |
 | Keep the publish-time cache and refetch when a version has no time | Two upstream requests where one does |
-| Fetch the full packument on every npm request, cooldown or not | Up to 3.6x the bytes for a fact no check reads |

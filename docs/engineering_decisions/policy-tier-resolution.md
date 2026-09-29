@@ -449,9 +449,9 @@ lookups, KEV and advisories are lookups in a local mirror, age is arithmetic, in
 scripts is a packument field. No extraction among them.
 
 Gathering one fact does cost a request. `cooldown_days` needs publish times, which only the
-full packument carries, measured at 1.7x to 3.6x the abbreviated one. Under a cooldown a
-metadata request asks for the full packument, and an artifact request whose record has no
-publish time fetches them in `publish_times_for`, before any check runs. Nothing is kept
+full packument carries, measured at 1.7x to 3.6x the abbreviated one. Every npm metadata
+request asks for the full packument, and an artifact request whose record has no publish
+time fetches it in `full_document`, before any check runs. Nothing is kept
 between requests ([no-metadata-cache](no-metadata-cache.md)). They are fetched even when
 another check already blocks the version, so the vector reports the cooldown's real result
 rather than `unenforced`. Decided 2026-09-15: skipping it is not the short circuit this
