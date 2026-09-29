@@ -20,12 +20,27 @@ reasoning per version. A version offered and not removed is not in the log.
 |---|---|
 | `at` | RFC 3339 in UTC, so two proxies' logs can be concatenated |
 | `path` | `resolution` (a filtered document, the client picks another version) or `pinned` (one version asked for by name) |
-| `action` | on a `resolution` line, the strongest action taken against any version |
+| `action` | on a `resolution` line, the strongest action taken against any version. Absent on a pinned line answered before anything was decided |
 | `checks` | strongest first on a `pinned` line; sorted on a `resolution` line, which is the union over the versions removed |
 | `unenforceable` | the checks that could not be answered, so an unenforced `cooldown_days` does not read as passed |
 | `intel_snapshot` | absent when no store was asked, so a decision without intel does not read as one against an empty snapshot |
-| `answered` | pinned only: `served`, `refused`, `deferred` or `upstream-mismatch`, since a deferral or a digest mismatch answers a request the policy would have served |
+| `answered` | pinned only: what the request got, below. A deferral, a digest mismatch and the proxy's own refusals answer requests the policy would have served |
 | `inputs` | pinned only: what the engine read, for [reproducible-verdicts](reproducible-verdicts.md). `as_of` is the date decided on, not read from `at`. `build` is `0.1.0` until releases are versioned, so a replay reports a difference rather than failing |
+
+| `answered` | The request got | Decided |
+|---|---|---|
+| `served` | the artifact | yes |
+| `refused` | a refusal by the policy | yes |
+| `unservable` | a refusal: its origin is one the proxy does not serve | yes |
+| `no-strong-digest` | a refusal: its metadata publishes no strong digest | yes |
+| `deferred` | 503 while it is analysed | yes |
+| `upstream-mismatch` | 502: the upstream's bytes did not match their digest | yes |
+| `not-listed` | a refusal: its metadata names neither its version nor its file | no |
+| `no-metadata` | 502: the registry gave no metadata for it | no |
+
+A line with nothing decided has no `action` and no `inputs`. `audit verify` and `policy diff`
+skip it. Until 2026-09-29 `unservable` and `no-strong-digest` were written as `refused`, and
+the two undecided answers wrote no line.
 
 Every field has a default, so a line an older build wrote without a field still reads. Empty
 lists are left out rather than written as `[]`.

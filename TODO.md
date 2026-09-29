@@ -2481,10 +2481,13 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         does not list its version, is refused; one whose metadata the registry did not
         give is a 502. 429 is not used, there is no per-client code and no bounded
         internal wait. yarn 1 and bun fail the first fetch of every novel artifact.
-  - [ ] An artifact refused for having no strong digest is audited with the action the
+  - [x] An artifact refused for having no strong digest is audited with the action the
         policy decided and `answered: refused`, and no reason. A request refused because
         the metadata names neither its version nor its file, or answered 502 because the
         registry gave none, has no audit line. Settle with observe mode's audit field.
+        Done 2026-09-29: `answered` names each: `unservable`, `no-strong-digest`,
+        `not-listed`, `no-metadata`. The last two have no `action`, and `audit verify` and
+        `policy diff` skip them ([audit-log](docs/engineering_decisions/audit-log.md)).
   - [x] `waharoa warm --lockfile` asks a running proxy for every artifact a lockfile
         locks, so bun and yarn 1 install them on the first try. Done 2026-09-28
         ([warm](docs/engineering_decisions/warm.md)).

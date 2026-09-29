@@ -1296,12 +1296,14 @@ impl<'a> Deciding<'a> {
         let found = match lookup_or_fetch(self.proxy, key, claimed_version, filename, path).await {
             Lookup::Found(found) => found,
             Lookup::NoSuchVersion => {
+                self.audit_undecided(audit::Answered::NotListed);
                 return Err(Box::new(self.unassessable(
                     self.refusal_status(),
                     "its metadata does not list this version",
                 )));
             }
             Lookup::Unknown => {
+                self.audit_undecided(audit::Answered::NoMetadata);
                 return Err(Box::new(self.unassessable(
                     StatusCode::BAD_GATEWAY,
                     "the registry gave no metadata for it",
@@ -1330,6 +1332,21 @@ impl<'a> Deciding<'a> {
         );
         report_direct_dependencies(self.proxy, &record, path, client);
         Ok(record)
+    }
+
+    /// Write a pinned line for a request answered before anything was decided, when there
+    /// is a log and a policy. `answered` is what the request got.
+    fn audit_undecided(&self, answered: audit::Answered) {
+        let (Some(log), Some(_)) = (&self.proxy.config.audit, &self.proxy.config.policy) else {
+            return;
+        };
+        let key = self.request.key;
+        log.write(&audit::Event::undecided(
+            key.ecosystem().as_str(),
+            &key.registry_name(),
+            self.request.claimed_version,
+            answered,
+        ));
     }
 
     /// Where to fetch the artifact and the digest to verify it against.
@@ -1456,11 +1473,11 @@ impl<'a> Deciding<'a> {
             self.observed(refusal);
         }
         if let Some(origin) = unservable.filter(|_| self.proxy.config.refuse_unservable) {
-            return (audit::Answered::Refused, self.unservable(&origin));
+            return (audit::Answered::Unservable, self.unservable(&origin));
         }
         if fetch.digest.is_none() {
             return (
-                audit::Answered::Refused,
+                audit::Answered::NoStrongDigest,
                 self.unassessable(
                     self.refusal_status(),
                     "its metadata publishes no strong digest, so its bytes can be neither \
@@ -7396,8 +7413,7 @@ mod tests {
         );
     }
 
-    /// Each answer `decide_artifact` reaches after the lookup writes one audit line saying what it
-    /// was.
+    /// Each answer `decide_artifact` reaches writes one audit line saying what it was.
     #[tokio::test]
     async fn every_pinned_answer_after_the_lookup_is_audited_once() {
         let dir = crate::util::test_support::tempdir("audit-every-answer");
@@ -7425,11 +7441,10 @@ mod tests {
         let (status, _) = refused(pinned(&undigested, "/widget/-/widget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _) = refused(pinned(&undigested, "/widget/-/widget-2.0.0.tgz").await).await;
-        assert_eq!(
-            status,
-            StatusCode::FORBIDDEN,
-            "not listed, so no audit line"
-        );
+        assert_eq!(status, StatusCode::FORBIDDEN, "not listed");
+        let unfetchable = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log.clone()));
+        let (status, _) = refused(pinned(&unfetchable, "/gadget/-/gadget-1.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "no metadata");
 
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
         let (base, analyser) = analysing_with(
@@ -7457,8 +7472,10 @@ mod tests {
         assert_eq!(
             answered,
             [
-                Some(audit::Answered::Refused),
-                Some(audit::Answered::Refused),
+                Some(audit::Answered::Unservable),
+                Some(audit::Answered::NoStrongDigest),
+                Some(audit::Answered::NotListed),
+                Some(audit::Answered::NoMetadata),
                 Some(audit::Answered::Deferred),
                 Some(audit::Answered::UpstreamMismatch),
             ]
