@@ -260,6 +260,7 @@ fn at(path: &Path) -> impl FnOnce(io::Error) -> OpenError + '_ {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::util::test_support::tempdir;

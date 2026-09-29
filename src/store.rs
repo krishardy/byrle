@@ -178,6 +178,7 @@ impl RecordStore {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::ecosystem::npm::normalize_packument;

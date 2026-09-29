@@ -223,6 +223,7 @@ pub fn exit_code(error: &clap::Error, args: &[std::ffi::OsString]) -> u8 {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use clap::CommandFactory;

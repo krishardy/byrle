@@ -249,6 +249,7 @@ pub fn by_stream(stream: &str) -> Option<&'static Stream> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::intel::load::Kind;

@@ -363,6 +363,7 @@ fn lines<'a>(path: &Path, manifest: &'a str) -> Result<Vec<(&'a str, &'a str)>, 
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::intel::rows::{Affected, Rows};

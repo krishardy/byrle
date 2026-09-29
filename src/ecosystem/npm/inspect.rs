@@ -102,6 +102,7 @@ pub fn inspect_decoded(decoded: &[u8], detail: DocumentDetail) -> PackumentOutco
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::super::fixture;
     use super::*;

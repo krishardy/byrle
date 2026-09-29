@@ -604,6 +604,7 @@ fn on_off(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use jiff::civil::date;

@@ -71,6 +71,7 @@ impl std::error::Error for FetchError {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

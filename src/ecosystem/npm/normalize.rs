@@ -254,6 +254,7 @@ pub fn parse_publish_times(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::super::{fixture, normalized};
     use super::*;

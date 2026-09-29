@@ -265,6 +265,7 @@ pub fn uv_config(vars: &UvVars, files: &[&str]) -> Indexes {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::env::testing::with;

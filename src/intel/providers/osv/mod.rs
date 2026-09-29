@@ -313,6 +313,7 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, serde_json::E
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::intel::range::{End, Interval, Start};

@@ -87,6 +87,7 @@ impl<K: Eq + Hash + Clone, V> Lru<K, V> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

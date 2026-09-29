@@ -900,6 +900,7 @@ fn upstream(var: Var, value: String) -> Result<String, EnvError> {
 
 /// Environments other modules' tests read, built here so no variable name is written there.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod testing {
     use std::collections::HashMap;
     use std::ffi::OsString;
@@ -946,6 +947,7 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::identity::Ecosystem;

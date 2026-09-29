@@ -318,6 +318,11 @@ Items that I've added that are not stage-bound.
     from 95 to 100. The library was then at 96.42% of regions (1,796 missed), 96.96% of
     functions (116) and 97.67% of lines (747). The largest gaps are in `proxy.rs`,
     `doctor.rs`, `startup.rs`, `policy/diff.rs` and `env.rs`. `doctor::run` had no test.
+    Test code is not counted from 2026-09-29: `make coverage` runs on a pinned nightly with
+    `coverage(off)` on every `#[cfg(test)]` item
+    ([coverage-counts-library-code-only](docs/engineering_decisions/coverage-counts-library-code-only.md)).
+    Counting library code only, after `doctor`, `env`, `explain` and `policy diff` reached
+    100%: 92.53% of regions (962 missed), 96.99% of functions (55), 95.46% of lines (553).
 
 ## Architecture Refactor
 

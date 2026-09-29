@@ -123,6 +123,7 @@ pub fn band_ceiling(band: &str) -> Option<f64> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::identity::{Ecosystem, PackageKey};

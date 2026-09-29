@@ -322,6 +322,7 @@ pub async fn for_command(
 
 /// A store for tests above the storage seam.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub mod testing {
     use super::*;
 
@@ -385,6 +386,7 @@ pub mod testing {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

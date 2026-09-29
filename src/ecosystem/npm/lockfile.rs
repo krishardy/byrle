@@ -395,6 +395,7 @@ fn bun_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -275,6 +275,7 @@ pub fn text(buf: &std::sync::Mutex<Vec<u8>>) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod capture_tests {
     use super::{capture, text};
 

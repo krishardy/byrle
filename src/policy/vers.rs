@@ -408,6 +408,7 @@ fn without(spans: Vec<Interval<Ordered>>, version: &Ordered) -> Vec<Interval<Ord
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 
