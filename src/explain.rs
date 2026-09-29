@@ -1,22 +1,6 @@
 //! `waharoa explain`: the whole decision vector, not just the verdict.
 //!
-//! The point of a vector is that every check answers. A refusal that named only the
-//! strongest reason would hide that two others also fired, and hide that a third was never
-//! asked. So every check is printed with its own outcome, and the verdict is shown as what
-//! it is: the strongest answer in the list.
-//!
-//! Five states can appear against a check, and they are deliberately not collapsed:
-//!
-//! | state | means |
-//! |---|---|
-//! | `pass` | the check ran and found nothing |
-//! | `FAIL` | the check ran and found something |
-//! | `excepted` | it found something and a `packages` entry excused it |
-//! | `n/a` | the check has no meaning for this ecosystem |
-//! | `unenforced` | the fact it needs is not available in this build |
-//!
-//! `n/a` and `unenforced` both mean the check did not decide, for different reasons, and
-//! neither is `pass`. Reporting either as a pass would claim a check ran that never could.
+//! See docs/engineering_decisions/explain-output.md.
 
 use std::ffi::OsString;
 
@@ -79,8 +63,6 @@ pub fn decision(
         out.push('\n');
     }
 
-    // The verdict is the strongest answer above, not a separate judgement, and an
-    // unenforced line is not one of the answers: the proxy drops it before it acts.
     let verdict = crate::policy::enforce::enforced(decision, unenforceable).action();
     out.push_str(&format!("\n  verdict: {}\n", verdict.as_str()));
     if verdict == Action::Quarantine {
@@ -106,8 +88,6 @@ fn found(
         Check::Denials => "this exact version is denied".to_owned(),
         Check::KnownMalware => "reported as malware; this has no exception".to_owned(),
         Check::CooldownDays => {
-            // Excepted, the wait worth naming is the global one the package failed. Failed,
-            // it is the wait that applied, which an exception may have shortened.
             let wait = match entry.filter(|_| !excepted) {
                 Some(i) if decide::cooldown_required(policy, entry) != policy.cooldown_days => {
                     format!(
@@ -224,7 +204,6 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
 
     out.push_str("\nchecks\n");
     for check in Check::ALL {
-        // `enforce::unenforceable` gives the same answers for a package.
         let state = match (check, intel) {
             (Check::MaxCvss | Check::KnownMalware | Check::Kev, Intel::NotConsulted) => {
                 "unenforced, no advisory stream"
@@ -256,9 +235,7 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
     out
 }
 
-/// What `waharoa explain` prints and exits with.
-///
-/// `notes` are stderr lines without the command's prefix, `answer` is stdout.
+/// What `waharoa explain` prints and exits with: `notes` to stderr, `answer` to stdout.
 #[derive(Debug, Default)]
 pub struct Answered {
     pub notes: Vec<String>,
@@ -274,12 +251,9 @@ impl Answered {
     }
 }
 
-/// Answer `target` against the policy the environment names.
-///
-/// The same policy the proxy reads and the same engine, so an answer here and a refusal in
-/// the proxy cannot disagree. Metadata is fetched from the package's own registry rather
-/// than through a running proxy: explain is a question about the policy, and requiring the
-/// proxy to be up to ask it would be the wrong dependency.
+/// Answer `target`, a package or `--policy`, against the policy `environment` names.
+/// Metadata comes from the package's own registry, not a running proxy.
+/// Returns what to print and the exit code.
 pub async fn run<L: Fn(&str) -> Option<OsString>>(
     target: &crate::cli::Explain,
     environment: &Env<L>,
@@ -334,7 +308,6 @@ async fn answer_using<L: Fn(&str) -> Option<OsString>>(
     policy: &Policy,
     store: Option<&dyn IntelStore>,
 ) -> Result<String, Stopped> {
-    // `cli::Explain` holds `--policy` or a purl, never both and never neither.
     match target.purl.as_deref() {
         Some(argument) => package_answer(policy, store, argument, environment).await,
         None => Ok(policy_report(policy, consulted(store).await?)),
@@ -366,7 +339,6 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         .parse::<PackageRef>()
         .map_err(|e| stopped(2, format!("`{argument}` is not a package reference: {e}")))?;
 
-    // The package is asked of its own ecosystem's registry.
     let clients = Clients::from_env(environment).map_err(|e| stopped(2, e))?;
     let metadata = crate::ecosystem::fetched(clients.metadata(reference.key()).await)
         .map_err(|e| stopped(1, e))?;
@@ -377,8 +349,6 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         ));
     };
 
-    // Only when the policy asks for it, the same gate the proxy uses.
-    // A cooldown that cannot be judged is an answer `explain` cannot give.
     let times = if policy.needs_publish_times() {
         clients
             .publish_times(reference.key())
@@ -797,8 +767,10 @@ mod tests {
 
         assert!(out.contains("unenforced"), "{out}");
         assert!(out.contains("carries no publish times"), "{out}");
-        // The check failed inside the engine, and that is not what is shown.
-        assert!(!out.contains("FAIL quarantine"), "{out}");
+        assert!(
+            !out.contains("FAIL quarantine"),
+            "the engine's failed check is not what is shown: {out}"
+        );
     }
 
     /// `n/a` is not `pass` either, and says which ecosystem it is not applicable to.
@@ -922,8 +894,10 @@ mod tests {
         assert!(out.contains("max_cvss         7.5"), "{out}");
         assert!(out.contains("denials          1"), "{out}");
         assert!(out.contains("packages[0]  reviewed"), "{out}");
-        // A store without the KEV catalogue enforces every advisory check but `kev`.
-        assert!(!out.contains("no advisory stream"), "{out}");
+        assert!(
+            !out.contains("no advisory stream"),
+            "a store without the KEV catalogue enforces every advisory check but kev: {out}"
+        );
         assert!(out.contains("max_cvss          enforced"), "{out}");
         assert!(out.contains("known_malware     enforced"), "{out}");
         assert!(

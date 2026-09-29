@@ -43,8 +43,6 @@ async fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
             return std::process::ExitCode::from(e.exit_code());
         }
     };
-    // The only part that leaves the machine, and only when asked: a waiver's version has
-    // to be dated by the registry that published it.
     if args.fetch {
         let clients = or_exit(waharoa::ecosystem::Clients::from_env(&env::process()));
         let (outlived, notes) = check::outlived_waivers(&policy, &clients, as_of).await;
@@ -63,12 +61,6 @@ async fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
-/// `waharoa policy diff <from> <to> [--from-date DATE] [--to-date DATE] [--snapshot ID]
-/// [--lockfile PATH]...`.
-///
-/// The package set is the audit log's versions, which record what this proxy has actually
-/// been asked about, and each lockfile's. The exit code is the OR of `diff::LOOSENED` and
-/// `diff::TIGHTENED`, or `diff::ERROR` alone.
 /// `waharoa audit verify`: decide each pinned line of an audit log again.
 fn run_audit_verify(args: cli::Verify) -> std::process::ExitCode {
     let verified = waharoa::audit::verify(&args.log, &args.policy);
@@ -137,17 +129,11 @@ async fn run_doctor() -> std::process::ExitCode {
     std::process::ExitCode::from(checked.code)
 }
 
-/// `waharoa status`: what this build does for each ecosystem, and what covers it.
-///
-/// Two axes that fail separately: an adapter can be complete while no stream covers its
-/// ecosystem. `doctor` answers whether this machine is wired up; this answers what waharoa
-/// does at all.
+/// `waharoa status`: what this build does for each ecosystem, and which streams cover it.
+/// Returns 0.
 async fn run_status() -> std::process::ExitCode {
     let environment = env::process();
     let upstreams = or_exit(environment.upstreams());
-    // The snapshot is what the store last loaded. No store, or one that cannot answer, is
-    // reported as no snapshot rather than as an error: the adapter axis is still worth
-    // printing.
     use waharoa::intel::store::Intel as _;
     let snapshot = match postgres::from_env(&environment).await {
         Ok(Some(store)) => match store.snapshot().await {
@@ -216,13 +202,10 @@ async fn run_daemon() -> std::process::ExitCode {
 
     let started = match startup::proxy(&environment).await {
         Ok(started) => started,
-        // A value that does not parse exits 2, as a malformed command line does.
         Err(startup::StartupError::Env(e)) => {
             eprintln!("waharoa: {e}");
             return std::process::ExitCode::from(2);
         }
-        // Something the operator asked for and that is not there or not usable. Refusing
-        // to start is right: a running proxy would read as that thing being in force.
         Err(startup::StartupError::Unusable(why)) => panic!("{why}"),
     };
     let (proxy, listen) = (started.proxy, started.listen);
@@ -268,11 +251,6 @@ async fn run_daemon() -> std::process::ExitCode {
 
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
-    // No command, or an unknown command or argument, exits 2, or 4 for `policy diff`.
-    // `--help` and `--version` exit 0. Every trust decision the proxy makes comes from the
-    // environment and the metadata documents it reads, not from argv.
-    // The rule below warns about trusting argv for security decisions. These arguments only
-    // choose the exit code for a command line clap refused, and the program path is skipped.
     // nosemgrep: rust.lang.security.args-os.args-os
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let parsed = match cli::Cli::try_parse_from(&args) {

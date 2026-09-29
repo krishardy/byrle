@@ -1,9 +1,5 @@
-//! A packument as npm serves it.
-//!
-//! These are the deserialisation targets and nothing else. A packument is already
-//! version-keyed, which is the shape [`crate::record::PackageMetadata`] holds, so
-//! `normalize` reads these directly with no intermediate form. PyPI needs one; see
-//! `crate::ecosystem::pypi::wire`.
+//! A packument as npm serves it: the deserialisation targets `normalize` reads, visible no
+//! further than this ecosystem. See docs/engineering_decisions/npm-packument-shapes.md.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -13,10 +9,6 @@ use serde::{Deserialize, Deserializer};
 
 use crate::record::Repository;
 
-// These mirror npm's JSON and nothing else. Visible no further than this ecosystem's
-// module: the crate's contract is PackageRecord, and letting a registry's field names leak
-// upward is how an ecosystem quirk becomes everyone's problem.
-
 #[derive(Debug, Deserialize)]
 pub(super) struct WirePackument {
     pub(super) name: String,
@@ -24,12 +16,10 @@ pub(super) struct WirePackument {
     pub(super) dist_tags: BTreeMap<String, String>,
     #[serde(default)]
     pub(super) versions: BTreeMap<String, WireVersion>,
-    /// Full packument only. Keyed by version string, plus the `created` and `modified`
-    /// entries, which are document metadata and not versions.
+    /// Full packument only. Keyed by version, plus `created` and `modified`.
     #[serde(default)]
     pub(super) time: BTreeMap<String, String>,
-    /// Package-level fallbacks. npm repeats both inside each version object, and the
-    /// per-version copy is what was true at publish time, so it wins.
+    /// Package-level fallbacks for the per-version copies.
     #[serde(default)]
     pub(super) maintainers: Option<Vec<WireMaintainer>>,
     #[serde(default)]
@@ -40,12 +30,10 @@ pub(super) struct WirePackument {
 pub(super) struct WireVersion {
     #[serde(default)]
     pub(super) dist: Option<WireDist>,
-    /// Abbreviated only, and present only when true (measured: 3 of 9,321 versions
-    /// carried the key, none of them `false`).
+    /// Abbreviated only, and present only when true.
     #[serde(default, rename = "hasInstallScript")]
     pub(super) has_install_script: Option<bool>,
-    /// The message `npm deprecate` set, in both documents. `npm deprecate pkg@range ""`
-    /// clears it, and npm then omits the key.
+    /// The message `npm deprecate` set, in both documents.
     #[serde(default)]
     pub(super) deprecated: Option<String>,
     /// Full only.
@@ -57,8 +45,7 @@ pub(super) struct WireVersion {
     pub(super) repository: Option<Repository>,
     #[serde(default, rename = "_npmUser")]
     pub(super) npm_user: Option<WireNpmUser>,
-    /// Only the entries a client fetches from where they point. The rest are dropped as
-    /// they are read, so a packument of thousands of versions keeps no dependency lists.
+    /// Only the entries a client fetches from where they point, kept as they are read.
     #[serde(default)]
     pub(super) dependencies: DirectSpecs,
     #[serde(default, rename = "optionalDependencies")]
@@ -91,10 +78,9 @@ impl<'de> Deserialize<'de> for DirectSpecs {
 }
 
 /// Whether a dependency specifier names where to fetch from rather than a version range,
-/// as npm's own parser, npm-package-arg, classifies them: a git repository (`git+…`,
-/// `git://`, `github:`, `gitlab:`, `bitbucket:`, `gist:`, or `owner/repo`), a remote
-/// tarball (`http:`, `https:`), or a path (`file:`, `./`, `../`, `/`, `~/`). An `npm:`
-/// alias resolves through the registry and is not one.
+/// as npm-package-arg classifies them. See docs/engineering_decisions/bypass-self-detection.md.
+/// `spec` is the specifier as the packument writes it.
+/// Returns true for a git, URL or path specifier.
 pub fn is_direct(spec: &str) -> bool {
     const PREFIXES: [&str; 13] = [
         "git+",
@@ -115,8 +101,6 @@ pub fn is_direct(spec: &str) -> bool {
     if PREFIXES.iter().any(|p| spec.starts_with(p)) {
         return true;
     }
-    // GitHub's shorthand, `owner/repo` with an optional `#ref`. A range never has a
-    // slash, and an alias starts `npm:`.
     let path = spec.split('#').next().unwrap_or(spec);
     match path.split_once('/') {
         Some((owner, repo)) => {
@@ -188,13 +172,7 @@ pub(super) struct WireTrustedPublisher {
     pub(super) id: String,
 }
 
-/// `repository` is either an object or a shorthand string such as `github:user/repo`.
-///
-/// Hand-written rather than `#[serde(untagged)]` on purpose. `untagged` buffers into an
-/// intermediate value and tries each variant, which silently discards any
-/// `deny_unknown_fields` on the variants and turns a field-level mistake into "no
-/// variant matched" (plan §5). Here it would also cost an allocation per version on a
-/// document that can hold several thousand.
+/// `repository` as an object or a shorthand string, such as `github:user/repo`.
 impl<'de> Deserialize<'de> for Repository {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct RepositoryVisitor;
@@ -223,7 +201,6 @@ impl<'de> Deserialize<'de> for Repository {
                         "url" => url = map.next_value::<Option<String>>()?,
                         "type" => kind = map.next_value::<Option<String>>()?,
                         "directory" => directory = map.next_value::<Option<String>>()?,
-                        // Unknown keys are skipped, matching the rest of this module.
                         _ => {
                             map.next_value::<de::IgnoredAny>()?;
                         }

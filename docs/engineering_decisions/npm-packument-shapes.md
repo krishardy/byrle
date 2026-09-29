@@ -33,3 +33,14 @@ document, September 2026. The set mixes current packages with ones published in 
 | install scripts, abbreviated against full | agreed on all 24,852 pairs | |
 
 `real_packuments_normalise_without_skipping_anything` checks this against a corpus on disk.
+
+| Field | Read as |
+|---|---|
+| `time` | full document only, keyed by version, plus `created` and `modified`, which are not versions |
+| `maintainers`, `repository` at package level | a fallback: the per-version copy is what was true at publish time, so it is used when present |
+| `deprecated` | the message `npm deprecate` set, in both documents. `npm deprecate pkg@range ""` clears it, and npm then omits the key |
+
+`repository`'s deserializer is written by hand rather than `#[serde(untagged)]`. `untagged`
+buffers into an intermediate value and tries each variant, which discards
+`deny_unknown_fields` on the variants and turns a field error into "no variant matched". It
+would also allocate once per version.

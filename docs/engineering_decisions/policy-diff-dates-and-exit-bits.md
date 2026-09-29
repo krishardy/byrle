@@ -47,7 +47,8 @@ command line that starts `policy diff` exits 4 (`cli::exit_code`), and so does a
 
 `main` reads the arguments with `std::env::args_os` to choose that code, which semgrep's
 `rust.lang.security.args-os.args-os` flags. The arguments choose only an exit code, and the
-program path is skipped, so the line carries a `nosemgrep` comment saying so.
+program path is skipped, so the line carries a `nosemgrep` directive. Every trust decision
+the proxy makes comes from the environment and the metadata it reads, not from argv.
 
 | Asked of the user | Chosen | Not chosen |
 |---|---|---|
