@@ -436,6 +436,18 @@ runs, and keeps it for up to 1,024 packages. It is fetched even when another che
 blocks the version, so the vector reports the cooldown's real result rather than
 `unenforced`. Decided 2026-09-15: skipping it is not the short circuit this section keeps.
 
+### A check whose fact is missing
+
+`decide` answers every check, and a missing fact takes the safe direction: an unknown
+publish date is not old enough, so `cooldown_days` fails. The proxy would then refuse every
+package on a fact the registry never sent. `enforce::unenforceable` names the checks whose
+fact is missing, and `enforce::enforced` removes them from the decision the proxy acts on.
+They are reported as `unenforced`, never as `pass`, and startup names the settings that are
+configured and inert. With no intel store, `max_cvss`, `known_malware` and `kev` are
+unenforceable, because an empty advisory list is an absent answer; with a store that has not
+loaded the KEV catalogue, `kev` is. `explain` and `policy diff` report the action from
+`enforced`, so neither names a verdict the proxy does not reach.
+
 Stage 4's detectors are different. Capability analysis and source diff are the "expensive
 analysis" §5 defers a request for, and they stay lazy: the cheap checks are a vector, and
 anything expensive runs only if that vector has not already settled the answer.

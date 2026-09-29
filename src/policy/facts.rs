@@ -1,28 +1,6 @@
-//! What the proxy knows about a package, as the policy engine wants it.
-//!
-//! [`crate::record::PackageRecord`] is what Stage 1 normalises out of a packument.
-//! [`Facts`] is what [`super::decide`] asks for. This is the join, and it is nearly
-//! one-to-one: the fields the record carries map straight across, and the fields it
-//! cannot carry are the intel ones.
-//!
-//! # What this build cannot answer
-//!
-//! `known_malware` is `false` and `advisories` is empty, because no advisory stream
-//! exists yet. Those are not "clean" answers, they are absent ones, and
-//! [`Facts::from_record`] cannot tell the difference. What stops that reading as a pass
-//! is `Capabilities::gaps`, which reports at startup that nothing can originate a
-//! finding for an enabled ecosystem.
-//!
-//! # `cooldown_days` cannot be answered from what the proxy fetches
-//!
-//! `published` comes from the packument's `time` map, which npm sends only in the full
-//! document. `npm install` asks for the abbreviated one, and so does the proxy on its own
-//! behalf (`fetch_and_store`), so `published` is `None` for every record this build holds.
-//!
-//! [`super::decide`] treats an unknown publish date as not old enough, which is the
-//! correct direction and makes `cooldown_days` fail every package rather than pass it.
-//! That is why this build does not enforce `cooldown_days`: see
-//! [`Facts::can_answer_cooldown`].
+//! What the proxy knows about a package, as the policy engine wants it: the join of a
+//! [`crate::record::PackageRecord`], its publish times and the intel store's answer into
+//! [`Facts`]. See docs/engineering_decisions/intel-in-decisions.md.
 
 use super::decide::{Advisory, Facts, Intel};
 use crate::intel::store::PackageIntel;
@@ -30,9 +8,7 @@ use crate::record::{DocumentDetail, PackageRecord};
 use jiff::civil::Date;
 use jiff::tz::TimeZone;
 
-/// A check this build can produce a real answer for.
-///
-/// Not a policy setting: the operator does not choose this, the available facts do.
+/// Whether the facts a check needs are present. The available facts decide this, not the policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answerable {
     /// Every fact is present.
@@ -41,10 +17,7 @@ pub enum Answerable {
     Missing(&'static str),
 }
 
-/// When each version of a package was published, read from the full packument.
-///
-/// Separate from the record because the record comes from the abbreviated document, which
-/// carries no `time` map. See [`crate::ecosystem::npm::parse_publish_times`].
+/// When each version was published, from the full packument, which the abbreviated record lacks.
 pub type PublishTimes = std::collections::BTreeMap<String, jiff::Timestamp>;
 
 impl Facts {
@@ -61,7 +34,6 @@ impl Facts {
             name: key.registry_name(),
             version: record.package.version().to_owned(),
             published: published_date(record, times),
-            // Absent, not clean. Nothing can originate a finding in this build.
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: record.has_install_scripts,
@@ -104,24 +76,12 @@ impl Facts {
         self
     }
 
-    /// Whether `cooldown_days` can be answered for this record.
-    ///
-    /// The abbreviated packument carries no `time` map, and that is the document both
-    /// `npm install` and the proxy's own fetch ask for. Asking the engine anyway would
-    /// fail every package on a fact the registry never sent.
-    /// Add what the intel store knows about this version.
-    ///
-    /// Marks the facts consulted even when nothing is known against the version, because
-    /// the store was asked. A malware record with no score is left out of `advisories`:
-    /// `known_malware` refuses it, and `max_cvss` would refuse it a second time as unscored.
-    /// Any other record with no score is kept, with `cvss` `None`, and `max_cvss` refuses it.
+    /// Add what the intel store knows about this version, one advisory per id.
+    /// `intel` is the store's answer for the package.
+    /// Returns the facts, marked consulted.
     pub fn with_intel(mut self, intel: &PackageIntel) -> Self {
         let records = intel.for_version(&self.ecosystem, &self.version);
         self.known_malware = records.iter().any(|r| r.malware);
-        // One advisory per id, carrying every stream that reported it. `for_version` returns
-        // a record per stream, and two streams holding one advisory is corroboration rather
-        // than two vulnerabilities. Where they disagree the highest score stands, which is
-        // the direction `max_cvss` already reads; making that configurable is its own item.
         let mut by_id: std::collections::BTreeMap<String, Advisory> =
             std::collections::BTreeMap::new();
         for record in &records {
@@ -164,6 +124,9 @@ impl Facts {
         self
     }
 
+    /// Whether `cooldown_days` can be answered for `record`: an abbreviated packument
+    /// carries no publish times. `times` are those fetched separately, if any.
+    /// Returns what is missing, if anything.
     pub fn can_answer_cooldown(record: &PackageRecord, times: Option<&PublishTimes>) -> Answerable {
         match published_date(record, times) {
             Some(_) => Answerable::Yes,
@@ -198,9 +161,6 @@ impl Intel {
 fn published_date(record: &PackageRecord, times: Option<&PublishTimes>) -> Option<Date> {
     record
         .published_at
-        // The full document is the only source of a `time` map, so a record built from
-        // the abbreviated one has nothing here and the separately fetched times are what
-        // answer.
         .or_else(|| times?.get(record.package.version()).copied())
         .map(|at| at.to_zoned(TimeZone::UTC).date())
 }
@@ -289,10 +249,11 @@ mod tests {
         assert_eq!(facts.advisories.len(), 1, "one advisory, not two");
         let advisory = &facts.advisories[0];
         assert_eq!(advisory.sources, ["github", "osv"], "sorted, once each");
-        // The streams disagree on the score and the higher stands, the direction
-        // `max_cvss` reads. Exploitation from either stream marks the advisory.
-        assert_eq!(advisory.cvss, Some(8.8));
-        assert!(advisory.kev);
+        assert_eq!(advisory.cvss, Some(8.8), "the higher score stands");
+        assert!(
+            advisory.kev,
+            "exploitation from either stream marks the advisory"
+        );
         assert_eq!(
             advisory.aliases,
             ["CVE-of-GHSA-1"],
@@ -393,8 +354,6 @@ cooldown_days: 0
         ]));
         assert_eq!(
             facts.advisories,
-            // Sorted by id: the advisories are grouped through a `BTreeMap`, so the order
-            // is the ids' and not the order the records came back in.
             vec![
                 Advisory {
                     id: "GHSA-banded".to_owned(),
@@ -447,10 +406,7 @@ cooldown_days: 0
         assert_eq!(Facts::from_record(&r).name, "@babel/traverse");
     }
 
-    /// The gap that decides what this build can enforce.
-    ///
-    /// `npm install` asks for the abbreviated document and so does the proxy's own
-    /// fetch, so no record it holds carries a publish time.
+    /// An abbreviated record carries no publish date, and a full one does.
     #[test]
     fn the_abbreviated_packument_answers_no_publish_date() {
         assert_eq!(Facts::from_record(&abbreviated()).published, None);
@@ -459,13 +415,12 @@ cooldown_days: 0
             Answerable::Missing("the abbreviated packument carries no publish times")
         );
 
-        // The same version read the other way does carry one.
         assert!(Facts::from_record(&full()).published.is_some());
         assert_eq!(Facts::can_answer_cooldown(&full(), None), Answerable::Yes);
     }
 
-    /// Why `cooldown_days` is not enforced, stated as the engine's own answer rather
-    /// than as a claim in a comment.
+    /// `cooldown_days` quarantines lodash 4.17.21, published in 2021, when only the
+    /// abbreviated record is known, and allows it from the full one.
     #[test]
     fn asking_for_cooldown_on_an_abbreviated_record_fails_every_package() {
         let policy = policy("version: 1\ncooldown_days: 7\n");
@@ -481,12 +436,9 @@ cooldown_days: 0
             .find(|r| r.check == Check::CooldownDays)
             .expect("cooldown is always asked");
 
-        // lodash 4.17.21 was published in 2021 and is years past any cooldown. It fails
-        // only because the document the proxy fetches does not say when.
         assert_eq!(cooldown.outcome, Outcome::Failed(Action::Quarantine));
         assert_eq!(decision.action(), Action::Quarantine);
 
-        // Read as the full document, the same version passes.
         let decision = decide(&policy, &consistent(&full()), today);
         assert_eq!(decision.action(), Action::Allow);
     }

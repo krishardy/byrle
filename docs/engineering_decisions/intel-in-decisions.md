@@ -46,10 +46,13 @@ between them.
 
 ## What reaches the engine
 
-`Facts::with_intel` sets `known_malware` from the malware rows and `intel` to `Consulted`.
-`Advisory::cvss` is `f64`, so a record with no score is left out of `advisories` rather than
-entered as 0.0. `advisories` holds the scored `GHSA-` records for the version, each with its
-aliases so a `vuln_advisory_ids` exception can name it by CVE. See
+`Facts::with_intel` sets `known_malware` from the malware rows and `intel` to `Consulted`,
+even when nothing is known against the version, because the store was asked. `advisories`
+holds one entry per advisory id, each with its aliases so a `vuln_advisory_ids` exception
+can name it by CVE. Two streams reporting one advisory are one entry listing both sources:
+the highest score stands, the direction `max_cvss` reads, and either stream's exploitation
+marks it. A record with no score is kept with `cvss` `None`, and `max_cvss` refuses it. A
+malware record with no score is left out: `known_malware` refuses it already. See
 [osv-ranges-and-scores](osv-ranges-and-scores.md).
 
 `enforce::artifact` and `enforce::unenforceable` take the intel state from the caller. Before
