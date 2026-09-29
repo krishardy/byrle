@@ -1374,6 +1374,11 @@ not json
             logged.contains("audit log could not be written"),
             "{logged}"
         );
+        drop(_guard);
+        // And uncaptured, where the warning goes to `log` instead.
+        AuditLog::open(Path::new("/dev/full"))
+            .expect("opens")
+            .write(&event);
     }
 
     /// A writer that panicked holding the lock does not stop the next event.
