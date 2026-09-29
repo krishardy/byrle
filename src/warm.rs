@@ -551,9 +551,7 @@ mod tests {
                 }),
             )
             .route("/packages/x-1.0.tar.gz", get(|| async { "bytes" }));
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
         let path = crate::util::test_support::tempdir("warm-pypi").join("requirements.txt");
         std::fs::write(&path, "x==1.0\nx==2.0\n").unwrap();
 

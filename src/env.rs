@@ -386,7 +386,7 @@ pub const HOME_DIR: Var = other(
     "HOME",
     &["the user's home directory, under which bun keeps its default cache"],
 );
-pub const BUN_INSTALL_CACHE_DIR: Var = other(
+pub const BUN_CACHE: Var = other(
     Kind::External,
     "BUN_INSTALL_CACHE_DIR",
     &["where bun keeps its cache, when set"],
@@ -470,7 +470,7 @@ pub const ALL: [Var; 49] = [
     NPM_CORPUS_FULL,
     TEST_DATABASE_URL,
     HOME_DIR,
-    BUN_INSTALL_CACHE_DIR,
+    BUN_CACHE,
     CONFIG_HOME,
     UV_DEFAULT,
     UV_OLDER_INDEX,
@@ -581,14 +581,12 @@ pub struct Env<L> {
     lookup: L,
 }
 
-/// The environment the process was started with.
-pub type Process = Env<fn(&str) -> Option<OsString>>;
+/// An environment whose lookup is chosen at runtime: the process's own, or one a test holds.
+pub type Process = Env<Box<dyn Fn(&str) -> Option<OsString> + Send + Sync>>;
 
 /// The process environment.
 pub fn process() -> Process {
-    Env {
-        lookup: |name: &str| std::env::var_os(name),
-    }
+    Env::from_lookup(Box::new(|name: &str| std::env::var_os(name)))
 }
 
 impl<L: Fn(&str) -> Option<OsString>> Env<L> {
@@ -861,7 +859,7 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     }
 
     pub fn bun_install_cache_dir(&self) -> Result<Option<PathBuf>, EnvError> {
-        self.path(BUN_INSTALL_CACHE_DIR)
+        self.path(BUN_CACHE)
     }
 
     pub fn xdg_config_home(&self) -> Result<Option<PathBuf>, EnvError> {
@@ -906,39 +904,44 @@ pub(crate) mod testing {
     use std::collections::HashMap;
     use std::ffi::OsString;
 
-    use super::{BUN_INSTALL_CACHE_DIR, Env, HOME_DIR, Process, Var};
+    use super::{BUN_CACHE, Env, HOME_DIR, Process, Var};
 
     /// An environment holding exactly `pairs`. Each variable is named by its `Var`, so no
     /// name is written outside this module.
-    pub fn with(pairs: &[(Var, &str)]) -> Env<impl Fn(&str) -> Option<OsString> + use<>> {
+    pub fn with(pairs: &[(Var, &str)]) -> Process {
         let map: HashMap<&'static str, OsString> = pairs
             .iter()
             .map(|(var, value)| (var.name, OsString::from(value)))
             .collect();
-        Env::from_lookup(move |name: &str| map.get(name).cloned())
+        Env::from_lookup(Box::new(move |name: &str| map.get(name).cloned()))
+    }
+
+    /// `pairs`, and `unreadable` set to bytes that are not UTF-8, which reading it refuses.
+    pub fn with_unreadable(pairs: &[(Var, &str)], unreadable: Var) -> Process {
+        use std::os::unix::ffi::OsStringExt;
+        let set = with(pairs);
+        Env::from_lookup(Box::new(move |name: &str| {
+            if name == unreadable.name {
+                Some(OsString::from_vec(vec![0x66, 0xff]))
+            } else {
+                (set.lookup)(name)
+            }
+        }))
     }
 
     /// bun's cache variable at `/bun`, and the home directory at `/home/u`.
     pub fn bun_cache_and_home() -> Process {
-        Env::from_lookup(|name| {
-            if name == BUN_INSTALL_CACHE_DIR.name {
-                Some("/bun".into())
-            } else if name == HOME_DIR.name {
-                Some("/home/u".into())
-            } else {
-                None
-            }
-        })
+        with(&[(BUN_CACHE, "/bun"), (HOME_DIR, "/home/u")])
     }
 
     /// Only the home directory, at `/home/u`.
     pub fn home_only() -> Process {
-        Env::from_lookup(|name| (name == HOME_DIR.name).then(|| "/home/u".into()))
+        with(&[(HOME_DIR, "/home/u")])
     }
 
     /// Nothing set.
     pub fn empty() -> Process {
-        Env::from_lookup(|_| None)
+        with(&[])
     }
 }
 
@@ -1063,7 +1066,7 @@ mod tests {
             (NPM_CORPUS_FULL, "full"),
             (TEST_DATABASE_URL, "postgres://test"),
             (HOME_DIR, "/home/u"),
-            (BUN_INSTALL_CACHE_DIR, "/cache"),
+            (BUN_CACHE, "/cache"),
         ]);
         assert_eq!(env.listen().unwrap(), "0.0.0.0:9000");
         assert_eq!(
@@ -1388,21 +1391,8 @@ mod tests {
             rust_files(&root.join(dir), &mut files);
         }
         let this = root.join("src/env.rs");
-        let mut found = Vec::new();
-        for file in files.iter().filter(|f| **f != this) {
-            let text = std::fs::read_to_string(file).expect("readable");
-            for (number, line) in text.lines().enumerate() {
-                let named = ALL
-                    .iter()
-                    .map(|var| var.name)
-                    .chain(["WAHAROA_"])
-                    .filter(|name| contains_name(line, name));
-                for name in named {
-                    let path = file.strip_prefix(root).unwrap_or(file);
-                    found.push(format!("{}:{}: {name}", path.display(), number + 1));
-                }
-            }
-        }
+        files.retain(|f| *f != this);
+        let found = named_outside(root, &files);
         assert!(found.is_empty(), "{found:#?}");
 
         // And every WAHAROA_ name written here is one of `ALL`.
@@ -1417,6 +1407,95 @@ mod tests {
                 "{name} is written in env.rs but is not in ALL"
             );
         }
+    }
+
+    /// Each line of `files` that writes a variable's name, as `path:line: name` with the path
+    /// under `root`.
+    fn named_outside(root: &std::path::Path, files: &[PathBuf]) -> Vec<String> {
+        let mut found = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(file).expect("readable");
+            for (number, line) in text.lines().enumerate() {
+                let named = ALL
+                    .iter()
+                    .map(|var| var.name)
+                    .chain(["WAHAROA_"])
+                    .filter(|name| contains_name(line, name));
+                for name in named {
+                    let path = file.strip_prefix(root).unwrap_or(file);
+                    found.push(format!("{}:{}: {name}", path.display(), number + 1));
+                }
+            }
+        }
+        found
+    }
+
+    /// The check above finds a name, and a prefix of one it does not know.
+    #[test]
+    fn a_name_written_elsewhere_is_found() {
+        let root = crate::util::test_support::tempdir("env-named-outside");
+        let file = root.join("elsewhere.rs");
+        let name = LISTEN.name;
+        std::fs::write(&file, format!("fn a() {{}}\nlet _ = \"{name}\";\n")).unwrap();
+        assert_eq!(
+            named_outside(&root, std::slice::from_ref(&file)),
+            [
+                format!("elsewhere.rs:2: {name}"),
+                "elsewhere.rs:2: WAHAROA_".to_owned()
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Every accessor refuses a value that is not UTF-8, naming its variable.
+    #[test]
+    fn an_unreadable_variable_is_refused_by_its_accessor() {
+        use testing::with_unreadable;
+
+        type Read = fn(&Process) -> Option<EnvError>;
+        let cases: [(Var, Read); 17] = [
+            (EXPIRY_CEILING_DAYS, |e| e.expiry_ceiling_days().err()),
+            (ARTIFACT_ORIGINS, |e| e.artifact_origins().err()),
+            (UPSTREAM_NPM, |e| e.upstreams().err()),
+            (SPOOL_DIR, |e| e.spool_dir().err()),
+            (REFUSAL_STATUS, |e| e.refusal_status().err()),
+            (FORWARD_HTTPS, |e| e.upstream_proxy().err()),
+            (FORWARD_HTTPS_LOWER, |e| e.upstream_proxy().err()),
+            (FORWARD_HTTP, |e| e.upstream_proxy().err()),
+            (FORWARD_HTTP_LOWER, |e| e.upstream_proxy().err()),
+            (FORWARD_EXCEPT, |e| e.upstream_proxy().err()),
+            (FORWARD_EXCEPT_LOWER, |e| e.upstream_proxy().err()),
+            (DEFER_TEST, |e| e.defer_test().err()),
+            (UV_DEFAULT, |e| e.uv_indexes().err()),
+            (UV_OLDER_INDEX, |e| e.uv_indexes().err()),
+            (UV_EXTRAS, |e| e.uv_indexes().err()),
+            (UV_NAMED, |e| e.uv_indexes().err()),
+            (GITHUB_TOKEN, |e| e.github_token().err()),
+        ];
+        for (var, read) in cases {
+            let error = read(&with_unreadable(&[], var)).expect(var.name);
+            assert_eq!(error.var, var.name);
+        }
+        assert_eq!(
+            testing::with(&[(GITHUB_TOKEN, "t")])
+                .github_token()
+                .unwrap(),
+            Some("t".to_owned())
+        );
+    }
+
+    /// The constructors every variable is declared with, run rather than evaluated by the
+    /// compiler.
+    #[test]
+    fn a_variable_is_built_with_its_kind_and_no_default() {
+        let built = runtime("BUILT_AT_RUNTIME", "<shown>", &["help"]);
+        assert_eq!(
+            (built.name, built.shown, built.kind, built.default_text()),
+            ("BUILT_AT_RUNTIME", "<shown>", Kind::Runtime, None)
+        );
+        let other = other(Kind::External, "BUILT", &["help"]);
+        assert_eq!((other.kind, other.shown), (Kind::External, ""));
+        assert_eq!(MAX_RECORDS.default_text(), None, "a number");
     }
 
     /// `name` in `line` with no identifier character on either side. `WAHAROA_` matches as a

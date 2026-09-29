@@ -130,7 +130,9 @@ async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
 }
 
 async fn run_doctor() -> std::process::ExitCode {
-    let checked = match doctor::run(&env::process()).await {
+    let environment = env::process();
+    let dir = std::env::current_dir().unwrap_or_default();
+    let checked = match doctor::run(&doctor::Machine::this(&environment, &dir)).await {
         Ok(checked) => checked,
         Err(e) => {
             eprintln!("waharoa: {e}");

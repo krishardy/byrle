@@ -68,17 +68,18 @@ impl Finding {
 
 impl fmt::Display for Finding {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let fix = self
+            .fix
+            .as_ref()
+            .map(|fix| format!("\n         fix: {fix}"))
+            .unwrap_or_default();
         write!(
             f,
-            "{:>7}  {}: {}",
+            "{:>7}  {}: {}{fix}",
             self.severity.label(),
             self.title,
             self.detail
-        )?;
-        if let Some(fix) = &self.fix {
-            write!(f, "\n         fix: {fix}")?;
-        }
-        Ok(())
+        )
     }
 }
 
@@ -106,7 +107,7 @@ pub enum RegistrySource {
     /// A function of the client's ecosystem module reads it, for a client with no one
     /// command that answers: pip and uv. `None` when the client is not installed.
     Read {
-        read: fn(&env::Process) -> Result<Option<Indexes>, env::EnvError>,
+        read: fn(&Machine) -> Result<Option<Indexes>, env::EnvError>,
         /// What points the client at `url`.
         set_index: fn(&str) -> String,
         /// What removes an extra index.
@@ -142,6 +143,33 @@ pub enum CacheLocation {
         configured: fn(&env::Process) -> Result<Option<std::path::PathBuf>, env::EnvError>,
         under_home: &'static str,
     },
+}
+
+/// What `doctor` reads from the machine it runs on: the environment, the directory it checks,
+/// and the programs installed there. [`Machine::this`] is the real one; a test supplies its own.
+pub struct Machine<'a> {
+    pub environment: &'a env::Process,
+    /// Where lockfiles and uv's project configuration are read from.
+    pub dir: &'a std::path::Path,
+    /// Run a program with arguments and return what it printed, trimmed. `None` when it
+    /// could not run or failed.
+    pub run: &'a (dyn Fn(&str, &[&str]) -> Option<String> + Sync),
+}
+
+impl<'a> Machine<'a> {
+    /// This machine: programs run with [`probe::run`].
+    pub fn this(environment: &'a env::Process, dir: &'a std::path::Path) -> Self {
+        Self {
+            environment,
+            dir,
+            run: &probe::run,
+        }
+    }
+
+    /// What `program` printed, `None` also when it printed nothing.
+    pub fn ask(&self, program: &str, args: &[&str]) -> Option<String> {
+        (self.run)(program, args).filter(|printed| !printed.is_empty())
+    }
 }
 
 /// Every client any ecosystem lists, in table order.
@@ -267,15 +295,17 @@ pub fn check_lockfile(name: &str, pins: &Pins, contents: &str, proxy: &str) -> F
     let (ours, theirs): (Vec<&String>, Vec<&String>) =
         origins.iter().partition(|o| **o == proxy_origin);
 
-    match (ours.is_empty(), theirs.is_empty()) {
-        (false, true) => Finding::new(
+    if theirs.is_empty() {
+        return Finding::new(
             Severity::Ok,
             title,
             format!(
                 "every artifact is pinned to {proxy_origin}, so this was installed through the proxy"
             ),
-        ),
-        (true, false) => Finding::new(
+        );
+    }
+    if ours.is_empty() {
+        return Finding::new(
             Severity::Warn,
             title,
             format!(
@@ -283,20 +313,19 @@ pub fn check_lockfile(name: &str, pins: &Pins, contents: &str, proxy: &str) -> F
                 join(&theirs)
             ),
         )
-        .with_fix(pins.reinstall),
-        // A lockfile that names two places installs from both, and only one is examined.
-        (false, false) => Finding::new(
-            Severity::Problem,
-            title,
-            format!(
-                "artifacts are split between {proxy_origin} and {}, so part of this install \
-                 does not go through the proxy",
-                join(&theirs)
-            ),
-        )
-        .with_fix(pins.reinstall),
-        (true, true) => unreachable!("origins is not empty"),
+        .with_fix(pins.reinstall);
     }
+    // A lockfile that names two places installs from both, and only one is examined.
+    Finding::new(
+        Severity::Problem,
+        title,
+        format!(
+            "artifacts are split between {proxy_origin} and {}, so part of this install does \
+             not go through the proxy",
+            join(&theirs)
+        ),
+    )
+    .with_fix(pins.reinstall)
 }
 
 /// Whether the address written into artifact URLs is pinned.
@@ -653,10 +682,12 @@ pub fn count_files(dir: &std::path::Path) -> u64 {
     };
     entries
         .filter_map(Result::ok)
-        .map(|entry| match entry.file_type() {
-            Ok(kind) if kind.is_dir() => count_files(&entry.path()),
-            Ok(_) => 1,
-            Err(_) => 0,
+        .map(|entry| {
+            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                count_files(&entry.path())
+            } else {
+                1
+            }
         })
         .sum()
 }
@@ -766,9 +797,10 @@ pub struct Checked {
 /// Reads client configuration, runs each client, reads the lockfiles in the working
 /// directory and asks the proxy about itself. The report is built rather than printed, so
 /// `main` prints it and a test can read it.
-pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
+pub async fn run(machine: &Machine<'_>) -> Result<Checked, env::EnvError> {
     use std::fmt::Write as _;
 
+    let environment = machine.environment;
     let mut report = String::new();
     let listen = environment.listen()?;
     let public = environment.public_url()?;
@@ -776,18 +808,14 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
 
     let _ = writeln!(report, "waharoa doctor");
     let _ = writeln!(report, "  proxy expected at {proxy}");
-    let _ = writeln!(
-        report,
-        "  checking from {}",
-        std::env::current_dir().unwrap_or_default().display()
-    );
+    let _ = writeln!(report, "  checking from {}", machine.dir.display());
     report.push('\n');
 
     let mut findings = proxy_findings(&proxy).await;
     findings.extend(policy_findings(environment).await?);
-    findings.extend(registry_findings(environment, &proxy)?);
-    findings.extend(lockfile_findings(public.as_deref(), &proxy));
-    findings.extend(cache_findings(environment)?);
+    findings.extend(registry_findings(machine, &proxy)?);
+    findings.extend(lockfile_findings(machine.dir, public.as_deref(), &proxy));
+    findings.extend(cache_findings(machine)?);
 
     for finding in &findings {
         let _ = writeln!(report, "{finding}");
@@ -833,15 +861,15 @@ async fn proxy_findings(proxy: &str) -> Vec<Finding> {
 /// The PyPI index form when a cooldown is configured, and the policy the proxy is
 /// configured with.
 async fn policy_findings(environment: &env::Process) -> Result<Vec<Finding>, env::EnvError> {
+    let Some(path) = environment.policy()? else {
+        return Ok(Vec::new());
+    };
     let mut findings = Vec::new();
     // Which form the PyPI index serves, and what a cooldown can be answered from. Asked
     // only when a cooldown is configured, because that is the check the answer changes.
-    let uses_cooldown = match environment.policy()? {
-        Some(path) => crate::policy::Policy::load(&path)
-            .map(|policy| policy.uses_cooldown())
-            .unwrap_or(false),
-        None => false,
-    };
+    let uses_cooldown = crate::policy::Policy::load(&path)
+        .map(|policy| policy.uses_cooldown())
+        .unwrap_or(false);
     if uses_cooldown {
         let index = environment
             .upstreams()?
@@ -852,39 +880,34 @@ async fn policy_findings(environment: &env::Process) -> Result<Vec<Finding>, env
     }
 
     // The policy the proxy is configured with, judged as `waharoa policy check` judges it.
-    if let Some(path) = environment.policy()? {
-        let loaded = crate::policy::check::load(
-            &path,
-            crate::policy::today(),
-            environment.expiry_ceiling_days()?,
-        )
-        .map(|(_, report)| report)
-        .map_err(|e| e.to_string());
-        findings.extend(check_policy(
-            &path.display().to_string(),
-            loaded.as_ref().map_err(String::as_str),
-        ));
-    }
+    let loaded = crate::policy::check::load(
+        &path,
+        crate::policy::today(),
+        environment.expiry_ceiling_days()?,
+    )
+    .map(|(_, report)| report)
+    .map_err(|e| e.to_string());
+    findings.extend(check_policy(
+        &path.display().to_string(),
+        loaded.as_ref().map_err(String::as_str),
+    ));
     Ok(findings)
 }
 
 /// The registry and extra indexes each client is configured with.
-fn registry_findings(
-    environment: &env::Process,
-    proxy: &str,
-) -> Result<Vec<Finding>, env::EnvError> {
+fn registry_findings(machine: &Machine, proxy: &str) -> Result<Vec<Finding>, env::EnvError> {
     let mut findings = Vec::new();
     for client in clients() {
         match &client.registry {
             None => {}
             Some(RegistrySource::Asked(query)) => findings.push(check_registry(
                 client,
-                probe::configured_registry(client, query).as_deref(),
+                probe::configured_registry(machine, client, query).as_deref(),
                 proxy,
             )),
             Some(RegistrySource::Read {
                 read, drop_extra, ..
-            }) => match read(environment)? {
+            }) => match read(machine)? {
                 None => findings.push(check_registry(client, None, proxy)),
                 Some(indexes) => {
                     findings.push(check_registry(client, Some(&indexes.index), proxy));
@@ -901,13 +924,13 @@ fn registry_findings(
     Ok(findings)
 }
 
-/// Lockfiles in this directory are the record of what actually happened, as opposed to
-/// what is configured now. The origins they record are checked against `public`.
-fn lockfile_findings(public: Option<&str>, proxy: &str) -> Vec<Finding> {
+/// Lockfiles in `dir` are the record of what actually happened, as opposed to what is
+/// configured now. The origins they record are checked against `public`.
+fn lockfile_findings(dir: &std::path::Path, public: Option<&str>, proxy: &str) -> Vec<Finding> {
     let mut findings = Vec::new();
     let mut recorded = std::collections::BTreeSet::new();
     for (lockfile, pins) in crate::lockfile::pinning() {
-        let Ok(contents) = std::fs::read_to_string(lockfile.name) else {
+        let Ok(contents) = std::fs::read_to_string(dir.join(lockfile.name)) else {
             continue;
         };
         recorded.extend(recorded_origins(pins.key, &contents));
@@ -919,15 +942,11 @@ fn lockfile_findings(public: Option<&str>, proxy: &str) -> Vec<Finding> {
 
 /// Every client caches, and what a warm cache supplies never reaches the proxy. How much
 /// it supplies differs, so each installed client is reported with what was measured for it.
-fn cache_findings(environment: &env::Process) -> Result<Vec<Finding>, env::EnvError> {
+fn cache_findings(machine: &Machine) -> Result<Vec<Finding>, env::EnvError> {
     let mut findings = Vec::new();
     for client in clients() {
-        if std::process::Command::new(client.name)
-            .arg("--version")
-            .output()
-            .is_ok()
-        {
-            let warm = probe::warm_cache(client, environment)?;
+        if (machine.run)(client.name, &["--version"]).is_some() {
+            let warm = probe::warm_cache(machine, client)?;
             findings.push(check_cache(client, warm.as_deref()));
         }
     }
@@ -936,16 +955,14 @@ fn cache_findings(environment: &env::Process) -> Result<Vec<Finding>, env::EnvEr
 
 /// Asking an installed client about itself. The one part of `doctor` that runs programs.
 pub mod probe {
-    use super::{CacheLocation, Client, RegistryQuery};
+    use super::{CacheLocation, Client, Machine, RegistryQuery};
 
-    use crate::env::{EnvError, Process};
+    use crate::env::EnvError;
     use std::path::PathBuf;
 
-    /// Run `program` with `args` and return what it printed, trimmed. `None` when it could
-    /// not run, failed, or printed nothing.
-    pub fn ask(program: &str, args: &[&str]) -> Option<String> {
-        run(program, args).filter(|printed| !printed.is_empty())
-    }
+    /// How long a probe waits. Short, because doctor is a command someone is waiting on, and
+    /// a proxy or index that takes seconds to answer is not one that is working.
+    const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
     /// Run `program` with `args` and return what it printed, trimmed, empty included.
     /// `None` when it could not run or failed.
@@ -964,15 +981,22 @@ pub mod probe {
     ///
     /// Its own resolved configuration, not a file this could read: only the client knows
     /// which of its configuration files set the value.
-    pub fn configured_registry(client: &Client, query: &RegistryQuery) -> Option<String> {
-        ask(client.name, query.args).filter(|value| value != query.unset)
+    pub fn configured_registry(
+        machine: &Machine,
+        client: &Client,
+        query: &RegistryQuery,
+    ) -> Option<String> {
+        machine
+            .ask(client.name, query.args)
+            .filter(|value| value != query.unset)
     }
 
     /// Where a client keeps its cache. `Ok(None)` when the client does not say, or no home
     /// directory is set.
-    pub fn cache_dir(client: &Client, environment: &Process) -> Result<Option<PathBuf>, EnvError> {
+    pub fn cache_dir(machine: &Machine, client: &Client) -> Result<Option<PathBuf>, EnvError> {
+        let environment = machine.environment;
         Ok(match client.cache {
-            CacheLocation::Asked { args, under } => ask(client.name, args).map(|printed| {
+            CacheLocation::Asked { args, under } => machine.ask(client.name, args).map(|printed| {
                 let dir = PathBuf::from(printed);
                 match under {
                     Some(under) => dir.join(under),
@@ -989,29 +1013,14 @@ pub mod probe {
         })
     }
 
-    /// Ask the proxy about itself at `path`. `None` when nothing answers there with the JSON
-    /// expected, which is itself the finding.
-    ///
-    /// The status is not checked: readiness answers with its JSON on a 503 too, and anything
-    /// that is not a waharoa does not answer with this JSON.
-    ///
-    /// Async, not `reqwest::blocking`: doctor runs inside the same tokio runtime as
-    /// everything else, and a blocking client builds a second runtime, which panics when it
-    /// is dropped in an async context.
-    ///
-    /// The timeout is short because doctor is a command someone is waiting on, and a proxy
-    /// that takes seconds to say hello is not one that is working.
     /// What the index answers a `HEAD` with, which says which form it serves without
     /// fetching a body. Measured 2026-09-21: pypi.org answers
     /// `application/vnd.pypi.simple.v1+json`, and www.piwheels.org, pypi.nvidia.com and
     /// download.pytorch.org answer `text/html`, to the same request.
     pub async fn index_content_type(index: &str) -> Option<String> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
-            .ok()?;
-        let response = client
+        let response = reqwest::Client::new()
             .head(index)
+            .timeout(TIMEOUT)
             .header(reqwest::header::ACCEPT, crate::ecosystem::pypi::SIMPLE_JSON)
             .send()
             .await
@@ -1026,19 +1035,28 @@ pub mod probe {
         )
     }
 
+    /// Ask the proxy about itself at `path`. `None` when nothing answers there with the JSON
+    /// expected, which is itself the finding.
+    ///
+    /// The status is not checked: readiness answers with its JSON on a 503 too, and anything
+    /// that is not a waharoa does not answer with this JSON.
+    ///
+    /// Async, not `reqwest::blocking`: doctor runs inside the same tokio runtime as
+    /// everything else, and a blocking client builds a second runtime, which panics when it
+    /// is dropped in an async context.
     pub async fn own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Option<T> {
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(3))
-            .build()
+        let response = reqwest::Client::new()
+            .get(format!("{proxy}{path}"))
+            .timeout(TIMEOUT)
+            .send()
+            .await
             .ok()?;
-        let response = client.get(format!("{proxy}{path}")).send().await.ok()?;
         serde_json::from_str(&response.text().await.ok()?).ok()
     }
 
     /// The client's cache when it holds something, `Ok(None)` when it is empty or absent.
-    pub fn warm_cache(client: &Client, environment: &Process) -> Result<Option<PathBuf>, EnvError> {
-        Ok(cache_dir(client, environment)?
-            .filter(|dir| dir.is_dir() && super::count_files(dir) > 0))
+    pub fn warm_cache(machine: &Machine, client: &Client) -> Result<Option<PathBuf>, EnvError> {
+        Ok(cache_dir(machine, client)?.filter(|dir| dir.is_dir() && super::count_files(dir) > 0))
     }
 
     #[cfg(test)]
@@ -1046,6 +1064,11 @@ pub mod probe {
         use super::super::CacheBypass;
         use super::*;
         use crate::env::testing;
+
+        /// This machine, with nothing set in the environment, checking `/`.
+        fn here(environment: &crate::env::Process) -> Machine<'_> {
+            Machine::this(environment, std::path::Path::new("/"))
+        }
 
         fn echoing(cache: CacheLocation) -> Client {
             Client {
@@ -1079,9 +1102,7 @@ pub mod probe {
             let addr = listener
                 .local_addr()
                 .expect("a bound listener has an address");
-            tokio::spawn(async move {
-                let _ = axum::serve(listener, router).await;
-            });
+            tokio::spawn(axum::serve(listener, router).into_future());
             assert_eq!(
                 index_content_type(&format!("http://{addr}/simple/"))
                     .await
@@ -1094,6 +1115,44 @@ pub mod probe {
                 index_content_type(&format!("http://{silent}/simple/")).await,
                 None,
                 "nothing is listening for this"
+            );
+        }
+
+        /// An index that names no type, or one that is not text, says nothing about its form.
+        #[tokio::test]
+        async fn an_index_type_that_cannot_be_read_is_none() {
+            use axum::Router;
+            use axum::http::HeaderValue;
+            use axum::routing::any;
+
+            let router = Router::new()
+                .route("/untyped/", any(|| async { axum::http::StatusCode::OK }))
+                .route(
+                    "/unreadable/",
+                    any(|| async {
+                        (
+                            [(
+                                reqwest::header::CONTENT_TYPE,
+                                HeaderValue::from_bytes(b"text/\xffhtml").expect("obs-text"),
+                            )],
+                            "",
+                        )
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("a loopback port should bind");
+            let addr = listener
+                .local_addr()
+                .expect("a bound listener has an address");
+            tokio::spawn(axum::serve(listener, router).into_future());
+            assert_eq!(
+                index_content_type(&format!("http://{addr}/untyped/")).await,
+                None
+            );
+            assert_eq!(
+                index_content_type(&format!("http://{addr}/unreadable/")).await,
+                None
             );
         }
 
@@ -1112,6 +1171,15 @@ pub mod probe {
                 own(&format!("http://{text}"), "/-/waharoa/ready").await;
             assert_eq!(not_json, None, "anything that is not a waharoa");
 
+            let cut = scripted(vec![Answer::Body {
+                bytes: b"{".to_vec(),
+                declared: Some(64),
+            }])
+            .await;
+            let short: Option<serde_json::Value> =
+                own(&format!("http://{cut}"), "/-/waharoa/ready").await;
+            assert_eq!(short, None, "a body cut short");
+
             let silent = closing_server().await;
             let nothing: Option<serde_json::Value> =
                 own(&format!("http://{silent}"), "/-/waharoa/ready").await;
@@ -1120,10 +1188,20 @@ pub mod probe {
 
         #[test]
         fn a_program_is_asked_for_what_it_prints() {
-            assert_eq!(ask("echo", &["  printed  "]).as_deref(), Some("printed"));
-            assert_eq!(ask("echo", &[""]), None, "printed nothing");
-            assert_eq!(ask("false", &[]), None, "failed");
-            assert_eq!(ask("waharoa-no-such-program", &[]), None, "not installed");
+            let empty = testing::empty();
+            let machine = here(&empty);
+            assert_eq!(
+                machine.ask("echo", &["  printed  "]).as_deref(),
+                Some("printed")
+            );
+            assert_eq!(machine.ask("echo", &[""]), None, "printed nothing");
+            assert_eq!(machine.ask("false", &[]), None, "failed");
+            assert_eq!(
+                machine.ask("waharoa-no-such-program", &[]),
+                None,
+                "not installed"
+            );
+            assert_eq!(machine.ask("printf", &["\\377"]), None, "not UTF-8");
         }
 
         #[test]
@@ -1136,9 +1214,14 @@ pub mod probe {
                 args,
                 unset: "undefined",
             };
-            assert_eq!(configured_registry(&client, &query(&["undefined"])), None);
+            let empty = testing::empty();
+            let machine = here(&empty);
             assert_eq!(
-                configured_registry(&client, &query(&["http://proxy/"])).as_deref(),
+                configured_registry(&machine, &client, &query(&["undefined"])),
+                None
+            );
+            assert_eq!(
+                configured_registry(&machine, &client, &query(&["http://proxy/"])).as_deref(),
                 Some("http://proxy/")
             );
         }
@@ -1150,7 +1233,7 @@ pub mod probe {
                 under: Some("_cacache"),
             });
             assert_eq!(
-                cache_dir(&under, &testing::empty()).unwrap(),
+                cache_dir(&here(&testing::empty()), &under).unwrap(),
                 Some(PathBuf::from("/c/_cacache"))
             );
             let bare = echoing(CacheLocation::Asked {
@@ -1158,7 +1241,7 @@ pub mod probe {
                 under: None,
             });
             assert_eq!(
-                cache_dir(&bare, &testing::empty()).unwrap(),
+                cache_dir(&here(&testing::empty()), &bare).unwrap(),
                 Some(PathBuf::from("/c"))
             );
         }
@@ -1169,17 +1252,17 @@ pub mod probe {
             let path: &'static str = Box::leak(dir.display().to_string().into_boxed_str());
             let args: &'static [&'static str] = Box::leak(Box::new([path]));
             let client = echoing(CacheLocation::Asked { args, under: None });
-            assert_eq!(warm_cache(&client, &testing::empty()).unwrap(), None);
+            assert_eq!(warm_cache(&here(&testing::empty()), &client).unwrap(), None);
             std::fs::write(dir.join("entry"), b"x").expect("writes");
             assert_eq!(
-                warm_cache(&client, &testing::empty()).unwrap(),
+                warm_cache(&here(&testing::empty()), &client).unwrap(),
                 Some(dir.clone())
             );
             let absent = echoing(CacheLocation::Asked {
                 args: &["/nonexistent/waharoa-cache"],
                 under: None,
             });
-            assert_eq!(warm_cache(&absent, &testing::empty()).unwrap(), None);
+            assert_eq!(warm_cache(&here(&testing::empty()), &absent).unwrap(), None);
             let _ = std::fs::remove_dir_all(&dir);
         }
 
@@ -1188,13 +1271,16 @@ pub mod probe {
         fn a_configured_cache_is_the_variable_then_the_home_directory() {
             let bun = crate::ecosystem::npm::clients::named("bun");
             let set = testing::bun_cache_and_home();
-            assert_eq!(cache_dir(bun, &set).unwrap(), Some(PathBuf::from("/bun")));
+            assert_eq!(
+                cache_dir(&here(&set), bun).unwrap(),
+                Some(PathBuf::from("/bun"))
+            );
             let home = testing::home_only();
             assert_eq!(
-                cache_dir(bun, &home).unwrap(),
+                cache_dir(&here(&home), bun).unwrap(),
                 Some(PathBuf::from("/home/u/.bun/install/cache"))
             );
-            assert_eq!(cache_dir(bun, &testing::empty()).unwrap(), None);
+            assert_eq!(cache_dir(&here(&testing::empty()), bun).unwrap(), None);
         }
     }
 }
@@ -1400,6 +1486,32 @@ mod tests {
         assert!(finding.fix.is_some());
     }
 
+    /// An address with no origin, such as a listen address written without a scheme, is
+    /// compared as written.
+    #[test]
+    fn an_address_with_no_origin_is_compared_as_written() {
+        let npm = r#"{"packages":{"a":{"resolved":"https://registry.npmjs.org/a/-/a-1.0.0.tgz"}}}"#;
+        let finding = check_lockfile(
+            "package-lock.json",
+            pins("package-lock.json"),
+            npm,
+            "127.0.0.1:8080",
+        );
+        assert_eq!(finding.severity, Severity::Warn);
+        assert_eq!(
+            finding.detail,
+            "artifacts are pinned to https://registry.npmjs.org, so this was not installed \
+             through the proxy"
+        );
+
+        let public = check_public_url(Some("proxy.internal"), &BTreeSet::new());
+        assert_eq!(public.severity, Severity::Ok);
+        assert_eq!(public.detail, "proxy.internal");
+
+        assert!(same_origin("proxy.internal/", "proxy.internal"));
+        assert!(!same_origin("http://proxy.internal", "proxy.internal"));
+    }
+
     /// A lockfile naming two places installs from both, and only one is examined. That is
     /// worse than one that names neither.
     #[test]
@@ -1559,6 +1671,11 @@ mod tests {
                 "{}",
                 lockfile.name
             );
+            assert!(
+                recorded_origins(pins.key, &format!("{} http://", pins.key)).is_empty(),
+                "a URL with no host: {}",
+                lockfile.name
+            );
         }
     }
 
@@ -1634,9 +1751,12 @@ mod tests {
     #[test]
     fn a_ready_proxy_whose_snapshot_cannot_match_npm_warns() {
         let mut ready = readiness(IntelState::Loaded);
-        if let Some(snapshot) = ready.snapshot.as_mut() {
-            snapshot.streams.retain(|s| s.stream == "cisa/kev");
-        }
+        ready
+            .snapshot
+            .as_mut()
+            .expect("a loaded snapshot")
+            .streams
+            .retain(|s| s.stream == "cisa/kev");
         let finding = check_readiness(Some(&ready), PROXY);
         assert_eq!(finding.severity, Severity::Warn);
         assert_eq!(
@@ -1723,9 +1843,7 @@ mod tests {
         assert!(
             findings[0].detail.contains(
                 "forwarding to npm=https://registry.npmjs.org pypi=https://pypi.org/simple"
-            ),
-            "{}",
-            findings[0].detail
+            )
         );
     }
 
@@ -1903,10 +2021,16 @@ mod tests {
             "also asks https://example.jfrog.io/api/pypi/simple/, whose files never reach the proxy"
         );
         assert_eq!(elsewhere.fix.as_deref(), Some("drop it"));
-        let RegistrySource::Read { drop_extra, .. } = PIP.registry.as_ref().expect("read") else {
-            panic!("pip is read");
+        let drop_extra = |client: &Client| match &client.registry {
+            Some(RegistrySource::Read { drop_extra, .. }) => Some(drop_extra()),
+            _ => None,
         };
-        assert!(drop_extra().starts_with("pip config unset global.extra-index-url"));
+        assert!(
+            drop_extra(&PIP)
+                .expect("pip is read")
+                .starts_with("pip config unset global.extra-index-url")
+        );
+        assert_eq!(drop_extra(named("npm")), None, "npm is asked");
     }
 
     /// pip asks the index and the files again with a warm cache, measured 2026-09-19.
@@ -1935,5 +2059,288 @@ mod tests {
         assert!(looks_like_a_registry("https://pypi.org"));
         assert!(looks_like_a_registry("https://files.pythonhosted.org"));
         assert!(!looks_like_a_registry("http://127.0.0.1:8080"));
+    }
+
+    /// A fake proxy whose health names `public` as its public URL, whose readiness is
+    /// `ready`, and which answers anything else as a PEP 503 index. Returns its URL.
+    async fn fake_proxy(public: bool, ready: Readiness) -> String {
+        use axum::Router;
+        use axum::routing::{any, get};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port should bind");
+        let url = format!(
+            "http://{}",
+            listener
+                .local_addr()
+                .expect("a bound listener has an address")
+        );
+        let mut health = health();
+        health.public_base = public.then(|| url.clone());
+        let router = Router::new()
+            .route(
+                crate::proxy::HEALTH_PATH,
+                get(move || {
+                    let health = health.clone();
+                    async move { axum::Json(health) }
+                }),
+            )
+            .route(
+                READY_PATH,
+                get(move || {
+                    let ready = ready.clone();
+                    async move { axum::Json(ready) }
+                }),
+            )
+            .fallback(any(|| async {
+                ([(reqwest::header::CONTENT_TYPE, "text/html")], "")
+            }));
+        tokio::spawn(axum::serve(listener, router).into_future());
+        url
+    }
+
+    /// Every program is missing.
+    fn nothing_installed(_: &str, _: &[&str]) -> Option<String> {
+        None
+    }
+
+    /// `doctor` run from `dir` with `environment` and programs answering as `run` does.
+    async fn doctored(
+        environment: &env::Process,
+        dir: &std::path::Path,
+        run: &(dyn Fn(&str, &[&str]) -> Option<String> + Sync),
+    ) -> Result<Checked, env::EnvError> {
+        super::run(&Machine {
+            environment,
+            dir,
+            run,
+        })
+        .await
+    }
+
+    /// Every client pointed at a proxy that answers, with nothing cached and no lockfile,
+    /// is the one report that exits 0 with nothing to say.
+    #[tokio::test]
+    async fn every_client_at_a_ready_proxy_exits_0() {
+        let ready = Readiness {
+            ready: true,
+            intel: IntelState::Loaded,
+            snapshot: None,
+        };
+        let url = fake_proxy(true, ready).await;
+        let index = format!("{url}/simple/");
+        let at_proxy = |program: &str, args: &[&str]| match (program, args) {
+            (_, ["--version"]) => Some("1.0".to_owned()),
+            ("npm" | "pnpm" | "yarn", ["config", "get", "registry"]) => Some(format!("{url}/")),
+            ("pip", ["config", "list"]) => Some(format!("global.index-url='{index}'")),
+            _ => None,
+        };
+        let environment = crate::env::testing::with(&[
+            (env::PUBLIC_URL, &url),
+            (env::UV_DEFAULT, &index),
+            (env::UV_NO_FILES, "1"),
+        ]);
+        let dir = crate::util::test_support::tempdir("doctor-run-ok");
+
+        let checked = doctored(&environment, &dir, &at_proxy).await.expect("runs");
+        assert_eq!(checked.code, 0, "{}", checked.report);
+        assert!(
+            checked.report.starts_with(&format!(
+                "waharoa doctor\n  proxy expected at {url}\n  checking from {}\n\n",
+                dir.display()
+            )),
+            "{}",
+            checked.report
+        );
+        assert!(
+            checked
+                .report
+                .ends_with("\nEverything checked is pointing at the proxy.\n"),
+            "{}",
+            checked.report
+        );
+        assert!(!checked.report.contains("WARN"), "{}", checked.report);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Nothing installed, a proxy with no public URL and no intel store, and a cooldown
+    /// against an index serving PEP 503 are each a warning, so the exit is still 0.
+    #[tokio::test]
+    async fn warnings_alone_exit_0() {
+        let url = fake_proxy(false, readiness(IntelState::NotConsulted)).await;
+        let dir = crate::util::test_support::tempdir("doctor-run-warn");
+        let policy = dir.join("policy.yaml");
+        std::fs::write(&policy, "version: 1\ncooldown_days: 3\n").expect("writes");
+        std::fs::write(
+            dir.join("package-lock.json"),
+            format!(
+                r#"{{"packages":{{"node_modules/a":{{"resolved":"{url}/a/-/a-1.0.0.tgz"}}}}}}"#
+            ),
+        )
+        .expect("writes");
+        let environment = crate::env::testing::with(&[
+            (env::PUBLIC_URL, &url),
+            (env::POLICY, &policy.display().to_string()),
+            (env::UPSTREAM_PYPI, &format!("{url}/simple/")),
+        ]);
+
+        let checked = doctored(&environment, &dir, &nothing_installed)
+            .await
+            .expect("runs");
+        assert_eq!(checked.code, 0, "{}", checked.report);
+        for expected in [
+            "npm registry: not installed, or its configuration could not be read",
+            "pip registry: not installed, or its configuration could not be read",
+            &format!(
+                "proxy public URL: the proxy has no {}",
+                env::PUBLIC_URL.name
+            ),
+            "proxy readiness: ready, but uses no intel store",
+            &format!("{}", policy.display()),
+            "serves PEP 503 HTML",
+            "package-lock.json: ",
+            "Installs reach the proxy, with the caveats above.",
+        ] {
+            assert!(
+                checked.report.contains(expected),
+                "{expected}\n{}",
+                checked.report
+            );
+        }
+        assert!(!checked.report.contains("PROBLEM"), "{}", checked.report);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A proxy that does not answer, clients pointed elsewhere, and a lockfile recording
+    /// another address are problems, and the exit is 1.
+    #[tokio::test]
+    async fn a_problem_exits_1() {
+        let proxy = format!(
+            "http://{}",
+            crate::util::test_support::closing_server().await
+        );
+        let dir = crate::util::test_support::tempdir("doctor-run-problem");
+        let cache = dir.join("npm-cache");
+        std::fs::create_dir_all(cache.join("_cacache/index-v5")).expect("creates");
+        std::fs::write(cache.join("_cacache/index-v5/entry"), b"x").expect("writes");
+        std::fs::write(
+            dir.join("package-lock.json"),
+            r#"{"packages":{"node_modules/a":{"resolved":"http://old.example:8080/a/-/a-1.0.0.tgz"}}}"#,
+        )
+        .expect("writes");
+        let cache_dir = cache.display().to_string();
+        let elsewhere = |program: &str, args: &[&str]| match (program, args) {
+            ("npm" | "uv", ["--version"]) => Some("1.0".to_owned()),
+            ("npm", ["config", "get", "registry"]) => {
+                Some("https://registry.npmjs.org/".to_owned())
+            }
+            ("npm", ["config", "get", "cache"]) => Some(cache_dir.clone()),
+            ("pip", ["config", "list"]) => Some(
+                "global.index-url='https://pypi.org/simple/'\n\
+                 global.extra-index-url='https://extra.example/simple/'"
+                    .to_owned(),
+            ),
+            _ => None,
+        };
+        let missing = dir.join("missing.yaml").display().to_string();
+        let environment = crate::env::testing::with(&[
+            (env::PUBLIC_URL, &proxy),
+            (env::POLICY, &missing),
+            (env::UV_DEFAULT, "https://pypi.org/simple/"),
+            (env::UV_NO_FILES, "1"),
+        ]);
+
+        let checked = doctored(&environment, &dir, &elsewhere)
+            .await
+            .expect("runs");
+        assert_eq!(checked.code, 1, "{}", checked.report);
+        for expected in [
+            "proxy: nothing answered at",
+            "npm registry: points at https://registry.npmjs.org/, not the proxy",
+            "pip registry: points at https://pypi.org/simple/",
+            "pip extra indexes",
+            "uv registry: points at https://pypi.org/simple/",
+            "public URL",
+            "http://old.example:8080",
+            "npm cache",
+            &format!("PROBLEM  policy: {missing}: "),
+            "Some installs are not going through the proxy. See above.",
+        ] {
+            assert!(
+                checked.report.contains(expected),
+                "{expected}\n{}",
+                checked.report
+            );
+        }
+        assert!(
+            !checked.report.contains(READINESS_TITLE),
+            "readiness is not asked of a proxy that does not answer\n{}",
+            checked.report
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A variable that cannot be read stops `doctor` with that variable's error, before any
+    /// finding is printed.
+    #[tokio::test]
+    async fn an_unreadable_variable_is_the_error() {
+        use crate::env::Var;
+        use crate::env::testing::{with, with_unreadable};
+
+        let proxy = format!(
+            "http://{}",
+            crate::util::test_support::closing_server().await
+        );
+        let dir = crate::util::test_support::tempdir("doctor-run-unreadable");
+        let cooldown = dir.join("cooldown.yaml");
+        std::fs::write(&cooldown, "version: 1\ncooldown_days: 3\n").expect("writes");
+        let cooldown = cooldown.display().to_string();
+        let installed = |program: &str, args: &[&str]| match (program, args) {
+            ("uv" | "bun", ["--version"]) => Some("1.0".to_owned()),
+            _ => None,
+        };
+        let base: &[(Var, &str)] = &[(env::PUBLIC_URL, &proxy)];
+        let cases: Vec<(env::Process, Var)> = vec![
+            (with_unreadable(&[], env::LISTEN), env::LISTEN),
+            (with_unreadable(&[], env::PUBLIC_URL), env::PUBLIC_URL),
+            (with_unreadable(base, env::POLICY), env::POLICY),
+            (
+                with(&[
+                    (env::PUBLIC_URL, &proxy),
+                    (env::POLICY, &cooldown),
+                    (env::UPSTREAM_PYPI, "ftp://pypi.example/simple/"),
+                ]),
+                env::UPSTREAM_PYPI,
+            ),
+            (
+                with(&[
+                    (env::PUBLIC_URL, &proxy),
+                    (env::POLICY, &cooldown),
+                    (env::EXPIRY_CEILING_DAYS, "soon"),
+                ]),
+                env::EXPIRY_CEILING_DAYS,
+            ),
+            (with_unreadable(base, env::UV_NO_FILES), env::UV_NO_FILES),
+            (with_unreadable(base, env::BUN_CACHE), env::BUN_CACHE),
+            (
+                with_unreadable(
+                    &[(env::PUBLIC_URL, &proxy), (env::UV_NO_FILES, "1")],
+                    env::HOME_DIR,
+                ),
+                env::HOME_DIR,
+            ),
+        ];
+        for (environment, var) in &cases {
+            let error = doctored(environment, &dir, &installed)
+                .await
+                .expect_err(var.name);
+            assert!(
+                error.to_string().starts_with(var.name),
+                "{}: {error}",
+                var.name
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

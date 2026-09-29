@@ -522,9 +522,7 @@ mod tests {
         }));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
         format!("http://{addr}/widget/-/widget-1.0.0.tgz")
     }
 
@@ -728,9 +726,7 @@ mod tests {
         }
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
         format!("http://{addr}")
     }
 
@@ -753,9 +749,7 @@ mod tests {
             .route("/attestations", late(100, 404, Vec::new()));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
         let (spool, _) = Spool::open(&tempdir("run-phases"), 1 << 20).expect("opens");
         let one_slot = Analyser::new(
             reqwest::Client::new(),

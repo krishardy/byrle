@@ -157,9 +157,7 @@ mod tests {
             .await
             .expect("should bind an ephemeral port");
         let addr = listener.local_addr().expect("bound socket has an address");
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
         format!("http://{addr}")
     }
 
