@@ -1,17 +1,7 @@
-//! A deferral this proxy can be told to return, so real clients can be measured against
-//! it before the thing that would cause one exists.
+//! A deferral this proxy can be told to return, so clients can be measured against it.
 //!
-//! §5 defers a request when the proxy is not ready to answer it: warming, or an artifact
-//! still under analysis. Which status code to use is an open decision, and it turns on
-//! what package managers actually do with 429 and 503, which is not documented and does
-//! not agree between them. This makes the response producible on demand so the answer
-//! comes from measurement. `make retry-matrix` is the harness.
-//!
-//! # Debug builds only
-//!
-//! An env var that makes a proxy refuse traffic is a denial-of-service switch, so the
-//! whole module is `#[cfg(debug_assertions)]` and is not compiled into a release binary.
-//! The startup log says loudly when it is on.
+//! Debug builds only. `make retry-matrix` is the harness.
+//! See docs/engineering_decisions/deferral-status-codes.md.
 
 use crate::route::RequestTarget;
 use std::time::Duration;
@@ -19,11 +9,9 @@ use std::time::Duration;
 /// Which requests a deferral applies to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// Metadata requests: an npm packument, a PyPI index. §5's "we are not ready, all
-    /// requests" case.
+    /// Metadata requests: an npm packument, a PyPI index.
     Metadata,
-    /// Artifact requests: an npm tarball, a PyPI file. §5's "this one artifact is under
-    /// analysis" case.
+    /// Artifact requests: an npm tarball, a PyPI file.
     Artifact,
     /// Both.
     All,
@@ -46,18 +34,14 @@ impl Scope {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeferTest {
     status: u16,
-    /// Seconds for `Retry-After`. `None` omits the header, which is its own measurement:
-    /// a client may retry on the code alone.
+    /// Seconds for `Retry-After`. `None` omits the header.
     retry_after: Option<u32>,
     scope: Scope,
-    /// How long the deferral lasts, measured from startup. `None` never stops, which
-    /// measures the client's retry budget. A duration measures the other half: whether a
-    /// client waits out a proxy that is warming, which is §5's cold-start case.
+    /// How long the deferral lasts, measured from startup. `None` never stops.
     duration: Option<Duration>,
 }
 
-/// Why a spec was rejected. Startup fails on any of these rather than running with the
-/// knob half-understood.
+/// Why a spec was rejected. Startup fails on any of these.
 #[derive(Debug, PartialEq, Eq)]
 pub enum SpecError {
     Fields(usize),
@@ -94,8 +78,6 @@ impl DeferTest {
             other => return Err(SpecError::Fields(other.len())),
         };
 
-        // Bounded to the error range: this exists to measure how a client reacts to being
-        // turned away, and a 2xx or a redirect is not that.
         let status: u16 = status
             .parse()
             .ok()
@@ -197,12 +179,8 @@ mod proofs {
         }
     }
 
-    /// A bounded deferral models a proxy warming up, so once it has lifted it must stay
-    /// lifted. A deferral that came back would be a client that had already retried
-    /// successfully being turned away again, which is a failed install rather than a
-    /// slow one.
-    ///
-    /// Over every scope, both bounded and unbounded, and every pair of times in order.
+    /// Once a bounded deferral has lifted it stays lifted, over every scope, both bounded
+    /// and unbounded, and every pair of times in order.
     #[kani::proof]
     fn a_deferral_that_has_lifted_never_comes_back() {
         let deferral = any_deferral();

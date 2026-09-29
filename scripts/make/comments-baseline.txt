@@ -5,10 +5,8 @@ src/analysis/run.rs
 src/analysis.rs
 src/audit.rs
 src/cli.rs
-src/defer.rs
 src/doctor.rs
 src/ecosystem/npm/normalize.rs
-src/ecosystem/npm/paths.rs
 src/ecosystem/npm/rewrite.rs
 src/ecosystem/npm/transport.rs
 src/ecosystem/npm/wire.rs
@@ -29,14 +27,11 @@ src/intel/postgres.rs
 src/intel/providers/github.rs
 src/intel/providers/osv/mod.rs
 src/intel/range.rs
-src/intel/rows.rs
 src/intel/snapshot_dir.rs
-src/intel/snapshot_intel.rs
 src/intel/store.rs
 src/intel.rs
 src/main.rs
 src/origin.rs
-src/policy/check.rs
 src/policy/decide.rs
 src/policy/diff.rs
 src/policy/enforce.rs

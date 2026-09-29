@@ -52,6 +52,15 @@ mirror holds the raw strings and does not. **So the mirror keys on parsed compon
 never on the purl string**, and the parser rejoins an encoded scope. Missing this
 silently orphans those 855 records, which are disproportionately malware.
 
+An npm name contains a `/` only when it is scoped, and a scope starts with `@`.
+`npm::paths::split_name` refuses `foo/bar`, which would otherwise become
+`pkg:npm/foo/bar`, a package npm cannot have. A request for `/simple/requests` sent to the
+npm side is that shape.
+
+npm percent-encodes the scope separator on packument requests (`/@babel%2fcore`) and leaves
+it bare on tarball paths (`/@babel/core/-/core-7.0.0.tgz`). Both name the same package.
+Registry endpoints are under `/-/`, and a package name cannot start with `-`.
+
 **4. Identity comes from the packument's `name`, not the request path.** The registry
 is case-sensitive (`/adultjs` 404s where `/AdultJS` returns 200), so for npm the two
 agree, but the body is the canonical spelling and the path also carries percent-encoding

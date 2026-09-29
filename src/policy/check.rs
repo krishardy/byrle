@@ -1,26 +1,7 @@
 //! `waharoa policy check`: whether a policy loads, and which of its package entries do
 //! nothing.
 //!
-//! Loading is the proxy's own, [`Policy::load`] then [`packages::check`], so a policy this
-//! accepts is one the proxy starts with on the same date and ceiling. The proxy at startup
-//! and `doctor` read the same [`Report`].
-//!
-//! # What does nothing
-//!
-//! - An entry that **changes nothing** sets every value to what the global settings
-//!   already say. See [`packages::changes_nothing`].
-//! - An entry that **never wins** matches no package that a narrower entry does not also
-//!   match, so most-specific-wins always picks the narrower one.
-//!
-//! Loading has already refused duplicate selectors and overlaps that cannot be ordered.
-//! What is left that can cover an entry is one shape: two entries with its ecosystem, name
-//! and version, one `has_install_scripts: true` and one `false`, below an entry that sets
-//! neither. Covering a name pattern or a version would take narrower entries listing every
-//! name or version under it, and that is not looked for.
-//!
-//! A narrower entry with an expiry covers only until it lapses, so the wide entry is
-//! reported as shadowed through that date, not as never winning. A lapsed entry matches
-//! nothing and covers nothing, as in [`super::decide::decide`].
+//! See docs/engineering_decisions/policy-check.md.
 
 use super::packages::{self, PackageError};
 use super::selector::Canonical;
@@ -74,8 +55,7 @@ pub struct Shadowed {
     pub index: usize,
     /// The `has_install_scripts: true` entry, then the `false` one.
     pub by: [usize; 2],
-    /// The last day the cover holds: the earlier expiry of the two. `None` when neither
-    /// expires.
+    /// The last day the cover holds, the earlier expiry of the two. `None` when neither expires.
     pub through: Option<Date>,
 }
 
@@ -104,19 +84,11 @@ pub struct Report {
     pub permanent: Vec<usize>,
     /// `advisory_scores` entries marked `permanent: true`, as their label, id and reason.
     pub permanent_scores: Vec<String>,
-    /// Cooldown waivers whose version is now old enough without them. Empty unless the
-    /// caller fetched publish dates: see [`Waiver`].
+    /// Cooldown waivers whose version is now old enough without them, if dates were fetched.
     pub outlived: Vec<Outlived>,
 }
 
-/// A `packages` entry that shortens `cooldown_days` for one named version.
-///
-/// A waiver is needed only while its version is younger than the global wait. Whether it
-/// still is takes the version's publish date, which is registry data, so `policy check`
-/// asks for it only with `--fetch`.
-///
-/// Only an entry naming one exact version is a waiver here. One naming a range or a whole
-/// package also covers versions not published yet, so no publish date answers it.
+/// A `packages` entry that shortens `cooldown_days` for one exact version.
 pub struct Waiver {
     pub entry: usize,
     pub reference: crate::identity::PackageRef,
@@ -207,12 +179,9 @@ fn pinned_version(selector: &crate::policy::Selector) -> Option<crate::identity:
     }
     let name = selector.name.as_deref()?;
     let version = selector.version.as_deref()?;
-    // A range covers versions nobody has published yet, so no publish date answers it.
     if version.starts_with(super::selector::VERS) {
         return None;
     }
-    // A policy loads a version only for an ecosystem this build orders, and only one that
-    // is not empty, so the ecosystem parses and the version attaches.
     let ecosystem = selector
         .ecosystem
         .parse()
@@ -274,7 +243,6 @@ impl Report {
 
         Self {
             as_of,
-            // Filled by the caller, which is the only side that can fetch.
             outlived: Vec::new(),
             entries: policy
                 .packages
@@ -414,9 +382,8 @@ mod tests {
         .expect("the policy loads")
     }
 
-    /// A waiver is an entry that shortens the wait for one named version. One naming a
-    /// range or a whole package covers versions nobody has published yet, so no publish
-    /// date answers it.
+    /// A waiver is an entry that shortens the wait for one exact version, not a range or a
+    /// whole package.
     #[test]
     fn only_an_entry_naming_one_version_is_a_waiver() {
         for (selector, named) in [
