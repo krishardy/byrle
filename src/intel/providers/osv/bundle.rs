@@ -85,7 +85,7 @@ impl Tally {
 
 impl std::fmt::Display for Tally {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (label, count) in [
+        let lines: String = [
             ("stored: malware", self.malware),
             ("stored: vulnerability, scored", self.scored),
             ("scored from a severity band", self.banded),
@@ -98,10 +98,11 @@ impl std::fmt::Display for Tally {
             ("records", self.records()),
             ("stored with something left out", self.partly_stored),
             ("CVSS vectors unread", self.unread_vectors),
-        ] {
-            writeln!(f, "{label:32} {count:>8}")?;
-        }
-        Ok(())
+        ]
+        .iter()
+        .map(|(label, count)| format!("{label:32} {count:>8}\n"))
+        .collect();
+        f.write_str(&lines)
     }
 }
 
@@ -422,5 +423,28 @@ mod tests {
         assert_eq!(cvss("PYSEC-2018-28"), cvss("GHSA-x84v-xcm2-53pg"));
         assert_eq!(cvss("PYSEC-2018-28"), Some(7.5));
         assert_eq!(cvss("PYSEC-2099-1"), None);
+    }
+
+    /// A record naming no package is counted as skipped for it.
+    #[test]
+    fn a_record_with_no_package_is_counted() {
+        let mut tally = Tally::default();
+        tally.count(&Parsed::Skipped(Skipped::NoPackage));
+        assert_eq!(
+            tally,
+            Tally {
+                no_package: 1,
+                ..Tally::default()
+            }
+        );
+    }
+
+    /// An entry whose local header is not one fails the bundle, as the archive does.
+    #[test]
+    fn an_entry_that_cannot_be_opened_is_an_archive_error() {
+        let mut bytes = zip_of(&[("MAL-2021-1.json", b"{}")]);
+        bytes[..4].copy_from_slice(b"XXXX");
+        let err = read_bundle(Ecosystem::Npm, &bytes).expect_err("a broken entry");
+        assert!(matches!(err, BundleError::Archive(_)), "{err}");
     }
 }

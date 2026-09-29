@@ -289,8 +289,7 @@ pub fn decode_for_parsing(
 /// runs for every packument.
 pub fn gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    encoder.write_all(data)?;
-    encoder.finish()
+    encoder.write_all(data).and_then(|()| encoder.finish())
 }
 
 /// Marker on an `ETag` for a body this proxy rewrote.

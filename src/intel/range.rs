@@ -691,4 +691,19 @@ mod tests {
             "not a version"
         );
     }
+
+    /// An excluded start that does not parse is no interval.
+    #[test]
+    fn an_excluded_start_that_does_not_parse_is_none() {
+        assert_eq!(
+            Interval::from_columns(
+                VersionOrder::SemVer,
+                Some("not a version"),
+                true,
+                None,
+                None
+            ),
+            None
+        );
+    }
 }

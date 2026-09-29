@@ -175,7 +175,7 @@ const V4_BASE: [&str; 11] = [
 /// an unknown prefix is returned whole, for `cvss` to refuse.
 fn base_vector(vector: &str) -> Option<String> {
     let mut parts = vector.split('/');
-    let prefix = parts.next()?;
+    let prefix = parts.next().unwrap_or_default();
     let base: &[&str] = match prefix {
         "CVSS:3.0" | "CVSS:3.1" => &V3_BASE,
         "CVSS:4.0" => &V4_BASE,

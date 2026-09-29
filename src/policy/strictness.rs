@@ -511,4 +511,24 @@ mod tests {
             "the one that says more survives"
         );
     }
+
+    /// Each combination the kani proofs reason about, run as a test.
+    #[test]
+    fn combining_two_answers() {
+        use Strictness::*;
+        for (a, b, both) in [
+            (Incomparable, Stricter, Incomparable),
+            (Looser, Incomparable, Incomparable),
+            (NotApplicable, Unset, NotApplicable),
+            (Unset, NotApplicable, NotApplicable),
+            (Unset, Unset, Unset),
+            (Same, Looser, Looser),
+            (Stricter, NotApplicable, Stricter),
+            (Stricter, Stricter, Stricter),
+            (Looser, Looser, Looser),
+            (Stricter, Looser, Incomparable),
+        ] {
+            assert_eq!(a.and(b), both, "{a:?} and {b:?}");
+        }
+    }
 }

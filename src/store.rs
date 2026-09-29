@@ -170,9 +170,11 @@ impl RecordStore {
             if self.records <= self.max_records || self.entries.len() <= 1 {
                 break;
             }
-            if let Some(entry) = self.entries.remove(&key) {
-                self.records -= entry.metadata.records.len();
-            }
+            let entry = self
+                .entries
+                .remove(&key)
+                .expect("each key was read from the entries");
+            self.records -= entry.metadata.records.len();
         }
     }
 }

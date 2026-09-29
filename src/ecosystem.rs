@@ -454,6 +454,34 @@ mod table {
     use super::*;
     use crate::record::DocumentDetail;
 
+    /// A limit that does not parse stops the clients being built, and a registry that cannot
+    /// be reached is an error for a record rather than no record.
+    #[tokio::test]
+    async fn a_client_that_cannot_be_built_or_reach_its_registry_is_an_error() {
+        use crate::env::testing::with;
+        let Err(error) = Clients::from_env(&with(&[(crate::env::MAX_METADATA_BYTES, "lots")]))
+        else {
+            panic!("the limit does not parse");
+        };
+        assert_eq!(error.var, crate::env::MAX_METADATA_BYTES.name);
+
+        let closed = crate::util::test_support::closing_server().await;
+        let clients = Clients::from_env(&with(&[(
+            crate::env::UPSTREAM_NPM,
+            &format!("http://{closed}"),
+        )]))
+        .expect("builds");
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").expect("a name");
+        let error = clients
+            .record(&key, "4.17.21")
+            .await
+            .expect_err("unreachable");
+        assert!(
+            error.starts_with("metadata could not be fetched"),
+            "{error}"
+        );
+    }
+
     /// The property the table exists for. A variant with no row makes `of` panic, and
     /// `of` is on the request path.
     #[test]
