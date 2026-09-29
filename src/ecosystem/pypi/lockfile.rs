@@ -1,23 +1,6 @@
-//! Lockfiles uv, poetry and pip write, read for `waharoa policy diff`.
+//! Lockfiles uv, poetry, pip and pipenv write, read for `waharoa policy diff`.
 //!
-//! PyPI's row of [`crate::ecosystem::TABLE`] lists these. The registry writes none of
-//! them; the clients do.
-//!
-//! | File | Written by | Format | Where the package and version are |
-//! |---|---|---|---|
-//! | `uv.lock` | uv | TOML | each `[[package]]`'s `name` and `version` |
-//! | `poetry.lock` | poetry | TOML | the same |
-//! | `requirements.txt` | pip, or `uv export` | pip's requirement lines | a line pinned with `==` |
-//! | `Pipfile.lock` | pipenv | JSON | each entry of `default` and `develop`, whose `version` is an `==` pin |
-//!
-//! Only versions from a registry are kept, as npm's readers keep only those. uv writes
-//! `source = { registry = ... }` for one and `{ git = ... }`, `{ virtual = ... }` or a path
-//! for the rest; poetry writes a `[package.source]` table for anything that is not PyPI,
-//! whose `type` is `legacy` for another index and `git`, `url` or `directory` otherwise.
-//! A `requirements.txt` line naming a URL or a VCS reference is not a pin.
-//!
-//! Shapes measured 2026-09-21 against uv 0.12.5 and poetry 2.2.1, with the files in
-//! `tests/fixtures/lockfiles/`.
+//! See docs/engineering_decisions/policy-diff-lockfiles.md.
 
 use std::collections::BTreeSet;
 
@@ -27,10 +10,6 @@ use crate::identity::Ecosystem;
 use crate::lockfile::{Locked, Lockfile, Pins, Unread};
 
 /// Each lockfile name, the reader it chooses, and how it records artifact URLs.
-///
-/// `doctor` checks `requirements.txt` written with hashes, which records each file's URL
-/// only when the exporter wrote one; uv's `--no-hashes` form records none. uv's and
-/// poetry's own lockfiles record URLs per file, so both are checked.
 pub const LOCKFILES: &[Lockfile] = &[
     Lockfile {
         name: "uv.lock",
@@ -46,8 +25,6 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "poetry.lock",
         read: poetry,
         artifacts: None,
-        // poetry records each file's name and hash and no URL at all: it rebuilds the URL
-        // from the index it is configured with.
         pins: None,
     },
     Lockfile {
@@ -60,7 +37,6 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "Pipfile.lock",
         read: pipenv,
         artifacts: None,
-        // pipenv records each file's hash and the index's name, never a URL.
         pins: None,
     },
 ];
@@ -86,8 +62,7 @@ struct TomlLock {
 struct TomlPackage {
     name: String,
     version: String,
-    /// uv writes one table per package, whose single key says where it came from. poetry
-    /// writes `[package.source]` only for a package that is not from its default index.
+    /// Where the package came from. poetry omits it for its default index.
     #[serde(default)]
     source: Option<toml::Value>,
 }
@@ -125,11 +100,8 @@ fn poetry(text: &str) -> Result<BTreeSet<Locked>, String> {
 }
 
 /// pipenv's lockfile: `default` and `develop`, each a map of name to entry.
-///
-/// A registry entry carries `version` as an `==` pin, and `index` when the project names
-/// more than one source. One from git carries `git` and `ref` and no version at all, and a
-/// local one carries `path` or `file`. Dev dependencies are kept, as every npm reader
-/// keeps them.
+/// An entry with an `==` `version` is kept. `text` is the file's contents.
+/// Returns the packages locked, or why the file does not read.
 fn pipenv(text: &str) -> Result<BTreeSet<Locked>, String> {
     #[derive(Deserialize)]
     struct Lock {
@@ -165,12 +137,10 @@ fn requirements(text: &str) -> Result<BTreeSet<Locked>, String> {
     let mut lines = 0;
     for line in text.lines() {
         let line = line.trim();
-        // A continuation of the line before it: `--hash=...`, or an option's value.
         if line.is_empty() || line.starts_with('#') || line.starts_with('-') {
             continue;
         }
         lines += 1;
-        // `name[extra]==1.0 ; python_version < "3.11" \`
         let requirement = line
             .split(';')
             .next()
@@ -180,8 +150,6 @@ fn requirements(text: &str) -> Result<BTreeSet<Locked>, String> {
         let Some((name, version)) = requirement.split_once("==") else {
             continue;
         };
-        // `name @ https://...` and `name @ git+...` are not pins, and neither is a line
-        // whose version carries another operator.
         if name.contains('@') || version.contains([',', '*']) {
             continue;
         }
@@ -292,13 +260,8 @@ url = "../local"
         );
     }
 
-    /// `uv export`'s requirements.txt: a pin per package, hashes on their own lines, and
-    /// comments saying what asked for it.
-    ///
-    /// A package resolved differently per marker is pinned once per marker, so both
-    /// versions are locked: this file pins `urllib3==2.6.3` under Python before 3.10 and
-    /// `2.8.0` from 3.10. Both are versions this project installs somewhere, so both are
-    /// judged.
+    /// `uv export`'s requirements.txt, which pins `urllib3` once per marker.
+    /// Both pins are locked.
     #[test]
     fn requirements_keeps_every_pinned_line() {
         let locked = requirements(&fixture("requirements.txt")).expect("the file reads");
@@ -337,8 +300,11 @@ url = "../local"
     fn a_file_with_no_pin_is_refused() {
         let error = requirements("requests>=2\nidna\n").expect_err("nothing is pinned");
         assert!(error.contains("not a lockfile"), "{error}");
-        // An empty file locks nothing, which is not the same as being unreadable.
-        assert_eq!(requirements("# nothing here\n"), Ok(BTreeSet::new()));
+        assert_eq!(
+            requirements("# nothing here\n"),
+            Ok(BTreeSet::new()),
+            "an empty file locks nothing, and is not unreadable"
+        );
     }
 
     /// A name is normalised as PyPI normalises one, so `Charset_Normalizer` and

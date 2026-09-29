@@ -94,6 +94,9 @@ dependency, and the `lockfileVersion` 0 file bun 1.1.45 wrote. Each gives the sa
 package versions
 (`each_manager_locking_the_same_project_gives_the_same_packages`).
 
+The Python shapes were measured 2026-09-21 against uv 0.12.5 and poetry 2.2.1, with the
+files in the same directory.
+
 `policy diff` from `max_cvss: 7.0` to `max_cvss: 9.0`, `WAHAROA_AUDIT_LOG` unset, over the
 kept npm snapshot, debug build. Each of the four lockfiles alone gives this report, and all
 four together give the same 15 packages:

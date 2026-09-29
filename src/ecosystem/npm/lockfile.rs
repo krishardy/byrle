@@ -1,21 +1,5 @@
 //! Lockfiles npm, yarn 1, pnpm and bun write, read for `waharoa policy diff`.
 //!
-//! npm's row of [`crate::ecosystem::TABLE`] lists these:
-//!
-//! | File | Format | Where the package and version are |
-//! |---|---|---|
-//! | `package-lock.json`, `npm-shrinkwrap.json` | JSON, `lockfileVersion` 2 or 3 | an entry's `name`, else its key after the last `node_modules/`, and `version` |
-//! | `yarn.lock` | yarn 1's own text | the first descriptor, or the package after `npm:` in an alias, and `version` |
-//! | `pnpm-lock.yaml` | YAML, `lockfileVersion` 9 | each `packages` key, `name@version` |
-//! | `bun.lock` | JSON with trailing commas, read as YAML | the first element of each `packages` value, `name@version` |
-//!
-//! In npm, yarn and bun an entry's key can be an alias, such as `my-lodash` for
-//! `lodash@4.17.21`. The package is read from the entry, so an alias is judged as the package
-//! it installs.
-//!
-//! Only versions from a registry are kept. A path, a git reference or a URL in the version is
-//! not one, and neither is an npm entry resolved from somewhere other than an HTTP URL. yarn 1
-//! writes `resolved` for every registry entry, so a yarn entry without one is not kept either.
 //! See docs/engineering_decisions/policy-diff-lockfiles.md.
 
 use serde::Deserialize;
@@ -28,8 +12,7 @@ use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Platform, Unread};
 const REINSTALL: &str =
     "delete the lockfile and node_modules, then install again through the proxy";
 
-/// npm and yarn record the absolute artifact URL, so a lockfile written through the proxy
-/// contains its address.
+/// How npm and yarn record the absolute artifact URL.
 const RESOLVED: Pins = Pins {
     key: "resolved",
     when_absent: "records no artifact URLs",
@@ -37,9 +20,6 @@ const RESOLVED: Pins = Pins {
 };
 
 /// Each lockfile name, the reader it chooses, and how it records artifact URLs.
-///
-/// bun's `bun.lock` is not checked by `doctor`: it records an empty string for an artifact
-/// from the configured registry.
 pub const LOCKFILES: &[Lockfile] = &[
     Lockfile {
         name: "package-lock.json",
@@ -63,8 +43,6 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "pnpm-lock.yaml",
         read: pnpm,
         artifacts: Some(pnpm_artifacts),
-        // pnpm omits `resolution.tarball` when the URL matches the configured registry and
-        // derives it at install time.
         pins: Some(Pins {
             key: "tarball",
             when_absent: "records no artifact URLs, which is normal: pnpm derives them from \
@@ -210,7 +188,6 @@ fn npm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     let packages = lock.packages.ok_or("`packages` is missing")?;
     let mut out = Vec::new();
     for (key, entry) in packages {
-        // The project and its workspaces sit outside `node_modules`, and a link points at one.
         let (Some((_, installed)), Some(version)) =
             (key.rsplit_once("node_modules/"), entry.version)
         else {
@@ -257,7 +234,6 @@ fn yarn_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
             let entry = entry
                 .as_mut()
                 .ok_or_else(|| format!("line {i}: indented before any entry"))?;
-            // A field of the entry. Deeper lines are under `dependencies` and the like.
             if let Some(version) = field.strip_prefix("version ") {
                 entry.version = Some(unquote(version));
             } else if let Some(resolved) = field.strip_prefix("resolved ") {
@@ -272,7 +248,6 @@ fn yarn_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
         let first = unquote(descriptors.split(", ").next().unwrap_or_default());
         let (name, range) =
             split(first).ok_or_else(|| format!("line {i}: `{first}` is not `name@range`"))?;
-        // An alias is followed by the package it installs.
         let name = match range.strip_prefix("npm:") {
             Some(package) => split(package).map_or(package, |(name, _)| name),
             None => name,

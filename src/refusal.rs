@@ -1,28 +1,6 @@
 //! What a policy refusal looks like on the wire.
 //!
-//! One mechanism for every denial, so a block and an unservable artifact answer the same
-//! way and Stage 2's engine has somewhere to plug in.
-//!
-//! # Why the status is configurable
-//!
-//! Package managers bucket status codes rather than reading them, and they do not agree.
-//! 403 is the right default because it says policy denied you and is terminal for every
-//! client tested, but an operator who finds a client mishandling it needs to be able to
-//! say so without waiting for a release. The key is (ecosystem, client) because the same
-//! client behaves differently per ecosystem, and because Stage 2 gates more than npm.
-//!
-//! # Identifying the client
-//!
-//! By the **first token** of the user-agent, never a substring. Measured:
-//!
-//! ```text
-//! npm/9.9.4 node/v16.20.1 linux x64 workspaces/false
-//! pnpm/10.33.0 npm/? node/v20.11.1 linux x64
-//! yarn/1.22.22 npm/? node/v16.20.1 linux x64
-//! ```
-//!
-//! pnpm and yarn both carry `npm/` further along, so searching for "npm" matches all
-//! three.
+//! See docs/engineering_decisions/refusal-status.md.
 
 use crate::identity::Ecosystem;
 use std::collections::BTreeMap;
@@ -101,16 +79,9 @@ impl fmt::Display for RefusalParseError {
 impl std::error::Error for RefusalParseError {}
 
 impl RefusalStatus {
-    /// Parse a comma-separated table.
-    ///
-    /// ```text
-    /// default=403,npm/pnpm=451,npm/yarn=404
-    /// ```
-    ///
-    /// Anything outside 400..=599 is refused: a denial that answers 2xx is not a denial,
-    /// and a 3xx would send the client somewhere. 5xx is accepted because an operator may
-    /// need it for a client that mishandles 4xx, and [`RefusalStatus::misleading`] reports
-    /// it so they are told what it costs.
+    /// Parse a comma-separated table, such as `default=403,npm/pnpm=451`.
+    /// `spec` is the table. A status outside 400..=599 is refused.
+    /// Returns the table, or the first entry that does not parse.
     pub fn parse(spec: &str) -> Result<Self, RefusalParseError> {
         let mut table = Self::default();
         for entry in spec.split(',') {
@@ -163,12 +134,8 @@ impl RefusalStatus {
         Ok(table)
     }
 
-    /// The status to answer this client with.
-    ///
-    /// An unrecognised or absent user-agent gets the default. That differs from the
-    /// not-ready codes in §5, where an unknown client falls back to the more widely
-    /// retried option: a denial is meant to be terminal, so there is nothing to retry
-    /// toward.
+    /// The status to answer this client with. `ecosystem` is the registry asked.
+    /// `user_agent` names the client; an unknown or absent one gets the default.
     pub fn for_client(&self, ecosystem: Ecosystem, user_agent: Option<&str>) -> u16 {
         client_name(user_agent)
             .and_then(|name| self.by_client.get(&(ecosystem, name)).copied())
@@ -179,10 +146,7 @@ impl RefusalStatus {
         self.default
     }
 
-    /// Configured statuses that will be read as something other than a denial.
-    ///
-    /// §5 reserves 5xx for the proxy not being ready. A denial wearing one tells an
-    /// operator their registry is broken when it is doing its job.
+    /// Configured statuses of 500 or more, which clients read as the proxy not being ready.
     pub fn misleading(&self) -> Vec<u16> {
         let mut found: Vec<u16> = std::iter::once(self.default)
             .chain(self.by_client.values().copied())
@@ -198,17 +162,11 @@ impl RefusalStatus {
 mod proofs {
     use super::*;
 
-    /// The delimiters, a letter that is not one, and an uppercase letter so the
-    /// lowercasing is exercised.
+    /// The delimiters, a lowercase letter, and an uppercase one for the lowercasing.
     const ALPHABET: [u8; 5] = [b'/', b' ', b'\t', b'n', b'N'];
 
-    /// The rule the per-client table rests on: the client is the **first token**, never a
-    /// substring. `pnpm/10.33.0 npm/? ...` and `yarn/1.22.22 npm/? ...` both contain
-    /// `npm/`, so a name that kept a delimiter, or anything after one, would let one
-    /// client's rule fire for another's request.
-    ///
-    /// Stated as a property of the output rather than a restatement of the split: the
-    /// name contains no delimiter, and it is lowercase.
+    /// A client name contains no delimiter and is lowercase, so `pnpm/10.33.0 npm/?`
+    /// is never read as npm.
     #[kani::proof]
     #[kani::unwind(6)]
     fn a_client_name_is_one_lowercase_token() {
@@ -219,8 +177,7 @@ mod proofs {
         let len: usize = kani::any();
         kani::assume(len <= bytes.len());
 
-        // Every byte is ASCII, so this cannot fail.
-        let ua = core::str::from_utf8(&bytes[..len]).unwrap();
+        let ua = core::str::from_utf8(&bytes[..len]).expect("every byte is ASCII");
 
         let Some(name) = client_name(Some(ua)) else {
             return;
@@ -246,7 +203,7 @@ mod proofs {
         }
         let len: usize = kani::any();
         kani::assume(len <= bytes.len());
-        let ua = core::str::from_utf8(&bytes[..len]).unwrap();
+        let ua = core::str::from_utf8(&bytes[..len]).expect("every byte is ASCII");
 
         assert!(client_name(Some(ua)).is_none());
     }
@@ -329,8 +286,6 @@ mod tests {
     }
 
     /// The key is (ecosystem, client), so one ecosystem's entry does not move the other's.
-    /// `pip` is not an npm client and npm's clients are not pip; an operator who tunes one
-    /// registry's answer has not tuned the other's.
     #[test]
     fn an_entry_applies_to_its_own_ecosystem_only() {
         let table = RefusalStatus::parse("default=403, pypi/pip=451, npm/pnpm=404").unwrap();
