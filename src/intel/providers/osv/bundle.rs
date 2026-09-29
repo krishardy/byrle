@@ -21,7 +21,7 @@ pub const PYPI_STREAM: &str = "osv/pypi";
 pub const MAX_BUNDLE_BYTES: usize = 512 << 20;
 
 /// Bytes past which one record is refused, counted as they decompress, not as declared.
-pub const MAX_RECORD_BYTES: u64 = 1 << 20;
+pub const MAX_RECORD_BYTES: u64 = 16 << 20;
 
 /// What a bundle's records came to.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
