@@ -36,10 +36,11 @@ impl SnapshotIntel {
         id: &str,
         packages: HashSet<Package>,
     ) -> Result<Self, KeptError> {
+        let taken_at = dir.written(id)?;
         let sources = dir.sources(id)?;
         let snapshot = LoadedSnapshot {
             digest: id.to_owned(),
-            taken_at: dir.written(id)?,
+            taken_at,
             sources: sources.iter().map(|(source, _)| source.clone()).collect(),
             streams: Vec::new(),
         };
@@ -50,7 +51,7 @@ impl SnapshotIntel {
             // By index in the advisory table. Aliases are read before affected rows and ranges,
             // so a record has every alias when it is copied to a package.
             let mut records: Vec<Record> = Vec::new();
-            dir.read_source(&source, &digest, |row| {
+            dir.read_source(&source, &digest, &mut |row| {
                 match row {
                     // Every column but `cvss_source` and `exploited` comes from the rows. The
                     // loader writes no `cvss_source`, and `exploited` is marked below.
@@ -558,5 +559,42 @@ mod tests {
         let err = SnapshotIntel::read(&dir, &load::digest(b"no such snapshot"), npm(&[]))
             .expect_err("not kept");
         assert!(matches!(err, KeptError::Io { .. }), "{err:?}");
+    }
+
+    /// A snapshot directory that cannot be named or does not hold the snapshot is an error
+    /// naming why, and so is a snapshot file that no longer matches its id.
+    #[test]
+    fn a_kept_snapshot_that_cannot_be_read_is_an_error() {
+        use crate::env::testing::{with, with_unreadable};
+
+        let Err(unreadable) = super::kept(
+            &with_unreadable(&[], crate::env::SNAPSHOT_DIR),
+            "s",
+            npm(&[]),
+        ) else {
+            panic!("an unreadable variable");
+        };
+        assert!(
+            unreadable.starts_with(crate::env::SNAPSHOT_DIR.name),
+            "{unreadable}"
+        );
+
+        let empty = crate::util::test_support::tempdir("kept-empty");
+        let Err(absent) = super::kept(
+            &with(&[(crate::env::SNAPSHOT_DIR, &empty.display().to_string())]),
+            "sha256:00",
+            npm(&[]),
+        ) else {
+            panic!("no such snapshot");
+        };
+        assert!(absent.contains("sha256:00"), "{absent}");
+
+        let (path, id) = super::testing::kept_path("kept-altered", &[("osv", Vec::new())]);
+        let hex = id.strip_prefix("sha256:").expect("a digest");
+        std::fs::write(path.join(format!("{hex}.snapshot")), "altered\n").expect("writes");
+        let dir = SnapshotDir::open_to_read(&path);
+        assert!(SnapshotIntel::read(&dir, &id, npm(&[])).is_err());
+        let _ = std::fs::remove_dir_all(&empty);
+        let _ = std::fs::remove_dir_all(&path);
     }
 }

@@ -597,4 +597,14 @@ mod tests {
         }
         assert!(set("vers:npm/<=1.0.0").overlaps(&set("vers:npm/>=1.0.0")));
     }
+
+    /// A `%` needs two hex digits after it, and what they decode to has to be UTF-8.
+    #[test]
+    fn a_percent_escape_is_decoded_once() {
+        assert_eq!(percent_decoded("1.0.0%2Bb").as_deref(), Some("1.0.0+b"));
+        assert_eq!(percent_decoded("1.0%"), None, "no digits");
+        assert_eq!(percent_decoded("1%a\u{e9}"), None, "split character");
+        assert_eq!(percent_decoded("1%zz"), None, "not hex");
+        assert_eq!(percent_decoded("%ff"), None, "not UTF-8");
+    }
 }

@@ -614,4 +614,26 @@ mod tests {
             );
         }
     }
+
+    /// A spec with no version after its name is not split, and its entry is not read.
+    #[test]
+    fn a_spec_with_no_version_is_not_split() {
+        assert_eq!(split("@s/b@1.0.0"), Some(("@s/b", "1.0.0")));
+        assert_eq!(split("lodash"), None);
+        assert_eq!(split(""), None);
+        let locked = pnpm("lockfileVersion: '9.0'\npackages:\n  lodash: {}\n  a@1.0.0: {}\n")
+            .expect("reads");
+        assert_eq!(
+            locked
+                .into_iter()
+                .map(|(_, name, _)| name)
+                .collect::<Vec<_>>(),
+            ["a"]
+        );
+    }
+
+    #[test]
+    fn a_bun_lockfile_that_is_not_json_is_an_error() {
+        assert!(bun("{ not json").is_err());
+    }
 }

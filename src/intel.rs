@@ -828,4 +828,14 @@ mod tests {
         assert!(Mal.is_malware("npm", "evil-pkg", "1.0.0"));
         assert!(!Mal.is_malware("npm", "left-pad", "1.0.0"));
     }
+
+    /// A stream this build does not declare is granted nothing.
+    #[test]
+    fn an_unknown_stream_grants_nothing() {
+        let capabilities = capabilities_of(&[recorded("somewhere/else")]);
+        assert_eq!(
+            capabilities.uncovered_by(&["npm"], Capability::Match).len(),
+            1
+        );
+    }
 }

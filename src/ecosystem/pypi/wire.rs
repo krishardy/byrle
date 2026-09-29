@@ -352,4 +352,12 @@ mod tests {
         assert_eq!(Kind::Wheel.as_str(), "wheel");
         assert_eq!(Kind::Sdist.as_str(), "sdist");
     }
+
+    /// A JSON index with no `name` is named by the request.
+    #[test]
+    fn an_index_with_no_name_is_named_by_the_request() {
+        let body = br#"{"meta": {"api-version": "1.1"}, "files": [
+            {"filename": "Requests-1.0.tar.gz", "url": "https://f/r-1.0.tar.gz", "hashes": {"sha256": "aa"}}]}"#;
+        assert_eq!(parse("Requests", body).expect("reads").name, "requests");
+    }
 }

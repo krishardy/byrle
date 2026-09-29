@@ -157,14 +157,9 @@ pub fn classify_path(path: &str) -> RequestTarget {
         if name.contains('/') {
             return artifact(name.rsplit('/').next().unwrap_or_default());
         }
-        let normalised = normalise(name);
-        if normalised.is_empty() {
-            return RequestTarget::Other;
-        }
-        return match PackageKey::from_registry_name(Ecosystem::PyPI, &normalised) {
-            Ok(key) => RequestTarget::Metadata(key),
-            Err(_) => RequestTarget::Other,
-        };
+        // An empty name is refused by the name rule.
+        return PackageKey::from_registry_name(Ecosystem::PyPI, name)
+            .map_or(RequestTarget::Other, RequestTarget::Metadata);
     }
 
     let Some(rest) = path.strip_prefix("packages/") else {
@@ -175,17 +170,18 @@ pub fn classify_path(path: &str) -> RequestTarget {
 
 /// The request for one file, named by a filename this build can read a version out of.
 fn artifact(filename: &str) -> RequestTarget {
-    let Some((name, version, _)) = filename_parts(filename) else {
-        return RequestTarget::Other;
-    };
-    match PackageKey::from_registry_name(Ecosystem::PyPI, &name) {
-        Ok(key) => RequestTarget::Artifact {
-            key,
-            claimed_version: version,
-            filename: filename.to_owned(),
-        },
-        Err(_) => RequestTarget::Other,
-    }
+    // `filename_parts` gives a non-empty name with no `/`, which the name rule accepts.
+    filename_parts(filename)
+        .and_then(|(name, version, _)| {
+            PackageKey::from_registry_name(Ecosystem::PyPI, &name)
+                .ok()
+                .map(|key| RequestTarget::Artifact {
+                    key,
+                    claimed_version: version,
+                    filename: filename.to_owned(),
+                })
+        })
+        .unwrap_or(RequestTarget::Other)
 }
 
 #[cfg(test)]
@@ -365,5 +361,15 @@ mod tests {
         ] {
             assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
         }
+    }
+
+    /// An sdist name with no `-` names no version.
+    #[test]
+    fn an_sdist_with_no_version_is_not_read() {
+        assert_eq!(filename_parts("requests.tar.gz"), None);
+        assert_eq!(
+            classify_path("packages/ab/requests.tar.gz"),
+            RequestTarget::Other
+        );
     }
 }

@@ -74,9 +74,9 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
                 continue;
             }
         };
-        let Some(file) = project.preferred(version) else {
-            continue;
-        };
+        let file = project
+            .preferred(version)
+            .expect("every version is read from a file");
         // Wheels before sdists, so the first is the file a resolver would take. Each
         // keeps its own digest and its own install-scripts answer, because a request
         // names a file and this record is about a version.

@@ -69,7 +69,14 @@ pub enum IndexFormat {
 /// `application/json; charset=UTF-8` and `Application/JSON` both give `application/json`.
 /// Every ecosystem's reader compares against a constant, so they all start here.
 pub fn media_type(content_type: Option<&str>) -> Option<String> {
-    Some(content_type?.split(';').next()?.trim().to_ascii_lowercase())
+    content_type.map(|value| {
+        value
+            .split(';')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+    })
 }
 
 /// Which ecosystem answers this request path, and what the path refers to.

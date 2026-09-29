@@ -329,4 +329,40 @@ mod tests {
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
     }
+
+    /// A stream's tally is printed before the rows written.
+    #[test]
+    fn a_tally_is_printed_first() {
+        use crate::intel::providers::osv::bundle::Tally;
+        use crate::intel::stream::Payload;
+
+        let loaded = super::super::fetch::Loaded {
+            source: "osv",
+            payload: Payload::Advisories(Vec::new()),
+            tally: Some(Tally {
+                malware: 1,
+                ..Tally::default()
+            }),
+            streams: [StreamDigest {
+                stream: "osv/npm".to_owned(),
+                sha256: "aa".to_owned(),
+                etag: None,
+                last_modified: None,
+            }],
+        };
+        let written = crate::intel::postgres::Loaded {
+            advisories: 1,
+            aliases: 0,
+            affected: 0,
+            ranges: 0,
+            exploited: 0,
+            snapshot: "sha256:ab".to_owned(),
+            manifest: String::new(),
+        };
+        let printed = report(&[loaded], &written, None);
+        assert_eq!(
+            printed.lines().next(),
+            Some("stored: malware                         1")
+        );
+    }
 }

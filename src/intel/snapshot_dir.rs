@@ -128,8 +128,8 @@ impl SnapshotDir {
             .truncate(false)
             .write(true)
             .open(&lock_path)
+            .and_then(|lock| lock.lock().map(|()| lock))
             .map_err(at(&lock_path))?;
-        lock.lock().map_err(at(&lock_path))?;
         Ok(Self {
             path: path.to_owned(),
             _lock: Some(lock),
@@ -150,13 +150,14 @@ impl SnapshotDir {
 
     /// Write one source's rows, unless a file with that digest is already there.
     pub fn write_rows(&self, encoded: &Encoded) -> Result<PathBuf, KeptError> {
-        let path = self.file(&encoded.digest, ROWS)?;
+        let path = self.digest_file(&encoded.digest, ROWS);
         if !path.exists() {
             let mut gzip =
                 flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
-            gzip.write_all(&encoded.bytes).map_err(at(&path))?;
-            let bytes = gzip.finish().map_err(at(&path))?;
-            replace(&path, &bytes)?;
+            gzip.write_all(&encoded.bytes)
+                .and_then(|()| gzip.finish())
+                .map_err(at(&path))
+                .and_then(|bytes| replace(&path, &bytes))?;
         }
         Ok(path)
     }
@@ -166,7 +167,7 @@ impl SnapshotDir {
     /// Written again when it exists, so its modification time is that of the last refresh
     /// that loaded it. [`SnapshotDir::prune`] keeps by that time.
     pub fn write_snapshot(&self, manifest: &str) -> Result<PathBuf, KeptError> {
-        let path = self.file(&load::snapshot_id(manifest), SNAPSHOT)?;
+        let path = self.digest_file(&load::snapshot_id(manifest), SNAPSHOT);
         for (source, digest) in lines(&path, manifest)? {
             if !self.file(digest, ROWS)?.exists() {
                 return Err(KeptError::Missing {
@@ -181,15 +182,29 @@ impl SnapshotDir {
 
     /// A snapshot's manifest, checked against `id`.
     pub fn read_snapshot(&self, id: &str) -> Result<String, KeptError> {
+        self.manifest(id).map(|(_, manifest, _)| manifest)
+    }
+
+    /// Snapshot `id`'s path, its manifest checked against `id`, and the manifest's lines.
+    #[allow(clippy::type_complexity)]
+    fn manifest(&self, id: &str) -> Result<(PathBuf, String, Vec<(String, String)>), KeptError> {
         let path = self.file(id, SNAPSHOT)?;
         let manifest = fs::read_to_string(&path).map_err(at(&path))?;
         check(&path, load::snapshot_id(&manifest), id)?;
-        lines(&path, &manifest)?;
-        Ok(manifest)
+        let named = lines(&path, &manifest)?
+            .into_iter()
+            .map(|(source, digest)| (source.to_owned(), digest.to_owned()))
+            .collect();
+        Ok((path, manifest, named))
     }
 
     /// One source's encoded rows, checked against `digest`.
     pub fn read_rows(&self, digest: &str) -> Result<Vec<u8>, KeptError> {
+        self.rows(digest).map(|(_, bytes)| bytes)
+    }
+
+    /// [`SnapshotDir::read_rows`], and the file they were read from.
+    fn rows(&self, digest: &str) -> Result<(PathBuf, Vec<u8>), KeptError> {
         let path = self.file(digest, ROWS)?;
         let mut file = File::open(&path).map_err(at(&path))?;
         // A gzip file ends with the length of what it contains, modulo 2^32. It is read before
@@ -210,17 +225,12 @@ impl SnapshotDir {
             .read_to_end(&mut bytes)
             .map_err(at(&path))?;
         check(&path, load::digest(&bytes), digest)?;
-        Ok(bytes)
+        Ok((path, bytes))
     }
 
     /// Each source snapshot `id` names, with the digest of its rows.
     pub fn sources(&self, id: &str) -> Result<Vec<(String, String)>, KeptError> {
-        let manifest = self.read_snapshot(id)?;
-        let path = self.file(id, SNAPSHOT)?;
-        Ok(lines(&path, &manifest)?
-            .into_iter()
-            .map(|(source, digest)| (source.to_owned(), digest.to_owned()))
-            .collect())
+        self.manifest(id).map(|(_, _, named)| named)
     }
 
     /// One source's rows, checked against `digest` and against the source named, given to
@@ -229,10 +239,9 @@ impl SnapshotDir {
         &self,
         source: &str,
         digest: &str,
-        mut each: impl FnMut(Row) -> Result<(), KeptError>,
+        each: &mut dyn FnMut(Row) -> Result<(), KeptError>,
     ) -> Result<(), KeptError> {
-        let bytes = self.read_rows(digest)?;
-        let path = self.file(digest, ROWS)?;
+        let (path, bytes) = self.rows(digest)?;
         let undecodable = |reason: String| KeptError::Undecodable {
             path: path.clone(),
             reason,
@@ -257,18 +266,26 @@ impl SnapshotDir {
         let modified = fs::metadata(&path)
             .and_then(|m| m.modified())
             .map_err(at(&path))?;
-        jiff::Timestamp::try_from(modified)
-            .and_then(|t| jiff::Timestamp::from_second(t.as_second()))
-            .map(|t| t.to_string())
-            .map_err(|e| at(&path)(io::Error::other(e)))
+        // A time past jiff's range, years -9999 to 9999, reads as the end of it. The
+        // filesystems this runs on store neither end.
+        let written = jiff::Timestamp::try_from(modified).unwrap_or(jiff::Timestamp::MAX);
+        Ok(jiff::Timestamp::from_second(written.as_second())
+            .unwrap_or(written)
+            .to_string())
     }
 
     /// Keep the `limit` newest snapshots and the rows files they name. Remove every other
     /// snapshot and rows file, and any file a write left partial. Other files are left alone.
     pub fn prune(&self, limit: usize) -> Result<Pruned, KeptError> {
         let (mut snapshots, mut rows) = (Vec::new(), Vec::new());
-        for entry in fs::read_dir(&self.path).map_err(at(&self.path))? {
-            let path = entry.map_err(at(&self.path))?.path();
+        let paths = fs::read_dir(&self.path)
+            .and_then(|entries| {
+                entries
+                    .map(|entry| entry.map(|entry| entry.path()))
+                    .collect::<io::Result<Vec<_>>>()
+            })
+            .map_err(at(&self.path))?;
+        for path in paths {
             let name = path.to_string_lossy();
             if name.ends_with(SNAPSHOT) {
                 let modified = fs::metadata(&path)
@@ -302,6 +319,12 @@ impl SnapshotDir {
         })
     }
 
+    /// [`SnapshotDir::file`] for a digest this build computed, which is always one.
+    fn digest_file(&self, digest: &str, suffix: &str) -> PathBuf {
+        self.file(digest, suffix)
+            .expect("load::digest writes `sha256:` and 64 lowercase hex digits")
+    }
+
     /// `<hex><suffix>` in the directory. Only `sha256:` and 64 lowercase hex digits make a
     /// name, so no other value, such as one given on a command line, reaches a path.
     fn file(&self, digest: &str, suffix: &str) -> Result<PathBuf, KeptError> {
@@ -331,9 +354,8 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<(), KeptError> {
     let mut partial = path.as_os_str().to_owned();
     partial.push(PARTIAL);
     let partial = PathBuf::from(partial);
-    let mut file = File::create(&partial).map_err(at(&partial))?;
-    file.write_all(bytes)
-        .and_then(|()| file.sync_all())
+    File::create(&partial)
+        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
         .map_err(at(&partial))?;
     fs::rename(&partial, path).map_err(at(path))
 }
@@ -753,7 +775,7 @@ mod tests {
 
         let mut read = Vec::new();
         let err = dir
-            .read_source("other", &osv.digest, |row| {
+            .read_source("other", &osv.digest, &mut |row| {
                 read.push(row);
                 Ok(())
             })
@@ -766,7 +788,7 @@ mod tests {
                 named(&path, &osv.digest, ".rows.gz").display()
             )
         );
-        dir.read_source("osv", &osv.digest, |row| {
+        dir.read_source("osv", &osv.digest, &mut |row| {
             read.push(row);
             Ok(())
         })
@@ -794,5 +816,222 @@ mod tests {
                 .starts_with(&format!("{}: ", under.display())),
             "{err}"
         );
+    }
+
+    /// A directory this process cannot write, restored so the test can remove it.
+    struct ReadOnly<'a>(&'a Path);
+
+    impl<'a> ReadOnly<'a> {
+        fn new(path: &'a Path) -> Self {
+            set_mode(path, 0o555);
+            Self(path)
+        }
+    }
+
+    impl Drop for ReadOnly<'_> {
+        fn drop(&mut self) {
+            set_mode(self.0, 0o755);
+        }
+    }
+
+    fn set_mode(path: &Path, mode: u32) {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("sets the mode");
+    }
+
+    /// Rows kept under the digest of `content`, which need not decode.
+    fn kept_rows(dir: &Path, content: &[u8]) -> String {
+        let digest = load::digest(content);
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(content).expect("compresses");
+        fs::write(named(dir, &digest, ROWS), gzip.finish().expect("finishes")).expect("writes");
+        digest
+    }
+
+    /// Nothing is written into a directory this process cannot write: not the lock, not
+    /// rows, not a snapshot.
+    #[test]
+    fn a_directory_that_cannot_be_written_is_an_error_naming_the_file() {
+        let path = tempdir("kept-read-only");
+        let dir = SnapshotDir::open(&path).expect("opens");
+        let kept = encoded("osv", &["MAL-1"]);
+        dir.write_rows(&kept).expect("writes rows");
+        drop(dir);
+        fs::remove_file(path.join(LOCK)).expect("removes the lock");
+        let dir = SnapshotDir::open_to_read(&path);
+
+        let _read_only = ReadOnly::new(&path);
+        let Err(lock) = SnapshotDir::open(&path) else {
+            panic!("the lock cannot be made");
+        };
+        assert!(
+            lock.to_string()
+                .starts_with(&path.join(LOCK).display().to_string()),
+            "{lock}"
+        );
+        let rows = dir
+            .write_rows(&encoded("osv", &["MAL-2"]))
+            .expect_err("rows cannot be written");
+        assert!(matches!(rows, KeptError::Io { .. }), "{rows}");
+        let snapshot = dir
+            .write_snapshot(&manifest_of(&[&kept]))
+            .expect_err("the snapshot cannot be written");
+        assert!(matches!(snapshot, KeptError::Io { .. }), "{snapshot}");
+    }
+
+    /// A snapshot whose name is taken by a directory with something in it is not replaced.
+    #[test]
+    fn a_snapshot_that_cannot_be_moved_into_place_is_an_error() {
+        let path = tempdir("kept-rename");
+        let dir = SnapshotDir::open(&path).expect("opens");
+        let kept = encoded("osv", &["MAL-1"]);
+        dir.write_rows(&kept).expect("writes rows");
+        let manifest = manifest_of(&[&kept]);
+        let taken = named(&path, &load::snapshot_id(&manifest), SNAPSHOT);
+        fs::create_dir_all(taken.join("inside")).expect("makes a directory");
+        let err = dir
+            .write_snapshot(&manifest)
+            .expect_err("the name is taken");
+        assert!(matches!(err, KeptError::Io { .. }), "{err}");
+    }
+
+    /// A manifest line whose digest is not one is refused before any file is looked for.
+    #[test]
+    fn a_manifest_naming_something_that_is_not_a_digest_is_refused() {
+        let path = tempdir("kept-not-a-digest");
+        let dir = SnapshotDir::open(&path).expect("opens");
+        let err = dir
+            .write_snapshot("osv sha256:nope\n")
+            .expect_err("not a digest");
+        assert!(matches!(err, KeptError::NotADigest(_)), "{err}");
+    }
+
+    /// Rows that are missing, are not gzip, do not decode, stop decoding partway, or are
+    /// refused by the reader, each fail the read.
+    #[test]
+    fn rows_that_cannot_be_read_or_decoded_are_errors() {
+        let path = tempdir("kept-rows-errors");
+        let dir = SnapshotDir::open(&path).expect("opens");
+
+        let missing = dir
+            .read_rows(&load::digest(b"never written"))
+            .expect_err("no file");
+        assert!(matches!(missing, KeptError::Io { .. }), "{missing}");
+
+        let not_gzip = load::digest(b"not gzip");
+        fs::write(named(&path, &not_gzip, ROWS), b"plain text, not gzip").expect("writes");
+        let err = dir.read_rows(&not_gzip).expect_err("not gzip");
+        assert!(matches!(err, KeptError::Io { .. }), "{err}");
+
+        let err = dir
+            .read_source("osv", &load::digest(b"never written"), &mut |_| Ok(()))
+            .expect_err("no file");
+        assert!(matches!(err, KeptError::Io { .. }), "{err}");
+
+        let garbage = kept_rows(&path, b"not a rows file\n");
+        let err = dir
+            .read_source("osv", &garbage, &mut |_| Ok(()))
+            .expect_err("no header");
+        assert!(matches!(err, KeptError::Undecodable { .. }), "{err}");
+
+        let whole = encoded("osv", &["MAL-1", "MAL-2"]);
+        let cut = kept_rows(&path, &whole.bytes[..whole.bytes.len() - 2]);
+        let err = dir
+            .read_source("osv", &cut, &mut |_| Ok(()))
+            .expect_err("cut short");
+        assert!(matches!(err, KeptError::Undecodable { .. }), "{err}");
+
+        dir.write_rows(&whole).expect("writes rows");
+        let err = dir
+            .read_source("osv", &whole.digest, &mut |_| {
+                Err(KeptError::NotADigest("refused by the reader".to_owned()))
+            })
+            .expect_err("the reader refuses");
+        assert!(matches!(err, KeptError::NotADigest(_)), "{err}");
+    }
+
+    /// A prune of a directory that is gone, or one holding a snapshot it cannot read, stops
+    /// with the path it could not read.
+    #[test]
+    fn a_prune_that_cannot_read_what_it_keeps_is_an_error() {
+        let gone = SnapshotDir::open_to_read(&tempdir("kept-prune-gone").join("absent"));
+        assert!(matches!(gone.prune(1), Err(KeptError::Io { .. })));
+
+        let dangling = tempdir("kept-prune-dangling");
+        std::os::unix::fs::symlink(dangling.join("nowhere"), dangling.join("a.snapshot"))
+            .expect("links");
+        let err = SnapshotDir::open_to_read(&dangling)
+            .prune(1)
+            .expect_err("a dangling snapshot");
+        assert!(matches!(err, KeptError::Io { .. }), "{err}");
+
+        for (label, content, is_expected) in [
+            (
+                "kept-prune-not-a-line",
+                "no-space-at-all\n",
+                (|err: &KeptError| matches!(err, KeptError::NotALine { .. }))
+                    as fn(&KeptError) -> bool,
+            ),
+            ("kept-prune-not-a-digest", "osv sha256:nope\n", |err| {
+                matches!(err, KeptError::NotADigest(_))
+            }),
+        ] {
+            let path = tempdir(label);
+            fs::write(path.join("a.snapshot"), content).expect("writes");
+            let err = SnapshotDir::open_to_read(&path)
+                .prune(1)
+                .expect_err("an unreadable manifest");
+            assert!(is_expected(&err), "{label}: {err}");
+        }
+
+        let unreadable = tempdir("kept-prune-directory");
+        fs::create_dir(unreadable.join("a.snapshot")).expect("makes a directory");
+        let err = SnapshotDir::open_to_read(&unreadable)
+            .prune(1)
+            .expect_err("a snapshot that is a directory");
+        assert!(matches!(err, KeptError::Io { .. }), "{err}");
+    }
+
+    /// What a prune removes and cannot, it reports: a leftover partial file, or a snapshot
+    /// past the limit, that is a directory.
+    #[test]
+    fn a_prune_that_cannot_remove_a_file_is_an_error() {
+        let partial = tempdir("kept-prune-partial");
+        fs::create_dir(partial.join("a.partial")).expect("makes a directory");
+        assert!(matches!(
+            SnapshotDir::open_to_read(&partial).prune(1),
+            Err(KeptError::Io { .. })
+        ));
+
+        let past = tempdir("kept-prune-past");
+        fs::create_dir(past.join("a.snapshot")).expect("makes a directory");
+        assert!(matches!(
+            SnapshotDir::open_to_read(&past).prune(0),
+            Err(KeptError::Io { .. })
+        ));
+    }
+
+    /// Two snapshots written in the same second are ordered by name, so two prunes agree.
+    #[test]
+    fn snapshots_written_together_are_kept_by_name() {
+        let path = tempdir("kept-prune-tie");
+        let dir = SnapshotDir::open(&path).expect("opens");
+        let (a, b) = (encoded("osv", &["MAL-1"]), encoded("osv", &["MAL-2"]));
+        let mut written = Vec::new();
+        for kept in [&a, &b] {
+            dir.write_rows(kept).expect("writes rows");
+            written.push(dir.write_snapshot(&manifest_of(&[kept])).expect("writes"));
+        }
+        let at = SystemTime::now() - Duration::from_secs(60);
+        for snapshot in &written {
+            File::options()
+                .write(true)
+                .open(snapshot)
+                .and_then(|file| file.set_modified(at))
+                .expect("sets the time");
+        }
+        written.sort();
+        dir.prune(1).expect("prunes");
+        assert!(written[0].exists() && !written[1].exists());
     }
 }

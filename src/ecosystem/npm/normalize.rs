@@ -1043,4 +1043,21 @@ mod tests {
             "pkg:npm/AdultJS@1.0.0"
         );
     }
+
+    /// A version key that is empty is skipped with the reason, and the rest are read.
+    #[test]
+    fn an_empty_version_key_is_skipped() {
+        let body =
+            br#"{"name": "a", "versions": {" ": {"dist": {"tarball": "https://r/a/-/a-1.0.0.tgz"}},
+            "1.0.0": {"dist": {"tarball": "https://r/a/-/a-1.0.0.tgz"}}}}"#;
+        let metadata = normalize_packument(body, DocumentDetail::Abbreviated).expect("reads");
+        assert_eq!(metadata.records.len(), 1);
+        assert_eq!(metadata.skipped.len(), 1);
+        assert_eq!(metadata.skipped[0].version, " ");
+        assert!(
+            metadata.skipped[0].reason.contains("empty version"),
+            "{:?}",
+            metadata.skipped
+        );
+    }
 }

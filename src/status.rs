@@ -79,37 +79,28 @@ fn adapter(registry: &Registry, upstreams: &Upstreams) -> String {
     line(
         &mut out,
         "checks",
-        match not_applicable.is_empty() {
-            true => "every one applies".to_owned(),
-            false => format!("no meaning here: {}", not_applicable.join(", ")),
-        },
+        joined(&not_applicable).map_or("every one applies".to_owned(), |rules| {
+            format!("no meaning here: {rules}")
+        }),
     );
     line(
         &mut out,
         "clients",
-        match registry.clients.is_empty() {
-            true => "none checked by doctor".to_owned(),
-            false => registry
-                .clients
-                .iter()
-                .map(|client| client.name)
-                .collect::<Vec<_>>()
-                .join(", "),
-        },
+        joined(&registry.clients.iter().map(|c| c.name).collect::<Vec<_>>())
+            .unwrap_or("none checked by doctor".to_owned()),
     );
     // Written by this ecosystem's clients, npm and pip and the rest, not by the registry.
     line(
         &mut out,
         "client lockfiles",
-        match registry.lockfiles.is_empty() {
-            true => "none read".to_owned(),
-            false => registry
+        joined(
+            &registry
                 .lockfiles
                 .iter()
-                .map(|lockfile| lockfile.name)
-                .collect::<Vec<_>>()
-                .join(", "),
-        },
+                .map(|l| l.name)
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or("none read".to_owned()),
     );
     out
 }
@@ -126,10 +117,8 @@ fn intel(registry: &Registry, snapshot: Option<&LoadedSnapshot>) -> String {
         out,
         "  {:<16} {}",
         "streams",
-        match listed.is_empty() {
-            true => "none: this ecosystem is served with nothing to decide on".to_owned(),
-            false => listed.join(", "),
-        }
+        joined(&listed)
+            .unwrap_or("none: this ecosystem is served with nothing to decide on".to_owned())
     );
     let Some(snapshot) = snapshot else {
         return out;
@@ -144,10 +133,7 @@ fn intel(registry: &Registry, snapshot: Option<&LoadedSnapshot>) -> String {
         out,
         "  {:<16} {}",
         "loaded",
-        match loaded.is_empty() {
-            true => "none of them".to_owned(),
-            false => loaded.join(", "),
-        }
+        joined(&loaded).unwrap_or("none of them".to_owned())
     );
     let capabilities = capabilities_of(&snapshot.streams);
     let missing: Vec<&str> = [Capability::Match, Capability::Malware, Capability::Enrich]
@@ -163,12 +149,14 @@ fn intel(registry: &Registry, snapshot: Option<&LoadedSnapshot>) -> String {
         out,
         "  {:<16} {}",
         "not covered",
-        match missing.is_empty() {
-            true => "nothing: every capability has a stream".to_owned(),
-            false => missing.join(", "),
-        }
+        joined(&missing).unwrap_or("nothing: every capability has a stream".to_owned())
     );
     out
+}
+
+/// `items` separated by commas, `None` when there are none.
+fn joined(items: &[&str]) -> Option<String> {
+    (!items.is_empty()).then(|| items.join(", "))
 }
 
 #[cfg(test)]
@@ -251,5 +239,11 @@ mod tests {
         let out = report(&upstreams, None);
         assert!(!out.contains("secret"), "{out}");
         assert!(out.contains("https://example.test/simple"), "{out}");
+    }
+
+    #[test]
+    fn nothing_listed_is_none() {
+        assert_eq!(joined(&[]), None);
+        assert_eq!(joined(&["a", "b"]).as_deref(), Some("a, b"));
     }
 }
