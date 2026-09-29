@@ -4,7 +4,6 @@ src/analysis/postgres.rs
 src/analysis/run.rs
 src/analysis.rs
 src/audit.rs
-src/cli.rs
 src/doctor.rs
 src/ecosystem/npm/normalize.rs
 src/ecosystem/npm/rewrite.rs
