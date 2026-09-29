@@ -59,6 +59,7 @@ code, and the file names where.
 | [Every log value is a field with an OpenTelemetry name, and the daemon can write OpenTelemetry log records](structured-logs.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
 | [The coverage floor counts library code, not tests](coverage-counts-library-code-only.md) | Implemented |
+| [Three kinds of source comment](source-comments.md) | Implemented, files leaving the baseline |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
 | [GitHub Advisory is a signal stream beside OSV](github-advisory-signal-stream.md) | Decided, being built |
