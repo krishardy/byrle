@@ -234,6 +234,8 @@ adapter contributions are the scarce resource.
   semantics, the threat model, and milestones.
 * [docs/request-flow.md](docs/request-flow.md) charts how the proxy answers a request,
   and when it returns each status code.
+* [docs/fronting-tls.md](docs/fronting-tls.md) puts the proxy behind Caddy or nginx on
+  TLS, with configurations `make smoke-tls-front` tests.
 * [docs/break-glass.md](docs/break-glass.md) says how to install when the proxy is down,
   and how to release a package it refuses without a restart.
 * [docs/threat-model.md](docs/threat-model.md) says what waharoa defends against, what it
