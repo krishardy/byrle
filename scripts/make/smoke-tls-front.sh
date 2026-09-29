@@ -54,6 +54,8 @@ nginx_conf() {
     printf '        ssl_certificate %s;\n        ssl_certificate_key %s;\n' "$workdir/cert.pem" "$workdir/key.pem"
     printf '        location / {\n            proxy_pass http://127.0.0.1:%s;\n' "$proxy_port"
     printf '            proxy_http_version 1.1;\n'
+    # nginx's variable, written as it is.
+    # shellcheck disable=SC2016
     printf '            proxy_set_header Host $http_host;\n'
     printf '            proxy_set_header X-Forwarded-Proto https;\n'
     printf '            proxy_buffering off;\n'
