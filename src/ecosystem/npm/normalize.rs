@@ -187,6 +187,7 @@ fn provenance(entry: &WireVersion, dist: &WireDist) -> Provenance {
             .as_ref()
             .and_then(|u| u.trusted_publisher.as_ref())
             .map(|t| TrustedPublisher { id: t.id.clone() }),
+        publisher: entry.npm_user.as_ref().and_then(|u| u.name.clone()),
     }
 }
 

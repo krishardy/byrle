@@ -16,6 +16,7 @@ pub mod explain;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod golden;
+pub mod heuristics;
 pub mod http;
 pub mod identity;
 pub mod integrity;

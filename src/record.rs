@@ -117,6 +117,8 @@ pub struct Provenance {
     pub registry_signatures: Vec<RegistrySignature>,
     /// `_npmUser.trustedPublisher`, an OIDC publisher such as GitHub Actions. Full only.
     pub trusted_publisher: Option<TrustedPublisher>,
+    /// `_npmUser.name`, the account that published this version. Full only.
+    pub publisher: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

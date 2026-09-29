@@ -3,6 +3,7 @@
 //! metadata request: see docs/engineering_decisions/no-metadata-cache.md.
 
 use crate::analysis::attestation::{Previous, previous};
+use crate::heuristics::{Signal, signals};
 use crate::identity::PackageKey;
 use crate::policy::facts::PublishTimes;
 use crate::record::{PackageMetadata, PackageRecord};
@@ -144,6 +145,26 @@ impl RecordStore {
         self.entries.get(key).map_or(Previous::Unknown, |entry| {
             previous(&entry.metadata.records, version, times, window)
         })
+    }
+
+    /// What the metadata heuristics report for `record`, against the document held for its
+    /// package and the names of the other packages held in its ecosystem.
+    /// `now` is when they are asked for. Does not count as a use.
+    pub fn signals(&self, record: &PackageRecord, now: jiff::Timestamp) -> Vec<Signal> {
+        let key = record.package.key();
+        let records = self
+            .entries
+            .get(key)
+            .map_or(std::slice::from_ref(record), |entry| {
+                &entry.metadata.records
+            });
+        let served: Vec<String> = self
+            .entries
+            .keys()
+            .filter(|held| held.ecosystem() == key.ecosystem())
+            .map(PackageKey::registry_name)
+            .collect();
+        signals(records, record, served.iter().map(String::as_str), now)
     }
 
     /// Drop least recently used packages until the budget is met, keeping the most recent,
@@ -374,6 +395,49 @@ mod tests {
         assert!(
             store.records() > store.max_records,
             "the budget is a target, and this case is why"
+        );
+    }
+
+    /// Near names come from the other packages held in the same ecosystem. A record whose
+    /// package is not held is judged on itself.
+    #[test]
+    fn signals_compare_names_held_in_the_same_ecosystem() {
+        use crate::heuristics::Signal;
+        let mut store = RecordStore::new(100);
+        store.insert(packument("express", &["1.0.0"]));
+        store.insert(packument("expres", &["1.0.0"]));
+        store.insert(PackageMetadata {
+            key: PackageKey::from_registry_name(crate::identity::Ecosystem::PyPI, "expresz")
+                .unwrap(),
+            latest: None,
+            records: Vec::new(),
+            skipped: Vec::new(),
+        });
+        let now = jiff::Timestamp::now();
+        let expres = packument("expres", &["1.0.0"]).records.remove(0);
+        assert_eq!(
+            store.signals(&expres, now),
+            [Signal::NearName {
+                served: "express".to_owned()
+            }]
+        );
+        let unheld = packument("lodash", &["1.0.0"]).records.remove(0);
+        assert_eq!(store.signals(&unheld, now), []);
+
+        let mut taken = packument("taken", &["1.0.0", "1.0.1"]);
+        for (record, (days, publisher)) in taken.records.iter_mut().zip([(400, "ana"), (1, "eve")])
+        {
+            record.published_at = Some(now - jiff::SignedDuration::from_hours(24 * days));
+            record.provenance.publisher = Some(publisher.to_owned());
+        }
+        let latest = taken.records[1].clone();
+        store.insert(taken);
+        assert_eq!(
+            store.signals(&latest, now),
+            [Signal::NewPublisher {
+                publisher: "eve".to_owned()
+            }],
+            "the held document names the earlier publisher"
         );
     }
 }

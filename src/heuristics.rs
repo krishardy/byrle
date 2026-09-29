@@ -1,0 +1,286 @@
+//! Signals about a package version from its metadata: reported in the log, the audit line
+//! and `explain`, and never refused on until their false-positive rates are measured.
+//!
+//! See docs/engineering_decisions/metadata-heuristics.md.
+
+use crate::identity::Ecosystem;
+use crate::record::{DocumentDetail, PackageRecord};
+
+/// A package whose first version is younger than this is new.
+pub const NEW_PACKAGE_DAYS: i64 = 30;
+
+/// Names shorter than this are not compared, since most short names are one edit apart.
+pub const MIN_COMPARED_NAME: usize = 4;
+
+/// One signal, as the log and the audit line name it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Signal {
+    /// The first version was published this many days ago, under [`NEW_PACKAGE_DAYS`].
+    NewPackage { days: i64 },
+    /// No earlier version of the package was published by this account.
+    NewPublisher { publisher: String },
+    /// The npm document names no source repository for this version.
+    NoRepository,
+    /// A served package's name is one edit away, or the same name in another case.
+    NearName { served: String },
+}
+
+impl std::fmt::Display for Signal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NewPackage { days: 1 } => f.write_str("new package: first published 1 day ago"),
+            Self::NewPackage { days } => write!(f, "new package: first published {days} days ago"),
+            Self::NewPublisher { publisher } => {
+                write!(f, "new publisher: {publisher} published no earlier version")
+            }
+            Self::NoRepository => f.write_str("no repository: the metadata names none"),
+            Self::NearName { served } => {
+                write!(f, "near name: one edit from `{served}`, served here")
+            }
+        }
+    }
+}
+
+/// The signals for `record`, one version of the package whose held records are `records`.
+/// `served` are the names of other packages this proxy has served in the same ecosystem,
+/// and `now` is when the signals are asked for.
+/// Returns them in the order [`Signal`] declares.
+pub fn signals<'a>(
+    records: &[PackageRecord],
+    record: &PackageRecord,
+    served: impl IntoIterator<Item = &'a str>,
+    now: jiff::Timestamp,
+) -> Vec<Signal> {
+    let mut found = Vec::new();
+    let first = records.iter().filter_map(|r| r.published_at).min();
+    if let Some(days) = first.map(|first| now.duration_since(first).as_hours().max(0) / 24)
+        && days < NEW_PACKAGE_DAYS
+    {
+        found.push(Signal::NewPackage { days });
+    }
+    if let Some(publisher) = new_publisher(records, record) {
+        found.push(Signal::NewPublisher { publisher });
+    }
+    let key = record.package.key();
+    if key.ecosystem() == Ecosystem::Npm
+        && record.detail == DocumentDetail::Full
+        && record.repository.is_none()
+    {
+        found.push(Signal::NoRepository);
+    }
+    let name = key.registry_name();
+    found.extend(
+        served
+            .into_iter()
+            .filter(|served| near(&name, served))
+            .map(|served| Signal::NearName {
+                served: served.to_owned(),
+            }),
+    );
+    found
+}
+
+/// The publisher of `record` when earlier versions name publishers and none is it.
+/// `records` are the package's held versions.
+/// Returns `None` when nothing earlier names a publisher, or one of them is this one.
+fn new_publisher(records: &[PackageRecord], record: &PackageRecord) -> Option<String> {
+    let publisher = record.provenance.publisher.as_deref()?;
+    let published = record.published_at?;
+    let earlier: Vec<&str> = records
+        .iter()
+        .filter(|r| r.published_at.is_some_and(|at| at < published))
+        .filter_map(|r| r.provenance.publisher.as_deref())
+        .collect();
+    (!earlier.is_empty() && !earlier.contains(&publisher)).then(|| publisher.to_owned())
+}
+
+/// Whether two names, both at least [`MIN_COMPARED_NAME`] long, differ yet are one edit
+/// apart once lowercased. `name` and `other` are registry names.
+fn near(name: &str, other: &str) -> bool {
+    name != other
+        && name.chars().count() >= MIN_COMPARED_NAME
+        && other.chars().count() >= MIN_COMPARED_NAME
+        && within_one_edit(&name.to_lowercase(), &other.to_lowercase())
+}
+
+/// Whether `a` becomes `b` by at most one insertion, deletion or substitution.
+fn within_one_edit(a: &str, b: &str) -> bool {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let (short, long) = if a.len() <= b.len() { (a, b) } else { (b, a) };
+    let prefix = short.iter().zip(&long).take_while(|(x, y)| x == y).count();
+    if prefix == long.len() {
+        return true;
+    }
+    let rest = if short.len() == long.len() {
+        prefix + 1
+    } else {
+        prefix
+    };
+    short[rest..] == long[prefix + 1..]
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::ecosystem::npm::normalize::normalize_packument;
+
+    /// A full npm packument for `name` whose versions are each a version, days before
+    /// 2026-09-29, a publisher, and whether it names a repository.
+    fn document(name: &str, versions: &[(&str, i64, &str, bool)]) -> Vec<PackageRecord> {
+        let now = now();
+        let mut times = Vec::new();
+        let mut entries = Vec::new();
+        for (version, days, publisher, repository) in versions {
+            let at = now - jiff::SignedDuration::from_hours(24 * days);
+            times.push(format!(r#""{version}":"{at}""#));
+            let repository = if *repository {
+                r#""repository":{"type":"git","url":"git+https://github.com/o/r.git"},"#
+            } else {
+                ""
+            };
+            entries.push(format!(
+                r#""{version}":{{"version":"{version}",{repository}"_npmUser":{{"name":"{publisher}"}},"dist":{{"tarball":"https://registry.npmjs.org/{name}/-/{name}-{version}.tgz","integrity":"sha512-AAAA"}}}}"#
+            ));
+        }
+        let body = format!(
+            r#"{{"name":"{name}","time":{{{}}},"versions":{{{}}}}}"#,
+            times.join(","),
+            entries.join(",")
+        );
+        normalize_packument(body.as_bytes(), DocumentDetail::Full)
+            .expect("a full packument")
+            .records
+    }
+
+    fn now() -> jiff::Timestamp {
+        "2026-09-29T00:00:00Z".parse().expect("a timestamp")
+    }
+
+    fn of(records: &[PackageRecord], version: &str, served: &[&str]) -> Vec<Signal> {
+        let record = records
+            .iter()
+            .find(|r| r.package.version() == version)
+            .expect("the version is listed");
+        signals(records, record, served.iter().copied(), now())
+    }
+
+    #[test]
+    fn an_old_package_from_its_usual_publisher_with_a_repository_signals_nothing() {
+        let records = document(
+            "steady",
+            &[("1.0.0", 400, "ana", true), ("1.1.0", 5, "ana", true)],
+        );
+        assert_eq!(of(&records, "1.1.0", &["lodash", "express"]), []);
+    }
+
+    #[test]
+    fn a_package_first_published_under_30_days_ago_is_new() {
+        let records = document("fresh", &[("1.0.0", 3, "ana", true)]);
+        assert_eq!(of(&records, "1.0.0", &[]), [Signal::NewPackage { days: 3 }]);
+        let records = document("fresh", &[("1.0.0", 30, "ana", true)]);
+        assert_eq!(of(&records, "1.0.0", &[]), [], "30 days is no longer new");
+    }
+
+    /// A version published by an account that published no earlier version.
+    #[test]
+    fn a_version_from_an_account_that_published_none_before_is_a_new_publisher() {
+        let records = document(
+            "taken",
+            &[("1.0.0", 400, "ana", true), ("1.0.1", 1, "mallory", true)],
+        );
+        assert_eq!(
+            of(&records, "1.0.1", &[]),
+            [Signal::NewPublisher {
+                publisher: "mallory".to_owned()
+            }]
+        );
+        assert_eq!(of(&records, "1.0.0", &[]), [], "nothing earlier to compare");
+        let mut untimed = records[1].clone();
+        untimed.published_at = None;
+        assert_eq!(
+            signals(&records, &untimed, [], now()),
+            [],
+            "no time says which versions are earlier"
+        );
+    }
+
+    /// Only a full npm document answers whether there is a repository: the abbreviated one
+    /// omits it, and a PyPI record never holds one.
+    #[test]
+    fn a_full_npm_document_naming_no_repository_signals_it() {
+        let records = document("loose", &[("1.0.0", 400, "ana", false)]);
+        assert_eq!(of(&records, "1.0.0", &[]), [Signal::NoRepository]);
+
+        let mut abbreviated = records[0].clone();
+        abbreviated.detail = DocumentDetail::Abbreviated;
+        assert_eq!(signals(&records, &abbreviated, [], now()), []);
+
+        let mut pypi = records[0].clone();
+        pypi.package = crate::identity::PackageKey::from_registry_name(Ecosystem::PyPI, "loose")
+            .and_then(|key| key.at_version("1.0.0"))
+            .expect("a PyPI package");
+        assert_eq!(signals(&records, &pypi, [], now()), []);
+    }
+
+    /// One edit from a served name, or the same name in another case, and never a name
+    /// compared with itself or one too short to compare.
+    #[test]
+    fn a_name_one_edit_from_a_served_name_is_near() {
+        let records = document("expres", &[("1.0.0", 400, "ana", true)]);
+        assert_eq!(
+            of(&records, "1.0.0", &["express", "expres", "lodash"]),
+            [Signal::NearName {
+                served: "express".to_owned()
+            }]
+        );
+        for (name, other, expected) in [
+            ("lodash", "lodahs", false),
+            ("lodash", "l0dash", true),
+            ("lodash", "lodashs", true),
+            ("lodash", "Lodash", true),
+            ("lodash", "odash", true),
+            ("lodash", "loash", true),
+            ("lodash", "lodash", false),
+            ("ms", "mz", false),
+            ("abc", "abcd", false),
+            ("abcd", "abc", false),
+            ("lodash", "LODASH", true),
+            ("abcd", "abcdef", false),
+        ] {
+            assert_eq!(near(name, other), expected, "{name} {other}");
+        }
+    }
+
+    #[test]
+    fn each_signal_says_what_it_found() {
+        for (signal, text) in [
+            (
+                Signal::NewPackage { days: 2 },
+                "new package: first published 2 days ago",
+            ),
+            (
+                Signal::NewPackage { days: 1 },
+                "new package: first published 1 day ago",
+            ),
+            (
+                Signal::NewPublisher {
+                    publisher: "m".to_owned(),
+                },
+                "new publisher: m published no earlier version",
+            ),
+            (
+                Signal::NoRepository,
+                "no repository: the metadata names none",
+            ),
+            (
+                Signal::NearName {
+                    served: "express".to_owned(),
+                },
+                "near name: one edit from `express`, served here",
+            ),
+        ] {
+            assert_eq!(signal.to_string(), text);
+        }
+    }
+}

@@ -25,6 +25,7 @@ reasoning per version. A version offered and not removed is not in the log.
 | `unenforceable` | the checks that could not be answered, so an unenforced `cooldown_days` does not read as passed |
 | `intel_snapshot` | absent when no store was asked, so a decision without intel does not read as one against an empty snapshot |
 | `answered` | pinned only: what the request got, below. A deferral, a digest mismatch and the proxy's own refusals answer requests the policy would have served |
+| `signals` | pinned only: what the [metadata heuristics](metadata-heuristics.md) reported. No verdict reads it |
 | `inputs` | pinned only: what the engine read, for [reproducible-verdicts](reproducible-verdicts.md). `as_of` is the date decided on, not read from `at`. `build` is `0.1.0` until releases are versioned, so a replay reports a difference rather than failing |
 
 | `answered` | The request got | Decided |

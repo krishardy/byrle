@@ -80,6 +80,9 @@ pub struct Event {
     /// Everything the engine read, so `waharoa audit verify` can decide again. Pinned only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Inputs>,
+    /// What the metadata heuristics reported, which no verdict uses. Pinned events only.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<String>,
 }
 
 /// What a pinned verdict was decided on.
@@ -285,6 +288,7 @@ impl Default for Event {
             intel_snapshot: None,
             answered: None,
             inputs: None,
+            signals: Vec::new(),
         }
     }
 }
@@ -316,6 +320,7 @@ impl Event {
             intel_snapshot: None,
             answered: None,
             inputs: None,
+            signals: Vec::new(),
         }
     }
 
@@ -345,6 +350,12 @@ impl Event {
     /// Record what the verdict was decided on.
     pub fn with_inputs(mut self, inputs: Inputs) -> Self {
         self.inputs = Some(inputs);
+        self
+    }
+
+    /// Add what the metadata heuristics reported.
+    pub fn with_signals(mut self, signals: &[crate::heuristics::Signal]) -> Self {
+        self.signals = signals.iter().map(ToString::to_string).collect();
         self
     }
 
@@ -386,6 +397,7 @@ impl Event {
             intel_snapshot: None,
             answered: None,
             inputs: None,
+            signals: Vec::new(),
         }
     }
 }
