@@ -1,7 +1,7 @@
 //! The bytes a bulk load sends, built without a database, and the encoding a snapshot id is
 //! the digest of. `advisory` is written first; other tables use the keys read back from it.
-//!
-//! See docs/engineering_decisions/snapshot-identity.md and docs/engineering_decisions/kev-stream.md.
+//! See docs/engineering_decisions/snapshot-identity.md and
+//! docs/engineering_decisions/kev-stream.md.
 
 use super::range::{End, Interval, Start};
 use super::refresh::{StreamDigest, sha256_hex};

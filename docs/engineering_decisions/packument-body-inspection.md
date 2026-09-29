@@ -38,7 +38,18 @@ offered:
 
 npm 9.9.4 sends `gzip,deflate`, so npm alone would never produce a brotli body. Other
 clients may offer br. Narrowing the request to gzip means one decompressor instead of
-three, and the client still receives an encoding it listed.
+three, and the client still receives an encoding it listed. A header that is absent
+accepts identity (RFC 9110 §12.5.3). `*` covers gzip only when gzip is not named itself, so
+`gzip;q=0, *` refuses gzip. A q-value of zero is matched on its text, the five forms `0`,
+`0.`, `0.0`, `0.00` and `0.000` (RFC 9110 §12.4.2), not parsed as a float: the text is the
+client's, and float parsing brings rounding and NaN to a yes-or-no question. A Kani proof
+checks that match against the grammar. `encoding_to_request` as a whole is tested rather
+than proved: it lowercases each token, and a heap allocation in a symbolic loop did not
+finish in two minutes for three arbitrary bytes.
+
+**Why `Compression::fast` for a body the proxy produced.** On typescript's 8.7 MB
+packument, fast took 17.7 ms and produced 2.06 MB; the default level took 117.3 ms for
+1.69 MB. The hop is usually loopback or a LAN, and it runs for every packument.
 
 **Why decode explicitly rather than letting reqwest do it.** reqwest's `gzip` feature is
 off crate-wide, so nothing is decompressed behind the proxy's back and the proxy always

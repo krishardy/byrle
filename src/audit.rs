@@ -1,21 +1,6 @@
 //! One line per policy decision, in JSON Lines.
 //!
-//! Separate from the tracing log on purpose. Tracing output is diagnostic and its shape is
-//! free to change. This is a record an operator keeps and `waharoa policy diff` parses, so
-//! it has a schema, one line per decision, and no diagnostics interleaved.
-//!
-//! # The unit is a request, not a version
-//!
-//! A packument request evaluates every version in the document. typescript has 3,823 of
-//! them. One line per refused version would put thousands of lines in the log for one
-//! request, so a resolution event names the versions it removed and the checks that
-//! removed them. Per-version reasoning is what `explain` is for.
-//!
-//! # Writing never fails an install
-//!
-//! Same rule as `UNINSPECTED`: a full disk or an unwritable path is a warning, not a
-//! refusal. The warning is emitted once rather than per line, because a log that cannot be
-//! written is one problem and not one per package.
+//! See docs/engineering_decisions/audit-log.md.
 
 use crate::policy::decide::{Advisory, Decision, Facts, Intel, Outcome, Provenance};
 use crate::policy::enforce::Unenforceable;
@@ -28,9 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::warn;
 
 /// Which of decision #4's two paths produced this.
-///
-/// The same verdict means different things on each. A version filtered out of a packument
-/// left the client free to pick another; a refused pinned fetch did not.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum DecisionPath {
@@ -40,8 +22,7 @@ pub enum DecisionPath {
     Pinned,
 }
 
-/// What a pinned request was answered. The policy's action is one input to it; a deferral
-/// or a digest mismatch answers a request the policy would have served.
+/// What a pinned request was answered, of which the policy's action is one input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Answered {
@@ -55,10 +36,7 @@ pub enum Answered {
     UpstreamMismatch,
 }
 
-/// One decision, as written.
-///
-/// `Default` exists for `#[serde(default)]`, so a line written by an older build that
-/// lacks a field still reads rather than being dropped.
+/// One decision, as written. A field an older build did not write reads as its default.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Event {
@@ -70,41 +48,27 @@ pub struct Event {
     /// The version decided on. Absent on a resolution event, which decides many.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// `allow`, `quarantine` or `block`. On a resolution event this is the strongest
-    /// action taken against any version.
+    /// `allow`, `quarantine` or `block`; on a resolution event, the strongest of them.
     pub action: String,
     /// Versions no longer in the document. Resolution events only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub removed: Vec<String>,
-    /// The checks that decided against the package.
-    ///
-    /// Ordered strongest first on a `pinned` event, which decides one version. Sorted on a
-    /// `resolution` event, which is the union across every version removed and has no
-    /// single strongest to lead with.
+    /// The checks that decided against the package: strongest first if pinned, else sorted.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<String>,
     /// Indices of the `packages` entries that did work.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub exceptions_used: Vec<usize>,
     /// Checks that could not be answered, and why.
-    ///
-    /// Present so an unenforced `cooldown_days` does not read as a passed one. An absent
-    /// answer is not a clean answer, the same distinction `policy::facts` makes.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unenforceable: Vec<String>,
-    /// Which intel the verdict was reached against.
-    ///
-    /// `None` when no intel store was consulted. Absent rather than empty, so a decision
-    /// reached without intel cannot be read as one reached against an empty snapshot.
+    /// Which intel the verdict was reached against. `None` when no intel store was asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intel_snapshot: Option<String>,
-    /// What the request was answered. Pinned events only; absent on a line written before
-    /// it was recorded.
+    /// What the request was answered. Pinned events only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answered: Option<Answered>,
-    /// Everything the engine read to reach the verdict, so `waharoa audit verify` can reach
-    /// it again. Pinned events only; absent on a line written before it was recorded. See
-    /// `docs/engineering_decisions/reproducible-verdicts.md`.
+    /// Everything the engine read, so `waharoa audit verify` can decide again. Pinned only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Inputs>,
 }
@@ -112,18 +76,15 @@ pub struct Event {
 /// What a pinned verdict was decided on.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Inputs {
-    /// The day the engine decided as of, `YYYY-MM-DD`, UTC. Not read from `at`: a cooldown
-    /// and an expiry are decided on this date.
+    /// The day the engine decided as of, `YYYY-MM-DD`, UTC.
     pub as_of: String,
     /// [`crate::policy::Policy::digest`] of the policy in force.
     pub policy_digest: String,
-    /// The build's version. `0.1.0` on every commit until releases are versioned, so a
-    /// replay reports a difference rather than failing on it.
+    /// The build's version.
     pub build: String,
-    /// The reader and verifier whose stored results the facts were built from:
-    /// [`crate::analysis::READER`] and
-    /// [`crate::analysis::attestation::verifier_id`].
+    /// [`crate::analysis::READER`], whose stored results the facts were built from.
     pub reader: String,
+    /// [`crate::analysis::attestation::verifier_id`], whose stored results were read too.
     pub verifier: String,
     pub facts: RecordedFacts,
 }
@@ -142,8 +103,7 @@ impl Inputs {
     }
 }
 
-/// [`Facts`] as the audit log writes them. The advisories are written out rather than
-/// named by snapshot: a kept snapshot is optional and pruned.
+/// [`Facts`] as the audit log writes them, advisories included, since snapshots are pruned.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordedFacts {
     pub published: Option<String>,
@@ -280,8 +240,6 @@ impl RecordedFacts {
             yanked: self.yanked.clone(),
             deprecated: self.deprecated.clone(),
             provenance: match &self.provenance {
-                // The reason is text in the log; the engine decides an unknown one the same
-                // whatever it says.
                 RecordedProvenance::Unknown { .. } => Provenance::Unknown("recorded as unknown"),
                 RecordedProvenance::Consistent => Provenance::Consistent,
                 RecordedProvenance::Unverified { why } => {
@@ -331,7 +289,6 @@ impl Event {
         decision: &Decision,
         unenforceable: &[Unenforceable],
     ) -> Self {
-        // What the proxy acted on: an unenforced check's answer is not part of it.
         let decision = &crate::policy::enforce::enforced(decision, unenforceable);
         Self {
             at: now(),
@@ -401,12 +358,10 @@ impl Event {
     }
 }
 
-/// What re-deciding every pinned line of an audit log found. See `waharoa audit verify`
-/// and `docs/engineering_decisions/reproducible-verdicts.md`.
+/// What re-deciding every pinned line of an audit log found.
 #[derive(Debug, Default, PartialEq)]
 pub struct Replay {
-    /// Pinned lines decided again to the same action, checks, exceptions and unenforced
-    /// checks.
+    /// Pinned lines decided again to the same action, checks, exceptions and unenforced checks.
     pub reproduced: usize,
     /// Line number, and what differs.
     pub differ: Vec<(usize, String)>,
@@ -462,8 +417,7 @@ pub struct Verified {
     /// For stderr: why nothing was replayed.
     pub notes: Vec<String>,
     pub report: String,
-    /// The OR of [`DIFFERS`] and [`NOT_REPLAYABLE`], or [`UNREAD`] on its own: the bits
-    /// `waharoa policy diff` uses.
+    /// The OR of [`DIFFERS`] and [`NOT_REPLAYABLE`], or [`UNREAD`] on its own.
     pub code: u8,
 }
 
@@ -603,18 +557,13 @@ fn now() -> String {
     jiff::Timestamp::now().to_string()
 }
 
-/// Every package version the log names, oldest first, without duplicates.
-///
-/// The package set `policy diff` re-decides. A `pinned` line names one version. A
-/// `resolution` line names every version it removed, so one request can contribute many.
-/// Versions that were offered and not removed are not in the log at all: a resolution line
-/// records what the policy acted on, not the whole document.
+/// Every package version the log names, oldest first, without duplicates: the set
+/// `policy diff` decides again. A line of `log` that does not parse is skipped.
+/// Returns each ecosystem, name and version.
 pub fn packages(log: &str) -> Vec<(String, String, String)> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for line in log.lines().filter(|l| !l.trim().is_empty()) {
-        // A line that will not parse is skipped rather than failing the run. A log with a
-        // torn last write is the ordinary case after a crash.
         let Ok(event) = serde_json::from_str::<Event>(line) else {
             continue;
         };
@@ -652,7 +601,6 @@ impl AuditLog {
 
     /// Append one event. Failure is warned about once and otherwise ignored.
     pub fn write(&self, event: &Event) {
-        // An event is strings, numbers and lists of them, which always serialise.
         let mut line = serde_json::to_vec(event).expect("an event serialises");
         line.push(b'\n');
 
@@ -721,7 +669,6 @@ mod tests {
         assert_eq!(field(&json, "path"), "pinned");
         assert_eq!(field(&json, "name"), "lodash");
         assert_eq!(field(&json, "version"), "4.17.21");
-        // Empty collections are left out rather than written as `[]`.
         assert!(json.get("checks").is_none());
         assert!(json.get("removed").is_none());
     }
@@ -859,9 +806,8 @@ mod tests {
         assert!(event.at.parse::<jiff::Timestamp>().is_ok(), "{}", event.at);
     }
 
-    /// `cooldown_days` is deliberately not the check used here: it reports `Failed` even
-    /// when an exception shortened the wait, because the exception applied and the package
-    /// is still too young.
+    /// An exception that did work is recorded. Not tested with `cooldown_days`, which
+    /// fails even when an exception shortened the wait.
     #[test]
     fn an_exception_that_did_work_is_recorded() {
         let policy = Policy::parse(
@@ -1125,7 +1071,6 @@ not json
         let policy = policy(REPLAYED);
         let good = recorded(&policy, &refused_facts());
         let log = [
-            // Written before inputs were recorded: it still reads.
             "{\"at\":\"\",\"path\":\"pinned\",\"ecosystem\":\"npm\",\"name\":\"a\",\"version\":\"1.0.0\",\"action\":\"block\"}".to_owned(),
             recorded(&crate::policy::Policy::parse("version: 1\n").expect("loads"), &facts()),
             good.replace("\"as_of\":\"2026-09-13\"", "\"as_of\":\"yesterday\""),
