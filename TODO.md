@@ -333,6 +333,13 @@ Items that I've added that are not stage-bound.
     captured through `log` so every log call's `log` branch runs, and a generic function
     with branches has one non-generic core.
 
+27. [ ] Decide whether `waharoa doctor` checks `bun.lock` for the proxy's address. Raised
+    2026-09-29. `src/ecosystem/npm/lockfile.rs` gives it `pins: None` because bun was
+    recorded as writing an empty string for an artifact from the configured registry.
+    [break-glass](docs/break-glass.md) measured bun 1.4.2 on 2026-09-28 recording the tarball
+    URL. Measure what current bun writes, then set `pins` to match and update
+    [doctor-lockfile-urls](docs/engineering_decisions/doctor-lockfile-urls.md).
+
 ## Architecture Refactor
 
 Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here
