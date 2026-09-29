@@ -78,7 +78,9 @@ reached writes nothing, so a missing row means not yet verified.
   `@refs/`, because a monorepo tags `@scope/pkg@1.2.3`.
 - **Unknown**: nothing verified an attestation this version publishes, or the previous
   version is not known. The check is dropped by `enforce::unenforceable` and reported
-  unenforced, as `cooldown_days` is without a publish date.
+  unenforced, as `cooldown_days` is without a publish date. A prior whose attestations do
+  not verify is left out of the comparison, and when every prior's fails the answer is
+  Unknown.
 
 ## Where it is decided
 

@@ -1,22 +1,7 @@
-//! Where a decision becomes a response.
+//! Where a decision becomes a response on a pinned fetch, which refuses a quarantined
+//! version as it does a blocked one and says when it lapses.
 //!
-//! Decision #4 splits enforcement in two, and the split is not a detail:
-//!
-//! - **On resolution**, a refused version is filtered out of the metadata so the
-//!   resolver picks a clean one by itself. The client sees a 200 with fewer versions.
-//! - **On a pinned fetch**, there is nothing to resolve. The client already decided, from
-//!   a lockfile, and the only honest answer is a refusal.
-//!
-//! This module is the pinned half. A tarball request names one version, the record for it
-//! is already in the store because the digest had to be known before the fetch, so the
-//! engine can be asked and answered before a byte leaves upstream.
-//!
-//! # Why `quarantine` refuses here too
-//!
-//! Quarantine means "refused now, allowed later". On the resolution path that is a
-//! filter and the install succeeds on another version. On a pinned fetch there is no
-//! other version to pick, so it refuses like a block, and says when it lapses. The
-//! difference survives in what the client is told, not in whether it gets bytes.
+//! See docs/engineering_decisions/quarantine-filter-metadata.md.
 
 use super::decide::{Check, Decision, Intel, Outcome, Provenance};
 use super::{Action, Policy};
@@ -50,7 +35,6 @@ impl Refusal {
         let mut out = format!(
             "waharoa: {} is {} by policy\n",
             self.purl,
-            // `Verdict::Refuse` is only built from a non-allow action.
             if self.action == Action::Block {
                 "blocked"
             } else {
@@ -66,16 +50,7 @@ impl Refusal {
     }
 }
 
-/// A check this build cannot answer, because the fact it needs is not there.
-///
-/// Not the same as a check that passed. `decide` answers every check in the vector, and
-/// for a missing fact it answers in the safe direction: an unknown publish date is not
-/// old enough, so `cooldown_days` fails. That is right for the engine and wrong for a
-/// proxy, where it refuses every package on a fact the registry never sent.
-///
-/// So the result is dropped here rather than reported as a pass, and the reason is
-/// carried out so startup can say which settings are configured and inert. A check that
-/// quietly became a pass would be the worse failure.
+/// A check this build cannot answer, because the fact it needs is not there, and why.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Unenforceable {
     pub check: Check,
@@ -133,9 +108,6 @@ fn unenforceable_given(
             why,
         });
     }
-    // Three checks read the advisory list. With nothing to ask, an empty list is an absent
-    // answer rather than a clean one, and reporting them as passes would claim a check ran
-    // that never could.
     match intel {
         Intel::NotConsulted => out.extend([Check::KnownMalware, Check::Kev, Check::MaxCvss].map(
             |check| Unenforceable {
@@ -143,8 +115,6 @@ fn unenforceable_given(
                 why: "no intel store was consulted, so nothing was asked",
             },
         )),
-        // The store answers and has not loaded the KEV catalogue. OSV carries no exploitation
-        // data.
         Intel::Consulted {
             exploitation_loaded: false,
         } => out.push(Unenforceable {
@@ -159,12 +129,8 @@ fn unenforceable_given(
 }
 
 /// The decision with the checks this build cannot answer taken out: what the proxy acts
-/// on.
-///
-/// `Decision::action` over the whole vector counts an answer to a fact that was never
-/// there, such as a quarantine for a publish date the registry did not send. `explain` and
-/// `policy diff` report the action from this, so neither names a verdict the proxy does not
-/// reach.
+/// on. See policy-tier-resolution.md. `decision` is the whole vector.
+/// `unenforceable` are the checks to take out. Returns the decision.
 pub fn enforced(decision: &Decision, unenforceable: &[Unenforceable]) -> Decision {
     let mut kept = decision.clone();
     kept.results
@@ -238,13 +204,10 @@ fn reason(
 ) -> String {
     let name = result.check.as_str();
     match (&result.check, &result.outcome) {
-        // The publisher's own words. A deprecation with nothing to say is not one: see
-        // `npm::normalize`.
         (Check::Deprecated, _) => match facts.deprecated.as_deref() {
             Some(message) if !message.is_empty() => format!("{name}: {message}"),
             _ => format!("{name}: deprecated by its publisher"),
         },
-        // The publisher's own words for why the release was withdrawn, when they gave any.
         (Check::Yanked, _) => match facts.yanked.as_deref() {
             Some(reason) if !reason.is_empty() => format!("{name}: withdrawn, {reason}"),
             _ => format!("{name}: withdrawn by the registry"),
@@ -252,16 +215,11 @@ fn reason(
         (Check::Denials, _) => format!("{name}: this exact version is denied"),
         (Check::Provenance, _) => format!("{name}: {}", facts.provenance.describe()),
         (Check::KnownMalware, _) => format!("{name}: reported as malware"),
-        // A quarantine that lapses is worth a date: the client is told when this version
-        // becomes installable rather than only that it is too new.
         (Check::CooldownDays, _) => match lifts_on(policy, facts, entry) {
             Some(date) => format!("{name}: published too recently, installable on {date}"),
             None => format!("{name}: published too recently, and this lapses as it ages"),
         },
         (_, Outcome::Failed(action)) => format!("{name}: {}", action.as_str()),
-        // A check that passed or was excepted is not a reason, so this is unreachable
-        // through `reasons()`. Rendered rather than panicked on: a wrong line in an error
-        // body is better than a crash in the refusal path.
         (_, outcome) => format!("{name}: {outcome:?}"),
     }
 }
@@ -561,7 +519,6 @@ mod tests {
         assert_eq!(refusal.action, Action::Block);
         assert_eq!(refusal.reasons, ["install_scripts: block"]);
 
-        // The same package passes when the policy allows them.
         let allowing = loaded("version: 1\ncooldown_days: 0\ninstall_scripts: allow\n");
         assert_eq!(
             artifact(
@@ -612,7 +569,6 @@ mod tests {
             "published 2026-09-12, 30 days"
         );
 
-        // A package entry's own wait is the one the date is measured against.
         let shortened = loaded(
             "version: 1\ncooldown_days: 30\npackages:\n  \
              - match: { ecosystem: npm, name: lodash }\n    set: { cooldown_days: 3 }\n    \
@@ -738,10 +694,8 @@ mod tests {
         .clone()
     }
 
-    /// The abbreviated packument is what `npm install` asks for and what the proxy
-    /// fetches on its own behalf, so this is every record the build holds. Without the
-    /// drop, a configured `cooldown_days` refuses all of them on a fact the registry
-    /// never sent.
+    /// With no publish times, `cooldown_days` is dropped rather than refusing every
+    /// abbreviated record.
     #[test]
     fn a_cooldown_that_cannot_be_answered_is_dropped_rather_than_failed() {
         let policy = loaded("version: 1\ncooldown_days: 30\n");
@@ -848,8 +802,6 @@ mod tests {
         .expect("version is in the fixture")
         .clone();
 
-        // Both spellings of the same package. `%40` is what this codebase's own `Display`
-        // emits for a scoped name, and what OSV uses.
         for spelling in [
             "pkg:npm/%40babel/traverse@8.0.5",
             "pkg:npm/@babel/traverse@8.0.5",

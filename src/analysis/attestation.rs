@@ -1,17 +1,7 @@
-//! What a version's attestations say, verified, and what that makes of the version.
+//! What a version's attestations say, verified offline, and what that makes of the version
+//! against the versions before it. Nothing here is specific to an ecosystem.
 //!
-//! The `provenance` check compares a version with the version published before it. This
-//! module answers the two questions that takes: whose attestation is this, verified against
-//! the digest it names ([`verify`]), and which version came before ([`previous`]).
-//! [`provenance`] puts them together as the fact the policy engine decides on. See
-//! `docs/engineering_decisions/provenance-check.md`.
-//!
-//! Nothing here is specific to an ecosystem. Where each registry serves its attestations and
-//! how they are laid out is its adapter's: `crate::ecosystem::npm::attestation` turns npm's
-//! document into the Sigstore bundle this verifies.
-//!
-//! Verification is offline, against Sigstore's production root as `sigstore-verify` embeds
-//! it. See `docs/engineering_decisions/sigstore-verifier.md`.
+//! See `docs/engineering_decisions/provenance-check.md` and `sigstore-verifier.md`.
 
 use std::sync::OnceLock;
 
@@ -27,11 +17,9 @@ use crate::record::PackageRecord;
 /// What verifying one artifact's attestations found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Attested {
-    /// The attestation verified, and names this identity: the repository and workflow
-    /// file, without the ref.
+    /// The attestation verified, naming this repository and workflow file, without the ref.
     Verified { identity: String },
-    /// It did not verify, or could not be read, and why. A registry that could not be
-    /// reached is not this: nothing is recorded for it.
+    /// It did not verify, or could not be read, and why.
     Failed { why: String },
 }
 
@@ -53,7 +41,6 @@ fn verified_identity(bundle: &Bundle, digest: &Sri) -> Result<String, String> {
         Algorithm::Sha384 => HashAlgorithm::Sha2384,
         Algorithm::Sha512 => HashAlgorithm::Sha2512,
     };
-    // An `Sri` holds a digest of its algorithm's length, which is all `new` checks.
     let digest = ArtifactDigest::new(algorithm, digest.digest())
         .expect("an Sri's digest is its algorithm's length");
     let result = verifier()
@@ -96,13 +83,10 @@ fn verifier() -> &'static Verifier {
     })
 }
 
-/// The repository and workflow file a certificate's identity names, without the scheme
-/// or the ref: `https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1` is
-/// `github.com/o/r/.github/workflows/release.yml`.
-///
-/// Cut at the first `@refs/`, not the last `@`: a monorepo tags releases
-/// `@scope/pkg@1.2.3`, and the ref would otherwise be half kept. GitHub and GitLab both
-/// write the ref this way. An identity with no `@refs/` is kept whole.
+/// The repository and workflow file a certificate's identity names, without the scheme,
+/// cut at the first `@refs/`. `san` is the identity, such as
+/// `https://github.com/o/r/.github/workflows/release.yml@refs/tags/v1`.
+/// Returns `github.com/o/r/.github/workflows/release.yml`.
 fn identity(san: &str) -> String {
     let without_scheme = san.split_once("://").map_or(san, |(_, rest)| rest);
     without_scheme
@@ -111,28 +95,16 @@ fn identity(san: &str) -> String {
         .to_owned()
 }
 
-/// The versions a version is compared against: the one published just before it, every
-/// version published in the window before it, and the most recent attested version,
-/// however old. The window catches a burst: Nx published 19 malicious versions in two
-/// hours, each after another. The attested version catches a burst long after the last
-/// attested release: eslint-config-prettier's came 70 days after 10.1.5. See
-/// `docs/engineering_decisions/incident-benchmark.md`.
+/// The versions a version is compared against: before it, in the window, and last attested.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Previous {
     /// The version has no publish time, so nothing can be said to come before it.
     Unknown,
-    /// Those of them that claim attestations, most recent first. Empty when none does, or
-    /// nothing was published before it.
+    /// Those of them that claim attestations, most recent first.
     Known(Vec<Prior>),
 }
 
-/// What the check reads of a version published before: which one it is, where its
-/// attestations are, and the digest they bind.
-///
-/// The version as a whole. It claims attestations when any of its files does, and its
-/// identity is read from its attested sdist, or from its first attested file when it has
-/// no sdist. On PyPI no release was found attesting only some of its files, in 10 projects
-/// measured on 2026-09-26, so which file does not change the answer.
+/// A version published before, as a whole: which it is, its attestations, and their digest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prior {
     pub version: String,
@@ -210,14 +182,12 @@ pub fn predecessors(
         while dated[start].0 < opens {
             start += 1;
         }
-        // The window, and the version just before it when that falls outside the window.
         let from = start.min(group_start.saturating_sub(1));
         let mut priors: Vec<Prior> = dated[from..group_start]
             .iter()
             .rev()
             .filter_map(|&(_, i)| Prior::of(&records[i]))
             .collect();
-        // And the most recent attested version, however old, when neither of those is it.
         if let Some(anchor) = &anchor
             && !priors.iter().any(|p| p.version == anchor.version)
         {
@@ -256,9 +226,7 @@ pub fn from_metadata(this: &PackageRecord, previous: &Previous) -> Provenance {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Answer {
     Known(Provenance),
-    /// Verification results that are missing: this version's, and the priors' at these
-    /// positions of [`Previous::Known`]. The fact is [`Provenance::NOT_VERIFIED`] until
-    /// they are stored.
+    /// Verification results still missing: this version's, and the priors' at these positions.
     Needs {
         this: bool,
         priors: Vec<usize>,
@@ -266,15 +234,10 @@ pub enum Answer {
 }
 
 /// What the version's attestations say against the versions before it.
-///
-/// `this_result` is what verifying its attestations found, and `prior_results` each
-/// prior's, in the order of [`Previous::Known`], `None` where nothing has.
-///
-/// A version claiming no attestation after one that claimed some has dropped them. One
-/// claiming attestations is refused when they do not verify, or when their identity
-/// differs from that of any prior whose attestations verified. A prior whose attestations
-/// do not verify is left out of the comparison; when every prior's fails, the check is
-/// unknown.
+/// `this` is the version. `previous` is what it is compared against.
+/// `this_result` is what verifying its attestations found, `None` where nothing has.
+/// `prior_results` is each prior's, in the order of [`Previous::Known`].
+/// Returns the fact, or the verification results still needed.
 pub fn provenance(
     this: &PackageRecord,
     previous: &Previous,
@@ -467,8 +430,7 @@ mod tests {
             .records
     }
 
-    /// 1.0.0 and 2.0.0 a month apart, the 1.0.1 backport a month later, then 3.0.0, 3.0.1
-    /// and 3.0.2 on consecutive days.
+    /// 1.0.0 and 2.0.0 a month apart, a 1.0.1 backport, then 3.0.x on consecutive days.
     const SCHEDULE: &[(&str, &str)] = &[
         ("1.0.0", "2026-01-01"),
         ("2.0.0", "2026-02-01"),
@@ -592,7 +554,6 @@ mod tests {
                 "{version}"
             );
         }
-        // With no window, 3.0.2 is still compared with 3.0.0, the most recent attested.
         let previous = previous(&records, "3.0.2", None, jiff::SignedDuration::ZERO);
         assert_eq!(
             from_metadata(&find(&records, "3.0.2"), &previous),
@@ -602,9 +563,8 @@ mod tests {
         );
     }
 
-    /// eslint-config-prettier's burst came 70 days after its last attested release, far
-    /// outside the window, and each version after the first followed another malicious one.
-    /// The most recent attested version is compared with however old it is.
+    /// A burst long after the last attested release, as eslint-config-prettier's was, is
+    /// compared with that release, however old.
     #[test]
     fn a_burst_long_after_the_last_attested_release_is_compared_with_it() {
         let burst = records(SCHEDULE, &["2.0.0"]);
@@ -618,7 +578,6 @@ mod tests {
                 "{version}"
             );
         }
-        // Listed after the window's versions, and only once when it is also in the window.
         let attested = records(SCHEDULE, &["2.0.0", "3.0.1"]);
         assert_eq!(
             versions(previous(&attested, "3.0.2", None, WEEK)),
@@ -664,7 +623,6 @@ mod tests {
                 why: "bad".to_owned()
             })
         );
-        // A change against any prior, named by the one that differs.
         assert_eq!(
             ask(Some(&a), &[Some(&a), Some(&b)]),
             known(Provenance::IdentityChanged {
@@ -673,7 +631,6 @@ mod tests {
                 to: "a".to_owned(),
             })
         );
-        // A prior that does not verify is left out; when all fail, it is unknown.
         assert_eq!(
             ask(Some(&a), &[Some(&failed()), Some(&a)]),
             known(Provenance::Consistent)
@@ -683,7 +640,6 @@ mod tests {
             Answer::Known(Provenance::Unknown(_))
         ));
 
-        // What is still to be verified.
         assert_eq!(
             ask(None, &[None, Some(&a)]),
             Answer::Needs {
@@ -699,7 +655,6 @@ mod tests {
             }
         );
 
-        // Nothing attested before: its own attestation decides.
         let alone = records(SCHEDULE, &["3.0.2"]);
         let before = previous(&alone, "3.0.2", None, WEEK);
         assert_eq!(
