@@ -101,7 +101,7 @@ impl Reader {
         }
     }
 
-    pub fn read(self, artifact: impl Read) -> Result<InstallScripts, ReadError> {
+    pub fn read(self, artifact: &mut dyn Read) -> Result<InstallScripts, ReadError> {
         match self {
             Self::NpmTarball => npm_install_scripts(artifact),
             Self::Sdist => sdist_install_scripts(artifact),
@@ -115,11 +115,11 @@ const NPM_INSTALL_SCRIPTS: [&str; 3] = ["preinstall", "install", "postinstall"];
 /// The scripts an npm tarball's own `package.json` declares.
 ///
 /// One gzip stream and one JSON object: 0.4ms for `bufferutil` 4.1.0, 163,631 bytes.
-pub fn npm_install_scripts(tarball: impl Read) -> Result<InstallScripts, ReadError> {
+pub fn npm_install_scripts(tarball: &mut dyn Read) -> Result<InstallScripts, ReadError> {
     // `<top>/package.json` and nothing deeper: npm strips the top directory when it unpacks
     // a tarball, so a `package.json` under `node_modules/` belongs to a bundled dependency,
     // and taking the first one listed let an earlier one stand in for the package's own.
-    let manifest = member(tarball, |path| {
+    let manifest = member(tarball, &|path| {
         let path = path.strip_prefix("./").unwrap_or(path);
         matches!(path.split_once('/'), Some((top, "package.json")) if !top.is_empty())
     })?;
@@ -142,8 +142,8 @@ pub fn npm_install_scripts(tarball: impl Read) -> Result<InstallScripts, ReadErr
 ///
 /// A wheel runs nothing, so this is asked of an sdist only. `pyproject.toml` alone is not
 /// this: a PEP 517 build runs the backend it names, which is its own question.
-pub fn sdist_install_scripts(sdist: impl Read) -> Result<InstallScripts, ReadError> {
-    match member(sdist, |path| {
+pub fn sdist_install_scripts(sdist: &mut dyn Read) -> Result<InstallScripts, ReadError> {
+    match member(sdist, &|path| {
         path.rsplit('/').next() == Some("setup.py") && path.matches('/').count() <= 1
     }) {
         Ok(_) => Ok(InstallScripts {
@@ -156,19 +156,14 @@ pub fn sdist_install_scripts(sdist: impl Read) -> Result<InstallScripts, ReadErr
 }
 
 /// The first member of a gzipped tar whose path `wanted` accepts.
-fn member(bytes: impl Read, wanted: impl Fn(&str) -> bool) -> Result<Vec<u8>, ReadError> {
+fn member(bytes: &mut dyn Read, wanted: &dyn Fn(&str) -> bool) -> Result<Vec<u8>, ReadError> {
     let decoder = flate2::read::GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(decoder);
-    let entries = archive
-        .entries()
-        .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+    // `entries` refuses only an archive already read from, and this one is new.
+    let entries = archive.entries().expect("a new archive is at its start");
     for entry in entries {
         let entry = entry.map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
-        let path = entry
-            .path()
-            .map_err(|e| ReadError::NotAnArchive(e.to_string()))?
-            .to_string_lossy()
-            .into_owned();
+        let path = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
         if !wanted(&path) {
             continue;
         }
@@ -236,8 +231,8 @@ mod tests {
 
     /// What each reader finds on a fixed set of archives, one line each.
     fn answers() -> String {
-        let npm = |files: &[(&str, &[u8])]| npm_install_scripts(&*tarball(files));
-        let sdist = |files: &[(&str, &[u8])]| sdist_install_scripts(&*tarball(files));
+        let npm = |files: &[(&str, &[u8])]| npm_install_scripts(&mut &*tarball(files));
+        let sdist = |files: &[(&str, &[u8])]| sdist_install_scripts(&mut &*tarball(files));
         let cases: Vec<(&str, Result<InstallScripts, ReadError>)> = vec![
             (
                 "npm, every install lifecycle script and two others",
@@ -278,12 +273,12 @@ mod tests {
                 npm(&[("package/notpackage.json", br#"{"scripts":{"install":"no"}}"#)]),
             ),
             ("npm, no package.json", npm(&[("package/index.js", b"")])),
-            ("npm, not gzip", npm_install_scripts(&b"plain"[..])),
+            ("npm, not gzip", npm_install_scripts(&mut &b"plain"[..])),
             ("npm, package.json not JSON", npm(&[("package/package.json", b"{")])),
             ("sdist, setup.py at its root", sdist(&[("x-1.0/setup.py", b"")])),
             ("sdist, setup.py only deeper", sdist(&[("x-1.0/sub/setup.py", b"")])),
             ("sdist, pyproject.toml only", sdist(&[("x-1.0/pyproject.toml", b"")])),
-            ("sdist, not gzip", sdist_install_scripts(&b"plain"[..])),
+            ("sdist, not gzip", sdist_install_scripts(&mut &b"plain"[..])),
         ];
         cases
             .into_iter()
@@ -347,7 +342,7 @@ mod tests {
         );
         let sdist = tarball(&[("six-1.17.0/setup.py", b"")]);
         assert_eq!(
-            Reader::Sdist.read(&sdist[..]).expect("reads").names,
+            Reader::Sdist.read(&mut &sdist[..]).expect("reads").names,
             ["setup.py"]
         );
     }
@@ -358,7 +353,7 @@ mod tests {
     fn an_npm_tarball_reports_the_install_scripts_it_declares() {
         let manifest = br#"{"name":"bufferutil","version":"4.1.0","scripts":{
             "install":"node-gyp-build","prebuild":"prebuildify --napi","test":"mocha"}}"#;
-        let found = npm_install_scripts(&*tarball(&[("package/package.json", manifest)]))
+        let found = npm_install_scripts(&mut &*tarball(&[("package/package.json", manifest)]))
             .expect("the tarball reads");
         assert_eq!(
             found.names,
@@ -377,7 +372,7 @@ mod tests {
     fn the_install_lifecycle_is_pre_install_and_post() {
         let manifest = br#"{"scripts":{"postinstall":"c","preinstall":"a","install":"b",
             "prepare":"d","test":"e"}}"#;
-        let found = npm_install_scripts(&*tarball(&[("package/package.json", manifest)]))
+        let found = npm_install_scripts(&mut &*tarball(&[("package/package.json", manifest)]))
             .expect("the tarball reads");
         assert_eq!(found.names, ["preinstall", "install", "postinstall"]);
     }
@@ -389,7 +384,7 @@ mod tests {
             &br#"{"name":"node-gyp-build","version":"4.8.4"}"#[..],
             &br#"{"scripts":{"test":"standard && node test"}}"#[..],
         ] {
-            let found = npm_install_scripts(&*tarball(&[("package/package.json", manifest)]))
+            let found = npm_install_scripts(&mut &*tarball(&[("package/package.json", manifest)]))
                 .expect("the tarball reads");
             assert!(!found.runs_on_install(), "{found:?}");
         }
@@ -400,14 +395,17 @@ mod tests {
     #[test]
     fn an_archive_with_no_manifest_is_an_error() {
         let empty = tarball(&[("package/index.js", b"module.exports = 1;")]);
-        assert_eq!(npm_install_scripts(&*empty), Err(ReadError::NothingToRead));
+        assert_eq!(
+            npm_install_scripts(&mut &*empty),
+            Err(ReadError::NothingToRead)
+        );
         assert!(matches!(
-            npm_install_scripts(&b"not a gzip stream"[..]),
+            npm_install_scripts(&mut &b"not a gzip stream"[..]),
             Err(ReadError::NotAnArchive(_))
         ));
         let manifest = tarball(&[("package/package.json", b"{ not json")]);
         assert!(matches!(
-            npm_install_scripts(&*manifest),
+            npm_install_scripts(&mut &*manifest),
             Err(ReadError::NotAnArchive(_))
         ));
     }
@@ -418,7 +416,7 @@ mod tests {
         let big = vec![b' '; MAX_MEMBER_BYTES + 1];
         let archive = tarball(&[("package/package.json", &big)]);
         assert_eq!(
-            npm_install_scripts(&*archive),
+            npm_install_scripts(&mut &*archive),
             Err(ReadError::TooLarge {
                 member: "package/package.json".to_owned(),
                 limit: MAX_MEMBER_BYTES,
@@ -434,7 +432,7 @@ mod tests {
             ("six-1.17.0/PKG-INFO", b"Name: six"),
             ("six-1.17.0/setup.py", b"from setuptools import setup"),
         ]);
-        let found = sdist_install_scripts(&*with).expect("the sdist reads");
+        let found = sdist_install_scripts(&mut &*with).expect("the sdist reads");
         assert_eq!(found.names, ["setup.py"]);
 
         let without = tarball(&[
@@ -445,7 +443,7 @@ mod tests {
             ("idna-3.10/tests/data/setup.py", b"setup()"),
         ]);
         assert!(
-            !sdist_install_scripts(&*without)
+            !sdist_install_scripts(&mut &*without)
                 .expect("the sdist reads")
                 .runs_on_install()
         );
@@ -463,7 +461,7 @@ mod tests {
             bytes.resize(MAX_MEMBER_BYTES, b' ');
             bytes
         };
-        let found = npm_install_scripts(&*tarball(&[("package/package.json", &padded)]))
+        let found = npm_install_scripts(&mut &*tarball(&[("package/package.json", &padded)]))
             .expect("a member at the ceiling is read whole");
         assert_eq!(found.names, ["postinstall"]);
 
@@ -473,7 +471,7 @@ mod tests {
             bytes
         };
         assert_eq!(
-            npm_install_scripts(&*tarball(&[("package/package.json", &over)])),
+            npm_install_scripts(&mut &*tarball(&[("package/package.json", &over)])),
             Err(ReadError::TooLarge {
                 member: "package/package.json".to_owned(),
                 limit: MAX_MEMBER_BYTES,
@@ -528,7 +526,7 @@ mod tests {
         // `hasInstallScript: true` in its packument, `install: node-gyp-build` inside.
         let bufferutil =
             fetch("https://registry.npmjs.org/bufferutil/-/bufferutil-4.1.0.tgz").await;
-        let found = npm_install_scripts(&*bufferutil).expect("the tarball reads");
+        let found = npm_install_scripts(&mut &*bufferutil).expect("the tarball reads");
         assert_eq!(found.names, ["install"]);
         assert_eq!(found.bodies[0].1, "node-gyp-build");
 
@@ -536,7 +534,7 @@ mod tests {
         let node_gyp_build =
             fetch("https://registry.npmjs.org/node-gyp-build/-/node-gyp-build-4.8.4.tgz").await;
         assert!(
-            !npm_install_scripts(&*node_gyp_build)
+            !npm_install_scripts(&mut &*node_gyp_build)
                 .expect("the tarball reads")
                 .runs_on_install()
         );
@@ -548,7 +546,9 @@ mod tests {
         )
         .await;
         assert_eq!(
-            sdist_install_scripts(&*six).expect("the sdist reads").names,
+            sdist_install_scripts(&mut &*six)
+                .expect("the sdist reads")
+                .names,
             ["setup.py"]
         );
     }
@@ -572,5 +572,19 @@ mod tests {
         ] {
             assert_eq!(Claim::of(found, claimed, detail), expected, "{found:?}");
         }
+    }
+
+    /// A member that ends before its declared size is not an archive this can read.
+    #[test]
+    fn a_member_cut_short_is_not_an_archive() {
+        let body: Vec<u8> = (0..65_536u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 24) as u8)
+            .collect();
+        let whole = crate::util::test_support::tarball(&[("package/package.json", &body)]);
+        let cut = &whole[..whole.len() * 3 / 4];
+        assert!(matches!(
+            member(&mut &cut[..], &|path| path == "package/package.json"),
+            Err(ReadError::NotAnArchive(_))
+        ));
     }
 }

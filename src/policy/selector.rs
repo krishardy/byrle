@@ -557,14 +557,16 @@ pub fn check_overlaps<V: VersionSet>(selectors: &[Canonical<V>]) -> Result<(), O
 
 impl<V: VersionSet> fmt::Display for Canonical<V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}:{}", self.ecosystem, self.name)?;
-        if let Some(version) = &self.version {
-            write!(f, "@{version}")?;
-        }
-        if let Some(scripts) = self.has_install_scripts {
-            write!(f, " has_install_scripts={scripts}")?;
-        }
-        Ok(())
+        let version = self
+            .version
+            .as_ref()
+            .map(|version| format!("@{version}"))
+            .unwrap_or_default();
+        let scripts = self
+            .has_install_scripts
+            .map(|scripts| format!(" has_install_scripts={scripts}"))
+            .unwrap_or_default();
+        write!(f, "{}:{}{version}{scripts}", self.ecosystem, self.name)
     }
 }
 
@@ -1248,5 +1250,57 @@ mod tests {
                 Some("1.0.0".to_owned())
             )
         );
+    }
+
+    /// A selector prints as what it matches.
+    #[test]
+    fn a_selector_prints_as_what_it_matches() {
+        assert_eq!(canon("npm", None, None, None).to_string(), "npm:*");
+        assert_eq!(
+            canon("npm", Some("a"), Some("1.0.0"), Some(true)).to_string(),
+            "npm:a@1.0.0 has_install_scripts=true"
+        );
+    }
+
+    /// Each selector or denial that cannot be read is refused, and says why.
+    #[test]
+    fn each_unreadable_selector_says_why() {
+        let with_purl =
+            |ecosystem: &str, purl: &str, name: Option<&str>, version: Option<&str>| Selector {
+                purl: Some(purl.to_owned()),
+                ..sel(ecosystem, name, version, None)
+            };
+        for (selector, says) in [
+            (
+                with_purl("npm", "pkg:npm/a", Some("a"), None),
+                "a selector sets both `purl` and `name`",
+            ),
+            (
+                with_purl("pypi", "pkg:npm/a", None, None),
+                "`pkg:npm/a` is not a `pypi` package",
+            ),
+            (
+                with_purl("npm", "pkg:npm/a@not.a.version", None, None),
+                "not.a.version",
+            ),
+            (
+                with_purl("npm", "pkg:npm/a", None, Some("not.a.version")),
+                "not.a.version",
+            ),
+            (
+                sel("cargo", Some("x"), Some("vers:cargo/>=1"), None),
+                "cargo",
+            ),
+        ] {
+            let err = Canonical::of(&selector).expect_err(says).to_string();
+            assert!(err.contains(says), "{says}: {err}");
+        }
+        for (purl, version) in [
+            ("pkg:npm/a@not.a.version", None),
+            ("pkg:npm/a", Some("vers:npm/>=not.a.version")),
+            ("pkg:cargo/serde@1.0.0", None),
+        ] {
+            assert!(Canonical::of_denial(purl, version).is_err(), "{purl}");
+        }
     }
 }

@@ -54,8 +54,9 @@ pub fn read_packument(
     parse_started: Instant,
     path: &str,
 ) -> Option<Box<PackageMetadata>> {
-    match inspect_decoded(decoded, detail) {
-        PackumentOutcome::Normalized(p) => {
+    match normalize_packument(decoded, detail) {
+        Ok(p) => {
+            let p = Box::new(p);
             // Reported by `rewrite_packument`, which is where it is acted on.
             let (allowed_direct, refused) = p.unserved_origins(origins);
             let (held_packages, held_records) = {
@@ -84,12 +85,10 @@ pub fn read_packument(
             );
             Some(p)
         }
-        PackumentOutcome::Unreadable(e) => {
+        Err(e) => {
             warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: packument did not normalize");
             None
         }
-        // `inspect_decoded` never decodes, so it never reports this.
-        PackumentOutcome::Undecodable(_) => None,
     }
 }
 

@@ -83,19 +83,7 @@ pub enum IntelError {
 impl std::fmt::Display for IntelError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Backend(e) => {
-                write!(f, "intel store: {e}")?;
-                // Postgres names the table, line and column a failed `COPY` stopped at here,
-                // such as a value longer than its column.
-                match e
-                    .as_database_error()
-                    .and_then(|d| d.try_downcast_ref::<sqlx::postgres::PgDatabaseError>())
-                    .and_then(|d| d.r#where())
-                {
-                    Some(context) => write!(f, " ({context})"),
-                    None => Ok(()),
-                }
-            }
+            Self::Backend(e) => write!(f, "intel store: {}", super::postgres::described(e)),
             Self::Unkeyed { advisory_id } => {
                 write!(
                     f,
@@ -816,6 +804,37 @@ mod tests {
         assert_eq!(
             e.to_string(),
             "intel store: GHSA-x was not keyed before its rows"
+        );
+    }
+
+    /// A store that answers for the package and then cannot say its snapshot fails the
+    /// command.
+    #[tokio::test]
+    async fn a_snapshot_that_cannot_be_read_fails_the_command() {
+        struct Unsnapshotted;
+        impl Intel for Unsnapshotted {
+            fn lookup<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str) -> Lookup<'a, Vec<Record>> {
+                Box::pin(async move { Ok(Vec::new()) })
+            }
+            fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
+                Box::pin(async move { Err(IntelError::Backend(sqlx::Error::PoolTimedOut)) })
+            }
+            fn package<'a>(&'a self, _: &'a str, _: &'a str) -> Lookup<'a, Option<PackageIntel>> {
+                Box::pin(async move { Ok(Some(nothing_known("s0"))) })
+            }
+        }
+        let Err(NoIntel::Failed(why)) = for_command(Some(&Unsnapshotted), "npm", "x", true).await
+        else {
+            panic!("a snapshot that cannot be read fails");
+        };
+        assert!(why.starts_with("intel store: "), "{why}");
+        // For the trait's own coverage: the lookup answers nothing.
+        assert!(
+            Unsnapshotted
+                .lookup("npm", "x", "1")
+                .await
+                .expect("answers")
+                .is_empty()
         );
     }
 }

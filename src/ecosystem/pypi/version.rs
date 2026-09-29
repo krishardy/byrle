@@ -152,19 +152,20 @@ impl Ord for Version {
 /// The normalised form.
 impl fmt::Display for Version {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut out = String::new();
         if self.epoch != 0 {
-            write!(f, "{}!", self.epoch)?;
+            out.push_str(&format!("{}!", self.epoch));
         }
         let release: Vec<String> = self.release.iter().map(u64::to_string).collect();
-        f.write_str(&release.join("."))?;
+        out.push_str(&release.join("."));
         if let Some((phase, n)) = self.pre {
-            write!(f, "{}{n}", phase.as_str())?;
+            out.push_str(&format!("{}{n}", phase.as_str()));
         }
         if let Some(n) = self.post {
-            write!(f, ".post{n}")?;
+            out.push_str(&format!(".post{n}"));
         }
         if let Some(n) = self.dev {
-            write!(f, ".dev{n}")?;
+            out.push_str(&format!(".dev{n}"));
         }
         if let Some(local) = &self.local {
             let parts: Vec<String> = local
@@ -174,9 +175,9 @@ impl fmt::Display for Version {
                     Local::Number(n) => n.to_string(),
                 })
                 .collect();
-            write!(f, "+{}", parts.join("."))?;
+            out.push_str(&format!("+{}", parts.join(".")));
         }
-        Ok(())
+        f.write_str(&out)
     }
 }
 

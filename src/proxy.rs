@@ -398,12 +398,21 @@ impl Proxy {
     /// Additional origins whose artifacts this proxy serves, beyond the upstream and the
     /// default registry, and origins it permits a client to fetch directly.
     pub fn with_origin_policy<'a>(
-        mut self,
+        self,
         served: impl IntoIterator<Item = &'a str>,
         allowed_direct: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, crate::origin::OriginError> {
         let served: Vec<String> = served.into_iter().map(str::to_owned).collect();
         let allowed_direct: Vec<String> = allowed_direct.into_iter().map(str::to_owned).collect();
+        self.with_origin_lists(served, allowed_direct)
+    }
+
+    /// [`Proxy::with_origin_policy`] with its lists collected, so there is one body.
+    fn with_origin_lists(
+        mut self,
+        served: Vec<String>,
+        allowed_direct: Vec<String>,
+    ) -> Result<Self, crate::origin::OriginError> {
         self.config_mut().origins = self.origin_policy_for(&served, &allowed_direct)?;
         self.config_mut().served_origins = served;
         self.config_mut().allowed_direct = allowed_direct;
@@ -2565,7 +2574,7 @@ impl Exchange<'_> {
             self.negotiation.encoding,
             self.negotiation.rewrite_base.as_deref(),
             &self.path,
-            |bytes| self.log_proxied(status, bytes),
+            &|bytes| self.log_proxied(status, bytes),
         )
     }
 
@@ -2627,7 +2636,7 @@ fn finish(
     chosen_encoding: RequestedEncoding,
     rewrite_base: Option<&str>,
     path_and_query: &str,
-    log_proxied: impl Fn(u64),
+    log_proxied: &dyn Fn(u64),
 ) -> Response {
     let body = match forwarded {
         Some(rewritten) => {
@@ -5032,7 +5041,7 @@ mod tests {
                 encoding,
                 Some(base),
                 "/lodash",
-                |_| {},
+                &|_| {},
             )
         };
 

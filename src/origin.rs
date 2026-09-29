@@ -69,6 +69,14 @@ impl ReachableOrigins {
         upstreams: impl IntoIterator<Item = &'a str>,
         additional: impl IntoIterator<Item = &'b str>,
     ) -> Result<Self, OriginError> {
+        Self::of(
+            &upstreams.into_iter().collect::<Vec<_>>(),
+            &additional.into_iter().collect::<Vec<_>>(),
+        )
+    }
+
+    /// [`ReachableOrigins::new`] with its lists collected, so there is one body.
+    fn of(upstreams: &[&str], additional: &[&str]) -> Result<Self, OriginError> {
         let mut origins = Vec::new();
         for upstream in upstreams {
             let origin = normalise_origin(upstream)?;
@@ -194,6 +202,11 @@ impl OriginPolicy {
         reachable: ReachableOrigins,
         allowed_direct: impl IntoIterator<Item = &'a str>,
     ) -> Result<Self, OriginError> {
+        Self::of(reachable, &allowed_direct.into_iter().collect::<Vec<_>>())
+    }
+
+    /// [`OriginPolicy::new`] with its list collected, so there is one body.
+    fn of(reachable: ReachableOrigins, allowed_direct: &[&str]) -> Result<Self, OriginError> {
         let mut allowed = Vec::new();
         for base in allowed_direct {
             let base = base.trim();
@@ -365,6 +378,17 @@ impl std::error::Error for RewriteError {}
 pub fn rewrite_artifact_origins<'a>(
     json: &[u8],
     artifacts: impl IntoIterator<Item = &'a str>,
+    reachable: &ReachableOrigins,
+    public_base: &str,
+) -> Result<Rewritten, RewriteError> {
+    let artifacts: Vec<&str> = artifacts.into_iter().collect();
+    rewrite_listed(json, &artifacts, reachable, public_base)
+}
+
+/// [`rewrite_artifact_origins`] with its list collected, so there is one body.
+fn rewrite_listed(
+    json: &[u8],
+    artifacts: &[&str],
     reachable: &ReachableOrigins,
     public_base: &str,
 ) -> Result<Rewritten, RewriteError> {

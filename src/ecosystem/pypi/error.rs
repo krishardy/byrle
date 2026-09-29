@@ -27,3 +27,18 @@ impl std::fmt::Display for PypiError {
 }
 
 impl std::error::Error for PypiError {}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_json_error_says_the_index_is_not_readable() {
+        let e = PypiError::NotJson(serde_json::from_str::<()>("{").unwrap_err());
+        assert!(
+            e.to_string().starts_with("the index is not readable: "),
+            "{e}"
+        );
+    }
+}

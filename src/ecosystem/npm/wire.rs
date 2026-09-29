@@ -256,4 +256,24 @@ mod tests {
         assert!(message.contains("repository URL string"), "got: {message}");
         assert!(message.contains("object"), "got: {message}");
     }
+
+    /// A repository or dependency map whose JSON is broken, or whose fields have the wrong
+    /// type, is an error from the deserializer rather than a value.
+    #[test]
+    fn broken_json_in_a_repository_or_dependency_map_is_an_error() {
+        for json in [
+            r#"{"url": 5}"#,
+            r#"{"url": "u", "type": 5}"#,
+            r#"{"url": "u", "directory": 5}"#,
+            r#"{"url": "u", "other": }"#,
+            r#"{"url": "u", "#,
+            r#"{"type": "git"}"#,
+        ] {
+            assert!(
+                serde_json::from_slice::<Repository>(json.as_bytes()).is_err(),
+                "{json}"
+            );
+        }
+        assert!(serde_json::from_slice::<DirectSpecs>(b"{").is_err());
+    }
 }

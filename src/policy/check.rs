@@ -701,4 +701,42 @@ mod tests {
             "{refused}"
         );
     }
+
+    /// A version the registry does not list, or whose publish times cannot be fetched, is a
+    /// note naming the entry.
+    #[tokio::test]
+    async fn a_waiver_that_cannot_be_dated_says_why() {
+        use crate::util::test_support::{Answer, scripted};
+        let abbrev = crate::ecosystem::npm::fixture("lodash-4.17.21.abbrev.json");
+        for (answers, purl, says) in [
+            (
+                vec![Answer::body(abbrev.clone())],
+                "pkg:npm/lodash@0.0.1",
+                "the registry publishes no date for it",
+            ),
+            (
+                vec![Answer::body(abbrev.clone()), Answer::Status(500)],
+                "pkg:npm/lodash@4.17.21",
+                "publish times could not be fetched",
+            ),
+        ] {
+            let addr = scripted(answers).await;
+            let clients = crate::ecosystem::Clients::from_env(&crate::env::testing::with(&[(
+                crate::env::UPSTREAM_NPM,
+                &format!("http://{addr}"),
+            )]))
+            .expect("the upstream parses");
+            let policy = waiving(&format!("ecosystem: npm, purl: \"{purl}\""));
+            let (outlived, notes) = outlived_waivers(&policy, &clients, TODAY).await;
+            assert!(outlived.is_empty());
+            assert_eq!(notes.len(), 1, "{notes:?}");
+            assert!(notes[0].contains(says), "{says}: {notes:?}");
+        }
+    }
+
+    /// An entry that names no package is no waiver.
+    #[test]
+    fn an_entry_naming_no_package_is_no_waiver() {
+        assert!(cooldown_waivers(&waiving("ecosystem: npm, has_install_scripts: true")).is_empty());
+    }
 }

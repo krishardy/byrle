@@ -76,6 +76,19 @@ pub async fn intel_from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
         .map_err(|e| format!("{}: {e}", crate::env::DATABASE_URL))
 }
 
+/// `e`, and where Postgres says it stopped: a failed `COPY` names the table, line and column,
+/// such as a value longer than its column.
+pub(crate) fn described(e: &sqlx::Error) -> String {
+    match e
+        .as_database_error()
+        .and_then(|d| d.try_downcast_ref::<sqlx::postgres::PgDatabaseError>())
+        .and_then(|d| d.r#where())
+    {
+        Some(context) => format!("{e} ({context})"),
+        None => e.to_string(),
+    }
+}
+
 /// Why a command that cannot run without the store did not get one.
 #[derive(Debug)]
 pub struct Refused {

@@ -86,22 +86,27 @@ impl Platform {
 impl Target {
     /// The platform this build runs on.
     pub fn this_machine() -> Self {
-        let os = match std::env::consts::OS {
+        Self::named(
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            cfg!(target_env = "musl"),
+        )
+    }
+
+    /// A platform as Rust names it, in npm's names.
+    fn named(os: &str, arch: &str, musl: bool) -> Self {
+        let os = match os {
             "macos" => "darwin",
             "windows" => "win32",
             other => other,
         };
-        let cpu = match std::env::consts::ARCH {
+        let cpu = match arch {
             "x86_64" => "x64",
             "aarch64" => "arm64",
             "x86" => "ia32",
             other => other,
         };
-        let libc = if cfg!(target_env = "musl") {
-            "musl"
-        } else {
-            "glibc"
-        };
+        let libc = if musl { "musl" } else { "glibc" };
         let libc = (os == "linux").then_some(libc);
         Self {
             os: os.to_owned(),
@@ -414,5 +419,36 @@ mod tests {
                 path.display()
             )
         );
+    }
+
+    /// Rust's names for a platform, in npm's.
+    #[test]
+    fn a_platform_is_named_as_npm_names_it() {
+        let named = |os, arch, musl| {
+            let t = Target::named(os, arch, musl);
+            format!(
+                "{}-{}{}",
+                t.os,
+                t.cpu,
+                t.libc.map(|l| format!("-{l}")).unwrap_or_default()
+            )
+        };
+        assert_eq!(named("macos", "aarch64", false), "darwin-arm64");
+        assert_eq!(named("windows", "x86", false), "win32-ia32");
+        assert_eq!(named("linux", "x86_64", true), "linux-x64-musl");
+        assert_eq!(named("linux", "riscv64", false), "linux-riscv64-glibc");
+        assert_eq!(named("freebsd", "x86_64", false), "freebsd-x64");
+    }
+
+    /// A name that makes no purl is left out, and a path with no file name is no unread
+    /// lockfile.
+    #[test]
+    fn what_makes_no_purl_or_names_no_file_is_skipped() {
+        let listed = [
+            ("npm".to_owned(), "a".to_owned(), "1.0.0".to_owned()),
+            ("cargo".to_owned(), "b".to_owned(), "1.0.0".to_owned()),
+        ];
+        assert_eq!(references(listed).len(), 1);
+        assert!(unread(Path::new("/")).is_none());
     }
 }

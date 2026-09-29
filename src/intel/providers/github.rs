@@ -553,4 +553,33 @@ mod tests {
             End::Fixed("3.1.30.post1".to_owned())
         );
     }
+
+    /// Each error says where it came from.
+    #[test]
+    fn each_error_names_github() {
+        assert_eq!(
+            GithubError::Api("rate limited".to_owned()).to_string(),
+            "GitHub answered with an error: rate limited"
+        );
+        assert_eq!(
+            GithubError::Empty.to_string(),
+            "GitHub returned no advisories"
+        );
+    }
+
+    /// A range written in a form GitHub does not document is unexpressed, an `=` range is
+    /// one version, and a page with no data is skipped.
+    #[test]
+    fn exact_and_unknown_ranges_and_empty_pages() {
+        assert!(matches!(
+            bounds(VersionOrder::SemVer, "~> 1.0"),
+            Bounds::Unexpressed
+        ));
+        let pages = br#"[{"data": null}, {"data": {"securityVulnerabilities": {"nodes": [
+            {"package": {"name": "a"}, "vulnerableVersionRange": "= 1.0.0",
+             "advisory": {"ghsaId": "GHSA-1", "identifiers": [], "withdrawnAt": null}}]}}}]"#;
+        let rows = parse(Ecosystem::Npm, pages).expect("parses");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].affected.len(), 1);
+    }
 }

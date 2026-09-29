@@ -722,8 +722,7 @@ mod tests {
             "bad ceiling"
         );
 
-        use std::os::unix::ffi::OsStringExt;
-        let unreadable = Env::from_lookup(|_: &str| Some(OsString::from_vec(vec![0x66, 0xff])));
+        let unreadable = crate::env::testing::with_unreadable(&[], env::POLICY);
         reload_policy(&proxy, &unreadable);
         assert_eq!(
             digest(&proxy),

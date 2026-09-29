@@ -49,6 +49,17 @@ logged. A filter on the layer left every event on once the subscriber was instal
 call is covered once a test reaches it without capturing its level. Release builds do not
 have `log-always` or the logger.
 
+## Generic functions
+
+`llvm-cov report` counts each generic function by its best-covered instantiation. A test
+that calls one with its own type, such as `fetched::<u8>`, makes an instantiation that
+reaches some branches and not others. On 2026-09-29, 26 missed regions were such cases.
+
+A generic function with branches takes its arguments in a small generic shell and calls a
+non-generic core: `ReachableOrigins::new` calls `ReachableOrigins::of` with slices, and
+`Spool::write` calls `write_chunks` with a `dyn Stream`. A test that has to call a generic
+function uses the type production does.
+
 ## Consequences
 
 - `make dev-setup` installs the nightly and its `llvm-tools-preview`.
