@@ -1,5 +1,4 @@
 # Files not yet held to scripts/make/comments.py. Only ever shrinks.
-src/ecosystem/npm/normalize.rs
 src/policy/decide.rs
 src/policy.rs
 src/proxy.rs
