@@ -8,16 +8,13 @@
   1 line. An environment variable is a constant, so it gets 1 line too.
 - No `//` comments, except `// nosemgrep:` directives, which semgrep reads.
 
-Blank `///` lines count. Files listed in `comments-baseline.txt` are not yet held to this;
-a listed file that passes is an error too, so the list only shrinks.
-See docs/engineering_decisions/source-comments.md.
+Blank `///` lines count. See docs/engineering_decisions/source-comments.md.
 """
 import pathlib
 import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-BASELINE = ROOT / "scripts/make/comments-baseline.txt"
 MODULE_LIMIT = 4
 ITEM_LIMIT = 1
 FN_DESCRIPTION = 2
@@ -170,36 +167,12 @@ def main():
         for pattern in ("src/**/*.rs", "tests/*.rs")
         for p in ROOT.glob(pattern)
     )
-    baseline = set()
-    if BASELINE.exists():
-        baseline = {
-            line.strip()
-            for line in BASELINE.read_text().splitlines()
-            if line.strip() and not line.startswith("#")
-        }
     failed = False
     for path in files:
         name = str(path.relative_to(ROOT))
-        found = problems(path)
-        if name in baseline:
-            if not found:
-                print(f"{name}: passes, so remove it from {BASELINE.name}")
-                failed = True
-            continue
-        for problem in found:
+        for problem in problems(path):
             print(f"{name}:{problem}")
             failed = True
-    stale = baseline - {str(p.relative_to(ROOT)) for p in files}
-    for name in sorted(stale):
-        print(f"{name}: in {BASELINE.name} but not a source file")
-        failed = True
-    if "--baseline" in sys.argv:
-        failing = [str(p.relative_to(ROOT)) for p in files if problems(p)]
-        BASELINE.write_text(
-            "# Files not yet held to scripts/make/comments.py. Only ever shrinks.\n"
-            + "".join(f"{name}\n" for name in failing)
-        )
-        return 0
     return 1 if failed else 0
 
 

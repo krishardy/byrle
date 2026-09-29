@@ -2826,8 +2826,7 @@ mod tests {
         e.finish().unwrap()
     }
 
-    /// Everything a fake upstream saw, so a test can assert on the request the proxy
-    /// made rather than only on the response it returned.
+    /// Everything a fake upstream saw, so a test can assert on the request the proxy made.
     #[derive(Default)]
     struct Seen {
         paths: Vec<String>,
@@ -2905,9 +2904,7 @@ mod tests {
         (base, seen)
     }
 
-    /// An error page carries a status, not a document. A registry that answers 404 with
-    /// `application/json` is saying the package is gone, and reading that body as a
-    /// packument would report it as one that did not normalise.
+    /// An error page carries a status, not a document.
     #[tokio::test]
     async fn a_failed_response_is_forwarded_rather_than_read() {
         let body = fixture("lodash-4.17.21.abbrev.json");
@@ -2928,9 +2925,7 @@ mod tests {
         assert_eq!(response.bytes().await.unwrap().as_ref(), body.as_slice());
     }
 
-    /// The same for a simple index. The body below would rewrite cleanly if it were read,
-    /// so this measures the status gate rather than the parse failing anyway: a non-2xx
-    /// response is forwarded byte for byte whatever it contains.
+    /// A failed simple-index response is forwarded byte for byte, however readable its body.
     #[tokio::test]
     async fn a_failed_index_response_is_forwarded_rather_than_read() {
         let body = br#"{"name":"x","files":[{"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ab/cd/x-1.0.tar.gz","hashes":{}}]}"#.to_vec();
@@ -2946,9 +2941,8 @@ mod tests {
         assert_eq!(response.bytes().await.unwrap().as_ref(), body.as_slice());
     }
 
-    /// The whole path, through the router: pip asks for a project, the index comes back
-    /// with its files pointed at the proxy, and the URL it now carries is one this proxy
-    /// classifies as an artifact.
+    /// Through the router, an index comes back with its files pointed at the proxy, at URLs
+    /// the proxy classifies as artifacts.
     #[tokio::test]
     async fn an_index_served_through_the_proxy_points_its_files_here() {
         let index = br#"{"name":"x","files":[
@@ -2971,7 +2965,6 @@ mod tests {
             "the file now points at this proxy"
         );
 
-        // The proxy asked its PyPI upstream without sending its own `/simple` twice.
         assert_eq!(seen.lock().unwrap().paths, ["/x/"]);
 
         let path = url.strip_prefix(&base).unwrap();
@@ -3011,10 +3004,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    /// A packument is rewritten, and everything except the artifact URLs has to survive
-    /// it intact. `dist.integrity` above all: npm checks the bytes it downloads against
-    /// it, and the registry signature covers `<name>@<version>:<integrity>`.
+    /// A packument is rewritten, and everything except the artifact URLs has to survive it intact.
     #[tokio::test]
     async fn a_rewritten_packument_changes_only_the_artifact_urls() {
         let original = fixture("lodash-4.17.21.abbrev.json");
@@ -3051,7 +3041,6 @@ mod tests {
             "the artifact has to point at the proxy"
         );
 
-        // Put the original URL back, and nothing else may differ.
         expected["versions"]["4.17.21"]["dist"]["tarball"] =
             served["versions"]["4.17.21"]["dist"]["tarball"].clone();
         assert_eq!(served, expected, "something other than the URL changed");
@@ -3081,7 +3070,6 @@ mod tests {
         assert_eq!(response.headers()[header::RETRY_AFTER], "1");
         assert!(response.text().await.unwrap().contains("deferred"));
 
-        // A path that is not a packument is out of scope, so it is forwarded as usual.
         let other = reqwest::get(format!("{base}/-/ping")).await.unwrap();
         assert_eq!(other.status(), StatusCode::OK);
         assert_eq!(
@@ -3126,7 +3114,6 @@ mod tests {
             body,
         )
         .await;
-        // Zero seconds: already lifted when the request arrives.
         let base = serve(
             Proxy::new(reqwest::Client::new())
                 .with_upstream(Ecosystem::Npm, upstream)
@@ -3177,9 +3164,7 @@ mod tests {
         (serve(router).await, seen)
     }
 
-    /// A 304 carries the upstream's tag, and the client stores what comes back. Unless it
-    /// is marked here, the next revalidation sends a tag this proxy will drop and the
-    /// client gets a full body, alternating 200 and 304 forever.
+    /// A 304 carries this proxy's marked tag, not the upstream's, so the next one is a 304 too.
     #[tokio::test]
     async fn a_revalidated_packument_keeps_the_tag_this_proxy_issued() {
         let (upstream, seen) =
@@ -3247,10 +3232,6 @@ mod tests {
         assert_eq!(proxy.health().documents_uninspected, 1);
     }
 
-    // -----------------------------------------------------------------------
-    // Status handling
-    // -----------------------------------------------------------------------
-
     /// Decision #4's pinned half, end to end. `npm ci` fetches an artifact by name
     /// without asking for a packument, which is the case this covers.
     #[tokio::test]
@@ -3269,7 +3250,6 @@ mod tests {
                     "version: 1\ncooldown_days: 0\n\
                      denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n",
                 )))
-                // Off, so the 403 can only be the policy's and not the origin check's.
                 .with_refuse_unservable(false)
                 .router(),
         )
@@ -3283,8 +3263,6 @@ mod tests {
         assert!(body.contains("pkg:npm/lodash@4.17.21"), "{body}");
         assert!(body.contains("denials"), "{body}");
 
-        // The packument was fetched, because the digest has to be known before the
-        // artifact is. The artifact itself never was.
         let paths = &seen.lock().unwrap().paths;
         assert!(
             !paths.iter().any(|p| p.ends_with(".tgz")),
@@ -3482,8 +3460,6 @@ mod tests {
         const COOLDOWN: Option<&str> = Some("version: 1\ncooldown_days: 7\n");
         const PACKUMENT: &str = "/lodash";
         const TARBALL: &str = "/lodash/-/lodash-4.17.21.tgz";
-        // Label, policy, path, the client's headers, the header asked about, and what
-        // reaches upstream for it.
         type Case<'a> = (
             &'a str,
             Option<&'a str>,
@@ -3493,8 +3469,6 @@ mod tests {
             Option<&'a str>,
         );
         let cases: [Case; 13] = [
-            // npm 9 offers `gzip,deflate` and registry.npmjs.org answers brotli whenever br
-            // is offered. Narrowed, only gzip has to be decoded here.
             (
                 "br narrowed away",
                 None,
@@ -3511,8 +3485,6 @@ mod tests {
                 header::ACCEPT_ENCODING,
                 Some("identity"),
             ),
-            // Rewriting the header to an encoding the client refused would break the
-            // install for the sake of our inspection.
             (
                 "neither gzip nor identity is kept",
                 None,
@@ -3545,7 +3517,6 @@ mod tests {
                 header::PROXY_AUTHORIZATION,
                 None,
             ),
-            // A credential for this proxy, an account's token under TODO Stage 8.
             (
                 "a credential for this proxy",
                 None,
@@ -3554,11 +3525,7 @@ mod tests {
                 header::AUTHORIZATION,
                 None,
             ),
-            // reqwest writes the upstream's own `Host`.
             ("the proxy's Host", None, TARBALL, &[], header::HOST, None),
-            // Only `If-None-Match` carries the identity that says a cached body was
-            // rewritten here. A date-based 304 would authorise the client to serve one that
-            // was not.
             (
                 "a date conditional",
                 None,
@@ -3575,9 +3542,6 @@ mod tests {
                 header::IF_RANGE,
                 None,
             ),
-            // Measured: after rewriting was enabled at an address that had run without it,
-            // npm sent the upstream's own tag, the registry answered 304, and the client
-            // stayed on its unrewritten copy.
             (
                 "a tag this proxy did not issue",
                 None,
@@ -3594,7 +3558,6 @@ mod tests {
                 header::ACCEPT,
                 Some(npm::ABBREVIATED_ACCEPT),
             ),
-            // Replaced, not joined.
             (
                 "the full packument, under a cooldown",
                 COOLDOWN,
@@ -3615,10 +3578,7 @@ mod tests {
         }
     }
 
-    /// A tag this proxy issued reaches upstream as the upstream's own tag. One issued at
-    /// another address does not reach upstream: a 304 would leave the client with artifact
-    /// URLs pointing at an address nobody listens on, so the registry has to send a body
-    /// to rewrite afresh.
+    /// A tag this proxy issued reaches upstream as the upstream's own tag.
     #[test]
     fn a_tag_is_turned_back_only_at_the_address_that_issued_it() {
         let proxy = Proxy::new(reqwest::Client::new());
@@ -3643,10 +3603,8 @@ mod tests {
         }
     }
 
-    /// Artifact URLs point at the address the client used, so a proxy reachable by several
-    /// names points each client back at its own. A configured base wins over `Host`, which
-    /// a deployment behind a load balancer needs, and which pins a stable name into
-    /// lockfiles.
+    /// Artifact URLs point at the address the client used, so a proxy reachable by several names
+    /// points each client back at its own.
     #[test]
     fn artifact_urls_point_at_the_host_the_client_used_unless_a_base_is_configured() {
         let mut headers = HeaderMap::new();
@@ -3697,7 +3655,6 @@ mod tests {
     #[tokio::test]
     async fn an_artifact_request_logs_the_answer_for_the_file_it_names() {
         let proxy = offline(None, Some(NO_POLICY));
-        // 3.0 offers a wheel, which runs nothing, and an sdist, which runs `setup.py`.
         resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, PYPI_YANKED).await;
         for (file, expected) in [
             (
@@ -3745,9 +3702,8 @@ mod tests {
         );
     }
 
-    /// An index with no publish time in it, and a file host that answers `Last-Modified`:
-    /// the cooldown is decided on the file's own date. A PEP 503 page is this case, and
-    /// almost none carries a date: see `docs/engineering_decisions/pep-503-html-index.md`.
+    /// An index with no publish time in it, and a file host that answers `Last-Modified`: the
+    /// cooldown is decided on the file's own date.
     #[tokio::test]
     async fn a_cooldown_is_decided_on_the_file_hosts_last_modified() {
         for (label, status, last_modified, refused) in [
@@ -3763,11 +3719,7 @@ mod tests {
                 Some("2020-01-01T00:00:00Z".parse::<jiff::Timestamp>().unwrap()),
                 false,
             ),
-            // No date, so the check is dropped as unenforceable, which is what it was
-            // before the file host was asked at all.
             ("no Last-Modified", StatusCode::OK, None, false),
-            // A host that refuses the HEAD answers no question, whatever it puts in the
-            // headers of its refusal.
             (
                 "a 404 carrying a date",
                 StatusCode::NOT_FOUND,
@@ -3785,8 +3737,6 @@ mod tests {
                 response.body(Body::empty()).unwrap()
             }));
             let host = serve(router).await;
-            // An sdist, so `install_scripts` is allowed here and the cooldown is the only
-            // check that can refuse it.
             let yaml = "version: 1\ncooldown_days: 7\ninstall_scripts: allow\n";
             let proxy = offline(None, Some(yaml))
                 .with_origin_policy([host.as_str()], [])
@@ -3801,9 +3751,7 @@ mod tests {
         }
     }
 
-    /// A deprecated version is served, and the message its publisher left is logged. npm
-    /// installs one after a warning and no client skips it, so the proxy does not refuse
-    /// it: `docs/engineering_decisions/yanked-files.md`.
+    /// A deprecated version is served, and the message its publisher left is logged.
     #[tokio::test]
     async fn a_deprecated_version_is_served_and_its_message_logged() {
         let proxy = offline(None, Some(NO_POLICY));
@@ -4064,14 +4012,10 @@ mod tests {
         use crate::policy::decide::Check;
         const BASE: &str = NO_POLICY;
         for check in Check::ALL {
-            // A yank is PyPI's, so that check has its own document and paths:
-            // `a_yanked_version_is_refused_and_filtered`.
             if check == Check::Yanked {
                 yanked_is_refused_and_filtered().await;
                 continue;
             }
-            // Needs an attestation verified, which the analysis job does:
-            // `the_provenance_check_refuses_on_a_pinned_fetch`.
             if check == Check::Provenance {
                 continue;
             }
@@ -4092,7 +4036,6 @@ mod tests {
                         None,
                         "version: 1\ncooldown_days: 36500\n".to_owned(),
                     ),
-                    // Scored under the default `max_cvss`, so only `kev` refuses it.
                     Check::Kev => (
                         LODASH,
                         "lodash",
@@ -4130,7 +4073,6 @@ mod tests {
                         None,
                         format!("{BASE}install_scripts: block\n"),
                     ),
-                    // rimraf 1.0.0 carries npm's `deprecated`.
                     Check::Deprecated => (
                         RIMRAF,
                         "rimraf",
@@ -4152,8 +4094,6 @@ mod tests {
                 !offers(&resolved(&proxy, name, packument).await, version),
                 "{label}"
             );
-            // The same document under a policy that refuses nothing is offered, so the
-            // filtering above is the check's.
             let allowing = offline(None, Some(&format!("{BASE}install_scripts: allow\n")));
             assert!(
                 offers(&resolved(&allowing, name, packument).await, version),
@@ -4189,9 +4129,7 @@ mod tests {
         assert!(fetched(&pinned(&proxy, LODASH_TARBALL).await));
     }
 
-    /// No policy at all is not the same as a policy that allows everything, and neither
-    /// refuses. With no policy the store is never asked, so one that is down changes
-    /// nothing.
+    /// No policy at all is not the same as a policy that allows everything, and neither refuses.
     #[tokio::test]
     async fn without_a_policy_nothing_is_refused_and_the_store_is_not_asked() {
         let down: Arc<dyn Intel> = Arc::new(crate::intel::store::testing::FixedIntel(Err(())));
@@ -4238,9 +4176,7 @@ mod tests {
         );
     }
 
-    /// A 503 says how long to wait and which case it is. Measured over seven clients, a
-    /// 429 is terminal for yarn 1 and bun and every one of the seven retries a 503:
-    /// `docs/engineering_decisions/deferral-status-codes.md`.
+    /// A 503 says how long to wait and which case it is.
     #[tokio::test]
     async fn a_request_the_proxy_cannot_decide_says_how_long_to_wait_and_why() {
         for (unavailable, reason) in [
@@ -4274,19 +4210,13 @@ mod tests {
         assert_eq!(response.status(), 503);
     }
 
-    /// Decision #4's resolution half. The refused version is not in the document, so the
-    /// client's resolver picks another. Filtering is a policy question and repointing
-    /// artifact URLs a transport one, so it happens with rewriting off too:
-    /// `enforcement-tiers.md` says rewriting is correctly off once the proxy terminates TLS.
+    /// A denied version is absent from the packument the client receives, with rewriting off too.
     #[tokio::test]
     async fn a_denied_version_is_absent_from_the_packument_the_client_receives() {
         for rewriting in [true, false] {
             let proxy = offline(None, Some(DENY_LODASH)).with_artifact_rewriting(rewriting);
             let document = resolved(&proxy, "lodash", LODASH).await;
             assert!(!offers(&document, "4.17.21"), "rewriting {rewriting}");
-            // This fixture tags `latest` as 4.18.1, a version the document never carried,
-            // so the tag never named the denied version and survives. Tag dropping is
-            // covered against a document where it does, in `npm::tests::rewriting`.
             assert_eq!(document["dist-tags"]["latest"], "4.18.1");
         }
     }
@@ -4555,11 +4485,8 @@ mod tests {
         assert_eq!(proxy.store.lock().unwrap().records(), 1);
     }
 
-    /// An artifact the proxy cannot serve is removed from the packument, so a resolver
-    /// picks a version that can be examined. It is the only control that works: the client
-    /// would fetch that URL from `elsewhere.example` and never ask the proxy. With the
-    /// refusal off, the document is forwarded as it came, and the URL stays as it was:
-    /// rewriting it would mean the proxy fetching from an arbitrary host.
+    /// An artifact the proxy cannot serve is removed from the packument, so a resolver picks a
+    /// version that can be examined.
     #[tokio::test]
     async fn versions_the_proxy_cannot_serve_are_removed_from_the_packument() {
         let refusing = offline(None, None).with_refuse_unservable(true);
@@ -4596,11 +4523,7 @@ mod tests {
         ));
     }
 
-    /// A pinned fetch of a version the filter removes. Decision #4: filter on resolution,
-    /// hard fail on a pinned fetch, because there is no resolution left to influence.
-    /// Clients bucket status codes differently, so the status is configurable by
-    /// (ecosystem, client). pnpm and yarn both carry `npm/` in their user-agent, so this
-    /// also checks the client is read from the first token.
+    /// A pinned fetch of an unservable artifact is refused with the client's configured status.
     #[tokio::test]
     async fn a_pinned_fetch_of_an_unservable_artifact_is_refused_with_the_clients_status() {
         let proxy = offline(None, None)
@@ -4732,9 +4655,7 @@ mod tests {
         assert_eq!(health.allowed_direct_origins, ["https://cdn.example"]);
     }
 
-    /// A refusal is on identity, not on the spelling of the path. `@babel%2ftraverse` and
-    /// `@babel/traverse` are the same package, and a denial written either way reaches
-    /// both.
+    /// A refusal is on identity, not on the spelling of the path.
     #[tokio::test]
     async fn a_denial_matches_both_spellings_of_a_scoped_name() {
         for spelling in [
@@ -4791,11 +4712,7 @@ mod tests {
         assert!(!offered(&base, "lodash", "4.17.21").await);
     }
 
-    /// A version published after an earlier request is held back on the next one. Publish
-    /// times were kept per package once fetched, so a version newer than that fetch had no
-    /// time, `cooldown_days` was unenforceable for it, and the newest version went through.
-    /// Now each metadata request reads the full document, once, and its records carry the
-    /// times.
+    /// A version published after an earlier request is held back on the next one.
     #[tokio::test]
     async fn a_version_published_after_an_earlier_request_is_held_back_by_the_cooldown() {
         let requests = Arc::new(Mutex::new(Vec::<String>::new()));
@@ -4829,7 +4746,6 @@ mod tests {
                     doc["time"]["2.0.0"] = serde_json::Value::String(now);
                     doc["dist-tags"]["latest"] = "2.0.0".into();
                 }
-                // As the registry does: the abbreviated document has no `time` map.
                 let full = seen.last().is_some_and(|accept| accept == npm::FULL_ACCEPT);
                 if !full {
                     doc.as_object_mut().unwrap().remove("time");
@@ -4872,10 +4788,8 @@ mod tests {
         {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0.tar.gz","hashes":{}}
     ]}"#;
 
-    /// No stream in the snapshot covers PyPI, so a file is not served: an empty answer
-    /// would read as "nothing known" about a package nothing was asked about. The index is
-    /// served, because pip reports an index 503 as `No matching distribution found`: see
-    /// `UncoveredMetadata::FilterWithoutIntel`.
+    /// No stream in the snapshot covers PyPI, so a file is not served: an empty answer would read
+    /// as "nothing known" about a package nothing was asked about.
     #[tokio::test]
     async fn a_file_in_an_ecosystem_no_stream_covers_is_a_503() {
         let proxy = offline(Some(malware_everywhere()), Some(NO_POLICY));
@@ -4887,7 +4801,6 @@ mod tests {
             body.contains("no advisory stream for pypi"),
             "the body says which ecosystem: {body}"
         );
-        // npm is covered by the same snapshot and is served.
         let packument = resolve_npm(&proxy, "lodash", LODASH).await;
         assert!(matches!(
             packument,
@@ -4895,9 +4808,7 @@ mod tests {
         ));
     }
 
-    /// Four versions: 1.0 is yanked whole, 2.0 is not, 3.0 offers a wheel and a yanked
-    /// sdist, and 4.0 is yanked with no reason. A sha256 on each, so a record carries a
-    /// digest.
+    /// 1.0 yanked whole, 2.0 not, 3.0 a wheel and a yanked sdist, 4.0 yanked with no reason.
     const PYPI_YANKED: &[u8] = br#"{"name":"x","files":[
         {"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/23/x-1.0.tar.gz","hashes":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"yanked":"broken sdist"},
         {"filename":"x-2.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/24/x-2.0.tar.gz","hashes":{"sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},
@@ -4919,12 +4830,9 @@ mod tests {
         yanked_is_refused_and_filtered().await;
     }
 
-    /// The body of the test above, which
-    /// `every_check_refuses_on_a_pinned_fetch_and_filters_the_packument` also runs, so that
-    /// every check has a case there.
+    /// The yanked case, which `every_check_refuses_on_a_pinned_fetch_and_filters_the_packument`
+    /// also runs.
     async fn yanked_is_refused_and_filtered() {
-        // Both versions are sdists, so `install_scripts` is allowed here and the only
-        // check that can remove a file is the yank.
         const ALLOW_SDISTS: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n";
         let refusing = offline(None, Some(ALLOW_SDISTS));
         assert_eq!(
@@ -4935,7 +4843,6 @@ mod tests {
         for (file, told) in [
             (YANKED_FILE, "yanked: withdrawn, broken sdist"),
             (YANKED_SDIST, "yanked: withdrawn, wheel only"),
-            // PEP 592 allows a bare `true`, and then there is no reason to repeat.
             (YANKED_NO_REASON, "yanked: withdrawn by the registry"),
         ] {
             let (status, body) = refused(pinned(&refusing, file).await).await;
@@ -4989,9 +4896,7 @@ mod tests {
             .collect()
     }
 
-    /// The resolution half for PyPI. 2.0 runs `setup.py` whichever file pip takes, so it
-    /// is removed and pip resolves to 1.0. 1.0's sdist stays: the version offers a wheel,
-    /// and a request for the sdist is refused at the file.
+    /// A PyPI version the policy refuses is removed from the index, and pip resolves to another.
     #[tokio::test]
     async fn a_pypi_version_the_policy_refuses_is_removed_from_the_index() {
         let blocking = offline(
@@ -5009,9 +4914,7 @@ mod tests {
         assert_eq!(unfiltered.len(), 3, "nothing refused, nothing removed");
     }
 
-    /// With no stream covering PyPI the index is still filtered by the checks that need no
-    /// intel. The file request answers 503, held by
-    /// `a_file_in_an_ecosystem_no_stream_covers_is_a_503`.
+    /// With no stream covering PyPI the index is still filtered by the checks that need no intel.
     #[tokio::test]
     async fn a_pypi_index_no_stream_covers_is_filtered_without_intel() {
         let proxy = offline(
@@ -5071,9 +4974,7 @@ mod tests {
         assert!(body.contains("no advisory stream for npm"), "{body}");
     }
 
-    /// A store whose records name one snapshot and whose newest snapshot is another, as
-    /// a refresh between the two reads leaves it. Counts how often it is asked for the
-    /// snapshot.
+    /// A store whose records and newest snapshot differ, as a refresh between two reads leaves it.
     struct Refreshed {
         records_from: &'static str,
         newest: &'static str,
@@ -5254,13 +5155,7 @@ mod tests {
         );
     }
 
-    /// §5: a not-ready state never wears a code that reads as a block. A 4xx from a
-    /// registry proxy means policy denied you, so every state that is not a denial has to
-    /// be a 5xx.
-    ///
-    /// This enumerates the statuses the proxy produces of its own accord. Codes forwarded
-    /// from upstream are not among them: those are the registry's answer, covered by
-    /// `upstream_statuses_pass_through_unchanged`.
+    /// §5: a not-ready state never wears a code that reads as a block.
     #[tokio::test]
     async fn the_only_4xx_this_proxy_produces_is_a_policy_refusal() {
         let addr = crate::util::test_support::closing_server().await;
@@ -5271,8 +5166,6 @@ mod tests {
         )
         .await;
 
-        // Every request kind, because a tarball looks its packument up first and so has
-        // a second way to meet an upstream that sends no response.
         for path in ["/lodash", "/lodash/-/lodash-4.17.21.tgz", "/-/ping"] {
             let status = reqwest::get(format!("{dead}{path}"))
                 .await
@@ -5281,10 +5174,6 @@ mod tests {
             assert_eq!(status, StatusCode::BAD_GATEWAY, "{path}");
         }
 
-        // The one 4xx, and it is a denial rather than a state. It needs a live upstream:
-        // a denial names an exact version, so the packument has to be read before the
-        // policy has anything to answer about. An unreachable registry is a 502 for every
-        // request, including one the policy would have refused had it known.
         let (upstream, _) = upstream_serving(
             StatusCode::OK,
             "application/vnd.npm.install-v1+json",
@@ -5313,7 +5202,6 @@ mod tests {
             "the default refusal is what makes the code above a denial and not an accident"
         );
 
-        // Health is the proxy describing itself, and it is always ready to do that.
         let health = reqwest::get(format!("{dead}{HEALTH_PATH}")).await.unwrap();
         assert_eq!(health.status(), StatusCode::OK);
     }
@@ -5333,9 +5221,8 @@ mod tests {
         }
     }
 
-    /// A 304 leaves the proxy nothing to normalise, so when it holds no records for that
-    /// package it fetches the packument itself. Without this a restarted proxy meets a
-    /// warm client cache and observes nothing at all.
+    /// A 304 leaves the proxy nothing to normalise, so when it holds no records for that package it
+    /// fetches the packument itself.
     #[tokio::test]
     async fn a_304_with_no_records_makes_the_proxy_fetch_the_packument() {
         let body = fixture("lodash-4.17.21.abbrev.json");
@@ -5348,8 +5235,6 @@ mod tests {
                 let body = body.clone();
                 async move {
                     seen.lock().unwrap().headers.push(req.headers().clone());
-                    // Anything with a conditional header gets a 304, so the only 200 is
-                    // the proxy's own unconditional fetch.
                     if req.headers().contains_key(header::IF_NONE_MATCH) {
                         return Response::builder()
                             .status(StatusCode::NOT_MODIFIED)
@@ -5373,7 +5258,6 @@ mod tests {
         )
         .await;
 
-        // A tag this proxy issued, so the conditional is forwarded rather than dropped.
         let ours = crate::http::mark_etag("W/\"abc123\"", &base);
         let response = reqwest::Client::new()
             .get(format!("{base}/lodash"))
@@ -5383,7 +5267,6 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), 304);
 
-        // Having fetched it, the proxy can answer for the artifact without another fetch.
         let response = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
             .await
             .unwrap();
@@ -5522,10 +5405,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Digest verification
-    // -----------------------------------------------------------------------
-
     /// Serve a packument and a tarball, so a test can walk the real sequence: the
     /// packument publishes the digest, the tarball request finds it, the body is checked
     /// on the way past.
@@ -5576,7 +5455,6 @@ mod tests {
         let tarball: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
         let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
 
-        // The packument has to go past first, or there is no digest to check against.
         reqwest::get(format!("{base}/widget")).await.unwrap();
 
         let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
@@ -5631,9 +5509,6 @@ mod tests {
             .unwrap();
         assert_eq!(artifacts_verified(&base).await, 1);
 
-        // A hit still hashes. Skipping it would mean a registry that served correct bytes
-        // once could serve anything afterwards, which is what the verification exists to
-        // catch. The body arriving whole is what proves the check ran.
         let again = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
@@ -5645,9 +5520,7 @@ mod tests {
         );
     }
 
-    /// A mismatch is the registry serving bytes its own packument does not describe.
-    /// Recording that would be recording the attack, and a later request for the same
-    /// digest would read as already seen.
+    /// A tarball that fails its digest is not recorded as verified.
     #[tokio::test]
     async fn a_tarball_that_fails_its_digest_is_not_remembered() {
         let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
@@ -5661,11 +5534,7 @@ mod tests {
         assert_eq!(artifacts_verified(&base).await, 0);
     }
 
-    /// A registry serving bytes its own packument does not describe. The client must not
-    /// end up with a complete body: the response ends in an error instead.
-    ///
-    /// Checked against a real `npm install`, which reported ECONNRESET, retried twice
-    /// with backoff, and failed the install. Nothing was written to `node_modules`.
+    /// A tarball that fails its digest never reaches the client complete.
     #[tokio::test]
     async fn a_tampered_tarball_never_arrives_complete() {
         let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
@@ -5678,12 +5547,8 @@ mod tests {
         assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
     }
 
-    /// A tarball request with no packument behind it still gets verified, because the
-    /// proxy fetches the packument itself.
-    ///
-    /// This is the `npm ci` case. Measured through the proxy before this existed: 69
-    /// tarballs, zero packument requests, nothing verified. A warm npm cache, a restarted
-    /// proxy and an evicted entry produce the same gap.
+    /// A tarball request with no packument behind it still gets verified, because the proxy fetches
+    /// the packument itself.
     #[tokio::test]
     async fn a_tarball_with_no_packument_seen_is_verified_anyway() {
         let honest: Vec<u8> = vec![9u8; 1_000];
@@ -5691,14 +5556,10 @@ mod tests {
         tampered[500] ^= 0xFF;
         let base = registry_with(&sri_of(&honest), tampered).await;
 
-        // No packument request first: straight to the artifact, as `npm ci` does.
         assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
     }
 
-    /// A failed digest must not deliver a whole artifact. Where the failure surfaces
-    /// depends on chunking: a body that arrives in several chunks fails while being read,
-    /// and one that fits in a single chunk fails before the client sees a response at
-    /// all, because the proxy is still holding the only chunk there was.
+    /// A failed digest must not deliver a whole artifact.
     async fn assert_no_complete_body(url: &str) {
         let Ok(response) = reqwest::get(url).await else {
             return;
@@ -5877,7 +5738,6 @@ mod tests {
                 async move { ([(header::CONTENT_TYPE, "application/octet-stream")], body) }
             }),
         );
-        // Every other path, the packument included, 404s.
         let base = serve(
             Proxy::new(reqwest::Client::new())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
@@ -5894,9 +5754,7 @@ mod tests {
         assert!(!body.as_bytes().windows(tarball.len()).any(|w| w == tarball));
     }
 
-    /// An empty body still has to terminate and still has to be checked. reqwest ends a
-    /// stream with an empty chunk, and an artifact of zero bytes has a digest like any
-    /// other.
+    /// An empty body still has to terminate and still has to be checked.
     #[tokio::test]
     async fn an_empty_tarball_is_verified_rather_than_hanging() {
         let base = registry_with(&sri_of(b""), Vec::new()).await;
@@ -5909,9 +5767,7 @@ mod tests {
         assert!(response.bytes().await.unwrap().is_empty());
     }
 
-    /// Two versions in 24,852 publish only SHA-1, which is collision-broken. Those
-    /// artifacts are refused rather than checked weakly: their bytes can be neither
-    /// verified nor analysed.
+    /// Two versions in 24,852 publish only SHA-1, which is collision-broken.
     #[tokio::test]
     async fn a_version_with_only_a_sha1_digest_is_refused() {
         let tarball = vec![3u8; 500];
@@ -5942,9 +5798,8 @@ mod tests {
         }
     }
 
-    /// A client that caches a rewritten packument revalidates against a tag we issued,
-    /// not the upstream's. The proxy has to translate it back, or the registry never
-    /// answers 304 and the conditional request buys nothing.
+    /// A client that caches a rewritten packument revalidates against a tag we issued, not the
+    /// upstream's.
     #[tokio::test]
     async fn a_conditional_request_round_trips_through_the_rewrite() {
         let body = fixture("lodash-4.17.21.abbrev.json");
@@ -6024,12 +5879,6 @@ mod tests {
     }
 
     /// Concurrent packument requests all have to be served, however tight the limit.
-    ///
-    /// The slot is taken after the body is buffered, not before it is read. With the
-    /// acquire placed before the read, waiting held the upstream response open until it
-    /// timed out: 18 of 24 concurrent requests failed with "error decoding response
-    /// body". At a limit of one, every request here queues behind another, which is the
-    /// condition that exposed it.
     #[tokio::test]
     async fn a_tight_concurrency_limit_still_serves_every_request() {
         let body = fixture("lodash-4.17.21.abbrev.json");
@@ -6301,9 +6150,8 @@ mod tests {
             );
         }
 
-        /// A simple index answers the same two reasons a packument does: both are
-        /// rewritten, and a document that cannot be points its files somewhere the proxy
-        /// will not see them.
+        /// A simple index answers the same two reasons a packument does: both are rewritten, and a
+        /// document that cannot be points its files somewhere the proxy will not see them.
         #[test]
         fn a_simple_index_answers_the_same_reasons() {
             assert_eq!(
@@ -6396,8 +6244,6 @@ mod tests {
                     Some("text/html"),
                     Some(DocumentKind::SimpleIndex(IndexFormat::Html)),
                 ),
-                // An index may serve PEP 691 under the generic type, which
-                // `pypi::Client::project` accepts too.
                 (
                     Ecosystem::PyPI,
                     Some("application/json"),
@@ -6448,13 +6294,8 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Artifact analysis
-    // -----------------------------------------------------------------------
-
-    /// A listed version whose tarball the upstream answers 404 stores no analysis, and
-    /// nothing remembers the 404, so every request for it is answered 503. Decided
-    /// 2026-09-28.
+    /// A listed version whose tarball the upstream answers 404 stores no analysis, and nothing
+    /// remembers the 404, so every request for it is answered 503.
     #[tokio::test]
     async fn an_artifact_the_upstream_does_not_have_stays_deferred() {
         let packument = format!(
@@ -6512,7 +6353,6 @@ mod tests {
     #[tokio::test]
     async fn a_deferred_artifact_is_served_on_its_retry_after_the_analysis() {
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
-        // The job's fetch waits here, so the second request is deferred too.
         let gate = Arc::new(Semaphore::new(0));
         let (base, analyser) = analysing_with(
             "analyse-defer",
@@ -6549,7 +6389,6 @@ mod tests {
         let retry = tarball_request(&base).await;
         assert_eq!(retry.status(), 200);
         assert_eq!(retry.bytes().await.unwrap().as_ref(), tarball.as_slice());
-        // A later request is not a return: the deferral was already reported.
         assert_eq!(tarball_request(&base).await.status(), 200);
         drop(guard);
 
@@ -6572,9 +6411,7 @@ mod tests {
         );
     }
 
-    /// Each deferral of a digest is counted from the first, and a return takes the record
-    /// away. Asserted here rather than through captured log lines, which `tracing` drops
-    /// now and then when tests run in parallel.
+    /// Each deferral of a digest is counted from the first, and a return takes the record away.
     #[test]
     fn deferrals_of_one_digest_are_counted_until_it_returns() {
         let digest = Sri::parse(&sri_of(b"widget")).expect("parses");
@@ -6588,9 +6425,8 @@ mod tests {
         assert_eq!(deferred.defer(&digest), 1);
     }
 
-    /// Without a policy, with `install_scripts: allow`, and under an exception that allows
-    /// the package's scripts, nothing the analysis finds changes the answer. The artifact
-    /// is still answered 503 until its analysis has finished, and served after.
+    /// Under any policy, or none, an artifact is answered 503 until its analysis has
+    /// finished, and served after.
     #[tokio::test]
     async fn an_artifact_is_deferred_until_its_analysis_has_finished_under_any_policy() {
         let tarball =
@@ -6642,9 +6478,7 @@ mod tests {
         assert!(retry.text().await.unwrap().contains("install_scripts"));
     }
 
-    /// The packument claims a script and `package.json` names none. The claim stands: npm
-    /// runs `node-gyp rebuild` for a `binding.gyp`, which the reader does not look for. The
-    /// claim alone refuses it, so it is refused without being analysed.
+    /// A claimed script `package.json` does not name still refuses under `block`, unanalysed.
     #[tokio::test]
     async fn a_claimed_script_the_artifact_does_not_name_is_still_refused_under_block() {
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
@@ -6661,9 +6495,7 @@ mod tests {
         assert_eq!(analyser.in_flight(), 0, "no job was started");
     }
 
-    /// An analysis already stored, by a proxy without a policy or another proxy on the
-    /// same database, says the tarball's `package.json` names no script. The packument
-    /// claims one, and the claim stands under `block`.
+    /// A stored analysis finding no script never removes a script the packument claims.
     #[tokio::test]
     async fn a_stored_analysis_never_removes_a_claimed_script() {
         use crate::analysis::store::{Analyses, Analysis, InProcess};
@@ -6691,7 +6523,6 @@ mod tests {
         .await;
         assert_eq!(tarball_request(&base).await.status(), 403);
 
-        // The same analysis, with no claim, is served: it is the analysis being read.
         let (base, _) = analysing_with(
             "analyse-stored-none",
             "",
@@ -6761,9 +6592,8 @@ mod tests {
         assert_eq!(tarball_request(&base).await.status(), 403);
     }
 
-    /// A script the artifact runs and the metadata did not declare is a warning whatever
-    /// the policy says. One the metadata did declare, and an unreadable archive, are
-    /// reported without it.
+    /// A script the artifact runs and the metadata did not declare is a warning whatever the policy
+    /// says.
     #[test]
     fn a_script_the_metadata_hid_is_a_warning() {
         let record = &two_versions().records[0];
@@ -6811,10 +6641,6 @@ mod tests {
         assert_eq!(tarball_request(&base).await.status(), 403);
         assert_eq!(analyser.in_flight(), 0, "no job was started");
     }
-
-    // -----------------------------------------------------------------------
-    // Provenance
-    // -----------------------------------------------------------------------
 
     const PROVENANCE: &str = "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n";
 
@@ -6997,8 +6823,6 @@ mod tests {
         let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         analyser.ended(1).await;
-        // The upstream refused the connection, so nothing was stored and the retry waits
-        // again rather than being served unverified.
         let (status, _) = refused(pinned(&proxy, WIDGET_2).await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
         analyser.ended(2).await;
@@ -7221,10 +7045,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Bypass self-detection
-    // -----------------------------------------------------------------------
-
     /// A registry whose `widget` 1.0.0 tarball answers 304 to a conditional request and 200
     /// otherwise, and whose 2.0.0 tarball is gone, 404. Both digests are published.
     async fn conditional_registry() -> (String, Vec<u8>) {
@@ -7278,9 +7098,7 @@ mod tests {
         (base, tarball)
     }
 
-    /// A 304 and a 404 on an artifact pass through as they came. Neither body is the
-    /// artifact, so neither is hashed or reported as a mismatch, and neither counts as
-    /// verified.
+    /// A 304 and a 404 on an artifact pass through as they came.
     #[tokio::test]
     async fn an_artifact_answered_without_its_bytes_is_passed_through_unhashed() {
         let (base, tarball) = conditional_registry().await;
@@ -7328,7 +7146,6 @@ mod tests {
             revalidated[0]
         );
         assert_eq!(artifacts_verified(&base).await, 1);
-        // The 404 is not a revalidation.
         assert_eq!(revalidations(&base).await, 1);
     }
 
@@ -7369,7 +7186,6 @@ mod tests {
             crate::record::DocumentDetail::Abbreviated,
         );
         let (guard, log) = capture(tracing::Level::WARN);
-        // Reported, not refused: the artifact is still fetched.
         let step = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
         assert!(matches!(step, ArtifactStep::Fetch(_)));
         drop(guard);
@@ -7385,9 +7201,8 @@ mod tests {
         assert_eq!(proxy.health().artifacts_with_direct_dependencies, 1);
     }
 
-    /// A client that reads documents and fetches no artifact in a window is reported when
-    /// the window closes, and kept in health until the next one. HEAD requests and bun's
-    /// resolver probes are not counted.
+    /// A client that reads documents and fetches no artifact in a window is reported when the
+    /// window closes, and kept in health until the next one.
     #[tokio::test]
     async fn a_client_reading_documents_and_no_artifacts_is_reported() {
         let proxy = offline(None, None);
@@ -7413,7 +7228,6 @@ mod tests {
             proxy.health().clients_without_artifacts,
             [("pnpm".to_owned(), 3)].into()
         );
-        // The next window starts empty.
         proxy.report_traffic();
         assert!(proxy.health().clients_without_artifacts.is_empty());
     }
@@ -7467,9 +7281,8 @@ mod tests {
         );
     }
 
-    /// Each answer `decide_artifact` reaches after the lookup writes one audit line saying
-    /// what it was. A request answered before a record is found writes none, and so does
-    /// a proxy with no policy.
+    /// Each answer `decide_artifact` reaches after the lookup writes one audit line saying what it
+    /// was.
     #[tokio::test]
     async fn every_pinned_answer_after_the_lookup_is_audited_once() {
         let dir = crate::util::test_support::tempdir("audit-every-answer");
@@ -7592,7 +7405,6 @@ mod tests {
                 ("allow".to_owned(), Some(audit::Answered::Served)),
             ]
         );
-        // `waharoa audit verify` decides each line again from what it recorded.
         let replayed = audit::replay(
             &std::fs::read_to_string(&path).unwrap(),
             &[Policy::parse(PROVENANCE).unwrap()],
@@ -7648,9 +7460,8 @@ mod tests {
         assert_eq!(public_base(&headers, None), None, "not visible ASCII");
     }
 
-    /// A prior whose attestations are published where the proxy will not go, or which has
-    /// no strong digest, cannot be compared with, so the version is served. This version with
-    /// no strong digest fails verification and is refused. Nothing is fetched to decide.
+    /// A prior whose attestations are published where the proxy will not go, or which has no strong
+    /// digest, cannot be compared with, so the version is served.
     #[tokio::test]
     async fn an_attestation_that_cannot_be_verified_counts_as_not_verifying() {
         let edit = |label: &str, change: &dyn Fn(&mut serde_json::Value)| {
