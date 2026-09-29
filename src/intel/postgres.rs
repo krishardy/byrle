@@ -179,110 +179,20 @@ impl PgIntel {
             .execute(&mut *tx)
             .await
             .map_err(IntelError::Backend)?;
-        let (mut advisories, mut aliases, mut affected, mut ranges, mut exploited) =
-            (0, 0, 0, 0, 0);
+        let mut written = Written::default();
         for replacement in sources {
-            let encoded = replacement.encoded;
-            let source = encoded.source.as_str();
-            // Both tables, so a source is replaced whole whichever kind it was before.
-            sqlx::query!("DELETE FROM advisory WHERE source = $1", source)
-                .execute(&mut *tx)
-                .await
-                .map_err(IntelError::Backend)?;
-            sqlx::query!("DELETE FROM exploited_cve WHERE source = $1", source)
-                .execute(&mut *tx)
-                .await
-                .map_err(IntelError::Backend)?;
-            match encoded.kind {
-                Kind::Exploited => {
-                    exploited += copy(&mut tx, load::EXPLOITED, &encoded.first_table).await?;
-                }
-                Kind::Advisories => {
-                    advisories += copy(&mut tx, load::ADVISORY, &encoded.first_table).await?;
-                    let keys: HashMap<String, i64> = sqlx::query!(
-                        "SELECT publisher_id, id FROM advisory WHERE source = $1",
-                        source
-                    )
-                    .fetch_all(&mut *tx)
-                    .await
-                    .map_err(IntelError::Backend)?
-                    .into_iter()
-                    .map(|row| (row.publisher_id, row.id))
-                    .collect();
-                    let children = load::children(replacement.rows, &keys).map_err(
-                        |load::Unkeyed(advisory_id)| IntelError::Unkeyed { advisory_id },
-                    )?;
-                    aliases += copy(&mut tx, load::ALIAS, &children.alias).await?;
-                    affected += copy(&mut tx, load::AFFECTED, &children.affected).await?;
-                    ranges += copy(&mut tx, load::RANGE, &children.range).await?;
-                }
-            }
-
-            // `::text` first, so the parameters are text and sqlx needs no date or JSON type.
-            sqlx::query!(
-                "INSERT INTO intel_source (source, digest, streams) \
-                 VALUES ($1, $2, $3::text::jsonb) \
-                 ON CONFLICT (source) DO UPDATE \
-                 SET digest = EXCLUDED.digest, streams = EXCLUDED.streams",
-                source,
-                encoded.digest,
-                load::streams_json(replacement.streams)
-            )
-            .execute(&mut *tx)
-            .await
-            .map_err(IntelError::Backend)?;
+            write_source(&mut tx, replacement, &mut written).await?;
         }
-        let stored = sqlx::query!("SELECT source, digest FROM intel_source")
-            .fetch_all(&mut *tx)
-            .await
-            .map_err(IntelError::Backend)?;
-        let manifest = load::manifest(
-            stored
-                .iter()
-                .map(|s| (s.source.as_str(), s.digest.as_str())),
-        );
-        let snapshot = load::snapshot_id(&manifest);
-        // With no stream recorded, the aggregate is NULL and the column is not.
-        sqlx::query!(
-            "INSERT INTO intel_snapshot (digest, taken_at, streams) \
-             SELECT $1, $2::text::timestamptz, COALESCE(jsonb_object_agg(e.key, e.value), '{}') \
-             FROM intel_source s CROSS JOIN LATERAL jsonb_each(s.streams) e \
-             ON CONFLICT (digest) DO UPDATE \
-             SET taken_at = EXCLUDED.taken_at, streams = EXCLUDED.streams",
-            snapshot,
-            taken_at
-        )
-        .execute(&mut *tx)
-        .await
-        .map_err(IntelError::Backend)?;
-
-        for replacement in sources {
-            for bundle in replacement.streams {
-                let entry = Ingestion::loaded(
-                    taken_at,
-                    &replacement.encoded.source,
-                    bundle,
-                    &replacement.encoded.digest,
-                    &snapshot,
-                );
-                record(&mut tx, &entry).await?;
-            }
-        }
-        for stream in not_loaded {
-            record(
-                &mut tx,
-                &Ingestion::not_loaded(taken_at, stream, Some(&snapshot)),
-            )
-            .await?;
-        }
+        let (manifest, snapshot) = record_snapshot(&mut tx, taken_at).await?;
+        record_ingestions(&mut tx, sources, not_loaded, taken_at, &snapshot).await?;
 
         tx.commit().await.map_err(IntelError::Backend)?;
         Ok(Loaded {
-            advisories,
-            aliases,
-            affected,
-            ranges,
-            exploited,
+            advisories: written.advisories,
+            aliases: written.aliases,
+            affected: written.affected,
+            ranges: written.ranges,
+            exploited: written.exploited,
             snapshot,
             manifest,
         })
@@ -333,6 +243,147 @@ impl PgIntel {
             })
             .collect())
     }
+}
+
+/// Rows [`PgIntel::replace`] has copied so far, per table.
+#[derive(Default)]
+struct Written {
+    advisories: u64,
+    aliases: u64,
+    affected: u64,
+    ranges: u64,
+    exploited: u64,
+}
+
+/// Delete the rows `replacement`'s source supplied before, copy its new rows, and store its
+/// digest and streams in `intel_source`.
+async fn write_source(
+    conn: &mut PgConnection,
+    replacement: &Replacement<'_>,
+    written: &mut Written,
+) -> Result<(), IntelError> {
+    let encoded = replacement.encoded;
+    let source = encoded.source.as_str();
+    // Both tables, so a source is replaced whole whichever kind it was before.
+    sqlx::query!("DELETE FROM advisory WHERE source = $1", source)
+        .execute(&mut *conn)
+        .await
+        .map_err(IntelError::Backend)?;
+    sqlx::query!("DELETE FROM exploited_cve WHERE source = $1", source)
+        .execute(&mut *conn)
+        .await
+        .map_err(IntelError::Backend)?;
+    match encoded.kind {
+        Kind::Exploited => {
+            written.exploited += copy(conn, load::EXPLOITED, &encoded.first_table).await?;
+        }
+        Kind::Advisories => write_advisories(conn, replacement, written).await?,
+    }
+
+    // `::text` first, so the parameters are text and sqlx needs no date or JSON type.
+    sqlx::query!(
+        "INSERT INTO intel_source (source, digest, streams) \
+         VALUES ($1, $2, $3::text::jsonb) \
+         ON CONFLICT (source) DO UPDATE \
+         SET digest = EXCLUDED.digest, streams = EXCLUDED.streams",
+        source,
+        encoded.digest,
+        load::streams_json(replacement.streams)
+    )
+    .execute(conn)
+    .await
+    .map_err(IntelError::Backend)?;
+    Ok(())
+}
+
+/// Copy `advisory`, read back the keys Postgres assigned, and copy the alias, affected and
+/// range rows carrying them.
+async fn write_advisories(
+    conn: &mut PgConnection,
+    replacement: &Replacement<'_>,
+    written: &mut Written,
+) -> Result<(), IntelError> {
+    let encoded = replacement.encoded;
+    written.advisories += copy(conn, load::ADVISORY, &encoded.first_table).await?;
+    let keys: HashMap<String, i64> = sqlx::query!(
+        "SELECT publisher_id, id FROM advisory WHERE source = $1",
+        encoded.source
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(IntelError::Backend)?
+    .into_iter()
+    .map(|row| (row.publisher_id, row.id))
+    .collect();
+    let children = load::children(replacement.rows, &keys)
+        .map_err(|load::Unkeyed(advisory_id)| IntelError::Unkeyed { advisory_id })?;
+    written.aliases += copy(conn, load::ALIAS, &children.alias).await?;
+    written.affected += copy(conn, load::AFFECTED, &children.affected).await?;
+    written.ranges += copy(conn, load::RANGE, &children.range).await?;
+    Ok(())
+}
+
+/// Hash every source's digest into the snapshot id and upsert its `intel_snapshot` row.
+/// Returns the manifest and the snapshot id.
+async fn record_snapshot(
+    conn: &mut PgConnection,
+    taken_at: &str,
+) -> Result<(String, String), IntelError> {
+    let stored = sqlx::query!("SELECT source, digest FROM intel_source")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(IntelError::Backend)?;
+    let manifest = load::manifest(
+        stored
+            .iter()
+            .map(|s| (s.source.as_str(), s.digest.as_str())),
+    );
+    let snapshot = load::snapshot_id(&manifest);
+    // With no stream recorded, the aggregate is NULL and the column is not.
+    sqlx::query!(
+        "INSERT INTO intel_snapshot (digest, taken_at, streams) \
+         SELECT $1, $2::text::timestamptz, COALESCE(jsonb_object_agg(e.key, e.value), '{}') \
+         FROM intel_source s CROSS JOIN LATERAL jsonb_each(s.streams) e \
+         ON CONFLICT (digest) DO UPDATE \
+         SET taken_at = EXCLUDED.taken_at, streams = EXCLUDED.streams",
+        snapshot,
+        taken_at
+    )
+    .execute(conn)
+    .await
+    .map_err(IntelError::Backend)?;
+    Ok((manifest, snapshot))
+}
+
+/// Append each stream in `sources` to `intel_ingestion` as loaded, and each in `not_loaded`
+/// as not, both with `snapshot`.
+async fn record_ingestions(
+    conn: &mut PgConnection,
+    sources: &[Replacement<'_>],
+    not_loaded: &[NotLoaded],
+    taken_at: &str,
+    snapshot: &str,
+) -> Result<(), IntelError> {
+    for replacement in sources {
+        for bundle in replacement.streams {
+            let entry = Ingestion::loaded(
+                taken_at,
+                &replacement.encoded.source,
+                bundle,
+                &replacement.encoded.digest,
+                snapshot,
+            );
+            record(conn, &entry).await?;
+        }
+    }
+    for stream in not_loaded {
+        record(
+            conn,
+            &Ingestion::not_loaded(taken_at, stream, Some(snapshot)),
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 /// Append one row to `intel_ingestion`.
