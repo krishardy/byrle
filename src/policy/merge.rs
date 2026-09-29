@@ -1,8 +1,5 @@
-//! Comparing one set of settings against another, and whether a check applies at all.
-//!
-//! What remains of the global-to-ecosystem merge this module used to be. There are no
-//! per-ecosystem settings, so nothing is merged; what survives is the part the `packages`
-//! tier needs, which is deciding whether an exception loosens the settings above it.
+//! Comparing an exception's settings against the ones above it, and whether a check applies
+//! to an ecosystem at all.
 
 use super::strictness::{Direction, Strictness};
 use super::{Action, Policy, SetBlock};
@@ -32,8 +29,7 @@ impl Rule {
         }
     }
 
-    /// Every setting an exception can carry. One list, so a setting added to the schema
-    /// and not here is a compile error rather than a silently unchecked field.
+    /// Every setting an exception can carry.
     pub const ALL: [Rule; 7] = [
         Self::CooldownDays,
         Self::Kev,
@@ -45,32 +41,19 @@ impl Rule {
     ];
 }
 
-/// Whether a check means anything for an ecosystem.
-///
-/// Keyed on the ecosystem name as the policy file spells it, not on
-/// [`crate::identity::Ecosystem`], because a policy can name an ecosystem before an
-/// adapter for it exists. Go modules are the case that matters and have no adapter.
-///
-/// The default is that a check applies. An ecosystem is listed here only where a check
-/// genuinely has no meaning, because reporting not-applicable for one that does apply
-/// would hide a real loosening.
+/// Whether a check means anything for an ecosystem, as policy-tier-resolution.md lists.
+/// `ecosystem` is as the policy spells it, so it may name one with no adapter.
+/// `rule` is the check. Returns true unless the ecosystem has no such thing.
 pub fn applies(ecosystem: &str, rule: Rule) -> bool {
-    match (ecosystem, rule) {
-        // Go modules have no install step, so there is no script to run. The check
-        // reports not-applicable rather than a violation.
-        ("golang" | "go", Rule::InstallScripts) => false,
-        // npm has no yank: a version is published or it is gone from the packument.
-        ("npm", Rule::Yanked) => false,
-        // PyPI has no deprecation marker: a release is there, or it is yanked.
-        ("pypi", Rule::Deprecated) => false,
-        _ => true,
-    }
+    !matches!(
+        (ecosystem, rule),
+        ("golang" | "go", Rule::InstallScripts)
+            | ("npm", Rule::Yanked)
+            | ("pypi", Rule::Deprecated)
+    )
 }
 
-/// The settings an exception may change, borrowed from whichever side they come from.
-///
-/// One shape, so the global settings and an exception's `set` block are compared by the
-/// same code.
+/// The settings an exception may change, borrowed from the global settings or a `set` block.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RuleValues<'a> {
     pub cooldown_days: Option<u32>,
@@ -88,8 +71,6 @@ impl<'a> From<&'a SetBlock> for RuleValues<'a> {
             cooldown_days: s.cooldown_days,
             kev: s.kev,
             install_scripts: s.install_scripts,
-            // An empty list is not an exception, so it reads as unset rather than as an
-            // exception that ignores nothing.
             vuln_advisory_ids: (!s.vuln_advisory_ids.is_empty())
                 .then_some(s.vuln_advisory_ids.as_slice()),
             yanked: s.yanked,
@@ -105,9 +86,6 @@ impl From<&Policy> for RuleValues<'_> {
             cooldown_days: Some(p.cooldown_days),
             kev: Some(p.kev),
             install_scripts: Some(p.install_scripts),
-            // There is no global list of advisories to ignore. An exception naming one has
-            // nothing above it to be compared against, and ignoring an advisory can only
-            // ever loosen, which `compare` reports directly.
             vuln_advisory_ids: None,
             yanked: Some(p.yanked),
             deprecated: Some(p.deprecated),
@@ -123,12 +101,10 @@ pub fn compare(
     value: RuleValues<'_>,
     baseline: RuleValues<'_>,
 ) -> Strictness {
-    // Applicability is decided for the whole check, before its values are looked at.
     if !applies(ecosystem, rule) {
         return Strictness::NotApplicable;
     }
     match rule {
-        // Higher is stricter: a longer wait is a stricter policy.
         Rule::CooldownDays => match (value.cooldown_days, baseline.cooldown_days) {
             (Some(value), Some(baseline)) => {
                 Direction::HigherIsStricter.strictness(value, baseline)
@@ -140,8 +116,6 @@ pub fn compare(
         Rule::Yanked => action_strictness(value.yanked, baseline.yanked),
         Rule::Deprecated => action_strictness(value.deprecated, baseline.deprecated),
         Rule::Provenance => action_strictness(value.provenance, baseline.provenance),
-        // Ignoring an advisory can only loosen. There is nothing above to compare it to,
-        // so naming any is a loosening and naming none is no change at all.
         Rule::VulnAdvisoryIds => match value.vuln_advisory_ids {
             Some(ids) if !ids.is_empty() => Strictness::Looser,
             _ => Strictness::Unset,

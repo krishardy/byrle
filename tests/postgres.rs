@@ -1,12 +1,7 @@
 //! The repository traits against a real Postgres: the advisory mirror and the analyses.
 //!
-//! Not unit tests. They need a database, which `make test-integration` starts in a
-//! container and points at with `waharoa::env::TEST_DATABASE_URL`. Without that variable every
-//! test here is skipped, so `cargo test` stays runnable with nothing installed.
-//!
-//! These exist because SQLite was dropped and Postgres is the only backend. A suite left
-//! to itself covers whatever needs no service, which would have been the backend nobody
-//! deploys. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
+//! `make test-integration` sets `waharoa::env::TEST_DATABASE_URL`; without it each test is
+//! skipped. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
 
 #![cfg(not(coverage))]
 
@@ -35,10 +30,8 @@ fn url() -> Option<String> {
 }
 
 /// A schema of its own per test, so tests cannot see each other's rows.
-///
-/// A schema name is an identifier and cannot be a bind parameter, so it is formatted into
-/// the SQL. That is safe because `name` is a `'static` literal from
-/// `skip_without_database!` and the assert below admits only `[a-z0-9_]`.
+/// `name` is formatted into the SQL, so it is a `'static` literal of `[a-z0-9_]` only.
+/// Returns the migrated store, or `None` without a database.
 async fn fresh(name: &'static str) -> Option<PgIntel> {
     assert!(
         !name.is_empty()
@@ -68,7 +61,6 @@ async fn fresh(name: &'static str) -> Option<PgIntel> {
 
 /// A pool whose connection uses schema `name`, which `fresh` has created.
 async fn connect(name: &'static str) -> Option<PgPool> {
-    // One connection, so `search_path` holds for everything the test does.
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(1)
         .after_connect(move |conn, _| {
@@ -86,12 +78,9 @@ async fn connect(name: &'static str) -> Option<PgPool> {
     Some(pool)
 }
 
-/// `raw_sql`, not `query`: a prepared statement takes one command, and these fixtures are
-/// several. `'static` because sqlx 0.9 accepts unaudited SQL only as a literal, and every
-/// fixture is one.
-///
-/// A store with no snapshot has loaded nothing and answers no lookup, so a snapshot older
-/// than any a test names is recorded first.
+/// Run fixture SQL, several commands, after recording a snapshot older than any a test
+/// names, so the store answers lookups. `intel` is the store.
+/// `sql` is a literal, as sqlx accepts unaudited SQL only as one.
 async fn insert(intel: &PgIntel, sql: &'static str) {
     sqlx::raw_sql(
         "INSERT INTO intel_snapshot (digest, taken_at, streams) \
@@ -128,8 +117,10 @@ async fn a_store_is_built_from_the_environment_or_is_absent() {
         .await
         .expect("the database is there")
         .expect("the variable is set");
-    // Migrated, so a query against the schema answers.
-    assert!(intel.snapshot().await.is_ok());
+    assert!(
+        intel.snapshot().await.is_ok(),
+        "migrated, so a query against the schema answers"
+    );
 }
 
 /// A command that cannot run without the store says which variable to set, and exits 2 as
@@ -141,7 +132,6 @@ async fn a_command_without_a_store_is_refused_with_the_variable_to_set() {
     let unset = Env::from_lookup(|_| None);
     let refused = match waharoa::intel::postgres::required(&unset).await {
         Err(refused) => refused,
-        // `PgIntel` is not `Debug`, so `expect_err` cannot print the store it built.
         Ok(_) => panic!("an unset variable is no store"),
     };
     assert_eq!(refused.code, 2);
@@ -173,7 +163,6 @@ macro_rules! skip_without_database {
 async fn the_migrations_apply_to_an_empty_database() {
     let intel = skip_without_database!("t_migrate");
 
-    // Applying twice is what a restart does, and it must not fail.
     intel
         .migrate()
         .await
@@ -697,7 +686,6 @@ async fn the_snapshot_id_covers_every_source_in_the_store() {
     let streams: Vec<&str> = reported.streams.iter().map(|s| s.stream.as_str()).collect();
     assert_eq!(streams, ["s1", "s2"]);
 
-    // One source reloaded with the same rows: still both.
     let third = intel
         .replace_source(osv::bundle::NPM_STREAM, &ours, &fetch("s3"))
         .await
@@ -1098,13 +1086,11 @@ async fn a_range_row_with_both_ends_or_neither_is_refused_by_the_schema() {
     }
 }
 
-/// Every table is keyed by a `BIGINT` identity and joins on it. A string column is sized, and
-/// `TEXT` only where a value has no bound. See
-/// docs/engineering_decisions/intel-schema-keys-and-types.md.
+/// Every table is keyed by a `BIGINT` identity, and a string column is `TEXT` only where
+/// a value has no bound. See docs/engineering_decisions/intel-schema-keys-and-types.md.
 #[tokio::test]
 async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_text() {
     let intel = skip_without_database!("t_schema_types");
-    // `_sqlx_migrations` is sqlx's own.
     let columns: Vec<(String, String, String, String, Option<i32>)> = sqlx::query_as(
         "SELECT table_name::text, column_name::text, data_type::text, is_identity::text, \
                 character_maximum_length::int4 \
@@ -1122,9 +1108,6 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .filter(|c| c.2 == "text")
         .map(named)
         .collect();
-    // An upstream's response headers, an error from anywhere a refresh fails, the message
-    // a read error carries out of serde_json or the tar reader, and an npm script body,
-    // which package.json does not limit.
     assert_eq!(
         text,
         [
@@ -1150,7 +1133,6 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .filter(|c| c.1 == "id" || c.1 == "advisory_id")
         .map(|c| (named(c), c.2.clone(), c.3.clone()))
         .collect();
-    // Alphabetical, which is the order the query returns them in.
     let tables = [
         "advisory",
         "advisory_affected",
@@ -1193,9 +1175,8 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
     );
 }
 
-/// A load appends a row per stream it loaded and per stream that did not, with the snapshot. A
-/// load that fails appends nothing. A refresh that loaded nothing appends its streams with no
-/// snapshot. No row is replaced.
+/// A load appends a row per stream it tried, with the snapshot; a failed load appends
+/// nothing; a refresh that loaded nothing appends its streams with no snapshot.
 #[tokio::test]
 async fn every_stream_a_refresh_tried_is_appended_to_the_history() {
     let intel = skip_without_database!("t_history");
@@ -1399,7 +1380,6 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
     ];
     let encoded = load::encode(osv::bundle::NPM_STREAM, &rows);
     let exploited = load::encode_exploited(kev::STREAM, &["CVE-2099-1".to_owned()].into());
-    // A second advisory source, on packages OSV's records also affect.
     let (every, _) = target(&rows[0]);
     let (listed, _) = target(&rows[1]);
     let manifest = datadog::parse(
@@ -1490,7 +1470,6 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
     assert_eq!(datadog_records, 2, "one row each for {every} and {listed}");
     let kept_snapshot = kept.snapshot().await.expect("answers").expect("kept");
     assert_eq!(kept_snapshot.digest, loaded.snapshot);
-    // The catalogue was loaded with no stream, so only its source says it is there.
     let stored = intel.snapshot().await.expect("query").expect("loaded");
     assert_eq!(kept_snapshot.sources, stored.sources);
     assert!(kept_snapshot.exploitation_loaded() && stored.exploitation_loaded());
@@ -1524,9 +1503,8 @@ async fn exploitation(intel: &PgIntel, name: &str) -> (bool, Vec<(String, bool)>
     (found.exploitation_loaded, marked)
 }
 
-/// Sources replaced together are one snapshot. An advisory is exploited when its id or an
-/// alias is listed. Reloading OSV alone, as a refresh whose catalogue fetch failed does, leaves
-/// the catalogue loaded, and reloading the catalogue alone leaves OSV.
+/// A catalogue marks an advisory whose id or alias it lists. Reloading OSV or the
+/// catalogue alone leaves the other loaded.
 #[tokio::test]
 async fn a_catalogue_marks_the_advisories_it_lists_and_is_replaced_apart_from_osv() {
     let intel = skip_without_database!("t_kev");

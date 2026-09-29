@@ -62,6 +62,19 @@ the proxy makes comes from the environment and the metadata it reads, not from a
 | Publish times that cannot be read, in `explain` | exit 1 | `cooldown_days` reported unenforced |
 | Which usage errors exit 4 | `policy diff` only | every command |
 
+## What is compared
+
+Each check is compared, not the verdict. Two policies can both answer `block` for different
+reasons: one denial lapsed and another check started firing. The report names the check
+that moved.
+
+`FAIL` to `unenforced` is a loosening. The written setting is unchanged, but the package now
+installs, and the report says `unenforced` rather than `pass`.
+
+`n/a` moves only if the ecosystem did, and a package does not change ecosystem between two
+policies. `n/a` on one side and anything else on the other is `Strictness::Incomparable`,
+which sets the loosening bit: §5.5 fails loud when tightening cannot be proven.
+
 ## What moves between two dates
 
 | Between today and a later date | Direction |
