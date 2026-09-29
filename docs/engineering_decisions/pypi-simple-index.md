@@ -27,6 +27,13 @@ into it, which is the thing the stage exists to prevent.
 | install script | `hasInstallScript` on the version | nothing; an sdist runs `setup.py` and a wheel does not |
 | name | used as written | PEP 503 normalised, and the index 301s to it |
 | per-version document | the packument is the only one | none under `/simple/`; PEP 658 gives per-**file** metadata at `<url>.metadata` |
+| maintainers, repository | in the full packument | not in the index; PyPI's legacy JSON API has them, which a resolver does not fetch |
+| default version | `dist-tags.latest` | none: a resolver picks from the versions |
+| deprecation | `deprecated` | none: a release is there, or it is yanked |
+| URL dependencies | allowed | refused at upload, warehouse `forklift/metadata.py`: "Can't have direct dependency" |
+
+A PyPI record is `DocumentDetail::Full`: the index withholds nothing it has, so a `None`
+publish time means the index does not publish one, not that it was not fetched.
 
 The first row is the finding. `NormalizedPackument` is version-keyed and a PyPI project is
 not: several files carry one version and they are not interchangeable, because a wheel and

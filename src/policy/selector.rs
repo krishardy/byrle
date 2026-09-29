@@ -1,38 +1,7 @@
-//! What a `packages` selector matches, and which of two selectors is more specific.
+//! What a `packages` selector matches, and which of two selectors is more specific, by
+//! strict subset containment over a closed vocabulary.
 //!
-//! §5.5 resolves overlapping entries by **strict subset containment**, not a heuristic
-//! score: A is more specific than B when the set of packages A matches is a strict subset
-//! of B's. That is decidable only because the predicate vocabulary is closed, which is the
-//! payoff §5.5 claims for a hand-rolled engine over an open expression language.
-//!
-//! # Keeping the vocabulary closed
-//!
-//! A selector accepting arbitrary version ranges or arbitrary glob syntax would reopen
-//! exactly what that claim depends on: nobody can decide whether `^1.2` contains `>=1.0,
-//! <2` without each ecosystem's range algebra, and the answer for `a*` against `*b` needs a
-//! matcher. So both are restricted at load rather than admitted and then compared by
-//! guesswork:
-//!
-//! - a name is `*`, `prefix*`, or a literal. A `*` anywhere else is refused.
-//! - a version is an exact version, a VERS range, or absent. A VERS range is a union of
-//!   intervals over the ecosystem's version order, so containment is decided on the
-//!   intervals ([`super::vers`]). Every other range notation is refused.
-//!
-//! Names and versions are compared the ecosystem's way: a PyPI name by PEP 503, so
-//! `Django` is `django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`.
-//!
-//! Admitting them and reporting "incomparable" would be worse than refusing them: the
-//! load-time check for overlapping entries could no longer fire either, so the policy
-//! would carry pairs nobody can reason about and nothing would say so.
-//!
-//! # `purl` and `name` say the same thing
-//!
-//! `purl: "pkg:npm/chalk@5.6.2"` and `{name: chalk, version: "5.6.2"}` denote one set
-//! through different fields. Compared field by field they would come out incomparable
-//! while being identical, so every selector is canonicalised first and containment is
-//! decided on that. A selector setting both is refused: agreeing is redundant and
-//! disagreeing is a contradiction, and resolving it silently would pick one for reasons
-//! the operator never sees.
+//! See docs/engineering_decisions/policy-tier-resolution.md.
 
 use super::Selector;
 use super::vers::{VersError, Versions};
@@ -60,8 +29,6 @@ impl NamePattern {
             (Self::Prefix(a), Self::Prefix(b)) => a.starts_with(b.as_str()),
             (Self::Exact(a), Self::Prefix(b)) => a.starts_with(b.as_str()),
             (Self::Exact(a), Self::Exact(b)) => a == b,
-            // A prefix covers names an exact name does not, unless the prefix is empty,
-            // which is `Any` and handled above.
             (Self::Prefix(_), Self::Exact(_)) => false,
         }
     }
@@ -109,9 +76,7 @@ impl fmt::Display for NamePattern {
     }
 }
 
-/// The version dimension containment is decided on: [`Versions`] in a policy. The proofs
-/// below use a smaller set, because a set of parsed versions is more state than a proof
-/// unwinds in reasonable time, and what they prove is how the dimensions combine.
+/// The version dimension containment is decided on: [`Versions`], or a smaller set in proofs.
 pub trait VersionSet: Clone + PartialEq + fmt::Display {
     /// Whether every version in this set is in `other`.
     fn contained_by(&self, other: &Self) -> bool;
@@ -232,16 +197,8 @@ impl std::error::Error for SelectorError {}
 /// Operators that make a version string a range rather than one version.
 const RANGE_OPERATORS: [char; 9] = ['^', '~', '>', '<', '=', '*', '|', ',', ' '];
 
-/// Whether a version string names more than one version.
-///
-/// Two shapes, because the operators alone do not catch all of them: `1.x` is a range
-/// written without one. A wildcard is a whole component of the release part, so
-/// `1.0.0-x` stays an exact version with a prerelease tag of `x`, which is a real thing
-/// to publish.
-///
-/// This is deliberately a little eager. Refusing a version that turns out to be exact
-/// costs an operator one clear error; admitting a range costs the overlap check its
-/// ability to report anything about that entry.
+/// Whether a version string names more than one version: an operator, or a wildcard
+/// release component such as `1.x`. `version` of `1.0.0-x` is exact.
 fn looks_like_a_range(version: &str) -> bool {
     if version.contains(RANGE_OPERATORS) {
         return true;
@@ -338,11 +295,8 @@ impl Canonical {
 }
 
 impl<V: VersionSet> Canonical<V> {
-    /// Whether every package this matches is also matched by `other`.
-    ///
-    /// Per dimension, all of them: a selector is narrower only if it is narrower or equal
-    /// everywhere. Narrower in one dimension and wider in another is neither, which is
-    /// §5.5's incomparable case.
+    /// Whether every package this matches is also matched by `other`: narrower or equal in
+    /// every dimension.
     pub fn contained_by(&self, other: &Self) -> bool {
         self.ecosystem == other.ecosystem
             && self.name.contained_by(&other.name)
@@ -423,11 +377,8 @@ fn version_or_range(ecosystem: &str, written: &str) -> Result<Versions, Selector
 }
 
 /// Split a purl into its type, its registry-style name, and its version.
-///
-/// The type is kept as a string rather than resolved to [`crate::identity::Ecosystem`],
-/// because a policy may name an ecosystem no adapter exists for. That is the same
-/// decision the floor check and the not-applicable table already make: what the document
-/// says and what this build serves are separate questions.
+/// The type stays a string, since `purl` may name an ecosystem with no adapter.
+/// Returns the parts, or why `purl` is refused.
 pub(super) fn decompose(purl: &str) -> Result<(String, String, Option<String>), SelectorError> {
     use purl::GenericPurl;
     use std::str::FromStr as _;
@@ -437,11 +388,6 @@ pub(super) fn decompose(purl: &str) -> Result<(String, String, Option<String>), 
             purl: purl.to_owned(),
             reason: e.to_string(),
         })?;
-    // A selector is written in the name the registry uses, `@babel/core`, not a namespace
-    // and a name side by side. For an ecosystem this build serves, that name is built by the
-    // ecosystem's own rule, as a package key's is, so a purl no package can have is refused
-    // rather than loaded to match nothing. An ecosystem it does not serve has no rule here,
-    // and its parts are joined as they are written.
     let name = match parsed.package_type().parse::<crate::identity::Ecosystem>() {
         Ok(ecosystem) => {
             crate::identity::key_from_purl(ecosystem, parsed.namespace(), parsed.name())
@@ -485,11 +431,9 @@ fn pattern_of(name: Option<&str>) -> Result<NamePattern, SelectorError> {
 /// Two entries that cannot be ordered, or that are the same entry twice.
 #[derive(Debug, PartialEq)]
 pub enum OverlapError {
-    /// The same set of packages selected twice. Comparable, and still wrong: whichever
-    /// wins, the other is dead, and which one that is depends on file order.
+    /// The same set of packages selected twice.
     Duplicate { first: usize, second: usize },
-    /// Two entries match a common package and neither is more specific, so §5.5's
-    /// most-specific-wins has no answer.
+    /// Two entries match a common package and neither is more specific.
     Incomparable {
         first: usize,
         second: usize,
@@ -645,9 +589,7 @@ mod proofs {
         }
     }
 
-    /// A selector matches everything it matches. Without this, an entry could fail to be
-    /// recognised as a duplicate of itself, and the load-time check would pass a file
-    /// whose two identical entries make one of them permanently dead.
+    /// A selector contains itself, and is not strictly inside itself.
     #[kani::proof]
     #[kani::unwind(8)]
     fn a_selector_contains_itself_and_is_not_strictly_inside_itself() {
@@ -657,9 +599,7 @@ mod proofs {
         assert!(a.overlaps(&a));
     }
 
-    /// Two selectors cannot each be strictly inside the other. §5.5's most-specific-wins
-    /// picks the contained one, so a pair that contained each other would have two
-    /// winners and the answer would come down to which was written first.
+    /// Two selectors cannot each be strictly inside the other, or both would win.
     #[kani::proof]
     #[kani::unwind(8)]
     fn two_selectors_cannot_each_be_strictly_inside_the_other() {
@@ -668,9 +608,7 @@ mod proofs {
         assert!(!(a.strictly_contained_by(&b) && b.strictly_contained_by(&a)));
     }
 
-    /// Containment implies overlap, for anything that matches at all. A selector inside
-    /// another that shared no package with it would mean the load-time check skipping
-    /// exactly the pairs most-specific-wins has to order.
+    /// Containment implies overlap, for anything that matches at all.
     #[kani::proof]
     #[kani::unwind(8)]
     fn a_selector_inside_another_shares_packages_with_it() {
@@ -689,13 +627,6 @@ mod proofs {
         let b = any_canonical();
         assert!(a.overlaps(&b) == b.overlaps(&a));
     }
-
-    // Not proved here: that two equal selectors report as a duplicate rather than as an
-    // unorderable pair. Cloning a `Canonical` copies its `String` fields, and the loop
-    // that does it does not unwind at any bound worth waiting for. Reflexivity above
-    // covers the containment half, and the distinction between the two errors is a
-    // property of `check_overlaps`, which walks a slice and is not a kani shape either.
-    // `the_same_entry_written_twice_is_refused_at_load` covers it.
 }
 
 #[cfg(test)]
@@ -848,9 +779,7 @@ mod tests {
         assert!(error.to_string().contains("not-a-purl"));
     }
 
-    /// The closed vocabulary. A `*` anywhere but the end would need a matcher to compare,
-    /// and a range in an ecosystem's own notation would need that ecosystem's range
-    /// algebra.
+    /// A `*` anywhere but the end, and an ecosystem's own range notation, are refused.
     #[test]
     fn the_shapes_that_could_not_be_compared_are_refused_rather_than_guessed_at() {
         for name in ["*foo", "a*b", "@my*/foo", "**"] {
@@ -877,16 +806,12 @@ mod tests {
                 "`{version}`: {error}"
             );
         }
-        // Exact versions that look like ranges and are not: a prerelease tag may be
-        // anything, `x` included.
         for version in ["1.0.0", "1.0.0-rc.1", "1.0.0-x", "1.0.0+build.x", "0.1.2"] {
             assert!(
                 Canonical::of(&sel("npm", Some("pkg"), Some(version), None)).is_ok(),
                 "`{version}` is one version"
             );
         }
-        // PEP 440 specifiers each carry one of the operators, and a PEP 440 version,
-        // epoch and post-release included, carries none.
         for version in ["~=1.4", "!=1.4", "===1.4", "==1.4.*", ">=1.4,<2"] {
             let error = Canonical::of(&sel("pypi", Some("x"), Some(version), None)).unwrap_err();
             assert!(
@@ -901,10 +826,6 @@ mod tests {
             );
         }
     }
-
-    // -----------------------------------------------------------------------
-    // Overlaps
-    // -----------------------------------------------------------------------
 
     #[test]
     fn selectors_that_share_nothing_are_fine() {
@@ -963,9 +884,7 @@ mod tests {
         ));
     }
 
-    /// The case the whole mechanism exists for: one is narrower by name, the other by
-    /// predicate, and they share the packages that satisfy both. §5.5's most-specific-wins
-    /// has no answer, so the file is refused rather than resolved by position.
+    /// One narrower by name and the other by predicate, sharing packages, are refused.
     #[test]
     fn two_selectors_narrower_in_different_dimensions_are_refused() {
         let set = [
@@ -1108,7 +1027,6 @@ mod tests {
         assert!(post.matches("pypi", "x", "1.0-1", false));
         assert!(!post.matches("pypi", "x", "1.0.post2", false));
 
-        // An ecosystem this build does not serve keeps its name as written.
         assert_eq!(
             canon("cargo", Some("Serde"), None, None).name,
             NamePattern::Exact("Serde".to_owned())
@@ -1211,9 +1129,7 @@ mod tests {
         );
     }
 
-    /// A purl is read by its ecosystem's name rule, as a package key is, so a denial or a
-    /// selector naming no package that can exist is refused at load rather than matching
-    /// nothing.
+    /// A purl is read by its ecosystem's name rule, so one no package can have is refused.
     #[test]
     fn a_purl_is_read_by_its_ecosystems_name_rule() {
         for (purl, expected) in [
@@ -1241,7 +1157,6 @@ mod tests {
             let denial = Canonical::of_denial(purl, None).expect("a package that can exist");
             assert!(denial.matches(ecosystem, name, version, false), "{purl}");
         }
-        // An ecosystem this build does not serve keeps its parts as written.
         assert_eq!(
             decompose("pkg:cargo/ns/serde@1.0.0").expect("readable"),
             (
