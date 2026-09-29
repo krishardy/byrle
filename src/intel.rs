@@ -1,39 +1,7 @@
-//! What an advisory stream may say, and what it may not.
-//!
-//! §3 gives each stream a capability per ecosystem: `match`, `enrich` or `malware`. The
-//! distinction that matters is between the first two:
-//!
-//! - a **`match`** stream answers "what is wrong with this package", and so originates
-//!   findings;
-//! - an **`enrich`** stream answers "what more is known about this advisory", and so can
-//!   only add to a finding something else already made.
-//!
-//! NVD is the case that forced this: it is keyed by CPE, not by package, so it cannot be
-//! asked about npm at all. CISA's KEV catalogue is the same shape, measured: a KEV entry
-//! carries a `cveID` and no package identifier of any kind. Neither can be allowed to
-//! produce a finding on its own, because neither knows what a package is.
-//!
-//! # The enforcement is the types, not a check
-//!
-//! [`Finding`] and [`Enrichment`] are different types. There is no `From<Enrichment> for
-//! Finding`, no constructor on `Finding` that takes one, and [`EnrichStream`] cannot
-//! return one because its return type says so. A capability field on a shared type would
-//! be a runtime check wearing a type's clothes.
-//!
+//! What an advisory stream may say. An [`Enrichment`] never becomes a [`Finding`]:
 //! ```compile_fail
-//! use waharoa::intel::{Enrichment, Finding};
-//! // An enrichment knows an advisory id and a score, which looks like enough to make a
-//! // finding out of. It is not, and this does not compile.
-//! let enrichment = Enrichment::new("CVE-2024-1234");
-//! let finding: Finding = enrichment.into();
+//! let f: waharoa::intel::Finding = waharoa::intel::Enrichment::new("CVE-2024-1234").into();
 //! ```
-//!
-//! # What this is worth today
-//!
-//! Almost nothing, and it is still cheaper to build now than after three streams exist.
-//! Measured over OSV's npm bundle, 96.8% of npm advisories are malware records, and the
-//! `enrich` capability this machinery exists to constrain has no implemented producer at
-//! all. See `docs/engineering_decisions/advisory-stream-licences.md`.
 
 pub mod fetch;
 pub mod history;
@@ -50,22 +18,14 @@ pub mod stream;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// What a stream is trusted to say about one ecosystem.
-///
-/// `Ord` is derived so these can live in a `BTreeSet` and carries no meaning: `Malware` is
-/// not a stronger `Match`, and no code should compare two of these. The ordered enum in
-/// this codebase is [`crate::policy::Action`], where `allow < quarantine < block` is the
-/// §5.5 lattice.
+/// What a stream may say about one ecosystem.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Capability {
     /// Answers "what is wrong with this package". Originates findings.
     Match,
-    /// Answers "what more is known about this advisory". Adds to findings, never makes
-    /// one.
+    /// Answers "what more is known about this advisory". Adds to findings, never makes one.
     Enrich,
-    /// Answers "is this package malware". Separate from `Match` and a higher bar,
-    /// because known malware always blocks and has no exception: a stream holding this
-    /// can trigger the one check an operator cannot write their way past.
+    /// Answers "is this package malware", which feeds the one check with no exception.
     Malware,
 }
 
@@ -79,11 +39,7 @@ impl Capability {
     }
 }
 
-/// A score, and which stream said so.
-///
-/// The source is kept for `explain`, not for the arithmetic: the merge rule below does
-/// not consult it, so two streams reporting the same advisory cannot produce different
-/// answers depending on which was read first.
+/// A score, and which stream said so, for `explain`. The merge rule does not read the source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Score {
     cvss: f64,
@@ -91,14 +47,9 @@ pub struct Score {
 }
 
 impl Score {
-    /// CVSS runs 0.0 to 10.0. A feed reporting anything else, NaN included, has given a
-    /// broken record rather than a low score, and [`Score::new`] returns `None`.
-    ///
-    /// Refusing rather than clamping is what makes [`Finding::enriched_by`] independent of
-    /// the order enrichments arrive in. Every NaN comparison is false, so `9.0 > NaN` and
-    /// `NaN > 9.0` are both false and a NaN would stay wherever it landed first: `[NaN,
-    /// 9.0]` would settle on NaN and `[9.0, NaN]` on 9.0. Keeping the constructor the only
-    /// way to build one, and `cvss` private, is what holds the range.
+    /// A score from `source`, refused rather than clamped so enrichment order cannot matter.
+    /// See docs/engineering_decisions/advisory-stream-licences.md.
+    /// `cvss` must be 0.0 to 10.0, so NaN is refused. Returns `None` otherwise.
     pub fn new(source: &str, cvss: f64) -> Option<Self> {
         Self::in_range(cvss).then(|| Self {
             cvss,
@@ -148,10 +99,7 @@ pub struct Finding {
     pub score: Option<Score>,
     /// Which stream originated this.
     pub source: String,
-    /// Whether the advisory is known to be exploited.
-    ///
-    /// Always `false` as originated: exploitation is what `enrich` streams know, and a
-    /// `match` stream saying so would be claiming a capability it was not granted.
+    /// Whether the advisory is known to be exploited. Always `false` as originated.
     exploited: bool,
 }
 
@@ -172,12 +120,8 @@ impl Finding {
         self
     }
 
-    /// Record a score this stream reported.
-    ///
-    /// A score outside 0.0 to 10.0 is dropped and the finding keeps whatever it had. The
-    /// finding itself survives: the stream still says something is wrong with this
-    /// package, and losing that over a malformed number would be worse than losing the
-    /// number.
+    /// Record a score this stream reported. `cvss` outside 0.0 to 10.0 is dropped, and the
+    /// finding is kept with whatever score it had.
     pub fn with_score(mut self, cvss: f64) -> Self {
         if let Some(score) = Score::new(&self.source, cvss) {
             self.score = Some(score);
@@ -189,17 +133,8 @@ impl Finding {
         self.exploited
     }
 
-    /// Apply everything known about this advisory from `enrich` streams.
-    ///
-    /// **Escalation only.** An enrichment may raise a score and may mark an advisory as
-    /// exploited; it can do neither in reverse. That makes the result independent of the
-    /// order enrichments arrive in, which is what the plan means by requiring the
-    /// behaviour to be explicit rather than emergent: without it, two streams disagreeing
-    /// would resolve to whichever was read last.
-    ///
-    /// An enrichment applies when its id is the advisory's id or any alias. GitHub gives a fix
-    /// bypass the CVE ids of the advisory it bypasses, so an enrichment keyed on such a CVE
-    /// applies to both.
+    /// Apply what `enrich` streams know about this advisory, escalating only, so the order
+    /// they arrive in does not matter. `enrichments` apply by the advisory's id or an alias.
     pub fn enriched_by(mut self, enrichments: &[Enrichment]) -> Self {
         for e in enrichments
             .iter()
@@ -218,8 +153,7 @@ impl Finding {
     }
 }
 
-/// What more is known about an advisory. Carries no package, and cannot become a
-/// [`Finding`].
+/// What more is known about an advisory. Carries no package, and cannot become a [`Finding`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct Enrichment {
     pub advisory_id: String,
@@ -257,20 +191,13 @@ pub trait MatchStream {
     fn findings(&self, ecosystem: &str, name: &str, version: &str) -> Vec<Finding>;
 }
 
-/// A stream that can only add to what another stream found.
-///
-/// It is asked about an advisory, never about a package, so there is no package argument
-/// to give it even if the return type allowed a finding.
+/// A stream that can only add to what another stream found, asked about advisories only.
 pub trait EnrichStream {
     fn name(&self) -> &str;
     fn enrichments(&self, advisory_ids: &[String]) -> Vec<Enrichment>;
 }
 
-/// A stream that can say a package is malware.
-///
-/// Separate from [`MatchStream`] because the check it feeds has no exception. A stream
-/// granted this can stop an install outright with nothing an operator can write to
-/// override it.
+/// A stream that can say a package is malware, which no exception overrides.
 pub trait MalwareStream {
     fn name(&self) -> &str;
     fn is_malware(&self, ecosystem: &str, name: &str, version: &str) -> bool;
@@ -317,16 +244,9 @@ impl Capabilities {
             .collect()
     }
 
-    /// Ecosystems this build serves with nothing able to originate a finding for them.
-    ///
-    /// §3: for each enabled ecosystem, at least one enabled stream must provide `match`.
-    /// It is a startup warning and a `doctor` check rather than a startup failure, because
-    /// a proxy that still verifies digests and records what went past is worth more than
-    /// one that refuses to run.
-    ///
-    /// `malware` is not part of this check. An ecosystem with `match` and no `malware` stream
-    /// can never fire `known_malware`, the one check an operator cannot except, so
-    /// `LoadedSnapshot::gaps` adds [`Capabilities::uncovered_by`] for `malware` to these.
+    /// Ecosystems in `enabled` with no stream providing `match`, for the startup warning and
+    /// `doctor`. `LoadedSnapshot::gaps` adds those with no `malware` stream.
+    /// Returns the gaps.
     pub fn gaps(&self, enabled: &[&str]) -> Vec<Gap> {
         self.uncovered_by(enabled, Capability::Match)
     }
@@ -362,11 +282,8 @@ fn listing(stream: &str) -> Vec<&'static str> {
         .collect()
 }
 
-/// What the streams a snapshot records may say, as this build declares it.
-///
-/// Keyed by the name a snapshot records a stream under. A stream this build does not know is
-/// granted nothing. The policy schema has no `streams` block, so an operator cannot change
-/// these yet.
+/// What the streams a snapshot records may say, as this build declares it. A stream this
+/// build does not know is granted nothing.
 pub fn capabilities_of(streams: &[refresh::StreamDigest]) -> Capabilities {
     streams.iter().fold(Capabilities::new(), |caps, s| {
         let Some(declared) = stream::by_stream(&s.stream) else {
@@ -543,10 +460,7 @@ mod tests {
         );
     }
 
-    /// Standing in for NVD or KEV: knows advisory ids, knows nothing about packages.
-    ///
-    /// It keys on CVE ids, which is what CISA's catalogue really does. OSV findings carry
-    /// `GHSA-` and `MAL-` ids, and match it by their aliases.
+    /// Standing in for NVD or KEV: keyed on CVE ids, knowing nothing about packages.
     struct Catalogue;
 
     impl EnrichStream for Catalogue {
@@ -568,8 +482,6 @@ mod tests {
         let ids = vec!["CVE-2021-44228".to_owned(), "CVE-2020-0001".to_owned()];
         let enrichments = Catalogue.enrichments(&ids);
 
-        // The one thing it can say is about an advisory it was handed. There is no
-        // package argument to give it, and no `Finding` in the return type.
         assert_eq!(enrichments.len(), 1);
         assert_eq!(enrichments[0].advisory_id, "CVE-2021-44228");
         assert!(enrichments[0].exploited);
@@ -644,9 +556,11 @@ mod tests {
             .with_score(f64::NAN);
         assert_eq!(finding.score.unwrap().cvss(), 7.5);
 
-        // A finding whose only score is malformed is still a finding.
         let finding = Finding::new("osv", "CVE-1").with_score(99.9);
-        assert_eq!(finding.advisory_id, "CVE-1");
+        assert_eq!(
+            finding.advisory_id, "CVE-1",
+            "a finding whose only score is malformed is still a finding"
+        );
         assert_eq!(finding.score, None);
 
         assert_eq!(
@@ -657,8 +571,6 @@ mod tests {
 
     #[test]
     fn a_score_no_stream_could_report_cannot_stick_wherever_it_landed_first() {
-        // Every comparison against NaN is false, so an unvalidated NaN would survive when
-        // read first and be discarded when read second.
         let nan = Enrichment::new("CVE-1").with_score("a", f64::NAN);
         let real = Enrichment::new("CVE-1").with_score("b", 9.0);
 
@@ -693,8 +605,6 @@ mod tests {
 
     #[test]
     fn an_ecosystem_a_stream_can_only_enrich_is_still_a_gap() {
-        // NVD declared for npm, which it can only enrich. Nothing can originate a
-        // finding, so the ecosystem is uncovered despite having a stream.
         let caps = Capabilities::new().grant("nvd", "npm", &[Capability::Enrich]);
 
         let gaps = caps.gaps(&["npm"]);
@@ -722,8 +632,6 @@ mod tests {
         assert!(caps.has("ghsa", "npm", Capability::Match));
         assert!(!caps.has("ghsa", "npm", Capability::Malware));
 
-        // §3 asks only for `match`, so this is not a gap. `known_malware` can never fire
-        // for npm in this build, and that shows up separately.
         assert!(caps.gaps(&["npm"]).is_empty());
         assert_eq!(
             caps.uncovered_by(&["npm"], Capability::Malware)[0].missing,

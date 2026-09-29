@@ -1,23 +1,6 @@
 //! Whether one policy value is stricter than another.
 //!
-//! §5.5 warns when an override loosens the effective policy above it. That needs an
-//! answer to "is this looser?" for every kind of value a rule carries, and the answer is
-//! not always yes or no: `block/3d` against `warn/30d` is stricter in one dimension and
-//! looser in the other, and the plan says to warn rather than guess.
-//!
-//! # Why a direction has to be declared
-//!
-//! For an action the order is given: `allow < quarantine < block`. For a number it
-//! is not. A higher `cooldown.days` is stricter and a higher `max_cvss` is looser, and
-//! nothing about the value says which. So the direction is declared per parameter, and
-//! getting one backwards fires warnings in exactly the wrong direction, which is worse
-//! than having none.
-//!
-//! # Not applicable is not loosening
-//!
-//! `install_scripts` has no meaning for Go modules. A rule that does not apply reports
-//! [`Strictness::NotApplicable`], which combines as an identity and never warns, because
-//! a channel that warns about things that do not apply stops being read.
+//! See docs/engineering_decisions/strictness-comparison.md.
 
 use super::Action;
 
@@ -31,57 +14,32 @@ pub enum Strictness {
     /// Looser. This is what §5.5 warns about.
     Looser,
     /// Tighter in one dimension and looser in another, so neither can be proven.
-    /// §5.5: fail loud when tightening cannot be proven.
     Incomparable,
-    /// The rule has no meaning for this ecosystem. Reported in `explain`, never warned
-    /// about, and it does not make a comparison incomparable.
+    /// The rule has no meaning for this ecosystem. Reported, never warned about.
     NotApplicable,
     /// Nothing above this rule set a value, so there was nothing to loosen.
-    ///
-    /// Distinct from `Same`, which means a value was compared and did not move, and from
-    /// `NotApplicable`, which means the rule has no meaning here at all. This is the
-    /// common shape in a real config, where `defaults` is sparse and ecosystems fill it
-    /// in, and calling it `Same` would claim a comparison that never happened.
     Unset,
 }
 
 impl Strictness {
-    /// Whether §5.5 warns about this.
-    ///
-    /// Loosening warns, and so does an override whose direction cannot be proven. Not
-    /// applicable does not: it is reported, never warned.
+    /// Whether §5.5 warns about this: looser, or incomparable.
     pub fn warns(self) -> bool {
         matches!(self, Self::Looser | Self::Incomparable)
     }
 
-    /// Whether this carries a comparison at all.
-    ///
-    /// `NotApplicable` and `Unset` do not: one has no meaning here, the other had
-    /// nothing above it. Both are identities when dimensions are combined, and both are
-    /// reported rather than warned about.
+    /// Whether this carries a comparison at all, which `NotApplicable` and `Unset` do not.
     pub fn compared(self) -> bool {
         !matches!(self, Self::NotApplicable | Self::Unset)
     }
 
-    /// Combine two independent dimensions of the same rule.
-    ///
-    /// A rule is stricter only if nothing in it got looser. One dimension tighter and
-    /// another looser is the incomparable case, which is the whole reason this is not a
-    /// `min` over a number.
-    ///
-    /// `Same` and `NotApplicable` are both identities: a dimension that did not move, or
-    /// that has no meaning here, cannot make the rule looser or stricter on its own.
+    /// Combine two independent dimensions of the same rule: stricter only if nothing got
+    /// looser, and incomparable when one got stricter and the other looser.
     pub fn and(self, other: Self) -> Self {
         use Strictness::*;
         match (self, other) {
             (Incomparable, _) | (_, Incomparable) => Incomparable,
-            // Neither of these carries a comparison, so between them the one that says
-            // more survives: "this rule has no meaning here" outranks "nothing above set
-            // it". In practice they never meet, because applicability is decided for the
-            // whole rule before its dimensions are compared.
             (NotApplicable, NotApplicable | Unset) | (Unset, NotApplicable) => NotApplicable,
             (Unset, Unset) => Unset,
-            // A dimension that carried no comparison cannot decide the rule on its own.
             (NotApplicable | Unset, x) | (x, NotApplicable | Unset) | (Same, x) | (x, Same) => x,
             (Stricter, Stricter) => Stricter,
             (Looser, Looser) => Looser,
@@ -100,11 +58,8 @@ impl Strictness {
 }
 
 impl Action {
-    /// Position in the lattice, weakest first.
-    ///
-    /// Given explicitly rather than taken from the declaration order, so reordering the
-    /// variants cannot silently reverse the lattice. `ordering_is_the_lattice` proves the
-    /// two agree.
+    /// Position in the lattice, weakest first, written out rather than taken from the
+    /// declaration order.
     pub fn strength(self) -> u8 {
         match self {
             Self::Allow => 0,
@@ -126,10 +81,7 @@ impl Action {
     }
 }
 
-/// Which way a numeric parameter gets stricter.
-///
-/// Declared per parameter because the value cannot say: a higher `cooldown.days` is
-/// stricter and a higher `max_cvss` is looser.
+/// Which way a numeric parameter gets stricter, declared because the value cannot say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// `cooldown.days`, `min_package_age`.
@@ -203,9 +155,7 @@ mod proofs {
         }
     }
 
-    /// The lattice `allow < warn < quarantine < block` is a total order, and comparing
-    /// two actions is comparing their positions in it. Total matters: §5.5 warns only
-    /// when tightening cannot be proven, and for actions alone it always can.
+    /// `allow < quarantine < block` is a total order, so two actions always compare.
     #[kani::proof]
     fn comparing_two_actions_is_never_undecided() {
         let value = any_action();
@@ -237,9 +187,7 @@ mod proofs {
         assert!(value.strictness_against(baseline) == baseline.strictness_against(value).inverse());
     }
 
-    /// The derived `Ord` and the declared lattice agree. `strength` is written out so
-    /// reordering the variants cannot silently reverse the lattice; this is what makes
-    /// that guarantee real rather than a comment.
+    /// The derived `Ord` and the written-out `strength` agree.
     #[kani::proof]
     fn ordering_is_the_lattice() {
         let a = any_action();
@@ -247,9 +195,7 @@ mod proofs {
         assert_eq!(a.strength() < b.strength(), (a as u8) < (b as u8));
     }
 
-    /// Dimensions are combined pairwise and a rule can have any number of them, so the
-    /// answer must not depend on which order they are folded in. Without associativity
-    /// and commutativity, the same rule could warn or not depending on field order.
+    /// Combining is commutative and associative, so field order cannot change the answer.
     #[kani::proof]
     fn combining_dimensions_does_not_depend_on_their_order() {
         let a = any_strictness();
@@ -260,9 +206,7 @@ mod proofs {
         assert!(a.and(b).and(c) == a.and(b.and(c)));
     }
 
-    /// A dimension that carries no comparison never changes the answer. That is the
-    /// plan's "not applicable is not loosening", and it is stronger than the plan states
-    /// it: a dimension with nothing to compare is not anything.
+    /// A dimension that carries no comparison never changes the answer.
     #[kani::proof]
     fn a_dimension_with_nothing_to_compare_changes_nothing() {
         let a = any_strictness();
@@ -271,12 +215,8 @@ mod proofs {
         assert!(Strictness::Unset.and(a) == a);
     }
 
-    /// A dimension that did not move is an identity over every dimension that was
-    /// compared.
-    ///
-    /// Not over the two that were not, and the difference is the point: a rule with one
-    /// unchanged dimension and one that has no meaning here was compared and did not
-    /// move, so it is `Same`. The non-comparisons survive only when that is all there is.
+    /// A dimension that did not move is an identity over every compared dimension, and
+    /// wins over one that carries no comparison.
     #[kani::proof]
     fn an_unchanged_dimension_decides_nothing_that_was_compared() {
         let a = any_strictness();
@@ -287,9 +227,7 @@ mod proofs {
         assert!(Strictness::Same.and(Strictness::Unset) == Strictness::Same);
     }
 
-    /// Nothing that carries no comparison ever warns, and combining two of them leaves
-    /// the answer where it was. This is what keeps the channel readable when `defaults`
-    /// is sparse, which is the ordinary shape of a real config.
+    /// Nothing that carries no comparison warns, alone or combined with another.
     #[kani::proof]
     fn a_dimension_with_nothing_to_compare_never_warns() {
         let a = any_strictness();
@@ -298,13 +236,8 @@ mod proofs {
         assert!(a.and(a) == a);
     }
 
-    /// Combining can only ever move toward undecided, never away from it. A rule that
-    /// comes out stricter had no dimension that got looser, and the other way round.
-    ///
-    /// This is what §5.5's "fail loud when tightening cannot be proven" means in code,
-    /// and it is separate from the order-independence proof on purpose: a version that
-    /// resolved a conflict by picking one side would still be commutative and
-    /// associative, so that proof does not catch it.
+    /// Combining never resolves a conflict: stricter means no dimension got looser, and
+    /// the other way round. Commutativity alone would not catch picking one side.
     #[kani::proof]
     fn a_conflict_between_dimensions_is_never_resolved() {
         let a = any_strictness();
@@ -318,9 +251,7 @@ mod proofs {
         }
     }
 
-    /// Once a rule is undecided it stays undecided: no later dimension can argue it back
-    /// into being provably stricter. §5.5 fails loud, and this is what makes that
-    /// unconditional.
+    /// Once a rule is undecided, no later dimension makes it provably stricter.
     #[kani::proof]
     fn an_undecided_rule_cannot_be_argued_back() {
         let a = any_strictness();
@@ -339,9 +270,7 @@ mod proofs {
         );
     }
 
-    /// The two declared directions are mirror images over every pair of values. Getting
-    /// one backwards fires warnings in exactly the wrong direction, which the plan calls
-    /// worse than having none.
+    /// The two declared directions are mirror images over every pair of values.
     #[kani::proof]
     fn the_two_directions_are_mirror_images() {
         let value: u32 = kani::any();
@@ -431,10 +360,8 @@ mod tests {
         assert!(!Strictness::Same.warns());
     }
 
-    /// The two identities are not the same identity, and the difference is worth
-    /// pinning: a rule with one unchanged dimension and one that has no meaning here was
-    /// compared and did not move, so it is `Same`. `NotApplicable` is what is left when
-    /// there was nothing to compare at all, and that is what `explain` reports as N/A.
+    /// One unchanged dimension and one with no meaning here is `Same`. `NotApplicable`
+    /// is left only when nothing was compared.
     #[test]
     fn unchanged_beats_not_applicable_when_they_meet() {
         assert_eq!(
@@ -492,9 +419,7 @@ mod tests {
         assert_eq!(Strictness::Unset.inverse(), Strictness::Unset);
     }
 
-    /// `Unset` is the common shape in a real config, where `defaults` is sparse and
-    /// ecosystems fill it in. Calling it `Same` would claim a comparison that never
-    /// happened, and calling it `NotApplicable` would claim the rule has no meaning here.
+    /// `Unset` is neither `Same` nor `NotApplicable`.
     #[test]
     fn nothing_above_to_compare_against_is_neither_unchanged_nor_inapplicable() {
         assert!(!Strictness::Unset.compared());
