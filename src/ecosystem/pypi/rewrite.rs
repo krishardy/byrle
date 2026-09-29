@@ -43,61 +43,68 @@ pub struct Rewrite<'a> {
 /// could be rewritten. Each says so in the log, because a forwarded index means that
 /// project's files go around the proxy.
 pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
-    let Rewrite {
-        decoded,
-        format,
-        project,
-        reachable,
-        base,
-        refused_by_policy,
-        path,
-    } = r;
-    let kept: Vec<&str> = project
+    let kept: Vec<&str> = r
+        .project
         .files
         .iter()
-        .filter(|file| !refused_by_policy.contains(&file.version))
+        .filter(|file| !r.refused_by_policy.contains(&file.version))
         .map(|file| file.url.as_str())
         .collect();
-
-    // Always the filtered body once a version is refused, even when the rewrite below
-    // does nothing. Forwarding the original would put every refused version back.
-    let filtered = if refused_by_policy.is_empty() {
+    // Always the filtered body once a version is refused, even when the rewrite below does
+    // nothing. Forwarding the original would put every refused version back.
+    let filtered = if r.refused_by_policy.is_empty() {
         None
     } else {
-        match remove_versions(decoded, format, project, refused_by_policy) {
-            Ok(body) => {
-                warn!(
-                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                    waharoa.package.removed_files = project.files.len() - kept.len(),
-                    waharoa.package.kept_files = kept.len(),
-                    waharoa.package.removed_by_policy = refused_by_policy.len(),
-                    "REFUSED versions removed from the document so the resolver picks \
-                     another"
-                );
-                Some(body)
-            }
-            Err(e) => {
-                warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: simple index could not be filtered");
-                return None;
-            }
-        }
+        Some(filtered(&r, kept.len())?)
     };
-    let body = filtered.as_deref().unwrap_or(decoded);
-
-    let Some(base) = base else {
+    let Some(base) = r.base else {
         warn!(
-            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
+            url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
             waharoa.package.files = kept.len(),
             "UNINSPECTED: the simple index is forwarded as written, so its files are \
              fetched from the index's own host rather than through the proxy"
         );
         return filtered;
     };
+    repointed(&r, filtered, kept, base)
+}
+
+/// The index with the files of the versions the policy refuses removed, `kept` files left.
+/// Returns `None` when it cannot be filtered.
+fn filtered(r: &Rewrite<'_>, kept: usize) -> Option<Vec<u8>> {
+    match remove_versions(r.decoded, r.format, r.project, r.refused_by_policy) {
+        Ok(body) => {
+            warn!(
+                url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
+                waharoa.package.removed_files = r.project.files.len() - kept,
+                waharoa.package.kept_files = kept,
+                waharoa.package.removed_by_policy = r.refused_by_policy.len(),
+                "REFUSED versions removed from the document so the resolver picks \
+                 another"
+            );
+            Some(body)
+        }
+        Err(e) => {
+            warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %e, "UNINSPECTED: simple index could not be filtered");
+            None
+        }
+    }
+}
+
+/// `filtered`, or the index as it came, with the `kept` files pointed at `base`.
+/// Returns `filtered` when no file was repointed or the rewrite failed.
+fn repointed(
+    r: &Rewrite<'_>,
+    filtered: Option<Vec<u8>>,
+    kept: Vec<&str>,
+    base: &str,
+) -> Option<Vec<u8>> {
+    let body = filtered.as_deref().unwrap_or(r.decoded);
     let files = kept.len();
-    match rewrite_artifact_origins(body, kept, reachable, base) {
+    match rewrite_artifact_origins(body, kept, r.reachable, base) {
         Ok(out) => {
             info!(
-                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
+                url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
                 waharoa.package.files = files,
                 waharoa.package.rewritten_files = out.rewritten,
                 waharoa.package.left_alone_files = out.left_alone,
@@ -110,7 +117,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
             }
         }
         Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: simple index could not be rewritten");
+            warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %e, "UNINSPECTED: simple index could not be rewritten");
             filtered
         }
     }

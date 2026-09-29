@@ -1,6 +1,6 @@
 //! Removing versions from a packument, and pointing the rest at the proxy.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use tracing::warn;
 
@@ -135,102 +135,110 @@ pub struct Rewrite<'a> {
 /// Returns `None` when the document is forwarded as it came, which always means some
 /// artifacts for this package will be fetched without the proxy seeing them.
 pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
-    let Rewrite {
-        decoded,
-        packument,
-        base,
-        origins: policy,
-        refused_by_policy,
-        refuse_unservable,
-        path,
-    } = r;
-    let (allowed_direct, refused) = packument.unserved_origins(policy);
-
-    // An accepted gap has to stay visible. One that stops being reported outlives the
-    // reason it was added.
-    if !allowed_direct.is_empty() {
-        warn!(
-            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-            waharoa.package.versions = allowed_direct.values().sum::<usize>(),
-            waharoa.package.origins = ?allowed_direct.keys().collect::<Vec<_>>(),
-            "UNINSPECTED: artifacts fetched directly by the client, allowed by configuration"
-        );
+    let (allowed_direct, refused) = r.packument.unserved_origins(r.origins);
+    warn_allowed_direct(r.path, &allowed_direct);
+    // Either reason to drop a version puts this on the structural path. The byte rewrite
+    // cannot remove anything, only repoint URLs.
+    if !r.refused_by_policy.is_empty() || (r.refuse_unservable && !refused.is_empty()) {
+        return filtered(&r, &refused);
     }
+    warn_unserved(r.path, &refused, r.packument.records.len());
+    repointed(&r)
+}
 
-    // Either reason to drop a version puts this on the structural path. The byte
-    // rewrite below cannot remove anything, only repoint URLs.
-    if !refused_by_policy.is_empty() || (refuse_unservable && !refused.is_empty()) {
-        let origins: Vec<&String> = refused.keys().collect();
-        let artifacts = packument
-            .records
-            .iter()
-            .filter_map(|r| Some((r.package.version().to_owned(), r.artifact()?.url.clone())));
-        return match filter_unservable_versions(
-            decoded,
-            artifacts,
-            policy,
-            refused_by_policy,
-            refuse_unservable,
-            base.unwrap_or(""),
-        ) {
-            Ok(filtered) => {
-                warn!(
-                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                    waharoa.package.removed = filtered.removed.len(),
-                    waharoa.package.removed_by_policy = refused_by_policy.len(),
-                    waharoa.package.kept = filtered.rewritten,
-                    waharoa.package.allowed_direct = filtered.allowed,
-                    waharoa.package.origins = ?origins,
-                    "REFUSED versions removed from the document so the resolver picks \
-                     another"
-                );
-                // Always the filtered body, even when nothing survived. Returning None
-                // here forwards the original, which would put every refused version
-                // straight back into the document.
-                Some(filtered.body)
-            }
-            Err(e) => {
-                warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: packument could not be filtered");
-                None
-            }
-        };
+/// Warn about artifacts on origins the operator allowed clients to fetch directly.
+fn warn_allowed_direct(path: &str, allowed_direct: &BTreeMap<String, usize>) {
+    if allowed_direct.is_empty() {
+        return;
     }
+    warn!(
+        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
+        waharoa.package.versions = allowed_direct.values().sum::<usize>(),
+        waharoa.package.origins = ?allowed_direct.keys().collect::<Vec<_>>(),
+        "UNINSPECTED: artifacts fetched directly by the client, allowed by configuration"
+    );
+}
 
-    if !refused.is_empty() {
-        let versions: usize = refused.values().sum();
-        let origins: Vec<&String> = refused.keys().collect();
-
-        // Every artifact being off-origin is not the same exposure as some of them being
-        // off-origin, and it is the shape someone would construct.
-        if versions == packument.records.len() {
+/// The document with the versions the policy refuses, and those on an origin the proxy
+/// does not serve, removed. `refused` is those origins, with their version counts.
+/// Returns `None` when the document cannot be filtered.
+fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Option<Vec<u8>> {
+    let origins: Vec<&String> = refused.keys().collect();
+    let artifacts = r.packument.records.iter().filter_map(|record| {
+        Some((
+            record.package.version().to_owned(),
+            record.artifact()?.url.clone(),
+        ))
+    });
+    match filter_unservable_versions(
+        r.decoded,
+        artifacts,
+        r.origins,
+        r.refused_by_policy,
+        r.refuse_unservable,
+        r.base.unwrap_or(""),
+    ) {
+        // Always the filtered body, even when nothing survived. Forwarding the original
+        // would put every refused version straight back into the document.
+        Ok(filtered) => {
             warn!(
-                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                waharoa.package.versions = versions,
+                url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
+                waharoa.package.removed = filtered.removed.len(),
+                waharoa.package.removed_by_policy = r.refused_by_policy.len(),
+                waharoa.package.kept = filtered.rewritten,
+                waharoa.package.allowed_direct = filtered.allowed,
                 waharoa.package.origins = ?origins,
-                "UNINSPECTED: every artifact in this packument is on an origin the proxy \
-                 does not front"
+                "REFUSED versions removed from the document so the resolver picks \
+                 another"
             );
-        } else {
-            warn!(
-                url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                waharoa.package.versions = versions,
-                waharoa.package.origins = ?origins,
-                "UNINSPECTED: some artifacts left on an origin the proxy does not front"
-            );
+            Some(filtered.body)
+        }
+        Err(e) => {
+            warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %e, "UNINSPECTED: packument could not be filtered");
+            None
         }
     }
+}
 
-    // Nothing left to do when artifact URLs are not being repointed. Reached when the
-    // operator turned rewriting off and the policy refused nothing.
-    let base = base?;
-    let artifacts = packument
+/// Warn about artifacts left on an origin the proxy does not serve, saying whether that
+/// is every one of the document's `records` versions.
+fn warn_unserved(path: &str, refused: &BTreeMap<String, usize>, records: usize) {
+    if refused.is_empty() {
+        return;
+    }
+    let versions: usize = refused.values().sum();
+    let origins: Vec<&String> = refused.keys().collect();
+    if versions == records {
+        warn!(
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
+            waharoa.package.versions = versions,
+            waharoa.package.origins = ?origins,
+            "UNINSPECTED: every artifact in this packument is on an origin the proxy \
+             does not front"
+        );
+    } else {
+        warn!(
+            url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
+            waharoa.package.versions = versions,
+            waharoa.package.origins = ?origins,
+            "UNINSPECTED: some artifacts left on an origin the proxy does not front"
+        );
+    }
+}
+
+/// The document with its artifact URLs pointed at the proxy.
+/// Returns `None` when URLs are not repointed, nothing was, or the rewrite failed.
+fn repointed(r: &Rewrite<'_>) -> Option<Vec<u8>> {
+    let base = r.base?;
+    let artifacts = r
+        .packument
         .records
         .iter()
         .filter_map(|record| Some(record.artifact()?.url.as_str()));
-    match rewrite_artifact_origins(decoded, artifacts, policy.reachable(), base) {
+    match rewrite_artifact_origins(r.decoded, artifacts, r.origins.reachable(), base) {
         Ok(rewritten) => (rewritten.rewritten > 0).then_some(rewritten.body),
         Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "UNINSPECTED: packument could not be rewritten");
+            warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %e, "UNINSPECTED: packument could not be rewritten");
             None
         }
     }
@@ -475,6 +483,39 @@ mod tests {
             None,
             "rewriting is off and nothing is refused"
         );
+    }
+
+    /// What rewriting `json` warns about.
+    fn warned(json: &str, origins: &OriginPolicy) -> String {
+        let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
+        rewrite_document(json, origins, Some(PROXY), &HashSet::new(), false);
+        drop(guard);
+        crate::util::test_support::text(&buf)
+    }
+
+    /// An artifact the client fetches without the proxy is warned about, saying whether
+    /// the operator allowed it and whether it is every artifact or some.
+    #[test]
+    fn an_artifact_the_proxy_does_not_see_is_warned_about() {
+        let allowed = warned(OFFSITE, &policy(&[], &["https://elsewhere.example"]));
+        assert!(allowed.contains("allowed by configuration"), "{allowed}");
+        assert!(!allowed.contains("does not front"), "{allowed}");
+
+        let every = warned(OFFSITE, &policy(&[], &[]));
+        assert!(
+            every.contains("every artifact in this packument"),
+            "{every}"
+        );
+
+        let mixed = r#"{"name":"w","versions":{
+            "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://elsewhere.example/w-1.0.0.tgz"}},
+            "2.0.0":{"version":"2.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-2.0.0.tgz"}}}}"#;
+        let some = warned(mixed, &policy(&[], &[]));
+        assert!(some.contains("some artifacts left"), "{some}");
+        assert!(!some.contains("every artifact"), "{some}");
+
+        let none = warned(ON_REGISTRY, &policy(&[], &[]));
+        assert!(none.is_empty(), "{none}");
     }
 
     /// Either reason to drop a version sends the filtered body, even with rewriting off.
