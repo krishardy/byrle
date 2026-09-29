@@ -12,13 +12,10 @@ use super::wire::{File, Kind, Project};
 fn artifact(file: &File) -> crate::record::Artifact {
     crate::record::Artifact {
         filename: file.filename.clone(),
-        // An sdist runs the package's own build on install; a wheel unpacks and runs
-        // nothing.
         runs_install_scripts: file.kind == Kind::Sdist,
         yanked: file.yanked.clone(),
         url: file.url.clone(),
         integrity: file.sha256.as_deref().and_then(sri),
-        // PyPI's index gives sha256 and nothing weaker.
         legacy_sha1: None,
         attestation_url: file.provenance.clone(),
         file_count: None,
@@ -27,10 +24,7 @@ fn artifact(file: &File) -> crate::record::Artifact {
 }
 
 /// `hashes.sha256` as an SRI string, the shape [`crate::integrity`] verifies.
-///
-/// PyPI writes a hex digest and npm writes SRI, so one of the two has to convert and the
-/// verifier is npm's shape. `None` when the digest is not 64 hex characters, which is not
-/// a sha256 whatever it is.
+/// Returns `None` when `hex` is not 64 hex characters.
 fn sri(hex: &str) -> Option<String> {
     if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
@@ -41,20 +35,9 @@ fn sri(hex: &str) -> Option<String> {
     Some(format!("sha256-{}", BASE64.encode(&bytes)))
 }
 
-/// One [`crate::record::PackageRecord`] per version, as the policy engine sees it.
-///
-/// A record is about a **version**, which is the question the index filter answers: may
-/// this version be installed. Several files carry one version and the record names the one
-/// a resolver would take, so `artifact` is the wheel where there is one.
-///
-/// The bytes that actually arrive are checked against the file that was requested, not
-/// against this one. [`Project::files`] keeps every file for that, because a pinned fetch
-/// names a filename and the proxy must verify what it serves rather than what it would
-/// have preferred.
-///
-/// A yanked file is kept. PEP 592 says a resolver ignores a yanked version unless it is
-/// pinned, which makes yanking an upstream signal rather than a decision this proxy makes,
-/// and dropping it here would answer "no such version" for a version that exists.
+/// One [`crate::record::PackageRecord`] per version, holding every file, wheels first, each
+/// with its own digest and install-scripts answer. Yanked files are kept.
+/// See docs/engineering_decisions/pypi-simple-index.md.
 pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
     use crate::identity::{Ecosystem, PackageKey};
     use crate::record::{Artifact, DocumentDetail, PackageRecord, Provenance};
@@ -77,37 +60,20 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
         let file = project
             .preferred(version)
             .expect("every version is read from a file");
-        // Wheels before sdists, so the first is the file a resolver would take. Each
-        // keeps its own digest and its own install-scripts answer, because a request
-        // names a file and this record is about a version.
         let mut files = project.files_for(version);
         files.sort_by_key(|f| (f.kind, f.filename.as_str()));
         let artifacts: Vec<Artifact> = files.iter().map(|f| artifact(f)).collect();
         out.push(PackageRecord {
             package,
-            // The simple index is the only document under `/simple/`, and it carries
-            // everything the index has, publish time included. Nothing is withheld the way
-            // npm withholds `time` from the abbreviated packument, so a `None` below means
-            // the index does not publish it rather than that it was not fetched.
             detail: DocumentDetail::Full,
             published_at: file
                 .upload_time
                 .as_deref()
                 .and_then(|t| t.parse::<jiff::Timestamp>().ok()),
-            // The simple index carries neither. PyPI publishes them on its legacy JSON API,
-            // which a resolver does not fetch and this proxy therefore does not see.
             maintainers: None,
             repository: None,
-            // An sdist runs the package's own build on install and a wheel does not, so a
-            // version offering a wheel is not an install-script version. This is the PyPI
-            // shape of the same question, read from what is on offer rather than from a
-            // flag the index does not have.
-            // PyPI has no deprecation marker: a release is there or it is yanked.
             deprecated: None,
             has_install_scripts: project.only_sdist(version).unwrap_or(false),
-            // Every file withdrawn leaves a resolver nothing to take, so the version is
-            // yanked, and the first file's reason stands for it. One file left and it is
-            // not: PEP 592 is about which file is chosen.
             yanked: artifacts
                 .iter()
                 .all(|a| a.yanked.is_some())
@@ -115,15 +81,9 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
                 .flatten(),
             install_scripts: None,
             provenance: Provenance {
-                // PEP 740: the index publishes where the bundle is, not the bundle. Presence
-                // is a claim; verifying it is Stage 4. This is the preferred file's, the one a
-                // resolver would take, because `Provenance` is about the version; a pinned
-                // fetch of another file of the same version reads the same field.
                 attestation_url: file.provenance.clone(),
                 ..Provenance::default()
             },
-            // PyPI refuses an upload whose metadata names a dependency by URL: warehouse's
-            // `forklift/metadata.py`, "Can't have direct dependency".
             direct_dependencies: Vec::new(),
             artifacts,
         });
@@ -136,8 +96,6 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
     }
     Ok(PackageMetadata {
         key,
-        // The simple index has no `dist-tags`. A resolver picks from `versions` itself,
-        // and PEP 503 gives it nothing to pick by name.
         latest: None,
         records: out,
         skipped,
@@ -186,9 +144,7 @@ mod tests {
         );
     }
 
-    /// One version, a wheel and an sdist. The version-level answer is about the file a
-    /// resolver would take; each artifact carries its own, because the client can ask for
-    /// either and only one of them runs `setup.py`.
+    /// A version offering a wheel and an sdist keeps each file's own install answer.
     #[test]
     fn a_version_offering_both_keeps_each_files_own_install_answer() {
         let document = br#"{"name":"x","files":[
@@ -268,7 +224,6 @@ mod tests {
     /// silence, the same as npm's skipped versions.
     #[test]
     fn a_version_that_is_not_an_identity_is_skipped_and_named() {
-        // A filename whose version field is blank after the name gives an empty version.
         let document = br#"{"name":"x","files":[
             {"filename":"x-1.0.tar.gz","url":"https://e/a","hashes":{}},
             {"filename":"x- -py3-none-any.whl","url":"https://e/b","hashes":{}}
@@ -294,9 +249,7 @@ mod tests {
         assert!(!metadata.skipped[0].reason.is_empty());
     }
 
-    /// npm withholds `time` from the abbreviated packument, so a record built from one is
-    /// `Abbreviated` and its `None` means unfetched. The simple index withholds nothing it
-    /// has, so a PyPI record is `Full` and `cooldown_days` is answerable from it.
+    /// A PyPI record is `Full`, so `cooldown_days` is answerable from it.
     #[test]
     fn a_record_carries_the_publish_time_and_is_not_incomplete() {
         let project = parse("requests", &fixture()).expect("the fixture reads");
@@ -324,7 +277,6 @@ mod tests {
             converted,
             "sha256-gTICrOTZMBo8AHQMcA4BL7nz+Mc93P4Cq1WKjfbxdf0="
         );
-        // It round-trips through the verifier npm's digests use.
         let parsed = crate::integrity::Sri::parse(&converted).expect("valid SRI");
         assert_eq!(parsed.algorithm(), crate::integrity::Algorithm::Sha256);
 
@@ -355,7 +307,6 @@ mod tests {
             "most files have none: `ruff` published 0 of 7,134"
         );
 
-        // The HTML form writes the same thing as an attribute.
         let page = format!(
             r#"<a href="https://files.pythonhosted.org/attrs-26.1.0.tar.gz" data-provenance="{URL}">attrs-26.1.0.tar.gz</a>"#
         );
@@ -374,9 +325,7 @@ mod tests {
         );
     }
 
-    /// PEP 592: a resolver ignores a yanked version unless it is pinned, so yanking is an
-    /// upstream signal rather than a decision this proxy makes. Dropping the record would
-    /// answer "no such version" for a version that exists.
+    /// A yanked version still becomes a record.
     #[test]
     fn a_yanked_version_still_becomes_a_record() {
         let project = parse("requests", &fixture()).expect("the fixture reads");

@@ -319,6 +319,25 @@ Two things §5.5 got right and keep earning their place: **not-applicable is nev
 violation**, which the redesign made more load-bearing rather than less, and
 **specificity is strict subset containment, not a score**.
 
+### Why the selector vocabulary is closed
+
+Containment is decidable only because the vocabulary is closed (`policy::selector`). Nobody
+can decide whether `^1.2` contains `>=1.0, <2` without each ecosystem's range algebra, and
+`a*` against `*b` needs a matcher. So a name is `*`, `prefix*` or a literal, and a version is
+exact, a VERS range, or absent; everything else is refused at load. Admitting them and
+reporting "incomparable" would be worse: the overlap check could say nothing about those
+entries. A version that looks like a range, such as `1.x`, is refused even when unsure;
+`1.0.0-x` stays exact, since a prerelease tag may be `x`.
+
+`purl: "pkg:npm/chalk@5.6.2"` and `{name: chalk, version: "5.6.2"}` select one set, so every
+selector is put in one canonical form before containment is decided. Setting both is
+refused, since agreeing is redundant and disagreeing is a contradiction. A purl's name is
+built by its ecosystem's name rule, so one no package can have is refused rather than loaded
+to match nothing; an ecosystem this build does not serve keeps its name as written. Two
+entries selecting the same set are refused as a duplicate, because one of them can never
+win and which one depends on file order. Two that overlap with neither inside the other are
+refused as incomparable.
+
 ## KEV is asked per advisory
 
 A KEV entry carries a `cveID`, a vendor and a product, and **no package identifier of any
