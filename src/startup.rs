@@ -438,6 +438,126 @@ mod tests {
         }
     }
 
+    /// What `proxy` logs at INFO and above for `pairs`, with whether it started.
+    async fn logged(label: &str, pairs: &[(env::Var, &str)]) -> (bool, String) {
+        let (dir, environment) = spooled(label, pairs);
+        let (guard, buf) = crate::util::test_support::capture(tracing::Level::INFO);
+        let started = proxy(&environment).await.is_ok();
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dir);
+        (started, crate::util::test_support::text(&buf))
+    }
+
+    /// Each setting that reduces what the proxy examines is warned about at startup.
+    #[tokio::test]
+    async fn each_setting_that_reduces_what_is_examined_is_warned_about() {
+        let dir = crate::util::test_support::tempdir("startup-warned-policy");
+        let policy = dir.join("policy.yaml");
+        std::fs::write(&policy, "version: 1\n").unwrap();
+        let mut pairs = vec![
+            (env::REWRITE_ARTIFACTS, "0"),
+            (env::REFUSAL_STATUS, "default=503"),
+            (env::MODE, "observe"),
+            (env::REFUSE_UNSERVABLE, "0"),
+            (env::POLICY, policy.to_str().unwrap()),
+        ];
+        if cfg!(debug_assertions) {
+            pairs.push((env::DEFER_TEST, "503:1:all"));
+        }
+        let (started, log) = logged("startup-warned", &pairs).await;
+
+        assert!(started, "{log}");
+        let mut expected = vec![
+            "artifact URL rewriting is OFF",
+            "a refusal configured with this status will read as the proxy being broken",
+            "observe mode: what the policy refuses is served and logged",
+            "set to 0: artifacts published off this registry are forwarded",
+            "policy loaded and validated",
+            "no audit log configured, so policy decisions are not recorded",
+            "NOT ENFORCED: known_malware, max_cvss and kev",
+        ];
+        if cfg!(debug_assertions) {
+            expected.push("set: matching requests are answered with a deferral");
+        }
+        for message in expected {
+            assert!(log.contains(message), "{message}: {log}");
+        }
+        assert!(
+            !log.contains("not set: `npm ci` fails"),
+            "rewriting is off: {log}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With rewriting on and no public URL, the lockfile address is warned about; a
+    /// forward proxy is named.
+    #[tokio::test]
+    async fn an_unset_public_url_is_warned_about_and_a_forward_proxy_named() {
+        let (started, log) = logged(
+            "startup-public",
+            &[(env::HTTPS_PROXY, "http://egress.example:3128")],
+        )
+        .await;
+
+        assert!(started, "{log}");
+        assert!(log.contains("not set: `npm ci` fails"), "{log}");
+        assert!(
+            log.contains("upstream traffic goes through a forward proxy"),
+            "{log}"
+        );
+        assert!(!log.contains("observe mode"), "{log}");
+    }
+
+    /// A CA bundle is loaded and said to be, and one that does not load refuses the start.
+    #[tokio::test]
+    async fn a_ca_bundle_is_loaded_or_refuses_the_start() {
+        let bundle = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tls/test-ca.pem"
+        );
+        let (started, log) = logged(
+            "startup-bundle",
+            &[(env::CA_BUNDLE, bundle), (env::CA_BUNDLE_EXCLUSIVE, "1")],
+        )
+        .await;
+        assert!(started, "{log}");
+        assert!(log.contains("upstream CA bundle loaded"), "{log}");
+        assert!(log.contains("public roots are NOT trusted"), "{log}");
+
+        let (started, log) = logged(
+            "startup-bundle-missing",
+            &[(env::CA_BUNDLE, "/nonexistent/ca.pem")],
+        )
+        .await;
+        assert!(!started, "{log}");
+    }
+
+    /// An audit log is opened and said to be, and one that cannot be opened refuses the
+    /// start, naming the variable.
+    #[tokio::test]
+    async fn an_audit_log_is_opened_or_refuses_the_start() {
+        let dir = crate::util::test_support::tempdir("startup-audit-file");
+        let log_path = dir.join("audit.jsonl");
+        let (started, log) = logged(
+            "startup-audit",
+            &[(env::AUDIT_LOG, log_path.to_str().unwrap())],
+        )
+        .await;
+        assert!(started, "{log}");
+        assert!(log.contains("audit log open"), "{log}");
+
+        let (dir2, environment) = spooled(
+            "startup-audit-bad",
+            &[(env::AUDIT_LOG, "/nonexistent/dir/audit.jsonl")],
+        );
+        let Err(StartupError::Unusable(why)) = proxy(&environment).await.map(drop) else {
+            panic!("an audit log that cannot be opened refuses the start");
+        };
+        assert!(why.starts_with(&env::AUDIT_LOG.to_string()), "{why}");
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir2);
+    }
+
     /// Nothing set but the spool directory: npm's and PyPI's own registries, no policy, no
     /// store, and artifact URLs pointed at the proxy.
     #[tokio::test]
