@@ -46,6 +46,6 @@ checks that the two agree. Two actions always compare, so an action alone is nev
 `Incomparable`.
 
 For a number, nothing in the value says which way is stricter: a higher `cooldown_days` is
-stricter and a higher `max_cvss` is looser. The direction is declared once per parameter,
-and `the_two_directions_are_mirror_images` checks the two directions against each other. A
+stricter and a higher `max_cvss` is looser. `merge::compare` names the direction for
+`cooldown_days`, the one number an exception can set, and `the_two_directions_are_mirror_images` checks the two directions against each other. A
 direction declared backwards would warn in exactly the wrong cases.
