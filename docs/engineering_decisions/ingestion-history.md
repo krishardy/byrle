@@ -38,7 +38,7 @@ Before this, which feed was ingested when, and from which bundle, could not be r
 | `rows_digest` | the rows loaded, as `intel_source.digest`; NULL when the stream did not load |
 | `snapshot` | the snapshot the store contains after the refresh; NULL when the refresh loaded nothing |
 | `error` | why the stream did not load; NULL when it loaded |
-| `unconfigured` | the stream was not read because it is not configured, such as GitHub's with no token. Added 2026-09-29 by `0012_ingestion_unconfigured.sql`; the snapshot reports the streams whose latest row says so ([uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md)) |
+| `unconfigured` | the stream was not read because it is not configured, such as GitHub's with no token. Added 2026-09-29 by `0012_ingestion_unconfigured.sql`, which marks the earlier rows whose error is GitHub's missing-token message, so an upgraded proxy is ready without another refresh; the snapshot reports the streams whose latest row says so ([uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md)) |
 
 Two `CHECK` constraints hold the shape: a row with no error has a bundle, rows digest and
 snapshot, and a row with an error has no rows digest. `etag`, `last_modified` and `error` are
