@@ -1,10 +1,7 @@
-//! A simple index as PyPI serves it, and the cleaned form the normaliser reads.
-//!
-//! Two shapes rather than npm's one. `Document` and `Entry` are the PEP 691
-//! deserialisation targets; [`Project`] is what [`parse`] turns them into. The
-//! intermediate exists because a simple index is **file**-keyed and
-//! [`crate::record::PackageMetadata`] is version-keyed: `requests` lists 244 files for 160
-//! versions, and deciding which file stands for a version is a question npm never asks.
+//! A simple index as PyPI serves it, and the cleaned form the normaliser reads. The
+//! intermediate [`Project`] exists because an index is file-keyed and
+//! [`crate::record::PackageMetadata`] is version-keyed.
+//! See docs/engineering_decisions/pypi-simple-index.md.
 
 use std::collections::BTreeMap;
 
@@ -18,8 +15,7 @@ use super::paths::{filename_parts, normalise};
 pub enum Kind {
     /// A built distribution. Installing unpacks it and runs nothing from the package.
     Wheel,
-    /// A source distribution. Installing runs the package's own build, `setup.py`
-    /// included, which is the PyPI shape of the `install_scripts` question.
+    /// A source distribution. Installing runs the package's own build, `setup.py` included.
     Sdist,
 }
 
@@ -42,17 +38,12 @@ pub struct File {
     pub url: String,
     /// Hex SHA-256, when the index gives one. PyPI always does; another index may not.
     pub sha256: Option<String>,
-    /// RFC 3339, as the index wrote it. `cooldown_days` reads this, and unlike npm it is
-    /// in the document a resolver already fetches.
+    /// RFC 3339, as the index wrote it. `cooldown_days` reads this.
     pub upload_time: Option<String>,
-    /// The reason the publisher gave, empty when the index said only `true`. `None` is not
-    /// yanked.
+    /// The reason the publisher gave, empty for a bare `true`. `None` is not yanked.
     pub yanked: Option<String>,
     pub requires_python: Option<String>,
     /// PEP 740: where this file's attestation bundle is, when the index published one.
-    ///
-    /// The index carries the URL and not the bundle, so presence is a claim of provenance
-    /// and nothing here is verified: fetching and checking it is Stage 4.
     pub provenance: Option<String>,
 }
 
@@ -66,9 +57,6 @@ pub struct Project {
 
 impl Project {
     /// Every version the files name, sorted and once each.
-    ///
-    /// Read from the files rather than the index's own `versions` key, which is PEP 700 and
-    /// optional: an index that omits it still answers this.
     pub fn versions(&self) -> Vec<&str> {
         let mut seen: Vec<&str> = self.files.iter().map(|f| f.version.as_str()).collect();
         seen.sort_unstable();
@@ -82,10 +70,8 @@ impl Project {
     }
 
     /// Whether installing `version` runs the package's own code.
-    ///
-    /// True when every file for that version is an sdist. A resolver that can take a wheel
-    /// will, so a version offering one is not an install-script version; a version offering
-    /// only an sdist leaves no choice. `None` when the index lists no file for it.
+    /// `version` is as the filenames write it.
+    /// Returns true when every file for it is an sdist, `None` when it has none.
     pub fn only_sdist(&self, version: &str) -> Option<bool> {
         let files = self.files_for(version);
         if files.is_empty() {
@@ -111,28 +97,19 @@ struct Entry {
     hashes: BTreeMap<String, String>,
     #[serde(default, rename = "upload-time")]
     upload_time: Option<String>,
-    /// PEP 592: `true`, or a string giving the reason. `false` or absent is not yanked,
-    /// and absent is the common case: of 244 `requests` files on 2026-09-20, 4 are yanked
-    /// and every one carries a reason string.
+    /// PEP 592: `true`, or a string giving the reason. `false` or absent is not yanked.
     #[serde(default)]
     yanked: serde_json::Value,
     #[serde(default, rename = "requires-python")]
     requires_python: Option<String>,
-    /// PEP 740. `null` on a file published without attestations, which is most of them:
-    /// counted 2026-09-21, `attrs` publishes 12 of 72 with one and `ruff` none of 7,134.
+    /// PEP 740. `null` on a file published without attestations.
     #[serde(default)]
     provenance: Option<String>,
 }
 
-/// One project's index, read.
-///
-/// A file whose name gives no version is skipped rather than refusing the document: PyPI
-/// lists eggs and `.exe` installers for old projects, and one of those should not hide
-/// every wheel beside it.
-///
-/// Measured over nine projects on 2026-09-16, 12,164 files: 510 skipped, every one of them
-/// `.egg` (265), `.exe` (237) or `.src.rpm` (8). pip installs neither eggs nor installers,
-/// so nothing a resolver would fetch is among them. `examples/pypi_index.rs` is the run.
+/// One project's index, read. A file whose name gives no version is skipped.
+/// `name` is used when the document does not name the project. `bytes` is the PEP 691 JSON.
+/// Returns the project, or why the document does not read.
 pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
     let document: Document = serde_json::from_slice(bytes).map_err(PypiError::NotJson)?;
     let listed = document.files.len();
@@ -150,7 +127,6 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
                 upload_time: entry.upload_time,
                 yanked: match entry.yanked {
                     serde_json::Value::String(reason) => Some(reason),
-                    // PEP 592 allows a bare `true`, which is a yank with no reason given.
                     serde_json::Value::Bool(true) => Some(String::new()),
                     _ => None,
                 },
@@ -171,12 +147,7 @@ pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
     Ok(Project { name, files })
 }
 
-/// The file a resolver would take for a version.
-///
-/// A wheel wins because a resolver that can take one will. `normalize` reads this for the
-/// version's publish time, so a version offering both kinds is dated by its wheel; the
-/// install-scripts answer comes from [`Project::only_sdist`] rather than from here.
-/// `None` when the index lists no file for that version.
+/// The file a resolver would take for a version: a wheel when there is one.
 impl Project {
     pub(super) fn preferred(&self, version: &str) -> Option<&File> {
         let files = self.files_for(version);
@@ -238,9 +209,8 @@ mod tests {
         );
     }
 
-    /// PEP 592 writes `false` or a string giving the reason, so `yanked` is a string, or
-    /// `true`, and anything else is not a yank. An index that omits the key is the common
-    /// case: reading an absent key as a yank refused every file of every project.
+    /// `yanked` is a yank when it is a string or `true`, and not otherwise, including
+    /// when the key is absent.
     #[test]
     fn a_file_is_yanked_by_a_reason_or_by_true_and_by_nothing_else() {
         let project = parse("requests", &fixture()).expect("the fixture reads");
@@ -293,12 +263,10 @@ mod tests {
 
     #[test]
     fn a_wheel_with_a_build_tag_still_gives_its_version() {
-        // PEP 427 allows a build tag between the version and the python tag.
         assert_eq!(
             filename_parts("x-1.2.3-1-py3-none-any.whl"),
             Some(("x".to_owned(), "1.2.3".to_owned(), Kind::Wheel))
         );
-        // An sdist whose project name contains a hyphen: the version is after the last one.
         assert_eq!(
             filename_parts("zope-interface-5.4.0.tar.gz"),
             Some(("zope-interface".to_owned(), "5.4.0".to_owned(), Kind::Sdist))
@@ -307,9 +275,8 @@ mod tests {
         assert_eq!(filename_parts("x-py3-none-any.whl"), None, "too few fields");
     }
 
-    /// A filename that gives a version but no project name is skipped the same as one that
-    /// gives no version. `parse` discards the name, so without this the file would become a
-    /// record under the project the index was asked about.
+    /// A filename that gives a version but no project name is skipped, as one with no
+    /// version is.
     #[test]
     fn a_file_whose_name_is_only_a_version_is_skipped() {
         assert_eq!(filename_parts("-1.0.tar.gz"), None, "sdist, empty name");

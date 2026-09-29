@@ -108,7 +108,10 @@ every file for the version, wheels first. `Artifact` gained two fields:
 | `runs_install_scripts` | equal to `PackageRecord::has_install_scripts` | `kind == Sdist` |
 
 `has_install_scripts` stays the version-level answer: true only when every file for that
-version is an sdist, because a resolver that can take a wheel will.
+version is an sdist, because a resolver that can take a wheel will. For the same reason a
+version's publish time is its wheel's `upload-time` when it offers one. The version list is
+read from the files, not the PEP 700 `versions` key, which an index may omit. A wheel
+filename may carry a PEP 427 build tag between the version and the Python tag.
 
 ### Why the per-file answer had to exist
 

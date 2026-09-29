@@ -1,49 +1,13 @@
-//! Package identity. PURL throughout the core (plan §4).
+//! Package identity as purls: [`PackageKey`] is versionless, the lookup key, and
+//! [`PackageRef`] is a key and a version. npm names keep their case, against purl-spec.
 //!
-//! Two types, because the advisory data has two shapes and conflating them loses
-//! matches:
-//!
-//! * [`PackageKey`] is a **versionless** identity, `pkg:npm/lodash`. This is the
-//!   lookup key. Every one of the 231,533 npm entries in OSV's bundle carries a
-//!   versionless purl and version ranges in a separate field, so a key that demanded
-//!   a version could not express a lookup at all.
-//! * [`PackageRef`] is a key plus a concrete version, `pkg:npm/lodash@4.17.21`. This
-//!   is what a verdict is about, and what §5.5 `denials` match on.
-//!
-//! # Casing: npm names are not lowercased
-//!
-//! The purl specification says npm names MUST be lowercased. **We do not**, because
-//! the advisory corpus we have to match does not.
-//!
-//! Measured against OSV's full npm bundle (Sept 2026, 228,941 advisories): 112 npm
-//! package names contain uppercase, and all 112 are case-preserved in OSV's own purl.
-//! Nearly all are `MAL-` records, which are malicious-package advisories. §5.5 pins
-//! `known_malware: block` to the non-overridable floor. Confirmed live against the
-//! OSV API:
-//!
-//! ```text
-//! pkg:npm/AdultJS  -> MAL-2025-14119
-//! pkg:npm/adultjs  -> no match
-//! ```
-//!
-//! OSV also holds four npm names that differ only by case, one of them three ways:
-//! `OpenClaw`, `Openclaw` and `openclaw`. Case-insensitive keying merges their
-//! advisories.
-//!
-//! Do not change this to comply with the spec without re-running
-//! `cargo run --example osv_conformance`.
-//!
-//! Identity comes from the packument's own `name` field, not the request path. The
-//! registry reports the canonical spelling there; the path also carries
-//! percent-encoding and query strings.
+//! See docs/engineering_decisions/purl-identity-rules.md.
 
 use purl::GenericPurl;
 use std::fmt;
 use std::str::FromStr;
 
-/// Ecosystems we can express an identity for.
-///
-/// Which of them the proxy serves is `crate::ecosystem::TABLE`.
+/// Ecosystems an identity can be expressed for. `crate::ecosystem::TABLE` lists those served.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ecosystem {
     Npm,
@@ -52,18 +16,13 @@ pub enum Ecosystem {
 }
 
 impl Ecosystem {
-    /// Every ecosystem a package can be named in, served or not.
-    ///
-    /// `ecosystem::TABLE` is checked against this: a variant with no row would make
-    /// `ecosystem::of` panic on the request path, so the count has to match.
+    /// Every ecosystem a package can be named in. `ecosystem::TABLE` has a row for each.
     pub const EXPRESSIBLE: [Ecosystem; 2] = [Ecosystem::Npm, Ecosystem::PyPI];
 
     /// The purl `type` component, and the string OSV keys on.
     pub const fn as_str(self) -> &'static str {
         match self {
             Ecosystem::Npm => "npm",
-            // The purl type and OSV's ecosystem key are both lowercase, unlike PyPI's own
-            // spelling of itself.
             Ecosystem::PyPI => "pypi",
         }
     }
@@ -118,23 +77,16 @@ pub struct PackageKey {
 }
 
 impl PackageKey {
-    /// Build a key from a registry-reported package name.
-    ///
-    /// Takes the name as the registry spells it. How it splits into a purl namespace and a
-    /// name is the ecosystem's rule, the `split_name` of its row in
-    /// [`crate::ecosystem::TABLE`]: npm's `@babel/core` is the namespace `@babel` and the
-    /// name `core`, and a PyPI project has no namespace. Case is preserved exactly; see the
-    /// module docs for why that is not an oversight.
+    /// Build a key from a registry-reported package name, split by the ecosystem's
+    /// `split_name`. Case is preserved.
+    /// `ecosystem` chooses the rule. `name` is as the registry spells it.
+    /// Returns the key, or why `name` is not one.
     pub fn from_registry_name(ecosystem: Ecosystem, name: &str) -> Result<Self, IdentityError> {
         let name = name.trim();
         if name.is_empty() {
             return Err(IdentityError::Malformed("empty package name".into()));
         }
         let (namespace, bare) = (crate::ecosystem::of(ecosystem).split_name)(name)?;
-        // Not a `return Err`: with the empty check above and each rule refusing an empty
-        // name after a namespace, there is no input that reaches here with an empty `bare`. An
-        // unreachable error arm is a branch no test can ever cover, which makes it look
-        // like a gap in the test suite instead of what it is.
         debug_assert!(!bare.is_empty(), "`{name}` produced an empty package name");
         Ok(PackageKey {
             ecosystem,
@@ -199,27 +151,14 @@ impl fmt::Display for PackageKey {
         }
         match builder.build() {
             Ok(p) => write!(f, "{p}"),
-            // Unreachable for values built through the constructors, which validate.
             Err(e) => write!(f, "<invalid purl: {e}>"),
         }
     }
 }
 
-/// The key a purl names: its namespace and name joined by `/`, which is how npm spells a
-/// scope, then split by the ecosystem's rule as [`PackageKey::from_registry_name`] splits a
-/// registry name.
-///
-/// OSV publishes scoped npm packages in **two** forms, and they do not parse alike:
-///
-/// ```text
-/// pkg:npm/%40antv/algorithm    -> namespace "@antv", name "algorithm"
-/// pkg:npm/%40antv%2Falgorithm  -> namespace None,    name "@antv/algorithm"
-/// ```
-///
-/// Both join to `@antv/algorithm`. Measured across OSV's npm bundle: 16,904 scoped entries
-/// use the first form and 855 use the second. OSV's own API normalizes them, but a local
-/// mirror holds the raw strings, so without this those 855 records are unreachable by a key
-/// built from a registry name. `MAL-` malware records are over-represented among them.
+/// The key a purl names: its namespace and name joined by `/`, then split as
+/// [`PackageKey::from_registry_name`] splits a registry name, so both of OSV's scoped forms
+/// give one key.
 pub fn key_from_purl(
     ecosystem: Ecosystem,
     namespace: Option<&str>,
@@ -381,7 +320,6 @@ mod tests {
 
     #[test]
     fn npm_scope_becomes_a_percent_encoded_namespace() {
-        // OSV writes scoped purls exactly this way; verified across its npm bundle.
         assert_eq!(key("@babel/core").to_string(), "pkg:npm/%40babel/core");
         assert_eq!(
             key("@babel/traverse")
@@ -392,11 +330,8 @@ mod tests {
         );
     }
 
-    /// The regression this module exists to prevent.
-    ///
-    /// purl-spec says npm names must be lowercased. `pkg:npm/AdultJS` matches
-    /// MAL-2025-14119; `pkg:npm/adultjs` matches nothing. MAL- records are
-    /// malicious-package advisories.
+    /// purl-spec says npm names must be lowercased, but `pkg:npm/AdultJS` matches
+    /// MAL-2025-14119 and `pkg:npm/adultjs` matches nothing.
     #[test]
     fn uppercase_names_are_preserved_not_lowercased() {
         assert_eq!(key("AdultJS").to_string(), "pkg:npm/AdultJS");
@@ -437,8 +372,11 @@ mod tests {
         let slash: PackageKey = "pkg:npm/%40antv/algorithm".parse().unwrap();
         let encoded: PackageKey = "pkg:npm/%40antv%2Falgorithm".parse().unwrap();
         assert_eq!(slash, encoded);
-        // ...and both agree with the key built from the name the registry reports.
-        assert_eq!(slash, key("@antv/algorithm"));
+        assert_eq!(
+            slash,
+            key("@antv/algorithm"),
+            "both agree with the key built from the registry's name"
+        );
         assert_eq!(encoded.registry_name(), "@antv/algorithm");
 
         let slash: PackageRef = "pkg:npm/%40antv/algorithm@1.0.0".parse().unwrap();
@@ -489,7 +427,6 @@ mod tests {
         assert!(PackageKey::from_registry_name(Ecosystem::Npm, "@scope/").is_err());
         assert!(PackageKey::from_registry_name(Ecosystem::Npm, "a/b/c").is_err());
         assert!(key("lodash").at_version("").is_err());
-        // Ecosystems we have not implemented must fail loudly rather than be guessed at.
         assert!(matches!(
             "pkg:cargo/serde".parse::<PackageKey>(),
             Err(IdentityError::UnsupportedEcosystem(_))

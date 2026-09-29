@@ -1,16 +1,7 @@
 //! The bytes a bulk load sends, built without a database, and the encoding a snapshot id is
-//! the digest of.
+//! the digest of. `advisory` is written first; other tables use the keys read back from it.
 //!
-//! `COPY ... FROM STDIN (FORMAT csv)`. Every value is quoted, so an unquoted empty field is
-//! NULL and a quoted one is an empty string, and a summary holding `\.` on a line of its own
-//! cannot end the data early. Kept apart from `postgres.rs` so the encoding is unit-tested
-//! inside the coverage floor, and only the sending needs a container.
-//!
-//! `advisory` is written first. Every other table refers to the key Postgres assigns an
-//! advisory, so their rows are built from the keys read back after that `COPY`.
-//!
-//! A source contains advisories or exploited CVE ids, never both. See
-//! docs/engineering_decisions/snapshot-identity.md and docs/engineering_decisions/kev-stream.md.
+//! See docs/engineering_decisions/snapshot-identity.md and docs/engineering_decisions/kev-stream.md.
 
 use super::range::{End, Interval, Start};
 use super::refresh::{StreamDigest, sha256_hex};
@@ -123,8 +114,7 @@ pub struct Encoded {
     /// The source the rows are stored under.
     pub source: String,
     pub kind: Kind,
-    /// CSV for the first table, `advisory` or `exploited_cve`, which a load sends to `COPY` as
-    /// it is.
+    /// CSV for the first table, `advisory` or `exploited_cve`, sent to `COPY` as it is.
     pub first_table: Vec<u8>,
     /// The whole encoding.
     pub bytes: Vec<u8>,
@@ -133,24 +123,8 @@ pub struct Encoded {
 }
 
 /// Encode one source's rows so the same rows give the same bytes in every database.
-///
-/// ```text
-/// waharoa intel rows 2
-/// source osv
-/// advisory 23771415
-/// (23,771,415 bytes of CSV)
-/// advisory_alias 1149815
-/// (1,149,815 bytes of CSV)
-/// advisory_affected 9360804
-/// (9,360,804 bytes of CSV)
-/// advisory_range 437575
-/// (437,575 bytes of CSV)
-/// ```
-///
-/// Each table's CSV is the `COPY` encoding. Records are sorted by publisher id. A child row
-/// carries its advisory's position in that order, from 1, where `COPY` carries the key
-/// Postgres assigned, which differs between databases. Lengths are in bytes, so a summary
-/// cannot be read as a table line.
+/// `source` names the rows. `rows` are sorted by publisher id before encoding.
+/// Returns the `COPY` CSV of the first table and the encoding.
 pub fn encode(source: &str, rows: &[Rows]) -> Encoded {
     let mut sorted: Vec<&Rows> = rows.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
@@ -180,15 +154,8 @@ pub fn encode(source: &str, rows: &[Rows]) -> Encoded {
 }
 
 /// Encode one source's exploited CVE ids, the way [`encode`] encodes advisories.
-///
-/// ```text
-/// waharoa intel exploited 1
-/// source cisa/kev
-/// exploited_cve 47189
-/// (47,189 bytes of CSV)
-/// ```
-///
-/// A row is the source and the id, in id order.
+/// `source` names the rows. `ids` are written in order.
+/// Returns the `COPY` CSV and the encoding.
 pub fn encode_exploited(source: &str, ids: &BTreeSet<String>) -> Encoded {
     let mut csv = Vec::new();
     for id in ids {
@@ -250,12 +217,10 @@ impl std::fmt::Display for Undecodable {
 
 impl std::error::Error for Undecodable {}
 
-/// One row of an [`encode`]d source, in the order the encoding contains them. A child row
-/// carries its advisory's index in the advisory table, from 0.
+/// One row of an [`encode`]d source. A child row carries its advisory's index, from 0.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Row {
-    /// A record with no aliases, affected entries or ranges. Those follow as rows of their own.
-    /// `unread_vectors` and `unexpressed` are not in the encoding and are 0.
+    /// A record without its aliases, affected entries and ranges, which follow as rows.
     Advisory(Rows),
     Alias(usize, String),
     Affected(usize, Affected),
@@ -278,11 +243,7 @@ fn follows(previous: &Row, next: &Row) -> bool {
     }
 }
 
-/// The rows of an [`encode`]d source, read one at a time.
-///
-/// Each row is encoded again and compared with the bytes it was read from, and must follow the
-/// row before it, so a reading that differs from what was written is refused rather than used.
-/// Only one row is decoded at a time, so reading a source costs its bytes and not its rows.
+/// The rows of an [`encode`]d source, read and checked one at a time.
 #[derive(Debug)]
 pub struct Decoder<'a> {
     source: String,
@@ -373,7 +334,6 @@ impl<'a> Decoder<'a> {
     /// A record of `table`, the table at `self.table`.
     fn row(&mut self, table: &str, fields: Vec<Option<String>>) -> Result<Row, Undecodable> {
         Ok(match (self.kind, self.table) {
-            // `exploited_cve`, the only table.
             (Kind::Exploited, _) => {
                 let [_source, id] = width(table, fields)?;
                 Row::Exploited(given(table, id)?)
@@ -426,7 +386,6 @@ impl<'a> Decoder<'a> {
                     },
                 )
             }
-            // `advisory_range`, the last table.
             (Kind::Advisories, _) => {
                 let [
                     position,
@@ -564,8 +523,7 @@ fn take_table<'a>(rest: &mut &'a [u8], table: &'static str) -> Result<Records<'a
     Ok(Records { table, csv, i: 0 })
 }
 
-/// Each record's bytes and fields, as [`line()`] writes them: an empty field is `None`, and a
-/// quoted one is its text with doubled quotes undone. Anything else is refused.
+/// Each record's bytes and fields, as [`line()`] writes them.
 #[derive(Debug)]
 struct Records<'a> {
     table: &'static str,
@@ -652,7 +610,6 @@ pub fn advisories<'a>(source: &str, rows: impl IntoIterator<Item = &'a Rows>) ->
 }
 
 fn advisory_line(out: &mut Vec<u8>, source: &str, r: &Rows) {
-    // `f64`'s `Display` is the shortest text that reads back as the same number.
     let cvss = r.cvss.map(|c| c.to_string());
     let modified = r.modified.as_deref().map(timestamp);
     line(
@@ -699,7 +656,6 @@ fn range_line(out: &mut Vec<u8>, key: &str, ranged: &Ranged) {
             Some(&ranged.ecosystem),
             Some(&ranged.name),
             introduced,
-            // Postgres reads `t` and `f` as a boolean in CSV.
             Some(if excluded { "t" } else { "f" }),
             fixed,
             last_affected,
@@ -707,11 +663,9 @@ fn range_line(out: &mut Vec<u8>, key: &str, ranged: &Ranged) {
     );
 }
 
-/// `value` in UTC, rounded to the microsecond.
-///
-/// Postgres keeps microseconds, so the value sent is the value stored, and [`encode`] hashes
-/// what the row contains. OSV writes nanoseconds. A value that does not parse as an RFC 3339
-/// timestamp is sent as it is.
+/// `value` in UTC, rounded to the microsecond Postgres keeps.
+/// `value` is sent as it is when it is not RFC 3339.
+/// Returns the timestamp to send.
 fn timestamp(value: &str) -> String {
     value
         .parse::<jiff::Timestamp>()
@@ -1175,12 +1129,14 @@ mod tests {
         }
         assert!(decode(good.as_bytes()).is_ok());
 
-        // A decoder that refused a row gives nothing after.
         let bytes = framed([row, "\"2\",\"CVE-a\"\n", "", ""]);
         let mut refused = Decoder::new(&bytes).expect("a header");
         assert!(refused.next().expect("the advisory").is_ok());
         assert!(refused.next().expect("the refusal").is_err());
-        assert!(refused.next().is_none());
+        assert!(
+            refused.next().is_none(),
+            "a decoder that refused a row gives nothing after"
+        );
     }
 
     /// A range that excludes its start is written with `t` and read back as `After`.
@@ -1236,8 +1192,11 @@ mod tests {
         let (a, b) = (plain("GHSA-1", "CVE-a", "a"), rows());
         let encoded = encode("osv", &[a.clone(), b.clone()]);
         assert_eq!(encoded, encode("osv", &[b.clone(), a.clone()]));
-        // `intel_source.digest` is VARCHAR(71).
-        assert_eq!(encoded.digest.len(), 71);
+        assert_eq!(
+            encoded.digest.len(),
+            71,
+            "intel_source.digest is VARCHAR(71)"
+        );
 
         let rescored = Rows {
             cvss: Some(0.1),
