@@ -237,11 +237,6 @@ impl Outcome {
             Self::Passed | Self::Excepted { .. } | Self::NotApplicable => Action::Allow,
         }
     }
-
-    /// Whether the check found something, whatever was then done about it.
-    pub fn found_something(&self) -> bool {
-        matches!(self, Self::Failed(_) | Self::Excepted { .. })
-    }
 }
 
 /// One check and what it decided.
@@ -545,24 +540,19 @@ fn kev(
     set: Option<&super::SetBlock>,
     entry: Option<usize>,
 ) -> Outcome {
-    let exploited: Vec<&Advisory> = facts.advisories.iter().filter(|a| a.kev).collect();
-    if exploited.is_empty() {
+    if !facts.advisories.iter().any(|a| a.kev) {
         return Outcome::Passed;
     }
-    // The exception is per package, so the subtraction is all or nothing. Written as a
-    // subtraction anyway, because a per-advisory list would be the same shape and would
-    // change nothing else here.
+    // The exception is per package, so it excuses every exploited advisory or none. `set`
+    // comes from `entry`, so an excused advisory always has the entry that excused it.
     let excused = set.and_then(|s| s.kev) == Some(Action::Allow);
-    let remaining = if excused { 0 } else { exploited.len() };
-
-    match (remaining, entry) {
-        (0, Some(entry)) => Outcome::Excepted {
+    match entry.filter(|_| excused) {
+        Some(entry) => Outcome::Excepted {
             entry,
             action: policy.kev,
         },
-        _ if policy.kev == Action::Allow => Outcome::Passed,
-        (0, None) => Outcome::Passed,
-        _ => Outcome::Failed(policy.kev),
+        None if policy.kev == Action::Allow => Outcome::Passed,
+        None => Outcome::Failed(policy.kev),
     }
 }
 
@@ -1421,5 +1411,40 @@ mod tests {
             assert!(!check.as_str().is_empty());
         }
         assert_eq!(Check::ALL.len(), 9);
+    }
+
+    /// Each provenance state in the words a refusal uses.
+    #[test]
+    fn each_provenance_describes_itself() {
+        assert_eq!(
+            Provenance::NOT_VERIFIED.describe(),
+            "no attestation of it has been verified"
+        );
+        assert_eq!(
+            Provenance::Consistent.describe(),
+            "its attestations agree with the version before it"
+        );
+    }
+
+    /// A yanked PyPI release an entry allows is excepted by that entry.
+    #[test]
+    fn an_entry_can_allow_a_yanked_release() {
+        let policy = policy(
+            "packages:\n  - match: { ecosystem: pypi, name: requests }\n    \
+             set: { yanked: allow }\n    reason: pinned\n    expires: \"2026-12-01\"\n",
+        );
+        let facts = Facts {
+            ecosystem: "pypi".to_owned(),
+            name: "requests".to_owned(),
+            yanked: Some("broken".to_owned()),
+            ..clean()
+        };
+        let decision = decide(&policy, &facts, TODAY);
+        let yanked = decision
+            .results
+            .iter()
+            .find(|r| r.check == Check::Yanked)
+            .expect("asked");
+        assert!(matches!(yanked.outcome, Outcome::Excepted { entry: 0, .. }));
     }
 }

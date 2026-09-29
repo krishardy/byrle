@@ -1365,4 +1365,59 @@ mod tests {
             PolicyError::Invalid(_)
         ));
     }
+
+    /// Each way an entry or a version is written wrong says so in its own words.
+    #[test]
+    fn a_policy_written_wrong_says_how() {
+        let both = parse(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    set: { kev: allow }\n    \
+             reason: reviewed\n    expires: \"2026-12-01\"\n    permanent: true\n",
+        )
+        .expect_err("both");
+        assert!(
+            both.to_string()
+                .contains("sets both `expires` and `permanent: true`"),
+            "{both}"
+        );
+        let huge = Policy::parse("version: 18446744073709551615\n").expect_err("too large");
+        assert!(huge.to_string().contains("18446744073709551615"), "{huge}");
+        let not_a_date = serde_json::from_str::<ExpiryDate>("5").expect_err("a number");
+        assert!(
+            not_a_date
+                .to_string()
+                .contains("a calendar date written as YYYY-MM-DD"),
+            "{not_a_date}"
+        );
+    }
+
+    /// An entry's own cooldown is a cooldown, and its yanked and deprecated settings are
+    /// on-off settings like the global ones.
+    #[test]
+    fn an_entry_can_set_a_cooldown_yanked_and_deprecated() {
+        let policy = parse(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { cooldown_days: 5, yanked: allow, deprecated: allow }\n    \
+             reason: reviewed\n    expires: \"2026-12-01\"\n",
+        )
+        .expect("loads");
+        assert!(policy.uses_cooldown());
+        let refused = parse(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { deprecated: quarantine }\n    reason: reviewed\n    expires: \"2026-12-01\"\n",
+        )
+        .expect_err("not on or off");
+        assert!(
+            refused.to_string().contains("packages[0].set.deprecated"),
+            "{refused}"
+        );
+        let refused = parse(
+            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+             set: { yanked: quarantine }\n    reason: reviewed\n    expires: \"2026-12-01\"\n",
+        )
+        .expect_err("not on or off");
+        assert!(
+            refused.to_string().contains("packages[0].set.yanked"),
+            "{refused}"
+        );
+    }
 }

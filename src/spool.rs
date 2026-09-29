@@ -127,16 +127,8 @@ impl Spool {
             .write(true)
             .open(&lock_path)
             .map_err(at(&lock_path))?;
-        match lock.try_lock() {
-            Ok(()) => {}
-            Err(TryLockError::WouldBlock) => return Err(OpenError::Locked(dir.to_owned())),
-            Err(TryLockError::Error(error)) => {
-                return Err(OpenError::Io {
-                    path: lock_path,
-                    error,
-                });
-            }
-        }
+        lock.try_lock()
+            .map_err(|e| lock_error(dir, &lock_path, e))?;
         let swept = sweep(dir).map_err(at(dir))?;
         let spool = Self {
             dir: dir.to_owned(),
@@ -164,12 +156,24 @@ impl Spool {
         &self,
         body: S,
         claimed: Option<u64>,
-        mut observe: impl FnMut(&[u8]),
+        mut observe: impl FnMut(&[u8]) + Send,
     ) -> Result<Spooled, WriteError>
     where
-        S: Stream<Item = Result<Bytes, E>>,
+        S: Stream<Item = Result<Bytes, E>> + Send,
         E: std::fmt::Display,
     {
+        let body = body.map(|chunk| chunk.map_err(|e| e.to_string()));
+        self.write_chunks(std::pin::pin!(body), claimed, &mut observe)
+            .await
+    }
+
+    /// [`Spool::write`] for one stream type and one observer type, so there is one body.
+    async fn write_chunks(
+        &self,
+        body: std::pin::Pin<&mut (dyn Stream<Item = Result<Bytes, String>> + Send)>,
+        claimed: Option<u64>,
+        observe: &mut (dyn FnMut(&[u8]) + Send),
+    ) -> Result<Spooled, WriteError> {
         if claimed.is_some_and(|length| length > self.ceiling) {
             return Err(WriteError::TooLarge {
                 ceiling: self.ceiling,
@@ -189,21 +193,44 @@ impl Spool {
         debug!(file.path = %path.display(), "spooling an artifact");
         let mut spooled = Spooled { path, len: 0 };
         let mut file = tokio::fs::File::from_std(file);
-        let mut body = std::pin::pin!(body);
-        while let Some(chunk) = body.next().await {
-            let chunk = chunk.map_err(|e| WriteError::Upstream(e.to_string()))?;
-            spooled.len += chunk.len() as u64;
-            if spooled.len > self.ceiling {
-                return Err(WriteError::TooLarge {
-                    ceiling: self.ceiling,
-                    claimed: false,
-                });
-            }
-            observe(&chunk);
-            file.write_all(&chunk).await.map_err(WriteError::Io)?;
-        }
-        file.flush().await.map_err(WriteError::Io)?;
+        spooled.len = copy(body, &mut file, self.ceiling, observe).await?;
         Ok(spooled)
+    }
+}
+
+/// Write `body` to `out`, passing each chunk to `observe` first, and give how many bytes it
+/// held. Past `ceiling` bytes it stops with [`WriteError::TooLarge`].
+async fn copy(
+    mut body: std::pin::Pin<&mut (dyn Stream<Item = Result<Bytes, String>> + Send)>,
+    out: &mut (dyn tokio::io::AsyncWrite + Unpin + Send),
+    ceiling: u64,
+    observe: &mut (dyn FnMut(&[u8]) + Send),
+) -> Result<u64, WriteError> {
+    let mut len = 0;
+    while let Some(chunk) = body.next().await {
+        let chunk = chunk.map_err(WriteError::Upstream)?;
+        len += chunk.len() as u64;
+        if len > ceiling {
+            return Err(WriteError::TooLarge {
+                ceiling,
+                claimed: false,
+            });
+        }
+        observe(&chunk);
+        out.write_all(&chunk).await.map_err(WriteError::Io)?;
+    }
+    out.flush().await.map_err(WriteError::Io)?;
+    Ok(len)
+}
+
+/// What a lock that could not be taken means: another process holds it, or locking failed.
+fn lock_error(dir: &Path, lock_path: &Path, e: TryLockError) -> OpenError {
+    match e {
+        TryLockError::WouldBlock => OpenError::Locked(dir.to_owned()),
+        TryLockError::Error(error) => OpenError::Io {
+            path: lock_path.to_owned(),
+            error,
+        },
     }
 }
 
@@ -242,9 +269,12 @@ impl Drop for Spooled {
 /// lock, a directory, or a symlink, whatever it is named.
 fn sweep(dir: &Path) -> io::Result<usize> {
     let mut swept = 0;
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_type()?.is_file() && entry.file_name().to_string_lossy().starts_with(PREFIX) {
+    // An entry that cannot be read is left where it is: sweeping is cleanup, and one file
+    // left behind is better than a spool that does not open.
+    for entry in fs::read_dir(dir)?.flatten() {
+        if entry.file_type().is_ok_and(|kind| kind.is_file())
+            && entry.file_name().to_string_lossy().starts_with(PREFIX)
+        {
             fs::remove_file(entry.path())?;
             swept += 1;
         }
@@ -553,5 +583,97 @@ mod tests {
     #[test]
     fn the_default_is_a_directory_of_its_own_in_the_temporary_directory() {
         assert_eq!(default_dir(), std::env::temp_dir().join("waharoa-spool"));
+    }
+
+    /// A writer that refuses its writes, or accepts them and refuses the flush.
+    struct Refusing {
+        at_flush: bool,
+    }
+
+    impl tokio::io::AsyncWrite for Refusing {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            std::task::Poll::Ready(if self.at_flush {
+                Ok(bytes.len())
+            } else {
+                Err(io::Error::other("refused"))
+            })
+        }
+
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Err(io::Error::other("refused")))
+        }
+
+        fn poll_shutdown(
+            self: std::pin::Pin<&mut Self>,
+            _: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::task::Poll::Ready(Ok(()))
+        }
+    }
+
+    /// A write or a flush the disk refuses is an I/O error.
+    #[tokio::test]
+    async fn a_write_or_flush_that_fails_is_an_io_error() {
+        for at_flush in [false, true] {
+            let body = futures_util::stream::iter(vec![Ok(Bytes::from_static(b"abc"))]);
+            let result = copy(
+                std::pin::pin!(body),
+                &mut Refusing { at_flush },
+                1024,
+                &mut |_| {},
+            )
+            .await;
+            assert!(
+                matches!(result, Err(WriteError::Io(_))),
+                "at_flush {at_flush}"
+            );
+        }
+    }
+
+    /// Another holder of the lock, and a lock that failed, are told apart.
+    #[test]
+    fn a_lock_that_is_held_or_failed_says_which() {
+        let dir = Path::new("/spool");
+        let lock = dir.join(LOCK);
+        assert!(matches!(
+            lock_error(dir, &lock, TryLockError::WouldBlock),
+            OpenError::Locked(_)
+        ));
+        assert!(matches!(
+            lock_error(
+                dir,
+                &lock,
+                TryLockError::Error(io::Error::other("no locks"))
+            ),
+            OpenError::Io { .. }
+        ));
+    }
+
+    /// A spool directory whose lock cannot be created, or which cannot be listed, does not
+    /// open.
+    #[test]
+    fn a_directory_that_cannot_be_locked_or_listed_does_not_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let set = |dir: &Path, mode| {
+            fs::set_permissions(dir, fs::Permissions::from_mode(mode)).expect("sets the mode");
+        };
+        let read_only = crate::util::test_support::tempdir("spool-read-only");
+        set(&read_only, 0o555);
+        let locked = Spool::open(&read_only, 1024);
+        set(&read_only, 0o755);
+        assert!(matches!(locked, Err(OpenError::Io { .. })));
+
+        let unlistable = crate::util::test_support::tempdir("spool-unlistable");
+        set(&unlistable, 0o300);
+        let listed = Spool::open(&unlistable, 1024);
+        set(&unlistable, 0o755);
+        assert!(matches!(listed, Err(OpenError::Io { .. })));
     }
 }

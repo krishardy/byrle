@@ -433,4 +433,21 @@ mod tests {
             None
         );
     }
+
+    /// A page that cannot be read is not cut, and a JSON index with no `versions` key has
+    /// only its files filtered.
+    #[test]
+    fn an_unreadable_page_is_an_error_and_versions_are_optional() {
+        let removed: HashSet<&str> = ["x-1.0.tar.gz"].into();
+        assert!(matches!(
+            remove_from_html(b"<a href=\"x\">", &removed),
+            Err(RemoveError::Html("unreadable"))
+        ));
+        let json =
+            br#"{"name":"x","files":[{"filename":"x-1.0.tar.gz"},{"filename":"x-2.0.tar.gz"}]}"#;
+        let out = remove_from_json(json, &removed, &HashSet::new()).expect("filters");
+        let out: Value = serde_json::from_slice(&out).expect("json");
+        assert_eq!(out["files"].as_array().map(Vec::len), Some(1));
+        assert!(out.get("versions").is_none());
+    }
 }

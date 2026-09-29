@@ -40,6 +40,25 @@ pub fn filter_unservable_versions(
     refuse_unservable: bool,
     public_base: &str,
 ) -> Result<Filtered, RewriteError> {
+    filter_listed(
+        json,
+        artifacts.into_iter().collect(),
+        policy,
+        refused_by_policy,
+        refuse_unservable,
+        public_base,
+    )
+}
+
+/// [`filter_unservable_versions`] with its list collected, so there is one body.
+fn filter_listed(
+    json: &[u8],
+    artifacts: Vec<(String, String)>,
+    policy: &OriginPolicy,
+    refused_by_policy: &HashSet<String>,
+    refuse_unservable: bool,
+    public_base: &str,
+) -> Result<Filtered, RewriteError> {
     let mut document: serde_json::Value =
         serde_json::from_slice(json).map_err(RewriteError::NotJson)?;
     let base = public_base.trim_end_matches('/');

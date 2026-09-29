@@ -50,11 +50,11 @@ impl Refusal {
         let mut out = format!(
             "waharoa: {} is {} by policy\n",
             self.purl,
-            match self.action {
-                Action::Block => "blocked",
-                Action::Quarantine => "held",
-                // `Verdict::Refuse` is only built from a non-allow action.
-                Action::Allow => "allowed",
+            // `Verdict::Refuse` is only built from a non-allow action.
+            if self.action == Action::Block {
+                "blocked"
+            } else {
+                "held"
             }
         );
         for reason in &self.reasons {
@@ -241,8 +241,8 @@ fn reason(
         // The publisher's own words. A deprecation with nothing to say is not one: see
         // `npm::normalize`.
         (Check::Deprecated, _) => match facts.deprecated.as_deref() {
-            Some(message) => format!("{name}: {message}"),
-            None => format!("{name}: deprecated by its publisher"),
+            Some(message) if !message.is_empty() => format!("{name}: {message}"),
+            _ => format!("{name}: deprecated by its publisher"),
         },
         // The publisher's own words for why the release was withdrawn, when they gave any.
         (Check::Yanked, _) => match facts.yanked.as_deref() {
@@ -871,5 +871,30 @@ mod tests {
             };
             assert_eq!(refusal.purl, "pkg:npm/@babel/traverse@8.0.5");
         }
+    }
+
+    /// A deprecation with nothing to say is still named, and a check that did not refuse
+    /// renders as its outcome rather than panicking.
+    #[test]
+    fn a_reason_is_always_a_line() {
+        let policy = loaded("version: 1\ndeprecated: block\n");
+        let facts = Facts {
+            deprecated: Some(String::new()),
+            ..Facts::from_record(&record())
+        };
+        let result = |check, outcome| crate::policy::decide::Result { check, outcome };
+        assert_eq!(
+            reason(
+                &result(Check::Deprecated, Outcome::Failed(Action::Block)),
+                &policy,
+                &facts,
+                None
+            ),
+            "deprecated: deprecated by its publisher"
+        );
+        assert_eq!(
+            reason(&result(Check::Kev, Outcome::Passed), &policy, &facts, None),
+            "kev: Passed"
+        );
     }
 }

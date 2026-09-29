@@ -613,4 +613,59 @@ mod tests {
             .expect("the fetch itself succeeded");
         assert!(matches!(fetched, Err(NormalizeError::Json(_))));
     }
+
+    /// A packument that is not JSON is a record that cannot be read, and publish times that
+    /// cannot be decoded or arrive cut short are errors.
+    #[tokio::test]
+    async fn a_body_that_cannot_be_read_is_an_error() {
+        use crate::util::test_support::{Answer, scripted};
+        use axum::Router;
+        use axum::routing::get;
+
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
+        let not_json = scripted(vec![Answer::body("not json")]).await;
+        let client = Client::new(reqwest::Client::new(), format!("http://{not_json}"));
+        assert!(matches!(client.metadata(&key).await, Ok(Err(_))));
+
+        let router = Router::new().fallback(get(|| async {
+            ([(axum::http::header::CONTENT_ENCODING, "gzip")], "not gzip")
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, router).into_future());
+        let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
+        assert!(matches!(
+            client.publish_times(&key).await,
+            Err(FetchError::Undecodable(_))
+        ));
+
+        let cut = scripted(vec![Answer::Body {
+            bytes: b"{".to_vec(),
+            declared: Some(64),
+        }])
+        .await;
+        let client = Client::new(reqwest::Client::new(), format!("http://{cut}"));
+        assert!(matches!(
+            client.publish_times(&key).await,
+            Err(FetchError::Transport(_))
+        ));
+    }
+
+    /// A value, a body that did not parse, and a request that failed, each in its words.
+    #[test]
+    fn fetched_says_which_step_failed() {
+        let parse_error = || NormalizeError::Json(serde_json::from_str::<()>("{").unwrap_err());
+        let times = |r| fetched::<BTreeMap<String, jiff::Timestamp>>(r, "publish times");
+        assert!(times(Ok(Ok(BTreeMap::new()))).is_ok());
+        assert!(
+            times(Ok(Err(parse_error())))
+                .unwrap_err()
+                .starts_with("publish times could not be read: ")
+        );
+        assert!(
+            times(Err(FetchError::Status(reqwest::StatusCode::NOT_FOUND)))
+                .unwrap_err()
+                .starts_with("publish times could not be fetched: ")
+        );
+    }
 }

@@ -432,7 +432,7 @@ fn log_attested(attestation: &Attestation, attested: &Attested, fetch_ms: u64, v
 async fn read(job: &Job, spooled: Spooled, reader: Reader) -> Option<Scripts> {
     let read = tokio::task::spawn_blocking(move || {
         let file = spooled.reader()?;
-        Ok(Scripts::of(reader.read(std::io::BufReader::new(file))))
+        Ok(Scripts::of(reader.read(&mut std::io::BufReader::new(file))))
     })
     .await
     .map_err(std::io::Error::other)

@@ -180,4 +180,20 @@ mod tests {
         assert!(unreadable.metadata.is_none());
         assert_eq!(store.lock().unwrap().records(), 0);
     }
+
+    /// A PEP 503 page is read against the URL it came from.
+    #[test]
+    fn a_pep_503_page_is_read() {
+        let store = store();
+        let page = b"<a href=\"/packages/x-1.0.tar.gz\">x-1.0.tar.gz</a>";
+        read_index(
+            page,
+            IndexFormat::Html,
+            "https://pypi.org/simple/x/",
+            &store,
+            "/simple/x/",
+        )
+        .expect("it parses");
+        assert_eq!(store.lock().unwrap().records(), 1);
+    }
 }

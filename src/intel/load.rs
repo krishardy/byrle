@@ -1127,12 +1127,78 @@ mod tests {
                     .into_bytes(),
                 "is not `advisory_range <bytes>`",
             ),
+            (format!("{FORMAT}\n").into_bytes(), "a line has no end"),
+            (
+                framed([row, "\"1\",\"CVE-a\",\"x\"\n", "", ""]),
+                "advisory_alias: a row has 3 fields, not 2",
+            ),
+            (
+                framed([row, "\"1\",\n", "", ""]),
+                "advisory_alias: a required value is empty",
+            ),
+            (
+                framed([row, ",\"CVE-a\"\n", "", ""]),
+                "advisory_alias: a required value is empty",
+            ),
+            (
+                framed([row, "", "\"1\",\"npm\",\"a\"\n", ""]),
+                "advisory_affected: a row has 3 fields, not 4",
+            ),
+            (
+                framed([row, "", "\"2\",\"npm\",\"a\",\n", ""]),
+                "advisory_affected: no advisory at position 2",
+            ),
+            (
+                framed([row, "", "\"1\",,\"a\",\n", ""]),
+                "advisory_affected: a required value is empty",
+            ),
+            (
+                framed([row, "", "", "\"1\",\"npm\",\"a\"\n"]),
+                "advisory_range: a row has 3 fields, not 7",
+            ),
+            (
+                framed([row, "", "", "\"2\",\"npm\",\"a\",,\"f\",\"2.0.0\",\n"]),
+                "advisory_range: no advisory at position 2",
+            ),
+            (
+                framed([row, "", "", "\"1\",,\"a\",,\"f\",\"2.0.0\",\n"]),
+                "advisory_range: a required value is empty",
+            ),
+            (
+                framed([row, "", "", "\"1\",\"npm\",,,\"f\",\"2.0.0\",\n"]),
+                "advisory_range: a required value is empty",
+            ),
         ];
         for (bytes, reason) in cases {
             let err = decode(&bytes).expect_err(reason).to_string();
             assert!(err.contains(reason), "{err:?} lacks {reason:?}");
         }
         assert!(decode(good.as_bytes()).is_ok());
+
+        // A decoder that refused a row gives nothing after.
+        let bytes = framed([row, "\"2\",\"CVE-a\"\n", "", ""]);
+        let mut refused = Decoder::new(&bytes).expect("a header");
+        assert!(refused.next().expect("the advisory").is_ok());
+        assert!(refused.next().expect("the refusal").is_err());
+        assert!(refused.next().is_none());
+    }
+
+    /// A range that excludes its start is written with `t` and read back as `After`.
+    #[test]
+    fn an_excluded_start_round_trips() {
+        let mut rows = plain("GHSA-1", "CVE-a", "a");
+        rows.ranges = [Ranged {
+            ecosystem: "npm".to_owned(),
+            name: "a".to_owned(),
+            interval: Interval {
+                start: Start::After("1.0.0".to_owned()),
+                end: End::Fixed("2.0.0".to_owned()),
+            },
+        }]
+        .into();
+        let (_, decoded) =
+            decode(&encode("osv", std::slice::from_ref(&rows)).bytes).expect("decodes");
+        assert_eq!(decoded, [rows]);
     }
 
     /// Given out of order, so the numbering has to come from sorting.
