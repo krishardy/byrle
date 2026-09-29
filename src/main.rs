@@ -207,7 +207,7 @@ async fn run_daemon() -> std::process::ExitCode {
         }
         Err(startup::StartupError::Unusable(why)) => panic!("{why}"),
     };
-    let (proxy, listen) = (started.proxy, started.listen);
+    let (proxy, listen, watch) = (started.proxy, started.listen, started.watch);
 
     let listener = tokio::net::TcpListener::bind(&listen)
         .await
@@ -242,6 +242,18 @@ async fn run_daemon() -> std::process::ExitCode {
             reporting.report_traffic();
         }
     });
+    if let Some(every) = watch {
+        let watching = proxy.clone();
+        tokio::spawn(async move {
+            let mut every = tokio::time::interval(every);
+            every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            every.tick().await;
+            loop {
+                every.tick().await;
+                watching.watch().await;
+            }
+        });
+    }
     axum::serve(listener, proxy.router())
         .await
         .expect("server failed");

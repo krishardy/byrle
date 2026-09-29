@@ -75,6 +75,31 @@ impl RecordStore {
         self.evict_to_budget();
     }
 
+    /// Every package held, in no order. Does not count as a use of any of them.
+    pub fn packages(&self) -> Vec<PackageKey> {
+        self.entries.keys().cloned().collect()
+    }
+
+    /// Replace the document held for a package with a newer copy, keeping when the package
+    /// was last used, so the watcher's reads never keep a package held. `metadata` for a
+    /// package not held is dropped. Returns the versions the new copy lists and the held
+    /// one did not.
+    pub fn refresh(&mut self, metadata: PackageMetadata) -> Vec<PackageRecord> {
+        let Some(entry) = self.entries.get_mut(&metadata.key) else {
+            return Vec::new();
+        };
+        let new: Vec<PackageRecord> = metadata
+            .records
+            .iter()
+            .filter(|record| entry.metadata.version(record.package.version()).is_none())
+            .cloned()
+            .collect();
+        self.records = self.records - entry.metadata.records.len() + metadata.records.len();
+        entry.metadata = metadata;
+        self.evict_to_budget();
+        new
+    }
+
     /// Whether any record is held for this package.
     ///
     /// Does not count as a use: this answers "is there anything to read", and a package
@@ -172,6 +197,41 @@ mod tests {
 
     fn key(name: &str) -> PackageKey {
         PackageKey::from_registry_name(crate::identity::Ecosystem::Npm, name).unwrap()
+    }
+
+    /// A refresh finds the versions the held copy lacked, keeps the package's place in the
+    /// eviction order, and ignores a package not held.
+    #[test]
+    fn a_refresh_returns_new_versions_without_counting_as_a_use() {
+        let mut store = RecordStore::new(5);
+        store.insert(packument("old", &["1.0.0"]));
+        store.insert(packument("recent", &["1.0.0"]));
+        assert_eq!(store.packages().len(), 2);
+
+        let new = store.refresh(packument("old", &["1.0.0", "1.1.0", "2.0.0"]));
+        assert_eq!(
+            new.iter().map(|r| r.package.version()).collect::<Vec<_>>(),
+            ["1.1.0", "2.0.0"]
+        );
+        assert_eq!(store.records(), 4);
+        assert!(
+            store
+                .refresh(packument("old", &["1.0.0", "1.1.0", "2.0.0"]))
+                .is_empty(),
+            "nothing new the second time"
+        );
+
+        store.insert(packument("third", &["1.0.0", "2.0.0"]));
+        assert!(
+            !store.holds(&key("old")),
+            "refreshed, and still the least recently used"
+        );
+        assert!(store.holds(&key("recent")));
+        assert!(
+            store.refresh(packument("unheld", &["1.0.0"])).is_empty(),
+            "a package not held is not added"
+        );
+        assert!(!store.holds(&key("unheld")));
     }
 
     #[test]

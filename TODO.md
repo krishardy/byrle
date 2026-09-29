@@ -2491,10 +2491,12 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
   - [x] `waharoa warm --lockfile` asks a running proxy for every artifact a lockfile
         locks, so bun and yarn 1 install them on the first try. Done 2026-09-28
         ([warm](docs/engineering_decisions/warm.md)).
-  - [ ] A separate process watches each upstream registry for newly published versions
+  - [x] A separate process watches each upstream registry for newly published versions
         and starts their analysis, so the artifact is analysed before a client asks for
         it. The artifact analysis is the slowest step, and every novel artifact is
-        deferred until it finishes. Raised 2026-09-27.
+        deferred until it finishes. Raised 2026-09-27. Done 2026-09-29, in the daemon
+        rather than a separate process, for the packages it has served
+        ([watcher](docs/engineering_decisions/watcher.md)).
   - [x] The artifact digest in the deferral's header and body: `x-waharoa-digest`.
   - [x] Log every deferral, with a count per digest, and `returned after a deferral` with
         `after_ms` when a request finds the analysis stored, which turns the compatibility
