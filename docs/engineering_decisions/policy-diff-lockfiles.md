@@ -30,7 +30,7 @@ The file name chooses the reader. A lockfile under any other name is refused.
 | `package-lock.json`, `npm-shrinkwrap.json` | JSON, `lockfileVersion` 2 or 3 | an entry's `name`, else its key after the last `node_modules/`, and `version` |
 | `yarn.lock` | yarn 1's text, by hand | the first descriptor, or the package after `npm:` in an alias, and `version` |
 | `pnpm-lock.yaml` | YAML with `serde-saphyr`, `lockfileVersion` 9 | each `packages` key, `name@version` |
-| `bun.lock` | YAML with `serde-saphyr`, `lockfileVersion` 0 or 1 | the first element of each `packages` value, `name@version` |
+| `bun.lock` | YAML with `serde-saphyr`, `lockfileVersion` 0 to 3 | the first element of each `packages` value, `name@version` |
 | `uv.lock`, `poetry.lock` | TOML | each `[[package]]`'s `name` and `version` |
 | `requirements.txt` | pip's requirement lines | a line pinned with `==`, its name normalised |
 | `Pipfile.lock` | JSON | each entry of `default` and `develop` whose `version` is an `==` pin |
@@ -49,7 +49,19 @@ Each reader takes the package from the entry, so an alias is judged as `lodash@4
 
 bun 1.3.14 writes `bun.lock` at `lockfileVersion` 1. bun 1.1.45, run from npm's
 `@oven/bun-linux-x64` package with `bun install --save-text-lockfile`, wrote 0 for the same
-`package.json`.
+`package.json`. bun 1.4.2 writes 2, or 3 while `overrides` holds a scoped rule. Its own
+source (`src/install/lockfile/bun.lock.rs` at `bun-v1.4.2`) says what each changed:
+
+| Version | Change |
+|---|---|
+| 1 | a workspace package's entry no longer lists its dependencies |
+| 2 | stricter parsing of the same content: a tarball outside the configured registry must carry an integrity hash, and a git tag must be a safe path |
+| 3 | an `overrides` value may be an object of scoped rules |
+
+None of them changes a `packages` entry, and the reader does not read `overrides`, so 0 to
+3 are read alike. Measured on bun 1.4.2 for a project with a workspace, a git dependency, a
+`file:` dependency, a tarball URL and `esbuild`'s platform packages: every entry has the
+version 1 shape.
 
 `bun.lock` is JSON with trailing commas, which `serde_json` refuses. A YAML flow mapping
 accepts them, and `serde-saphyr` already reads the policy, so no dependency is added.
@@ -90,7 +102,8 @@ Refused, each with the reason after the path:
 
 `tests/fixtures/lockfiles/` has the lockfile npm 9.9.4, yarn 1.22.22, pnpm 10.33.0 and bun
 1.3.14 each wrote for one `package.json`: three dependencies, one an alias, and one dev
-dependency, and the `lockfileVersion` 0 file bun 1.1.45 wrote. Each gives the same 15
+dependency, the `lockfileVersion` 0 file bun 1.1.45 wrote, and the version 2 and 3 files
+bun 1.4.2 wrote on 2026-09-29. Each gives the same 15
 package versions
 (`each_manager_locking_the_same_project_gives_the_same_packages`).
 

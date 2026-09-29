@@ -10,6 +10,8 @@ Each directory contains the lockfile one package manager wrote for `package.json
 | `pnpm` | `pnpm install --lockfile-only --ignore-scripts` | pnpm 10.33.0 |
 | `bun` | `bun install --lockfile-only --ignore-scripts` | bun 1.3.14 |
 | `bun-1.1` | `bun install --save-text-lockfile --ignore-scripts`, `lockfileVersion` 0 | bun 1.1.45 |
+| `bun-1.4` | `bun install --save-text-lockfile`, `lockfileVersion` 2, on 2026-09-29 | bun 1.4.2 |
+| `bun-1.4-overrides` | `bun install --lockfile-only --ignore-scripts` for its own `package.json`, which adds a scoped `overrides` rule pinning `chalk` to the 2.4.2 already resolved, `lockfileVersion` 3, on 2026-09-29 | bun 1.4.2 |
 
 `my-lodash` is an alias for `lodash@4.17.21`, and `minimist` is a dev dependency. Every
 lockfile locks the same 15 package versions.

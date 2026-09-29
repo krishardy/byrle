@@ -332,11 +332,11 @@ Items that I've added that are not stage-bound.
     it records no URL, since that means it was resolved from npmjs.org. See
     [doctor-lockfile-urls](docs/engineering_decisions/doctor-lockfile-urls.md).
 
-28. [ ] Read `bun.lock` `lockfileVersion` 2. Raised 2026-09-29. bun 1.4.2 writes version 2
-    with a `configVersion` key, and `npm::lockfile::bun` refuses anything above 1, so
-    `policy diff` and `warm` cannot read a lockfile current bun writes. The fixtures are
-    bun 1.3.14 (version 1) and bun 1.1.45 (version 0). A registry package's entry has the
-    same shape in version 2, measured on `ms@2.1.3`; what else changed is not known.
+28. [x] Read `bun.lock` `lockfileVersion` 2. Raised 2026-09-29. bun 1.4.2 writes version 2,
+    or 3 while `overrides` holds a scoped rule, and `npm::lockfile::bun` refused anything
+    above 1. Done 2026-09-29: versions 2 and 3 change no `packages` entry, per bun's own
+    source, so 0 to 3 are read. Fixtures `bun-1.4` and `bun-1.4-overrides` hold one of each.
+    See [policy-diff-lockfiles](docs/engineering_decisions/policy-diff-lockfiles.md).
 
 ## Architecture Refactor
 
