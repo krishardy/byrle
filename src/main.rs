@@ -1,13 +1,7 @@
-//! Stage 1: reverse proxy in front of an npm registry, normalising what passes through.
+//! The `waharoa` binary: parse the command line, run the command, print what it returns.
 //!
-//! Startup only. The proxy itself is [`waharoa::proxy`], which lives in the library so
-//! it can be tested against a fake registry; `make smoke-npm` covers this file by
-//! running a real npm client through it.
-//!
-//! No policy engine and no adapter trait (decision #12: Stage 1 calls reqwest
-//! concretely). What this stage has to show is that installs work through the proxy and
-//! that every package in the resolved graph is observed and normalised, so the logging
-//! is load-bearing rather than decoration.
+//! Each command is in the library. `make smoke-npm`, `make smoke-python` and
+//! `make smoke-clients` cover this file by running real clients through the proxy.
 
 use clap::Parser as _;
 use tracing::info;
@@ -276,7 +270,7 @@ async fn run_daemon() -> std::process::ExitCode {
 async fn main() -> std::process::ExitCode {
     // No command, or an unknown command or argument, exits 2, or 4 for `policy diff`.
     // `--help` and `--version` exit 0. Every trust decision the proxy makes comes from the
-    // environment and the packuments it reads, not from argv.
+    // environment and the metadata documents it reads, not from argv.
     // The rule below warns about trusting argv for security decisions. These arguments only
     // choose the exit code for a command line clap refused, and the program path is skipped.
     // nosemgrep: rust.lang.security.args-os.args-os
