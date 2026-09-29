@@ -1,15 +1,6 @@
-//! The package managers that install from a PyPI index, as `waharoa doctor` checks them.
-//!
-//! Neither has one command that prints the index it uses, as `npm config get registry` does,
-//! so each is read here. What was measured, 2026-09-19, pip 26.1.1 and uv 0.12.5:
-//!
-//! | | pip | uv |
-//! |---|---|---|
-//! | configured index | `pip config list`, which includes pip's own variables as `:env:` keys. `pip config get global.index-url` answers `No such key` for a set key | no command: uv's variables, then `uv.toml` or `pyproject.toml` `[tool.uv]` |
-//! | second install through the proxy with one cache | the index and the files reach the proxy again | nothing reaches the proxy |
-//!
-//! `pip config list` prints values as written, credentials included, so nothing here prints
-//! a URL without [`crate::origin::without_credentials`].
+//! pip and uv, as `waharoa doctor` checks them. Neither prints the index it uses, so each is
+//! read: see docs/engineering_decisions/doctor-python-clients.md. `pip config list` prints
+//! credentials, so a URL is printed only through [`crate::origin::without_credentials`].
 
 use std::path::{Path, PathBuf};
 
@@ -73,12 +64,9 @@ fn pip_indexes(machine: &Machine) -> Result<Option<Indexes>, EnvError> {
     Ok((machine.run)("pip", &["config", "list"]).map(|listed| pip_config(&listed)))
 }
 
-/// The indexes `pip config list` says pip uses.
-///
-/// A `PIP_INDEX_URL` variable, listed as `:env:.index-url`, beats the `install` section, which
-/// beats `global`. Every `extra-index-url`, from any of them, is asked too. A value is one
-/// line of `section.key='value'`, and an `extra-index-url` may hold several URLs separated
-/// by whitespace.
+/// The indexes pip uses: `:env:.index-url`, then `install.`, then `global.`, and every
+/// `extra-index-url`.
+/// `listed`: what `pip config list` printed, one `section.key='value'` per line.
 pub fn pip_config(listed: &str) -> Indexes {
     let values: Vec<(&str, &str)> = listed
         .lines()
@@ -180,14 +168,10 @@ fn table(text: &str, pyproject: bool) -> Option<toml::Table> {
     document.get("tool")?.get("uv")?.as_table().cloned()
 }
 
-/// The indexes uv uses, from its variables and from `files`, most specific first, each a
-/// `uv.toml` or a `pyproject.toml`.
-///
-/// [`env::UV_DEFAULT`], or its older name [`env::UV_OLDER_INDEX`], beats a file's
-/// `[[index]]` with `default = true` or its `index-url`, and a nearer file beats a farther
-/// one. Every URL in [`env::UV_EXTRAS`] and [`env::UV_NAMED`], and every `extra-index-url`
-/// and other `[[index]]`, is asked too.
-/// A file that is not TOML is skipped; uv refuses it, so it configures nothing.
+/// The indexes uv uses: its variables before its files, a nearer file before a farther one,
+/// and every extra index from either.
+/// `vars`: uv's index variables.
+/// `files`: `uv.toml` and `pyproject.toml` texts, nearest first; one that is not TOML is skipped.
 pub fn uv_config(vars: &UvVars, files: &[&str]) -> Indexes {
     let tables: Vec<toml::Table> = files
         .iter()

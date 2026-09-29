@@ -1,28 +1,6 @@
-//! Artifacts this proxy has fetched and verified, keyed by content digest.
-//!
-//! Plan §5 branches the fetch path on whether the artifact in hand has been seen before:
-//! a hit streams through, a novel artifact may be analysed or deferred. The key is the
-//! artifact's own content digest, which the packument publishes and which is therefore
-//! known before the fetch rather than after it.
-//!
-//! # A hit does not skip verification
-//!
-//! It would be the obvious saving and it is the wrong one. A hit says that these bytes
-//! were verified *on an earlier request*. It says nothing about the bytes arriving now,
-//! which come from upstream on this request and could differ. Skipping the hash on a hit
-//! would mean a registry that served correct bytes once could serve anything afterwards
-//! and have it forwarded unchecked, which is the exact failure
-//! `proxy::VerifyingStream` exists to catch.
-//!
-//! So every artifact is hashed every time, and this answers a different question: has
-//! this artifact been past before? In Stage 1 that changes no response, because nothing
-//! analyses and nothing defers. It makes the branch, the key and the counts real, and it
-//! is the same key Stage 5's analysis cache is specified to use.
-//!
-//! # Why it is bounded
-//!
-//! One entry per artifact version ever fetched, and a proxy accumulates them for as long
-//! as it runs. Evicted by count, least recently used first, like [`crate::store`].
+//! Artifacts this proxy has fetched and verified, keyed by content digest. Every artifact is
+//! hashed on every fetch, a hit included: this says only whether it has been past before.
+//! See docs/engineering_decisions/verified-artifact-cache.md.
 
 use crate::integrity::Sri;
 use crate::util::lru::Lru;
@@ -62,11 +40,9 @@ impl VerifiedArtifacts {
         }
     }
 
-    /// Record that this digest was verified against bytes that actually arrived.
-    ///
-    /// Called when the hash matches, never when it does not: a mismatch means the
-    /// registry served bytes its own packument does not describe, and recording that
-    /// would be recording the attack.
+    /// Record that this digest was verified against bytes that arrived. Never called on a
+    /// mismatch, which would record the attack.
+    /// `sri`: the digest the bytes matched.
     pub fn record(&mut self, sri: Sri) {
         self.0.insert(sri, ());
     }
@@ -117,8 +93,11 @@ mod tests {
         let mut seen = VerifiedArtifacts::new(2);
         seen.record(sri(1));
         seen.record(sri(2));
-        // Touching 1 makes 2 the oldest.
-        assert_eq!(seen.lookup(&sri(1)), Seen::Before);
+        assert_eq!(
+            seen.lookup(&sri(1)),
+            Seen::Before,
+            "touching 1 makes 2 the oldest"
+        );
         seen.record(sri(3));
 
         assert_eq!(seen.len(), 2);

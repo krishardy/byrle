@@ -1,12 +1,6 @@
-//! `waharoa status`: what this build does for each ecosystem, and what it knows about.
-//!
-//! Two axes, because they fail separately. An adapter can be complete while no advisory
-//! stream covers its ecosystem, and a stream can cover an ecosystem this build barely
-//! reads. `waharoa doctor` answers "is this deployment wired up"; this answers "what does
-//! waharoa do here at all".
-//!
-//! Every line is read from [`crate::ecosystem::TABLE`] or from the loaded snapshot, so a
-//! row added to the table appears here without anything being written twice.
+//! `waharoa status`: what this build does for each ecosystem, and which advisory streams
+//! cover it. The two fail separately, so both are shown, each read from
+//! [`crate::ecosystem::TABLE`] or the loaded snapshot.
 
 use std::fmt::Write as _;
 
@@ -89,7 +83,6 @@ fn adapter(registry: &Registry, upstreams: &Upstreams) -> String {
         joined(&registry.clients.iter().map(|c| c.name).collect::<Vec<_>>())
             .unwrap_or("none checked by doctor".to_owned()),
     );
-    // Written by this ecosystem's clients, npm and pip and the rest, not by the registry.
     line(
         &mut out,
         "client lockfiles",
@@ -204,8 +197,10 @@ mod tests {
         }
         assert!(out.contains("streams"), "{out}");
         assert!(out.contains("loaded           osv/npm"), "{out}");
-        // PyPI's streams are listed and none of them loaded in this snapshot.
-        assert!(out.contains("none of them"), "{out}");
+        assert!(
+            out.contains("none of them"),
+            "no PyPI stream is loaded: {out}"
+        );
         assert!(out.contains("not covered"), "{out}");
     }
 
@@ -213,7 +208,6 @@ mod tests {
     #[test]
     fn a_check_with_no_meaning_for_an_ecosystem_is_named() {
         let out = report(&Upstreams::defaults(), None);
-        // On the section headers, not the word: PyPI's upstream URL contains it too.
         let npm = out.split("\npypi\n").next().expect("npm comes first");
         assert!(npm.contains("no meaning here: yanked"), "{npm}");
         let pypi = out.split("\npypi\n").nth(1).expect("pypi is reported");

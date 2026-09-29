@@ -17,8 +17,7 @@ use super::normalize::normalize_packument;
 #[derive(Debug)]
 pub enum PackumentOutcome {
     Normalized(Box<PackageMetadata>),
-    /// The body could not be decoded: an encoding we do not handle, a corrupt stream, or
-    /// output past the limit.
+    /// The body could not be decoded, or decoded past the limit.
     Undecodable(DecodeError),
     /// The body decoded but is not a shape we model. Our gap, not an upstream outage.
     Unreadable(NormalizeError),
@@ -57,7 +56,6 @@ pub fn read_packument(
     match normalize_packument(decoded, detail) {
         Ok(p) => {
             let p = Box::new(p);
-            // Reported by `rewrite_packument`, which is where it is acted on.
             let (allowed_direct, refused) = p.unserved_origins(origins);
             let (held_packages, held_records) = {
                 let mut store = store.lock().expect("record store lock");
@@ -70,8 +68,6 @@ pub fn read_packument(
                 waharoa.package.detail = ?detail,
                 waharoa.package.versions = p.records.len(),
                 waharoa.package.skipped_versions = p.skipped.len(),
-                // Every version in the document, not the one being installed, which the
-                // artifact request's own line answers.
                 install_script_versions_listed =
                     p.records.iter().filter(|r| r.has_install_scripts).count(),
                 waharoa.package.deprecated_versions = p.records.iter().filter(|r| r.deprecated.is_some()).count(),

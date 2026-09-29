@@ -110,10 +110,10 @@ def line_comments(text):
             found.append((line, text[i:end].split("\n")[0]))
             line += text.count("\n", i, end)
             i = end
-        elif ch == "r" and re.match(r'r#*"', text[i:]) and not re.match(r"\w", text[i - 1 : i] or " "):
-            hashes = re.match(r'r(#*)"', text[i:]).group(1)
+        elif re.match(r'b?r#*"', text[i:]) and not re.match(r"\w", text[i - 1 : i] or " "):
+            prefix, hashes = re.match(r'(b?r)(#*)"', text[i:]).groups()
             close = '"' + hashes
-            end = text.find(close, i + 2 + len(hashes))
+            end = text.find(close, i + len(prefix) + len(hashes) + 1)
             end = n if end == -1 else end + len(close)
             line += text.count("\n", i, end)
             i = end

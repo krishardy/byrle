@@ -1,10 +1,6 @@
-//! npm's attestations document, as served at `dist.attestations.url`.
-//!
-//! `{"attestations": [{"predicateType": ..., "bundle": {...}}]}`, one entry per attestation.
-//! A version published with provenance carries two: npm's publish attestation, signed with
-//! a registry key, and the SLSA provenance the build signed. Only the second names who
-//! built the artifact, so it is the one verified. See
-//! `docs/engineering_decisions/provenance-check.md`.
+//! npm's attestations document, as served at `dist.attestations.url`. Of its two entries,
+//! only the build's SLSA provenance names who built the artifact, so it is the one verified.
+//! See docs/engineering_decisions/provenance-check.md.
 
 use sigstore_verify::types::Bundle;
 
@@ -41,12 +37,13 @@ mod tests {
             "/tests/fixtures/npm/attestations/sigstore-5.0.0.json"
         );
         let bundle = provenance_bundle(&std::fs::read(path).expect("fixture")).expect("parses");
-        // The build's attestation carries a Fulcio certificate. npm's publish attestation
-        // carries the registry's public key.
-        assert!(!matches!(
-            bundle.verification_material.content,
-            sigstore_verify::types::bundle::VerificationMaterialContent::PublicKey { .. }
-        ));
+        assert!(
+            !matches!(
+                bundle.verification_material.content,
+                sigstore_verify::types::bundle::VerificationMaterialContent::PublicKey { .. }
+            ),
+            "the build's certificate, not the registry's publish key"
+        );
     }
 
     #[test]

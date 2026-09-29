@@ -1,13 +1,5 @@
-//! A map that keeps the most recently used entries and drops the rest.
-//!
-//! Every map keyed by artifact digest uses one, bounded by entry count because a proxy left
-//! running accumulates entries for as long as it runs: [`crate::verified`] holds the
-//! digests of artifacts that have been past, [`crate::analysis::store::InProcess`] what was
-//! found in them, [`crate::analysis::run::Analyser`] the digests whose last fetch did not
-//! match, and the proxy the artifacts it deferred.
-//!
-//! [`crate::store::RecordStore`] is not one of them. Its budget counts the records inside
-//! an entry rather than the entries, because one packument carries up to 3,822 of them.
+//! A map that keeps the most recently used entries and drops the rest, bounded by entry
+//! count. Each map keyed by artifact digest uses one.
 
 use std::collections::HashMap;
 use std::hash::Hash;
@@ -26,11 +18,11 @@ pub struct Lru<K, V> {
 }
 
 impl<K: Eq + Hash + Clone, V> Lru<K, V> {
+    /// An empty map.
+    /// `max_entries`: how many it holds, at least one, since none would pay for every lookup.
     pub fn new(max_entries: usize) -> Self {
         Self {
             entries: HashMap::new(),
-            // Zero would mean paying for every lookup and holding nothing, so the smallest
-            // useful budget is one.
             max_entries: max_entries.max(1),
             clock: 0,
         }
@@ -116,8 +108,7 @@ mod tests {
         let mut lru: Lru<u8, &str> = Lru::new(2);
         lru.insert(1, "one");
         lru.insert(2, "two");
-        // Reading 1 makes 2 the oldest.
-        assert_eq!(lru.get(&1), Some(&"one"));
+        assert_eq!(lru.get(&1), Some(&"one"), "reading 1 makes 2 the oldest");
         lru.insert(3, "three");
 
         assert_eq!(lru.len(), 2);
