@@ -25,7 +25,7 @@ pub enum FetchError {
     /// The body arrived and could not be decoded.
     Undecodable(crate::http::DecodeError),
     /// The index served neither simple-index form. Carries its `Content-Type`.
-    NotJson(Option<String>),
+    NotAnIndex(Option<String>),
     /// The name or the body was unusable. Carries [`PypiError`] rather than restating it.
     Unreadable(PypiError),
 }
@@ -36,9 +36,9 @@ impl std::fmt::Display for FetchError {
             Self::Transport(e) => write!(f, "index request failed: {e}"),
             Self::Status(s) => write!(f, "index answered {s}"),
             Self::Undecodable(e) => write!(f, "index body could not be decoded: {e}"),
-            Self::NotJson(got) => write!(
+            Self::NotAnIndex(got) => write!(
                 f,
-                "the index served `{}` rather than PEP 691 JSON",
+                "the index served `{}` rather than a simple index",
                 got.as_deref().unwrap_or("no content type")
             ),
             Self::Unreadable(e) => write!(f, "{e}"),
@@ -98,7 +98,7 @@ impl Client {
             .document(content_type.as_deref())
         {
             Some(crate::route::DocumentKind::SimpleIndex(format)) => format,
-            _ => return Err(FetchError::NotJson(content_type)),
+            _ => return Err(FetchError::NotAnIndex(content_type)),
         };
         let encoding = response
             .headers()
@@ -197,7 +197,7 @@ mod tests {
         .await;
         let error = client(&base).project("x").await.expect_err("not an index");
         assert!(
-            matches!(&error, FetchError::NotJson(Some(t)) if t.starts_with("application/octet-stream")),
+            matches!(&error, FetchError::NotAnIndex(Some(t)) if t.starts_with("application/octet-stream")),
             "{error}"
         );
     }
@@ -335,11 +335,11 @@ mod tests {
             ("missing", "index answered 404"),
             (
                 "text",
-                "the index served `text/plain` rather than PEP 691 JSON",
+                "the index served `text/plain` rather than a simple index",
             ),
             (
                 "untyped",
-                "the index served `no content type` rather than PEP 691 JSON",
+                "the index served `no content type` rather than a simple index",
             ),
             ("gzipped", "index body could not be decoded: "),
             ("nameless", "`` is not a usable project name"),
