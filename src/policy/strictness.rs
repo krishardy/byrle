@@ -84,9 +84,9 @@ impl Action {
 /// Which way a numeric parameter gets stricter, declared because the value cannot say.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
-    /// `cooldown.days`, `min_package_age`.
+    /// `cooldown_days`.
     HigherIsStricter,
-    /// `max_cvss`.
+    /// A threshold such as `max_cvss`, which no exception can set yet.
     LowerIsStricter,
 }
 
@@ -104,18 +104,6 @@ impl Direction {
         } else {
             Strictness::Looser
         }
-    }
-}
-
-/// The declared direction for every numeric parameter in the schema.
-///
-/// One table rather than a direction at each use site, so a parameter cannot be compared
-/// one way in the merge and the other way in `policy diff`.
-pub fn direction_of(parameter: &str) -> Option<Direction> {
-    match parameter {
-        "cooldown.days" | "min_package_age" => Some(Direction::HigherIsStricter),
-        "max_cvss" => Some(Direction::LowerIsStricter),
-        _ => None,
     }
 }
 
@@ -388,22 +376,6 @@ mod tests {
             Direction::LowerIsStricter.strictness(3, 3),
             Strictness::Same
         );
-    }
-
-    /// The table is what stops a parameter being compared one way in the merge and the
-    /// other way in `policy diff`.
-    #[test]
-    fn every_numeric_parameter_in_the_plan_has_a_declared_direction() {
-        assert_eq!(
-            direction_of("cooldown.days"),
-            Some(Direction::HigherIsStricter)
-        );
-        assert_eq!(
-            direction_of("min_package_age"),
-            Some(Direction::HigherIsStricter)
-        );
-        assert_eq!(direction_of("max_cvss"), Some(Direction::LowerIsStricter));
-        assert_eq!(direction_of("cooldown.dayz"), None);
     }
 
     #[test]
