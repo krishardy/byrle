@@ -72,6 +72,32 @@ impl Facts {
         }
     }
 
+    /// The facts for `record`, which is `version` of `records`, with `intel` when the store
+    /// knows the package.
+    ///
+    /// Provenance is what the document answers without verifying anything, as the proxy's
+    /// resolution path decides it, over `policy`'s own window: dropped provenance, or nothing
+    /// to verify.
+    pub fn from_document(
+        policy: &super::Policy,
+        records: &[PackageRecord],
+        record: &PackageRecord,
+        version: &str,
+        times: Option<&PublishTimes>,
+        intel: Option<&PackageIntel>,
+    ) -> Self {
+        use crate::analysis::attestation;
+        let provenance = attestation::from_metadata(
+            record,
+            &attestation::previous(records, version, times, policy.provenance_window()),
+        );
+        let facts = Self::from_record_and_times(record, times).with_provenance(provenance);
+        match intel {
+            Some(intel) => facts.with_intel(intel),
+            None => facts,
+        }
+    }
+
     /// What the version's attestations say, once something has verified them.
     pub fn with_provenance(mut self, provenance: super::decide::Provenance) -> Self {
         self.provenance = provenance;

@@ -277,8 +277,9 @@ Items that I've added that are not stage-bound.
     function to refactor until the behaviour is obvious from the code. Measured
     2026-09-28 over `src/`, 50,873 lines: 866 `//` lines, 5,148 `///` lines and 1,189 `//!`
     lines. The reasoning those comments carry belongs in `docs/engineering_decisions/`.
-24. [ ] Set a maximum code complexity, enforce it in `make lint`, and refactor every function
-    over it. Raised 2026-09-28. clippy has two lints for it:
+24. [x] Set a maximum code complexity, enforce it in `make lint`, and refactor every function
+    over it. Raised 2026-09-28, done 2026-09-29: `scripts/make/lint.sh` denies both lints over
+    the library and binaries. clippy has two lints for it:
     `clippy::cognitive_complexity`, threshold `cognitive-complexity-threshold` in
     `clippy.toml`, default 25; and `clippy::too_many_lines`, `too-many-lines-threshold`,
     default 100. The defaults are the thresholds, decided 2026-09-28. Over them that day:
@@ -295,12 +296,12 @@ Items that I've added that are not stage-bound.
     | `ecosystem::pypi::rewrite::rewrite_index`: done 2026-09-29, now 9 and 22, split into `filtered` and `repointed` | 39 | |
     | `intel::postgres::PgIntel::replace`: done 2026-09-29, now 8 and 23, split into `write_source`, `write_advisories`, `record_snapshot` and `record_ingestions` | 30 | 108 |
     | `proxy::dated_by_host`: done 2026-09-29, now 11 and 23, the HEAD request moved to `head_last_modified` | 26 | |
-    | `policy::diff::run` | | 199 |
-    | `explain::run` | | 125 |
-    | `intel::refresh::run::run` | | 121 |
-    | `doctor::run` | | 115 |
-    | `policy::vers::vers` | | 112 |
-    | `policy::decide::run` | | 112 |
+    | `policy::diff::run`: done 2026-09-29, now 8 and 62, split into `Comparison::read`, `Comparison::compare`, `listed`, `open_store` and `decide_under` | | 199 |
+    | `explain::run`: done 2026-09-29, now 3 and 11, split into `answer`, `consulted` and `package_answer` | | 125 |
+    | `intel::refresh::run::run`: done 2026-09-29, now 9 and 71, split into `Setup::read` and `load` | | 121 |
+    | `doctor::run`: done 2026-09-29, now 5 and 42, one function per group of findings | | 115 |
+    | `policy::vers::vers`: done 2026-09-29, now 2 and 41, split into `in_order` and `spans` | | 112 |
+    | `policy::decide::run`: done 2026-09-29, now 5 and 53, the denial, cooldown, KEV and CVSS checks in their own functions | | 112 |
 
     Measured with `cargo clippy --lib -- -A clippy::all -W clippy::cognitive_complexity -W
     clippy::too_many_lines`. Pairs with item 23: a comment explaining non-obvious behaviour

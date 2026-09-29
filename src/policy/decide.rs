@@ -413,27 +413,7 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
 
     match check {
         // No exception branch: a denial is absolute.
-        Check::Denials => {
-            // Parsed, not string-compared. `pkg:npm/%40babel/core@1.0.0` and
-            // `pkg:npm/@babel/core@1.0.0` are the same package, and the first is what
-            // this codebase's own `Display` emits and what OSV publishes. Comparing the
-            // written forms made a denial spelled the canonical way never fire, while the
-            // same spelling in a `packages` selector matched. A denial is matched as a
-            // selector is, so a VERS range and a PyPI version read the same way in both.
-            let denied = policy.denial_selectors().iter().any(|d| {
-                d.matches(
-                    &facts.ecosystem,
-                    &facts.name,
-                    &facts.version,
-                    facts.has_install_scripts,
-                )
-            });
-            if denied {
-                Outcome::Failed(Action::Block)
-            } else {
-                Outcome::Passed
-            }
-        }
+        Check::Denials => denials(policy, facts),
 
         // No exception branch either: behaviour rather than policy.
         Check::KnownMalware => {
@@ -447,84 +427,18 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
         // Quarantine, not block: it lapses as the package ages. A package whose
         // publication date is unknown is treated as too young, because "we do not know"
         // is not "old enough".
-        Check::CooldownDays => {
-            // Zero days of waiting is satisfied by everything, including a package
-            // whose publish date is unknown: there is no wait for it to be inside. This
-            // is how the check is turned off, and without the short circuit it fails
-            // every package the registry published no time for.
-            let waited = |days: u32| {
-                days == 0
-                    || facts.published.is_some_and(|published| {
-                        // A date so far out it cannot be represented is not a date this
-                        // package will ever reach, so it is not old enough.
-                        published
-                            .checked_add(jiff::Span::new().days(i64::from(days)))
-                            .is_ok_and(|ready| ready <= as_of)
-                    })
-            };
-            if waited(policy.cooldown_days) {
-                Outcome::Passed
-            } else if let Some(entry) = entry.filter(|_| waited(cooldown_required(policy, entry))) {
-                // Too young for the global wait and old enough for the exception's, so the
-                // exception is what let it through: the flow chart's
-                // `RECORD_cooldown_EXCEPTED`.
-                Outcome::Excepted {
-                    entry,
-                    action: Action::Quarantine,
-                }
-            } else {
-                // No exception, or one that shortened the wait and not enough. Either way
-                // no exception let anything through.
-                Outcome::Failed(Action::Quarantine)
-            }
-        }
+        Check::CooldownDays => cooldown_days(policy, facts, entry, as_of),
 
         // Read from the advisories as they came, never from the list `vuln_advisory_ids` has
         // filtered. Excepting an advisory by id says it is not reachable from this code;
         // it says nothing about whether it is being exploited in the wild, and letting
         // one stand for the other would dismiss the broader finding by accident.
-        //
-        // "None at all" and "all of them excused" are different answers, and only the
-        // second is an exception doing work, so both questions are asked.
-        Check::Kev => {
-            let exploited: Vec<&Advisory> = facts.advisories.iter().filter(|a| a.kev).collect();
-            if exploited.is_empty() {
-                return Outcome::Passed;
-            }
-            // The exception is per package, so the subtraction is all or nothing. Written
-            // as a subtraction anyway, because a per-advisory list would be the same
-            // shape and would change nothing else here.
-            let excused = set.and_then(|s| s.kev) == Some(Action::Allow);
-            let remaining = if excused { 0 } else { exploited.len() };
-
-            match (remaining, entry) {
-                (0, Some(entry)) => Outcome::Excepted {
-                    entry,
-                    action: policy.kev,
-                },
-                _ if policy.kev == Action::Allow => Outcome::Passed,
-                (0, None) => Outcome::Passed,
-                _ => Outcome::Failed(policy.kev),
-            }
-        }
+        Check::Kev => kev(policy, facts, set, entry),
 
         // Advisories the exception names are ignored; the rest are compared against the
         // threshold. Narrower than raising the threshold, which would apply to every
-        // advisory this package acquires later. An advisory with no score is refused, as
-        // "not known" is not "low".
-        Check::MaxCvss => {
-            let (counting, excused) = over_max_cvss(policy, facts, entry, as_of);
-            match (counting.is_empty(), excused.is_empty(), entry) {
-                (false, _, _) => Outcome::Failed(Action::Block),
-                // Something was over the threshold and the exception named all of it, so
-                // the exception is what saved it.
-                (true, false, Some(entry)) => Outcome::Excepted {
-                    entry,
-                    action: Action::Block,
-                },
-                _ => Outcome::Passed,
-            }
-        }
+        // advisory this package acquires later.
+        Check::MaxCvss => max_cvss(policy, facts, entry, as_of),
 
         Check::InstallScripts => {
             if !merge::applies(&facts.ecosystem, Rule::InstallScripts) {
@@ -569,6 +483,101 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             set.and_then(|s| s.provenance),
             entry,
         ),
+    }
+}
+
+/// Parsed, not string-compared. `pkg:npm/%40babel/core@1.0.0` and `pkg:npm/@babel/core@1.0.0`
+/// are the same package, and the first is what this codebase's own `Display` emits and what
+/// OSV publishes. Comparing the written forms made a denial spelled the canonical way never
+/// fire, while the same spelling in a `packages` selector matched. A denial is matched as a
+/// selector is, so a VERS range and a PyPI version read the same way in both.
+fn denials(policy: &Policy, facts: &Facts) -> Outcome {
+    let denied = policy.denial_selectors().iter().any(|d| {
+        d.matches(
+            &facts.ecosystem,
+            &facts.name,
+            &facts.version,
+            facts.has_install_scripts,
+        )
+    });
+    if denied {
+        Outcome::Failed(Action::Block)
+    } else {
+        Outcome::Passed
+    }
+}
+
+/// Zero days of waiting is satisfied by everything, including a package whose publish date
+/// is unknown: there is no wait for it to be inside. This is how the check is turned off,
+/// and without the short circuit it fails every package the registry published no time for.
+fn cooldown_days(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Date) -> Outcome {
+    let waited = |days: u32| {
+        days == 0
+            || facts.published.is_some_and(|published| {
+                // A date so far out it cannot be represented is not a date this package
+                // will ever reach, so it is not old enough.
+                published
+                    .checked_add(jiff::Span::new().days(i64::from(days)))
+                    .is_ok_and(|ready| ready <= as_of)
+            })
+    };
+    if waited(policy.cooldown_days) {
+        Outcome::Passed
+    } else if let Some(entry) = entry.filter(|_| waited(cooldown_required(policy, entry))) {
+        // Too young for the global wait and old enough for the exception's, so the
+        // exception is what let it through: the flow chart's `RECORD_cooldown_EXCEPTED`.
+        Outcome::Excepted {
+            entry,
+            action: Action::Quarantine,
+        }
+    } else {
+        // No exception, or one that shortened the wait and not enough. Either way no
+        // exception let anything through.
+        Outcome::Failed(Action::Quarantine)
+    }
+}
+
+/// "None at all" and "all of them excused" are different answers, and only the second is an
+/// exception doing work, so both questions are asked.
+fn kev(
+    policy: &Policy,
+    facts: &Facts,
+    set: Option<&super::SetBlock>,
+    entry: Option<usize>,
+) -> Outcome {
+    let exploited: Vec<&Advisory> = facts.advisories.iter().filter(|a| a.kev).collect();
+    if exploited.is_empty() {
+        return Outcome::Passed;
+    }
+    // The exception is per package, so the subtraction is all or nothing. Written as a
+    // subtraction anyway, because a per-advisory list would be the same shape and would
+    // change nothing else here.
+    let excused = set.and_then(|s| s.kev) == Some(Action::Allow);
+    let remaining = if excused { 0 } else { exploited.len() };
+
+    match (remaining, entry) {
+        (0, Some(entry)) => Outcome::Excepted {
+            entry,
+            action: policy.kev,
+        },
+        _ if policy.kev == Action::Allow => Outcome::Passed,
+        (0, None) => Outcome::Passed,
+        _ => Outcome::Failed(policy.kev),
+    }
+}
+
+/// An advisory with no score is refused, as "not known" is not "low".
+fn max_cvss(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Date) -> Outcome {
+    let (counting, excused) = over_max_cvss(policy, facts, entry, as_of);
+    match (counting.is_empty(), excused.is_empty(), entry) {
+        (false, _, _) => Outcome::Failed(Action::Block),
+        // Something was over the threshold and the exception named all of it, so the
+        // exception is what saved it.
+        (true, false, Some(entry)) => Outcome::Excepted {
+            entry,
+            action: Action::Block,
+        },
+        _ => Outcome::Passed,
     }
 }
 

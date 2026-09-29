@@ -27,10 +27,10 @@ pub struct Run {
 
 impl Run {
     /// Nothing was loaded: the reason went to `notice`.
-    fn stopped() -> Self {
+    fn stopped(code: u8) -> Self {
         Self {
             report: String::new(),
-            code: 1,
+            code,
         }
     }
 }
@@ -43,84 +43,28 @@ impl Run {
 /// fetched or read leaves its previous load in place: the others still load, and the code
 /// is 1.
 pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: Notice<'_>) -> Run {
-    /// Append `not_loaded` for a refresh that loaded nothing, and answer 1.
-    async fn nothing_loaded(intel: &PgIntel, not_loaded: &[NotLoaded], notice: Notice<'_>) -> Run {
-        let taken_at = jiff::Timestamp::now().to_string();
-        if let Err(e) = intel.record_not_loaded(not_loaded, &taken_at).await {
-            notice(&format!("the ingestion history is not written: {e}"));
-        }
-        Run::stopped()
-    }
-
     // Connected before the fetch, so a refresh that could record nothing stops before
     // downloading.
     let intel = match postgres::required(environment).await {
         Ok(intel) => intel,
         Err(refused) => {
             notice(&refused.why);
-            return Run {
-                report: String::new(),
-                code: refused.code,
-            };
+            return Run::stopped(refused.code);
         }
     };
     let started = std::time::Instant::now();
-
-    // Opened before the fetch, so a second refresh into the same directory waits here rather
-    // than after downloading.
-    let limit = match environment.snapshot_limit() {
-        Ok(value) => value,
-        Err(e) => {
-            notice(&e.to_string());
-            return Run {
-                report: String::new(),
-                code: 2,
-            };
-        }
-    };
-    let kept = match match environment.snapshot_dir() {
-        Ok(value) => value,
-        Err(e) => {
-            notice(&e.to_string());
-            return Run {
-                report: String::new(),
-                code: 2,
-            };
-        }
-    }
-    .as_deref()
-    .map(SnapshotDir::open)
-    .transpose()
-    {
-        Ok(kept) => kept,
-        Err(e) => {
-            notice(&format!("{}: {e}", env::SNAPSHOT_DIR));
-            return Run::stopped();
-        }
+    let setup = match Setup::read(environment, notice) {
+        Ok(setup) => setup,
+        Err(code) => return Run::stopped(code),
     };
 
-    // Without its timeouts a stalled connection blocks the refresh for as long as the host
-    // keeps it open: measured 2026-09-17, one sat for 12 minutes with nothing arriving.
-    let http = match http_client(READ_TIMEOUT) {
-        Ok(http) => http,
-        Err(e) => {
-            notice(&format!("{e}"));
-            return Run::stopped();
-        }
-    };
-
-    let github_token = match environment.github_token() {
-        Ok(value) => value,
-        Err(e) => {
-            notice(&e.to_string());
-            return Run {
-                report: String::new(),
-                code: 2,
-            };
-        }
-    };
-
-    let read = fetch::read_streams(&http, stream::ALL, github_token.as_deref(), notice).await;
+    let read = fetch::read_streams(
+        &setup.http,
+        stream::ALL,
+        setup.github_token.as_deref(),
+        notice,
+    )
+    .await;
     let (loaded, not_loaded) = (read.loaded, read.not_loaded);
     if loaded.is_empty() {
         notice("nothing loaded: no stream loaded");
@@ -138,39 +82,31 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: 
             streams: &l.streams,
         })
         .collect();
-
-    let none_loaded = |error: String| history::none_loaded(&sources, &not_loaded, &error);
-
-    // Written before the load, so a snapshot Postgres records never lacks its rows here. Rows
-    // left by a load that then fails are removed by the next prune.
-    if let Some(kept) = &kept {
-        for source in &sources {
-            if let Err(e) = kept.write_rows(source.encoded) {
-                notice(&format!("nothing loaded: {e}"));
-                return nothing_loaded(&intel, &none_loaded(e.to_string()), notice).await;
-            }
-        }
-    }
-
-    let written = match intel.replace(&sources, &not_loaded, &taken_at).await {
+    let written = match load(
+        &intel,
+        setup.kept.as_ref(),
+        &sources,
+        &not_loaded,
+        &taken_at,
+        notice,
+    )
+    .await
+    {
         Ok(written) => written,
-        Err(e) => {
-            notice(&format!("nothing loaded: {e}"));
-            return nothing_loaded(&intel, &none_loaded(e.to_string()), notice).await;
-        }
+        Err(run) => return run,
     };
 
-    let kept_report = match &kept {
+    let kept_report = match &setup.kept {
         Some(kept) => match kept
             .write_snapshot(&written.manifest)
-            .and_then(|path| Ok((path, kept.prune(limit)?)))
+            .and_then(|path| Ok((path, kept.prune(setup.limit)?)))
         {
             Ok((path, pruned)) => Some(Kept { path, pruned }),
             Err(e) => {
                 notice(&format!(
                     "loaded, but the snapshot file is not written: {e}"
                 ));
-                return Run::stopped();
+                return Run::stopped(1);
             }
         },
         None => None,
@@ -181,4 +117,91 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: 
         report,
         code: u8::from(!not_loaded.is_empty()),
     }
+}
+
+/// What a refresh reads from the environment besides the store.
+struct Setup {
+    limit: usize,
+    kept: Option<SnapshotDir>,
+    http: reqwest::Client,
+    github_token: Option<String>,
+}
+
+impl Setup {
+    /// `Err` is the exit code, after the reason went to `notice`.
+    ///
+    /// The snapshot directory is opened before the fetch, so a second refresh into the same
+    /// directory waits here rather than after downloading.
+    fn read<L: Fn(&str) -> Option<OsString>>(
+        environment: &Env<L>,
+        notice: Notice<'_>,
+    ) -> Result<Self, u8> {
+        let stop = |code: u8, why: String| {
+            notice(&why);
+            code
+        };
+        let limit = environment
+            .snapshot_limit()
+            .map_err(|e| stop(2, e.to_string()))?;
+        let kept = environment
+            .snapshot_dir()
+            .map_err(|e| stop(2, e.to_string()))?
+            .as_deref()
+            .map(SnapshotDir::open)
+            .transpose()
+            .map_err(|e| stop(1, format!("{}: {e}", env::SNAPSHOT_DIR)))?;
+        // Without its timeouts a stalled connection blocks the refresh for as long as the
+        // host keeps it open: measured 2026-09-17, one sat for 12 minutes with nothing
+        // arriving.
+        let http = http_client(READ_TIMEOUT).map_err(|e| stop(1, format!("{e}")))?;
+        let github_token = environment
+            .github_token()
+            .map_err(|e| stop(2, e.to_string()))?;
+        Ok(Self {
+            limit,
+            kept,
+            http,
+            github_token,
+        })
+    }
+}
+
+/// Write each source's rows to `kept`, then replace the store's load with `sources`. `Err`
+/// is the answer for a refresh that loaded nothing.
+///
+/// The rows are written before the load, so a snapshot Postgres records never lacks its
+/// rows here. Rows left by a load that then fails are removed by the next prune.
+async fn load(
+    intel: &PgIntel,
+    kept: Option<&SnapshotDir>,
+    sources: &[Replacement<'_>],
+    not_loaded: &[NotLoaded],
+    taken_at: &str,
+    notice: Notice<'_>,
+) -> Result<postgres::Loaded, Run> {
+    let failed = |error: String| async move {
+        notice(&format!("nothing loaded: {error}"));
+        let not_loaded = history::none_loaded(sources, not_loaded, &error);
+        nothing_loaded(intel, &not_loaded, notice).await
+    };
+    if let Some(kept) = kept {
+        for source in sources {
+            if let Err(e) = kept.write_rows(source.encoded) {
+                return Err(failed(e.to_string()).await);
+            }
+        }
+    }
+    match intel.replace(sources, not_loaded, taken_at).await {
+        Ok(written) => Ok(written),
+        Err(e) => Err(failed(e.to_string()).await),
+    }
+}
+
+/// Append `not_loaded` for a refresh that loaded nothing, and answer 1.
+async fn nothing_loaded(intel: &PgIntel, not_loaded: &[NotLoaded], notice: Notice<'_>) -> Run {
+    let taken_at = jiff::Timestamp::now().to_string();
+    if let Err(e) = intel.record_not_loaded(not_loaded, &taken_at).await {
+        notice(&format!("the ingestion history is not written: {e}"));
+    }
+    Run::stopped(1)
 }
