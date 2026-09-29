@@ -2595,6 +2595,107 @@ impl Read {
 /// `Retry-After` on a 503. See docs/engineering_decisions/deferral-status-codes.md.
 const RETRY_AFTER_SECONDS: &str = "1";
 
+/// The client name the watcher's requests are logged under.
+const WATCHER: &str = "waharoa-watch";
+
+/// What one pass of the watcher did.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Watched {
+    /// Packages whose metadata was read.
+    pub packages: usize,
+    /// Versions their metadata listed that the proxy did not hold.
+    pub new_versions: usize,
+    /// Analyses started for those versions' preferred files.
+    pub started: usize,
+}
+
+impl Proxy {
+    /// One pass of the watcher: read each held package's metadata, and start analysing the
+    /// preferred file of every version the proxy did not hold, before a client asks for it.
+    /// See docs/engineering_decisions/watcher.md. Returns what it did.
+    pub async fn watch(&self) -> Watched {
+        let mut watched = Watched::default();
+        if self.config.analyser.is_none() {
+            return watched;
+        }
+        let keys = self.store.lock().expect("record store lock").packages();
+        for key in keys {
+            let path = format!("/{}", key.registry_name());
+            let slot = metadata_slot(self, &path).await;
+            let fetched = crate::ecosystem::fetched(self.config.clients.metadata(&key).await);
+            drop(slot);
+            let metadata = match fetched {
+                Ok(metadata) => metadata,
+                Err(e) => {
+                    warn!(waharoa.package.purl = %key, error.message = %e, "watcher: could not read metadata");
+                    continue;
+                }
+            };
+            watched.packages += 1;
+            let new = self
+                .store
+                .lock()
+                .expect("record store lock")
+                .refresh(metadata);
+            watched.new_versions += new.len();
+            let files = new
+                .iter()
+                .filter_map(|r| r.artifact().map(|file| (r, file)));
+            for (record, file) in files {
+                if self.watch_version(record, file).await {
+                    watched.started += 1;
+                }
+            }
+        }
+        info!(
+            waharoa.watch.packages = watched.packages,
+            waharoa.watch.new_versions = watched.new_versions,
+            waharoa.watch.started = watched.started,
+            "watcher pass"
+        );
+        watched
+    }
+
+    /// Start analysing `record`'s preferred file, `artifact`, as a client's request would.
+    /// Returns whether an analysis started: not for a file on an origin the proxy does not
+    /// serve, with no strong digest, or already analysed.
+    async fn watch_version(
+        &self,
+        record: &PackageRecord,
+        artifact: &crate::record::Artifact,
+    ) -> bool {
+        let Some(path) =
+            crate::origin::reachable_path(&artifact.url, self.config.origins.reachable())
+        else {
+            return false;
+        };
+        let path = path.split('#').next().unwrap_or_default().to_owned();
+        let narrowed = record.narrowed_to(&artifact.filename);
+        let record = narrowed.as_ref().unwrap_or(record);
+        let key = record.package.key();
+        let deciding = Deciding::new(
+            self,
+            ArtifactRequest {
+                ecosystem: key.ecosystem(),
+                method: &Method::GET,
+                key,
+                claimed_version: record.package.version(),
+                filename: &artifact.filename,
+                path: &path,
+                client: WATCHER,
+            },
+        );
+        let (fetch, _) = deciding.fetch_plan(record);
+        let times = deciding.publish_times(record).await;
+        let analysed = deciding.analysed(record, &fetch, times.as_ref()).await;
+        let (AnalysisState::Pending(job), Some(analyser)) = (analysed.state, &self.config.analyser)
+        else {
+            return false;
+        };
+        analyser.start(job).is_some()
+    }
+}
+
 /// How often [`Proxy::report_traffic`] closes the window.
 pub const TRAFFIC_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -7410,6 +7511,191 @@ mod tests {
         assert_eq!(
             proxy.health().clients_without_artifacts,
             [("pnpm".to_owned(), 1)].into()
+        );
+    }
+
+    /// How a version in [`watching`]'s registry publishes its tarball.
+    #[derive(Clone)]
+    enum Published {
+        /// On the registry, with its digest.
+        Served(Vec<u8>),
+        /// On an origin the proxy does not serve, with its digest.
+        Elsewhere(Vec<u8>),
+        /// On the registry, with no digest.
+        Undigested(Vec<u8>),
+    }
+
+    impl Published {
+        /// The `integrity` member, the tarball URL and the bytes, for `version`.
+        fn written(&self, version: &str) -> (String, String, &[u8]) {
+            let (bytes, digested, host) = match self {
+                Self::Served(bytes) => (bytes, true, "registry.npmjs.org/widget/-"),
+                Self::Elsewhere(bytes) => (bytes, true, "elsewhere.example"),
+                Self::Undigested(bytes) => (bytes, false, "registry.npmjs.org/widget/-"),
+            };
+            let integrity = if digested {
+                format!(r#""integrity":"{}","#, sri_of(bytes))
+            } else {
+                String::new()
+            };
+            (
+                integrity,
+                format!("https://{host}/widget-{version}.tgz"),
+                bytes,
+            )
+        }
+    }
+
+    /// A registry serving `widget` at the versions in `published`. A proxy with an analyser
+    /// holds `widget` 1.0.0 and `gone`, which the registry no longer answers for.
+    async fn watching(
+        label: &str,
+        published: Arc<Mutex<Vec<(&'static str, Published)>>>,
+    ) -> (Proxy, Arc<Analyser>) {
+        let serving = published.clone();
+        let packument = move || {
+            let versions: Vec<String> = serving
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(v, published)| {
+                    let (integrity, url, _) = published.written(v);
+                    format!(r#""{v}":{{"version":"{v}","dist":{{{integrity}"tarball":"{url}"}}}}"#)
+                })
+                .collect();
+            format!(
+                r#"{{"name":"widget","versions":{{{}}}}}"#,
+                versions.join(",")
+            )
+        };
+        let tarballs = published.clone();
+        let tarball = move |file: String| {
+            tarballs
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(v, _)| file == format!("widget-{v}.tgz"))
+                .map(|(v, published)| published.written(v).2.to_vec())
+                .unwrap_or_default()
+        };
+        let router = Router::new()
+            .route(
+                "/widget",
+                get(move || {
+                    let body = packument();
+                    async move {
+                        (
+                            [(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")],
+                            body,
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/widget/-/{file}",
+                get(
+                    move |axum::extract::Path(file): axum::extract::Path<String>| {
+                        let bytes = tarball(file);
+                        async move { bytes }
+                    },
+                ),
+            );
+        let (spool, _) =
+            crate::spool::Spool::open(&crate::util::test_support::tempdir(label), 1 << 20)
+                .expect("opens");
+        let analyser = Arc::new(Analyser::new(
+            reqwest::Client::new(),
+            Arc::new(spool),
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+            2,
+            8,
+        ));
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, serve(router).await)
+            .with_analyser(Some(analyser.clone()));
+        let first = Published::Served(crate::util::test_support::tarball(&[(
+            "package/package.json",
+            RUNS_NOTHING,
+        )]));
+        let (integrity, url, _) = first.written("1.0.0");
+        hold_document(
+            &proxy,
+            format!(r#"{{"name":"widget","versions":{{"1.0.0":{{"version":"1.0.0","dist":{{{integrity}"tarball":"{url}"}}}}}}}}"#)
+                .as_bytes(),
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        published.lock().unwrap().push(("1.0.0", first));
+        hold_document(
+            &proxy,
+            br#"{"name":"gone","versions":{"1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/gone/-/gone-1.0.0.tgz"}}}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        (proxy, analyser)
+    }
+
+    /// A version published after the proxy read the package is analysed by the next pass.
+    /// A held version, analysed bytes, an origin not served and no digest start nothing.
+    #[tokio::test]
+    async fn the_watcher_analyses_a_new_version_before_a_client_asks() {
+        let published = Arc::new(Mutex::new(Vec::new()));
+        let (proxy, analyser) = watching("watch", published.clone()).await;
+        let second =
+            crate::util::test_support::tarball(&[("package/package.json", RUNS_POSTINSTALL)]);
+        published
+            .lock()
+            .unwrap()
+            .push(("2.0.0", Published::Served(second.clone())));
+
+        assert_eq!(
+            proxy.watch().await,
+            Watched {
+                packages: 1,
+                new_versions: 1,
+                started: 1
+            },
+            "1.0.0 was held, so only 2.0.0 is new, and `gone` is not read"
+        );
+        analyser.ended(1).await;
+        let digest = Sri::parse(&sri_of(&second)).expect("an SRI");
+        assert!(
+            matches!(analyser.known(&digest).await, Known::Analysed(_)),
+            "2.0.0 was analysed before any client asked for it"
+        );
+        assert_eq!(
+            proxy.watch().await.new_versions,
+            0,
+            "the refreshed document holds 2.0.0"
+        );
+
+        let other = |name: &str| {
+            crate::util::test_support::tarball(&[(
+                "package/package.json",
+                format!(r#"{{"name":"{name}","version":"1.0.0"}}"#).as_bytes(),
+            )])
+        };
+        {
+            let mut published = published.lock().unwrap();
+            published.push(("3.0.0", Published::Served(second)));
+            published.push(("4.0.0", Published::Elsewhere(other("elsewhere"))));
+            published.push(("5.0.0", Published::Undigested(other("undigested"))));
+        }
+        assert_eq!(
+            proxy.watch().await,
+            Watched {
+                packages: 1,
+                new_versions: 3,
+                started: 0
+            },
+            "3.0.0's bytes are 2.0.0's, already analysed; 4.0.0 is on an origin the proxy does \
+             not serve; 5.0.0 publishes no digest"
+        );
+
+        let unanalysed =
+            Proxy::new(reqwest::Client::new()).with_upstream(Ecosystem::Npm, NO_UPSTREAM);
+        assert_eq!(
+            unanalysed.watch().await,
+            Watched::default(),
+            "no analyser, no pass"
         );
     }
 

@@ -84,6 +84,7 @@ code, and the file names where.
 | [The artifact cache does not skip verification](verified-artifact-cache.md) | Implemented, Stage 1 |
 | [Deferral status codes](deferral-status-codes.md) | Measured, decision pending Stage 2 |
 | [Refusal status](refusal-status.md) | Implemented |
+| [The watcher analyses new versions of served packages before a client asks](watcher.md) | Implemented |
 | [Real packages that are safe to test against](live-test-packages.md) | Decided |
 | [The audit log](audit-log.md) | Implemented |
 | [Whether one policy value is stricter than another](strictness-comparison.md) | Implemented |

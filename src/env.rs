@@ -70,6 +70,9 @@ pub const DEFAULT_MAX_CONCURRENT_ANALYSES: usize = 8;
 /// Default ceiling on how many client names a traffic window counts before `other`.
 pub const DEFAULT_MAX_TRAFFIC_CLIENTS: usize = 256;
 
+/// Default seconds between the watcher's passes over the packages the proxy has served.
+pub const DEFAULT_WATCH_INTERVAL_SECONDS: u64 = 900;
+
 /// Default ceiling on one artifact written to the spool.
 pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1 << 30;
 
@@ -241,6 +244,15 @@ pub const MAX_TRAFFIC_CLIENTS: Var = runtime(
     &["client names counted apart in a traffic window"],
 )
 .with_default(Default::Number(DEFAULT_MAX_TRAFFIC_CLIENTS as u64));
+pub const WATCH_INTERVAL: Var = runtime(
+    "WAHAROA_WATCH_INTERVAL",
+    "",
+    &[
+        "seconds between checks of served packages for new versions to analyse",
+        "before a client asks for them; 0 turns it off",
+    ],
+)
+.with_default(Default::Number(DEFAULT_WATCH_INTERVAL_SECONDS));
 pub const REFUSAL_STATUS: Var = runtime(
     "WAHAROA_REFUSAL_STATUS",
     "",
@@ -381,7 +393,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 49] = [
+pub const ALL: [Var; 50] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -406,6 +418,7 @@ pub const ALL: [Var; 49] = [
     MAX_ARTIFACT_BYTES,
     MAX_CONCURRENT_ANALYSES,
     MAX_TRAFFIC_CLIENTS,
+    WATCH_INTERVAL,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     MODE,
@@ -673,6 +686,17 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         )
     }
 
+    /// How long the watcher waits between passes. `None` when it is off.
+    pub fn watch_interval(&self) -> Result<Option<std::time::Duration>, EnvError> {
+        let seconds = self.parsed(
+            WATCH_INTERVAL,
+            DEFAULT_WATCH_INTERVAL_SECONDS,
+            |v| v.parse().ok(),
+            "is not a whole number of seconds",
+        )?;
+        Ok((seconds > 0).then(|| std::time::Duration::from_secs(seconds)))
+    }
+
     pub fn max_concurrent_analyses(&self) -> Result<usize, EnvError> {
         self.count(MAX_CONCURRENT_ANALYSES, DEFAULT_MAX_CONCURRENT_ANALYSES)
     }
@@ -935,6 +959,12 @@ mod tests {
         assert_eq!(
             env.max_concurrent_analyses().unwrap(),
             DEFAULT_MAX_CONCURRENT_ANALYSES
+        );
+        assert_eq!(
+            env.watch_interval().unwrap(),
+            Some(std::time::Duration::from_secs(
+                DEFAULT_WATCH_INTERVAL_SECONDS
+            ))
         );
         assert_eq!(
             env.max_traffic_clients().unwrap(),
@@ -1290,6 +1320,21 @@ mod tests {
             "WAHAROA_POLICY: `f\u{fffd}` is not UTF-8"
         );
         assert!(!env.bless());
+    }
+
+    /// The watcher waits the given seconds, is off at 0, and refuses anything else.
+    #[test]
+    fn the_watch_interval_is_seconds_and_0_is_off() {
+        let interval = |value: &str| testing::with(&[(WATCH_INTERVAL, value)]).watch_interval();
+        assert_eq!(
+            interval("60").unwrap(),
+            Some(std::time::Duration::from_secs(60))
+        );
+        assert_eq!(interval("0").unwrap(), None);
+        assert_eq!(
+            interval("15m").unwrap_err().to_string(),
+            "WAHAROA_WATCH_INTERVAL: `15m` is not a whole number of seconds"
+        );
     }
 
     #[test]

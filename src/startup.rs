@@ -24,6 +24,8 @@ use crate::tls::{self, TrustMode};
 pub struct Started {
     pub proxy: Proxy,
     pub listen: String,
+    /// How long the watcher waits between passes. `None` when it is off.
+    pub watch: Option<std::time::Duration>,
 }
 
 /// Why the proxy is not started.
@@ -114,7 +116,20 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     #[cfg(debug_assertions)]
     let proxy = proxy.with_defer_test(defer_test);
 
-    Ok(Started { proxy, listen })
+    let watch = environment.watch_interval()?;
+    match watch {
+        Some(every) => info!(
+            waharoa.config.variable = %env::WATCH_INTERVAL,
+            waharoa.watch.interval_s = every.as_secs(),
+            "watcher on: served packages are read for new versions, which are analysed before a client asks"
+        ),
+        None => info!(waharoa.config.variable = %env::WATCH_INTERVAL, "watcher off"),
+    }
+    Ok(Started {
+        proxy,
+        listen,
+        watch,
+    })
 }
 
 /// The client every upstream request goes through, trusting [`env::CA_BUNDLE`]'s roots
@@ -596,6 +611,13 @@ mod tests {
     /// An audit log is opened and said to be, and one that cannot be opened refuses the
     /// start, naming the variable.
     #[tokio::test]
+    async fn a_watch_interval_of_0_turns_the_watcher_off() {
+        let (started, log) = logged("startup-watch-off", &[(env::WATCH_INTERVAL, "0")]).await;
+        assert!(started, "{log}");
+        assert!(log.contains("watcher off"), "{log}");
+    }
+
+    #[tokio::test]
     async fn an_audit_log_is_opened_or_refuses_the_start() {
         let dir = crate::util::test_support::tempdir("startup-audit-file");
         let log_path = dir.join("audit.jsonl");
@@ -626,6 +648,12 @@ mod tests {
         let (dir, environment) = spooled("startup-empty", &[]);
         let started = proxy(&environment).await.expect("the defaults are usable");
         assert_eq!(started.listen, env::DEFAULT_LISTEN);
+        assert_eq!(
+            started.watch,
+            Some(std::time::Duration::from_secs(
+                env::DEFAULT_WATCH_INTERVAL_SECONDS
+            ))
+        );
         assert_eq!(
             started.proxy.upstreams().get(Ecosystem::Npm),
             npm::DEFAULT_REGISTRY
@@ -869,6 +897,7 @@ mod tests {
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_ARTIFACT_BYTES),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_CONCURRENT_ANALYSES),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_TRAFFIC_CLIENTS),
+            (vec![(env::SPOOL_DIR, &spool)], env::WATCH_INTERVAL),
         ];
         if cfg!(debug_assertions) {
             cases.push((vec![], env::DEFER_TEST));
