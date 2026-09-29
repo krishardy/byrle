@@ -79,6 +79,8 @@ npm's empty `prefixes` is the root fallback, and `ecosystem::ROOT` names it. Bef
 table, `route::classify` was `if pypi::serves(path) { PyPI } else { Npm }`: a third
 ecosystem's prefix would have lost to npm without a compile error. `serving` now walks the
 table and falls back to `ROOT` only when no row claims the path.
+A path under a claimed prefix goes to that ecosystem even when it names no project, so
+pip's other requests get PyPI's 404 and not npm's.
 
 Three tests hold the table's shape: every `Ecosystem::EXPRESSIBLE` variant has exactly one
 row, exactly one row claims no prefix, and no prefix is claimed twice. The first is what

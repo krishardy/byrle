@@ -18,6 +18,8 @@ or `identity` when the client does not accept gzip. A client that accepts neithe
 its own header, and its body is not read.
 
 Which document arrived is read from the response `Content-Type`, not from the request.
+npm asks for both packument kinds in one `Accept` header, and an index may answer HTML
+where PEP 691 JSON was asked for.
 
 Decompression is capped, default 64 MiB since 2026-09-26 (32 MiB before, which vite's
 38.9 MB full packument exceeded), settable with `WAHAROA_MAX_METADATA_BYTES`.

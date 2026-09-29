@@ -151,6 +151,9 @@ configuration the smoke tests run. That proxy uses `InProcess`, a bounded map th
 with the process: each artifact is analysed once more after a restart, and a second proxy
 shares nothing with the first. Postgres is what makes an analysis outlive either.
 
+A database error on a read is treated as "not analysed before": the artifact is analysed
+again, at the cost of a deferral per request.
+
 ## Tests
 
 `tests/postgres.rs`, run by `make test-integration` against a container, 44 tests. Six are

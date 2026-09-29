@@ -1,8 +1,7 @@
 //! Building the proxy from the environment, the way `waharoa` runs it.
 //!
-//! Every value comes from `crate::env`, and what each one means is said here as the proxy
-//! starts: what is enforced, what is not, and what an unset variable leaves off. `main`
-//! keeps the logging setup, the listener and the exit codes.
+//! Logs what each `crate::env` value means as the proxy starts. `main` keeps the logging
+//! setup, the listener and the exit codes.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -126,8 +125,6 @@ fn upstream_client<L: Fn(&str) -> Option<OsString>>(
 ) -> Result<reqwest::Client, StartupError> {
     let builder = crate::http::client_builder(crate::http::READ_TIMEOUT);
     let Some(path) = environment.ca_bundle()? else {
-        // With no bundle only the TLS backend itself can fail, which
-        // `reqwest::Client::new` treats as a panic too.
         return Ok(builder.build().expect("the TLS backend initialises"));
     };
     let exclusive = environment.ca_bundle_exclusive()?;
@@ -336,8 +333,6 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
         "policy loaded and validated"
     );
 
-    // What is configured and what can actually fire are different things, and the gap
-    // has to be said out loud rather than discovered by a package getting through.
     warn!(
         "ENFORCED: denials, install_scripts, cooldown_days, yanked, deprecated, provenance. \
          A refused version is removed from the metadata document so the resolver picks \
@@ -413,7 +408,6 @@ pub fn reload_on_hangup<L: Fn(&str) -> Option<OsString> + Send + Sync>(
     proxy: Proxy,
     environment: Env<L>,
 ) -> impl std::future::Future<Output = ()> + Send {
-    // Registering fails only for a signal that cannot be caught, and SIGHUP can be.
     let hangups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
         .expect("SIGHUP can be listened for");
     let hangups = futures_util::stream::unfold(hangups, |mut hangups| async move {
@@ -894,9 +888,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A bundle the TLS backend refuses, a database URL that is not one, and an artifact
-    /// origin that is not a URL each refuse the start. A bundle that merges with the public
-    /// roots starts one.
+    /// An unusable bundle, database URL or artifact origin refuses the start.
+    /// A bundle that merges with the public roots starts one.
     #[tokio::test]
     async fn an_unusable_bundle_database_or_origin_refuses_the_start() {
         let refused = concat!(
