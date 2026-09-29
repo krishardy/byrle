@@ -78,7 +78,8 @@ impl ReachableOrigins {
         }
         for registry in crate::ecosystem::TABLE {
             for base in registry.always_reachable {
-                let origin = normalise_origin(base)?;
+                let origin = normalise_origin(base)
+                    .expect("each row's always-reachable origin is a usable URL");
                 if !origins.contains(&origin) {
                     origins.push(origin);
                 }
@@ -862,10 +863,76 @@ mod tests {
             assert_eq!(origins.get("https://other.example"), Some(&1));
         }
 
+        /// A record with no file has no origin to report, served or not.
+        #[test]
+        fn a_record_with_no_file_names_no_origin() {
+            let mut p = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
+            for record in &mut p.records {
+                record.artifacts.clear();
+            }
+            assert!(p.bypassing_origins(&reachable(&[])).is_empty());
+            let policy = OriginPolicy::new(reachable(&[]), std::iter::empty()).expect("valid");
+            assert_eq!(
+                p.unserved_origins(&policy),
+                (BTreeMap::new(), BTreeMap::new())
+            );
+        }
+
         #[test]
         fn an_ordinary_packument_reports_nothing() {
             let p = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
             assert!(p.bypassing_origins(&reachable(&[])).is_empty());
         }
+    }
+
+    /// A blank allowed origin is skipped and a repeated one is kept once.
+    #[test]
+    fn allowed_origins_are_kept_once_each() {
+        let policy = OriginPolicy::new(
+            reachable(&[]),
+            [" ", "https://a.example", "https://a.example/"],
+        )
+        .expect("valid");
+        assert_eq!(policy.allowed_direct, ["https://a.example"]);
+    }
+
+    /// A URL with no host, or none at all, has no origin and no path to keep.
+    #[test]
+    fn a_url_with_no_host_has_no_origin() {
+        assert_eq!(origin_of_url("mailto:a@example.org"), None);
+        assert_eq!(reachable_path("not a url", &reachable(&[])), None);
+    }
+
+    /// A body whose last candidate string never closes is left as it is from there on.
+    #[test]
+    fn an_unclosed_string_ends_the_scan() {
+        let url = format!("{UPSTREAM}/a/-/a-1.0.0.tgz");
+        let body = format!("{{\"tarball\":\"{url}\",\"x\":\"{UPSTREAM}/b");
+        let out = rewrite_artifact_origins(
+            body.as_bytes(),
+            [url.as_str()],
+            &reachable(&[]),
+            "http://proxy",
+        )
+        .expect("rewrites");
+        assert_eq!(out.rewritten, 1);
+        assert!(
+            String::from_utf8(out.body)
+                .unwrap()
+                .ends_with(&format!("\"{UPSTREAM}/b"))
+        );
+    }
+
+    #[test]
+    fn each_rewrite_error_says_what_the_document_was() {
+        let not_utf8 = rewrite_artifact_origins(b"\xff", [], &reachable(&[]), "http://p")
+            .expect_err("not UTF-8");
+        assert!(not_utf8.to_string().starts_with("document is not UTF-8: "));
+        let not_json = RewriteError::NotJson(serde_json::from_str::<()>("{").unwrap_err());
+        assert!(
+            not_json
+                .to_string()
+                .starts_with("document is not valid JSON: ")
+        );
     }
 }
