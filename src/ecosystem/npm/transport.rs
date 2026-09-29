@@ -259,9 +259,7 @@ mod tests {
                 }
             }),
         );
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
 
         let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
@@ -297,9 +295,7 @@ mod tests {
                 }
             }),
         );
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
 
         let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
@@ -335,9 +331,7 @@ mod tests {
                 }
             }),
         );
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
 
         let client =
             Client::new(reqwest::Client::new(), format!("http://{addr}")).with_max_bytes(16);
@@ -409,9 +403,7 @@ mod tests {
             .await
             .expect("should bind an ephemeral port");
         let addr = listener.local_addr().expect("bound socket has an address");
-        tokio::spawn(async move {
-            let _ = axum::serve(listener, router).await;
-        });
+        tokio::spawn(axum::serve(listener, router).into_future());
         format!("http://{addr}")
     }
 

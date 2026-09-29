@@ -13,8 +13,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::doctor::{CacheBypass, CacheLocation, Client, Indexes, RegistrySource, probe};
-use crate::env::{self, Env, EnvError, Process};
+use crate::doctor::{CacheBypass, CacheLocation, Client, Indexes, Machine, RegistrySource};
+use crate::env::{self, Env, EnvError};
 
 /// Where pip and uv install from when nothing is configured.
 const DEFAULT_INDEX: &str = super::INDEX;
@@ -69,8 +69,8 @@ pub const UV: Client = Client {
 
 pub const CLIENTS: &[Client] = &[PIP, UV];
 
-fn pip_indexes(_: &Process) -> Result<Option<Indexes>, EnvError> {
-    Ok(probe::run("pip", &["config", "list"]).map(|listed| pip_config(&listed)))
+fn pip_indexes(machine: &Machine) -> Result<Option<Indexes>, EnvError> {
+    Ok((machine.run)("pip", &["config", "list"]).map(|listed| pip_config(&listed)))
 }
 
 /// The indexes `pip config list` says pip uses.
@@ -114,11 +114,12 @@ pub struct UvVars {
     pub index: Option<String>,
 }
 
-fn uv_indexes(environment: &Process) -> Result<Option<Indexes>, EnvError> {
-    if probe::run("uv", &["--version"]).is_none() {
+fn uv_indexes(machine: &Machine) -> Result<Option<Indexes>, EnvError> {
+    if (machine.run)("uv", &["--version"]).is_none() {
         return Ok(None);
     }
-    let files = uv_config_files(environment, &std::env::current_dir().unwrap_or_default())?;
+    let environment = machine.environment;
+    let files = uv_config_files(environment, machine.dir)?;
     let read: Vec<String> = files
         .iter()
         .filter_map(|path| std::fs::read_to_string(path).ok())
@@ -295,6 +296,12 @@ mod tests {
             "https://global.example/simple/"
         );
         assert_eq!(
+            pip_config("WARNING: not a setting\nglobal.index-url='https://global.example/simple/'")
+                .index,
+            "https://global.example/simple/",
+            "a line with no `=` is skipped"
+        );
+        assert_eq!(
             pip_config(""),
             Indexes {
                 index: DEFAULT_INDEX.to_owned(),
@@ -356,6 +363,24 @@ mod tests {
         assert_eq!(
             uv_config(&older, &[]).index,
             "https://older.example/simple/"
+        );
+        let unusable = r#"
+            [tool.black]
+            line-length = 100
+
+            [[index]]
+            name = "no-url"
+
+            [[index]]
+            url = 7
+        "#;
+        assert_eq!(
+            uv_config(&UvVars::default(), &[unusable]),
+            Indexes {
+                index: DEFAULT_INDEX.to_owned(),
+                extra: Vec::new(),
+            },
+            "a `[tool]` with no `uv`, and an index with no URL string"
         );
         assert_eq!(
             uv_config(&UvVars::default(), &["not = [toml"]),
@@ -426,5 +451,56 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// uv is read only when it runs, from the files it would read. A file that cannot be
+    /// read configures nothing.
+    #[test]
+    fn uv_is_read_when_it_runs() {
+        use crate::env::testing::with_unreadable;
+        use crate::env::{self, Var};
+
+        let root = crate::util::test_support::tempdir("uv-indexes");
+        let file = root.join("uv.toml");
+        std::fs::write(&file, "index-url = \"https://file.example/simple/\"\n").unwrap();
+        let file = file.to_str().unwrap().to_owned();
+        let missing = root.join("missing.toml").to_str().unwrap().to_owned();
+        let runs = |_: &str, _: &[&str]| Some("uv 0.12.20".to_owned());
+        let absent = |_: &str, _: &[&str]| None;
+        let read = |environment: &env::Process,
+                    run: &(dyn Fn(&str, &[&str]) -> Option<String> + Sync)| {
+            uv_indexes(&Machine {
+                environment,
+                dir: &root,
+                run,
+            })
+        };
+
+        let named = with(&[(env::UV_FILE, &file)]);
+        assert_eq!(read(&named, &absent).unwrap(), None, "uv is not installed");
+        assert_eq!(
+            read(&named, &runs).unwrap().expect("uv runs").index,
+            "https://file.example/simple/"
+        );
+        assert_eq!(
+            read(&with(&[(env::UV_FILE, &missing)]), &runs)
+                .unwrap()
+                .expect("uv runs")
+                .index,
+            DEFAULT_INDEX
+        );
+
+        let cases: [(&[(Var, &str)], Var); 4] = [
+            (&[(env::UV_NO_FILES, "1")], env::UV_DEFAULT),
+            (&[], env::UV_FILE),
+            (&[], env::CONFIG_HOME),
+            (&[], env::HOME_DIR),
+        ];
+        for (pairs, unreadable) in cases {
+            let error =
+                read(&with_unreadable(pairs, unreadable), &runs).expect_err(unreadable.name);
+            assert!(error.to_string().starts_with(unreadable.name), "{error}");
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
