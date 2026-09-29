@@ -206,6 +206,7 @@ fn justified(entry: &PackageRule) -> bool {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::env::DEFAULT_EXPIRY_CEILING_DAYS;

@@ -157,6 +157,7 @@ pub fn fetched<T>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::super::fixture;
     use super::*;

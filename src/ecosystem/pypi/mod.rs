@@ -84,6 +84,7 @@ pub const MAX_INDEX_BYTES: usize = crate::env::DEFAULT_MAX_METADATA_BYTES;
 
 /// The `requests` index from `tests/fixtures/pypi/`.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn fixture() -> Vec<u8> {
     let path = format!(
         "{}/tests/fixtures/pypi/requests.json",

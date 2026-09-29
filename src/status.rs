@@ -172,6 +172,7 @@ fn intel(registry: &Registry, snapshot: Option<&LoadedSnapshot>) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::intel::refresh::StreamDigest;

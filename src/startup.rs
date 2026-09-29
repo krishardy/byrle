@@ -438,6 +438,7 @@ pub async fn reload_on_hangup<L: Fn(&str) -> Option<OsString>>(proxy: Proxy, env
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::ecosystem::{npm, pypi};

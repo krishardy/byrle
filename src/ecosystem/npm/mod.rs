@@ -97,6 +97,7 @@ pub const DEFAULT_REGISTRY: &str = "https://registry.npmjs.org";
 
 /// A packument from `tests/fixtures/npm/`.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn fixture(name: &str) -> Vec<u8> {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/npm/");
     std::fs::read(format!("{path}{name}")).expect("fixture is missing")
@@ -104,6 +105,7 @@ pub(crate) fn fixture(name: &str) -> Vec<u8> {
 
 /// That packument, normalised. Every caller wants the records, not the bytes.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn normalized(name: &str, detail: DocumentDetail) -> crate::record::PackageMetadata {
     normalize_packument(&fixture(name), detail).expect("fixture should normalise")
 }

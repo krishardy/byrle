@@ -54,5 +54,6 @@ sigstore-verify = { version = "=0.13.0", default-features = false }
 [lints.rust]
 # `coverage` is set by cargo-llvm-cov, which `make coverage` runs. Declared so the
 # network- and corpus-dependent tests can be compiled out of a coverage build without
-# tripping the unexpected-cfg lint.
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(kani)'] }
+# tripping the unexpected-cfg lint. `coverage_nightly` is set by it on nightly, where test
+# code is marked `coverage(off)`.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)', 'cfg(coverage_nightly)', 'cfg(kani)'] }

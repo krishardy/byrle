@@ -189,6 +189,7 @@ fn artifact(filename: &str) -> RequestTarget {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -328,6 +328,7 @@ fn code(outcomes: &[(String, Outcome)]) -> u8 {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::env::testing::with;

@@ -5,6 +5,9 @@
 //! identity. Splitting into separate *crates* remains deliberately deferred (TODO.md);
 //! a lib plus a bin in one crate is not that split.
 
+// `make coverage` runs on nightly, where test modules are left out of the count.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 pub mod analysis;
 pub mod audit;
 pub mod cli;
@@ -16,6 +19,7 @@ pub mod ecosystem;
 pub mod env;
 pub mod explain;
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod golden;
 pub mod http;
 pub mod identity;

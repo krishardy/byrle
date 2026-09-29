@@ -216,6 +216,7 @@ impl Intel for SnapshotIntel {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod testing {
     use super::*;
     use crate::intel::load;
@@ -289,6 +290,7 @@ pub(crate) mod testing {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
 
     /// A store keys a package by its ecosystem as a purl spells it and its registry name,

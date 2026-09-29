@@ -145,6 +145,7 @@ pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

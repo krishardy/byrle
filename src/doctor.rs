@@ -1060,6 +1060,7 @@ pub mod probe {
     }
 
     #[cfg(test)]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     mod tests {
         use super::super::CacheBypass;
         use super::*;
@@ -1286,6 +1287,7 @@ pub mod probe {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -242,6 +242,7 @@ impl<'de> Deserialize<'de> for Repository {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

@@ -182,6 +182,7 @@ pub fn read_bundle(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Bundle, BundleE
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use std::io::Write;

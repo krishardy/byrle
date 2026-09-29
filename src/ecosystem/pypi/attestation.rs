@@ -40,6 +40,7 @@ pub fn provenance_bundle(document: &[u8]) -> Result<Bundle, String> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::analysis::attestation::{Attested, verify};

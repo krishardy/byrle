@@ -270,6 +270,7 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Vec<Rows>, GithubErro
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

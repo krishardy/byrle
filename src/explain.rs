@@ -417,6 +417,7 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod run_tests {
     use super::*;
     use crate::env::testing::with;
@@ -662,6 +663,7 @@ mod run_tests {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::policy::decide::{Advisory, Intel, Provenance, decide};

@@ -449,6 +449,7 @@ pub fn serving(path: &str) -> &'static Registry {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod table {
     use super::*;
     use crate::record::DocumentDetail;

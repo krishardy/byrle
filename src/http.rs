@@ -368,6 +368,7 @@ fn base_tag(base: &str) -> String {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #[test]
     fn a_request_target_splits_into_path_and_query() {
@@ -738,6 +739,7 @@ pub fn http_date(value: &str) -> Option<jiff::Timestamp> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod http_date_tests {
     /// Read from files.pythonhosted.org, www.piwheels.org and pypi.nvidia.com on
     /// 2026-09-21.

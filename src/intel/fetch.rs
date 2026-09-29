@@ -274,6 +274,7 @@ pub async fn graphql(
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use std::sync::Mutex;
     use std::time::Duration;

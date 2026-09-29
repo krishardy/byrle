@@ -74,6 +74,7 @@ pub const CLIENTS: &[Client] = &[
 
 /// The client called `name`. Test use only.
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn named(name: &str) -> &'static Client {
     CLIENTS
         .iter()

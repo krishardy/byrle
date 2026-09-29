@@ -521,6 +521,7 @@ impl PackageMetadata {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     #[test]
     fn a_credential_in_a_url_is_not_printed() {

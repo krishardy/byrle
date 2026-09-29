@@ -256,6 +256,7 @@ pub fn read(path: &Path) -> Result<Vec<Locked>, LockfileError> {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::util::test_support::tempdir;

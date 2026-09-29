@@ -157,6 +157,7 @@ fn action_strictness(value: Option<Action>, baseline: Option<Action>) -> Strictn
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
 

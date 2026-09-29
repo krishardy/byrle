@@ -508,6 +508,7 @@ impl Iterator for Decoder<'_> {
 
 /// A source and its rows, collected from a [`Decoder`].
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 pub fn decode(bytes: &[u8]) -> Result<(String, Vec<Rows>), Undecodable> {
     let decoder = Decoder::new(bytes)?;
     let source = decoder.source().to_owned();
@@ -752,6 +753,7 @@ fn line(out: &mut Vec<u8>, fields: &[Option<&str>]) {
 }
 
 #[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
     use crate::intel::range::{End, Interval};

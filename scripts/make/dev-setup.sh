@@ -43,6 +43,10 @@ else
     cargo install cargo-llvm-cov --locked
 fi
 
+# shellcheck source=scripts/make/lib/coverage-toolchain.sh
+. "$repo_root/scripts/make/lib/coverage-toolchain.sh"
+waharoa_install_coverage_toolchain
+
 echo "==> cargo-mutants (mutation testing, used by 'make mutants')"
 if cargo mutants --version >/dev/null 2>&1; then
     echo "    already installed"
