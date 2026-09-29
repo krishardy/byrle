@@ -368,6 +368,8 @@ mod tests {
             ("pnpm", "pnpm-lock.yaml"),
             ("bun", "bun.lock"),
             ("bun-1.1", "bun.lock"),
+            ("bun-1.4", "bun.lock"),
+            ("bun-1.4-overrides", "bun.lock"),
         ] {
             let path = PathBuf::from(format!(
                 "{}/tests/fixtures/lockfiles/{dir}/{name}",

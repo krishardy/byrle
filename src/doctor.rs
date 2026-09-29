@@ -1423,8 +1423,7 @@ mod tests {
         assert!(finding.detail.contains("not"), "got: {}", finding.detail);
         assert!(finding.fix.is_some(), "a reinstall is suggested");
 
-        let nothing_locked =
-            bun_lock("").replace("\"lockfileVersion\": 2", "\"lockfileVersion\": 1");
+        let nothing_locked = bun_lock("");
         let finding = check_lockfile(
             lockfile("bun.lock"),
             pins("bun.lock"),

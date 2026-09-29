@@ -353,9 +353,9 @@ fn bun(text: &str) -> Result<BTreeSet<Locked>, String> {
 /// for the package. The platform is in the entry's third element.
 fn bun_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     let lock: BunLock = serde_saphyr::from_str(text).map_err(|e| e.to_string())?;
-    if lock.version > 1 {
+    if lock.version > 3 {
         return Err(format!(
-            "lockfileVersion {} is not read; bun writes 0 or 1",
+            "lockfileVersion {} is not read; bun writes 0 to 3",
             lock.version
         ));
     }
@@ -585,8 +585,8 @@ mod tests {
         assert_eq!(bun(text), Ok(set(&[("a", "1.0.0")])));
 
         assert_eq!(
-            bun(r#"{"lockfileVersion": 2, "packages": {}}"#),
-            Err("lockfileVersion 2 is not read; bun writes 0 or 1".to_owned())
+            bun(r#"{"lockfileVersion": 4, "packages": {}}"#),
+            Err("lockfileVersion 4 is not read; bun writes 0 to 3".to_owned())
         );
         for entry in ["[{}]", "[]", r#"["no-version"]"#] {
             assert_eq!(
