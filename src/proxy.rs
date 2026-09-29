@@ -2808,24 +2808,8 @@ async fn dated_by_host(
     {
         return None;
     }
-    let url = record.artifact()?.url.as_str();
     let started = Instant::now();
-    let response = match proxy.config.client.head(url).send().await {
-        Ok(response) if response.status().is_success() => response,
-        Ok(response) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), http.response.status_code = response.status().as_u16(), "no publish time: the file host refused a HEAD");
-            return None;
-        }
-        Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "no publish time: the file host could not be asked");
-            return None;
-        }
-    };
-    let last_modified = response
-        .headers()
-        .get(header::LAST_MODIFIED)
-        .and_then(|value| value.to_str().ok())
-        .and_then(crate::http::http_date)?;
+    let last_modified = head_last_modified(proxy, &record.artifact()?.url, path).await?;
     info!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
         waharoa.package.published = %last_modified,
@@ -2837,6 +2821,27 @@ async fn dated_by_host(
             .into_iter()
             .collect(),
     )
+}
+
+/// The `Last-Modified` a HEAD of `url` answers, for the request at `path`.
+/// Returns `None` when the host refuses the HEAD, cannot be asked, or sends no date.
+async fn head_last_modified(proxy: &Proxy, url: &str, path: &str) -> Option<jiff::Timestamp> {
+    let response = match proxy.config.client.head(url).send().await {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), http.response.status_code = response.status().as_u16(), "no publish time: the file host refused a HEAD");
+            return None;
+        }
+        Err(e) => {
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), error.message = %e, "no publish time: the file host could not be asked");
+            return None;
+        }
+    };
+    response
+        .headers()
+        .get(header::LAST_MODIFIED)
+        .and_then(|value| value.to_str().ok())
+        .and_then(crate::http::http_date)
 }
 
 /// JSON about the proxy itself, marked not to be cached: it reports the state at this moment.
