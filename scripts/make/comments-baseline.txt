@@ -2,7 +2,6 @@
 src/analysis/attestation.rs
 src/analysis/postgres.rs
 src/analysis/run.rs
-src/analysis/store.rs
 src/analysis.rs
 src/audit.rs
 src/cli.rs
@@ -33,7 +32,6 @@ src/intel/postgres.rs
 src/intel/providers/github.rs
 src/intel/providers/osv/mod.rs
 src/intel/range.rs
-src/intel/refresh/run.rs
 src/intel/rows.rs
 src/intel/snapshot_dir.rs
 src/intel/snapshot_intel.rs
@@ -54,8 +52,6 @@ src/policy.rs
 src/proxy.rs
 src/record.rs
 src/refusal.rs
-src/route.rs
 src/spool.rs
-src/startup.rs
 src/util/test_support.rs
 tests/postgres.rs

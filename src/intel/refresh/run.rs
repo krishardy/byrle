@@ -1,10 +1,6 @@
 //! Running a refresh: fetch every stream, write its rows, replace the store's load.
 //!
-//! The one part of a refresh that needs a database, so
-//! `scripts/make/coverage.sh` excludes this file as it excludes
-//! `crate::intel::postgres`. What is decidable without one is in the rest of
-//! `crate::intel`: the requests in `fetch`, the ceilings and retries in the module above,
-//! the parses in `providers`, and the report `super::report` renders.
+//! The part of a refresh that needs a database, so `scripts/make/coverage.sh` excludes it.
 
 use std::ffi::OsString;
 use std::fmt::Write as _;
@@ -36,15 +32,9 @@ impl Run {
 }
 
 /// Load every stream in [`stream::ALL`] into the intel store, and append what each stream
-/// did to the ingestion history.
-///
-/// Connect, migrate, fetch, load. A `Required` stream that cannot be fetched or read loads
-/// nothing, and the streams after it are not fetched. An `Optional` stream that cannot be
-/// fetched or read leaves its previous load in place: the others still load, and the code
-/// is 1.
+/// did to the ingestion history. `environment` supplies the database and snapshot settings.
+/// `notice` receives progress lines. Returns the report and exit code.
 pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: Notice<'_>) -> Run {
-    // Connected before the fetch, so a refresh that could record nothing stops before
-    // downloading.
     let intel = match postgres::required(environment).await {
         Ok(intel) => intel,
         Err(refused) => {
@@ -150,9 +140,6 @@ impl Setup {
             .map(SnapshotDir::open)
             .transpose()
             .map_err(|e| stop(1, format!("{}: {e}", env::SNAPSHOT_DIR)))?;
-        // Without its timeouts a stalled connection blocks the refresh for as long as the
-        // host keeps it open: measured 2026-09-17, one sat for 12 minutes with nothing
-        // arriving.
         let http = http_client(READ_TIMEOUT).map_err(|e| stop(1, format!("{e}")))?;
         let github_token = environment
             .github_token()
