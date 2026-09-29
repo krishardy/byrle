@@ -19,9 +19,7 @@ pub const RETRY_WAIT: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FetchFailure {
     pub why: String,
-    /// Whether another attempt could go better: a refused connection, a stalled read, a
-    /// body that stopped mid-stream. A status the host chose and a bundle over its ceiling
-    /// are the same on every attempt.
+    /// Whether another attempt could go better: not for a status or a ceiling, which repeat.
     pub again: bool,
 }
 
@@ -87,7 +85,6 @@ pub fn report(
             .map(|l| l.payload.rows())
     };
     use super::providers::{datadog, osv::bundle};
-    // Each ecosystem's two malware sources, compared where both loaded.
     for (osv_stream, datadog_stream) in [
         (bundle::NPM_STREAM, datadog::NPM_STREAM),
         (bundle::PYPI_STREAM, datadog::PYPI_STREAM),
@@ -138,8 +135,7 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
         .collect()
 }
 
-/// One stream's bundle, as a snapshot records it. Recorded, and part of no digest: the
-/// snapshot id is the digest of the rows. See `load::encode`.
+/// One stream's bundle, as a snapshot records it, and part of no digest.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StreamDigest {
     pub stream: String,
@@ -153,9 +149,7 @@ pub struct StreamDigest {
 mod tests {
     use super::*;
 
-    /// A transient failure is retried until the attempts run out. A settled one is not
-    /// retried at all: `osv/npm` is `Required`, so a refresh that gives up on it loads
-    /// nothing, and one that retries a 404 forever would never say so.
+    /// A transient failure is retried until the attempts run out, and a settled one never.
     #[test]
     fn only_a_transient_failure_is_retried_and_only_while_attempts_are_left() {
         let transient = FetchFailure::transient("reading: error decoding response body");
@@ -304,8 +298,6 @@ mod tests {
             .send()
             .await
             .expect("the headers arrive");
-        // A deadline of its own, so this test fails rather than hanging when the client
-        // carries no read timeout.
         let error = tokio::time::timeout(Duration::from_secs(5), response.bytes())
             .await
             .expect("the read timeout ends it well inside 5 s")

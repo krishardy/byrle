@@ -1,10 +1,5 @@
-//! Reading one ecosystem's OSV bundle.
-//!
-//! npm's is `npm/all.zip` and PyPI's `PyPI/all.zip`. On 2026-09-13 npm's was 214,977,916 bytes: 228,951 deflate
-//! entries, 379,092,155 bytes expanded, the largest entry 73,089 bytes. It is read from
-//! memory. `ZipArchive` needs `Read + Seek` to reach the central directory at the end, and
-//! holding the bytes avoids a temp file to create, protect and remove. The two ceilings below
-//! bound what a broken or hostile upstream can make this allocate.
+//! Reading one ecosystem's OSV bundle, `npm/all.zip` or `PyPI/all.zip`, from memory, within
+//! the two ceilings below. See docs/engineering_decisions/osv-malware-load.md.
 
 use crate::identity::Ecosystem;
 use crate::intel::providers::osv::{self, Parsed, Skipped};
@@ -25,8 +20,7 @@ pub const PYPI_STREAM: &str = "osv/pypi";
 /// 2.5 times the bundle on 2026-09-13.
 pub const MAX_BUNDLE_BYTES: usize = 512 << 20;
 
-/// 14 times the largest record on 2026-09-13. Checked against the bytes decompression
-/// produces, not the size an entry's header declares.
+/// Bytes past which one record is refused, counted as they decompress, not as declared.
 pub const MAX_RECORD_BYTES: u64 = 1 << 20;
 
 /// What a bundle's records came to.
@@ -36,8 +30,7 @@ pub struct Tally {
     pub scored: u64,
     /// Scored from a severity band rather than a CVSS vector. Already counted in `scored`.
     pub banded: u64,
-    /// Unscored, and given the score of a scored alias in the same bundle. Already counted
-    /// in `scored`. See [`crate::intel::rows::score_from_aliases`].
+    /// Scored from a scored alias in the same bundle, and counted in `scored` too.
     pub from_alias: u64,
     pub unscored: u64,
     pub withdrawn: u64,
@@ -262,7 +255,6 @@ mod tests {
             "{err}"
         );
 
-        // At the ceiling it is read, and fails only as JSON.
         let at = vec![b' '; MAX_RECORD_BYTES as usize];
         assert!(matches!(
             read_bundle(Ecosystem::Npm, &zip_of(&[("at.json", &at)])),
@@ -294,7 +286,6 @@ mod tests {
             .windows(good.len())
             .position(|w| w == good.as_slice())
             .expect("stored bytes are in the archive");
-        // A space inside the JSON, so only the checksum can notice.
         let space = at + good.iter().position(|&b| b == b' ').expect("a space");
         bytes[space] = b'\t';
 
@@ -361,7 +352,6 @@ mod tests {
                 unexpressed,
             }))
         };
-        // A malware record's band is not counted.
         tally.count(&rows(true, Some(8.9), Some("HIGH"), 0, 0));
         tally.count(&rows(false, Some(9.8), None, 1, 2));
         tally.count(&rows(false, Some(8.9), Some("HIGH"), 0, 0));
