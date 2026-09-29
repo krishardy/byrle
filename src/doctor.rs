@@ -1,13 +1,7 @@
-//! `waharoa doctor`: whether this machine is actually installing through the proxy.
+//! `waharoa doctor`: whether this machine is actually installing through the proxy, from
+//! the client side. The checks are pure; [`probe`] runs the package managers.
 //!
-//! Every enforcement tier below a controlled network is advisory (see
-//! `docs/engineering_decisions/enforcement-tiers.md`), so the interesting question is not
-//! "is the proxy running" but "is anything using it". These checks answer that from the
-//! client side: what each package manager is configured to talk to, what the lockfiles in
-//! this directory record, and what would silently skip the proxy.
-//!
-//! The checks are pure, so what is decided here can be tested against fixed inputs.
-//! [`probe`] runs the package managers. Reading files happens in the binary.
+//! See docs/engineering_decisions/enforcement-tiers.md.
 
 use crate::env;
 use crate::lockfile::Pins;
@@ -104,8 +98,7 @@ pub struct Indexes {
 pub enum RegistrySource {
     /// The client prints it: npm, pnpm and yarn.
     Asked(RegistryQuery),
-    /// A function of the client's ecosystem module reads it, for a client with no one
-    /// command that answers: pip and uv. `None` when the client is not installed.
+    /// A function of the client's ecosystem module reads it: pip and uv.
     Read {
         read: fn(&Machine) -> Result<Option<Indexes>, env::EnvError>,
         /// What points the client at `url`.
@@ -115,13 +108,11 @@ pub enum RegistrySource {
     },
 }
 
-/// A package manager `doctor` checks, as its ecosystem's row in
-/// [`crate::ecosystem::TABLE`] lists it.
+/// A package manager `doctor` checks, as its [`crate::ecosystem::TABLE`] row lists it.
 pub struct Client {
     /// The program, and the name findings use.
     pub name: &'static str,
-    /// How to learn the registry the client uses. `None` for a client whose registry is
-    /// not checked.
+    /// How to learn the registry the client uses. `None` when it is not checked.
     pub registry: Option<RegistrySource>,
     /// The command that points the client at a registry, before the address.
     pub set_registry: &'static str,
@@ -145,14 +136,12 @@ pub enum CacheLocation {
     },
 }
 
-/// What `doctor` reads from the machine it runs on: the environment, the directory it checks,
-/// and the programs installed there. [`Machine::this`] is the real one; a test supplies its own.
+/// What `doctor` reads from the machine: the environment, the directory and the programs.
 pub struct Machine<'a> {
     pub environment: &'a env::Process,
     /// Where lockfiles and uv's project configuration are read from.
     pub dir: &'a std::path::Path,
-    /// Run a program with arguments and return what it printed, trimmed. `None` when it
-    /// could not run or failed.
+    /// Run a program and return what it printed, trimmed; `None` when it failed.
     pub run: &'a (dyn Fn(&str, &[&str]) -> Option<String> + Sync),
 }
 
@@ -179,23 +168,15 @@ pub fn clients() -> impl Iterator<Item = &'static Client> {
         .flat_map(|registry| registry.clients)
 }
 
-/// Artifact origins a lockfile records, read from each line holding `key`.
-///
-/// Empty means the file pins no absolute artifact URL. For pnpm that is the normal case
-/// and not a fault: it omits `resolution.tarball` when the URL matches the configured
-/// registry and derives it at install time, which is why its lockfiles stay portable and
-/// why they cannot evidence which registry produced them.
-///
-/// Deliberately textual rather than a real parse of each format. What is wanted is every
-/// absolute artifact URL the file pins, and every format checked writes those as
-/// `<key>: <url>` or `<key> "<url>"` on one line.
+/// Artifact origins a lockfile records, read as text from each line holding `key`.
+/// See docs/engineering_decisions/doctor-lockfile-urls.md.
+/// `contents` is the lockfile. Returns nothing when it pins no absolute URL.
 pub fn recorded_origins(key: &str, contents: &str) -> BTreeSet<String> {
     let mut origins = BTreeSet::new();
     for line in contents.lines() {
         let Some(after) = line.split(key).nth(1) else {
             continue;
         };
-        // What follows is `": "https://..."`, `  "https://..."`, or `: https://...`.
         let Some(start) = after.find("http") else {
             continue;
         };
@@ -315,7 +296,6 @@ pub fn check_lockfile(name: &str, pins: &Pins, contents: &str, proxy: &str) -> F
         )
         .with_fix(pins.reinstall);
     }
-    // A lockfile that names two places installs from both, and only one is examined.
     Finding::new(
         Severity::Problem,
         title,
@@ -328,12 +308,8 @@ pub fn check_lockfile(name: &str, pins: &Pins, contents: &str, proxy: &str) -> F
     .with_fix(pins.reinstall)
 }
 
-/// Whether the address written into artifact URLs is pinned.
-///
-/// Without it the proxy uses whatever `Host` each client happened to use, and that address
-/// goes into lockfiles. Measured: `npm ci` against a lockfile whose recorded address is
-/// unreachable fails outright and does not fall back to the registry it was given on the
-/// command line.
+/// Whether the address written into artifact URLs is pinned, so it is not whatever `Host`
+/// each client used. `recorded` are the origins the lockfiles hold.
 pub fn check_public_url(configured: Option<&str>, recorded: &BTreeSet<String>) -> Finding {
     let title = "public URL".to_owned();
     let Some(configured) = configured.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -370,8 +346,7 @@ pub fn check_public_url(configured: Option<&str>, recorded: &BTreeSet<String>) -
     .with_fix("serve the proxy at the recorded address, or reinstall to rewrite the lockfiles")
 }
 
-/// How much of an install a warm cache supplies without asking the registry. Measured per
-/// client; `crate::ecosystem::npm::clients` has the measurements.
+/// How much of an install a warm cache supplies without asking the registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheBypass {
     /// The whole install is served locally.
@@ -382,24 +357,9 @@ pub enum CacheBypass {
     None,
 }
 
-/// A warm client cache serves without consulting the registry, so what it supplies never
-/// reaches the proxy to be examined.
-///
-/// `cache` is where the client would look **from this directory**, and `None` means there
-/// is nothing there. Which cache is in play is a per-directory question: `pnpm store path`
-/// answers with a store on the project's own filesystem, so it is `/tmp/.pnpm-store` in a
-/// directory under `/tmp` and the user's store elsewhere.
-///
-/// Reports presence and location rather than a count. Every client lays its cache out
-/// differently, so one number would mean packages for one and files for another: the same
-/// yarn cache is 12,983 entries or 749,073 files depending on which you count.
-/// Which form the configured PyPI index serves, and what that costs a cooldown.
-///
-/// PEP 503 has no field for a publish time and almost no index adds one, so a cooldown
-/// cannot be answered while filtering such an index. It is answered on the artifact
-/// request, from the file's `Last-Modified`: see
-/// `docs/engineering_decisions/pep-503-html-index.md`. An operator reading
-/// `cooldown_days: enforced` should be told which of the two they have.
+/// Which form the configured PyPI index serves, and so where a cooldown is answered: the
+/// index, or a PEP 503 file's `Last-Modified`.
+/// See docs/engineering_decisions/pep-503-html-index.md.
 pub fn check_index_format(index: &str, content_type: Option<&str>, uses_cooldown: bool) -> Finding {
     let title = "pypi index form";
     let shown = crate::origin::without_credentials(index);
@@ -434,6 +394,9 @@ pub fn check_index_format(index: &str, content_type: Option<&str>, uses_cooldown
     }
 }
 
+/// A warm client cache serves without the registry, so what it supplies is never examined.
+/// See docs/engineering_decisions/client-caches.md.
+/// `cache` is where the client would look from this directory, `None` when nothing is there.
 pub fn check_cache(client: &Client, cache: Option<&std::path::Path>) -> Finding {
     let title = format!("{} cache", client.name);
     let Some(cache) = cache else {
@@ -472,12 +435,7 @@ pub fn check_cache(client: &Client, cache: Option<&std::path::Path>) -> Finding 
 }
 
 /// Whether the proxy is there, and whether it is configured the way this check expects.
-///
-/// Everything else here reads what a client is configured to do. This is the one that
-/// asks whether the thing at the other end exists and answers.
-///
-/// `health` is what [`crate::proxy::HEALTH_PATH`] returned, or `None` when nothing
-/// answered there.
+/// `health` is what [`crate::proxy::HEALTH_PATH`] returned, `None` when nothing answered.
 pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Finding> {
     let title = "proxy".to_owned();
     let Some(health) = health else {
@@ -506,8 +464,6 @@ pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Fi
         ),
     )];
 
-    // The address the proxy writes into artifact URLs is the one lockfiles record, so a
-    // proxy that does not know its own address writes whatever Host each client used.
     match health.public_base.as_deref() {
         Some(base) if same_origin(base, proxy) => {}
         Some(base) => findings.push(
@@ -605,12 +561,8 @@ fn ready_using(using: String, gaps: &[crate::intel::Gap]) -> Finding {
     .with_fix(REFRESH_FIX)
 }
 
-/// Whether the proxy can decide on packages now.
-///
-/// A proxy can answer its health request and still answer every package with 503 while its
-/// intel store is empty or down. `readiness` is what [`READY_PATH`] returned, or `None` when
-/// nothing there could be read. Run only when the health request in [`check_proxy`]
-/// succeeded.
+/// Whether the proxy can decide on packages now, which a healthy proxy with an empty or
+/// down intel store cannot. `readiness` is what [`READY_PATH`] returned, if readable.
 pub fn check_readiness(readiness: Option<&Readiness>, proxy: &str) -> Finding {
     let Some(readiness) = readiness else {
         return Finding::new(
@@ -660,12 +612,8 @@ pub fn check_readiness(readiness: Option<&Readiness>, proxy: &str) -> Finding {
     }
 }
 
-/// Where the proxy is expected to be reachable.
-///
-/// [`env::PUBLIC_URL`] is the address written into artifact URLs and therefore into
-/// lockfiles, so it is the one that matters. Otherwise the listen address is the best
-/// guess available, and it is often wrong in the way the public URL check reports:
-/// `0.0.0.0` is not an address a client reaches the proxy on.
+/// Where the proxy is expected to be reachable: `public`, [`env::PUBLIC_URL`], which
+/// lockfiles record, or else the `listen` address, which may be `0.0.0.0`.
 pub fn expected_proxy_url(public: Option<&str>, listen: &str) -> String {
     match public.map(str::trim).filter(|s| !s.is_empty()) {
         Some(url) => url.trim_end_matches('/').to_owned(),
@@ -848,8 +796,6 @@ pub async fn run(machine: &Machine<'_>) -> Result<Checked, env::EnvError> {
 async fn proxy_findings(proxy: &str) -> Vec<Finding> {
     let health: Option<crate::proxy::Health> = probe::own(proxy, crate::proxy::HEALTH_PATH).await;
     let mut findings = check_proxy(health.as_ref(), proxy);
-    // A proxy that responds to the health request can still answer every package request
-    // with 503 while its intel store is empty or down.
     if health.is_some() {
         let readiness: Option<crate::proxy::Readiness> =
             probe::own(proxy, crate::proxy::READY_PATH).await;
@@ -865,8 +811,6 @@ async fn policy_findings(environment: &env::Process) -> Result<Vec<Finding>, env
         return Ok(Vec::new());
     };
     let mut findings = Vec::new();
-    // Which form the PyPI index serves, and what a cooldown can be answered from. Asked
-    // only when a cooldown is configured, because that is the check the answer changes.
     let uses_cooldown = crate::policy::Policy::load(&path)
         .map(|policy| policy.uses_cooldown())
         .unwrap_or(false);
@@ -879,7 +823,6 @@ async fn policy_findings(environment: &env::Process) -> Result<Vec<Finding>, env
         findings.push(check_index_format(&index, content_type.as_deref(), true));
     }
 
-    // The policy the proxy is configured with, judged as `waharoa policy check` judges it.
     let loaded = crate::policy::check::load(
         &path,
         crate::policy::today(),
@@ -960,8 +903,7 @@ pub mod probe {
     use crate::env::EnvError;
     use std::path::PathBuf;
 
-    /// How long a probe waits. Short, because doctor is a command someone is waiting on, and
-    /// a proxy or index that takes seconds to answer is not one that is working.
+    /// How long a probe waits. A proxy or index that takes seconds is not working.
     const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 
     /// Run `program` with `args` and return what it printed, trimmed, empty included.
@@ -1035,15 +977,9 @@ pub mod probe {
         )
     }
 
-    /// Ask the proxy about itself at `path`. `None` when nothing answers there with the JSON
-    /// expected, which is itself the finding.
-    ///
-    /// The status is not checked: readiness answers with its JSON on a 503 too, and anything
-    /// that is not a waharoa does not answer with this JSON.
-    ///
-    /// Async, not `reqwest::blocking`: doctor runs inside the same tokio runtime as
-    /// everything else, and a blocking client builds a second runtime, which panics when it
-    /// is dropped in an async context.
+    /// Ask the proxy about itself at `path`, whatever the status, since readiness answers
+    /// with its JSON on a 503. Async, because a blocking client's own runtime panics when
+    /// dropped inside doctor's. Returns `None` when nothing answers with the JSON expected.
     pub async fn own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Option<T> {
         let response = reqwest::Client::new()
             .get(format!("{proxy}{path}"))
@@ -1082,9 +1018,7 @@ pub mod probe {
             }
         }
 
-        /// A `HEAD` says which form an index serves without fetching its body. Measured
-        /// 2026-09-21: pypi.org answers the PEP 691 type and piwheels answers `text/html`
-        /// to the same request.
+        /// A `HEAD` says which form an index serves without fetching its body.
         #[tokio::test]
         async fn an_index_is_asked_which_form_it_serves() {
             use crate::util::test_support::closing_server;
@@ -1287,9 +1221,7 @@ pub mod probe {
 mod tests {
     use super::*;
 
-    /// An operator reading `cooldown_days: enforced` is told which form their index serves,
-    /// because a PEP 503 page carries no publish time. Measured 2026-09-21: pypi.org
-    /// answers the JSON type to a HEAD, and piwheels, nvidia and pytorch answer text/html.
+    /// Which form the index serves is reported, because a PEP 503 page carries no publish time.
     #[test]
     fn the_index_form_says_what_a_cooldown_can_be_answered_from() {
         use super::{Severity, check_index_format};
@@ -1309,7 +1241,6 @@ mod tests {
             html.detail
         );
 
-        // Without a cooldown the form costs nothing, so it is not a warning.
         let quiet =
             check_index_format("https://www.piwheels.org/simple/", Some("text/html"), false);
         assert_eq!(quiet.severity, Severity::Ok);
@@ -1318,7 +1249,6 @@ mod tests {
         assert_eq!(silent.severity, Severity::Warn);
         assert!(silent.detail.contains("did not say"), "{}", silent.detail);
 
-        // A credential in the index URL is not printed, as everywhere else doctor prints one.
         let credential = check_index_format(
             "https://user:secret@example.test/simple/",
             Some("text/html"),
@@ -1553,9 +1483,7 @@ mod tests {
         assert!(finding.fix.is_some());
     }
 
-    /// Every client has a cache that serves without consulting the registry. Plan §7
-    /// records it as a bypass vector, and it is measured per client rather than assumed
-    /// to work like npm's.
+    /// A warm cache is reported as skipping the proxy, per client.
     #[test]
     fn a_warm_cache_is_reported_as_skipping_the_proxy() {
         assert_eq!(check_cache(named("npm"), None).severity, Severity::Ok);
@@ -1906,8 +1834,6 @@ mod tests {
 
     #[test]
     fn counting_files_follows_subdirectories() {
-        // Under `target/`, not the shared temp directory: a predictable name there is
-        // writable by anyone on the machine.
         let root = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/target/tmp"))
             .join(format!("doctor-{}", std::process::id()));
         let nested = root.join("a").join("b");

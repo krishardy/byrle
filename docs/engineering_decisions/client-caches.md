@@ -20,3 +20,9 @@ what the proxy saw the second time. `waharoa doctor` reports each client's `Cach
 |---|---|---|
 | npm, pnpm, yarn | `config get registry`, which prints `undefined` for no value and reads a project `.npmrc`, then the user's, then the global one | the directory `config get cache` (npm), `store path` (pnpm) or `cache dir` (yarn) prints; npm's responses are one file each under `_cacache/index-v5` |
 | bun | not checked | `BUN_INSTALL_CACHE_DIR`, else `~/.bun/install/cache`: `bun pm cache` needs a `package.json` in the working directory, which doctor cannot assume |
+
+The cache is looked up from the directory doctor runs in, because it can differ per
+directory: `pnpm store path` answers with a store on the project's own filesystem, so it is
+`/tmp/.pnpm-store` under `/tmp` and the user's store elsewhere. Doctor reports whether a
+cache is there and where, not a count: each client lays its cache out differently, and one
+yarn cache is 12,983 entries or 749,073 files depending on which is counted.
