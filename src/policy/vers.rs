@@ -1,18 +1,6 @@
-//! The versions a selector or a denial covers: one exact version, or a VERS range.
-//!
-//! VERS is the Package-URL project's version range specifier,
-//! `vers:<type>/<constraint>|<constraint>...`, read as Clause 5 and `how-to-parse.md` of
-//! `github.com/package-url/vers-spec` say, and refused rather than corrected when it breaks
-//! them. The type is the ecosystem, and every version is ordered by its
-//! [`VersionOrder`]. See `docs/engineering_decisions/policy-version-ranges.md`.
-//!
-//! A range is held as a sorted union of disjoint intervals, which is what makes containment
-//! between two selectors decidable rather than estimated.
-//!
-//! Each constraint is read as the segment Clause 5.3.3 says it is. The containment procedure
-//! in `how-to-parse.md` walks pairs of constraints and never reaches a lone `<2.0.0` or a
-//! lone `!=1.0.0`; here the first is every version below 2.0.0 and the second every version
-//! but 1.0.0.
+//! The versions a selector or a denial covers: one exact version, or a VERS range, held as a
+//! sorted union of disjoint intervals so containment is decided rather than estimated. See
+//! docs/engineering_decisions/policy-version-ranges.md.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -22,9 +10,7 @@ use crate::intel::range::{End, Interval, Ordered, Start, VersionOrder};
 /// A set of versions, and how the policy wrote it.
 #[derive(Debug, Clone)]
 pub struct Versions {
-    /// Sorted and disjoint, with no two touching: two spans that touched would share a
-    /// version, and a VERS string names each version once. So one set has one
-    /// representation.
+    /// Sorted, disjoint and never touching, so one set has one representation.
     spans: Vec<Interval<Ordered>>,
     written: String,
 }
@@ -175,8 +161,7 @@ impl Versions {
     }
 }
 
-/// A constraint as [`constraint`] reads it: the comparator, the version, and the version as
-/// written.
+/// A constraint as [`constraint`] reads it: comparator, version, and the version as written.
 type Constraint = (Comparator, Ordered, String);
 
 /// Whether `read` is sorted, names no version twice, and alternates its bounds. `Err` is the
@@ -239,7 +224,6 @@ fn spans(read: &[Constraint]) -> Vec<Interval<Ordered>> {
                     End::LastAffected(version)
                 },
             }),
-            // Taken out of the spans below, once they are built.
             Comparator::NotEqual => {}
         }
     }
@@ -327,8 +311,7 @@ fn point(version: Ordered) -> Interval<Ordered> {
     }
 }
 
-/// Where an interval starts, as something that orders: `None` is below every version, and
-/// `true` excludes the version.
+/// Where an interval starts, ordered: `None` is below every version, `true` excludes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Lower<'a>(Option<(&'a Ordered, bool)>);
 
@@ -516,8 +499,10 @@ mod tests {
             let reason = reason(npm(written));
             assert!(reason.contains(expected), "{written}: {reason}");
         }
-        // The registered `pypi` examples break Clause 5.4's sorting rule.
-        assert!(reason(pypi("vers:pypi/>=3.0.0|2.0.3")).contains("is not sorted"));
+        assert!(
+            reason(pypi("vers:pypi/>=3.0.0|2.0.3")).contains("is not sorted"),
+            "the registered pypi examples break Clause 5.4's sorting rule"
+        );
     }
 
     /// `!=` may sit anywhere, and a percent-encoded version is decoded once.

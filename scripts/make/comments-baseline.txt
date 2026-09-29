@@ -31,10 +31,8 @@ src/integrity.rs
 src/intel/load.rs
 src/intel/postgres.rs
 src/intel/providers/github.rs
-src/intel/providers/osv/bundle.rs
 src/intel/providers/osv/mod.rs
 src/intel/range.rs
-src/intel/refresh/mod.rs
 src/intel/refresh/run.rs
 src/intel/rows.rs
 src/intel/snapshot_dir.rs
@@ -52,7 +50,6 @@ src/policy/facts.rs
 src/policy/merge.rs
 src/policy/selector.rs
 src/policy/strictness.rs
-src/policy/vers.rs
 src/policy.rs
 src/proxy.rs
 src/record.rs
@@ -60,7 +57,5 @@ src/refusal.rs
 src/route.rs
 src/spool.rs
 src/startup.rs
-src/store.rs
-src/tls.rs
 src/util/test_support.rs
 tests/postgres.rs

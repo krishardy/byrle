@@ -1,19 +1,5 @@
-//! Trust for the upstream connection.
-//!
-//! reqwest 0.13's default `rustls` feature pulls `rustls-platform-verifier`, so the
-//! upstream leg validates against the OS trust store with no configuration. That is not
-//! enough for two real cases: a private registry with an internal CA, and a corporate
-//! TLS-inspecting middlebox whose certificate the OS store may not carry.
-//!
-//! Two modes, and the difference matters:
-//!
-//! - **Merge.** The bundle is trusted in addition to the platform's roots.
-//! - **Exclusive.** Only the bundle is trusted, and every public root is dropped.
-//!
-//! Exclusive is worth having on its own terms. Pinning the upstream to a known CA means a
-//! compromise of any of the hundreds of public CAs cannot be used to impersonate the
-//! registry. Verified with a self-signed CA against registry.npmjs.org: merged, the
-//! request succeeds; exclusive, it fails at the TLS handshake.
+//! Trust for the upstream connection: the platform's roots, and a CA bundle merged with them
+//! or trusted alone. See docs/engineering_decisions/upstream-ca-bundle.md.
 
 use reqwest::Certificate;
 use std::fmt;
@@ -24,8 +10,7 @@ use std::path::{Path, PathBuf};
 pub enum TrustMode {
     /// Trust the bundle as well as the platform's roots.
     Merge,
-    /// Trust only the bundle. Public roots are dropped, so the upstream is pinned to
-    /// whoever issued these certificates.
+    /// Trust only the bundle, which pins the upstream to whoever issued it.
     Exclusive,
 }
 
@@ -39,18 +24,9 @@ pub enum TrustError {
         path: PathBuf,
         source: reqwest::Error,
     },
-    /// The file parsed and held no certificates.
-    ///
-    /// Its own case rather than an empty `Vec`, because the two modes would both fail
-    /// quietly: merging nothing changes nothing, and trusting nothing exclusively rejects
-    /// every connection at the handshake, which reads as a network fault.
+    /// The file parsed and held no certificates, which either mode would hide.
     Empty(PathBuf),
     /// The bundle parsed, and the TLS backend refused it when the client was built.
-    ///
-    /// A `CERTIFICATE` block whose base64 decodes to something that is not a certificate
-    /// gets through `from_pem_bundle`, which reports one certificate, and is rejected at
-    /// build time. Without this the failure surfaces as "failed to build HTTP client"
-    /// with no mention of the file that caused it.
     Rejected {
         path: PathBuf,
         source: reqwest::Error,
@@ -159,9 +135,7 @@ mod tests {
         assert_eq!(certificates.len(), 2);
     }
 
-    /// A file with no certificates is a misconfiguration, and both modes would hide it:
-    /// merging nothing changes nothing, and trusting nothing exclusively fails every
-    /// handshake, which reads as a network fault rather than a bad path.
+    /// A file with no certificates is an error, which both modes would otherwise hide.
     #[test]
     fn a_bundle_with_no_certificates_is_an_error() {
         for content in [
@@ -194,9 +168,8 @@ mod tests {
         assert!(std::error::Error::source(&e).is_some());
     }
 
-    /// A `CERTIFICATE` block whose base64 decodes to something that is not a certificate
-    /// gets through parsing, which reports one certificate, and is refused when the
-    /// client is built. The error has to name the file either way.
+    /// A certificate block that parses and is not a certificate is refused when the client
+    /// is built, naming the file.
     #[test]
     fn a_bundle_the_tls_backend_refuses_names_the_file() {
         let path = fixture("refused.pem");

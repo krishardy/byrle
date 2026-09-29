@@ -1,31 +1,6 @@
-//! What the proxy remembers from metadata documents it has already seen.
-//!
-//! The fetch path needs the artifact digest *before* the artifact is fetched (plan §5),
-//! and the document that published it went past on an earlier request. This holds those
-//! records so the artifact request can find them.
-//!
-//! One store for every ecosystem. `PackageKey` carries the ecosystem, so npm's packuments
-//! and PyPI's simple indexes coexist without colliding.
-//!
-//! # Why it is bounded
-//!
-//! A metadata document carries every version ever published, not the one being installed:
-//! measured over an `express + @babel/code-frame + typescript + eslint` install, 167
-//! packuments totalling 9,690 records, the largest being typescript at 3,822. A proxy
-//! left running accumulates these for as long as it runs, so the store evicts by total
-//! record count, least recently used first.
-//!
-//! One document larger than the whole budget is still kept, because the artifact request
-//! that follows it is the reason to have stored anything. The budget is a target, not a
-//! hard ceiling.
-//!
-//! The budget counts records. A PyPI record holds one artifact per file, `requests` 2.32.3
-//! being a wheel and an sdist. `examples/record_memory.rs` measured 906 to 959 bytes of heap
-//! per npm record and 1,115 to 1,397 per PyPI record.
-//!
-//! The store never answers a metadata request: every one goes upstream. Its records are
-//! read by the artifact request that follows, for facts that do not change once a version is
-//! published. See `docs/engineering_decisions/no-metadata-cache.md`.
+//! Records from metadata documents the proxy has seen, for the artifact request that follows.
+//! One store for every ecosystem, bounded by record count, and never used to answer a
+//! metadata request: see docs/engineering_decisions/no-metadata-cache.md.
 
 use crate::analysis::attestation::{Previous, previous};
 use crate::identity::PackageKey;
@@ -51,14 +26,9 @@ pub struct RecordStore {
 pub enum Lookup {
     /// The document was seen and names this version.
     Found(Box<PackageRecord>),
-    /// The document was seen and does not name this version.
-    ///
-    /// Reached when an artifact filename spells a version differently from the document:
-    /// `express@3.0.0-rc1` is served at `express-3.0.0rc1.tgz`, 38 such cases in 24,852
-    /// measured URLs.
+    /// The document was seen and names neither this version nor this file.
     NoSuchVersion,
-    /// No document for this package has gone past. A warm npm cache produces this: the
-    /// client sends `If-None-Match`, the registry answers 304 with no body.
+    /// No document for this package has gone past, as after a 304 to a warm client.
     Unknown,
 }
 
@@ -151,10 +121,8 @@ impl RecordStore {
         })
     }
 
-    /// Drop least recently used packages until the budget is met.
-    ///
-    /// Never drops the most recently used entry, so a package whose document alone
-    /// exceeds the budget is still there for the tarball request that follows it.
+    /// Drop least recently used packages until the budget is met, keeping the most recent,
+    /// which the artifact request that follows needs even when it alone is over the budget.
     fn evict_to_budget(&mut self) {
         if self.records <= self.max_records {
             return;
@@ -241,10 +209,8 @@ mod tests {
         assert_eq!(record.package.version(), "3.0.0-rc1");
     }
 
-    /// Three outcomes, not two. A version the document names neither by version nor by
-    /// file is a different situation from a package never seen, and the fetch path has
-    /// to tell them apart: one means the request names nothing the document holds, the
-    /// other means nothing was observed at all.
+    /// A version the document does not name and a package never seen are different
+    /// answers.
     #[test]
     fn a_missing_version_and_a_missing_package_are_different_answers() {
         let mut store = RecordStore::new(100);
@@ -294,10 +260,8 @@ mod tests {
         ));
     }
 
-    /// A lookup is a use. Without that, a package read on every install would be evicted
-    /// in favour of one stored once and never touched again.
-    /// Asking whether anything is held must not keep it alive, or a package that is only
-    /// ever asked about outlives one that is installed.
+    /// A lookup is a use and asking whether anything is held is not, so a package only
+    /// asked about does not outlive one that is installed.
     #[test]
     fn holds_reports_presence_without_counting_as_use() {
         let mut store = RecordStore::new(4);

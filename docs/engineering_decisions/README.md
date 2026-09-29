@@ -62,6 +62,7 @@ code, and the file names where.
 | [Three kinds of source comment](source-comments.md) | Implemented, files leaving the baseline |
 | [What an npm packument holds, measured](npm-packument-shapes.md) | Implemented |
 | [Where each npm client keeps its cache, and what a warm one skips](client-caches.md) | Implemented |
+| [A CA bundle for the upstream connection, merged or exclusive](upstream-ca-bundle.md) | Implemented |
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
 | [GitHub Advisory is a signal stream beside OSV](github-advisory-signal-stream.md) | Decided, being built |
