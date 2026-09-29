@@ -28,8 +28,16 @@ pub enum DecisionPath {
 pub enum Answered {
     /// The artifact was fetched for the client.
     Served,
-    /// Refused: by the policy, or because its origin is not served.
+    /// Refused by the policy.
     Refused,
+    /// Refused because its origin is one the proxy does not serve.
+    Unservable,
+    /// Refused because its metadata publishes no strong digest.
+    NoStrongDigest,
+    /// Refused because its metadata names neither its version nor its file. Nothing decided.
+    NotListed,
+    /// 502: the registry gave no metadata for it. Nothing decided.
+    NoMetadata,
     /// 503 while the artifact is analysed. The retry is audited again.
     Deferred,
     /// 502: the upstream's last bytes for it did not match their digest.
@@ -48,7 +56,8 @@ pub struct Event {
     /// The version decided on. Absent on a resolution event, which decides many.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
-    /// `allow`, `quarantine` or `block`; on a resolution event, the strongest of them.
+    /// `allow`, `quarantine` or `block`, the strongest on a resolution event; empty if undecided.
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub action: String,
     /// Versions no longer in the document. Resolution events only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -310,6 +319,29 @@ impl Event {
         }
     }
 
+    /// A pinned request answered before anything was decided: `answered` is
+    /// [`Answered::NotListed`] or [`Answered::NoMetadata`]. `ecosystem`, `name` and
+    /// `version` are the package the request named.
+    pub fn undecided(ecosystem: &str, name: &str, version: &str, answered: Answered) -> Self {
+        Self {
+            at: now(),
+            path: DecisionPath::Pinned,
+            ecosystem: ecosystem.to_owned(),
+            name: name.to_owned(),
+            version: Some(version.to_owned()),
+            answered: Some(answered),
+            ..Self::default()
+        }
+    }
+
+    /// Whether a policy decision is behind this line, which a replay and `policy diff` read.
+    pub fn decided(&self) -> bool {
+        !matches!(
+            self.answered,
+            Some(Answered::NotListed | Answered::NoMetadata)
+        )
+    }
+
     /// Record what the verdict was decided on.
     pub fn with_inputs(mut self, inputs: Inputs) -> Self {
         self.inputs = Some(inputs);
@@ -462,7 +494,7 @@ pub fn replay(log: &str, policies: &[crate::policy::Policy]) -> Replay {
             not("not an audit line".to_owned());
             continue;
         };
-        if event.path != DecisionPath::Pinned {
+        if event.path != DecisionPath::Pinned || !event.decided() {
             continue;
         }
         let Some(inputs) = &event.inputs else {
@@ -567,6 +599,9 @@ pub fn packages(log: &str) -> Vec<(String, String, String)> {
         let Ok(event) = serde_json::from_str::<Event>(line) else {
             continue;
         };
+        if !event.decided() {
+            continue;
+        }
         let versions = event
             .version
             .into_iter()
@@ -1064,6 +1099,32 @@ not json
         );
 
         assert_eq!(replay(&log, &[loose, strict]).reproduced, 2);
+    }
+
+    /// A request answered before anything was decided is written with no action, and
+    /// neither a replay nor `policy diff` reads it.
+    #[test]
+    fn an_undecided_line_is_recorded_and_read_by_neither_replay_nor_policy_diff() {
+        let line = serde_json::to_string(&Event::undecided(
+            "npm",
+            "widget",
+            "2.0.0",
+            Answered::NotListed,
+        ))
+        .expect("serialises");
+        assert!(line.contains(r#""answered":"not-listed""#), "{line}");
+        assert!(!line.contains("\"action\""), "nothing was decided: {line}");
+        let policy = policy("version: 1\ncooldown_days: 0\n");
+        let replayed = replay(&format!("{line}\n"), &[policy]);
+        assert_eq!(
+            (replayed.reproduced, replayed.not_replayable.len()),
+            (0, 0),
+            "skipped, not counted as unreplayable"
+        );
+        assert!(
+            packages(&line).is_empty(),
+            "not a package policy diff judges"
+        );
     }
 
     #[test]
