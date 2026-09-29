@@ -338,6 +338,14 @@ Items that I've added that are not stage-bound.
     source, so 0 to 3 are read. Fixtures `bun-1.4` and `bun-1.4-overrides` hold one of each.
     See [policy-diff-lockfiles](docs/engineering_decisions/policy-diff-lockfiles.md).
 
+29. [ ] Say when a stream an ecosystem lists did not load. Raised 2026-09-29. With
+    `MAL-2026-16369` past the 1 MiB record ceiling, `waharoa refresh` did not load `osv/npm`
+    and exited 1, and `/-/waharoa/ready` answered 200, because `datadog/npm` alone counts as
+    covering npm for `match` and `malware`. A fresh store then held no OSV npm advisories,
+    and `known_malware` let `clinstestpackage` through. Only the refresh's own output said
+    so. Readiness, `waharoa status` and `waharoa doctor` could report a listed stream missing
+    from the snapshot, or one whose last load is older than the others.
+
 ## Architecture Refactor
 
 Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here
