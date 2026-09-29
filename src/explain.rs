@@ -370,7 +370,7 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         intel.as_ref(),
     );
     let as_of = crate::policy::today();
-    Ok(decision(
+    let mut answer = decision(
         policy,
         &facts,
         &decide::decide(policy, &facts, as_of),
@@ -382,7 +382,27 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
             &facts.provenance,
         ),
         as_of,
-    ))
+    );
+    answer.push_str(&signals(&crate::heuristics::signals(
+        &metadata.records,
+        package,
+        [],
+        jiff::Timestamp::now(),
+    )));
+    Ok(answer)
+}
+
+/// The heuristics' signals, which refuse nothing, under the verdict. `explain` holds no
+/// served names, so near name is never among them.
+fn signals(signals: &[crate::heuristics::Signal]) -> String {
+    if signals.is_empty() {
+        return "  signals: none\n".to_owned();
+    }
+    let mut out = "  signals, which refuse nothing:\n".to_owned();
+    for signal in signals {
+        out.push_str(&format!("    {signal}\n"));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -480,6 +500,20 @@ mod run_tests {
             answered.answer.contains("verdict: allow"),
             "{}",
             answered.answer
+        );
+        assert!(
+            answered.answer.ends_with("  signals: none\n"),
+            "{}",
+            answered.answer
+        );
+    }
+
+    #[test]
+    fn each_signal_gets_a_line_under_the_verdict() {
+        use crate::heuristics::Signal;
+        assert_eq!(
+            signals(&[Signal::NoRepository, Signal::NewPackage { days: 1 }]),
+            "  signals, which refuse nothing:\n    no repository: the metadata names none\n    new package: first published 1 day ago\n"
         );
     }
 

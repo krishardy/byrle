@@ -161,6 +161,8 @@ pub(super) struct WireMaintainer {
 
 #[derive(Debug, Deserialize)]
 pub(super) struct WireNpmUser {
+    #[serde(default)]
+    pub(super) name: Option<String>,
     #[serde(default, rename = "trustedPublisher")]
     pub(super) trusted_publisher: Option<WireTrustedPublisher>,
 }

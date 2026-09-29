@@ -2509,8 +2509,12 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
   - [ ] Resolve repo URL and matching tag from package metadata
   - [ ] Normalize for expected build artifacts and packaging noise
   - [ ] Tune until the false-positive rate is publishable
-- [ ] Metadata heuristics: package age, maintainer age, missing repo link, maintainer
-      change, typosquat distance
+- [x] Metadata heuristics, report only
+      ([metadata-heuristics](docs/engineering_decisions/metadata-heuristics.md)): new
+      package, new publisher, no repository, and a name one edit from a served package.
+      Logged, audited as `signals` and printed by `explain`.
+  - [ ] Measure each signal's rate on packages intel never marks malicious, then decide
+        whether any becomes a policy key.
 - [ ] Pluggable detector interface for third-party/commercial feeds
   - [ ] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector
 - [x] Benchmark each control against known 2025–26 incidents (shai-hulud, tinycolor,

@@ -16,6 +16,7 @@ use crate::env::{
     DEFAULT_MAX_CONCURRENT_METADATA, DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_TRAFFIC_CLIENTS, DEFAULT_MAX_VERIFIED,
 };
+use crate::heuristics::Signal;
 use crate::http::{
     RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_conditional,
     is_hop_by_hop, mark_etag, unmark_if_none_match,
@@ -1222,6 +1223,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Ok(record) => record,
         Err(answer) => return *answer,
     };
+    let signals = deciding.signals(&record);
     let (fetch, unservable) = deciding.fetch_plan(&record);
     let times = deciding.publish_times(&record).await;
     let Analysed {
@@ -1248,12 +1250,15 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     let (answered, step) = deciding.answer(refusal.as_ref(), unservable, fetch, state);
     audit_pinned(
         proxy,
-        &record,
-        times.as_ref(),
-        intel.as_ref(),
-        &provenance,
-        today,
+        &Pinned {
+            record: &record,
+            times: times.as_ref(),
+            intel: intel.as_ref(),
+            provenance: &provenance,
+            today,
+        },
         answered,
+        &signals,
     );
     step
 }
@@ -1279,6 +1284,22 @@ impl<'a> Deciding<'a> {
             request,
             purl,
         }
+    }
+
+    /// What the metadata heuristics report for `record`, logged when there is any.
+    /// See docs/engineering_decisions/metadata-heuristics.md.
+    fn signals(&self, record: &PackageRecord) -> Vec<Signal> {
+        let signals = self
+            .proxy
+            .store
+            .lock()
+            .expect("record store lock")
+            .signals(record, jiff::Timestamp::now());
+        if !signals.is_empty() {
+            let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
+            warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, "metadata heuristics reported signals; they refuse nothing");
+        }
+        signals
     }
 
     /// The record for the requested file, from the metadata held or fetched now.
@@ -1981,15 +2002,15 @@ fn report_claim(record: &PackageRecord, scripts: &Scripts, path: &str) {
 ///
 /// Allowed decisions are written too. A log holding only refusals cannot answer "was this
 /// ever evaluated", which is what `policy diff` needs a package set for.
-fn audit_pinned(
-    proxy: &Proxy,
-    record: &PackageRecord,
-    times: Option<&facts::PublishTimes>,
-    intel: Option<&PackageIntel>,
-    provenance: &Provenance,
-    today: jiff::civil::Date,
-    answered: audit::Answered,
-) {
+/// `pinned` is what the verdict was reached on, and `signals` what the heuristics reported.
+fn audit_pinned(proxy: &Proxy, pinned: &Pinned<'_>, answered: audit::Answered, signals: &[Signal]) {
+    let Pinned {
+        record,
+        times,
+        intel,
+        provenance,
+        today,
+    } = *pinned;
     let (Some(audit), Some(policy)) = (&proxy.config.audit, proxy.config.policy.as_deref()) else {
         return;
     };
@@ -2008,8 +2029,18 @@ fn audit_pinned(
         )
         .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
         .answered(answered)
-        .with_inputs(audit::Inputs::of(policy, &facts, today)),
+        .with_inputs(audit::Inputs::of(policy, &facts, today))
+        .with_signals(signals),
     );
+}
+
+/// What a pinned verdict was reached on, as [`audit_pinned`] writes it.
+struct Pinned<'a> {
+    record: &'a PackageRecord,
+    times: Option<&'a facts::PublishTimes>,
+    intel: Option<&'a PackageIntel>,
+    provenance: &'a Provenance,
+    today: jiff::civil::Date,
 }
 
 /// Answer one request: the proxy's own endpoints, or the upstream's answer once an
@@ -7823,6 +7854,13 @@ mod tests {
                 ("allow".to_owned(), Some(audit::Answered::Served)),
             ]
         );
+        for event in lines(&path) {
+            assert_eq!(
+                event.signals,
+                [crate::heuristics::Signal::NoRepository.to_string()],
+                "widget's document names no repository"
+            );
+        }
         let replayed = audit::replay(
             &std::fs::read_to_string(&path).unwrap(),
             &[Policy::parse(PROVENANCE).unwrap()],
