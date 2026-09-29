@@ -1,13 +1,7 @@
 //! An intel store read from a kept snapshot, for `waharoa policy diff --snapshot`.
 //!
-//! Answers what [`PgIntel`](super::postgres::PgIntel) answers, from a snapshot's files
-//! rather than Postgres's latest load. The snapshot is read for a set of packages given up
-//! front, and only their records are kept: npm's 224,391 packages cost 195 MB, and `policy
-//! diff` asks for the few its audit log lists. Any other package is an error. See
-//! docs/engineering_decisions/snapshot-identity.md.
-//!
-//! A kept snapshot records no streams: its manifest holds only what the id is the digest of.
-//! `taken_at` is when the manifest was last written.
+//! Keeps only the records of the packages given up front; any other is an error.
+//! See docs/engineering_decisions/snapshot-identity.md.
 
 use super::ids;
 use super::load::Row;
@@ -48,13 +42,9 @@ impl SnapshotIntel {
         let mut found = HashMap::new();
         let mut exploited: HashSet<String> = HashSet::new();
         for (source, digest) in sources {
-            // By index in the advisory table. Aliases are read before affected rows and ranges,
-            // so a record has every alias when it is copied to a package.
             let mut records: Vec<Record> = Vec::new();
             dir.read_source(&source, &digest, &mut |row| {
                 match row {
-                    // Every column but `cvss_source` and `exploited` comes from the rows. The
-                    // loader writes no `cvss_source`, and `exploited` is marked below.
                     Row::Advisory(rows) => records.push(Record {
                         advisory_id: rows.id,
                         aliases: Vec::new(),
@@ -105,8 +95,6 @@ impl SnapshotIntel {
                 Ok(())
             })?;
         }
-        // After every source is read, so ids mark advisories in whichever order the manifest
-        // lists their sources.
         for package in found.values_mut() {
             let (records, ranges) = (&mut package.records, &mut package.ranges);
             for record in records
@@ -399,7 +387,6 @@ mod tests {
             ranges: [ranged("lib", "2.0.0", End::Fixed("2.1.0".to_owned()))].into(),
             ..advisory("GHSA-1")
         };
-        // Sorts first, so neither record under test is the advisory at index 0.
         let first = advisory("GHSA-0");
         let (dir, id) = kept(
             "intel-answers",
@@ -477,7 +464,6 @@ mod tests {
             },
             Rows {
                 affected: [affected("lib", Some("1.0.0"))].into(),
-                // Not SemVer, and not refused: nothing asked for `other`.
                 ranges: [ranged("other", "13.0", End::Open)].into(),
                 ..advisory("GHSA-1")
             },

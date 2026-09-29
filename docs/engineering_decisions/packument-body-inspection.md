@@ -52,6 +52,11 @@ set to describe what is actually sent.
 both documents. `DocumentDetail` qualifies every absent field on a record, so a wrong
 label turns "nobody asked for a publish time" into "npm publishes no publish time".
 
+Across 18 responses from registry.npmjs.org (6 packages, scoped and unscoped, each with
+three `Accept` headers), `Content-Type` was exactly one of the two media types, with no
+`charset` parameter. Parameters and case are handled anyway, because a mirror or a CDN may
+add them. Any other type is forwarded without being read.
+
 **Why cap decompression.** gzip reaches about 5x on a packument (typescript: 2.0 MB
 encoded, 15.7 MB decoded) and far more on crafted input. Without a ceiling the
 decompressed size is chosen by whoever sent the body.

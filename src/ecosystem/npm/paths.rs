@@ -16,11 +16,8 @@ pub fn canonical_name(name: &str) -> String {
 }
 
 /// Split an npm name into its scope and its name: `@babel/core` is `@babel` and `core`.
-///
-/// An npm name carries a `/` only when it is scoped, and a scope always starts with `@`.
-/// Without that check `foo/bar` would reach a purl of `pkg:npm/foo/bar`, a package npm
-/// cannot have. The proxy serves npm at the root and PyPI under `/simple/`, and a request
-/// for `/simple/requests` is the shape that made this matter.
+/// `name` must be scoped when it contains a `/`.
+/// Returns the scope and name, or why `name` is not an npm name.
 pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError> {
     let Some((scope, rest)) = name.split_once('/') else {
         return Ok((None, name.to_owned()));
@@ -39,10 +36,8 @@ pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError>
 }
 
 /// Classify a request path.
-///
-/// Paths that do not resolve to a package, including names this crate cannot turn into
-/// an identity, come back as [`RequestTarget::Other`]. A path the proxy cannot classify
-/// is still forwarded; it is not an error.
+/// `path` is the request path, with or without a query.
+/// Returns [`RequestTarget::Other`] for a path that names no package.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let path = path.trim_start_matches('/');
@@ -50,8 +45,6 @@ pub fn classify_path(path: &str) -> RequestTarget {
         return RequestTarget::Other;
     }
 
-    // Registry endpoints live under `/-/`. A package name cannot start with `-`, so a
-    // leading segment of `-` is never a package.
     if path == "-" || path.starts_with("-/") {
         return RequestTarget::Other;
     }
@@ -61,8 +54,6 @@ pub fn classify_path(path: &str) -> RequestTarget {
         None => (path, None),
     };
 
-    // npm percent-encodes the scope separator on packument requests and leaves it bare
-    // on tarball paths. Both spell the same package.
     let name = name.replace("%2f", "/").replace("%2F", "/");
     let Ok(key) = PackageKey::from_registry_name(Ecosystem::Npm, &name) else {
         return RequestTarget::Other;
@@ -72,7 +63,6 @@ pub fn classify_path(path: &str) -> RequestTarget {
         return RequestTarget::Metadata(key);
     };
 
-    // `<unscoped name>-<version>.tgz`, with the scope absent from the filename.
     let Some(stem) = artifact.strip_suffix(".tgz") else {
         return RequestTarget::Other;
     };
@@ -92,16 +82,8 @@ pub fn classify_path(path: &str) -> RequestTarget {
 }
 
 /// Which document a response body is, read from its `Content-Type`.
-///
-/// The response is authoritative and the request is not: npm asks with
-/// `application/vnd.npm.install-v1+json; q=1.0, application/json; q=0.8, */*`, which
-/// names both documents and settles nothing.
-///
-/// Across 18 responses from registry.npmjs.org (6 packages, scoped and unscoped, each
-/// of the three Accept headers above), the value was exactly one of the two media types
-/// with no `charset` parameter. Parameters and casing are handled anyway, since a mirror
-/// or a CDN in front of one may add them. Anything else returns `None`, and the proxy
-/// forwards that response without reading it.
+/// `content_type` is the header's value, if any.
+/// Returns `None` for anything but the two packument media types.
 pub fn detail_from_content_type(content_type: Option<&str>) -> Option<DocumentDetail> {
     match crate::route::media_type(content_type)?.as_str() {
         ABBREVIATED_ACCEPT => Some(DocumentDetail::Abbreviated),
@@ -218,10 +200,7 @@ mod tests {
         );
     }
 
-    /// 38 of 24,852 tarball URLs spell the version differently from the packument:
-    /// every `express` prerelease before 3.0.0 and every `grunt` prerelease before
-    /// 0.4.0 drops the hyphen. The path says `3.0.0rc1`, the packument says
-    /// `3.0.0-rc1`.
+    /// The path's `3.0.0rc1` is kept, although the packument says `3.0.0-rc1`.
     #[test]
     fn the_filename_version_is_what_the_filename_says() {
         let RequestTarget::Artifact {

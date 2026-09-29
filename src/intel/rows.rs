@@ -11,19 +11,16 @@ pub struct Rows {
     /// RFC 3339, as OSV wrote it.
     pub modified: Option<String>,
     pub malware: bool,
-    /// The CVSS base score. From a vector when one parses; otherwise, when the record carries
-    /// no CVSS vector at all, the top of its severity band. `None` when neither gives one.
+    /// The CVSS base score, from a vector, or else the top of the severity band.
     pub cvss: Option<f64>,
-    /// The `database_specific.severity` band `cvss` was read from: `LOW`, `MODERATE`, `HIGH`
-    /// or `CRITICAL`. `None` when a vector gave the score, or nothing did.
+    /// The `database_specific.severity` band `cvss` was read from, if it was.
     pub band: Option<String>,
     /// CVSS vectors in the record that did not parse.
     pub unread_vectors: usize,
     pub aliases: BTreeSet<String>,
     pub affected: BTreeSet<Affected>,
     pub ranges: BTreeSet<Ranged>,
-    /// npm entries in the record with a range or a whole entry that could not be stored, so
-    /// a record can be partly stored without that reading as fully stored.
+    /// npm entries in the record with a range or a whole entry that could not be stored.
     pub unexpressed: usize,
 }
 
@@ -48,8 +45,7 @@ impl Affected {
     }
 }
 
-/// An interval of package versions an advisory is against. Never every version, which is
-/// an [`Affected`] with no version.
+/// An interval of package versions an advisory affects, never every version.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Ranged {
     pub ecosystem: String,
@@ -68,16 +64,10 @@ impl Ranged {
     }
 }
 
-/// Give each unscored vulnerability the highest score among the records in `rows` it is a
-/// direct alias of: records it lists by id, or records that list its id. Returns how many
-/// took a score.
-///
-/// One load's records only, so a score is borrowed from the same stream. In OSV's PyPI
-/// bundle of 2026-09-19, 2,583 of 2,731 unscored `PYSEC-` records had a scored `GHSA-` alias:
-/// `PYSEC-2018-28` and `GHSA-x84v-xcm2-53pg` are both CVE-2018-18074, and only the second
-/// carries 7.5. Unscored, the first would refuse every version `max_cvss` lets the second
-/// through. A malware record has no score to take or give. The alias's band comes with its
-/// score, so a score read from a band still says so.
+/// Give each unscored vulnerability the highest score among the records it lists by id,
+/// or that list its id. See docs/engineering_decisions/alias-matching.md.
+/// `rows` is one load's records, and the scores are written into it.
+/// Returns how many took a score.
 pub fn score_from_aliases(rows: &mut [Rows]) -> u64 {
     let mut scored: BTreeMap<String, (f64, Option<String>)> = BTreeMap::new();
     let mut named_by: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -192,19 +182,15 @@ mod tests {
                 None,
                 &["CVE-2018-18074", "PYSEC-2018-28"],
             ),
-            // Named only by the scored record, which lists it.
             advisory("PYSEC-2020-1", None, None, &[]),
             advisory("GHSA-aaaa", Some(5.0), Some("MODERATE"), &["PYSEC-2020-1"]),
             advisory("GHSA-bbbb", Some(8.1), None, &["PYSEC-2020-1"]),
-            // Sharing only a CVE is not a direct alias.
             advisory("PYSEC-2021-1", None, None, &["CVE-1"]),
             advisory("GHSA-cccc", Some(9.8), None, &["CVE-1"]),
-            // A malware record neither takes nor gives a score.
             Rows {
                 malware: true,
                 ..advisory("MAL-1", None, None, &["GHSA-cccc"])
             },
-            // A scored record keeps its own.
             advisory("PYSEC-2022-1", Some(2.0), None, &["GHSA-cccc"]),
         ];
         assert_eq!(score_from_aliases(&mut rows), 2);
@@ -213,10 +199,26 @@ mod tests {
             (r.cvss, r.band.as_deref())
         };
         assert_eq!(score("PYSEC-2018-28"), (Some(7.5), None));
-        assert_eq!(score("PYSEC-2020-1"), (Some(8.1), None));
-        assert_eq!(score("PYSEC-2021-1"), (None, None));
-        assert_eq!(score("MAL-1"), (None, None));
-        assert_eq!(score("PYSEC-2022-1"), (Some(2.0), None));
+        assert_eq!(
+            score("PYSEC-2020-1"),
+            (Some(8.1), None),
+            "named only by the scored records, which list it"
+        );
+        assert_eq!(
+            score("PYSEC-2021-1"),
+            (None, None),
+            "sharing only a CVE is not a direct alias"
+        );
+        assert_eq!(
+            score("MAL-1"),
+            (None, None),
+            "a malware record neither takes nor gives a score"
+        );
+        assert_eq!(
+            score("PYSEC-2022-1"),
+            (Some(2.0), None),
+            "a scored record keeps its own"
+        );
 
         let mut banded = [
             advisory("PYSEC-2023-1", None, None, &["GHSA-dddd"]),

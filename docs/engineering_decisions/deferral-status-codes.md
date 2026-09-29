@@ -18,8 +18,11 @@ This is that test. `make retry-matrix` produces it, and
 ## What was measured
 
 The proxy can be told to answer a matching request with a deferral instead of fetching
-(`WAHAROA_DEFER_TEST`, debug builds only; see `src/defer.rs`). Two runs per cell, because
-they answer different questions:
+(`WAHAROA_DEFER_TEST`, debug builds only; see `src/defer.rs`). A variable that makes a
+proxy refuse traffic is a denial-of-service switch, so `src/defer.rs` is not compiled into a
+release binary, and the startup log says when it is on. The status is limited to 400 to 599,
+because a 2xx or a redirect is not being turned away. Two runs per cell, because they answer
+different questions:
 
 - **Unbounded.** The deferral never lifts. Attempts and the gaps between them are the
   client's retry budget, which is what `Retry-After` has to land inside.
