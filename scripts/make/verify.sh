@@ -29,6 +29,10 @@
 # `contains` admits NaN, and all four proofs fail on that mutation. The one-line unit test
 # for the same property passes, because a test has to name NaN to find it and a proof does
 # not.
+#
+# A harness must not call through `ecosystem::of`. Kani compiles every function in
+# `ecosystem::TABLE` once one is reachable, down to `Url::parse`, and kani 0.67.0 panics on
+# `idna`'s `ZeroSlice<u16>`. Build a `PackageKey` with `PackageKey::for_proof`.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

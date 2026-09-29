@@ -143,6 +143,18 @@ impl PackageKey {
         })
     }
 
+    /// A key with no namespace, built without the ecosystem's name rule. Calling through
+    /// [`crate::ecosystem::of`] brings every function in [`crate::ecosystem::TABLE`] into a
+    /// kani harness, down to `Url::parse`, which kani 0.67.0 cannot compile.
+    #[cfg(kani)]
+    pub(crate) fn for_proof(ecosystem: Ecosystem, name: &str) -> Self {
+        PackageKey {
+            ecosystem,
+            namespace: None,
+            name: name.to_owned(),
+        }
+    }
+
     /// Attach a concrete version, producing something a verdict can be about.
     pub fn at_version(&self, version: &str) -> Result<PackageRef, IdentityError> {
         let version = version.trim();
