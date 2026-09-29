@@ -1395,7 +1395,7 @@ mod tests {
     #[test]
     fn an_entry_can_set_a_cooldown_yanked_and_deprecated() {
         let policy = parse(
-            "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
+            "cooldown_days: 0\npackages:\n  - match: { ecosystem: npm, name: lodash }\n    \
              set: { cooldown_days: 5, yanked: allow, deprecated: allow }\n    \
              reason: reviewed\n    expires: \"2026-12-01\"\n",
         )

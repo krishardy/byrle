@@ -482,9 +482,8 @@ struct InFlight {
 
 impl Drop for InFlight {
     fn drop(&mut self) {
-        if let Ok(mut set) = self.set.lock() {
-            set.remove(&self.digest);
-        }
+        // A poisoned set keeps the entry: nothing else can be done from a drop.
+        let _ = self.set.lock().map(|mut set| set.remove(&self.digest));
         self.ended.send_modify(|ended| *ended += 1);
     }
 }
@@ -913,5 +912,91 @@ mod tests {
             .await
             .expect("finishes");
         assert_eq!(analyser.known(&digest).await, Known::Unknown);
+    }
+
+    /// A store that cannot say or keep what attestations found is logged, and the answer
+    /// is verified again.
+    #[tokio::test]
+    async fn a_store_that_cannot_keep_attestations_is_logged() {
+        let analyser = analyser("run-broken-attest", 1 << 20, Arc::new(Broken));
+        let digest = crate::analysis::store::tests::sri(7);
+        assert_eq!(analyser.attested(&digest).await, None);
+        let registry = upstream(200, b"{}".to_vec()).await;
+        let job = Job {
+            reader: None,
+            attestations: vec![Attestation {
+                digest: digest.clone(),
+                url: registry,
+                bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+            }],
+            ..job(&digest, crate::util::test_support::NO_UPSTREAM)
+        };
+        analyser
+            .start(job)
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(analyser.attested(&digest).await, None);
+    }
+
+    /// An attestations body cut short stores nothing, an artifact that cannot be fetched
+    /// stores nothing, and a spooled file removed before it is read stores nothing.
+    #[tokio::test]
+    async fn what_cannot_be_read_stores_nothing() {
+        use crate::util::test_support::{Answer, scripted};
+        let store = Arc::new(InProcess::new(8));
+        let analyser = analyser("run-unread", 1 << 20, store);
+        let digest = crate::analysis::store::tests::sri(8);
+        let cut = scripted(vec![Answer::Body {
+            bytes: b"{".to_vec(),
+            declared: Some(64),
+        }])
+        .await;
+        let cut_short = Job {
+            attestations: vec![Attestation {
+                digest: digest.clone(),
+                url: format!("http://{cut}/attestations"),
+                bundle: crate::ecosystem::npm::attestation::provenance_bundle,
+            }],
+            ..job(&digest, crate::util::test_support::NO_UPSTREAM)
+        };
+        analyser
+            .start(cut_short)
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(analyser.attested(&digest).await, None);
+        assert_eq!(analyser.known(&digest).await, Known::Unknown);
+
+        // An artifact the upstream does not answer for.
+        analyser
+            .start(job(&digest, crate::util::test_support::NO_UPSTREAM))
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(analyser.known(&digest).await, Known::Unknown);
+
+        let spooled = analyser
+            .spool
+            .write(
+                futures_util::stream::iter(vec![Ok::<_, String>(bytes::Bytes::from_static(b"x"))]),
+                None,
+                |_| {},
+            )
+            .await
+            .expect("spools");
+        for entry in std::fs::read_dir(analyser.spool.dir()).expect("lists") {
+            let path = entry.expect("an entry").path();
+            if path.file_name().is_some_and(|name| name != ".lock") {
+                std::fs::remove_file(path).expect("removes");
+            }
+        }
+        let unread = read(
+            &job(&digest, crate::util::test_support::NO_UPSTREAM),
+            spooled,
+            Reader::NpmTarball,
+        )
+        .await;
+        assert!(unread.is_none());
     }
 }

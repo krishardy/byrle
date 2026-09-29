@@ -45,7 +45,8 @@ pub async fn stream_bundle(
     github_token: Option<&str>,
     notice: Notice<'_>,
 ) -> Result<Fetched, String> {
-    for attempt in 1..=ATTEMPTS {
+    let mut attempt = 1;
+    loop {
         let got = match declared.transport {
             Transport::Get => bundle(http, declared.url, declared.ceiling, notice).await,
             Transport::GithubGraphql { query } => match github_token {
@@ -58,6 +59,7 @@ pub async fn stream_bundle(
                 ))),
             },
         };
+        // `retried` is false on the last attempt, which therefore returns.
         match got {
             Ok(fetched) => return Ok(fetched),
             Err(failure) if retried(&failure, attempt) => {
@@ -66,11 +68,11 @@ pub async fn stream_bundle(
                     RETRY_WAIT.as_secs()
                 ));
                 tokio::time::sleep(RETRY_WAIT).await;
+                attempt += 1;
             }
             Err(failure) => return Err(failure.why),
         }
     }
-    unreachable!("the last attempt returns rather than looping");
 }
 
 /// The body at `url`, refused past `ceiling` bytes.
@@ -227,8 +229,7 @@ pub async fn graphql(
             "query": query,
             "variables": { "after": after },
         });
-        let body =
-            serde_json::to_vec(&body).map_err(|e| FetchFailure::settled(format!("{url}: {e}")))?;
+        let body = serde_json::to_vec(&body).expect("a JSON value serialises");
         let response = http
             .post(url)
             .bearer_auth(token)
@@ -612,7 +613,7 @@ mod tests {
         );
     }
 
-    /// GitHub's stream is not read without a token, and that is not retried.    /// GitHub's stream is not read without a token, and that is not retried.
+    /// GitHub's stream is not read without a token, and that is not retried.
     #[tokio::test]
     async fn the_github_stream_without_a_token_is_not_fetched() {
         let printed = Printed::default();
@@ -626,5 +627,76 @@ mod tests {
             "{why}"
         );
         assert!(printed.lines().is_empty(), "nothing was fetched");
+    }
+
+    /// With a token, GitHub's stream is read page by page, a page naming no cursor is the
+    /// last, and the pages are one array.
+    #[tokio::test]
+    async fn the_github_stream_is_read_with_a_token() {
+        let first = br#"{"data":{"securityVulnerabilities":{"nodes":[],"pageInfo":{"hasNextPage":true,"endCursor":"c1"}}}}"#;
+        let last =
+            br#"{"data":{"securityVulnerabilities":{"nodes":[],"pageInfo":{"hasNextPage":true}}}}"#;
+        let addr = scripted(vec![
+            Answer::body(first.to_vec()),
+            Answer::body(last.to_vec()),
+        ])
+        .await;
+        let github = crate::intel::stream::by_stream(crate::intel::providers::github::NPM_STREAM)
+            .expect("this build declares it");
+        let declared = Stream {
+            url: Box::leak(format!("http://{addr}/graphql").into_boxed_str()),
+            ..*github
+        };
+        let printed = Printed::default();
+        let fetched = stream_bundle(&client(), &declared, Some("token"), &printed.notice())
+            .await
+            .expect("two pages");
+        let array: serde_json::Value = serde_json::from_slice(&fetched.bytes).expect("an array");
+        assert_eq!(array.as_array().map(Vec::len), Some(2));
+    }
+
+    /// A GitHub page that cannot be fetched, or arrives cut short, fails the fetch, and so
+    /// does a bundle cut short.
+    #[tokio::test]
+    async fn a_page_or_bundle_that_cannot_be_read_fails() {
+        let printed = Printed::default();
+        let closed = crate::util::test_support::closing_server().await;
+        let failure = graphql(
+            &client(),
+            &format!("http://{closed}/graphql"),
+            4096,
+            "token",
+            "query",
+            &printed.notice(),
+        )
+        .await
+        .expect_err("nothing answers");
+        assert!(failure.why.starts_with("fetching http"), "{}", failure.why);
+
+        let cut = scripted(vec![Answer::Body {
+            bytes: b"{".to_vec(),
+            declared: Some(64),
+        }])
+        .await;
+        let failure = graphql(
+            &client(),
+            &format!("http://{cut}/graphql"),
+            4096,
+            "token",
+            "query",
+            &printed.notice(),
+        )
+        .await
+        .expect_err("cut short");
+        assert!(failure.why.starts_with("reading http"), "{}", failure.why);
+        let failure = bundle(
+            &client(),
+            &format!("http://{cut}/all.zip"),
+            4096,
+            &printed.notice(),
+        )
+        .await
+        .expect_err("cut short");
+        assert!(failure.why.starts_with("reading http"), "{}", failure.why);
     }
 }

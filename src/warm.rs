@@ -668,4 +668,36 @@ mod tests {
         );
         assert_eq!(on_proxy(base, "not a url"), "not a url");
     }
+
+    /// With no proxy given, warm asks the environment for one, and a variable it cannot read
+    /// stops it before anything is asked.
+    #[tokio::test]
+    async fn the_proxy_comes_from_the_environment_or_warm_stops() {
+        use crate::env::testing::with_unreadable;
+        use crate::env::{LISTEN, PUBLIC_URL};
+
+        for environment in [
+            with_unreadable(&[], PUBLIC_URL),
+            with_unreadable(&[], LISTEN),
+        ] {
+            let warmed = run(&[], None, None, SHORT, &environment).await;
+            assert_eq!(warmed.code, UNREAD);
+            assert_eq!(warmed.notes.len(), 1);
+        }
+        let warmed = run(&[], None, None, SHORT, &with(&[(LISTEN, "127.0.0.1:1")])).await;
+        assert_eq!(warmed.code, 0, "{:?}", warmed.notes);
+    }
+
+    /// A lockfile read for its versions, rather than its artifacts, that cannot be read is
+    /// an error, and a record that could not be fetched fails its version.
+    #[test]
+    fn a_version_lockfile_or_record_that_cannot_be_read_fails() {
+        let missing = PathBuf::from("/nonexistent/requirements.txt");
+        assert!(plan(&[missing], None).is_err());
+        let asked = asks_for("http://p", "pkg:npm/a@1.0.0", Err("unreachable".to_owned()));
+        assert!(matches!(
+            asked.as_slice(),
+            [(purl, Ask::Known(Outcome::Failed(why)))] if purl == "pkg:npm/a@1.0.0" && why == "unreachable"
+        ));
+    }
 }

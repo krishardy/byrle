@@ -361,4 +361,23 @@ mod tests {
             assert!(!error.is_empty(), "{stream} gives no error text");
         }
     }
+
+    /// Every stream's reader refuses a body that is not its document, and GitHub's reads a
+    /// page into advisory rows.
+    #[test]
+    fn each_stream_reads_its_own_document_only() {
+        for stream in ALL {
+            assert!(
+                (stream.parse)(b"not a document").is_err(),
+                "{}",
+                stream.stream
+            );
+        }
+        let page = br#"[{"data": {"securityVulnerabilities": {"nodes": [
+            {"package": {"name": "a"}, "vulnerableVersionRange": "< 1.0.0",
+             "advisory": {"ghsaId": "GHSA-1", "identifiers": [], "withdrawnAt": null}}]}}}]"#;
+        let parsed =
+            (declared(crate::intel::providers::github::NPM_STREAM).parse)(page).expect("a page");
+        assert!(matches!(parsed.payload, Payload::Advisories(rows) if rows.len() == 1));
+    }
 }

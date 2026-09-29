@@ -186,9 +186,8 @@ fn bounds(order: VersionOrder, range: &str) -> Bounds {
             return Bounds::Unexpressed;
         }
     }
-    if start == Start::First && end == End::Open {
-        return Bounds::Unexpressed;
-    }
+    // `split` yields at least one part, and each part above sets a bound or returns, so
+    // the interval has at least one end.
     Bounds::Interval(Interval { start, end })
 }
 
