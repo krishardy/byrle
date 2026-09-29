@@ -146,7 +146,7 @@ pub struct Check {
     pub fetch: bool,
 }
 
-#[derive(Debug, PartialEq, Args)]
+#[derive(Debug, Clone, PartialEq, Args)]
 pub struct Diff {
     /// The policy in force
     pub from: PathBuf,

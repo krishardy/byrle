@@ -65,6 +65,17 @@ pub async fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
     Ok(Some(intel))
 }
 
+/// [`from_env`] as any [`Intel`], for `explain` and `policy diff`, which read a kept
+/// snapshot the same way. The error names [`crate::env::DATABASE_URL`].
+pub async fn intel_from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
+    environment: &crate::env::Env<L>,
+) -> Result<Option<Box<dyn Intel>>, String> {
+    from_env(environment)
+        .await
+        .map(|store| store.map(|store| Box::new(store) as Box<dyn Intel>))
+        .map_err(|e| format!("{}: {e}", crate::env::DATABASE_URL))
+}
+
 /// Why a command that cannot run without the store did not get one.
 #[derive(Debug)]
 pub struct Refused {
