@@ -36,7 +36,7 @@ impl Client {
         self
     }
 
-    /// The packument URL for a package. `key` is the package.
+    /// The packument URL for a package.
     /// Returns the URL, with a scoped name as `@scope%2Fname`, as npm's own client sends it.
     pub fn packument_url(&self, key: &PackageKey) -> String {
         let name = key.registry_name();

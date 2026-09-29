@@ -79,8 +79,8 @@ async fn connect(name: &'static str) -> Option<PgPool> {
 }
 
 /// Run fixture SQL, several commands, after recording a snapshot older than any a test
-/// names, so the store answers lookups. `intel` is the store.
-/// `sql` is a literal, as sqlx accepts unaudited SQL only as one.
+/// names, so the store answers lookups. `sql` is a literal: sqlx accepts unaudited SQL
+/// only as one.
 async fn insert(intel: &PgIntel, sql: &'static str) {
     sqlx::raw_sql(
         "INSERT INTO intel_snapshot (digest, taken_at, streams) \

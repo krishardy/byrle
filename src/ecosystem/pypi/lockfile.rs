@@ -101,7 +101,6 @@ fn poetry(text: &str) -> Result<BTreeSet<Locked>, String> {
 
 /// pipenv's lockfile: `default` and `develop`, each a map of name to entry.
 /// An entry with an `==` `version` is kept. `text` is the file's contents.
-/// Returns the packages locked, or why the file does not read.
 fn pipenv(text: &str) -> Result<BTreeSet<Locked>, String> {
     #[derive(Deserialize)]
     struct Lock {

@@ -80,8 +80,7 @@ impl std::error::Error for RefusalParseError {}
 
 impl RefusalStatus {
     /// Parse a comma-separated table, such as `default=403,npm/pnpm=451`.
-    /// `spec` is the table. A status outside 400..=599 is refused.
-    /// Returns the table, or the first entry that does not parse.
+    /// A status outside 400..=599 is refused.
     pub fn parse(spec: &str) -> Result<Self, RefusalParseError> {
         let mut table = Self::default();
         for entry in spec.split(',') {
@@ -134,7 +133,7 @@ impl RefusalStatus {
         Ok(table)
     }
 
-    /// The status to answer this client with. `ecosystem` is the registry asked.
+    /// The status to answer this client with.
     /// `user_agent` names the client; an unknown or absent one gets the default.
     pub fn for_client(&self, ecosystem: Ecosystem, user_agent: Option<&str>) -> u16 {
         client_name(user_agent)

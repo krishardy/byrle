@@ -41,9 +41,9 @@ impl Rule {
     ];
 }
 
-/// Whether a check means anything for an ecosystem, as policy-tier-resolution.md lists.
+/// Whether a check means anything for an ecosystem.
+/// See docs/engineering_decisions/policy-tier-resolution.md.
 /// `ecosystem` is as the policy spells it, so it may name one with no adapter.
-/// `rule` is the check. Returns true unless the ecosystem has no such thing.
 pub fn applies(ecosystem: &str, rule: Rule) -> bool {
     !matches!(
         (ecosystem, rule),

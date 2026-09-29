@@ -123,8 +123,7 @@ pub struct Encoded {
 }
 
 /// Encode one source's rows so the same rows give the same bytes in every database.
-/// `source` names the rows. `rows` are sorted by publisher id before encoding.
-/// Returns the `COPY` CSV of the first table and the encoding.
+/// `rows` are sorted by publisher id before encoding.
 pub fn encode(source: &str, rows: &[Rows]) -> Encoded {
     let mut sorted: Vec<&Rows> = rows.iter().collect();
     sorted.sort_by(|a, b| a.id.cmp(&b.id));
@@ -154,8 +153,7 @@ pub fn encode(source: &str, rows: &[Rows]) -> Encoded {
 }
 
 /// Encode one source's exploited CVE ids, the way [`encode`] encodes advisories.
-/// `source` names the rows. `ids` are written in order.
-/// Returns the `COPY` CSV and the encoding.
+/// `ids` are written in order.
 pub fn encode_exploited(source: &str, ids: &BTreeSet<String>) -> Encoded {
     let mut csv = Vec::new();
     for id in ids {
@@ -665,7 +663,6 @@ fn range_line(out: &mut Vec<u8>, key: &str, ranged: &Ranged) {
 
 /// `value` in UTC, rounded to the microsecond Postgres keeps.
 /// `value` is sent as it is when it is not RFC 3339.
-/// Returns the timestamp to send.
 fn timestamp(value: &str) -> String {
     value
         .parse::<jiff::Timestamp>()

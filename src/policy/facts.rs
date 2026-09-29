@@ -77,8 +77,6 @@ impl Facts {
     }
 
     /// Add what the intel store knows about this version, one advisory per id.
-    /// `intel` is the store's answer for the package.
-    /// Returns the facts, marked consulted.
     pub fn with_intel(mut self, intel: &PackageIntel) -> Self {
         let records = intel.for_version(&self.ecosystem, &self.version);
         self.known_malware = records.iter().any(|r| r.malware);
@@ -126,7 +124,6 @@ impl Facts {
 
     /// Whether `cooldown_days` can be answered for `record`: an abbreviated packument
     /// carries no publish times. `times` are those fetched separately, if any.
-    /// Returns what is missing, if anything.
     pub fn can_answer_cooldown(record: &PackageRecord, times: Option<&PublishTimes>) -> Answerable {
         match published_date(record, times) {
             Some(_) => Answerable::Yes,

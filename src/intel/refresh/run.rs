@@ -32,8 +32,7 @@ impl Run {
 }
 
 /// Load every stream in [`stream::ALL`] into the intel store, and append what each stream
-/// did to the ingestion history. `environment` supplies the database and snapshot settings.
-/// `notice` receives progress lines. Returns the report and exit code.
+/// did to the ingestion history.
 pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: Notice<'_>) -> Run {
     let intel = match postgres::required(environment).await {
         Ok(intel) => intel,

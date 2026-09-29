@@ -104,7 +104,6 @@ pub struct Package {
 
 impl Package {
     /// Whether any check on this package got looser, whatever the verdict did.
-    /// Returns true for a loosening.
     pub fn loosened(&self) -> bool {
         self.moved
             .iter()
@@ -279,8 +278,6 @@ impl Run {
 }
 
 /// Compare two policies over the packages the audit log and the lockfiles list.
-/// `args` are the command's. `environment` names the registries and intel store.
-/// Returns what to print and the exit code.
 pub async fn run<L: Fn(&str) -> Option<OsString>>(
     args: &crate::cli::Diff,
     environment: &Env<L>,

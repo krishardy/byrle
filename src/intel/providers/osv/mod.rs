@@ -96,7 +96,6 @@ struct Range {
 
 /// The base score of the newest CVSS version in `severity`, or with no vector at all, the
 /// top of `band`. See docs/engineering_decisions/osv-ranges-and-scores.md.
-/// `severity` is the record's entries. `band` is its GitHub severity band.
 /// Returns the score, the band it was read from, and how many vectors did not parse.
 fn score(severity: &[Severity], band: Option<&str>) -> (Option<f64>, Option<String>, usize) {
     let (cvss, unread) = vector_score(severity);
@@ -133,7 +132,6 @@ const V4_BASE: [&str; 11] = [
 
 /// The vector with only its base metrics, or `None` when one appears twice.
 /// `vector` is returned whole when its prefix is unknown, for `cvss` to refuse.
-/// Returns the base vector.
 fn base_vector(vector: &str) -> Option<String> {
     let mut parts = vector.split('/');
     let prefix = parts.next().unwrap_or_default();

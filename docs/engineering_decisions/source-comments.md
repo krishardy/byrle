@@ -39,5 +39,6 @@ listed file that passes is an error, so the list only shrinks, and the rule appl
 file from the commit that removes it from the list.
 
 `src/cli.rs` is the one file where a doc comment is behaviour: clap reads `///` on a command
-or argument as its `--help` text. Its text moves into `#[command(about, long_about)]` and
-`#[arg(help)]`, and the help output stays the same.
+or argument as its `--help` text. Help text longer than the limit moves into
+`#[command(about = ...)]` or `#[arg(help = ...)]`, and text within it stays a `///` line.
+Every `--help` page was byte-identical before and after.

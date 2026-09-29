@@ -75,7 +75,6 @@ impl Client {
 
     /// Fetch one project's index, PEP 691 JSON or a PEP 503 page, and read it.
     /// `name` is normalised before the request, so the index does not redirect.
-    /// Returns the project, or why it could not be fetched or read.
     pub async fn project(&self, name: &str) -> Result<Project, FetchError> {
         let url = index_url(&self.index, name).map_err(FetchError::Unreadable)?;
         let response = self

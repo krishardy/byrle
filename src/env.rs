@@ -612,7 +612,6 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     /// Where each ecosystem's requests are forwarded: the row's `upstream` variable, or its
     /// default. Each is an http or https URL with a host, kept with its path.
-    /// Returns the upstreams, or the first variable that is not one.
     pub fn upstreams(&self) -> Result<crate::ecosystem::Upstreams, EnvError> {
         let mut upstreams = crate::ecosystem::Upstreams::defaults();
         for registry in crate::ecosystem::TABLE {

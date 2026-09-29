@@ -130,7 +130,6 @@ async fn run_doctor() -> std::process::ExitCode {
 }
 
 /// `waharoa status`: what this build does for each ecosystem, and which streams cover it.
-/// Returns 0.
 async fn run_status() -> std::process::ExitCode {
     let environment = env::process();
     let upstreams = or_exit(environment.upstreams());

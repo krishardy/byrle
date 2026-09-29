@@ -70,7 +70,6 @@ impl Project {
     }
 
     /// Whether installing `version` runs the package's own code.
-    /// `version` is as the filenames write it.
     /// Returns true when every file for it is an sdist, `None` when it has none.
     pub fn only_sdist(&self, version: &str) -> Option<bool> {
         let files = self.files_for(version);
@@ -108,8 +107,7 @@ struct Entry {
 }
 
 /// One project's index, read. A file whose name gives no version is skipped.
-/// `name` is used when the document does not name the project. `bytes` is the PEP 691 JSON.
-/// Returns the project, or why the document does not read.
+/// `name` is used when the document does not name the project.
 pub fn parse(name: &str, bytes: &[u8]) -> Result<Project, PypiError> {
     let document: Document = serde_json::from_slice(bytes).map_err(PypiError::NotJson)?;
     let listed = document.files.len();

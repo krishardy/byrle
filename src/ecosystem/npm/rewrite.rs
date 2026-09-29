@@ -10,13 +10,10 @@ use crate::origin::{
 use crate::record::PackageMetadata;
 
 /// Remove the versions the policy refuses and those whose artifact is on an origin the proxy
-/// does not front, and point the rest at the proxy, as enforcement-tiers.md records.
-/// `json` is the packument. `artifacts` is each version and its artifact URL.
+/// does not front, and point the rest at the proxy.
+/// See docs/engineering_decisions/enforcement-tiers.md.
 /// `policy` says which origins are served, allowed or refused.
-/// `refused_by_policy` are the versions the policy refuses.
 /// `refuse_unservable` removes a refused origin's versions; false keeps them as published.
-/// `public_base` is the proxy's own address.
-/// Returns the filtered document, or why it could not be parsed.
 pub fn filter_unservable_versions(
     json: &[u8],
     artifacts: impl IntoIterator<Item = (String, String)>,
