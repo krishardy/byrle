@@ -10,11 +10,7 @@ use super::error::{FetchError, NormalizeError};
 use super::normalize::{normalize_packument, parse_publish_times};
 use super::{ABBREVIATED_ACCEPT, FULL_ACCEPT};
 
-/// Fetches packuments from one registry.
-///
-/// This is the proxy acting on its own behalf, which is separate from the bytes it
-/// forwards to a client. It exists so the policy engine can ask for the full document
-/// when an install only ever requests the abbreviated one.
+/// Fetches packuments from one registry, on the proxy's own behalf.
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -40,12 +36,8 @@ impl Client {
         self
     }
 
-    /// The packument URL for a package.
-    ///
-    /// A scoped name is sent as `@scope%2Fname`, which is the form npm's own client
-    /// uses. The unencoded `@scope/name` also resolves, but only because the registry
-    /// tolerates it, and the encoded form survives being embedded in a path by anything
-    /// that does not know npm's naming.
+    /// The packument URL for a package. `key` is the package.
+    /// Returns the URL, with a scoped name as `@scope%2Fname`, as npm's own client sends it.
     pub fn packument_url(&self, key: &PackageKey) -> String {
         let name = key.registry_name();
         match name.split_once('/') {
@@ -62,14 +54,8 @@ impl Client {
         }
     }
 
-    /// Fetch and normalise a packument.
-    ///
-    /// Asks for gzip and decodes it here. reqwest's `gzip` feature is off crate-wide, so
-    /// that the proxy can forward response bodies byte for byte, which means reqwest will
-    /// not decompress for this client either. Doing it explicitly is what makes the
-    /// request affordable: measured over the 69 packages of an `express` tree, the
-    /// packuments are 1.59 MB uncompressed and 0.52 MB gzipped, and `npm ci` makes this
-    /// request once per package because it asks for no packuments of its own.
+    /// Fetch and normalise a packument, asking for gzip and decoding it here.
+    /// See docs/engineering_decisions/packument-body-inspection.md.
     pub async fn packument(
         &self,
         key: &PackageKey,
@@ -93,8 +79,6 @@ impl Client {
             return Err(FetchError::Status(response.status()));
         }
 
-        // A registry is free to ignore the request and send identity, which decodes to
-        // itself.
         let encoding = response
             .headers()
             .get(reqwest::header::CONTENT_ENCODING)
@@ -162,7 +146,6 @@ mod tests {
     use super::super::fixture;
     use super::*;
 
-    // Only the live tests, which are compiled out under `cfg(coverage)`.
     #[cfg(not(coverage))]
     use super::super::DEFAULT_REGISTRY;
     use crate::identity::Ecosystem;
@@ -184,10 +167,8 @@ mod tests {
         );
     }
 
-    /// The transport half, against the real registry. Ignored by default: `cargo test`
-    /// must not depend on the network.
-    ///
-    /// Run with `cargo test --lib -- --ignored npm::tests::live`.
+    /// The transport half, against the real registry. Ignored by default. Run with
+    /// `cargo test --lib -- --ignored npm::tests::live`.
     #[cfg(not(coverage))]
     #[tokio::test]
     #[ignore = "hits registry.npmjs.org"]
@@ -223,10 +204,7 @@ mod tests {
         );
     }
 
-    /// The proxy asks for gzip and decodes it, because reqwest's `gzip` feature is off
-    /// crate-wide so that bodies can be forwarded byte for byte. `npm ci` makes this
-    /// request once per package, so the difference is the primary CI path: measured over
-    /// the 69 packages of an `express` tree, 1.59 MB uncompressed against 0.52 MB gzipped.
+    /// The proxy asks for gzip and decodes it.
     #[tokio::test]
     async fn the_client_asks_for_gzip_and_decodes_it() {
         use axum::routing::get;
@@ -347,9 +325,8 @@ mod tests {
         assert!(std::error::Error::source(&e).is_some());
     }
 
-    /// A package that does not exist is a status, not a transport failure, and not a
-    /// normalisation failure. The three stay separate so the proxy can answer 404 rather
-    /// than 502.
+    /// A package that does not exist is a status, not a transport or normalisation
+    /// failure, so the proxy can answer 404 rather than 502.
     #[cfg(not(coverage))]
     #[tokio::test]
     #[ignore = "hits registry.npmjs.org"]
@@ -367,9 +344,7 @@ mod tests {
         }
     }
 
-    /// The transport, against a server on localhost rather than the registry. This is
-    /// what covers `Client::packument`: the live tests below are ignored by default, so
-    /// without this the fetch path is exercised by nothing that runs in CI.
+    /// The transport, against a server on localhost rather than the registry.
     #[test]
     fn a_failed_request_and_an_unreadable_body_are_told_apart() {
         let json = serde_json::from_str::<serde_json::Value>("{").expect_err("not JSON");
@@ -412,9 +387,8 @@ mod tests {
         PackageKey::from_registry_name(Ecosystem::Npm, name).unwrap()
     }
 
-    /// The whole path: request, Accept header, body, records. The handler asserts
-    /// the header, because sending the wrong one silently yields the other document
-    /// and every absent field would then be mislabelled.
+    /// The whole path: request, `Accept` header, body, records. The wrong header would
+    /// yield the other document.
     #[tokio::test]
     async fn fetches_and_normalises_a_packument() {
         let body = std::str::from_utf8(&fixture("lodash-4.17.21.abbrev.json"))
@@ -444,9 +418,7 @@ mod tests {
         assert_eq!(p.records.len(), 1);
     }
 
-    /// The only source of a publish date, so an empty map means every version reads as
-    /// having no publish time and `cooldown_days` gates nothing. Asserted against a server
-    /// because the live test that covered this is ignored by default.
+    /// The full packument's `time` map, the only source of a publish date, is read.
     #[tokio::test]
     async fn fetches_the_time_map_from_the_full_packument() {
         let body = std::str::from_utf8(&fixture("lodash-4.17.21.full.json"))
@@ -575,8 +547,7 @@ mod tests {
     }
 
     /// A registry that closes the connection without a response is a transport failure,
-    /// and the outer `Result` is what carries it. This is the only branch a 502 is the
-    /// right answer to.
+    /// the only one a 502 answers.
     #[tokio::test]
     async fn a_registry_that_sends_no_response_is_a_transport_error() {
         let addr = crate::util::test_support::closing_server().await;

@@ -1,21 +1,9 @@
 //! Helpers for unit tests in more than one module.
 
-/// An upstream address where a request fails at once, for a test that should send none.
-///
-/// Loopback, so the request never leaves the machine, and port 9, the reserved discard
-/// service, which nothing runs: a connection is refused in microseconds. A public host
-/// would send traffic out, a TEST-NET address would wait for a connect timeout, and a
-/// `.invalid` name would ask a resolver first.
-///
-/// A test that needs an upstream to answer wants [`closing_server`] or its own stub. This
-/// is for one whose store or configuration is meant to answer without any request.
+/// Loopback port 9, where nothing listens, so a request a test should not send fails at once.
 pub const NO_UPSTREAM: &str = "http://127.0.0.1:9";
 
-/// The `log` logger for the test process. Tests install no tracing subscriber, so every
-/// event is off where it is logged, and `tracing`'s `log-always`, on in test builds, hands it
-/// here. That is the branch `make coverage` cannot otherwise reach: see the
-/// `[dev-dependencies]` comment in Cargo.toml. A thread that is [`capture`]-ing gets each
-/// record at its level or less verbose, one line each.
+/// The `log` logger `tracing`'s `log-always` hands every event to in tests.
 struct Routing;
 
 impl log::Log for Routing {
@@ -45,9 +33,8 @@ impl log::Log for Routing {
     fn flush(&self) {}
 }
 
-/// Installed before `main`, so no event in any test runs before it.
-///
-/// Safety, as `ctor` asks: it touches only `log`'s two globals, which need nothing set up.
+/// Installed before `main`, so no event in any test runs before it. Safe, as `ctor`
+/// asks: it touches only `log`'s two globals, which need nothing set up.
 #[ctor::ctor(unsafe)]
 fn route_log_records() {
     let _ = log::set_logger(&Routing);
@@ -69,9 +56,7 @@ pub fn set_mode(path: &std::path::Path, mode: u32) {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("sets the mode");
 }
 
-/// A directory with its permission bits set to `mode` until this drops, when they are
-/// `0755` again so the test can remove it. A non-root process then cannot do what `mode`
-/// withholds.
+/// A directory with its permission bits set to `mode` until this drops, then `0755`.
 pub struct Restricted<'a>(&'a std::path::Path);
 
 impl<'a> Restricted<'a> {
@@ -87,13 +72,9 @@ impl Drop for Restricted<'_> {
     }
 }
 
-/// The address of a server that accepts each connection and closes it without a response.
-///
-/// For tests that need an upstream that sends nothing. Binding a port and dropping the
-/// listener leaves the port free for another process to take before the test connects.
-/// `the_only_4xx_this_proxy_produces_is_a_policy_refusal` did that and failed once on
-/// 2026-09-14, under parallel load. This server keeps the port bound until the test's
-/// runtime ends.
+/// A server that accepts each connection and closes it without a response. It keeps
+/// the port bound until the runtime ends, so no other process can take it.
+/// Returns its address.
 pub async fn closing_server() -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -123,8 +104,6 @@ pub async fn stalling_server() -> std::net::SocketAddr {
     tokio::spawn(async move {
         while let Ok((mut stream, _)) = listener.accept().await {
             tokio::spawn(async move {
-                // A body that is declared and never sent. The connection stays open, which
-                // is what a stalled download looks like.
                 let _ = stream
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\n\r\n")
                     .await;
@@ -148,8 +127,7 @@ pub enum Answer {
         bytes: Vec<u8>,
         declared: Option<usize>,
     },
-    /// 200 with this body in one chunk, and no `Content-Length` at all: the length is
-    /// known only as the body arrives.
+    /// 200 with this body in one chunk, and no `Content-Length`.
     Chunked(Vec<u8>),
 }
 
@@ -170,11 +148,9 @@ impl Answer {
     }
 }
 
-/// The address of a server that answers requests with `answers` in order, repeating the
-/// last one once they run out.
-///
-/// For tests of a fetch: a status it must not retry, a body over a ceiling, a connection
-/// that closes before the second attempt succeeds.
+/// A server that answers requests with `answers` in order, repeating the last one once
+/// they run out. `answers` must not be empty.
+/// Returns its address.
 pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -190,9 +166,6 @@ pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
             let answer = answers[request.min(answers.len() - 1)].clone();
             request += 1;
             tokio::spawn(async move {
-                // The request is read and dropped: what it asked for does not change the
-                // answer, and a client that gets a response before it finished writing
-                // sees a broken pipe instead.
                 let mut buffer = [0_u8; 4096];
                 let _ = stream.read(&mut buffer).await;
                 let response = match answer {

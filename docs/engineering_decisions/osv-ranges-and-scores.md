@@ -26,7 +26,9 @@ reported unenforced.
 
 A range's events are sorted by version. `introduced` opens an interval, the next `fixed` or
 `last_affected` closes it, and one left open has no upper bound. That is the OSV schema's
-evaluation, run once at load. The loader has no list of a package's versions to expand an
+evaluation, run once at load. The sort is stable, so events at one version keep the
+record's order. An `introduced` inside an open interval changes nothing, and an end with
+no interval open is ignored. `0` means "before the first version" only as `introduced`. The loader has no list of a package's versions to expand an
 interval against, and Postgres does not order SemVer, so intervals are compared in Rust over
 the rows `Intel::package` returns. `Intel::lookup`, which only tests call, is now
 `for_version` over `package` too.

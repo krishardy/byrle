@@ -1,12 +1,6 @@
-//! [`Analyses`] over Postgres, in the database the intel store already uses.
+//! [`Analyses`] over Postgres, in the pool and database the intel store already uses.
 //!
-//! One pool, not two. The analyses are written on the request path and the advisories are
-//! read on it, so a second pool would double the connections a proxy holds for one
-//! database. [`crate::intel::postgres::PgIntel::pool`] hands this one over, and
-//! `PgIntel::migrate` applies `migrations/0009_artifact_analysis.sql` and
-//! `migrations/0010_artifact_attestation.sql` with the rest.
-//!
-//! Tested by `tests/postgres.rs`, which `make test-integration` runs against a container.
+//! Tested by `tests/postgres.rs`. See docs/engineering_decisions/artifact-analysis-store.md.
 
 use crate::analysis::InstallScripts;
 use crate::analysis::attestation::{Attested, verifier_id};
@@ -57,9 +51,6 @@ impl PgAnalyses {
         };
         let mut tx = self.pool.begin().await.map_err(AnalysisError::Backend)?;
 
-        // Re-analysing the same bytes is not an error: two clients can ask for one
-        // artifact at once. The later answer replaces the earlier one, which is the same
-        // answer unless the reader itself changed.
         let id = sqlx::query_scalar!(
             r#"
             INSERT INTO artifact_analysis (digest, ecosystem, name, version, unreadable, reader)
@@ -84,9 +75,6 @@ impl PgAnalyses {
         .await
         .map_err(AnalysisError::Backend)?;
 
-        // The scripts are replaced rather than merged. A name the new answer does not
-        // carry is a script the artifact no longer declares, and leaving it would report
-        // a script no reader found.
         sqlx::query!(
             "DELETE FROM artifact_install_script WHERE analysis_id = $1",
             id
@@ -113,8 +101,6 @@ impl PgAnalyses {
     }
 
     async fn read(&self, digest: &Sri) -> Result<Option<Analysis>, AnalysisError> {
-        // One row per script, or one row with no script for an artifact that declares
-        // none and for one that could not be read.
         let rows = sqlx::query!(
             r#"
             SELECT
@@ -139,8 +125,6 @@ impl PgAnalyses {
         let Some(first) = rows.first() else {
             return Ok(None);
         };
-        // An unreadable archive was never asked, so any script row against it would be
-        // one nothing wrote. The column decides, not the absence of rows.
         let scripts = match &first.unreadable {
             Some(why) => Scripts::Unreadable(why.clone()),
             None => {
@@ -222,7 +206,6 @@ impl PgAnalyses {
         .fetch_optional(&self.pool)
         .await
         .map_err(AnalysisError::Backend)?;
-        // The table's CHECK sets exactly one of the two.
         Ok(row.map(|row| match (row.identity, row.failure) {
             (Some(identity), _) => Attested::Verified { identity },
             (None, why) => Attested::Failed {

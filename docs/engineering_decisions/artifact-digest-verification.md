@@ -67,7 +67,8 @@ records, largest 3,822 (typescript). Counting entries would treat those as equal
   `package-lock.json` and requests no packuments at all, so on the standard CI path every
   artifact was unverified. Measured: 69 tarballs, zero packument requests, zero digests
   known. With the fetch, 69 of 69 verify, at a mean 56 ms per package and no change to
-  the install's wall-clock time. The same mechanism covers a 304, a restarted proxy, and
+  the install's wall-clock time. `npm::Client` asks for gzip and decodes it: those 69
+  packuments are 1.59 MB uncompressed and 0.52 MB gzipped. The same mechanism covers a 304, a restarted proxy, and
   an evicted entry.
 - If that fetch also fails, the artifact is forwarded and logged as unverified. Stage 1
   does not fail an install over what it could not inspect; Stage 2 has to decide whether
