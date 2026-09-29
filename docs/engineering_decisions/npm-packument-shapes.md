@@ -57,6 +57,36 @@ A missing publish time must not read as old enough. `repository.url` is kept ver
 `git+https://` included, and `directory` holds a monorepo package's subdirectory, such as
 `packages/babel-traverse` for `@babel/traverse`.
 
+Publish times are in the full document's `time` map and nowhere else. The registry serves no
+projection of it: `?fields=time` returns the whole document and `/<package>/time` is a 404,
+both checked against registry.npmjs.org. `npm::parse_publish_times` reads only the map,
+without building 3,823 records for typescript to read one field each. `created` and
+`modified` share the map and are not versions; npm's semver parsing refuses a version by
+either name.
+
+`npm deprecate pkg@range ""` clears a deprecation and npm then omits the key: of 566
+deprecated versions across ten packages on 2026-09-20, none carried an empty message. An
+empty one is read as not deprecated. The install scripts are `preinstall`, `install` and
+`postinstall`; `prepare` and `prepublish` run when building from git or publishing, not when
+installing a registry tarball. A maintainer entry with no name keeps an empty name rather
+than being dropped, since the number of maintainers is itself a signal.
+
+`real_packuments_normalise_without_skipping_anything` runs over a corpus on disk and is
+ignored by default. Fill one directory per document kind and name them in
+`WAHAROA_NPM_CORPUS` (abbreviated) and `WAHAROA_NPM_CORPUS_FULL`:
+
+```text
+curl -H "Accept: application/vnd.npm.install-v1+json" \
+    https://registry.npmjs.org/typescript > abbrev/typescript.json
+curl -H "Accept: application/json" \
+    https://registry.npmjs.org/typescript > full/typescript.json
+cargo test --lib -- --ignored --nocapture
+```
+
+It fails on any skipped version, checks every tarball URL classifies to the package the
+document names and is on a reachable origin, and checks that rewriting every URL to the
+origin it already names gives back the original bytes.
+
 `repository`'s deserializer is written by hand rather than `#[serde(untagged)]`. `untagged`
 buffers into an intermediate value and tries each variant, which discards
 `deny_unknown_fields` on the variants and turns a field error into "no variant matched". It

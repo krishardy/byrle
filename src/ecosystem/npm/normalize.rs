@@ -15,13 +15,8 @@ use super::paths::tarball_filename;
 use super::wire::{WireDist, WireMaintainer, WirePackument, WireVersion};
 
 /// Turn a packument body into records.
-///
-/// `detail` says which document this is, and comes from what was asked for: the
-/// `Accept` header sent, or the `Content-Type` returned. It is not inferred from the
-/// content, because it qualifies every absent field in the result. Labelling an
-/// abbreviated document `Full` would report "npm publishes no timestamp for this
-/// version" when the truth is that nobody asked for one, and [`PackageRecord`]'s whole
-/// `source` field exists to keep those apart.
+/// `detail` says which document this is, from the `Accept` sent or the `Content-Type`
+/// returned, never inferred from the content, because it qualifies every absent field.
 pub fn normalize_packument(
     body: &[u8],
     detail: DocumentDetail,
@@ -77,10 +72,6 @@ fn version_record(
         .ok_or("version has no `dist.tarball`")?
         .to_owned();
 
-    // Publish time comes from the document-level `time` map keyed by version. `created`
-    // and `modified` live in the same map and describe the package, not a version; a
-    // version literally named "created" would collide, and npm's own semver parsing
-    // rejects that name, so the lookup is safe as written.
     let published_at = wire
         .time
         .get(version)
@@ -101,17 +92,11 @@ fn version_record(
         published_at,
         maintainers,
         repository,
-        // `npm deprecate pkg@range ""` removes a deprecation, and npm then omits the key:
-        // of 566 deprecated versions across ten packages on 2026-09-20, none carried an
-        // empty message. An empty one is read as not deprecated rather than as a
-        // deprecation with nothing to say.
         deprecated: entry
             .deprecated
             .clone()
             .filter(|message| !message.trim().is_empty()),
         has_install_scripts: scripts,
-        // npm has no yank. A version is published or unpublished, and an unpublished one
-        // is not in the packument at all.
         yanked: None,
         install_scripts: entry.scripts.as_ref().map(install_scripts),
         provenance: provenance(entry, dist),
@@ -127,16 +112,11 @@ fn version_record(
             spec: spec.clone(),
         })
         .collect(),
-        // One file. An npm version resolves to one tarball, so the version-level
-        // install-scripts answer and the file's own are the same answer.
         artifacts: vec![Artifact {
             filename: tarball_filename(&url),
             runs_install_scripts: scripts,
             yanked: None,
             url,
-            // Absent on two versions in the measured corpus, both from 2012. A record
-            // with no `integrity` has only a SHA-1 digest behind it, which the policy
-            // engine has to be able to see rather than have papered over here.
             integrity: dist.integrity.clone(),
             legacy_sha1: dist.shasum.clone(),
             attestation_url: dist.attestations.as_ref().and_then(|a| a.url.clone()),
@@ -146,17 +126,11 @@ fn version_record(
     })
 }
 
-/// The three lifecycle scripts npm runs on install. `prepare` and `prepublish` are
-/// deliberately absent: they run when building from a git dependency or publishing, not
-/// when installing a registry tarball.
+/// The three lifecycle scripts npm runs when installing a registry tarball.
 const INSTALL_SCRIPT_NAMES: [&str; 3] = ["preinstall", "install", "postinstall"];
 
-/// Answer the same question from either document.
-///
-/// The abbreviated packument states it outright. The full packument never carries
-/// `hasInstallScript` and has to be read from `scripts`. Checked equivalent across
-/// 24,852 version pairs with no disagreement; see
-/// `record::PackageRecord::has_install_scripts`.
+/// Whether installing runs a script: `hasInstallScript` in the abbreviated document,
+/// `scripts` in the full one. `entry` is one version of either.
 fn has_install_scripts(entry: &WireVersion) -> bool {
     if let Some(flag) = entry.has_install_script {
         return flag;
@@ -183,10 +157,6 @@ fn install_scripts(scripts: &BTreeMap<String, String>) -> BTreeMap<String, Strin
 
 fn maintainer(wire: &WireMaintainer) -> Maintainer {
     Maintainer {
-        // No maintainer entry in the measured corpus lacked a name, but `name` is not
-        // guaranteed by any schema. An entry missing one keeps an empty name rather
-        // than being dropped, because the number of maintainers is itself a signal the
-        // heuristics read.
         name: wire.name.clone().unwrap_or_default(),
         email: wire.email.clone(),
     }
@@ -220,17 +190,7 @@ fn provenance(entry: &WireVersion, dist: &WireDist) -> Provenance {
     }
 }
 
-/// Only the `time` map, out of a full packument.
-///
-/// npm publishes version timestamps in the full document and nowhere else. The
-/// abbreviated document that `npm install` asks for has no `time` map at all, and the
-/// registry serves no projection of one: `?fields=time` returns the whole document
-/// unchanged and `/<package>/time` is a 404, both checked against registry.npmjs.org.
-///
-/// So reading a publish date means fetching the full document, which is 1.7x to 3.6x the
-/// abbreviated one on eight packages measured, and 15.7 MB for typescript. This parses
-/// only the map rather than normalising, because building 3,823 records to read one field
-/// per version is the part worth not doing.
+/// Only the `time` map, out of a full packument, without building its records.
 #[derive(Deserialize)]
 struct WireTimes {
     #[serde(default)]
@@ -341,7 +301,6 @@ mod tests {
         );
     }
 
-    // The corpus run below is the only caller, and it is compiled out under `cfg(coverage)`.
     #[cfg(not(coverage))]
     use super::super::{DEFAULT_REGISTRY, classify_path};
     #[cfg(not(coverage))]
@@ -360,9 +319,7 @@ mod tests {
         );
     }
 
-    /// `created` and `modified` sit in the same map and describe the package. A version
-    /// named either would be rejected by npm's own semver parsing, so dropping them
-    /// cannot lose a real version.
+    /// `created` and `modified` sit in the `time` map and are not versions.
     #[test]
     fn the_package_level_timestamps_are_not_versions() {
         let times = parse_publish_times(
@@ -459,10 +416,8 @@ mod tests {
         assert!(!r.may_be_incomplete());
     }
 
-    /// `dist-tags.latest` is kept as a string and never resolved into a record here.
-    /// The lodash fixture is the case: it tags 4.18.1 as latest while carrying only
-    /// 4.17.21 in `versions`, and a resolver that assumed the tag names a present
-    /// version would panic or invent one.
+    /// `dist-tags.latest` is kept as a string: the lodash fixture tags 4.18.1 as latest
+    /// while carrying only 4.17.21.
     #[test]
     fn dist_tag_latest_may_name_a_version_the_document_does_not_carry() {
         let p = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
@@ -471,9 +426,7 @@ mod tests {
         assert_eq!(p.records.len(), 1);
     }
 
-    /// `created` and `modified` share the `time` map with real versions and are package
-    /// metadata. Reading either as a publish time would date every version to the same
-    /// instant.
+    /// `created` and `modified` in the `time` map do not become versions.
     #[test]
     fn time_map_metadata_keys_do_not_become_versions() {
         let p = normalized("lodash-4.17.21.full.json", DocumentDetail::Full);
@@ -482,9 +435,7 @@ mod tests {
         assert!(p.version("modified").is_none());
     }
 
-    /// The pairing is the point of the fixtures: the same package read both ways must
-    /// agree on the install-script question, which each document answers by a different
-    /// route.
+    /// The same package read from both documents agrees on install scripts.
     #[test]
     fn install_script_detection_agrees_across_both_documents() {
         for (abbrev, full, expected) in [
@@ -542,9 +493,7 @@ mod tests {
         );
     }
 
-    /// Identity comes from the document's `name`, and a scoped name has to survive the
-    /// trip into a purl. This is the case most likely to regress, because npm and OSV
-    /// each write scopes differently.
+    /// A scoped name from the document's `name` survives the trip into a purl.
     #[test]
     fn scoped_name_round_trips_from_document_to_purl() {
         let p = normalized(
@@ -708,9 +657,8 @@ mod tests {
         );
     }
 
-    /// A body the normaliser cannot read is our gap, not an upstream outage. The error
-    /// type keeps it separate from a transport failure so the proxy never answers 502
-    /// for it.
+    /// A body the normaliser cannot read is a normalise error, not a fetch error, so the
+    /// proxy never answers 502 for it.
     #[test]
     fn malformed_bodies_are_a_normalize_error_not_a_fetch_error() {
         assert!(matches!(
@@ -722,29 +670,8 @@ mod tests {
             Err(NormalizeError::Json(_)),
         ));
     }
-    /// Fixtures are curated, so they only prove the normaliser handles what was chosen
-    /// for it. This runs it over whole real packuments instead.
-    ///
-    /// Compiled out under `cfg(coverage)`, which `make coverage` sets, along with the
-    /// two live tests below. None of them run in a coverage build, and counting the
-    /// body of a test that cannot run reports a gap in the test suite that is not one.
-    ///
-    /// Ignored by default because it needs a corpus on disk. Populate one per document
-    /// kind and point the two environment variables at them:
-    ///
-    /// ```text
-    /// curl -H "Accept: application/vnd.npm.install-v1+json" \
-    ///     https://registry.npmjs.org/typescript > abbrev/typescript.json
-    /// curl -H "Accept: application/json" \
-    ///     https://registry.npmjs.org/typescript > full/typescript.json
-    /// cargo test --lib -- --ignored --nocapture
-    /// ```
-    ///
-    /// with [`crate::env::NPM_CORPUS`] set to `abbrev` and [`crate::env::NPM_CORPUS_FULL`]
-    /// to `full`.
-    ///
-    /// It fails on any skipped version. A registry shape the normaliser cannot read is
-    /// exactly what fixtures will not surface.
+    /// Whole real packuments normalise without a skipped version. Ignored by default; see
+    /// docs/engineering_decisions/npm-packument-shapes.md for the corpus it needs.
     #[cfg(not(coverage))]
     #[test]
     #[ignore = "needs a corpus directory of packuments; see the doc comment"]
@@ -772,9 +699,6 @@ mod tests {
             check_corpus(dir, *detail);
         }
 
-        // With both corpora present, the pairing is checkable at corpus scale: the same
-        // version read two ways must agree on whether installing it runs a script, a
-        // question each document answers by a different route.
         if corpora.len() == 2 {
             cross_check_install_scripts(&corpora[0].0, &corpora[1].0);
         }
@@ -855,8 +779,6 @@ mod tests {
                             path.display()
                         );
 
-                        // Every real tarball URL has to classify, and has to classify
-                        // to the same package the document names.
                         let url_path = record
                             .artifact()
                             .expect("one file")
@@ -865,8 +787,6 @@ mod tests {
                             .and_then(|(_, rest)| rest.split_once('/'))
                             .map(|(_, p)| format!("/{p}"))
                             .unwrap_or_default();
-                        // Every artifact a real registry publishes has to be one the
-                        // proxy will see, or verification never gets a chance.
                         assert_eq!(
                             bypassing_origin(
                                 &record.artifact().expect("one file").url,
@@ -889,18 +809,12 @@ mod tests {
                 Err(e) => failures.push(format!("{}: {e}", path.display())),
             }
 
-            // Every real document has to survive the rewrite, and putting the URLs back
-            // has to give the original bytes. That is the property re-serialising into a
-            // JSON value could not offer.
             if let Ok(p) = normalize_packument(&body, detail) {
                 let artifacts: Vec<String> = p
                     .records
                     .iter()
                     .map(|r| r.artifact().expect("one file").url.clone())
                     .collect();
-                // Rewriting to the origin the URLs already name: every artifact is
-                // found and replaced, and the result has to be the original bytes. That
-                // exercises the whole copy path and checks that nothing but a URL moves.
                 match rewrite_artifact_origins(
                     &body,
                     artifacts.iter().map(String::as_str),
@@ -933,10 +847,7 @@ mod tests {
         assert!(failures.is_empty(), "{}", failures.join("\n"));
     }
 
-    /// npm did not always publish SRI digests. `event-stream@0.9.1` (2012) carries only
-    /// `dist.shasum`, so a record can exist with no `integrity` at all, and the policy
-    /// engine has to be able to tell that apart from a strong digest it simply did not
-    /// read.
+    /// `event-stream@0.9.1`, from 2012, carries only `dist.shasum` and no `integrity`.
     #[test]
     fn a_pre_sri_version_has_a_sha1_and_no_integrity() {
         let p = normalized(
@@ -955,9 +866,7 @@ mod tests {
         assert_eq!(r.artifact().expect("one file").unpacked_size, None);
     }
 
-    /// npm's `deprecated`, carried in both documents. It is reported and never refused:
-    /// npm installs a deprecated version after printing a warning, and no npm client skips
-    /// one. See `docs/engineering_decisions/yanked-files.md`.
+    /// npm's `deprecated`, carried in both documents, is read with its message.
     #[test]
     fn a_deprecated_version_carries_the_message_its_publisher_left() {
         for (name, detail) in [
@@ -974,7 +883,6 @@ mod tests {
         let lodash = normalized("lodash-4.17.21.abbrev.json", DocumentDetail::Abbreviated);
         assert_eq!(lodash.records[0].deprecated, None, "no key is no message");
 
-        // `npm deprecate pkg@range ""` removes the deprecation.
         let undeprecated = br#"{"name":"x","dist-tags":{"latest":"1.0.0"},"versions":{"1.0.0":{
             "name":"x","version":"1.0.0","deprecated":"","dist":{
             "tarball":"https://registry.npmjs.org/x/-/x-1.0.0.tgz","integrity":"sha512-AAAA"}}}}"#;
@@ -982,9 +890,7 @@ mod tests {
         assert_eq!(p.records[0].deprecated, None, "an empty message is not one");
     }
 
-    /// `rimraf@1.0.0` is the shorthand string form in the wild, and its document also
-    /// gives the package-level `repository` as an object. The version's own value is
-    /// what was true at publish time, so it has to win.
+    /// `rimraf@1.0.0`'s own shorthand `repository` wins over the package-level object.
     #[test]
     fn version_repository_overrides_the_package_level_one() {
         let p = normalized("rimraf-1.0.0.full.json", DocumentDetail::Full);
@@ -1003,9 +909,7 @@ mod tests {
         );
     }
 
-    /// A version whose only lifecycle entry is `test` runs nothing on install. `prepare`
-    /// and `prepublish` are likewise excluded: they run when building from git or
-    /// publishing, not when installing a registry tarball.
+    /// `test`, `prepare` and `prepublish` do not set the install-scripts flag.
     #[test]
     fn non_install_lifecycle_scripts_do_not_set_the_flag() {
         let p = normalized("rimraf-1.0.0.full.json", DocumentDetail::Full);
@@ -1029,9 +933,7 @@ mod tests {
         ReachableOrigins::new([DEFAULT_REGISTRY], std::iter::empty()).expect("valid origins")
     }
 
-    /// Casing is preserved end to end. `pkg:npm/AdultJS` is a malicious-package advisory
-    /// and `pkg:npm/adultjs` matches nothing, so lowercasing anywhere on this path loses
-    /// the match (see `identity`).
+    /// A document name's casing is preserved end to end, as `pkg:npm/AdultJS` needs.
     #[test]
     fn document_name_casing_is_preserved() {
         let body = br#"{"name":"AdultJS","versions":{"1.0.0":{"version":"1.0.0","dist":{
