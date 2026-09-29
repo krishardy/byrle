@@ -1,11 +1,6 @@
 //! The command line: which command runs, and its arguments.
 //!
-//! Parsed by clap with its default features off, which leaves no colour and no typo
-//! suggestions. See `docs/engineering_decisions/cli-parser-clap.md`. The proxy itself is
-//! configured through the environment, which [`crate::env::help`] lists after the generated
-//! help.
-//!
-//! Parsing is here rather than in `main.rs` so it is tested inside the coverage floor.
+//! See `docs/engineering_decisions/cli-parser-clap.md`.
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
@@ -41,9 +36,12 @@ pub enum Command {
     /// Work with policy files
     #[command(subcommand)]
     Policy(PolicyCommand),
-    /// Ask a running proxy for every artifact a lockfile locks, so each is analysed before
-    /// a client asks for it. The exit code is the OR of 1 for a failure and 2 for an
-    /// artifact still being analysed, and 4 on its own for an error
+    #[command(
+        about = "Ask a running proxy for every artifact a lockfile locks, so each is \
+                       analysed before a client asks for it. The exit code is the OR of 1 for \
+                       a failure and 2 for an artifact still being analysed, and 4 on its own \
+                       for an error"
+    )]
     Warm(Warm),
     #[command(about = format!(
         "Load OSV, GitHub, CISA KEV and Datadog intel into the Postgres at {}",
@@ -54,9 +52,11 @@ pub enum Command {
 
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum AuditCommand {
-    /// Decide each pinned line again from the inputs it recorded. The exit code is the OR of
-    /// 1 for a line that decides differently, 2 for one that cannot be decided again, and 4
-    /// on its own for an error
+    #[command(
+        about = "Decide each pinned line again from the inputs it recorded. The exit \
+                       code is the OR of 1 for a line that decides differently, 2 for one that \
+                       cannot be decided again, and 4 on its own for an error"
+    )]
     Verify(Verify),
 }
 
@@ -122,11 +122,16 @@ pub struct Explain {
 
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum PolicyCommand {
-    /// Load a policy as the proxy does, and list the package entries that do nothing. Exits
-    /// 1 if it is refused
+    #[command(
+        about = "Load a policy as the proxy does, and list the package entries that \
+                       do nothing. Exits 1 if it is refused"
+    )]
     Check(Check),
-    /// Compare two policies over the audit log's and lockfiles' packages. The exit code is the
-    /// OR of 1 for a loosening, 2 for a tightening, and 4 on its own for an error
+    #[command(
+        about = "Compare two policies over the audit log's and lockfiles' packages. \
+                       The exit code is the OR of 1 for a loosening, 2 for a tightening, and 4 \
+                       on its own for an error"
+    )]
     Diff(Diff),
 }
 
@@ -140,9 +145,11 @@ pub struct Check {
     /// Also exit 1 when an entry changes nothing or never wins
     #[arg(long)]
     pub strict: bool,
-    /// Ask each registry when the versions cooldown waivers name were published, and
-    /// report the waivers their version no longer needs
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Ask each registry when the versions cooldown waivers name were published, and \
+                report the waivers their version no longer needs"
+    )]
     pub fetch: bool,
 }
 
@@ -527,8 +534,11 @@ mod tests {
         ] {
             stops(args, kind);
         }
-        // Exit 0, where every refusal above exits 2.
-        assert_eq!(stops(&["--help"], ErrorKind::DisplayHelp).exit_code(), 0);
+        assert_eq!(
+            stops(&["--help"], ErrorKind::DisplayHelp).exit_code(),
+            0,
+            "help exits 0, where every refusal above exits 2"
+        );
         assert_eq!(
             stops(&["doctr"], ErrorKind::InvalidSubcommand).exit_code(),
             2
@@ -539,8 +549,6 @@ mod tests {
     /// too.
     #[test]
     fn the_help_renders_as_the_golden_files_say() {
-        // Rendered from the parse, which is what the binary prints: a subcommand rendered on
-        // its own omits `waharoa` from its usage line.
         for (args, name) in [
             (["--help"].as_slice(), "help.txt"),
             (&["explain", "--help"], "explain.txt"),
