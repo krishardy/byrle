@@ -5,7 +5,7 @@
 //! keeps the logging setup, the listener and the exit codes.
 
 use std::ffi::OsString;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 
 use tracing::{error, info, warn};
@@ -61,62 +61,100 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
 ) -> Result<Started, StartupError> {
     let listen = environment.listen()?;
     let upstreams = environment.upstreams()?;
-
-    // reqwest 0.13 defaults to rustls with rustls-platform-verifier, so the upstream leg
-    // validates against the OS trust store. The inbound leg stays plain HTTP on
-    // loopback: decision #3 is reverse proxy first, CA-terminating forward proxy later.
-    //
-    // The `gzip` feature is off, so reqwest never decompresses behind our back and
-    // bodies can be forwarded with their `Content-Encoding` intact.
-    //
-    // A connect timeout and a read timeout, and no total one: an upstream that stops
-    // sending ends the request it holds, and a slow download that keeps arriving does not.
-    let mut builder = crate::http::client_builder(crate::http::READ_TIMEOUT);
-    let mut bundle_path: Option<PathBuf> = None;
-
-    // A private registry with an internal CA, or a corporate TLS-inspecting middlebox,
-    // needs roots the OS store may not carry. `env::CA_BUNDLE_EXCLUSIVE` set to 1 drops the
-    // public roots entirely, which pins the upstream to whoever issued the bundle.
-    if let Some(path) = environment.ca_bundle()? {
-        let exclusive = environment.ca_bundle_exclusive()?;
-        let mode = if exclusive {
-            TrustMode::Exclusive
-        } else {
-            TrustMode::Merge
-        };
-        // Refusing to start is right: the operator asked for a trust anchor and it is not
-        // there, and continuing would fall back to the platform roots without saying so.
-        let certificates =
-            tls::load_bundle(&path).map_err(|e| StartupError::Unusable(e.to_string()))?;
-        info!(
-            waharoa.tls.bundle = %path.display(),
-            waharoa.tls.certificates = certificates.len(),
-            waharoa.tls.mode = ?mode,
-            "upstream CA bundle loaded"
-        );
-        if exclusive {
-            info!("public roots are NOT trusted for the upstream connection");
-        }
-        builder = tls::apply(builder, certificates, mode);
-        bundle_path = Some(path);
-    }
-
-    let client = match bundle_path.as_deref() {
-        Some(path) => {
-            tls::build(builder, path).map_err(|e| StartupError::Unusable(e.to_string()))?
-        }
-        None => builder
-            .build()
-            .map_err(|e| StartupError::Unusable(format!("upstream HTTP client: {e}")))?,
-    };
-
+    let client = upstream_client(environment)?;
     let max_metadata_bytes = environment.max_metadata_bytes()?;
     let max_records = environment.max_records()?;
     let max_verified = environment.max_verified()?;
+    let (public_base, rewrite_artifacts) = artifact_urls(environment)?;
+    let max_concurrent = environment.max_concurrent_metadata()?;
+    let served_origins = environment.artifact_origins()?;
+    let allowed_direct = environment.allow_direct_origins()?;
+    let refusal = refusal_status(environment)?;
+    report_forward_proxy(environment)?;
+    let (mode, refuse_unservable) = serving(environment)?;
+    #[cfg(debug_assertions)]
+    let defer_test = defer_test(environment)?;
+    let (policy, audit) = policy_and_audit(environment)?;
+    let intel = intel_store(environment, policy.is_some()).await?;
+    let analyses: Arc<dyn Analyses> = match &intel {
+        Some(store) => Arc::new(PgAnalyses::new(store.pool().clone())),
+        None => Arc::new(InProcess::new(max_verified)),
+    };
+    let intel = intel.map(|store| Arc::new(store) as Arc<dyn Intel>);
+    let spool = open_spool(environment)?;
 
-    // Artifact URLs are pointed at the proxy so every client in the ecosystem fetches
-    // through it. Setting `env::PUBLIC_URL` pins the address written into them, which is
-    // what lockfiles record; without it the request's own Host is used.
+    let proxy = Proxy::new(client.clone())
+        .with_upstreams(upstreams)
+        .with_intel(intel)
+        .with_spool(Some(spool.clone()))
+        .with_analyser(Some(Arc::new(Analyser::new(
+            client,
+            spool,
+            analyses,
+            environment.max_concurrent_analyses()?,
+            max_verified,
+        ))))
+        .with_refusal_status(refusal)
+        .with_refuse_unservable(refuse_unservable)
+        .with_mode(mode)
+        .with_origin_policy(
+            served_origins.iter().map(String::as_str),
+            allowed_direct.iter().map(String::as_str),
+        )
+        .map_err(|e| StartupError::Unusable(format!("origin configuration: {e}")))?
+        .with_max_concurrent_documents(max_concurrent)
+        .with_max_traffic_clients(environment.max_traffic_clients()?)
+        .with_policy(policy)
+        .with_audit_log(audit)
+        .with_max_metadata_bytes(max_metadata_bytes)
+        .with_max_records(max_records)
+        .with_max_verified(max_verified)
+        .with_artifact_rewriting(rewrite_artifacts)
+        .with_public_base(public_base);
+    #[cfg(debug_assertions)]
+    let proxy = proxy.with_defer_test(defer_test);
+
+    Ok(Started { proxy, listen })
+}
+
+/// The client every upstream request goes through, trusting [`env::CA_BUNDLE`]'s roots
+/// too when it is set, or only them with [`env::CA_BUNDLE_EXCLUSIVE`].
+/// Errors when a bundle is named and does not load.
+fn upstream_client<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<reqwest::Client, StartupError> {
+    let builder = crate::http::client_builder(crate::http::READ_TIMEOUT);
+    let Some(path) = environment.ca_bundle()? else {
+        return builder
+            .build()
+            .map_err(|e| StartupError::Unusable(format!("upstream HTTP client: {e}")));
+    };
+    let exclusive = environment.ca_bundle_exclusive()?;
+    let mode = if exclusive {
+        TrustMode::Exclusive
+    } else {
+        TrustMode::Merge
+    };
+    let certificates =
+        tls::load_bundle(&path).map_err(|e| StartupError::Unusable(e.to_string()))?;
+    info!(
+        waharoa.tls.bundle = %path.display(),
+        waharoa.tls.certificates = certificates.len(),
+        waharoa.tls.mode = ?mode,
+        "upstream CA bundle loaded"
+    );
+    if exclusive {
+        info!("public roots are NOT trusted for the upstream connection");
+    }
+    tls::build(tls::apply(builder, certificates, mode), &path)
+        .map_err(|e| StartupError::Unusable(e.to_string()))
+}
+
+/// [`env::PUBLIC_URL`] and whether artifact URLs are rewritten, warning when rewriting is
+/// off or the address lockfiles record is left to each request's `Host`.
+fn artifact_urls<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<(Option<String>, bool), StartupError> {
     let public_base = environment.public_url()?;
     let rewrite_artifacts = environment.rewrite_artifacts()?;
     if !rewrite_artifacts {
@@ -125,9 +163,6 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
              directly and nothing about them is observed"
         );
     } else if public_base.is_none() {
-        // Measured: with a lockfile whose `resolved` names a proxy address that is no
-        // longer reachable, `npm ci` fails outright. It does not fall back to the
-        // registry it was given on the command line.
         warn!(
             waharoa.config.variable = %env::PUBLIC_URL,
             waharoa.config.consequence = doctor::WITHOUT_PUBLIC_URL,
@@ -135,21 +170,13 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
              unreachable. Set it to a stable name"
         );
     }
+    Ok((public_base, rewrite_artifacts))
+}
 
-    let max_concurrent = environment.max_concurrent_metadata()?;
-
-    // Additional origins whose artifacts this proxy serves, for a registry that publishes
-    // them somewhere else. The upstream and the default registry are always included.
-    let served_origins = environment.artifact_origins()?;
-
-    // Origins the proxy does not serve and permits anyway, so the client fetches those
-    // artifacts directly and unexamined. Without this the only escape from a refusal is
-    // setting `env::REFUSE_UNSERVABLE` to 0, which trades one origin's exemption for every
-    // origin's.
-    let allowed_direct = environment.allow_direct_origins()?;
-
-    // What a policy refusal answers with: `env::DEFAULT_REFUSAL_STATUS` unless an operator
-    // finds a client that mishandles it.
+/// What a refusal answers with, warning about each 5xx, which reads as not-ready.
+fn refusal_status<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<crate::refusal::RefusalStatus, StartupError> {
     let refusal = environment.refusal_status()?;
     for status in refusal.misleading() {
         warn!(
@@ -158,10 +185,13 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
              than as policy denying the request (plan §5 reserves 5xx for not-ready)"
         );
     }
+    Ok(refusal)
+}
 
-    // Versions whose artifacts are published where this proxy cannot see them are removed
-    // from the packument, so a resolver picks one that can be examined. Setting this to 0
-    // forwards them instead, and the client then fetches those artifacts directly.
+/// Log the forward proxy upstream traffic goes through, when one is set.
+fn report_forward_proxy<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<(), StartupError> {
     if let Some([https, http, direct]) = environment.upstream_proxy()?.fields() {
         info!(
             waharoa.forward_proxy.https = https,
@@ -170,6 +200,14 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
             "upstream traffic goes through a forward proxy"
         );
     }
+    Ok(())
+}
+
+/// [`env::MODE`] and [`env::REFUSE_UNSERVABLE`], warning when either serves what enforce
+/// mode would refuse.
+fn serving<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<(crate::refusal::Mode, bool), StartupError> {
     let mode = environment.mode()?;
     if mode == crate::refusal::Mode::Observe {
         warn!(
@@ -185,30 +223,37 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
              fetches them without the proxy seeing them"
         );
     }
+    Ok((mode, refuse_unservable))
+}
 
-    // Debug builds only, and the module is not compiled into a release binary at all: an
-    // env var that makes a proxy turn traffic away is a denial-of-service switch. The
-    // warning is loud because a proxy answering 429 to everything looks like a bug.
-    #[cfg(debug_assertions)]
-    let defer_test = environment.defer_test()?.inspect(|deferral| {
+/// [`env::DEFER_TEST`], warned about when set: it turns traffic away.
+#[cfg(debug_assertions)]
+fn defer_test<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<Option<crate::defer::DeferTest>, StartupError> {
+    Ok(environment.defer_test()?.inspect(|deferral| {
         warn!(
             waharoa.defer_test = %deferral,
             waharoa.config.variable = %env::DEFER_TEST,
             "set: matching requests are answered with a deferral and never fetched. This is \
              a measurement harness, not a feature"
         );
-    });
+    }))
+}
 
-    // Loaded, validated and reported. Not consulted for any decision: the engine is
-    // Stage 2 work in progress, and a policy that silently did nothing would be worse
-    // than no policy at all, so the log says so every time.
+/// A policy and an audit log, each when configured.
+type PolicyAndAudit = (Option<Arc<Policy>>, Option<Arc<AuditLog>>);
+
+/// The policy and the audit log, each when configured, warning when a policy has no log
+/// to record its decisions in.
+/// Errors when either is named and cannot be loaded or opened.
+fn policy_and_audit<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<PolicyAndAudit, StartupError> {
     let policy = match environment.policy()? {
         Some(path) => Some(report_policy(&path, environment.expiry_ceiling_days()?)?),
         None => None,
     };
-
-    // An operator who asked for an audit log and silently did not get one would believe
-    // decisions were being recorded.
     let audit = match environment.audit_log()? {
         Some(path) => {
             let log = AuditLog::open(&path).map_err(|e| {
@@ -225,46 +270,55 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
             "no audit log configured, so policy decisions are not recorded"
         );
     }
+    Ok((policy, audit))
+}
 
-    // Refusing to start is right, as for the audit log: an operator who configured a store
-    // and silently did not get one would believe known_malware was being enforced.
+/// The intel store at [`env::DATABASE_URL`], when set, warning which checks a policy can
+/// enforce from it and each gap in its snapshot.
+/// Errors when the store is named and cannot be opened.
+async fn intel_store<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+    has_policy: bool,
+) -> Result<Option<postgres::PgIntel>, StartupError> {
     let intel = postgres::from_env(environment)
         .await
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DATABASE_URL)))?;
-    match (&intel, &policy) {
-        (Some(store), Some(_)) => {
-            warn!(
-                waharoa.config.variable = %env::DATABASE_URL,
-                "ENFORCED: known_malware and max_cvss, from the intel store, and kev once the \
-                 store has loaded the KEV catalogue. A store that cannot answer, or holds no \
-                 snapshot, is a 503 for every package"
-            );
-            // The snapshot loaded now. `waharoa doctor` reports the same for a later one.
-            if let Ok(Some(snapshot)) = store.snapshot().await {
-                for gap in snapshot.gaps() {
-                    warn!(waharoa.intel.gap = %gap, "the intel snapshot has a gap");
-                }
-            }
-        }
-        (None, Some(_)) => warn!(
+    if has_policy {
+        warn_enforcement(intel.as_ref()).await;
+    }
+    Ok(intel)
+}
+
+/// Warn which checks a policy enforces from `store`, and each gap in its snapshot; or,
+/// with no store, which it cannot enforce.
+async fn warn_enforcement(store: Option<&postgres::PgIntel>) {
+    let Some(store) = store else {
+        warn!(
             waharoa.config.variable = %env::DATABASE_URL,
             "NOT ENFORCED: known_malware, max_cvss and kev. The variable is not set, so there \
              is no intel store to ask"
-        ),
-        _ => {}
-    }
-
-    // What analysing an artifact found is kept in the intel store's database when there is
-    // one, and otherwise in this process only, so a restart analyses each artifact again.
-    let analyses: Arc<dyn Analyses> = match &intel {
-        Some(store) => Arc::new(PgAnalyses::new(store.pool().clone())),
-        None => Arc::new(InProcess::new(max_verified)),
+        );
+        return;
     };
-    let intel = intel.map(|store| Arc::new(store) as Arc<dyn Intel>);
+    warn!(
+        waharoa.config.variable = %env::DATABASE_URL,
+        "ENFORCED: known_malware and max_cvss, from the intel store, and kev once the store \
+         has loaded the KEV catalogue. A store that cannot answer, or holds no snapshot, is a \
+         503 for every package"
+    );
+    let Ok(Some(snapshot)) = store.snapshot().await else {
+        return;
+    };
+    for gap in snapshot.gaps() {
+        warn!(waharoa.intel.gap = %gap, "the intel snapshot has a gap");
+    }
+}
 
-    // Refusing to start is right: a second proxy on the same directory would remove the
-    // first one's files, and a directory that cannot be written is a proxy that cannot
-    // analyse. Every spool file present now was left by a process that ended.
+/// The spool at [`env::SPOOL_DIR`], with the files an earlier process left removed.
+/// Errors when it cannot be opened, or another proxy holds it.
+fn open_spool<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<Arc<Spool>, StartupError> {
     let spool_dir = environment.spool_dir()?;
     let (spool, swept) = Spool::open(&spool_dir, environment.max_artifact_bytes()?)
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::SPOOL_DIR)))?;
@@ -274,42 +328,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         waharoa.spool.swept = swept,
         "spool open; files left by an earlier process removed"
     );
-    let spool = Arc::new(spool);
-
-    let proxy = Proxy::new(client.clone())
-        .with_upstreams(upstreams)
-        .with_intel(intel)
-        .with_spool(Some(spool.clone()))
-        .with_analyser(Some(Arc::new(Analyser::new(
-            client.clone(),
-            spool,
-            analyses,
-            environment.max_concurrent_analyses()?,
-            max_verified,
-        ))))
-        .with_refusal_status(refusal)
-        .with_refuse_unservable(refuse_unservable)
-        .with_mode(mode)
-        .with_origin_policy(
-            served_origins.iter().map(String::as_str),
-            allowed_direct.iter().map(String::as_str),
-        )
-        // Refusing to start is right: an origin the operator named and that was quietly
-        // dropped would leave them believing those artifacts are covered.
-        .map_err(|e| StartupError::Unusable(format!("origin configuration: {e}")))?
-        .with_max_concurrent_documents(max_concurrent)
-        .with_max_traffic_clients(environment.max_traffic_clients()?)
-        .with_policy(policy)
-        .with_audit_log(audit)
-        .with_max_metadata_bytes(max_metadata_bytes)
-        .with_max_records(max_records)
-        .with_max_verified(max_verified)
-        .with_artifact_rewriting(rewrite_artifacts)
-        .with_public_base(public_base);
-    #[cfg(debug_assertions)]
-    let proxy = proxy.with_defer_test(defer_test);
-
-    Ok(Started { proxy, listen })
+    Ok(Arc::new(spool))
 }
 
 /// Load a policy and report what it says.
@@ -339,18 +358,29 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
          A refused version is removed from the metadata document so the resolver picks \
          another, and a pinned fetch of one is refused"
     );
-    if policy.uses_cooldown() {
-        for (ecosystem, cost) in crate::ecosystem::cooldown_costs() {
-            warn!(
-                waharoa.policy.cooldown_days = policy.cooldown_days,
-                waharoa.ecosystem = %ecosystem,
-                waharoa.cooldown.cost = cost,
-                "cooldown_days is enforced, at a cost to the ecosystem"
-            );
-        }
+    warn_cooldown_costs(&policy);
+    warn_idle_exceptions(&policy, &report);
+    Ok(Arc::new(policy))
+}
+
+/// Warn, per ecosystem, what a cooldown costs, when the policy sets one.
+fn warn_cooldown_costs(policy: &Policy) {
+    if !policy.uses_cooldown() {
+        return;
     }
-    // An entry that does nothing is valid and worth saying out loud. `waharoa policy check`
-    // and `doctor` report the same entries.
+    for (ecosystem, cost) in crate::ecosystem::cooldown_costs() {
+        warn!(
+            waharoa.policy.cooldown_days = policy.cooldown_days,
+            waharoa.ecosystem = %ecosystem,
+            waharoa.cooldown.cost = cost,
+            "cooldown_days is enforced, at a cost to the ecosystem"
+        );
+    }
+}
+
+/// Warn about each exception that changes nothing or never wins, as `waharoa policy check`
+/// and `doctor` report them.
+fn warn_idle_exceptions(policy: &Policy, report: &check::Report) {
     for &index in &report.unchanged {
         warn!(
             waharoa.policy.exception = packages::label(index),
@@ -365,8 +395,6 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
             "policy exception never wins"
         );
     }
-
-    Ok(Arc::new(policy))
 }
 
 /// Load the policy file again and put it in force, as startup loads it. The policy in
@@ -415,6 +443,7 @@ mod tests {
     use crate::ecosystem::{npm, pypi};
     use crate::env::testing::with;
     use crate::identity::Ecosystem;
+    use std::path::PathBuf;
 
     /// `pairs`, with a spool directory of this test's own. Tests run at once in one
     /// process, and a second proxy on one directory is refused.
@@ -473,6 +502,7 @@ mod tests {
             "observe mode: what the policy refuses is served and logged",
             "set to 0: artifacts published off this registry are forwarded",
             "policy loaded and validated",
+            "cooldown_days is enforced, at a cost to the ecosystem",
             "no audit log configured, so policy decisions are not recorded",
             "NOT ENFORCED: known_malware, max_cvss and kev",
         ];
@@ -495,7 +525,7 @@ mod tests {
     async fn an_unset_public_url_is_warned_about_and_a_forward_proxy_named() {
         let (started, log) = logged(
             "startup-public",
-            &[(env::HTTPS_PROXY, "http://egress.example:3128")],
+            &[(env::FORWARD_HTTPS, "http://egress.example:3128")],
         )
         .await;
 
@@ -506,6 +536,44 @@ mod tests {
             "{log}"
         );
         assert!(!log.contains("observe mode"), "{log}");
+        assert!(
+            !log.contains("no audit log configured"),
+            "no policy, no log: {log}"
+        );
+    }
+
+    /// Each exception that changes nothing or never wins is warned about, and a policy with
+    /// no cooldown has no cost to warn about.
+    #[tokio::test]
+    async fn a_policy_names_its_idle_exceptions_and_a_cooldown_its_cost() {
+        let dead = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/policy-check/dead.yaml"
+        );
+        let (started, log) = logged("startup-dead", &[(env::POLICY, dead)]).await;
+        assert!(started, "{log}");
+        assert!(
+            log.contains("policy exception changes nothing")
+                && log.contains("waharoa.policy.exception=\"packages[6]\""),
+            "{log}"
+        );
+        assert!(
+            log.contains("policy exception never wins")
+                && log.contains("waharoa.policy.exception=\"packages[0]\""),
+            "{log}"
+        );
+
+        let dir = crate::util::test_support::tempdir("startup-no-cooldown");
+        let policy = dir.join("policy.yaml");
+        std::fs::write(&policy, "version: 1\ncooldown_days: 0\n").unwrap();
+        let (started, log) = logged(
+            "startup-no-cooldown-run",
+            &[(env::POLICY, policy.to_str().unwrap())],
+        )
+        .await;
+        assert!(started, "{log}");
+        assert!(!log.contains("cooldown_days is enforced"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A CA bundle is loaded and said to be, and one that does not load refuses the start.
