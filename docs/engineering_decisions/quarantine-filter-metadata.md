@@ -25,6 +25,13 @@ waharoa: pkg:npm/lodash@4.17.21 is held by policy
   - cooldown_days: published too recently, installable on 2026-10-12
 ```
 
+Filtering is not gated on artifact URL rewriting. Filtering a refused version is a policy
+question and repointing URLs a transport one. Tying them together meant that turning
+rewriting off, which [enforcement-tiers](enforcement-tiers.md) says is right once the proxy
+terminates TLS, also stopped the filtering. A document with every version refused leaves
+the resolver nothing, and the install fails with the registry's own "no matching version",
+so the proxy logs it.
+
 ## A filtered document says so
 
 The client resolves against a document this proxy changed, so the response carrying it says
