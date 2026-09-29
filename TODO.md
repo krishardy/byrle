@@ -255,7 +255,9 @@ Items that I've added that are not stage-bound.
     `make smoke-python` passes having checked one client instead of two, which is the
     failure this repo already refuses to accept for shellcheck. It now reports python3 and
     installs uv through pipx.
-20. [ ] main.rs is still NPM focused, especially in the comments. Generalize the comments and code.
+20. [x] main.rs is still NPM focused, especially in the comments. Generalize the comments and code.
+    Done 2026-09-29: the code already served each row of `ecosystem::TABLE`; the module
+    documentation said Stage 1, npm and no policy engine, and now says what the binary does.
 21. [ ] Consider making each ecosystem an optional module, pluggable through Cargo features in
     `Cargo.toml`, so a build carries only the ecosystems it serves. Raised 2026-09-26 while
     `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
@@ -265,6 +267,8 @@ Items that I've added that are not stage-bound.
     set a per-thread default subscriber, and tracing caches a callsite's interest for the
     whole process from the thread that first reaches it. Fixed 2026-09-28: one global
     subscriber with a dynamic filter routes each event to the capturing thread's buffer.
+    Replaced 2026-09-29 (`4e9a798`): tests install no tracing subscriber, and capture reads
+    the `log` records `test_support` routes to the capturing thread.
     A `filter_fn` was tried first and failed 6 tests on every run: it is cacheable, and
     caches "never" the same way. 50 of 50 full-suite runs passed after the fix.
 23. [ ] Keep only three kinds of source comment. Raised 2026-09-28.
