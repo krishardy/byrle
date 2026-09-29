@@ -136,21 +136,14 @@ Items that I've added that are not stage-bound.
    reports login state, so it is part of setting a machine up rather than a surprise on the
    first scan.
 
-9. [ ] **Watch: `purl` 0.1.6 pulls `smartstring` 1.0.1, flagged RUSTSEC-2026-0249 as
-   unmaintained.** Found by `make check-deps`. Not a vulnerability, and it does not
-   reverse the crate choice: `packageurl` is disqualified on correctness, which is the
-   worse failure. But it is why `make check-deps` is not clean under
-   `CHECK_DEPS_STRICT=1` today. Revisit if it becomes a real advisory; the swap path
-   is the same one-line change described under the identity item.
-   Checked Sept 2026: `purl` is still 0.1.6, no newer release, and the advisory still
-   stands. `make check-deps` passes; `CHECK_DEPS_STRICT=1` fails on it, as designed.
+9. [x] **`purl` 0.1.6 pulls `smartstring` 1.0.1, flagged RUSTSEC-2026-0249 as
+   unmaintained.** Found by `make check-deps`. `packageurl` stays disqualified on
+   correctness. Done 2026-09-29: `smartstring` is an optional default feature of `purl` that
+   only changes string storage, so `purl` is built with `default-features = false`, which
+   also drops `phf` and `unicase`. `cargo audit --deny warnings` is clean.
+   `CHECK_DEPS_STRICT=1` still fails, now only on outdated crates: `clap`, `cvss`,
+   `serde-saphyr` and `sqlx`.
 
-10. [ ] File upstream issues asking npm / pip / uv / cargo to honor `429` + `Retry-After`.
-   The evidence is now measured: four of five npm-ecosystem clients ignore
-   `Retry-After`, and two treat 429 as terminal. See
-   `docs/engineering_decisions/deferral-status-codes.md`.
-   Argues on its own merits (a proxy legitimately rate-limiting is a real scenario),
-   so it is a small uncontroversial patch. Long lead time — file early.
 11. [x] **`cargo build --release` does not compile.** `src/lib.rs` gates `pub mod audit` on
    `#[cfg(debug_assertions)]` (since `95c52b0`), and `src/proxy.rs:58` uses `crate::audit`
    unconditionally, so a release build fails with `could not find audit in the crate root`.
@@ -2806,6 +2799,12 @@ Decided 2026-09-19:
       private registry behind the proxy was reached with whatever `Authorization` the client
       sent; the proxy no longer forwards it, so an upstream that needs a credential is not
       reachable until this exists.
+
+- [ ] File upstream issues asking npm / pip / uv / cargo to honor `429` + `Retry-After`.
+      Moved from Ad-hoc item 10 on 2026-09-29. Four of five npm-ecosystem clients ignore
+      `Retry-After`, and two treat 429 as terminal: see
+      `docs/engineering_decisions/deferral-status-codes.md`. A proxy rate-limiting is a
+      real scenario on its own, so the patch stands without waharoa.
 
 **Exit:** a user who installed a package through the proxy is emailed within one refresh of
 a malware or critical/high advisory for the version they installed.
