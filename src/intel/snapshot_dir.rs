@@ -818,27 +818,6 @@ mod tests {
         );
     }
 
-    /// A directory this process cannot write, restored so the test can remove it.
-    struct ReadOnly<'a>(&'a Path);
-
-    impl<'a> ReadOnly<'a> {
-        fn new(path: &'a Path) -> Self {
-            set_mode(path, 0o555);
-            Self(path)
-        }
-    }
-
-    impl Drop for ReadOnly<'_> {
-        fn drop(&mut self) {
-            set_mode(self.0, 0o755);
-        }
-    }
-
-    fn set_mode(path: &Path, mode: u32) {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(mode)).expect("sets the mode");
-    }
-
     /// Rows kept under the digest of `content`, which need not decode.
     fn kept_rows(dir: &Path, content: &[u8]) -> String {
         let digest = load::digest(content);
@@ -860,7 +839,7 @@ mod tests {
         fs::remove_file(path.join(LOCK)).expect("removes the lock");
         let dir = SnapshotDir::open_to_read(&path);
 
-        let _read_only = ReadOnly::new(&path);
+        let _read_only = crate::util::test_support::Restricted::new(&path, 0o555);
         let Err(lock) = SnapshotDir::open(&path) else {
             panic!("the lock cannot be made");
         };

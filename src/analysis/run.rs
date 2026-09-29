@@ -929,8 +929,10 @@ mod tests {
     /// is verified again.
     #[tokio::test]
     async fn a_store_that_cannot_keep_attestations_is_logged() {
+        use crate::util::test_support::{capture, text};
         let analyser = analyser("run-broken-attest", 1 << 20, Arc::new(Broken));
         let digest = crate::analysis::store::tests::sri(7);
+        let (guard, buf) = capture(tracing::Level::WARN);
         assert_eq!(analyser.attested(&digest).await, None);
         let registry = upstream(200, b"{}".to_vec()).await;
         let job = Job {
@@ -948,6 +950,13 @@ mod tests {
             .await
             .expect("finishes");
         assert_eq!(analyser.attested(&digest).await, None);
+        drop(guard);
+        let log = text(&buf);
+        assert!(
+            log.contains("analysis store cannot answer; verifying again"),
+            "{log}"
+        );
+        assert!(log.contains("attestations: not stored"), "{log}");
     }
 
     /// An attestations body cut short stores nothing, an artifact that cannot be fetched
@@ -958,11 +967,8 @@ mod tests {
         let store = Arc::new(InProcess::new(8));
         let analyser = analyser("run-unread", 1 << 20, store);
         let digest = crate::analysis::store::tests::sri(8);
-        let cut = scripted(vec![Answer::Body {
-            bytes: b"{".to_vec(),
-            declared: Some(64),
-        }])
-        .await;
+        let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
+        let cut = scripted(vec![Answer::cut_short()]).await;
         let cut_short = Job {
             attestations: vec![Attestation {
                 digest: digest.clone(),
@@ -1009,5 +1015,14 @@ mod tests {
         )
         .await;
         assert!(unread.is_none());
+        drop(guard);
+        let log = crate::util::test_support::text(&buf);
+        for said in [
+            "attestations: body failed, nothing stored",
+            "artifact analysis: fetch failed, nothing stored",
+            "artifact analysis: the spool file could not be read, nothing stored",
+        ] {
+            assert!(log.contains(said), "{said}: {log}");
+        }
     }
 }

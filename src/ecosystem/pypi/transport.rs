@@ -382,11 +382,7 @@ mod tests {
         let got = said(client(&closed).metadata(&key("x")).await);
         assert!(got.starts_with("index request failed: "), "{got}");
 
-        let cut = scripted(vec![Answer::Body {
-            bytes: b"{".to_vec(),
-            declared: Some(64),
-        }])
-        .await;
+        let cut = scripted(vec![Answer::cut_short()]).await;
         let got = said(client(&format!("http://{cut}")).metadata(&key("x")).await);
         assert!(got.starts_with("index request failed: "), "{got}");
     }

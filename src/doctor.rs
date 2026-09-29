@@ -1172,11 +1172,7 @@ pub mod probe {
                 own(&format!("http://{text}"), "/-/waharoa/ready").await;
             assert_eq!(not_json, None, "anything that is not a waharoa");
 
-            let cut = scripted(vec![Answer::Body {
-                bytes: b"{".to_vec(),
-                declared: Some(64),
-            }])
-            .await;
+            let cut = scripted(vec![Answer::cut_short()]).await;
             let short: Option<serde_json::Value> =
                 own(&format!("http://{cut}"), "/-/waharoa/ready").await;
             assert_eq!(short, None, "a body cut short");

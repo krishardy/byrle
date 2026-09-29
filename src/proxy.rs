@@ -8071,24 +8071,16 @@ mod tests {
         }
     }
 
-    /// A store with nothing against any package, whose snapshot covers npm.
-    fn clean_store() -> Arc<dyn Intel> {
-        Arc::new(crate::intel::store::testing::FixedIntel(Ok(Some(
-            PackageIntel {
-                snapshot: "s1".to_owned(),
-                records: Vec::new(),
-                ranges: Vec::new(),
-                exploitation_loaded: false,
-            },
-        ))))
-    }
-
     /// With a store, each audit line names the snapshot it was decided with.
     #[tokio::test]
     async fn an_audit_line_names_the_snapshot() {
         let path = crate::util::test_support::tempdir("proxy-audit-snapshot").join("audit.jsonl");
         let log = Arc::new(AuditLog::open(&path).expect("should open"));
-        let proxy = offline(Some(clean_store()), Some(DENY_LODASH)).with_audit_log(Some(log));
+        let proxy = offline(
+            Some(Arc::new(crate::intel::store::testing::knowing_nothing())),
+            Some(DENY_LODASH),
+        )
+        .with_audit_log(Some(log));
         resolved(&proxy, "lodash", LODASH).await;
         pinned(&proxy, LODASH_TARBALL).await;
         let written = std::fs::read_to_string(&path).expect("should read");
@@ -8105,36 +8097,10 @@ mod tests {
     /// A store that answers for a package and then cannot say its snapshot is not ready.
     #[tokio::test]
     async fn a_snapshot_that_cannot_be_read_is_not_ready() {
-        use crate::intel::store::{IntelError, LoadedSnapshot, Lookup, Record};
-        struct Unsnapshotted;
-        impl Intel for Unsnapshotted {
-            fn lookup<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str) -> Lookup<'a, Vec<Record>> {
-                Box::pin(async move { Ok(Vec::new()) })
-            }
-            fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
-                Box::pin(async move { Err(IntelError::Backend(sqlx::Error::PoolTimedOut)) })
-            }
-            fn package<'a>(&'a self, _: &'a str, _: &'a str) -> Lookup<'a, Option<PackageIntel>> {
-                Box::pin(async move {
-                    Ok(Some(PackageIntel {
-                        snapshot: "s1".to_owned(),
-                        records: Vec::new(),
-                        ranges: Vec::new(),
-                        exploitation_loaded: false,
-                    }))
-                })
-            }
-        }
+        use crate::intel::store::testing::Unsnapshotted;
         let proxy = offline(Some(Arc::new(Unsnapshotted)), Some(ALLOW_ALL));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         assert!(intel_for(&proxy, &key, "/lodash").await.is_err());
-        assert!(
-            Unsnapshotted
-                .lookup("npm", "lodash", "1")
-                .await
-                .expect("answers")
-                .is_empty()
-        );
     }
 
     /// With no `Host` and no public base, a document the proxy would read is uninspected
