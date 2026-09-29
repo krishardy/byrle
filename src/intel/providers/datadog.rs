@@ -1,11 +1,6 @@
 //! Reading Datadog's malicious software packages dataset, one ecosystem's manifest at a time.
-//!
-//! A manifest maps each package name to `null`, every version, or a list of versions.
-//! Apache-2.0. npm's, at commit `8fff54014596` (2026-09-14), was 1,698,934 bytes and listed
-//! 48,313 packages: 46,242 at every version and 2,071 by version. PyPI's, read 2026-09-18, was
-//! 49,739 bytes and listed 1,834: 1,817 at every version and 17 by version. An entry gives no
-//! id, so each package is one record, `DATADOG-<purl type>-<name>`, stored as a malware report
-//! the way an OSV `MAL-` record is. See docs/engineering_decisions/datadog-stream.md.
+//! An entry gives no id, so each package is one malware record, `DATADOG-<purl type>-<name>`.
+//! See docs/engineering_decisions/datadog-stream.md.
 
 use crate::identity::Ecosystem;
 use crate::intel::range;
@@ -30,9 +25,7 @@ fn id_prefix(ecosystem: Ecosystem) -> String {
     format!("DATADOG-{}-", ecosystem.as_str())
 }
 
-/// The widths of `advisory.publisher_id` and `advisory_affected.version`. A longer value is
-/// refused here, because a load Postgres refuses would also fail the OSV load in the same
-/// transaction.
+/// The widths of `advisory.publisher_id` and `advisory_affected.version`, past which a value is refused.
 const MAX_ID_BYTES: usize = 128;
 const MAX_VERSION_BYTES: usize = 255;
 
@@ -219,10 +212,10 @@ mod tests {
                 .all(|r| r.aliases.is_empty() && r.ranges.is_empty())
         );
         assert_eq!(names_and_versions(&rows[0]), [("0h".to_owned(), None)]);
-        // Listed versions are stored as OSV's are, padded.
         assert_eq!(
             names_and_versions(&rows[1]),
-            [("@s/p".to_owned(), Some("13.0.0".to_owned()))]
+            [("@s/p".to_owned(), Some("13.0.0".to_owned()))],
+            "a listed version is padded, as OSV's are"
         );
         assert_eq!(
             names_and_versions(&rows[2]),
