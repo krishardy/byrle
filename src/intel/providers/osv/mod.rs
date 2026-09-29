@@ -156,7 +156,7 @@ fn base_vector(vector: &str) -> Option<String> {
 
 /// Whether every base metric is present.
 ///
-/// `cvss` 2.2.0 refuses a v4 vector missing one, and parses a v3 vector missing any of them,
+/// `cvss` 3.0.0 refuses a v4 vector missing one, and parses a v3 vector missing any of them,
 /// scoring `CVSS:3.1/AV:N` as 0.0. That would pass every `max_cvss`.
 fn complete(vector: &cvss::Cvss) -> bool {
     match vector {

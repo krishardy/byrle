@@ -89,14 +89,20 @@ written is only in the range.
 
 | Choice | Value | Why |
 |---|---|---|
-| What is read | `CVSS_V3` and `CVSS_V4` entries in `severity`, parsed by `cvss` 2.2.0 | no npm record carried another type |
+| What is read | `CVSS_V3` and `CVSS_V4` entries in `severity`, parsed by `cvss` 3.0.0 | no npm record carried another type |
 | A record with both (809) | the v4 score | v3 and v4 are different scoring systems. Taking the higher would compare them as one |
 | A record with 3.0 and 3.1 | the 3.1 score | the newer version |
-| Metrics scored | base metrics only | 313 records also carry others: 309 v4 vectors with `E`, 4 v3 vectors with `E`, `RL` or `RC`. `cvss` counts `E` in a v4 score, where `E:U` lowers it, and refuses a v3 vector carrying any |
+| Metrics scored | base metrics only | 313 records also carry others: 309 v4 vectors with `E`, 4 v3 vectors with `E`, `RL` or `RC`. `cvss` counts `E` in a v4 score, where `E:U` lowers it. 2.2.0 refused a v3 vector carrying any; 3.0.0 reads it and scores the base |
 | A v3 vector missing a base metric | unread, no score | `cvss` parses `CVSS:3.1/AV:N` and scores it 0.0, which passes every `max_cvss` |
 | A base metric given twice | unread, no score | |
 | No CVSS vector, only a `database_specific` severity band (689) | the top of the band | decided 2026-09-15, below |
 | A vector that does not parse, and a band | unread, no score | the band does not hide a vector that failed |
+
+`cvss` 3.0.0 replaced 2.2.0 on 2026-09-29. Over the 2,201 distinct `CVSS_V3` and `CVSS_V4`
+vectors in OSV's npm and PyPI bundles fetched that day, 1,262 of them v4, both versions gave
+the same score for 2,187 and refused the same 2. The other 12 are v3.1 vectors with temporal
+metrics, which 2.2.0 refused and 3.0.0 scores; `base_vector` removes those metrics before
+either parses, so no stored score changes.
 
 A malware record with no score counts toward `known_malware` and is left out of
 `advisories`. Any other record with no score is refused by `max_cvss`, below.
