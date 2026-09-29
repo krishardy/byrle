@@ -7,11 +7,7 @@ use std::fmt;
 
 use crate::identity::IdentityError;
 
-/// A packument could not be turned into records.
-///
-/// Deliberately distinct from a transport failure. The proxy must not answer 502
-/// because a registry served a document shape we did not model: that is our gap, not
-/// the upstream's outage.
+/// A packument that arrived and could not be read into records, which is not a 502.
 #[derive(Debug)]
 pub enum NormalizeError {
     /// The body was not JSON, or not a JSON object of the expected shape.
@@ -45,8 +41,7 @@ pub enum FetchError {
     Transport(reqwest::Error),
     /// The registry answered, with something other than success.
     Status(reqwest::StatusCode),
-    /// The body arrived and could not be decoded: an encoding this does not handle, a
-    /// corrupt stream, or more output than the limit allows.
+    /// The body arrived and could not be decoded, or decoded past the limit.
     Undecodable(crate::http::DecodeError),
 }
 

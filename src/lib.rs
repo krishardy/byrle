@@ -1,11 +1,6 @@
-//! waharoa: a dependency firewall.
-//!
-//! The binary in `main.rs` is the proxy; this library holds the pieces that are
-//! meaningful on their own and testable without a network, starting with package
-//! identity. Splitting into separate *crates* remains deliberately deferred (TODO.md);
-//! a lib plus a bin in one crate is not that split.
+//! waharoa: a dependency firewall. The binary is in `main.rs`, and every command it runs is
+//! here, where it can be tested without a network.
 
-// `make coverage` runs on nightly, where test modules are left out of the count.
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
 pub mod analysis;

@@ -108,7 +108,6 @@ pub(crate) async fn analysing_with(
                 let tarball = tarball.clone();
                 let gate = gate.clone();
                 async move {
-                    // Held until the test lets the analysis job's fetch through.
                     if let Some(gate) = gate {
                         gate.acquire().await.expect("open").forget();
                     }

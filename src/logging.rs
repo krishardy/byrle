@@ -12,8 +12,7 @@ use tracing_subscriber::registry::LookupSpan;
 pub enum Format {
     #[default]
     Text,
-    /// One JSON object per line in OpenTelemetry's log record shape: `timestamp`,
-    /// `severity_text`, `severity_number`, `body` and `attributes`.
+    /// One JSON object per line, as an OpenTelemetry log record.
     Json,
 }
 

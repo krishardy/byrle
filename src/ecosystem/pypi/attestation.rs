@@ -1,12 +1,7 @@
-//! PyPI's PEP 740 provenance object, as served at a file's `provenance` URL.
+//! PyPI's PEP 740 provenance object, rebuilt as a Sigstore bundle to be verified.
 //!
-//! `{"version": 1, "attestation_bundles": [{"publisher": {...}, "attestations": [...]}]}`,
-//! each attestation `{"version": 1, "verification_material": {"certificate",
-//! "transparency_entries"}, "envelope": {"statement", "signature"}}`. That is not a
-//! Sigstore bundle, so it is rebuilt as one: the certificate and log entries become the
-//! bundle's verification material, and the statement and signature a DSSE envelope. The
-//! statement's subject is the file's sha256. See
-//! `docs/engineering_decisions/provenance-check.md`.
+//! Its certificate and log entries become the bundle's verification material, and its
+//! statement and signature a DSSE envelope: see docs/engineering_decisions/provenance-check.md.
 
 use sigstore_verify::types::Bundle;
 
