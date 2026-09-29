@@ -293,7 +293,7 @@ Items that I've added that are not stage-bound.
     | `proxy::handle`: done 2026-09-28, now 7 and 47, split into `Exchange` | 44 | 224 |
     | `startup::report_policy`: done 2026-09-29, now 15 | 40 | |
     | `ecosystem::pypi::rewrite::rewrite_index`: done 2026-09-29, now 9 and 22, split into `filtered` and `repointed` | 39 | |
-    | `intel::postgres::PgIntel::replace` | 30 | 108 |
+    | `intel::postgres::PgIntel::replace`: done 2026-09-29, now 8 and 23, split into `write_source`, `write_advisories`, `record_snapshot` and `record_ingestions` | 30 | 108 |
     | `proxy::dated_by_host`: done 2026-09-29, now 11 and 23, the HEAD request moved to `head_last_modified` | 26 | |
     | `policy::diff::run` | | 199 |
     | `explain::run` | | 125 |
