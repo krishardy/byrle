@@ -287,9 +287,12 @@ pub fn decode_for_parsing(
 /// that is 17.7 ms against 117.3 ms, for 2.06 MB against 1.69 MB. A 22% larger body on a
 /// hop that is usually loopback or a LAN, for a sixth of the CPU time, on a path that
 /// runs for every packument.
-pub fn gzip(data: &[u8]) -> std::io::Result<Vec<u8>> {
+pub fn gzip(data: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
-    encoder.write_all(data).and_then(|()| encoder.finish())
+    encoder
+        .write_all(data)
+        .and_then(|()| encoder.finish())
+        .expect("compressing into memory cannot fail")
 }
 
 /// Marker on an `ETag` for a body this proxy rewrote.
@@ -420,11 +423,6 @@ mod tests {
     }
 
     use super::*;
-
-    /// The real encoder, so the tests exercise what the proxy emits.
-    fn gzip(data: &[u8]) -> Vec<u8> {
-        super::gzip(data).expect("writing to a Vec cannot fail")
-    }
 
     #[test]
     fn gzip_round_trips_through_the_decoder() {

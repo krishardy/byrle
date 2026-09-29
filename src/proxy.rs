@@ -1813,9 +1813,13 @@ impl<'a> Deciding<'a> {
     /// 503 until `job`, started here, has analysed the artifact.
     fn defer(&self, job: Job) -> ArtifactStep {
         let digest = job.digest.clone();
-        if let Some(analyser) = &self.proxy.config.analyser {
-            analyser.start(job);
-        }
+        // A job is pending only when `analysed` found an analyser to give it to.
+        self.proxy
+            .config
+            .analyser
+            .as_ref()
+            .expect("a pending job has an analyser")
+            .start(job);
         let deferrals = self
             .proxy
             .deferred
@@ -2109,7 +2113,8 @@ fn attestation_url(
             ));
         }
     }
-    let parsed = reqwest::Url::parse(advertised).map_err(|e| e.to_string())?;
+    // `Served` is the answer only for a URL with an origin, which parses.
+    let parsed = reqwest::Url::parse(advertised).expect("a served URL parses");
     let path = match parsed.query() {
         Some(query) => format!("{}?{query}", parsed.path()),
         None => parsed.path().to_owned(),
@@ -2151,63 +2156,77 @@ async fn attested(
         return (attestation::from_metadata(record, &previous), Vec::new());
     };
     let ecosystem = key.ecosystem();
-    let routed = |url: &String| attestation_url(proxy, ecosystem, url);
-    let failed = |why: String| Some(attestation::Attested::Failed { why });
-    let this_url = record.provenance.attestation_url.as_ref().map(routed);
-    let this_result = match (&this_url, digest) {
-        (None, _) => None,
-        (Some(Err(why)), _) => failed(why.clone()),
-        (Some(Ok(_)), None) => failed("it publishes no strong digest to verify against".to_owned()),
-        (Some(Ok(_)), Some(digest)) => analyser.attested(digest).await,
+    // Where to fetch an attestation and the digest to verify it against, or why it cannot
+    // be verified: routed nowhere, or no strong digest. That counts as not verifying.
+    let verifiable = |url: &String, digest: Option<Sri>, no_digest: &str| {
+        let url = attestation_url(proxy, ecosystem, url)?;
+        let digest = digest.ok_or_else(|| no_digest.to_owned())?;
+        Ok::<_, String>((url, digest))
     };
-    // Each prior's route, digest and result. A prior routed nowhere, or with no strong
-    // digest, cannot be verified and counts as not verifying.
+    let this = record.provenance.attestation_url.as_ref().map(|url| {
+        verifiable(
+            url,
+            digest.cloned(),
+            "it publishes no strong digest to verify against",
+        )
+    });
+    let this_result = match &this {
+        None => None,
+        Some(to_verify) => result_of(analyser, to_verify).await,
+    };
     let priors: Vec<_> = match &previous {
         attestation::Previous::Known(priors) => priors
             .iter()
             .map(|prior| {
-                (
-                    routed(&prior.attestation_url),
+                verifiable(
+                    &prior.attestation_url,
                     prior.integrity.as_deref().and_then(|i| Sri::parse(i).ok()),
+                    "it publishes no strong digest",
                 )
             })
             .collect(),
         attestation::Previous::Unknown => Vec::new(),
     };
     let mut prior_results = Vec::with_capacity(priors.len());
-    for (url, prior_digest) in &priors {
-        prior_results.push(match (url, prior_digest) {
-            (Err(why), _) => failed(why.clone()),
-            (Ok(_), None) => failed("it publishes no strong digest".to_owned()),
-            (Ok(_), Some(prior_digest)) => analyser.attested(prior_digest).await,
-        });
+    for to_verify in &priors {
+        prior_results.push(result_of(analyser, to_verify).await);
     }
     let prior_results: Vec<_> = prior_results.iter().map(Option::as_ref).collect();
     match attestation::provenance(record, &previous, this_result.as_ref(), &prior_results) {
         attestation::Answer::Known(provenance) => (provenance, Vec::new()),
         attestation::Answer::Needs {
-            this,
-            priors: needed,
+            this: this_needed,
+            priors: priors_needed,
         } => {
-            let mut work = Vec::new();
-            if this && let (Some(Ok(url)), Some(digest)) = (this_url, digest) {
-                work.push(Attestation {
+            // A result still needed is one the analyser has not stored, which only a
+            // verifiable attestation can lack: the others fail at once, above.
+            let needed = |to_verify: &Result<(String, Sri), String>| {
+                let (url, digest) = to_verify
+                    .as_ref()
+                    .expect("an attestation still needed can be verified");
+                Attestation {
                     digest: digest.clone(),
-                    url,
+                    url: url.clone(),
                     bundle,
-                });
-            }
-            for i in needed {
-                if let (Ok(url), Some(prior_digest)) = &priors[i] {
-                    work.push(Attestation {
-                        digest: prior_digest.clone(),
-                        url: url.clone(),
-                        bundle,
-                    });
                 }
-            }
+            };
+            let mut work: Vec<Attestation> =
+                this.iter().filter(|_| this_needed).map(needed).collect();
+            work.extend(priors_needed.into_iter().map(|i| needed(&priors[i])));
             (Provenance::NOT_VERIFIED, work)
         }
+    }
+}
+
+/// What verifying `to_verify` found: the analyser's stored result, or a failure when it
+/// cannot be verified.
+async fn result_of(
+    analyser: &Analyser,
+    to_verify: &Result<(String, Sri), String>,
+) -> Option<attestation::Attested> {
+    match to_verify {
+        Ok((_, digest)) => analyser.attested(digest).await,
+        Err(why) => Some(attestation::Attested::Failed { why: why.clone() }),
     }
 }
 
@@ -2574,7 +2593,6 @@ impl Exchange<'_> {
             forward_status,
             self.negotiation.encoding,
             self.negotiation.rewrite_base.as_deref(),
-            &self.path,
             &|bytes| self.log_proxied(status, bytes),
         )
     }
@@ -2615,12 +2633,12 @@ fn mark_filtered(headers: &mut HeaderMap, refused: &Refused) {
     if refused.versions.is_empty() {
         return;
     }
-    if let Ok(value) = HeaderValue::from_str(&refused.versions.len().to_string()) {
-        headers.insert(FILTERED_VERSIONS, value);
-    }
-    if let Ok(value) = HeaderValue::from_str(&refused.checks.join(",")) {
-        headers.insert(FILTERED_CHECKS, value);
-    }
+    headers.insert(FILTERED_VERSIONS, HeaderValue::from(refused.versions.len()));
+    // Check names are fixed ASCII words, which a header value always holds.
+    headers.insert(
+        FILTERED_CHECKS,
+        HeaderValue::from_str(&refused.checks.join(",")).expect("check names are ASCII"),
+    );
 }
 
 /// Send the document on, rewritten or not.
@@ -2628,7 +2646,6 @@ fn mark_filtered(headers: &mut HeaderMap, refused: &Refused) {
 /// A rewritten body is this proxy's, so its length, its encoding and its entity tag all
 /// have to describe it rather than the upstream's. `None` forwards the upstream's bytes
 /// untouched, headers included.
-#[allow(clippy::too_many_arguments)]
 fn finish(
     forwarded: Option<Vec<u8>>,
     body: Bytes,
@@ -2636,31 +2653,21 @@ fn finish(
     forward_status: StatusCode,
     chosen_encoding: RequestedEncoding,
     rewrite_base: Option<&str>,
-    path_and_query: &str,
     log_proxied: &dyn Fn(u64),
 ) -> Response {
     let body = match forwarded {
         Some(rewritten) => {
             let encoded = match chosen_encoding {
-                RequestedEncoding::Gzip => match gzip(&rewritten) {
-                    Ok(encoded) => {
-                        headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
-                        encoded
-                    }
-                    Err(e) => {
-                        warn!(url.path = %crate::http::url_path(path_and_query), url.query = crate::http::url_query(path_and_query), error.message = %e, "could not re-compress; sending identity");
-                        headers.remove(header::CONTENT_ENCODING);
-                        rewritten
-                    }
-                },
+                RequestedEncoding::Gzip => {
+                    headers.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+                    gzip(&rewritten)
+                }
                 _ => {
                     headers.remove(header::CONTENT_ENCODING);
                     rewritten
                 }
             };
-            if let Ok(value) = HeaderValue::from_str(&encoded.len().to_string()) {
-                headers.insert(header::CONTENT_LENGTH, value);
-            }
+            headers.insert(header::CONTENT_LENGTH, HeaderValue::from(encoded.len()));
             if let Some(etag) = headers
                 .get(header::ETAG)
                 .and_then(|v| v.to_str().ok())
@@ -2819,7 +2826,9 @@ async fn dated_by_host(
         return None;
     }
     let started = Instant::now();
-    let last_modified = head_last_modified(proxy, &record.artifact()?.url, path).await?;
+    // A pinned record is found by its file, so it has one.
+    let artifact = record.artifact().expect("a pinned record names its file");
+    let last_modified = head_last_modified(proxy, &artifact.url, path).await?;
     info!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
         waharoa.package.published = %last_modified,
@@ -5041,7 +5050,6 @@ mod tests {
                 StatusCode::OK,
                 encoding,
                 Some(base),
-                "/lodash",
                 &|_| {},
             )
         };
@@ -7961,5 +7969,263 @@ mod tests {
             }
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An empty chunk is skipped, an error from the upstream ends the body with that error,
+    /// and a finished body stays finished.
+    #[tokio::test]
+    async fn a_verifying_stream_skips_empty_chunks_and_ends_on_an_error() {
+        use futures_util::StreamExt as _;
+        let closed = crate::util::test_support::closing_server().await;
+        let failed = reqwest::get(format!("http://{closed}"))
+            .await
+            .expect_err("nothing answers");
+        let body: ByteStream = Box::pin(futures_util::stream::iter(vec![
+            Ok(Bytes::from_static(b"a")),
+            Ok(Bytes::new()),
+            Err(failed),
+        ]));
+        let sri = Sri::parse(&sri_of(b"a")).expect("an SRI");
+        let mut stream = VerifyingStream::new(
+            body,
+            &sri,
+            "/a".to_owned(),
+            "pkg:npm/a@1.0.0".to_owned(),
+            Arc::new(Mutex::new(VerifiedArtifacts::new(8))),
+        );
+        assert!(matches!(stream.next().await, Some(Err(_))));
+        assert!(stream.next().await.is_none());
+    }
+
+    /// The base a rewritten URL points at comes from a `Host` that can be read, and is
+    /// nothing without one.
+    #[test]
+    fn a_host_that_cannot_be_read_gives_no_base() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(public_base(&headers, None), None, "no Host");
+        headers.insert(header::HOST, HeaderValue::from_static(" "));
+        assert_eq!(public_base(&headers, None), None, "an empty Host");
+        headers.insert(
+            header::HOST,
+            HeaderValue::from_bytes(b"h\xffst").expect("obs-text"),
+        );
+        assert_eq!(public_base(&headers, None), None, "not visible ASCII");
+    }
+
+    /// A prior whose attestations are published where the proxy will not go, or which has
+    /// no strong digest, cannot be compared with, so the version is served. This version with
+    /// no strong digest fails verification and is refused. Nothing is fetched to decide.
+    #[tokio::test]
+    async fn an_attestation_that_cannot_be_verified_counts_as_not_verifying() {
+        let edit = |label: &str, change: &dyn Fn(&mut serde_json::Value)| {
+            let mut doc: serde_json::Value =
+                serde_json::from_str(&widget_versions(&["1.0.0", "2.0.0"])).expect("json");
+            change(&mut doc);
+            (label.to_owned(), doc.to_string())
+        };
+        let served = "fetch digest=true";
+        let refused = "403 Forbidden waharoa: pkg:npm/widget@2.0.0 is blocked by policy\n  - \
+                       provenance: an attestation failed verification: it publishes no strong \
+                       digest to verify against\n";
+        let cases = [
+            edit("provenance-prior-elsewhere", &|doc| {
+                doc["versions"]["1.0.0"]["dist"]["attestations"]["url"] =
+                    serde_json::json!("https://elsewhere.example/attestations/widget@1.0.0");
+            }),
+            edit("provenance-prior-no-digest", &|doc| {
+                doc["versions"]["1.0.0"]["dist"]
+                    .as_object_mut()
+                    .expect("an object")
+                    .remove("integrity");
+            }),
+            edit("provenance-this-no-digest", &|doc| {
+                doc["versions"]["2.0.0"]["dist"]
+                    .as_object_mut()
+                    .expect("an object")
+                    .remove("integrity");
+            }),
+        ];
+        for ((label, packument), expected) in cases.into_iter().zip([served, served, refused]) {
+            let (proxy, analyser) = provenance_proxy(
+                &label,
+                PROVENANCE,
+                &[],
+                &[("1.0.0", verified("a")), ("2.0.0", verified("a"))],
+            )
+            .await;
+            hold_document(
+                &proxy,
+                packument.as_bytes(),
+                crate::record::DocumentDetail::Full,
+            );
+            let step = pinned(&proxy, WIDGET_2).await;
+            let outcome = match step {
+                ArtifactStep::Answer(response) => {
+                    let (status, body) = read(response).await;
+                    format!("{status} {body}")
+                }
+                ArtifactStep::Fetch(fetch) => format!("fetch digest={}", fetch.digest.is_some()),
+            };
+            assert_eq!(outcome, expected, "{label}");
+            assert_eq!(analyser.in_flight(), 0, "{label}: nothing to fetch");
+        }
+    }
+
+    /// A store with nothing against any package, whose snapshot covers npm.
+    fn clean_store() -> Arc<dyn Intel> {
+        Arc::new(crate::intel::store::testing::FixedIntel(Ok(Some(
+            PackageIntel {
+                snapshot: "s1".to_owned(),
+                records: Vec::new(),
+                ranges: Vec::new(),
+                exploitation_loaded: false,
+            },
+        ))))
+    }
+
+    /// With a store, each audit line names the snapshot it was decided with.
+    #[tokio::test]
+    async fn an_audit_line_names_the_snapshot() {
+        let path = crate::util::test_support::tempdir("proxy-audit-snapshot").join("audit.jsonl");
+        let log = Arc::new(AuditLog::open(&path).expect("should open"));
+        let proxy = offline(Some(clean_store()), Some(DENY_LODASH)).with_audit_log(Some(log));
+        resolved(&proxy, "lodash", LODASH).await;
+        pinned(&proxy, LODASH_TARBALL).await;
+        let written = std::fs::read_to_string(&path).expect("should read");
+        let events: Vec<serde_json::Value> = written
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("each line is one object"))
+            .collect();
+        assert_eq!(events.len(), 2, "{written}");
+        for event in &events {
+            assert_eq!(event["intel_snapshot"], "s1", "{event}");
+        }
+    }
+
+    /// A store that answers for a package and then cannot say its snapshot is not ready.
+    #[tokio::test]
+    async fn a_snapshot_that_cannot_be_read_is_not_ready() {
+        use crate::intel::store::{IntelError, LoadedSnapshot, Lookup, Record};
+        struct Unsnapshotted;
+        impl Intel for Unsnapshotted {
+            fn lookup<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str) -> Lookup<'a, Vec<Record>> {
+                Box::pin(async move { Ok(Vec::new()) })
+            }
+            fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
+                Box::pin(async move { Err(IntelError::Backend(sqlx::Error::PoolTimedOut)) })
+            }
+            fn package<'a>(&'a self, _: &'a str, _: &'a str) -> Lookup<'a, Option<PackageIntel>> {
+                Box::pin(async move {
+                    Ok(Some(PackageIntel {
+                        snapshot: "s1".to_owned(),
+                        records: Vec::new(),
+                        ranges: Vec::new(),
+                        exploitation_loaded: false,
+                    }))
+                })
+            }
+        }
+        let proxy = offline(Some(Arc::new(Unsnapshotted)), Some(ALLOW_ALL));
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
+        assert!(intel_for(&proxy, &key, "/lodash").await.is_err());
+        assert!(
+            Unsnapshotted
+                .lookup("npm", "lodash", "1")
+                .await
+                .expect("answers")
+                .is_empty()
+        );
+    }
+
+    /// With no `Host` and no public base, a document the proxy would read is uninspected
+    /// for that reason.
+    #[test]
+    fn a_document_with_no_address_to_point_at_is_uninspected() {
+        let proxy = offline(None, None);
+        let mut negotiation = negotiated(None, Method::GET, "/lodash", "gzip");
+        negotiation.rewrite_base = None;
+        negotiation.rewriting = false;
+        let (_, target) = crate::route::classify("/lodash");
+        let log = logged(|| {
+            report_uninspected(
+                &proxy,
+                &target,
+                &Method::GET,
+                &negotiation,
+                &HeaderMap::new(),
+                "/lodash",
+            )
+        });
+        assert!(
+            log.contains("no Host header and no configured public base"),
+            "{log}"
+        );
+    }
+
+    /// A PyPI index that reads but does not normalise is forwarded with nothing filtered,
+    /// under a cooldown too.
+    #[tokio::test]
+    async fn an_index_that_does_not_normalise_is_forwarded() {
+        let nameless =
+            br#"{"meta":{"api-version":"1.1"},"name":"","files":[{"filename":"x-1.0.tar.gz",
+            "url":"https://files.pythonhosted.org/packages/aa/bb/x-1.0.tar.gz","hashes":{}}]}"#;
+        for yaml in [None, Some("version: 1\ncooldown_days: 3\n")] {
+            let proxy = offline(None, yaml);
+            let step = resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, nameless).await;
+            assert!(
+                matches!(&step, DocumentStep::Forward { refused, .. } if refused.versions.is_empty()),
+                "{yaml:?}"
+            );
+        }
+    }
+
+    /// A claimed version that makes no purl is named as written.
+    #[tokio::test]
+    async fn a_claimed_version_that_makes_no_purl_is_named_as_written() {
+        let proxy = offline(None, None);
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
+        let deciding = Deciding::new(
+            &proxy,
+            ArtifactRequest {
+                ecosystem: Ecosystem::Npm,
+                method: &Method::GET,
+                key: &key,
+                claimed_version: " ",
+                filename: "lodash-.tgz",
+                path: "/lodash/-/lodash-.tgz",
+                client: "-",
+            },
+        );
+        assert_eq!(deciding.purl, "pkg:npm/lodash@ ");
+    }
+
+    /// A file host that cannot be asked gives no publish time.
+    #[tokio::test]
+    async fn a_file_host_that_cannot_be_asked_gives_no_date() {
+        let proxy = offline(None, None);
+        let closed = crate::util::test_support::closing_server().await;
+        assert_eq!(
+            head_last_modified(&proxy, &format!("http://{closed}/x.tar.gz"), "/x").await,
+            None
+        );
+    }
+
+    /// Metadata fetched on the proxy's own behalf that does not read leaves nothing to find.
+    #[tokio::test]
+    async fn metadata_fetched_that_does_not_read_is_logged() {
+        use crate::util::test_support::{Answer, scripted};
+        let upstream = scripted(vec![Answer::body("not json")]).await;
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, format!("http://{upstream}"))
+            .with_policy(Some(policy(ALLOW_ALL)));
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
+        let (guard, buf) = capture(tracing::Level::WARN);
+        fetch_and_store(&proxy, &key, "/lodash/-/lodash-4.17.21.tgz").await;
+        drop(guard);
+        let log = text(&buf);
+        assert!(
+            log.contains("metadata fetched but did not normalize"),
+            "{log}"
+        );
     }
 }

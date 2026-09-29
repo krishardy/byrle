@@ -109,7 +109,7 @@ mod tests {
     use crate::http::gzip;
 
     fn gzipped(data: &[u8]) -> Vec<u8> {
-        gzip(data).expect("gzip into memory")
+        gzip(data)
     }
 
     #[test]
