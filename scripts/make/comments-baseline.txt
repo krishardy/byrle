@@ -10,16 +10,13 @@ src/defer.rs
 src/doctor.rs
 src/ecosystem/npm/attestation.rs
 src/ecosystem/npm/clients.rs
-src/ecosystem/npm/error.rs
 src/ecosystem/npm/inspect.rs
 src/ecosystem/npm/lockfile.rs
-src/ecosystem/npm/mod.rs
 src/ecosystem/npm/normalize.rs
 src/ecosystem/npm/paths.rs
 src/ecosystem/npm/rewrite.rs
 src/ecosystem/npm/transport.rs
 src/ecosystem/npm/wire.rs
-src/ecosystem/pypi/attestation.rs
 src/ecosystem/pypi/clients.rs
 src/ecosystem/pypi/html.rs
 src/ecosystem/pypi/inspect.rs
@@ -42,8 +39,6 @@ src/intel/load.rs
 src/intel/postgres.rs
 src/intel/providers/datadog.rs
 src/intel/providers/github.rs
-src/intel/providers/kev.rs
-src/intel/providers/mod.rs
 src/intel/providers/osv/bundle.rs
 src/intel/providers/osv/mod.rs
 src/intel/range.rs
@@ -55,9 +50,7 @@ src/intel/snapshot_intel.rs
 src/intel/store.rs
 src/intel/stream.rs
 src/intel.rs
-src/lib.rs
 src/lockfile.rs
-src/logging.rs
 src/main.rs
 src/origin.rs
 src/policy/check.rs
@@ -71,7 +64,6 @@ src/policy/selector.rs
 src/policy/strictness.rs
 src/policy/vers.rs
 src/policy.rs
-src/proxy/testing.rs
 src/proxy.rs
 src/record.rs
 src/refusal.rs
@@ -84,5 +76,4 @@ src/tls.rs
 src/util/lru.rs
 src/util/test_support.rs
 src/verified.rs
-src/warm.rs
 tests/postgres.rs

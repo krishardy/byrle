@@ -33,11 +33,9 @@ pub enum Outcome {
     Warmed,
     /// Answered this 4xx. The policy's answer, which needs no analysis.
     Refused(u16),
-    /// The proxy's metadata does not list the version: the policy removed it, or its
-    /// artifacts are on an origin the proxy does not serve.
+    /// The proxy's metadata does not list the version: refused, or on an origin it does not serve.
     NotListed,
-    /// Answered 503 for a reason waiting does not clear, named by
-    /// `x-waharoa-not-ready`.
+    /// Answered 503 for the reason `x-waharoa-not-ready` names, which waiting does not clear.
     NotReady(String),
     /// Still 503 for its analysis at the deadline.
     StillDeferred,

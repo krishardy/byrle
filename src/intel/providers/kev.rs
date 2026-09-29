@@ -1,8 +1,5 @@
-//! Reading CISA's Known Exploited Vulnerabilities catalogue.
-//!
-//! One JSON document, CC0 1.0. On 2026-09-14 it was 1.7 MB and listed 1,710 CVE ids. An entry
-//! gives a `cveID` and no package, so only `cveID` is read: an advisory is exploited when its id
-//! or one of its aliases is listed. See docs/engineering_decisions/kev-stream.md.
+//! Reading CISA's Known Exploited Vulnerabilities catalogue, which lists CVE ids and no
+//! packages. See docs/engineering_decisions/kev-stream.md.
 
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -16,8 +13,7 @@ pub const STREAM: &str = "cisa/kev";
 /// 9.7 times the catalogue on 2026-09-14.
 pub const MAX_CATALOGUE_BYTES: usize = 16 << 20;
 
-/// The width of `exploited_cve.cve_id`. A longer id is refused here, because a load that
-/// Postgres refuses would also fail the OSV load in the same transaction.
+/// The width of `exploited_cve.cve_id`, past which an id is refused before Postgres sees it.
 const MAX_ID_BYTES: usize = 128;
 
 #[derive(Deserialize)]
