@@ -70,10 +70,19 @@ impl Clients {
     /// Publish times fetched separately from the records. `Ok(None)` for an ecosystem
     /// whose records carry `published_at`, which asks nothing.
     pub async fn publish_times(&self, key: &PackageKey) -> Result<Option<PublishTimes>, String> {
+        Ok(self.full_document(key).await?.map(|full| full.times))
+    }
+
+    /// The full document, for an ecosystem whose client asks for less. `Ok(None)` for one
+    /// whose records carry `published_at`, which asks nothing.
+    pub async fn full_document(
+        &self,
+        key: &PackageKey,
+    ) -> Result<Option<npm::transport::FullDocument>, String> {
         match of(key.ecosystem()).publish_times {
             PublishTimeSource::Record => Ok(None),
             PublishTimeSource::FullPackument => {
-                npm::fetched(self.npm.publish_times(key).await, "publish times").map(Some)
+                npm::fetched(self.npm.full(key).await, "publish times").map(Some)
             }
         }
     }

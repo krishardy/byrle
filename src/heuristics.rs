@@ -4,7 +4,7 @@
 //! See docs/engineering_decisions/metadata-heuristics.md.
 
 use crate::identity::Ecosystem;
-use crate::record::{DocumentDetail, PackageRecord};
+use crate::record::{DocumentDetail, PackageMetadata, PackageRecord};
 
 /// A package whose first version is younger than this is new.
 pub const NEW_PACKAGE_DAYS: i64 = 30;
@@ -42,15 +42,25 @@ impl std::fmt::Display for Signal {
 }
 
 /// The signals for `record`, one version of the package whose held records are `records`.
+/// `full` is the full document, read in their place when it lists the version.
 /// `served` are the names of other packages this proxy has served in the same ecosystem,
 /// and `now` is when the signals are asked for.
 /// Returns them in the order [`Signal`] declares.
 pub fn signals<'a>(
     records: &[PackageRecord],
     record: &PackageRecord,
+    full: Option<&PackageMetadata>,
     served: impl IntoIterator<Item = &'a str>,
     now: jiff::Timestamp,
 ) -> Vec<Signal> {
+    let (records, record) = full
+        .and_then(|full| {
+            Some((
+                full.records.as_slice(),
+                full.version(record.package.version())?,
+            ))
+        })
+        .unwrap_or((records, record));
     let mut found = Vec::new();
     let first = records.iter().filter_map(|r| r.published_at).min();
     if let Some(days) = first.map(|first| now.duration_since(first).as_hours().max(0) / 24)
@@ -162,7 +172,7 @@ mod tests {
             .iter()
             .find(|r| r.package.version() == version)
             .expect("the version is listed");
-        signals(records, record, served.iter().copied(), now())
+        signals(records, record, None, served.iter().copied(), now())
     }
 
     #[test]
@@ -199,10 +209,31 @@ mod tests {
         let mut untimed = records[1].clone();
         untimed.published_at = None;
         assert_eq!(
-            signals(&records, &untimed, [], now()),
+            signals(&records, &untimed, None, [], now()),
             [],
             "no time says which versions are earlier"
         );
+    }
+
+    /// The full document is read in place of the held one when it lists the version, and
+    /// not when it does not.
+    #[test]
+    fn a_full_document_is_read_when_it_lists_the_version() {
+        let held = document("pkg", &[("1.0.0", 400, "ana", true)]);
+        let full = crate::record::PackageMetadata {
+            key: held[0].package.key().clone(),
+            latest: None,
+            records: document("pkg", &[("1.0.0", 3, "ana", true)]),
+            skipped: Vec::new(),
+        };
+        let judged =
+            |full: &crate::record::PackageMetadata| signals(&held, &held[0], Some(full), [], now());
+        assert_eq!(judged(&full), [Signal::NewPackage { days: 3 }]);
+        let other = crate::record::PackageMetadata {
+            records: document("pkg", &[("2.0.0", 3, "ana", true)]),
+            ..full
+        };
+        assert_eq!(judged(&other), [], "2.0.0 only: the held document is read");
     }
 
     /// Only a full npm document answers whether there is a repository: the abbreviated one
@@ -214,13 +245,13 @@ mod tests {
 
         let mut abbreviated = records[0].clone();
         abbreviated.detail = DocumentDetail::Abbreviated;
-        assert_eq!(signals(&records, &abbreviated, [], now()), []);
+        assert_eq!(signals(&records, &abbreviated, None, [], now()), []);
 
         let mut pypi = records[0].clone();
         pypi.package = crate::identity::PackageKey::from_registry_name(Ecosystem::PyPI, "loose")
             .and_then(|key| key.at_version("1.0.0"))
             .expect("a PyPI package");
-        assert_eq!(signals(&records, &pypi, [], now()), []);
+        assert_eq!(signals(&records, &pypi, None, [], now()), []);
     }
 
     /// One edit from a served name, or the same name in another case, and never a name

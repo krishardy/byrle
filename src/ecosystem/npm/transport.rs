@@ -65,7 +65,28 @@ impl Client {
             DocumentDetail::Abbreviated => ABBREVIATED_ACCEPT,
             DocumentDetail::Full => FULL_ACCEPT,
         };
+        let decoded = self.decoded(key, accept).await?;
+        Ok(normalize_packument(&decoded, detail))
+    }
 
+    /// Fetch the full packument: its `time` map, and its records for the heuristics.
+    ///
+    /// A request the client never made, and the only way to learn a publish date. See
+    /// [`parse_publish_times`] for why there is no cheaper source.
+    pub async fn full(
+        &self,
+        key: &PackageKey,
+    ) -> Result<Result<FullDocument, NormalizeError>, FetchError> {
+        let decoded = self.decoded(key, FULL_ACCEPT).await?;
+        Ok(parse_publish_times(&decoded).map(|times| FullDocument {
+            times,
+            metadata: normalize_packument(&decoded, DocumentDetail::Full)
+                .map_err(|e| e.to_string()),
+        }))
+    }
+
+    /// The packument's body, asked for with `accept` and gzip, decoded.
+    async fn decoded(&self, key: &PackageKey, accept: &str) -> Result<Vec<u8>, FetchError> {
         let response = self
             .http
             .get(self.packument_url(key))
@@ -85,46 +106,18 @@ impl Client {
             .and_then(|value| value.to_str().ok())
             .map(str::to_owned);
         let body = response.bytes().await.map_err(FetchError::Transport)?;
-
-        match crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes) {
-            Ok(decoded) => Ok(normalize_packument(&decoded, detail)),
-            Err(e) => Err(FetchError::Undecodable(e)),
-        }
+        crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes)
+            .map_err(FetchError::Undecodable)
     }
+}
 
-    /// Fetch the full packument and read only its `time` map.
-    ///
-    /// A request the client never made, and the only way to learn a publish date. See
-    /// [`parse_publish_times`] for why there is no cheaper source.
-    pub async fn publish_times(
-        &self,
-        key: &PackageKey,
-    ) -> Result<Result<BTreeMap<String, jiff::Timestamp>, NormalizeError>, FetchError> {
-        let response = self
-            .http
-            .get(self.packument_url(key))
-            .header(reqwest::header::ACCEPT, FULL_ACCEPT)
-            .header(reqwest::header::ACCEPT_ENCODING, "gzip")
-            .send()
-            .await
-            .map_err(FetchError::Transport)?;
-
-        if !response.status().is_success() {
-            return Err(FetchError::Status(response.status()));
-        }
-
-        let encoding = response
-            .headers()
-            .get(reqwest::header::CONTENT_ENCODING)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let body = response.bytes().await.map_err(FetchError::Transport)?;
-
-        match crate::http::decode_for_parsing(&body, encoding.as_deref(), self.max_bytes) {
-            Ok(decoded) => Ok(parse_publish_times(&decoded)),
-            Err(e) => Err(FetchError::Undecodable(e)),
-        }
-    }
+/// The full packument, as [`Client::full`] read it.
+#[derive(Debug, Clone)]
+pub struct FullDocument {
+    /// Publish time by version, without `created` and `modified`.
+    pub times: BTreeMap<String, jiff::Timestamp>,
+    /// The records, or why the document did not normalise when its `time` map did.
+    pub metadata: Result<PackageMetadata, String>,
 }
 
 /// A registry request's value, or what went wrong: `<what> could not be fetched: ...` when
@@ -439,14 +432,35 @@ mod tests {
         .await;
 
         let times = Client::new(reqwest::Client::new(), base)
-            .publish_times(&key("lodash"))
+            .full(&key("lodash"))
             .await
             .expect("server answered")
-            .expect("body parsed");
+            .expect("body parsed")
+            .times;
         assert_eq!(
             times.get("4.17.21").map(|t| t.to_string()),
             Some("2021-02-20T15:42:16.891Z".to_owned())
         );
+    }
+
+    /// A document whose records do not normalise still gives its times, which a cooldown
+    /// reads, and says why it gave no records.
+    #[tokio::test]
+    async fn times_survive_records_that_do_not_normalise() {
+        let base = serve(Router::new().route(
+            "/lodash",
+            get(|| async {
+                r#"{"name":"","time":{"1.0.0":"2020-01-01T00:00:00Z"},"versions":{}}"#
+            }),
+        ))
+        .await;
+        let full = Client::new(reqwest::Client::new(), base)
+            .full(&key("lodash"))
+            .await
+            .expect("server answered")
+            .expect("the time map parsed");
+        assert_eq!(full.times.len(), 1);
+        assert!(full.metadata.is_err(), "{:?}", full.metadata);
     }
 
     /// A registry that says no is a status, not an empty map: an empty map would read as
@@ -458,7 +472,7 @@ mod tests {
                 .await;
 
         let error = Client::new(reqwest::Client::new(), base)
-            .publish_times(&key("lodash"))
+            .full(&key("lodash"))
             .await
             .expect_err("403 is a fetch failure");
         assert!(
@@ -606,14 +620,14 @@ mod tests {
         tokio::spawn(axum::serve(listener, router).into_future());
         let client = Client::new(reqwest::Client::new(), format!("http://{addr}"));
         assert!(matches!(
-            client.publish_times(&key).await,
+            client.full(&key).await,
             Err(FetchError::Undecodable(_))
         ));
 
         let cut = scripted(vec![Answer::cut_short()]).await;
         let client = Client::new(reqwest::Client::new(), format!("http://{cut}"));
         assert!(matches!(
-            client.publish_times(&key).await,
+            client.full(&key).await,
             Err(FetchError::Transport(_))
         ));
     }
