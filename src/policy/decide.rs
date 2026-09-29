@@ -1,27 +1,7 @@
-//! Judging one package against a policy.
+//! Judging one package against a policy. Every check runs and appends one result to a
+//! decision vector, and the disposition is the strongest action in it.
 //!
-//! Every check runs. Each appends one result to a decision vector, and the disposition is
-//! the strongest action in it. See `docs/engineering_decisions/policy-tier-resolution.md`
-//! for the flow chart this implements.
-//!
-//! # Why not stop at the first failure
-//!
-//! The outcome would be identical: every check must pass for a package to be delivered,
-//! so the decision is a plain conjunction. What changes is what is known when the answer
-//! is given. A package both too young and carrying a known-exploited vulnerability
-//! reports both, rather than only the reason that lapses on its own, which would send an
-//! operator to grant an age exception and find it still refused.
-//!
-//! The cost is that a check runs after one has already failed. Here that is reading
-//! fields off a struct. Gathering the facts can cost more: publish times for
-//! `cooldown_days` are a full-packument request, made before this runs. Stage 4's
-//! expensive analysis is the exception and short-circuits in front of this.
-//!
-//! # Facts come from somewhere else
-//!
-//! This evaluates a policy against facts, and does not gather them. `Facts` is what the
-//! intel layer and the packument between them have to supply, written down as a type so
-//! the engine can be built and tested before either exists.
+//! See docs/engineering_decisions/policy-tier-resolution.md.
 
 use super::merge::{self, Rule};
 use super::selector::Canonical;
@@ -31,50 +11,33 @@ use jiff::civil::Date;
 /// What the policy is asked about one package.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Facts {
-    /// As the policy file spells it, not [`crate::identity::Ecosystem`]: a policy may
-    /// name an ecosystem no adapter exists for.
+    /// As the policy file spells it, which may name an ecosystem with no adapter.
     pub ecosystem: String,
     /// The name the registry uses, scope included.
     pub name: String,
     pub version: String,
-    /// When this version was published. `None` when the registry did not say, which is
-    /// not the same as "old enough".
+    /// When this version was published. `None` is not "old enough".
     pub published: Option<Date>,
     pub known_malware: bool,
     /// Advisories against this version.
     pub advisories: Vec<Advisory>,
-    /// Whether an advisory stream was asked at all.
-    ///
-    /// An empty `advisories` with `known_malware` false means two different things: a
-    /// package nothing is known against, or a build with nothing to ask. The checks that
-    /// read them cannot tell those apart, so the caller says which it is. Same distinction
-    /// `intel::Capabilities::gaps` reports at startup.
+    /// Whether an advisory stream was asked at all, so empty advisories are not read as clean.
     pub intel: Intel,
     pub has_install_scripts: bool,
-    /// The reason the registry gave for withdrawing this version, empty when it gave
-    /// none. PyPI's PEP 592 yank; npm has none, and the check reports not-applicable
-    /// there.
+    /// The reason the registry gave for withdrawing this version, PyPI's PEP 592 yank.
     pub yanked: Option<String>,
-    /// The message the publisher left when deprecating this version. npm's `deprecated`;
-    /// PyPI has none, and the check reports not-applicable there.
+    /// npm's `deprecated` message for this version.
     pub deprecated: Option<String>,
     /// What its attestations say, against the version published before it.
     pub provenance: Provenance,
 }
 
-/// What a version's attestations say, against the version published before it.
-///
-/// Identity is the repository and workflow file an attestation names, without the ref:
-/// every release is built from a new tag.
+/// What a version's attestations say, against the versions published before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Provenance {
-    /// Not established, and why. Nothing verified an attestation it publishes, or the
-    /// version published before it is not known. `decide` fails the check in the safe
-    /// direction and `enforce::unenforceable` drops it, as for a missing publish date.
+    /// Not established, and why. `enforce::unenforceable` drops the check.
     Unknown(&'static str),
-    /// Nothing contradicts it. It publishes no attestation and the version before it
-    /// published none, or its attestation verified and names the same identity as the
-    /// previous version's, or the previous version published none.
+    /// Nothing contradicts it.
     Consistent,
     /// An attestation it publishes failed verification.
     Unverified { why: String },
@@ -119,12 +82,10 @@ impl Default for Provenance {
 pub enum Intel {
     /// A stream answered. Empty advisories mean nothing is known against this version.
     Consulted {
-        /// Whether the answer included the KEV catalogue. Without it, no advisory is marked
-        /// exploited because nothing was asked.
+        /// Whether the answer included the KEV catalogue.
         exploitation_loaded: bool,
     },
-    /// No stream exists or none covers this ecosystem. Empty advisories mean nothing was
-    /// asked, which is not the same as nothing found.
+    /// No stream exists or none covers this ecosystem, so nothing was asked.
     NotConsulted,
 }
 
@@ -133,23 +94,13 @@ pub struct Advisory {
     pub id: String,
     /// The other ids it is known by. A GHSA advisory's CVE id is here.
     pub aliases: Vec<String>,
-    /// `None` when no stream scored it. `max_cvss` refuses it until `advisory_scores` gives
-    /// it a score.
+    /// `None` when no stream scored it, which `max_cvss` refuses unless `advisory_scores` does.
     pub cvss: Option<f64>,
     /// The severity band `cvss` was read from, for `explain`. `None` when a vector gave it.
     pub band: Option<String>,
-    /// Whether this advisory is in a known-exploited catalogue.
-    ///
-    /// A property of the advisory, not of the package: a KEV entry carries a `cveID` and
-    /// no package identifier of any kind. See
-    /// `docs/engineering_decisions/advisory-stream-licences.md`.
+    /// Whether this advisory, not the package, is in a known-exploited catalogue.
     pub kev: bool,
     /// Every stream that reported this advisory, sorted and once each.
-    ///
-    /// OSV and GitHub are signal streams checked independently, and both publish `GHSA-`
-    /// ids, so one advisory is commonly reported twice. That is corroboration rather than
-    /// two vulnerabilities: `decide` gives each check one result, and this is the set the
-    /// result was reached over. Empty only for an advisory built without intel.
     pub sources: Vec<String>,
 }
 
@@ -190,8 +141,7 @@ impl Check {
         }
     }
 
-    /// Every check, in the order the flow chart draws them. One list, so a check added to
-    /// the engine and not here is a compile error rather than one silently never run.
+    /// Every check, in the order the flow chart draws them.
     pub const ALL: [Check; 9] = [
         Self::Denials,
         Self::KnownMalware,
@@ -204,11 +154,7 @@ impl Check {
         Self::Provenance,
     ];
 
-    /// Whether an exception can excuse this check.
-    ///
-    /// Fixed here rather than configured. A denial and known malware have no exception
-    /// branch in the flow chart, which is what makes them the two an operator cannot
-    /// write their way past.
+    /// Whether an exception can excuse this check: every one but a denial and known malware.
     pub fn exceptable(self) -> bool {
         !matches!(self, Self::Denials | Self::KnownMalware)
     }
@@ -221,11 +167,9 @@ pub enum Outcome {
     Passed,
     /// It did, and this is what it contributes.
     Failed(Action),
-    /// It did, and an exception excused it. Carries the entry, so an audit trail can say
-    /// which one and a review can find the ones doing work.
+    /// It did, and the `packages` entry it carries excused it.
     Excepted { entry: usize, action: Action },
-    /// The check has no meaning for this ecosystem. Not the same as `Passed`: reporting
-    /// it as one would claim a check ran that never could.
+    /// The check has no meaning for this ecosystem.
     NotApplicable,
 }
 
@@ -255,10 +199,7 @@ pub struct Decision {
 }
 
 impl Decision {
-    /// The strongest action in the vector.
-    ///
-    /// `Action::strength` is the lattice order, proved. Under a short circuit no two
-    /// actions were ever combined and the lattice did no work.
+    /// The strongest action in the vector, by `Action::strength`.
     pub fn action(&self) -> Action {
         self.results
             .iter()
@@ -407,10 +348,8 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
     let set = entry.map(|i| &policy.packages[i].set);
 
     match check {
-        // No exception branch: a denial is absolute.
         Check::Denials => denials(policy, facts),
 
-        // No exception branch either: behaviour rather than policy.
         Check::KnownMalware => {
             if facts.known_malware {
                 Outcome::Failed(Action::Block)
@@ -419,20 +358,10 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             }
         }
 
-        // Quarantine, not block: it lapses as the package ages. A package whose
-        // publication date is unknown is treated as too young, because "we do not know"
-        // is not "old enough".
         Check::CooldownDays => cooldown_days(policy, facts, entry, as_of),
 
-        // Read from the advisories as they came, never from the list `vuln_advisory_ids` has
-        // filtered. Excepting an advisory by id says it is not reachable from this code;
-        // it says nothing about whether it is being exploited in the wild, and letting
-        // one stand for the other would dismiss the broader finding by accident.
         Check::Kev => kev(policy, facts, set, entry),
 
-        // Advisories the exception names are ignored; the rest are compared against the
-        // threshold. Narrower than raising the threshold, which would apply to every
-        // advisory this package acquires later.
         Check::MaxCvss => max_cvss(policy, facts, entry, as_of),
 
         Check::InstallScripts => {
@@ -471,7 +400,6 @@ fn run(policy: &Policy, facts: &Facts, check: Check, entry: Option<usize>, as_of
             )
         }
 
-        // Anything short of consistent fails, `Unknown` included, in the safe direction.
         Check::Provenance => on_off(
             facts.provenance != Provenance::Consistent,
             policy.provenance,
@@ -509,8 +437,6 @@ fn cooldown_days(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Da
     let waited = |days: u32| {
         days == 0
             || facts.published.is_some_and(|published| {
-                // A date so far out it cannot be represented is not a date this package
-                // will ever reach, so it is not old enough.
                 published
                     .checked_add(jiff::Span::new().days(i64::from(days)))
                     .is_ok_and(|ready| ready <= as_of)
@@ -519,15 +445,11 @@ fn cooldown_days(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Da
     if waited(policy.cooldown_days) {
         Outcome::Passed
     } else if let Some(entry) = entry.filter(|_| waited(cooldown_required(policy, entry))) {
-        // Too young for the global wait and old enough for the exception's, so the
-        // exception is what let it through: the flow chart's `RECORD_cooldown_EXCEPTED`.
         Outcome::Excepted {
             entry,
             action: Action::Quarantine,
         }
     } else {
-        // No exception, or one that shortened the wait and not enough. Either way no
-        // exception let anything through.
         Outcome::Failed(Action::Quarantine)
     }
 }
@@ -543,8 +465,6 @@ fn kev(
     if !facts.advisories.iter().any(|a| a.kev) {
         return Outcome::Passed;
     }
-    // The exception is per package, so it excuses every exploited advisory or none. `set`
-    // comes from `entry`, so an excused advisory always has the entry that excused it.
     let excused = set.and_then(|s| s.kev) == Some(Action::Allow);
     match entry.filter(|_| excused) {
         Some(entry) => Outcome::Excepted {
@@ -561,8 +481,6 @@ fn max_cvss(policy: &Policy, facts: &Facts, entry: Option<usize>, as_of: Date) -
     let (counting, excused) = over_max_cvss(policy, facts, entry, as_of);
     match (counting.is_empty(), excused.is_empty(), entry) {
         (false, _, _) => Outcome::Failed(Action::Block),
-        // Something was over the threshold and the exception named all of it, so the
-        // exception is what saved it.
         (true, false, Some(entry)) => Outcome::Excepted {
             entry,
             action: Action::Block,
@@ -582,8 +500,6 @@ fn on_off(
         return Outcome::Passed;
     }
     match (exception, entry) {
-        // The exception turned the check off, and the check had something to say, so the
-        // exception is what let this package through.
         (Some(Action::Allow), Some(entry)) => Outcome::Excepted {
             entry,
             action: setting,
@@ -656,7 +572,6 @@ mod tests {
         assert!(d.delivered());
         assert_eq!(d.action(), Action::Allow);
         assert!(d.reasons().is_empty());
-        // `clean()` is an npm package, and npm has no yank, so that check does not apply.
         assert!(
             d.results
                 .iter()
@@ -675,10 +590,7 @@ mod tests {
         }
     }
 
-    /// The point of the vector: a package failing several checks reports all of them, not
-    /// the first. Under a short circuit this would say only "too young", the reason that
-    /// lapses on its own, and an operator granting the age exception would find it still
-    /// refused for a reason they only then see.
+    /// A package failing several checks reports all of them, not the first.
     #[test]
     fn a_package_failing_several_checks_reports_all_of_them() {
         let facts = Facts {
@@ -701,16 +613,11 @@ mod tests {
             *outcome(&d, Check::InstallScripts),
             Outcome::Failed(Action::Block)
         );
-        // Four, not three: the exploited advisory scores 9.8, so it fails `max_cvss` as
-        // well as `kev`. Being exploited does not remove an advisory from the score
-        // comparison, and the two are separate results in the vector.
         assert_eq!(*outcome(&d, Check::MaxCvss), Outcome::Failed(Action::Block));
         assert_eq!(d.reasons().len(), 4);
     }
 
-    /// The disposition is the strongest action, so one `block` among quarantines decides
-    /// it. Reasons come back strongest first, because the one that will not lapse is the
-    /// one to act on.
+    /// One `block` among quarantines decides, and reasons come back strongest first.
     #[test]
     fn the_strongest_action_decides_and_leads_the_reasons() {
         let facts = Facts {
@@ -735,7 +642,6 @@ mod tests {
         assert_eq!(d.action(), Action::Quarantine);
         assert!(!d.delivered());
 
-        // Five days later the same package and the same policy deliver it.
         let later = decide(&policy(""), &facts, date(2026, 9, 18));
         assert!(later.delivered());
     }
@@ -789,7 +695,6 @@ mod tests {
         assert_eq!(*outcome(&d, Check::Denials), Outcome::Failed(Action::Block));
         assert_eq!(d.action(), Action::Block);
 
-        // A different version of the same package is not denied.
         let other = Facts {
             version: "4.17.20".to_owned(),
             ..clean()
@@ -840,7 +745,6 @@ mod tests {
             }
         }
 
-        // An exception matching the package changes neither.
         let p = policy(
             "denials:\n  - purl: \"pkg:npm/lodash@4.17.21\"\n    reason: compromised\npackages:\n  \
              - match: { ecosystem: npm, name: lodash }\n    set: { kev: allow }\n    \
@@ -859,8 +763,6 @@ mod tests {
     }
 
     /// An exception that let a package through is recorded as `Excepted`, not `Passed`.
-    /// It is the one carrying operational risk, and it is what an expiry review has to
-    /// find.
     #[test]
     fn an_exception_that_did_work_is_recorded_as_having_done_it() {
         let p = policy(
@@ -955,7 +857,6 @@ mod tests {
         );
         assert!(d.delivered());
 
-        // A second advisory the exception does not name is still over the threshold.
         let more = Facts {
             advisories: vec![
                 Advisory {
@@ -1061,9 +962,7 @@ mod tests {
         );
     }
 
-    /// The rule the gather-then-subtract shape exists to guarantee. Excepting an
-    /// advisory by id says it is not reachable from this code; it says nothing about
-    /// whether it is being exploited, and one must not stand for the other.
+    /// Excepting an advisory by id does not excuse its exploitation.
     #[test]
     fn excepting_an_advisory_by_id_does_not_excuse_its_exploitation() {
         let p = policy(
@@ -1142,7 +1041,6 @@ mod tests {
             "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
              set: { kev: allow }\n    reason: belt and braces\n    permanent: true\n",
         );
-        // An advisory, but nobody is exploiting it.
         let facts = Facts {
             advisories: vec![advisory("CVE-2024-1234", 3.1)],
             ..clean()
@@ -1181,9 +1079,8 @@ mod tests {
         }
     }
 
-    /// A stored score is compared whatever the policy says. Otherwise the highest
-    /// `advisory_scores` entry in force naming the advisory by id or alias, and with
-    /// neither the advisory counts as over.
+    /// A stored score is compared, else the highest `advisory_scores` entry in force naming
+    /// the advisory, else it counts as over.
     #[test]
     fn an_unscored_advisory_counts_as_over_max_cvss_until_policy_scores_it() {
         let p = policy(
@@ -1309,9 +1206,7 @@ mod tests {
         }
     }
 
-    /// Go has no install step, so the check reports not-applicable rather than a
-    /// violation. Three of the four outcomes contribute `allow` and are distinguished
-    /// anyway.
+    /// Go has no install step, so `install_scripts` is not applicable there.
     #[test]
     fn a_check_with_no_meaning_for_an_ecosystem_is_not_applicable() {
         let facts = Facts {
@@ -1345,11 +1240,8 @@ mod tests {
         assert!(d.exceptions_used().is_empty());
     }
 
-    /// Most specific wins. Overlapping entries that cannot be ordered are refused at
-    /// load, so whatever matches forms a chain and the narrowest is unique.
-    ///
-    /// The narrow entry is written **first** on purpose. With it last, "the narrowest
-    /// wins" and "the last one wins" give the same answer and the test proves neither.
+    /// The most specific entry applies, written first so "narrowest wins" and "last wins"
+    /// give different answers.
     #[test]
     fn the_most_specific_matching_exception_is_the_one_that_applies() {
         let narrow_first = policy(
@@ -1367,8 +1259,6 @@ mod tests {
             "the narrow entry waives the wait, and it is not the last one written"
         );
 
-        // The same two entries the other way round give the same answer, which is what
-        // makes the result about specificity rather than about file order.
         let narrow_last = policy(
             "packages:\n  - match: { ecosystem: npm, name: \"lo*\" }\n    \
              set: { cooldown_days: 30 }\n    reason: wide\n    permanent: true\n  \
@@ -1377,7 +1267,6 @@ mod tests {
         );
         assert!(decide(&narrow_last, &facts, TODAY).delivered());
 
-        // And a package the narrow entry does not name gets the wide one's longer wait.
         let other = Facts {
             name: "lolcat".to_owned(),
             published: Some(date(2026, 9, 11)),
