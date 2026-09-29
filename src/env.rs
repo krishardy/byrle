@@ -311,7 +311,7 @@ pub const MODE: Var = runtime(
     &["\"observe\" serves what the policy refuses and logs it"],
 )
 .with_default(Default::Text("enforce"));
-pub const HTTPS_PROXY: Var = runtime(
+pub const FORWARD_HTTPS: Var = runtime(
     "HTTPS_PROXY",
     "",
     &[
@@ -319,7 +319,7 @@ pub const HTTPS_PROXY: Var = runtime(
         "is read too",
     ],
 );
-pub const HTTP_PROXY: Var = runtime(
+pub const FORWARD_HTTP: Var = runtime(
     "HTTP_PROXY",
     "",
     &[
@@ -327,7 +327,7 @@ pub const HTTP_PROXY: Var = runtime(
         "is read too",
     ],
 );
-pub const NO_PROXY: Var = runtime(
+pub const FORWARD_EXCEPT: Var = runtime(
     "NO_PROXY",
     "",
     &[
@@ -335,9 +335,9 @@ pub const NO_PROXY: Var = runtime(
         "the lowercase name is read too",
     ],
 );
-pub const HTTPS_PROXY_LOWER: Var = other(Kind::External, "https_proxy", &["as HTTPS_PROXY"]);
-pub const HTTP_PROXY_LOWER: Var = other(Kind::External, "http_proxy", &["as HTTP_PROXY"]);
-pub const NO_PROXY_LOWER: Var = other(Kind::External, "no_proxy", &["as NO_PROXY"]);
+pub const FORWARD_HTTPS_LOWER: Var = other(Kind::External, "https_proxy", &["as HTTPS_PROXY"]);
+pub const FORWARD_HTTP_LOWER: Var = other(Kind::External, "http_proxy", &["as HTTP_PROXY"]);
+pub const FORWARD_EXCEPT_LOWER: Var = other(Kind::External, "no_proxy", &["as NO_PROXY"]);
 pub const LOG_FORMAT: Var = runtime(
     "WAHAROA_LOG_FORMAT",
     "",
@@ -456,12 +456,12 @@ pub const ALL: [Var; 49] = [
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     MODE,
-    HTTPS_PROXY,
-    HTTP_PROXY,
-    NO_PROXY,
-    HTTPS_PROXY_LOWER,
-    HTTP_PROXY_LOWER,
-    NO_PROXY_LOWER,
+    FORWARD_HTTPS,
+    FORWARD_HTTP,
+    FORWARD_EXCEPT,
+    FORWARD_HTTPS_LOWER,
+    FORWARD_HTTP_LOWER,
+    FORWARD_EXCEPT_LOWER,
     LOG_FORMAT,
     LOG_FILTER,
     DEFER_TEST,
@@ -811,9 +811,9 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
             Ok(self.text(upper)?.or(self.text(lower)?))
         };
         Ok(crate::http::UpstreamProxy {
-            https: first(HTTPS_PROXY, HTTPS_PROXY_LOWER)?,
-            http: first(HTTP_PROXY, HTTP_PROXY_LOWER)?,
-            direct: first(NO_PROXY, NO_PROXY_LOWER)?,
+            https: first(FORWARD_HTTPS, FORWARD_HTTPS_LOWER)?,
+            http: first(FORWARD_HTTP, FORWARD_HTTP_LOWER)?,
+            direct: first(FORWARD_EXCEPT, FORWARD_EXCEPT_LOWER)?,
         })
     }
 
@@ -1134,10 +1134,10 @@ mod tests {
     #[test]
     fn the_forward_proxy_is_read_uppercase_first() {
         let env = with(&[
-            (HTTPS_PROXY, "http://upper:3128"),
-            (HTTPS_PROXY_LOWER, "http://lower:3128"),
-            (HTTP_PROXY_LOWER, "http://lower:8080"),
-            (NO_PROXY_LOWER, "internal.example"),
+            (FORWARD_HTTPS, "http://upper:3128"),
+            (FORWARD_HTTPS_LOWER, "http://lower:3128"),
+            (FORWARD_HTTP_LOWER, "http://lower:8080"),
+            (FORWARD_EXCEPT_LOWER, "internal.example"),
         ]);
         assert_eq!(
             env.upstream_proxy().unwrap(),
