@@ -899,19 +899,12 @@ mod tests {
     /// roots starts one.
     #[tokio::test]
     async fn an_unusable_bundle_database_or_origin_refuses_the_start() {
-        let dir = crate::util::test_support::tempdir("startup-unusable");
-        let refused = dir.join("refused.pem");
-        std::fs::write(
-            &refused,
-            b"-----BEGIN CERTIFICATE-----\naGVsbG8gd29ybGQ=\n-----END CERTIFICATE-----\n",
-        )
-        .unwrap();
-        let refused = refused.display().to_string();
+        let refused = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tls/refused.pem"
+        );
         for (label, pairs) in [
-            (
-                "startup-bundle-refused",
-                vec![(env::CA_BUNDLE, refused.as_str())],
-            ),
+            ("startup-bundle-refused", vec![(env::CA_BUNDLE, refused)]),
             ("startup-database", vec![(env::DATABASE_URL, "not a url")]),
             ("startup-origin", vec![(env::ARTIFACT_ORIGINS, "not a url")]),
         ] {
@@ -928,32 +921,33 @@ mod tests {
         let (started, log) = logged("startup-bundle-merged", &[(env::CA_BUNDLE, bundle)]).await;
         assert!(started, "{log}");
         assert!(!log.contains("public roots are NOT trusted"), "{log}");
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// With a store, what a policy enforces is said, then each gap in its snapshot. A store
     /// with no snapshot, or one that errors, has no gaps to say.
     #[tokio::test]
     async fn a_store_says_what_it_enforces_and_its_gaps() {
-        use crate::intel::store::PackageIntel;
-        use crate::intel::store::testing::FixedIntel;
-        let loaded = FixedIntel(Ok(Some(PackageIntel {
-            snapshot: "s1".to_owned(),
-            records: Vec::new(),
-            ranges: Vec::new(),
-            exploitation_loaded: false,
-        })));
-        let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
-        warn_enforcement(Some(&loaded)).await;
-        drop(guard);
-        let log = crate::util::test_support::text(&buf);
+        use crate::intel::store::testing::{FixedIntel, knowing_nothing};
+        let said = async |store: FixedIntel| {
+            let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
+            warn_enforcement(Some(&store)).await;
+            drop(guard);
+            crate::util::test_support::text(&buf)
+        };
+        let loaded = said(knowing_nothing()).await;
         assert!(
-            log.contains("ENFORCED: known_malware and max_cvss"),
-            "{log}"
+            loaded.contains("ENFORCED: known_malware and max_cvss"),
+            "{loaded}"
         );
-        assert!(log.contains("the intel snapshot has a gap"), "{log}");
-        warn_enforcement(Some(&FixedIntel(Ok(None)))).await;
-        warn_enforcement(Some(&FixedIntel(Err(())))).await;
+        assert!(loaded.contains("the intel snapshot has a gap"), "{loaded}");
+        for store in [FixedIntel(Ok(None)), FixedIntel(Err(()))] {
+            let log = said(store).await;
+            assert!(
+                log.contains("ENFORCED: known_malware and max_cvss"),
+                "{log}"
+            );
+            assert!(!log.contains("gap"), "{log}");
+        }
     }
 
     /// Each hangup reloads the policy, and the loop ends with the stream.

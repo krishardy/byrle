@@ -8,6 +8,7 @@ discarded, and nothing here is trusted by anything.
 |---|---|
 | `test-ca.pem` | one CA certificate |
 | `test-ca-bundle.pem` | two, to check that a bundle loads every certificate in it |
+| `refused.pem` | one `CERTIFICATE` block holding `hello world`: it parses, and the TLS backend refuses it when a client is built |
 
 Parsing does not check validity dates, so these do not need refreshing. They are valid for
 20 years regardless.

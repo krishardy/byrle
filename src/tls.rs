@@ -199,17 +199,16 @@ mod tests {
     /// client is built. The error has to name the file either way.
     #[test]
     fn a_bundle_the_tls_backend_refuses_names_the_file() {
-        let pem = b"-----BEGIN CERTIFICATE-----\naGVsbG8gd29ybGQ=\n-----END CERTIFICATE-----\n";
-        let path = Path::new("not-really-a-cert.pem");
-        let certificates = parse_bundle(pem, path).expect("this parses, which is the point");
+        let path = fixture("refused.pem");
+        let certificates = load_bundle(&path).expect("this parses, which is the point");
         assert_eq!(certificates.len(), 1);
 
         let builder = apply(reqwest::Client::builder(), certificates, TrustMode::Merge);
-        let Err(e) = build(builder, path) else {
+        let Err(e) = build(builder, &path) else {
             panic!("the backend should refuse this");
         };
         assert!(matches!(e, TrustError::Rejected { .. }), "got: {e:?}");
-        assert!(e.to_string().contains("not-really-a-cert.pem"), "got: {e}");
+        assert!(e.to_string().contains("refused.pem"), "got: {e}");
         assert!(std::error::Error::source(&e).is_some());
     }
 

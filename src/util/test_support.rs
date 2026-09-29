@@ -63,6 +63,30 @@ pub fn tempdir(label: &str) -> std::path::PathBuf {
     dir
 }
 
+/// Set `path`'s permission bits to `mode`.
+pub fn set_mode(path: &std::path::Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).expect("sets the mode");
+}
+
+/// A directory with its permission bits set to `mode` until this drops, when they are
+/// `0755` again so the test can remove it. A non-root process then cannot do what `mode`
+/// withholds.
+pub struct Restricted<'a>(&'a std::path::Path);
+
+impl<'a> Restricted<'a> {
+    pub fn new(path: &'a std::path::Path, mode: u32) -> Self {
+        set_mode(path, mode);
+        Self(path)
+    }
+}
+
+impl Drop for Restricted<'_> {
+    fn drop(&mut self) {
+        set_mode(self.0, 0o755);
+    }
+}
+
 /// The address of a server that accepts each connection and closes it without a response.
 ///
 /// For tests that need an upstream that sends nothing. Binding a port and dropping the
@@ -134,6 +158,14 @@ impl Answer {
         Self::Body {
             bytes: bytes.into(),
             declared: None,
+        }
+    }
+
+    /// A body that ends before its `Content-Length`: one byte sent of 64 declared.
+    pub fn cut_short() -> Self {
+        Self::Body {
+            bytes: b"{".to_vec(),
+            declared: Some(64),
         }
     }
 }

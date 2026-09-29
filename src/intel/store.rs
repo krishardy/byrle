@@ -314,6 +314,40 @@ pub async fn for_command(
 pub mod testing {
     use super::*;
 
+    /// A store holding snapshot `s1`, which covers npm, with nothing against any package.
+    pub fn knowing_nothing() -> FixedIntel {
+        FixedIntel(Ok(Some(PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: Vec::new(),
+            ranges: Vec::new(),
+            exploitation_loaded: false,
+        })))
+    }
+
+    /// A store that answers for any package and then cannot say its snapshot.
+    pub struct Unsnapshotted;
+
+    impl Intel for Unsnapshotted {
+        fn lookup<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str) -> Lookup<'a, Vec<Record>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move { Err(IntelError::Backend(sqlx::Error::PoolTimedOut)) })
+        }
+
+        fn package<'a>(&'a self, _: &'a str, _: &'a str) -> Lookup<'a, Option<PackageIntel>> {
+            Box::pin(async move {
+                Ok(Some(PackageIntel {
+                    snapshot: "s1".to_owned(),
+                    records: Vec::new(),
+                    ranges: Vec::new(),
+                    exploitation_loaded: false,
+                }))
+            })
+        }
+    }
+
     /// Answers every question from one fixed reply. `Ok(None)` is a store with nothing
     /// loaded, and `Err(())` is a store that cannot be reached. Its snapshot records
     /// `osv/npm`, so npm is covered and PyPI is not.
@@ -811,30 +845,11 @@ mod tests {
     /// command.
     #[tokio::test]
     async fn a_snapshot_that_cannot_be_read_fails_the_command() {
-        struct Unsnapshotted;
-        impl Intel for Unsnapshotted {
-            fn lookup<'a>(&'a self, _: &'a str, _: &'a str, _: &'a str) -> Lookup<'a, Vec<Record>> {
-                Box::pin(async move { Ok(Vec::new()) })
-            }
-            fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
-                Box::pin(async move { Err(IntelError::Backend(sqlx::Error::PoolTimedOut)) })
-            }
-            fn package<'a>(&'a self, _: &'a str, _: &'a str) -> Lookup<'a, Option<PackageIntel>> {
-                Box::pin(async move { Ok(Some(nothing_known("s0"))) })
-            }
-        }
+        use testing::Unsnapshotted;
         let Err(NoIntel::Failed(why)) = for_command(Some(&Unsnapshotted), "npm", "x", true).await
         else {
             panic!("a snapshot that cannot be read fails");
         };
         assert!(why.starts_with("intel store: "), "{why}");
-        // For the trait's own coverage: the lookup answers nothing.
-        assert!(
-            Unsnapshotted
-                .lookup("npm", "x", "1")
-                .await
-                .expect("answers")
-                .is_empty()
-        );
     }
 }

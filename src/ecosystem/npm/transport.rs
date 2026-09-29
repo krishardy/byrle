@@ -639,11 +639,7 @@ mod tests {
             Err(FetchError::Undecodable(_))
         ));
 
-        let cut = scripted(vec![Answer::Body {
-            bytes: b"{".to_vec(),
-            declared: Some(64),
-        }])
-        .await;
+        let cut = scripted(vec![Answer::cut_short()]).await;
         let client = Client::new(reqwest::Client::new(), format!("http://{cut}"));
         assert!(matches!(
             client.publish_times(&key).await,

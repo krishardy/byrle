@@ -660,20 +660,13 @@ mod tests {
     /// open.
     #[test]
     fn a_directory_that_cannot_be_locked_or_listed_does_not_open() {
-        use std::os::unix::fs::PermissionsExt;
-        let set = |dir: &Path, mode| {
-            fs::set_permissions(dir, fs::Permissions::from_mode(mode)).expect("sets the mode");
-        };
-        let read_only = crate::util::test_support::tempdir("spool-read-only");
-        set(&read_only, 0o555);
-        let locked = Spool::open(&read_only, 1024);
-        set(&read_only, 0o755);
-        assert!(matches!(locked, Err(OpenError::Io { .. })));
-
-        let unlistable = crate::util::test_support::tempdir("spool-unlistable");
-        set(&unlistable, 0o300);
-        let listed = Spool::open(&unlistable, 1024);
-        set(&unlistable, 0o755);
-        assert!(matches!(listed, Err(OpenError::Io { .. })));
+        use crate::util::test_support::{Restricted, tempdir};
+        for (label, mode) in [("spool-read-only", 0o555), ("spool-unlistable", 0o300)] {
+            let dir = tempdir(label);
+            let restricted = Restricted::new(&dir, mode);
+            let opened = Spool::open(&dir, 1024);
+            drop(restricted);
+            assert!(matches!(opened, Err(OpenError::Io { .. })), "{label}");
+        }
     }
 }

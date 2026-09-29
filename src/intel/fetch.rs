@@ -673,11 +673,7 @@ mod tests {
         .expect_err("nothing answers");
         assert!(failure.why.starts_with("fetching http"), "{}", failure.why);
 
-        let cut = scripted(vec![Answer::Body {
-            bytes: b"{".to_vec(),
-            declared: Some(64),
-        }])
-        .await;
+        let cut = scripted(vec![Answer::cut_short()]).await;
         let failure = graphql(
             &client(),
             &format!("http://{cut}/graphql"),

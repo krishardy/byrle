@@ -51,9 +51,11 @@ By making a contribution to this project, I certify that:
 
 ## Before a pull request
 
-`make lint`, `make test` and `make coverage` pass. CLAUDE.md lists the project's
-standards, including 100% unit test coverage of the library and documentation of each
-engineering decision in `docs/engineering_decisions/`.
+`make lint`, `make test` and `make coverage` pass. `make coverage` runs on a pinned
+nightly toolchain, which `make dev-setup` installs; see
+[coverage-counts-library-code-only](docs/engineering_decisions/coverage-counts-library-code-only.md).
+CLAUDE.md lists the project's standards, including 100% unit test coverage of the library
+and documentation of each engineering decision in `docs/engineering_decisions/`.
 
 A report of a security vulnerability goes through [SECURITY.md](SECURITY.md), not an issue
 or pull request.

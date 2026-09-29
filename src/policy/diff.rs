@@ -934,9 +934,6 @@ mod run_tests {
     /// the run goes on.
     #[tokio::test]
     async fn a_package_the_snapshot_does_not_cover_is_counted() {
-        use crate::intel::store::PackageIntel;
-        use crate::intel::store::testing::FixedIntel;
-
         let addr = scripted(vec![Answer::body(crate::ecosystem::pypi::fixture())]).await;
         let registry = with(&[(crate::env::UPSTREAM_PYPI, &format!("http://{addr}/simple"))]);
         let policy = || Policy::parse("version: 1\ncooldown_days: 0\n").expect("loads");
@@ -948,12 +945,7 @@ mod run_tests {
                 "requests".to_owned(),
                 "0.2.0".to_owned(),
             )]),
-            store: Some(Box::new(FixedIntel(Ok(Some(PackageIntel {
-                snapshot: "s1".to_owned(),
-                records: Vec::new(),
-                ranges: Vec::new(),
-                exploitation_loaded: false,
-            }))))),
+            store: Some(Box::new(crate::intel::store::testing::knowing_nothing())),
             clients: Clients::from_env(&registry).expect("clients"),
             needs_times: false,
             streams_recorded: true,
