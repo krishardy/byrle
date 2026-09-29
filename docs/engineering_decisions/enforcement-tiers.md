@@ -72,6 +72,26 @@ What it needs that does not exist yet:
   say so without waiting for a release. A 5xx is accepted and warned about, because §5
   reserves those for the proxy not being ready.
 
+### How tier 3 filters a packument
+
+`npm::rewrite::filter_unservable_versions` removes a version from the packument for either
+of two reasons, in one pass: the policy refuses it, or its artifact is on an origin the
+proxy does not front. The policy is asked first, because its answer does not depend on the
+origin. Zero of 24,852 artifact URLs measured on registry.npmjs.org were off-origin, so the
+document is parsed only when there is something to remove; otherwise the byte rewrite runs.
+
+| Artifact origin | Version |
+|---|---|
+| fronted by the proxy | kept, URL pointed at the proxy |
+| in `WAHAROA_ALLOW_DIRECT_ORIGINS` | kept exactly as published, so the client fetches it there |
+| anything else, or a URL that does not parse | removed, unless `WAHAROA_REFUSE_UNSERVABLE=0` keeps it as published |
+
+Before the allow list, the only way to exempt one origin was to turn refusing off for all.
+A `dist-tags` entry naming a removed version is dropped, so the resolver falls back to a
+version that remains. When nothing remains the filtered document is still sent, with an
+empty `versions` map; forwarding the original would put every refused version back. A
+version with no `dist.tarball` is left alone: it produces no record, so nothing installs it.
+
 ## Where enforcement is recorded, which is the real trade
 
 Tiers 2 and 3 record enforcement **in the artifact**. The lockfile names the proxy, so a

@@ -1,8 +1,5 @@
-//! What a PyPI request path refers to, and which document a response body is.
-//!
-//! Also the two name questions the paths turn on: PEP 503 normalisation, which decides
-//! what the proxy asks the index for, and PEP 427 filename parsing, which is the only
-//! place a file's version is written.
+//! What a PyPI request path refers to, which document a response body is, and the PEP 503
+//! and PEP 427 name rules the paths turn on.
 
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
 use crate::route::{DocumentKind, IndexFormat, RequestTarget};
@@ -35,12 +32,8 @@ pub fn canonical_name(name: &str) -> String {
 }
 
 /// A project name as PEP 503 normalises it: lowercased, with every run of `-`, `_` and `.`
-/// replaced by a single `-`.
-///
-/// The index redirects to this form rather than serving the name as written: `Flask` 301s to
-/// `flask`, `zope.interface` and `ruamel_yaml` to `zope-interface` and `ruamel-yaml`, all
-/// measured 2026-09-16. Normalising here means the proxy asks for the name the index would
-/// redirect to, so one project is one identity rather than one per spelling.
+/// replaced by a single `-`. `name` is as written.
+/// Returns the name the index would redirect to.
 pub fn normalise(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let mut in_run = false;
@@ -67,22 +60,12 @@ pub fn index_url(base: &str, name: &str) -> Result<String, PypiError> {
     Ok(format!("{}/{normalised}/", base.trim_end_matches('/')))
 }
 
-/// What a distribution filename says: the project it belongs to, its version, and what
-/// kind of file it is.
-///
-/// A wheel is PEP 427 `{name}-{version}(-{build})?-{python}-{abi}-{platform}.whl`, so the
-/// name and version are the first two of at least five fields. An sdist is
-/// `{name}-{version}` with an archive extension, where the name may itself contain `-`, so
-/// the version is what follows the last `-`. `None` for anything else, including the eggs
-/// and `.exe` installers old projects still list.
-///
-/// The name comes back as [`normalise`] gives it. A wheel writes `-` in the project name
-/// as `_`, so `zope-interface` reaches the filename as `zope_interface`, and the two spell
-/// one project.
+/// What a distribution filename says, a wheel's by PEP 427 and an sdist's by its last `-`.
+/// `filename` is the file's name. Eggs and installers give `None`.
+/// Returns the [`normalise`]d project name, the version and the kind of file.
 pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
     if let Some(stem) = filename.strip_suffix(".whl") {
         let fields: Vec<&str> = stem.split('-').collect();
-        // name, version, then python, abi and platform, with an optional build tag between.
         if fields.len() < 5 {
             return None;
         }
@@ -103,20 +86,11 @@ pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
     None
 }
 
-/// Where a request under PyPI's prefixes goes upstream.
-///
-/// The index answers `/simple/<name>/` and the files come from [`FILES`], which the index
-/// gives in full and which the proxy reaches by keeping the path: the hash segments in
-/// `/packages/ab/cd/ef.../name-1.0.whl` are what locate the file, and they arrive in the
-/// request because the client followed the URL the index published.
-///
-/// `index` already ends in the index path, `https://pypi.org/simple`, so the proxy's own
-/// `/simple` prefix comes off before the rest is appended. A path under a PyPI prefix that
-/// names no project still goes to PyPI: `/simple/` is the root index, and answering pip
-/// with an npm registry's 404 says nothing useful.
-///
-/// `/integrity/`, PEP 740's attestations, is served by the index's host beside `/simple`:
-/// `https://pypi.org/integrity/attrs/26.1.0/attrs-26.1.0.tar.gz/provenance`.
+/// Where a request under PyPI's prefixes goes upstream: `/simple/` to the index, `/packages/`
+/// to [`FILES`] with its path kept, and `/integrity/` to the index's host.
+/// `index` ends in the index path, such as `https://pypi.org/simple`, whose prefix the path
+/// loses. `path_and_query` is the request's.
+/// Returns the upstream URL.
 pub fn upstream_url(index: &str, path_and_query: &str) -> String {
     if path_and_query.starts_with("/integrity/") {
         let host = index.strip_suffix("/simple").unwrap_or(index);
@@ -128,11 +102,9 @@ pub fn upstream_url(index: &str, path_and_query: &str) -> String {
     }
 }
 
-/// Which metadata document a body with this `Content-Type` is.
-///
-/// PyPI's row of [`crate::ecosystem::TABLE`] reads media types through this. Both simple
-/// index forms are read: PEP 691 JSON, and the PEP 503 page an index that has not
-/// implemented PEP 691 serves.
+/// Which simple-index form, PEP 691 JSON or a PEP 503 page, a body is.
+/// `content_type` is the header's value, if any.
+/// Returns `None` for any other media type.
 pub fn document_from_content_type(content_type: Option<&str>) -> Option<DocumentKind> {
     match crate::route::media_type(content_type)?.as_str() {
         SIMPLE_JSON | "application/json" => Some(DocumentKind::SimpleIndex(IndexFormat::Json)),
@@ -147,17 +119,12 @@ pub fn classify_path(path: &str) -> RequestTarget {
 
     if let Some(rest) = path.strip_prefix("simple/") {
         let name = rest.trim_end_matches('/');
-        // `/simple/` itself is the root index: every project PyPI serves, not one of them.
         if name.is_empty() {
             return RequestTarget::Other;
         }
-        // A file served from under the index rather than from a file host.
-        // `www.piwheels.org` writes `/simple/idna/idna-3.20-py3-none-any.whl`, and the
-        // request that follows the rewrite carries that path.
         if name.contains('/') {
             return artifact(name.rsplit('/').next().unwrap_or_default());
         }
-        // An empty name is refused by the name rule.
         return PackageKey::from_registry_name(Ecosystem::PyPI, name)
             .map_or(RequestTarget::Other, RequestTarget::Metadata);
     }
@@ -170,7 +137,6 @@ pub fn classify_path(path: &str) -> RequestTarget {
 
 /// The request for one file, named by a filename this build can read a version out of.
 fn artifact(filename: &str) -> RequestTarget {
-    // `filename_parts` gives a non-empty name with no `/`, which the name rule accepts.
     filename_parts(filename)
         .and_then(|(name, version, _)| {
             PackageKey::from_registry_name(Ecosystem::PyPI, &name)
@@ -200,16 +166,18 @@ mod tests {
             ("zope.interface", "zope-interface"),
             ("ruamel_yaml", "ruamel-yaml"),
             ("ruamel.yaml", "ruamel-yaml"),
-            // A run of separators collapses to one.
             ("a---b", "a-b"),
             ("A_-.B", "a-b"),
             ("already-normal", "already-normal"),
         ] {
             assert_eq!(normalise(given), normalised, "{given}");
         }
-        // Normalising is idempotent, so asking twice cannot drift.
         for name in ["Flask", "zope.interface", "a---b"] {
-            assert_eq!(normalise(&normalise(name)), normalise(name), "{name}");
+            assert_eq!(
+                normalise(&normalise(name)),
+                normalise(name),
+                "normalising {name} twice gives the same name"
+            );
         }
     }
 
@@ -219,12 +187,10 @@ mod tests {
             index_url(INDEX, "Zope.Interface").expect("usable"),
             "https://pypi.org/simple/zope-interface/"
         );
-        // A trailing slash on the base does not double up.
         assert_eq!(
             index_url("https://pypi.org/simple/", "flask").expect("usable"),
             "https://pypi.org/simple/flask/"
         );
-        // A name of nothing but separators normalises away, so no path can be built.
         let error = index_url(INDEX, "...").expect_err("not a usable name");
         assert!(matches!(error, PypiError::UnusableName(_)), "{error}");
     }
@@ -246,8 +212,6 @@ mod tests {
         let wheel = &project.files_for("2.34.2")[0];
         assert_eq!(wheel.kind, Kind::Wheel);
         assert_eq!(wheel.requires_python.as_deref(), Some(">=3.10"));
-        // The artifact is on another host than the index, which a certificate covering only
-        // the index host would miss. See enforcement-tiers.md.
         assert!(
             wheel.url.starts_with("https://files.pythonhosted.org/"),
             "{}",
@@ -272,9 +236,8 @@ mod tests {
         );
     }
 
-    /// PEP 503 asks for the normalised name, and pip sends whichever spelling the
-    /// requirement used. `Zope.Interface`, `zope_interface` and `zope-interface` are
-    /// one project, so they are one key.
+    /// `Zope.Interface`, `zope_interface` and `zope-interface`, as pip may send them, are
+    /// one key.
     #[test]
     fn the_index_name_is_normalised_into_the_key() {
         for spelling in ["Zope.Interface", "zope_interface", "ZOPE--INTERFACE"] {

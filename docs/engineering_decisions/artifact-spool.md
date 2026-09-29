@@ -80,6 +80,17 @@ at the first `package.json`. That prefix is not small enough to bound: of 78 npm
 5 are not readable from 4 MiB, `next`, `selenium-webdriver`, `three`, `echarts` and
 `aws-sdk`, because `package/package.json` is not always the first member.
 
+### Jobs
+
+| Rule | Why |
+|---|---|
+| one job per digest at a time | a client retrying, and an install asking for one artifact from several places, start one job between them |
+| at most `WAHAROA_MAX_CONCURRENT_ANALYSES` jobs run; the rest wait for a slot | bounds how much of the spool is in use. A request never waits |
+| a job ends after 10 minutes (`analysis::run::DEADLINE`), and its spool file is deleted | the upstream client ends a stall after `http::READ_TIMEOUT` with no bytes and sets no total timeout, so an upstream that trickles would hold a slot, and its digest would answer 503, for as long as it trickled. 10 minutes is a 1 GiB artifact at under 2 MB/s |
+| a digest whose fetch did not match is remembered in this process only, bounded by count | a mismatch is about one upstream at one time, not about the bytes |
+| an analysis store that cannot answer reads as not analysed | the artifact is analysed again |
+| an archive nothing could read is stored as `Unreadable` | the retry is decided rather than deferred again, and `install_scripts: block` refuses it |
+
 ## Why not memory
 
 Measured in [artifact-analysis-store](artifact-analysis-store.md): the artifacts that are

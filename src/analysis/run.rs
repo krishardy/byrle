@@ -1,14 +1,7 @@
-//! Analysing an artifact in the background, so no request waits for it.
+//! Analysing an artifact in the background, so no request waits for it: fetch it, spool
+//! it, check its digest, read it, and store what was read under the digest.
 //!
-//! The first fetch of an artifact starts a job here: fetch the artifact from upstream,
-//! write it to the [`crate::spool`], check its digest, read it, and store what was read
-//! under the digest. The request is answered 503 until the job has finished, and the
-//! client's retry is decided on what was stored. See
-//! `docs/engineering_decisions/artifact-spool.md`.
-//!
-//! The retry fetches the artifact from upstream again, and that fetch is checked against
-//! the same digest. That check is what makes the stored analysis apply to the bytes
-//! served.
+//! See `docs/engineering_decisions/artifact-spool.md`.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -27,11 +20,6 @@ use crate::spool::{Spool, Spooled, WriteError};
 use crate::util::lru::Lru;
 
 /// How long one job may take, from its fetch starting to its analysis being stored.
-///
-/// The upstream client ends a stall after [`crate::http::READ_TIMEOUT`] with no bytes, and
-/// sets no total timeout, so without this an upstream that trickles holds a slot, and its
-/// digest is answered 503 for as long as it trickles. Ten minutes is a
-/// [`crate::env::DEFAULT_MAX_ARTIFACT_BYTES`] artifact at under 2 MB/s.
 pub const DEADLINE: Duration = Duration::from_secs(600);
 
 /// What is known about the artifact with a digest.
@@ -39,11 +27,9 @@ pub const DEADLINE: Duration = Duration::from_secs(600);
 pub enum Known {
     /// An analysis is stored.
     Analysed(Analysis),
-    /// The upstream served bytes that do not match the digest, on the last fetch this
-    /// process made.
+    /// The upstream served bytes that do not match the digest, on this process's last fetch.
     Mismatched(Mismatch),
-    /// Neither. An analysis store that cannot answer is this too, and the artifact is
-    /// analysed again, which is the safe direction.
+    /// Neither, including when the analysis store cannot answer.
     Unknown,
 }
 
@@ -54,14 +40,12 @@ pub struct Job {
     pub digest: Sri,
     /// Where the proxy fetches the artifact from, as it would for the client.
     pub url: String,
-    /// What reads the artifact for install scripts. `None` when that analysis is already
-    /// stored and only attestations are missing, so the artifact is not fetched.
+    /// What reads the artifact for install scripts. `None` when only attestations are missing.
     pub reader: Option<Reader>,
     pub ecosystem: String,
     pub name: String,
     pub version: String,
-    /// Attestations to verify: this artifact's, and the version published before it,
-    /// each against the digest the metadata published for its own artifact.
+    /// Attestations to verify: this artifact's and the previous version's.
     pub attestations: Vec<Attestation>,
 }
 
@@ -72,8 +56,7 @@ pub struct Attestation {
     pub digest: Sri,
     /// Where the registry serves the attestations document.
     pub url: String,
-    /// The adapter's reader for that document, which is laid out per registry:
-    /// `crate::ecosystem::npm::attestation::provenance_bundle` for npm.
+    /// The adapter's reader for that document, such as npm's `attestation::provenance_bundle`.
     pub bundle: fn(&[u8]) -> Result<Bundle, String>,
 }
 
@@ -83,14 +66,11 @@ pub struct Analyser {
     client: reqwest::Client,
     spool: Arc<Spool>,
     store: Arc<dyn Analyses>,
-    /// Bounds how many analyses run at once, and so how much of the spool is in use. A
-    /// job waits for a slot. A request never does.
+    /// Bounds how many analyses run at once. A job waits for a slot; a request never does.
     slots: Arc<Semaphore>,
-    /// The digests being analysed now. A client retrying, and an install asking for one
-    /// artifact from several places, start one job between them.
+    /// The digests being analysed now, so each has one job at a time.
     in_flight: Arc<Mutex<HashSet<Sri>>>,
-    /// The digests whose last fetch did not match, bounded by count. In this process only:
-    /// a mismatch is about one upstream at one time, not about the bytes.
+    /// The digests whose last fetch did not match, bounded by count, in this process only.
     mismatched: Arc<Mutex<Lru<Sri, Mismatch>>>,
     /// How many jobs have ended, however they ended. What a test waits on.
     ended: Arc<watch::Sender<u64>>,
@@ -209,7 +189,6 @@ impl Analyser {
             ..Timings::default()
         };
         let running = Instant::now();
-        // Dropping the analysis on expiry drops its spool file too.
         let work = async {
             if let Some(reader) = job.reader {
                 self.analyse(&job, reader, &mut timings).await;
@@ -392,8 +371,6 @@ impl Analyser {
                     None
                 }
             },
-            // Stored, so the retry is decided rather than deferred again. An artifact
-            // nothing read is `Unreadable`, which `install_scripts: block` refuses.
             Err(too_large @ WriteError::TooLarge { .. }) => {
                 warn!(url.full = %job.url, error.message = %too_large, "artifact analysis: over the ceiling");
                 Some(Err(Scripts::Unreadable(too_large.to_string())))
@@ -483,8 +460,7 @@ fn ms(since: Instant) -> u64 {
     since.elapsed().as_millis() as u64
 }
 
-/// Takes a digest out of the in-flight set when its job ends, however it ends, and counts
-/// the job as ended.
+/// Takes a digest out of the in-flight set when its job ends, however it ends.
 struct InFlight {
     set: Arc<Mutex<HashSet<Sri>>>,
     digest: Sri,
@@ -493,7 +469,6 @@ struct InFlight {
 
 impl Drop for InFlight {
     fn drop(&mut self) {
-        // A poisoned set keeps the entry: nothing else can be done from a drop.
         let _ = self.set.lock().map(|mut set| set.remove(&self.digest));
         self.ended.send_modify(|ended| *ended += 1);
     }
@@ -588,8 +563,6 @@ mod tests {
         assert_eq!(spool_files(&analyser), 0, "the spool file is deleted");
     }
 
-    /// A retry arriving while the first job runs starts nothing. Once the job ends, the
-    /// digest can be analysed again.
     /// A job returns how long each phase took, as it logs them.
     #[tokio::test]
     async fn a_job_logs_how_long_each_phase_took() {
@@ -611,6 +584,8 @@ mod tests {
         assert!(phases <= timings.total_ms + 4, "{timings:?}");
     }
 
+    /// A retry arriving while the first job runs starts nothing. Once the job ends, the
+    /// digest can be analysed again.
     #[tokio::test]
     async fn one_digest_is_analysed_once_at_a_time() {
         let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
@@ -793,9 +768,8 @@ mod tests {
         assert!(second.queued_ms >= 230, "{second:?}");
     }
 
-    /// A real document verifies and its identity is stored. A 404 and a body that is not
-    /// an attestations document are stored as failures. A 503 stores nothing, so the next
-    /// request verifies again: a registry having a bad minute refuses nothing.
+    /// A real document verifies and is stored, a 404 or a non-document is stored as a
+    /// failure, and a 503 stores nothing, so the next request verifies again.
     #[tokio::test]
     async fn attestations_are_verified_and_only_a_real_answer_is_stored() {
         let sigstore = std::fs::read(concat!(
@@ -862,8 +836,11 @@ mod tests {
             Some(Attested::Failed { .. })
         ));
         assert_eq!(analyser.attested(&digests[3]).await, None);
-        // The artifact itself was not fetched: its analysis was not asked for.
-        assert_eq!(analyser.known(&digests[0]).await, Known::Unknown);
+        assert_eq!(
+            analyser.known(&digests[0]).await,
+            Known::Unknown,
+            "the artifact itself was not fetched: its analysis was not asked for"
+        );
     }
 
     /// A registry that refuses the connection stores nothing either.
@@ -985,7 +962,6 @@ mod tests {
         assert_eq!(analyser.attested(&digest).await, None);
         assert_eq!(analyser.known(&digest).await, Known::Unknown);
 
-        // An artifact the upstream does not answer for.
         analyser
             .start(job(&digest, crate::util::test_support::NO_UPSTREAM))
             .expect("starts")

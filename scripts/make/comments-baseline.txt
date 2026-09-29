@@ -1,17 +1,13 @@
 # Files not yet held to scripts/make/comments.py. Only ever shrinks.
 src/analysis/attestation.rs
-src/analysis/run.rs
 src/analysis.rs
 src/audit.rs
 src/doctor.rs
 src/ecosystem/npm/normalize.rs
-src/ecosystem/npm/rewrite.rs
 src/ecosystem/pypi/normalize.rs
-src/ecosystem/pypi/paths.rs
 src/ecosystem.rs
 src/http.rs
 src/intel/postgres.rs
-src/intel/store.rs
 src/intel.rs
 src/origin.rs
 src/policy/decide.rs

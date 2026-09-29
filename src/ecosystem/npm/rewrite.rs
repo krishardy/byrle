@@ -9,29 +9,14 @@ use crate::origin::{
 };
 use crate::record::PackageMetadata;
 
-///
-/// This is the only control that works on an off-origin artifact. The client fetches
-/// `dist.tarball` from whatever host it names, so a refusal at the artifact request never
-/// happens: the request goes somewhere else. The packument is the last point at which the
-/// version is visible, and dropping it there is what decision #4 already settles for
-/// quarantine, letting the client's own resolver pick a version the proxy can see.
-///
-/// Structural, so unlike [`rewrite_artifact_origins`] it parses the document. That cost
-/// is paid only when there is something to remove: zero of the 24,852 artifact URLs
-/// measured on registry.npmjs.org were off-origin, so this path is not the normal one.
-///
-/// Versions with no `dist.tarball` at all are left alone. They produce no record, so
-/// nothing can install them anyway, and removing them would be a second behaviour hiding
-/// behind this one.
-///
-/// `refuse_unservable` says what happens to an artifact on an origin the proxy does not
-/// front: dropped when true, and when false kept and left exactly as published, because
-/// the operator chose to let the client fetch it directly.
-///
-/// A version is dropped for either of two reasons: its artifact is published somewhere
-/// the proxy cannot see, or the package policy refuses it. They are separate questions
-/// and share one pass because both remove from the same `versions` map and both leave a
-/// `dist-tags` entry pointing at nothing.
+/// Remove the versions the policy refuses and those whose artifact is on an origin the proxy
+/// does not front, and point the rest at the proxy, as enforcement-tiers.md records.
+/// `json` is the packument. `artifacts` is each version and its artifact URL.
+/// `policy` says which origins are served, allowed or refused.
+/// `refused_by_policy` are the versions the policy refuses.
+/// `refuse_unservable` removes a refused origin's versions; false keeps them as published.
+/// `public_base` is the proxy's own address.
+/// Returns the filtered document, or why it could not be parsed.
 pub fn filter_unservable_versions(
     json: &[u8],
     artifacts: impl IntoIterator<Item = (String, String)>,
@@ -71,8 +56,6 @@ fn filter_listed(
         .and_then(serde_json::Value::as_object_mut)
     {
         for (version, url) in artifacts {
-            // Asked first, because the policy's answer does not depend on where the
-            // artifact lives. A version refused here is gone whatever its origin is.
             if refused_by_policy.contains(&version) {
                 versions.remove(&version);
                 removed.push(version);
@@ -80,7 +63,6 @@ fn filter_listed(
             }
             match policy.disposition(&url) {
                 Disposition::Served => {
-                    // `disposition` answers `Served` only for a URL on a reachable origin.
                     let path = reachable_path(&url, policy.reachable())
                         .expect("a served URL has a reachable path");
                     if let Some(tarball) = versions
@@ -92,8 +74,6 @@ fn filter_listed(
                         rewritten += 1;
                     }
                 }
-                // Left exactly as published, so the client fetches it where the registry
-                // said. That is the point of allowing it.
                 Disposition::AllowedDirect(_) => allowed += 1,
                 Disposition::Refused(_) if refuse_unservable => {
                     versions.remove(&version);
@@ -104,8 +84,6 @@ fn filter_listed(
         }
     }
 
-    // A tag pointing at a version that is gone would resolve to nothing. Dropping the tag
-    // lets the resolver fall back to a version that is still there.
     let removed_set: HashSet<&str> = removed.iter().map(String::as_str).collect();
     if let Some(tags) = document
         .get_mut("dist-tags")
@@ -131,8 +109,7 @@ pub struct Filtered {
     pub removed: Vec<String>,
     /// Versions kept, with their artifact pointed at the proxy.
     pub rewritten: usize,
-    /// Versions kept with their artifact left as published, because the operator allows
-    /// that origin to be fetched directly.
+    /// Versions kept with their artifact left as published.
     pub allowed: usize,
 }
 
@@ -156,8 +133,6 @@ pub struct Rewrite<'a> {
 pub fn rewrite_packument(r: Rewrite<'_>) -> Option<Vec<u8>> {
     let (allowed_direct, refused) = r.packument.unserved_origins(r.origins);
     warn_allowed_direct(r.path, &allowed_direct);
-    // Either reason to drop a version puts this on the structural path. The byte rewrite
-    // cannot remove anything, only repoint URLs.
     if !r.refused_by_policy.is_empty() || (r.refuse_unservable && !refused.is_empty()) {
         return filtered(&r, &refused);
     }
@@ -197,8 +172,6 @@ fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Option<Vec<u8
         r.refuse_unservable,
         r.base.unwrap_or(""),
     ) {
-        // Always the filtered body, even when nothing survived. Forwarding the original
-        // would put every refused version straight back into the document.
         Ok(filtered) => {
             warn!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
@@ -647,9 +620,7 @@ mod tests {
         );
     }
 
-    /// The only control that works on an off-origin artifact: the client fetches it
-    /// from whatever host the packument names, so refusing the artifact request never
-    /// happens. Dropping the version is what decision #4 settles for quarantine.
+    /// A version whose artifact is on an origin the proxy does not front is removed.
     #[test]
     fn versions_the_proxy_cannot_serve_are_removed() {
         let out = filter(MIXED, &policy(&[], &[]));
@@ -666,9 +637,7 @@ mod tests {
         );
     }
 
-    /// Three states, not two. Before the allow list the only escape from a refusal
-    /// was turning refusing off everywhere, which trades one origin's exemption for
-    /// every origin's.
+    /// An artifact on an allowed origin is kept exactly as published.
     #[test]
     fn an_allowed_origin_is_kept_exactly_as_published() {
         let out = filter(MIXED, &policy(&[], &["https://elsewhere.example"]));
@@ -688,9 +657,8 @@ mod tests {
         assert_eq!(v["dist-tags"]["latest"], serde_json::json!("1.0.2"));
     }
 
-    /// Served, allowed and refused are distinguished, and an unparseable URL is
-    /// refused under its own text: it names no origin that could be served or
-    /// allowed, and an artifact that cannot be located cannot be examined.
+    /// Served, allowed and refused are distinguished, and a URL that does not parse is
+    /// refused under its own text.
     #[test]
     fn the_policy_distinguishes_all_three_states() {
         let p = policy(&["https://cdn.example"], &["https://allowed.example"]);
@@ -751,9 +719,7 @@ mod tests {
         assert_eq!(e.reason, "scheme is not http or https");
     }
 
-    /// When nothing survives, the document still has to be the filtered one. An
-    /// empty `versions` map says there is no installable version; forwarding the
-    /// original would put every refused version straight back.
+    /// When nothing survives, the filtered document with an empty `versions` map is sent.
     #[test]
     fn a_document_where_nothing_survives_is_still_filtered() {
         let json = r#"{"name":"w","dist-tags":{"latest":"1.0.0"},"versions":{
@@ -824,9 +790,7 @@ mod tests {
         assert!(matches!(result, Err(RewriteError::NotJson(_))));
     }
 
-    /// npm's `_resolved` repeats `dist.tarball` verbatim. A rewrite that only touched
-    /// `dist.tarball` would leave it pointing at the registry. Measured in the corpus:
-    /// 2 of 49,704 URLs appear twice, both this way.
+    /// npm's `_resolved` repeats `dist.tarball` verbatim, and both are rewritten.
     #[test]
     fn a_url_repeated_elsewhere_is_rewritten_everywhere() {
         let out = rewrite(
@@ -905,9 +869,7 @@ mod tests {
         );
     }
 
-    /// A document whose artifact URLs are not there to be found is refused outright.
-    /// Half a rewrite would send some artifacts to the proxy and leave the rest
-    /// pointing at the registry.
+    /// A document whose artifact URLs cannot all be found is not rewritten at all.
     #[test]
     fn a_url_that_cannot_be_found_fails_the_whole_rewrite() {
         let absent = ["https://registry.npmjs.org/ghost/-/ghost-1.0.0.tgz"];
