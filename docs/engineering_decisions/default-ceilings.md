@@ -36,3 +36,8 @@ tree the rewrite walks, the serialised output and the gzip buffer are live toget
 
 Eight kept the worst case near half a gigabyte when typescript's 15.7 MB was the largest
 packument.
+
+A request waits for a slot after its body is read, not before. The upstream connection is
+then finished and waiting costs only time. With the wait placed before the read, the
+response stalled until it timed out: 18 of 24 concurrent requests failed with "error
+decoding response body".

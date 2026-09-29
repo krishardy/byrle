@@ -1,50 +1,7 @@
-//! The reverse proxy: forward every request, normalise the packuments on the way back.
+//! The reverse proxy: forward every request, and read, filter and rewrite the metadata
+//! documents on the way back. Artifacts stream through, hashed on the way past.
 //!
-//! Lives in the library rather than in `main.rs` so it can be tested against a fake
-//! registry. `main.rs` reads the environment and serves [`Proxy::router`].
-//!
-//! # Bodies
-//!
-//! Tarballs stream straight through, hashed on the way past. Packuments are buffered,
-//! decoded, normalised, and then **rewritten**: every artifact URL the proxy can serve is
-//! pointed at the proxy itself, and the document is re-compressed.
-//!
-//! The rewrite replaces URLs in the text rather than rebuilding the document, so what the
-//! client receives is byte-identical to the upstream's apart from those URLs. See
-//! [`crate::origin::rewrite_artifact_origins`] for why, and what it costs.
-//!
-//! The rewrite exists because clients disagree about `dist.tarball`. npm rewrites it to
-//! the configured registry; pnpm 10, yarn 1, yarn 4 and bun 1.3 use it verbatim and
-//! fetch from whatever host it names, so without this their artifacts never reach the
-//! proxy at all. See
-//! `docs/engineering_decisions/packument-tarball-url-rewriting.md`.
-//!
-//! Normalising reads the decoded original, never the rewritten copy. Records built from
-//! the rewritten document would carry the proxy's own origin as the registry's claim, and
-//! would make [`crate::origin::bypassing_origin`] report every package.
-//!
-//! For a packument request the proxy replaces the client's `Accept-Encoding` with gzip
-//! or identity, whichever the client accepts ([`crate::http::encoding_to_request`]).
-//! registry.npmjs.org serves brotli when it is offered and npm 9 offers `gzip,deflate`,
-//! so narrowing the request means one decompressor here instead of three, and the client
-//! still receives an encoding it asked for.
-//!
-//! Normalising happens before the response is forwarded, not in a spawned task. Stage 2
-//! has to decide before forwarding, so the shape does not change, and a background task
-//! would make the smoke assertions racy. Measured cost, logged as `parse_ms`: 2 ms for
-//! lodash (117 versions), 7 ms for @babel/core (230), 252 ms for the full typescript
-//! packument (3,822 versions, 15.7 MB decoded).
-//!
-//! # When a packument is forwarded unrewritten
-//!
-//! Every such path logs `UNINSPECTED`, because each one leaves that package's artifacts
-//! to be fetched wherever the document says. They are: the client accepts no encoding
-//! this can decode; there is no `Host` and no configured public base; the body passes the
-//! size cap; it cannot be decoded; it cannot be normalised; it cannot be re-serialised;
-//! and, per version, an artifact on an origin the proxy does not front. Stage 1 forwards
-//! in all of them rather than failing an install. Stage 2 has to decide whether that
-//! stays acceptable, because for every client except npm it means the bytes are never
-//! seen.
+//! See docs/request-flow.md.
 
 use crate::analysis::Claim;
 use crate::analysis::attestation;
@@ -95,37 +52,21 @@ use std::time::Instant;
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
-/// The path the proxy answers for itself rather than forwarding.
-///
-/// Under `/-/`, which is the registry's own namespace and where a package name can never
-/// live, so it cannot collide with anything a client asks for.
+/// The path the proxy answers for itself, under `/-/`, where no package name can be.
 pub const HEALTH_PATH: &str = "/-/waharoa/health";
 
-/// Where the proxy says whether it can decide on packages now, for an orchestrator's
-/// readiness probe. Under `/-/` for the same reason as [`HEALTH_PATH`].
+/// Where the proxy says whether it can decide on packages now, for a readiness probe.
 pub const READY_PATH: &str = "/-/waharoa/ready";
 
-/// How many versions the policy took out of a metadata document, on the response carrying
-/// it. Absent when it took none.
-///
-/// Decision #4 filters on resolution, so the client resolves against a document this proxy
-/// changed. `docs/engineering_decisions/enforcement-tiers.md` calls changing it silently a
-/// trust problem of its own, and these two headers are what a client, a CI log or a person
-/// with `curl -I` can see it by.
+/// How many versions the policy took out of a metadata document. Absent when it took none.
 pub const FILTERED_VERSIONS: header::HeaderName =
     header::HeaderName::from_static("x-waharoa-filtered-versions");
 
-/// Which checks took them out, comma separated, in name order. Beside
-/// [`FILTERED_VERSIONS`].
+/// Which checks took them out, comma separated, in name order.
 pub const FILTERED_CHECKS: header::HeaderName =
     header::HeaderName::from_static("x-waharoa-filtered-checks");
 
 /// Whether the proxy can decide on a package now. Served at [`READY_PATH`].
-///
-/// 200 when ready and 503 when not, so a probe needs only the status. Ready exactly when a
-/// package request would not be answered with the intel 503. No percentage: `waharoa
-/// refresh` loads in one transaction, so the store holds the previous snapshot or the new
-/// one and never part of one. See `docs/engineering_decisions/readiness-endpoint.md`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Readiness {
     pub ready: bool,
@@ -148,15 +89,7 @@ pub enum IntelState {
     Unavailable,
 }
 
-/// What the proxy is, and what it is configured to do.
-///
-/// Served at [`HEALTH_PATH`] so a client can tell a waharoa from any other registry, and
-/// so the settings that decide what gets examined are visible without reading the
-/// environment of a running process. `waharoa doctor` reads it.
-///
-/// Deliberately no secrets: the CA bundle's contents, the upstream's credentials if it
-/// ever has any, and the throwaway block are all absent. What is here is what an operator
-/// needs to answer "is this thing doing what I think".
+/// What the proxy is, and what it is configured to do, without secrets. Served at [`HEALTH_PATH`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Health {
     /// Always "waharoa", so a response from something else is recognisable as such.
@@ -164,11 +97,9 @@ pub struct Health {
     pub version: String,
     /// Each ecosystem's upstream, by purl type.
     pub upstreams: BTreeMap<String, String>,
-    /// The address written into artifact URLs, when one is configured. `None` means each
-    /// request's own `Host` is used, and that address is what lockfiles record.
+    /// The address written into artifact URLs; `None` uses each request's own `Host`.
     pub public_base: Option<String>,
-    /// Whether artifact URLs are pointed at this proxy. With this off, pnpm and yarn
-    /// fetch artifacts without the proxy seeing them.
+    /// Whether artifact URLs are pointed at this proxy.
     pub rewrite_artifacts: bool,
     /// Whether versions whose artifacts this proxy cannot serve are removed.
     pub refuse_unservable: bool,
@@ -184,46 +115,33 @@ pub struct Health {
     pub records_held: usize,
     /// Artifacts fetched and verified since the proxy started. See [`crate::verified`].
     pub artifacts_verified: usize,
-    /// Where an artifact being analysed is written, when a spool is open. See
-    /// [`crate::spool`].
+    /// Where an artifact being analysed is written, when a spool is open.
     pub spool_dir: Option<String>,
-    /// Artifact requests answered 304 since the proxy started. The client installed bytes
-    /// from its own cache, which this proxy did not hash on that request. Every warm-cache
-    /// install makes one per artifact, so this is a count, not a finding.
+    /// Artifact requests answered 304 since the proxy started, from the client's own cache.
     #[serde(default)]
     pub artifacts_revalidated: u64,
-    /// Artifact requests since the proxy started for a version that depends on a package
-    /// by URL, git or path. Each is a dependency the client fetched around this proxy.
+    /// Artifact requests for a version that depends on a package by URL, git or path.
     #[serde(default)]
     pub artifacts_with_direct_dependencies: u64,
-    /// Metadata documents since the proxy started forwarded without being read or
-    /// rewritten, oversized or undecodable. The artifacts they list are fetched from where
-    /// they point, which is a bypass for certain.
+    /// Metadata documents forwarded without being read or rewritten since the proxy started.
     #[serde(default)]
     pub documents_uninspected: u64,
-    /// The clients the last window found reading metadata documents and fetching no
-    /// artifact, with the number of documents. A heuristic: see
-    /// [`Proxy::report_traffic`].
+    /// The clients the last window found reading documents and fetching no artifact.
     #[serde(default)]
     pub clients_without_artifacts: BTreeMap<String, u64>,
 }
 
 #[derive(Clone)]
 pub struct Proxy {
-    /// Set by the builders and read while serving. Behind one `Arc`, because axum clones
-    /// the proxy for every request and several of these fields are heap allocations.
+    /// Set by the builders and read while serving, behind one `Arc` as axum clones the proxy.
     config: Arc<Config>,
-    /// Records from packuments already seen, so a tarball request can find the digest
-    /// its packument published. Bounded; see [`crate::store`].
+    /// Records from metadata already seen, so an artifact request finds its digest.
     store: Arc<Mutex<RecordStore>>,
-    /// Artifacts already fetched and verified, keyed by content digest. The fetch path
-    /// branches on this (plan §5). See [`crate::verified`].
+    /// Artifacts already fetched and verified, keyed by content digest.
     verified: Arc<Mutex<VerifiedArtifacts>>,
-    /// Bounds how many packuments are decoded and rewritten at once. See
-    /// [`DEFAULT_MAX_CONCURRENT_METADATA`].
+    /// Bounds how many metadata documents are decoded and rewritten at once.
     metadata_slots: Arc<Semaphore>,
-    /// The configuration after a policy reload, which each request reads from then on.
-    /// `None` until the first reload. See [`Proxy::replace_policy`].
+    /// The configuration after a policy reload, `None` until the first.
     reloaded: Arc<RwLock<Option<Arc<Config>>>>,
     /// The intel snapshot [`intel_for`] last read coverage from. See [`snapshot_named`].
     coverage: Arc<Mutex<Option<LoadedSnapshot>>>,
@@ -248,48 +166,34 @@ struct Config {
     /// Fetches the metadata a client never asked for. See [`lookup_or_fetch`].
     clients: Clients,
     /// Which origins this proxy serves, and which it permits a client to fetch directly.
-    /// One source of truth for rewriting, for the report, and for the refusal.
     origins: OriginPolicy,
     /// What a policy refusal answers with, per ecosystem and client.
     refusal: RefusalStatus,
     /// Whether to drop versions whose artifacts this proxy cannot serve.
     refuse_unservable: bool,
     mode: Mode,
-    /// Origins the operator added, beyond the upstreams, as `with_origin_policy` accepted
-    /// them. Kept so a later upstream change rebuilds `origins` without losing them.
+    /// Origins the operator added, kept so a later upstream change can rebuild `origins`.
     served_origins: Vec<String>,
     /// Origins a client may fetch from directly, kept for the same reason.
     allowed_direct: Vec<String>,
-    /// Where each ecosystem's requests are forwarded. A PyPI client asks this proxy for
-    /// `/simple/<name>/` and the request goes to `{pypi upstream}/<name>/`, because the base
-    /// already names the index.
+    /// Where each ecosystem's requests are forwarded.
     upstreams: Upstreams,
-    /// The policy, when one is configured. `None` is Stage 1 behaviour and is a distinct
-    /// state from a policy that allows everything: nothing was asked, rather than asked
-    /// and answered yes.
+    /// The policy, when one is configured. `None` asks nothing, unlike a policy allowing all.
     policy: Option<Arc<Policy>>,
     /// One line per policy decision, when a path is configured.
     audit: Option<Arc<AuditLog>>,
-    /// The intel store, when one is configured. With a policy, every decision consults it,
-    /// and a store that cannot answer is a 503 rather than a serve. See [`intel_for`].
+    /// The intel store, when one is configured. See [`intel_for`].
     intel: Option<Arc<dyn Intel>>,
-    /// Where an artifact is written while it is analysed. Its lock is held for as long as
-    /// the proxy lives. See [`crate::spool`].
+    /// Where an artifact is written while it is analysed, locked while the proxy lives.
     spool: Option<Arc<Spool>>,
-    /// Analyses an artifact nothing has analysed, in the background. Without one, nothing
-    /// is analysed and the metadata's claim decides. See [`crate::analysis::run`].
+    /// Analyses an artifact nothing has analysed. Without one, the metadata's claim decides.
     analyser: Option<Arc<Analyser>>,
     max_metadata_bytes: usize,
-    /// Point artifact URLs at the proxy so every client fetches through it. See
-    /// [`npm::rewrite_packument`] and [`pypi::rewrite::rewrite_index`].
+    /// Point artifact URLs at the proxy so every client fetches through it.
     rewrite_artifacts: bool,
-    /// The address to write into artifact URLs, when it must not be taken from the
-    /// request's `Host`. Needed behind a load balancer, and for a stable name in
-    /// lockfiles.
+    /// The address to write into artifact URLs, when it must not be the request's `Host`.
     public_base: Option<String>,
-    /// Debug builds only: answer with a deferral instead of fetching, so client retry
-    /// behaviour can be measured before the thing that would cause one exists. See
-    /// [`crate::defer`].
+    /// Debug builds only: answer with a deferral instead of fetching. See [`crate::defer`].
     #[cfg(debug_assertions)]
     defer_test: Option<(DeferTest, Instant)>,
 }
@@ -367,8 +271,6 @@ impl Proxy {
     /// Debug builds only. See [`crate::defer`].
     #[cfg(debug_assertions)]
     pub fn with_defer_test(mut self, defer_test: Option<DeferTest>) -> Self {
-        // The instant is taken here rather than at parse, so a bounded deferral is
-        // measured from when the proxy started rather than from when the spec was read.
         self.config_mut().defer_test = defer_test.map(|d| (d, Instant::now()));
         self
     }
@@ -495,8 +397,7 @@ impl Proxy {
     }
 
     /// Close the traffic window: log each client that read metadata documents and fetched
-    /// no artifact in it, keep them for [`HEALTH_PATH`], and open the next. `main` calls
-    /// this every [`TRAFFIC_WINDOW`].
+    /// no artifact in it, keep them for [`HEALTH_PATH`], and open the next.
     pub fn report_traffic(&self) {
         let quiet = self.traffic.lock().expect("traffic lock").close();
         for (client, documents) in &quiet {
@@ -530,7 +431,6 @@ impl Proxy {
             Ok(Some(snapshot)) => (IntelState::Loaded, Some(snapshot)),
             Ok(None) => (IntelState::Empty, None),
             Err(e) => {
-                // Logged, not sent, as in `intel_for`.
                 error!(waharoa.reason = %e, "intel store cannot answer; not ready");
                 (IntelState::Unavailable, None)
             }
@@ -601,8 +501,6 @@ impl Proxy {
 
     pub fn with_max_metadata_bytes(mut self, limit: usize) -> Self {
         self.config_mut().max_metadata_bytes = limit;
-        // The proxy's own fetches decode under the same ceiling as the bodies it
-        // forwards, so one setting means one limit.
         self.rebuilt()
     }
 
@@ -660,8 +558,7 @@ type ByteStream = Pin<Box<dyn futures_util::Stream<Item = reqwest::Result<Bytes>
 enum Buffered {
     /// The whole body, within the limit.
     Complete(Bytes),
-    /// The body passed the limit. Carries what was read plus the rest of the stream, so
-    /// it can still be forwarded; it just will not be parsed.
+    /// The body passed the limit. Carries what was read and the rest, to forward unparsed.
     Oversized { prefix: Bytes, rest: ByteStream },
     /// The body could not be read to completion.
     Failed(reqwest::Error),
@@ -670,24 +567,7 @@ enum Buffered {
 /// Any error a forwarded body can end with.
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// A body being forwarded while its digest is checked, with the last chunk held back.
-///
-/// The digest cannot be compared until the final byte has gone past, and the status and
-/// headers left long before that. Forwarding every chunk as it arrives would mean the
-/// client already holds a complete, correct-length body by the time the check fails.
-/// Worse, it would not fail: hyper stops polling a body once `Content-Length` is
-/// satisfied, so the end of the stream is never reached and the comparison never runs.
-/// Measured on a real tarball fetch, which forwarded all 318,961 bytes and verified
-/// nothing.
-///
-/// So one chunk is always held back. Each chunk is hashed on arrival and released only
-/// when the next one arrives; the last is released only after the digest matches. On a
-/// mismatch the body ends in an error instead, the response is short of its declared
-/// `Content-Length`, and the client sees a failed download. Holding one chunk also keeps
-/// hyper polling, because the declared length is not yet satisfied.
-///
-/// Extra memory is one chunk, not the artifact. Plan §5: there is no mid-stream branch
-/// into buffering, because the digest is known before the fetch.
+/// A body forwarded while its digest is checked, holding back one chunk until it matches.
 struct VerifyingStream {
     inner: ByteStream,
     /// Taken when the stream ends, which is the only place it can be used.
@@ -727,13 +607,9 @@ impl VerifyingStream {
     /// Compare, and decide what the body ends with.
     fn finish(&mut self) -> Poll<Option<Result<Bytes, BoxError>>> {
         self.finished = true;
-        // `finished` is set here, and `poll_next` asks nothing of a finished stream, so this
-        // runs once and the verifier is still here.
         let verifier = self.verifier.take().expect("the body ends once");
         match verifier.finish(self.bytes) {
             Ok(()) => {
-                // Recorded here and nowhere else: the digest is a claim until bytes have
-                // been hashed against it.
                 self.verified
                     .lock()
                     .expect("verified artifacts lock")
@@ -746,9 +622,6 @@ impl VerifyingStream {
                 );
                 Poll::Ready(self.held.take().map(Ok))
             }
-            // A mismatch is a finding, not a cache error: the registry served bytes its
-            // own packument does not describe. The held chunk is dropped, so the client
-            // never receives a complete body that failed the check.
             Err(mismatch) => {
                 error!(
                     url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
@@ -782,16 +655,9 @@ impl futures_util::Stream for VerifyingStream {
                         .expect("the verifier is taken only when the body ends")
                         .update(&chunk);
                     this.bytes += chunk.len() as u64;
-                    // An empty chunk carries nothing and must not count as "the next
-                    // chunk arrived": reqwest ends a tarball stream with one, and letting
-                    // it displace the held chunk releases the whole body before the
-                    // digest is compared. Measured on a real fetch, where the final
-                    // chunk was 0 bytes and all 318,961 bytes reached the client
-                    // unverified.
                     if chunk.is_empty() {
                         continue;
                     }
-                    // Release the previous chunk, keep this one.
                     if let Some(previous) = this.held.replace(chunk) {
                         return Poll::Ready(Some(Ok(previous)));
                     }
@@ -833,22 +699,12 @@ async fn buffer_to_limit(mut stream: ByteStream, limit: usize) -> Buffered {
 /// unreachable.
 fn refusal_status(proxy: &Proxy, ecosystem: Ecosystem, user_agent: Option<&str>) -> StatusCode {
     let code = proxy.config.refusal.for_client(ecosystem, user_agent);
-    // Unreachable: `RefusalStatus` is only ever built by `parse`, which refuses anything
-    // outside 400..=599, or by `default`, which is 403. Kept rather than unwrapped
-    // because a panic here would take down a request handler, and 403 is what the
-    // default would have been anyway.
     StatusCode::from_u16(code).unwrap_or(StatusCode::FORBIDDEN)
 }
 
-/// The address to write into artifact URLs.
-///
-/// The request's `Host` is the address the client actually reached the proxy on, which is
-/// what its next request has to go to. `X-Forwarded-Proto` covers TLS terminated in front
-/// of us. An explicit override wins over both, for a load balancer whose `Host` is not
-/// what clients use, and for pinning a stable name into lockfiles.
-///
-/// `None` when there is nothing usable, which means the packument is forwarded as it
-/// came.
+/// The address to write into artifact URLs: `configured` if set, else the request's
+/// `Host` with `X-Forwarded-Proto` from `headers`.
+/// Returns `None` when there is nothing usable, and the document is forwarded as it came.
 fn public_base(headers: &HeaderMap, configured: Option<&str>) -> Option<String> {
     if let Some(base) = configured {
         return Some(base.trim_end_matches('/').to_owned());
@@ -866,17 +722,9 @@ fn public_base(headers: &HeaderMap, configured: Option<&str>) -> Option<String> 
     Some(format!("{scheme}://{host}"))
 }
 
-/// Find the record for an artifact, fetching its packument if the client never asked for
-/// one.
-///
-/// `npm ci` is the reason this exists. It reads `resolved` and `integrity` out of
-/// `package-lock.json` and requests **no packuments at all**: measured through the proxy,
-/// 69 tarballs and zero packument requests, so every digest was unknown and nothing was
-/// verified. A warm npm cache, a restarted proxy, and an evicted entry all produce the
-/// same gap. Fetching the packument here closes all four.
-///
-/// It happens once per package per proxy lifetime, on the request path rather than in the
-/// background, because the digest has to be in hand before the artifact is forwarded.
+/// Find the record for an artifact, fetching its metadata document if the client never
+/// asked for one, as `npm ci` never does. The digest must be in hand before the artifact
+/// is forwarded. See docs/engineering_decisions/artifact-digest-verification.md.
 async fn lookup_or_fetch(
     proxy: &Proxy,
     key: &PackageKey,
@@ -884,7 +732,6 @@ async fn lookup_or_fetch(
     filename: &str,
     path: &str,
 ) -> Lookup {
-    // The guard is dropped before the await: nothing holds the lock across a fetch.
     let first = proxy
         .store
         .lock()
@@ -903,13 +750,8 @@ async fn lookup_or_fetch(
         .lookup(key, version, filename)
 }
 
-/// Fetch the metadata document the client did not ask for, and keep its records.
-///
-/// Each ecosystem asks its own registry: npm the abbreviated packument, PyPI the simple
-/// index. `key` carries the ecosystem, and [`Clients::metadata`] chooses by it.
-///
-/// Failure is logged here and not propagated. The artifact request finds no record and is
-/// answered 502.
+/// Fetch the metadata document the client did not ask for from `key`'s own registry, and
+/// keep its records. A failure is logged, and the artifact request is answered 502.
 async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     let started = Instant::now();
     match proxy.config.clients.metadata(key).await {
@@ -937,14 +779,12 @@ async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
     }
 }
 
-/// Why a metadata document is forwarded without the proxy being able to see what a client
-/// does with it.
+/// Why a metadata document is forwarded without its artifact URLs pointed at the proxy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Uninspected {
     /// The client accepts no encoding this build can decode, so the body cannot be read.
     Unreadable,
-    /// No `Host` header and no configured public base, so there is no address to point
-    /// artifact URLs at.
+    /// No `Host` header and no configured public base to point artifact URLs at.
     NoBase,
 }
 
@@ -960,18 +800,8 @@ impl Uninspected {
     }
 }
 
-/// Whether this request leaves a package's artifacts unexamined, and why.
-///
-/// `None` on every request that is not a metadata GET, and on a packument the proxy is
-/// about to rewrite. An operator who turned rewriting off is also `None`: that is a
-/// configured choice, not a case the proxy failed to handle.
-///
-/// Measured 2026-09-16 with pip 26.1.1 installing `requests` through this proxy before the
-/// index was rewritten: five `/simple/` pages arrived and no `/packages/` request did. The
-/// index gives each file's URL in full on `files.pythonhosted.org` and pip uses it as
-/// written, so every file was fetched around the proxy. That is the PyPI shape of
-/// `docs/engineering_decisions/packument-tarball-url-rewriting.md`, and it is why both
-/// document kinds reach this check.
+/// Whether this request leaves a package's artifacts unexamined, and why. `None` for
+/// anything but a metadata GET, a document about to be rewritten, or `rewriting` off.
 fn uninspected(
     target: &RequestTarget,
     method: &Method,
@@ -994,19 +824,8 @@ fn uninspected(
     None
 }
 
-/// Whether this request is the resolver looking rather than the client installing.
-///
-/// A PyPI request that is neither a project index nor a file is a PEP 658
-/// `<file>.metadata` probe, and there are two orders of magnitude more of them than
-/// installs: measured 2026-09-16, `pip install boto3 'botocore<1.34' s3transfer` made 679
-/// of them and fetched 7 artifacts. At INFO they bury the 7 lines an operator needs, so
-/// they are logged at DEBUG.
-///
-/// Nothing else changes. A probe names a file the resolver is considering, not one it is
-/// installing, so it gets no record lookup, no policy decision and no audit entry: of the
-/// 679, zero produced any of the three.
-///
-/// Which ecosystem's unclassified requests are probes is its row's `other_is_probe`.
+/// Whether this request is the resolver looking rather than the client installing, such
+/// as a PEP 658 `.metadata` request. See docs/engineering_decisions/adapter-interface.md.
 fn resolver_probe(ecosystem: Ecosystem, target: &RequestTarget) -> bool {
     crate::ecosystem::of(ecosystem).other_is_probe && matches!(target, RequestTarget::Other)
 }
@@ -1019,8 +838,6 @@ fn upstream_url(
     path_and_query: &str,
     artifact_origin: Option<&str>,
 ) -> String {
-    // An origin the operator added for artifacts wins for either ecosystem: that is what
-    // the additional-origins list is for.
     if let Some(origin) = artifact_origin {
         return format!("{origin}{path_and_query}");
     }
@@ -1048,15 +865,6 @@ async fn revalidated(
     headers: &mut HeaderMap,
     path: &str,
 ) {
-    // A warm client cache sends If-None-Match, and 304 carries no body, so there is
-    // nothing to normalise from this response. The client is about to resolve against a
-    // document the proxy cannot see.
-    //
-    // When the records are still held that does not matter: the 304 only revalidates a
-    // body this proxy produced, so it was normalised when it was first served. When they
-    // are not, because the proxy restarted or the entry was evicted, the packument is
-    // fetched here so the metadata is in hand before the artifact requests arrive rather
-    // than one lazy fetch at a time.
     if let RequestTarget::Metadata(key) = target {
         let held = proxy.store.lock().expect("record store lock").holds(key);
         info!(
@@ -1071,14 +879,6 @@ async fn revalidated(
         }
     }
 
-    // A 304 carries the upstream's own `ETag`, and the client stores whatever comes back.
-    // Left alone it replaces the marked tag with the upstream's, `unmark_if_none_match`
-    // drops that tag on the next revalidation, and the client gets a full body. Measured
-    // over four requests for lodash before this: 200 (68,970 bytes), 304, 200, 304. After:
-    // 200, then 304 every time.
-    //
-    // The body the client is being told to keep is one this proxy rewrote at this base,
-    // because that is the only tag the request could have carried to get a 304 here.
     if negotiation.rewriting
         && let Some(base) = negotiation.rewrite_base.as_deref()
         && let Some(marked) = headers
@@ -1091,17 +891,8 @@ async fn revalidated(
     }
 }
 
-/// Wait for a slot to decode, read and rewrite a metadata document in.
-///
-/// Queue after the body is read, not before. The encoded body is already in hand and the
-/// upstream connection is finished, so waiting costs only time. Waiting with the response
-/// still streaming stalls it until it times out: measured with the acquire placed before
-/// the read, 18 of 24 concurrent requests failed with "error decoding response body".
-///
-/// What this bounds is the expensive part. The decoded copy, the value tree the rewrite
-/// walks, the re-serialised output and the gzip buffer are live together, and 24
-/// simultaneous large packuments reached 1,348 MB while the encoded bodies totalled
-/// 27.6 MB.
+/// Wait for a slot to decode, read and rewrite a metadata document in, after its body is
+/// read. See docs/engineering_decisions/default-ceilings.md.
 async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphorePermit {
     let queued = Instant::now();
     let slot = proxy
@@ -1150,10 +941,6 @@ async fn filtered_document(
     negotiation: &Negotiation,
     path: &str,
 ) -> DocumentStep {
-    // Decoded once. Normalising and the store read these bytes; the rewrite below works
-    // on a copy. Building records from the rewritten document instead would set every
-    // artifact URL to the proxy's own origin, which is both the wrong thing to store as
-    // the upstream's claim and enough to make the offsite check report every package.
     let parse_started = Instant::now();
     let decoded = match decode_for_parsing(body, content_encoding, proxy.config.max_metadata_bytes)
     {
@@ -1168,9 +955,6 @@ async fn filtered_document(
         }
     };
 
-    // Each document kind is read by its own normaliser, and a `match` rather than a test
-    // and a fall-through: a third kind has to answer this rather than reach whichever arm
-    // was written last.
     let read = match document {
         DocumentKind::Packument(detail) => npm::read_packument(
             &decoded,
@@ -1183,8 +967,6 @@ async fn filtered_document(
         )
         .map(Read::Packument),
         DocumentKind::SimpleIndex(format) => {
-            // The page's own URL, because a PEP 503 href may be relative to it. It is the
-            // URL this body was fetched from, which `upstream_url` built for the request.
             let page = upstream_url(proxy, Ecosystem::PyPI, path, None);
             pypi::read_index(&decoded, format, &page, &proxy.store, path).map(Read::SimpleIndex)
         }
@@ -1198,7 +980,6 @@ async fn filtered_document(
     report_undated(proxy, &read, path);
     let normalized = read.metadata();
 
-    // Asked once per document rather than once per version: typescript has 3,823.
     let intel = match normalized {
         Some(metadata) => match intel_for(proxy, &metadata.key, path).await {
             Ok(intel) => intel,
@@ -1217,16 +998,6 @@ async fn filtered_document(
         None => None,
     };
 
-    // Not gated on `rewriting`. Filtering refused versions is a policy question and
-    // repointing artifact URLs is a transport one, and tying them together meant that
-    // turning rewriting off, which `docs/engineering_decisions/enforcement-tiers.md` says
-    // is correct once the proxy terminates TLS, silently stopped the policy filtering
-    // with it.
-    //
-    // Decision #4's resolution half. A version the policy refuses is dropped from the
-    // document, so the client's own resolver picks one that is allowed and the install
-    // succeeds without anyone being told no. The pinned half, where there is no resolution
-    // left to influence, refuses at the artifact request.
     let refused_by_policy = match normalized {
         Some(metadata) => policy_refused_versions(
             metadata,
@@ -1243,16 +1014,6 @@ async fn filtered_document(
         .then_some(negotiation.rewrite_base.as_deref())
         .flatten();
 
-    // The npm rewrite. Every client in the npm ecosystem has to fetch artifacts through the
-    // proxy, and they do not agree about `dist.tarball`: npm rewrites it to the
-    // configured registry, pnpm 10 and yarn 1 use it verbatim. Pointing it here makes
-    // them behave alike.
-    //
-    // It needs the records, so a packument that did not normalise is not rewritten either.
-    // That is the honest outcome: without records there is nothing to gate on anyway, and
-    // it is already logged as UNINSPECTED. A simple index that parsed but did not
-    // normalise still has its files repointed, because the file request is where PyPI's
-    // digest is checked.
     let body = match &read {
         Read::Packument(packument) => npm::rewrite_packument(npm::Rewrite {
             decoded: &decoded,
@@ -1279,24 +1040,18 @@ async fn filtered_document(
     }
 }
 
-/// How a request's metadata document is asked for and read, decided from the request and
-/// the proxy's configuration before anything goes upstream.
+/// How a request's metadata document is asked for and read, decided before going upstream.
 #[derive(Debug, PartialEq, Eq)]
 struct Negotiation {
     /// The encoding asked of upstream on a document the proxy reads.
     encoding: RequestedEncoding,
-    /// The body is read: a metadata GET, in an encoding this build can decode. Both
-    /// ecosystems: a packument and a simple index are both read so their artifact URLs can
-    /// be pointed at the proxy.
+    /// The body is read: a metadata GET, in an encoding this build can decode.
     read_metadata: bool,
     /// The address artifact URLs are pointed at. See [`public_base`].
     rewrite_base: Option<String>,
     /// Artifact URLs are pointed at the proxy.
     rewriting: bool,
-    /// Under a cooldown, an ecosystem that publishes version times only in its full
-    /// document is asked for that document, whatever the client asked for, so every record
-    /// read from it carries its own publish time. The client is served the full document,
-    /// filtered and rewritten; npm clients read it as they read the abbreviated one.
+    /// Under a cooldown, the full packument is asked for and served, for its publish times.
     full_document: bool,
 }
 
@@ -1377,9 +1132,6 @@ fn report_uninspected(
 fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -> HeaderMap {
     let mut outbound = HeaderMap::new();
     for (name, value) in client {
-        // `Authorization` is the client's credential for this proxy, and an account's token
-        // under TODO Stage 8. Forwarded, it reached registry.npmjs.org and pypi.org: see
-        // docs/engineering_decisions/account-identification.md.
         if is_hop_by_hop(name.as_str()) || name == header::HOST || name == header::AUTHORIZATION {
             continue;
         }
@@ -1402,8 +1154,6 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
     if negotiation.full_document {
         outbound.append(header::ACCEPT, HeaderValue::from_static(npm::FULL_ACCEPT));
     }
-    // An `If-None-Match` the client got from us names our rewritten body, not the
-    // upstream's. Turn it back, or drop it when it came from a proxy at another address.
     if negotiation.rewriting
         && let Some(inm) = client
             .get(header::IF_NONE_MATCH)
@@ -1414,9 +1164,6 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
             Some(Ok(value)) => {
                 outbound.append(header::IF_NONE_MATCH, value);
             }
-            // A 304 would let the client serve a body this proxy did not produce here,
-            // whose artifact URLs were never pointed at it. Dropping the header makes the
-            // registry send a body to rewrite afresh.
             _ => info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 "dropped a conditional request for a body this proxy did not rewrite"
@@ -1439,8 +1186,7 @@ struct ArtifactRequest<'a> {
 
 /// What the proxy does with an artifact GET, decided before a byte is fetched.
 enum ArtifactStep {
-    /// The proxy answers without asking upstream: refused by policy, published on an origin
-    /// the proxy does not serve, or no intel to decide with.
+    /// The proxy answers without asking upstream.
     Answer(Response),
     /// Fetch it upstream.
     Fetch(ArtifactFetch),
@@ -1449,13 +1195,11 @@ enum ArtifactStep {
 /// How to fetch an artifact and check what arrives.
 #[derive(Default)]
 struct ArtifactFetch {
-    /// The purl the request claims, for the verifier's log lines. Empty on a request that
-    /// is not an artifact GET.
+    /// The purl the request claims, for the verifier's log lines, if an artifact GET.
     purl: String,
     /// The digest the metadata published. `None` forwards the bytes unverified.
     digest: Option<Sri>,
     /// An origin the operator added, when the metadata published the artifact there.
-    /// `None` sends the request to the ecosystem's upstream.
     origin: Option<String>,
 }
 
@@ -1813,7 +1557,6 @@ impl<'a> Deciding<'a> {
     /// 503 until `job`, started here, has analysed the artifact.
     fn defer(&self, job: Job) -> ArtifactStep {
         let digest = job.digest.clone();
-        // A job is pending only when `analysed` found an analyser to give it to.
         self.proxy
             .config
             .analyser
@@ -1865,12 +1608,7 @@ impl<'a> Deciding<'a> {
     }
 }
 
-/// The artifacts answered 503 while their analysis ran, by digest.
-///
-/// What turns `docs/engineering_decisions/deferral-status-codes.md`'s client table into
-/// evidence: each deferral is logged, and so is the request that finds the analysis
-/// stored, with how long after the first deferral it came. A digest with a deferral line
-/// and no return line is a client that gave up.
+/// The artifacts answered 503 while their analysis ran, by digest, for the deferral logs.
 struct Deferred(Lru<Sri, Deferral>);
 
 struct Deferral {
@@ -1890,16 +1628,7 @@ impl Deferred {
     }
 }
 
-/// Metadata documents and artifacts each client asked for since the window opened, by
-/// the client name its user-agent gives.
-///
-/// A client that reads documents and fetches no artifact is the signature of one that
-/// takes artifacts from somewhere this proxy is not: pnpm and yarn 1 with rewriting off, or
-/// a cache that skips the proxy. It is also what a client looks like that resolves and
-/// installs nothing new, so it is a heuristic, reported and never refused. Keyed by client
-/// name rather than address: the server does not keep the peer address, and behind a load
-/// balancer it would be the balancer's. See
-/// `docs/engineering_decisions/bypass-self-detection.md`.
+/// Documents and artifacts each client, by user-agent name, asked for in this window.
 #[derive(Debug)]
 struct Traffic {
     clients: BTreeMap<String, Counts>,
@@ -1994,8 +1723,7 @@ fn returned(proxy: &Proxy, digest: &Sri, path: &str, client: &str) {
     );
 }
 
-/// The record to decide on, with `has_install_scripts` taken from the artifact's own
-/// bytes where a reader reads it, and whether the artifact can be served yet.
+/// The record to decide on, with the artifact's own install-script answer.
 struct Analysed {
     record: PackageRecord,
     /// What its attestations say against the version published before it.
@@ -2008,22 +1736,14 @@ enum AnalysisState {
     Decided,
     /// The last fetch of these bytes did not match their digest. Answered 502.
     Mismatched(crate::integrity::Mismatch),
-    /// Nothing has analysed these bytes. The analysis is started, and the request is
-    /// answered 503 until it has finished.
+    /// Nothing has analysed these bytes, so the analysis starts and the request is answered 503.
     Pending(Job),
 }
 
-/// What the artifact's own bytes say about install scripts, where a reader reads it.
-///
-/// An analysis stored under the digest adds what the archive declares to the metadata's
-/// claim, and never removes the claim. An archive that could not be read counts as running
-/// scripts: not knowing is not knowing there is none. An artifact with no strong digest has
-/// no key to store an analysis under, and the caller refuses it. An artifact not analysed
-/// yet keeps the claim, so a version the policy refuses on what is known already is
-/// refused rather than deferred.
-///
-/// A wheel is read by nothing, and a proxy started without an analyser analyses nothing.
-/// Both keep the claim.
+/// What the artifact's own bytes say about install scripts, where a reader reads it. A
+/// stored analysis adds to the metadata's claim and never removes it; an unreadable
+/// archive counts as running scripts; an artifact not analysed yet keeps the claim.
+/// See docs/engineering_decisions/artifact-spool.md.
 async fn analysed(
     proxy: &Proxy,
     record: &PackageRecord,
@@ -2046,20 +1766,14 @@ async fn analysed(
     let Some(analyser) = analyser else {
         return decided(record, provenance);
     };
-    // Refused by the caller: there is no key to store an analysis under.
     let Some(digest) = digest else {
         return decided(record, provenance);
     };
-    // A file no reader reads, a PyPI wheel, still has attestations to verify.
     let reads = match reader {
         None => None,
         Some(reader) => match analyser.known(digest).await {
             Known::Analysed(analysis) => {
                 report_claim(&record, &analysis.scripts, path);
-                // Adds to the claim and never takes from it. The readers see only part of
-                // what runs: an sdist with no `setup.py` still runs its PEP 517 backend, and
-                // npm runs `node-gyp rebuild` for a `binding.gyp` that `package.json` never
-                // names.
                 record.has_install_scripts |= analysis
                     .scripts
                     .names()
@@ -2113,7 +1827,6 @@ fn attestation_url(
             ));
         }
     }
-    // `Served` is the answer only for a URL with an origin, which parses.
     let parsed = reqwest::Url::parse(advertised).expect("a served URL parses");
     let path = match parsed.query() {
         Some(query) => format!("{}?{query}", parsed.path()),
@@ -2135,8 +1848,6 @@ async fn attested(
     times: Option<&facts::PublishTimes>,
 ) -> (Provenance, Vec<Attestation>) {
     let key = record.package.key();
-    // Where each registry serves its attestations and how they are laid out is its
-    // adapter's.
     let bundle: fn(&[u8]) -> Result<_, String> = match key.ecosystem() {
         Ecosystem::Npm => npm::attestation::provenance_bundle,
         Ecosystem::PyPI => pypi::attestation::provenance_bundle,
@@ -2151,13 +1862,10 @@ async fn attested(
         times,
         window,
     );
-    // Without an analyser nothing is verified, and only what metadata answers is known.
     let Some(analyser) = analyser else {
         return (attestation::from_metadata(record, &previous), Vec::new());
     };
     let ecosystem = key.ecosystem();
-    // Where to fetch an attestation and the digest to verify it against, or why it cannot
-    // be verified: routed nowhere, or no strong digest. That counts as not verifying.
     let verifiable = |url: &String, digest: Option<Sri>, no_digest: &str| {
         let url = attestation_url(proxy, ecosystem, url)?;
         let digest = digest.ok_or_else(|| no_digest.to_owned())?;
@@ -2198,8 +1906,6 @@ async fn attested(
             this: this_needed,
             priors: priors_needed,
         } => {
-            // A result still needed is one the analyser has not stored, which only a
-            // verifiable attestation can lack: the others fail at once, above.
             let needed = |to_verify: &Result<(String, Sri), String>| {
                 let (url, digest) = to_verify
                     .as_ref()
@@ -2625,16 +2331,12 @@ impl Exchange<'_> {
 }
 
 /// Say what the policy took out of this document, on the response that carries it.
-///
-/// Nothing is added when nothing was removed: an absent header is a document the policy
-/// left alone, not one nobody looked at. Whether the proxy inspects at all is
-/// [`HEALTH_PATH`].
+/// Nothing is added when nothing was removed.
 fn mark_filtered(headers: &mut HeaderMap, refused: &Refused) {
     if refused.versions.is_empty() {
         return;
     }
     headers.insert(FILTERED_VERSIONS, HeaderValue::from(refused.versions.len()));
-    // Check names are fixed ASCII words, which a header value always holds.
     headers.insert(
         FILTERED_CHECKS,
         HeaderValue::from_str(&refused.checks.join(",")).expect("check names are ASCII"),
@@ -2698,7 +2400,6 @@ fn defer_response(
     client_ua: &str,
     started: Instant,
 ) -> Response {
-    // Checked against 400..=599 when the spec was parsed.
     let code = StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE);
     let mut headers = HeaderMap::new();
     if let Some(seconds) = retry_after
@@ -2724,17 +2425,9 @@ fn defer_response(
         .into_response()
 }
 
-/// Publish times for this package, fetched from the registry now.
-///
-/// Not kept between requests: a map filled once lacked every version published after it, and
-/// a version with no time is one `cooldown_days` cannot hold back, so the newest version, the
-/// one the check exists for, went through. Asked only for a record that carries no
-/// `published_at`, which under a cooldown is an artifact whose document this proxy has not
-/// read: a metadata request under a cooldown reads the full document, whose records carry it.
-///
-/// `None` when no check reads publish times, and for an ecosystem whose records carry
-/// `published_at`, which [`Clients::publish_times`] answers without a request. A fetch that
-/// fails is not fatal: the checks it feeds report themselves as unenforceable.
+/// Publish times for this package, fetched from the registry now and never kept.
+/// See docs/engineering_decisions/no-metadata-cache.md.
+/// Returns `None` when no check reads them, or the registry could not be asked.
 async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::PublishTimes> {
     if !proxy
         .config
@@ -2762,12 +2455,8 @@ async fn publish_times_for(proxy: &Proxy, key: &PackageKey) -> Option<facts::Pub
     Some(times)
 }
 
-/// Say when a cooldown cannot be answered while filtering this document.
-///
-/// A PEP 503 page carries no publish time and almost none adds one, so every version it
-/// lists is undated and `cooldown_days` is dropped for each. The check still bites on the
-/// artifact request, where [`dated_by_host`] asks the file host, so this says which of the
-/// two an operator has rather than reporting the check as unenforceable and stopping.
+/// Say when a cooldown cannot be answered while filtering this document, because a PEP 503
+/// page carries no publish time, and that [`dated_by_host`] answers it on the artifact.
 fn report_undated(proxy: &Proxy, read: &Read, path: &str) {
     if !proxy
         .config
@@ -2797,21 +2486,10 @@ fn report_undated(proxy: &Proxy, read: &Read, path: &str) {
     );
 }
 
-/// The publish time read from the file itself, for a record whose index gave none.
-///
-/// A PEP 503 page has no field for a publish time and almost no index adds one, so
-/// `cooldown_days` would be unenforceable for every version such an index lists. The file
-/// host answers `Last-Modified`, and for an immutable artifact that is when it was
-/// published: measured against PyPI's own upload times on 2026-09-21, files.pythonhosted.org
-/// was within 4 seconds on six files, against a check measured in days.
-///
-/// One `HEAD` per artifact decision that needs it, on the pinned path only. The resolution
-/// filter decides every version on the page at once, and one request per version is
-/// thousands for `download.pytorch.org/whl/torch/`.
-///
-/// `None` leaves the check unenforceable, which is what it already was. A mirror that
-/// rewrote the object makes the file look newer and holds it longer, which is the safe
-/// direction.
+/// The publish time from the file host's `Last-Modified`, for a record whose index gave
+/// none. One `HEAD`, on the pinned path only.
+/// See docs/engineering_decisions/pep-503-html-index.md.
+/// Returns `None` when the host gives no date.
 async fn dated_by_host(
     proxy: &Proxy,
     record: &PackageRecord,
@@ -2826,7 +2504,6 @@ async fn dated_by_host(
         return None;
     }
     let started = Instant::now();
-    // A pinned record is found by its file, so it has one.
     let artifact = record.artifact().expect("a pinned record names its file");
     let last_modified = head_last_modified(proxy, &artifact.url, path).await?;
     info!(
@@ -2889,37 +2566,25 @@ impl Read {
     }
 }
 
-/// How long a client is told to wait before asking again, on a request the proxy is not
-/// ready to answer.
-///
-/// One second. Measured 2026-09-19, two clients of seven honour `Retry-After`: yarn 4 and
-/// pip, whose total patience is 3.2s and 5.5s. npm, pnpm, yarn 1, uv and bun run their own
-/// backoff and ignore the header, so the value only decides how promptly those two come
-/// back. See `docs/engineering_decisions/deferral-status-codes.md`.
+/// `Retry-After` on a 503. See docs/engineering_decisions/deferral-status-codes.md.
 const RETRY_AFTER_SECONDS: &str = "1";
 
-/// The header naming which not-ready case a 503 is, for a client or a log to read without
-/// parsing prose. Neither status code distinguishes them.
 /// How often [`Proxy::report_traffic`] closes the window.
 pub const TRAFFIC_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// The header naming which not-ready case a 503 is, since the status does not.
 pub const NOT_READY: header::HeaderName = header::HeaderName::from_static("x-waharoa-not-ready");
 
-/// The digest of the artifact a 503 is waiting on, when it waits on an analysis. The same
-/// value the log lines for it carry.
+/// The digest of the artifact a 503 is waiting on, as its log lines carry it.
 pub const DEFERRED_DIGEST: header::HeaderName = header::HeaderName::from_static("x-waharoa-digest");
 
-/// Why a request is not decided on yet. Already logged; [`NotReady::response`] is what
-/// the client is sent.
+/// Why a request is not decided on yet. [`NotReady::response`] is what the client is sent.
 enum NotReady {
     /// The store errored, or holds no snapshot.
     Unanswered,
-    /// The snapshot has no stream that can report a finding or malware for this ecosystem,
-    /// so an empty answer would read as "nothing known" about a package nothing was asked
-    /// about.
+    /// The snapshot has no stream that can report a finding or malware for this ecosystem.
     Uncovered(Ecosystem),
-    /// The artifact has not been analysed. The analysis has been started, and the client's
-    /// retry is decided on it.
+    /// The artifact's analysis has started, and the client's retry is decided on it.
     Analysing { purl: String, digest: Sri },
 }
 
@@ -2933,11 +2598,8 @@ impl NotReady {
         }
     }
 
-    /// 503 with a wait and a reason.
-    ///
-    /// 503 rather than 429, including for an artifact under analysis. Measured over seven
-    /// clients, a 429 is terminal for yarn 1 and bun, which report it and stop, while every
-    /// one of the seven retries a 503.
+    /// 503 with a wait and a reason, since a 429 is terminal for yarn 1 and bun.
+    /// See docs/engineering_decisions/deferral-status-codes.md.
     fn response(self) -> Response {
         let body = match &self {
             Self::Unanswered => {
@@ -2998,19 +2660,10 @@ async fn snapshot_named(
     Ok(Some(snapshot))
 }
 
-/// What the intel store knows about a package, when a policy and a store are both configured.
-///
-/// `Ok(None)` is no store, or no policy: the checks that read advisories are dropped as
-/// unenforceable, as they were before a store existed. Each of these is `Err`, answered
-/// with a 503:
-///
-/// - the store errors, or holds no snapshot yet;
-/// - the snapshot has no stream providing `match` or `malware` for the package's ecosystem;
-/// - a refresh replaced the snapshot between reading the records and reading its streams.
-///
-/// Never a serve: `known_malware` has no exception, and serving while it cannot be asked
-/// would pass malware through unseen. An allowed decision is not written either, so the
-/// audit log never records a snapshot as used for a package it could say nothing about.
+/// What the intel store knows about a package, when a policy and a store are both
+/// configured. `Ok(None)` without either. See docs/engineering_decisions/intel-in-decisions.md.
+/// Returns [`NotReady`] when the store errors, has no snapshot, does not cover the
+/// ecosystem, or was replaced mid-read, so the request is answered 503, never served.
 async fn intel_for(
     proxy: &Proxy,
     key: &PackageKey,
@@ -3041,7 +2694,6 @@ async fn intel_for(
         Ok(None) => "no intel has been loaded".to_owned(),
         Err(e) => e.to_string(),
     };
-    // Logged, not sent: a database error can carry the database's address.
     error!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
         waharoa.reason = %why,
@@ -3050,16 +2702,8 @@ async fn intel_for(
     Err(NotReady::Unanswered)
 }
 
-/// The versions in this metadata document the policy refuses.
-///
-/// Every version is asked, not just the one a client might resolve to: which one it picks
-/// is what the filtering decides. A check the record cannot answer is dropped, the same
-/// way it is on the artifact path, so a configured `cooldown_days` does not empty the
-/// document on a fact the registry never sent.
-///
-/// Publish times come from the records alone. Under a cooldown an npm request asks for the
-/// full packument, whose records carry them, and a PyPI record always does. Fetching them
-/// again would repeat the request this document came from.
+/// The versions in this metadata document the policy refuses, every one asked, with
+/// checks the record cannot answer dropped. Publish times come from the records alone.
 fn policy_refused_versions(
     metadata: &PackageMetadata,
     policy: Option<&Policy>,
@@ -3076,8 +2720,6 @@ fn policy_refused_versions(
     let mut order = Vec::new();
     let mut checks: BTreeSet<String> = BTreeSet::new();
     let mut strongest = crate::policy::Action::Allow;
-    // Dropped provenance is decided here from the document alone. A change of identity or a
-    // failed verification needs an attestation verified, which the artifact request does.
     let predecessors =
         attestation::predecessors(&metadata.records, None, policy.provenance_window());
     for (record, previous) in metadata.records.iter().zip(&predecessors) {
@@ -3087,10 +2729,7 @@ fn policy_refused_versions(
         else {
             continue;
         };
-        // `enforce::artifact` has already dropped unenforceable checks, so this needs no
-        // `enforce::enforced` call.
         strongest = std::cmp::max_by_key(strongest, refusal.action, |a| a.strength());
-        // The reason line leads with the check name, which is what the log records.
         checks.extend(
             refusal
                 .reasons
@@ -3144,9 +2783,6 @@ fn policy_refused_versions(
         return Refused::default();
     }
     if refused.len() == metadata.records.len() && !refused.is_empty() {
-        // Every version gone leaves the resolver nothing to pick, so the install fails
-        // with the registry's own "no matching version" rather than anything this proxy
-        // said. Worth saying out loud, because it reads as a broken registry.
         warn!(
             url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             waharoa.package.versions = refused.len(),
