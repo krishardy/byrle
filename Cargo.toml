@@ -53,10 +53,10 @@ sigstore-verify = { version = "=0.13.0", default-features = false }
 
 [dev-dependencies]
 # Test builds only. `sqlx-core` turns on `tracing`'s `log` feature, which gives every event a
-# branch that hands it to `log` when no tracing subscriber takes it. `log-always` takes that
-# branch whenever the event is off, and `test_support` installs a `log` logger that keeps
-# nothing, with `ctor`, before any test runs. Without both, no test can reach the branch,
-# and `make coverage` counts it against every log call. See
+# branch that hands it to `log` when no tracing subscriber takes it. Tests install no tracing
+# subscriber, `log-always` takes that branch, and `test_support` installs the `log` logger,
+# with `ctor`, before any test runs; a test captures logs from it. Without all three no test
+# reaches the branch, and `make coverage` counts it against every log call. See
 # docs/engineering_decisions/coverage-counts-library-code-only.md.
 tracing = { version = "0.1.44", features = ["log-always"] }
 log = "0.4.34"

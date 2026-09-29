@@ -10,9 +10,7 @@ use std::sync::Arc;
 
 use tracing::{error, info, warn};
 
-use crate::analysis::postgres::PgAnalyses;
 use crate::analysis::run::Analyser;
-use crate::analysis::store::{Analyses, InProcess};
 use crate::audit::AuditLog;
 use crate::doctor;
 use crate::env::{self, Env};
@@ -75,12 +73,15 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     #[cfg(debug_assertions)]
     let defer_test = defer_test(environment)?;
     let (policy, audit) = policy_and_audit(environment)?;
-    let intel = intel_store(environment, policy.is_some()).await?;
-    let analyses: Arc<dyn Analyses> = match &intel {
-        Some(store) => Arc::new(PgAnalyses::new(store.pool().clone())),
-        None => Arc::new(InProcess::new(max_verified)),
-    };
-    let intel = intel.map(|store| Arc::new(store) as Arc<dyn Intel>);
+    let (intel, analyses) = crate::analysis::postgres::stores(
+        postgres::from_env(environment)
+            .await
+            .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DATABASE_URL)))?,
+        max_verified,
+    );
+    if policy.is_some() {
+        warn_enforcement(intel.as_deref()).await;
+    }
     let spool = open_spool(environment)?;
 
     let proxy = Proxy::new(client.clone())
@@ -125,9 +126,9 @@ fn upstream_client<L: Fn(&str) -> Option<OsString>>(
 ) -> Result<reqwest::Client, StartupError> {
     let builder = crate::http::client_builder(crate::http::READ_TIMEOUT);
     let Some(path) = environment.ca_bundle()? else {
-        return builder
-            .build()
-            .map_err(|e| StartupError::Unusable(format!("upstream HTTP client: {e}")));
+        // With no bundle only the TLS backend itself can fail, which
+        // `reqwest::Client::new` treats as a panic too.
+        return Ok(builder.build().expect("the TLS backend initialises"));
     };
     let exclusive = environment.ca_bundle_exclusive()?;
     let mode = if exclusive {
@@ -273,25 +274,9 @@ fn policy_and_audit<L: Fn(&str) -> Option<OsString>>(
     Ok((policy, audit))
 }
 
-/// The intel store at [`env::DATABASE_URL`], when set, warning which checks a policy can
-/// enforce from it and each gap in its snapshot.
-/// Errors when the store is named and cannot be opened.
-async fn intel_store<L: Fn(&str) -> Option<OsString>>(
-    environment: &Env<L>,
-    has_policy: bool,
-) -> Result<Option<postgres::PgIntel>, StartupError> {
-    let intel = postgres::from_env(environment)
-        .await
-        .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DATABASE_URL)))?;
-    if has_policy {
-        warn_enforcement(intel.as_ref()).await;
-    }
-    Ok(intel)
-}
-
 /// Warn which checks a policy enforces from `store`, and each gap in its snapshot; or,
 /// with no store, which it cannot enforce.
-async fn warn_enforcement(store: Option<&postgres::PgIntel>) {
+async fn warn_enforcement(store: Option<&dyn Intel>) {
     let Some(store) = store else {
         warn!(
             waharoa.config.variable = %env::DATABASE_URL,
@@ -425,15 +410,24 @@ pub fn reload_policy<L: Fn(&str) -> Option<OsString>>(proxy: &Proxy, environment
 /// [`reload_policy`] on each `SIGHUP`, for as long as the process runs.
 #[cfg(unix)]
 pub async fn reload_on_hangup<L: Fn(&str) -> Option<OsString>>(proxy: Proxy, environment: Env<L>) {
-    let mut hangups = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
-        Ok(hangups) => hangups,
-        Err(e) => {
-            error!(error.message = %e, "SIGHUP cannot be listened for, so the policy is never reloaded");
-            return;
-        }
-    };
-    while hangups.recv().await.is_some() {
-        reload_policy(&proxy, &environment);
+    // Registering fails only for a signal that cannot be caught, and SIGHUP can be.
+    let hangups = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+        .expect("SIGHUP can be listened for");
+    let hangups = futures_util::stream::unfold(hangups, |mut hangups| async move {
+        hangups.recv().await.map(|()| ((), hangups))
+    });
+    reload_each(&proxy, &environment, std::pin::pin!(hangups)).await;
+}
+
+/// [`reload_policy`] once for each item of `hangups`, until it ends.
+async fn reload_each<L: Fn(&str) -> Option<OsString>>(
+    proxy: &Proxy,
+    environment: &Env<L>,
+    mut hangups: std::pin::Pin<&mut (dyn futures_util::Stream<Item = ()> + Send)>,
+) {
+    use futures_util::StreamExt as _;
+    while hangups.next().await.is_some() {
+        reload_policy(proxy, environment);
     }
 }
 
@@ -841,5 +835,143 @@ mod tests {
         assert!(policy.uses_cooldown());
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Each variable `proxy` reads refuses the start when its value is not UTF-8, naming
+    /// the variable, before anything after it is read.
+    #[tokio::test]
+    async fn each_variable_that_cannot_be_read_refuses_the_start() {
+        use crate::env::testing::with_unreadable;
+        let dir = crate::util::test_support::tempdir("startup-unreadable");
+        let spool = dir.join("spool").display().to_string();
+        let bundle = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tls/test-ca.pem"
+        );
+        let mut cases = vec![
+            (vec![], env::LISTEN),
+            (vec![], env::UPSTREAM_NPM),
+            (vec![], env::CA_BUNDLE),
+            (vec![(env::CA_BUNDLE, bundle)], env::CA_BUNDLE_EXCLUSIVE),
+            (vec![], env::MAX_METADATA_BYTES),
+            (vec![], env::MAX_RECORDS),
+            (vec![], env::MAX_VERIFIED),
+            (vec![], env::PUBLIC_URL),
+            (vec![], env::REWRITE_ARTIFACTS),
+            (vec![], env::MAX_CONCURRENT_METADATA),
+            (vec![], env::ARTIFACT_ORIGINS),
+            (vec![], env::ALLOW_DIRECT_ORIGINS),
+            (vec![], env::REFUSAL_STATUS),
+            (vec![], env::FORWARD_HTTPS),
+            (vec![], env::MODE),
+            (vec![], env::REFUSE_UNSERVABLE),
+            (vec![], env::POLICY),
+            (vec![], env::AUDIT_LOG),
+            (vec![], env::SPOOL_DIR),
+            (vec![(env::SPOOL_DIR, &spool)], env::MAX_ARTIFACT_BYTES),
+            (vec![(env::SPOOL_DIR, &spool)], env::MAX_CONCURRENT_ANALYSES),
+            (vec![(env::SPOOL_DIR, &spool)], env::MAX_TRAFFIC_CLIENTS),
+        ];
+        if cfg!(debug_assertions) {
+            cases.push((vec![], env::DEFER_TEST));
+        }
+        let policy = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/policy-check/dead.yaml"
+        );
+        cases.push((vec![(env::POLICY, policy)], env::EXPIRY_CEILING_DAYS));
+        for (pairs, var) in cases {
+            let Err(StartupError::Env(e)) = proxy(&with_unreadable(&pairs, var)).await.map(drop)
+            else {
+                panic!("{} refuses the start", var.name);
+            };
+            assert_eq!(e.var, var.name);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bundle the TLS backend refuses, a database URL that is not one, and an artifact
+    /// origin that is not a URL each refuse the start. A bundle that merges with the public
+    /// roots starts one.
+    #[tokio::test]
+    async fn an_unusable_bundle_database_or_origin_refuses_the_start() {
+        let dir = crate::util::test_support::tempdir("startup-unusable");
+        let refused = dir.join("refused.pem");
+        std::fs::write(
+            &refused,
+            b"-----BEGIN CERTIFICATE-----\naGVsbG8gd29ybGQ=\n-----END CERTIFICATE-----\n",
+        )
+        .unwrap();
+        let refused = refused.display().to_string();
+        for (label, pairs) in [
+            (
+                "startup-bundle-refused",
+                vec![(env::CA_BUNDLE, refused.as_str())],
+            ),
+            ("startup-database", vec![(env::DATABASE_URL, "not a url")]),
+            ("startup-origin", vec![(env::ARTIFACT_ORIGINS, "not a url")]),
+        ] {
+            let (spool, environment) = spooled(label, &pairs);
+            let Err(StartupError::Unusable(_)) = proxy(&environment).await.map(drop) else {
+                panic!("{label} refuses the start");
+            };
+            let _ = std::fs::remove_dir_all(&spool);
+        }
+        let bundle = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/tls/test-ca.pem"
+        );
+        let (started, log) = logged("startup-bundle-merged", &[(env::CA_BUNDLE, bundle)]).await;
+        assert!(started, "{log}");
+        assert!(!log.contains("public roots are NOT trusted"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With a store, what a policy enforces is said, then each gap in its snapshot. A store
+    /// with no snapshot, or one that errors, has no gaps to say.
+    #[tokio::test]
+    async fn a_store_says_what_it_enforces_and_its_gaps() {
+        use crate::intel::store::PackageIntel;
+        use crate::intel::store::testing::FixedIntel;
+        let loaded = FixedIntel(Ok(Some(PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: Vec::new(),
+            ranges: Vec::new(),
+            exploitation_loaded: false,
+        })));
+        let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
+        warn_enforcement(Some(&loaded)).await;
+        drop(guard);
+        let log = crate::util::test_support::text(&buf);
+        assert!(
+            log.contains("ENFORCED: known_malware and max_cvss"),
+            "{log}"
+        );
+        assert!(log.contains("the intel snapshot has a gap"), "{log}");
+        warn_enforcement(Some(&FixedIntel(Ok(None)))).await;
+        warn_enforcement(Some(&FixedIntel(Err(())))).await;
+    }
+
+    /// Each hangup reloads the policy, and the loop ends with the stream.
+    #[tokio::test]
+    async fn each_hangup_reloads_until_the_stream_ends() {
+        let dir = crate::util::test_support::tempdir("startup-reload-each");
+        let path = dir.join("policy.yaml");
+        std::fs::write(&path, ALLOW).unwrap();
+        let proxy = Proxy::new(reqwest::Client::new());
+        let environment = with(&[(env::POLICY, path.to_str().unwrap())]);
+        let hangups = futures_util::stream::iter([()]);
+        reload_each(&proxy, &environment, std::pin::pin!(hangups)).await;
+        assert_eq!(digest(&proxy), Some(crate::policy::digest_of(ALLOW)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With rewriting on and a public URL set, there is nothing to warn about.
+    #[test]
+    fn a_public_url_with_rewriting_on_is_not_warned_about() {
+        let (base, rewriting) =
+            artifact_urls(&with(&[(env::PUBLIC_URL, "http://proxy.internal")])).expect("reads");
+        assert_eq!(base.as_deref(), Some("http://proxy.internal"));
+        assert!(rewriting);
     }
 }
