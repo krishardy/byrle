@@ -144,9 +144,7 @@ impl Facts {
                     advisory.aliases.push(alias.clone());
                 }
             }
-            if !advisory.sources.contains(&record.source) {
-                advisory.sources.push(record.source.clone());
-            }
+            advisory.sources.push(record.source.clone());
             if score > advisory.cvss {
                 advisory.cvss = score;
                 advisory.band = record.band.clone();
@@ -158,6 +156,7 @@ impl Facts {
             .map(|mut a| {
                 a.aliases.sort();
                 a.sources.sort();
+                a.sources.dedup();
                 a
             })
             .collect();
@@ -483,7 +482,7 @@ cooldown_days: 0
 
         // lodash 4.17.21 was published in 2021 and is years past any cooldown. It fails
         // only because the document the proxy fetches does not say when.
-        assert!(matches!(cooldown.outcome, Outcome::Failed(_)));
+        assert_eq!(cooldown.outcome, Outcome::Failed(Action::Quarantine));
         assert_eq!(decision.action(), Action::Quarantine);
 
         // Read as the full document, the same version passes.

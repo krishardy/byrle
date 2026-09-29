@@ -480,6 +480,24 @@ pkg:npm/lodash@4.17.21
 
   verdict: block
 
+=== deprecated, no message given
+  | version: 1
+  | deprecated: block
+
+pkg:npm/lodash@4.17.21
+
+  denials          pass
+  known_malware    pass
+  cooldown_days    pass
+  kev              pass
+  max_cvss         pass
+  install_scripts  pass
+  yanked           n/a               no meaning for npm
+  deprecated       FAIL block        deprecated by its publisher
+  provenance       pass
+
+  verdict: block
+
 === yanked, with the reason the publisher gave
   | version: 1
 

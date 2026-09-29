@@ -216,25 +216,13 @@ impl Intel for SnapshotIntel {
 }
 
 #[cfg(test)]
-mod tests {
-
-    /// A store keys a package by its ecosystem as a purl spells it and its registry name,
-    /// casing preserved.
-    #[test]
-    fn a_package_is_keyed_by_ecosystem_and_registry_name() {
-        let key: crate::identity::PackageKey = "pkg:npm/%40Scope/Name".parse().expect("a purl");
-        assert_eq!(key_of(&key), ("npm".to_owned(), "@Scope/Name".to_owned()));
-        let pypi: crate::identity::PackageKey = "pkg:pypi/requests".parse().expect("a purl");
-        assert_eq!(key_of(&pypi), ("pypi".to_owned(), "requests".to_owned()));
-    }
+pub(crate) mod testing {
     use super::*;
     use crate::intel::load;
-    use crate::intel::providers::kev;
-    use crate::intel::range::{End, Start};
-    use crate::intel::rows::{Affected, Ranged, Rows};
+    use crate::intel::rows::{Affected, Rows};
     use crate::util::test_support::tempdir;
 
-    fn advisory(id: &str) -> Rows {
+    pub(crate) fn advisory(id: &str) -> Rows {
         Rows {
             id: id.to_owned(),
             summary: None,
@@ -250,13 +238,74 @@ mod tests {
         }
     }
 
-    fn affected(name: &str, version: Option<&str>) -> Affected {
+    pub(crate) fn affected(name: &str, version: Option<&str>) -> Affected {
         Affected {
             ecosystem: "npm".to_owned(),
             name: name.to_owned(),
             version: version.map(str::to_owned),
         }
     }
+
+    /// Keep `sources` as one snapshot in a directory of its own, and give its id.
+    pub(crate) fn kept(label: &str, sources: &[(&str, Vec<Rows>)]) -> (SnapshotDir, String) {
+        kept_encoded(label, &encoded(sources))
+    }
+
+    /// [`kept`], giving the directory's path rather than the directory, for a test that names
+    /// it in the environment.
+    pub(crate) fn kept_path(
+        label: &str,
+        sources: &[(&str, Vec<Rows>)],
+    ) -> (std::path::PathBuf, String) {
+        let path = tempdir(label);
+        let (_, id) = kept_at(&path, &encoded(sources));
+        (path, id)
+    }
+
+    fn encoded(sources: &[(&str, Vec<Rows>)]) -> Vec<load::Encoded> {
+        sources
+            .iter()
+            .map(|(source, rows)| load::encode(source, rows))
+            .collect()
+    }
+
+    pub(crate) fn kept_encoded(label: &str, sources: &[load::Encoded]) -> (SnapshotDir, String) {
+        kept_at(&tempdir(label), sources)
+    }
+
+    fn kept_at(path: &std::path::Path, sources: &[load::Encoded]) -> (SnapshotDir, String) {
+        let dir = SnapshotDir::open(path).expect("opens");
+        for encoded in sources {
+            dir.write_rows(encoded).expect("writes rows");
+        }
+        let manifest = load::manifest(
+            sources
+                .iter()
+                .map(|e| (e.source.as_str(), e.digest.as_str())),
+        );
+        dir.write_snapshot(&manifest).expect("writes the snapshot");
+        (dir, load::snapshot_id(&manifest))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    /// A store keys a package by its ecosystem as a purl spells it and its registry name,
+    /// casing preserved.
+    #[test]
+    fn a_package_is_keyed_by_ecosystem_and_registry_name() {
+        let key: crate::identity::PackageKey = "pkg:npm/%40Scope/Name".parse().expect("a purl");
+        assert_eq!(key_of(&key), ("npm".to_owned(), "@Scope/Name".to_owned()));
+        let pypi: crate::identity::PackageKey = "pkg:pypi/requests".parse().expect("a purl");
+        assert_eq!(key_of(&pypi), ("pypi".to_owned(), "requests".to_owned()));
+    }
+    use super::testing::{advisory, affected, kept, kept_encoded};
+    use super::*;
+    use crate::intel::load;
+    use crate::intel::providers::kev;
+    use crate::intel::range::{End, Start};
+    use crate::intel::rows::{Ranged, Rows};
 
     fn ranged(name: &str, introduced: &str, end: End<String>) -> Ranged {
         Ranged {
@@ -274,29 +323,6 @@ mod tests {
             .iter()
             .map(|name| ("npm".to_owned(), name.to_string()))
             .collect()
-    }
-
-    /// Keep `sources` as one snapshot in a directory of its own, and give its id.
-    fn kept(label: &str, sources: &[(&str, Vec<Rows>)]) -> (SnapshotDir, String) {
-        let encoded: Vec<load::Encoded> = sources
-            .iter()
-            .map(|(source, rows)| load::encode(source, rows))
-            .collect();
-        kept_encoded(label, &encoded)
-    }
-
-    fn kept_encoded(label: &str, sources: &[load::Encoded]) -> (SnapshotDir, String) {
-        let dir = SnapshotDir::open(&tempdir(label)).expect("opens");
-        for encoded in sources {
-            dir.write_rows(encoded).expect("writes rows");
-        }
-        let manifest = load::manifest(
-            sources
-                .iter()
-                .map(|e| (e.source.as_str(), e.digest.as_str())),
-        );
-        dir.write_snapshot(&manifest).expect("writes the snapshot");
-        (dir, load::snapshot_id(&manifest))
     }
 
     #[tokio::test]

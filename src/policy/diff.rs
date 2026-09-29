@@ -336,56 +336,13 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
             dates[0], dates[1]
         ));
     }
-    let comparison = match Comparison::read(args, environment, dates, &mut out.notes).await {
-        Ok(comparison) => comparison,
+    match Comparison::read(args, environment, dates, &mut out.notes).await {
+        Ok(comparison) => comparison.report(out).await,
         Err(note) => {
             out.notes.push(note);
-            return out.stop();
-        }
-    };
-
-    let mut report = Report {
-        listed: comparison.versions.len(),
-        ..Report::default()
-    };
-    for (purl, reference, version) in &comparison.versions {
-        match comparison.compare(reference, version).await {
-            Ok(Compared::Decided(decided)) => report.push(package(
-                purl,
-                (&decided[0].0, &decided[0].1),
-                (&decided[1].0, &decided[1].1),
-            )),
-            Ok(Compared::Unpublished) => out.notes.push(format!("{purl}: no longer published")),
-            Ok(Compared::Unread(e)) => {
-                out.notes.push(format!("{purl}: {e}"));
-                report.unread += 1;
-            }
-            Err(e) => {
-                out.notes.push(format!("{purl}: {e}"));
-                return out.stop();
-            }
+            out.stop()
         }
     }
-
-    out.report = report.render();
-    let bits = report.exit_bits();
-    if bits != 0 {
-        out.summary.push(format!(
-            "{} loosened, {} incomparable, {} tightened, {} could not be read",
-            report.loosened().len(),
-            report.incomparable().len(),
-            report.tightened().len(),
-            report.unread
-        ));
-    }
-    if report.judged_none() {
-        out.summary.push(format!(
-            "none of the {} package versions listed was judged",
-            report.listed
-        ));
-    }
-    out.code = bits;
-    out
 }
 
 /// What [`run`] compares the two policies with, read before any package is.
@@ -445,6 +402,55 @@ impl Comparison {
             needs_times,
             streams_recorded: args.snapshot.is_none(),
         })
+    }
+
+    /// Compare every listed version, adding to `out`'s notes, and set its report, summary
+    /// and exit code.
+    async fn report(&self, mut out: Run) -> Run {
+        let mut report = Report {
+            listed: self.versions.len(),
+            ..Report::default()
+        };
+        for (purl, reference, version) in &self.versions {
+            match self.compare(reference, version).await {
+                Ok(Compared::Decided(decided)) => report.push(package(
+                    purl,
+                    (&decided[0].0, &decided[0].1),
+                    (&decided[1].0, &decided[1].1),
+                )),
+                Ok(Compared::Unpublished) => {
+                    out.notes.push(format!("{purl}: no longer published"));
+                }
+                Ok(Compared::Unread(e)) => {
+                    out.notes.push(format!("{purl}: {e}"));
+                    report.unread += 1;
+                }
+                Err(e) => {
+                    out.notes.push(format!("{purl}: {e}"));
+                    return out.stop();
+                }
+            }
+        }
+
+        out.report = report.render();
+        let bits = report.exit_bits();
+        if bits != 0 {
+            out.summary.push(format!(
+                "{} loosened, {} incomparable, {} tightened, {} could not be read",
+                report.loosened().len(),
+                report.incomparable().len(),
+                report.tightened().len(),
+                report.unread
+            ));
+        }
+        if report.judged_none() {
+            out.summary.push(format!(
+                "none of the {} package versions listed was judged",
+                report.listed
+            ));
+        }
+        out.code = bits;
+        out
     }
 
     /// Read one listed version and decide it under both policies. `Err` is an intel store
@@ -544,10 +550,7 @@ async fn open_store<L: Fn(&str) -> Option<OsString>>(
     versions: &[crate::lockfile::Reference],
 ) -> Result<Option<Box<dyn Intel>>, String> {
     let Some(id) = &args.snapshot else {
-        return crate::intel::postgres::from_env(environment)
-            .await
-            .map(|store| store.map(|store| Box::new(store) as Box<dyn Intel>))
-            .map_err(|e| format!("{}: {e}", crate::env::DATABASE_URL));
+        return crate::intel::postgres::intel_from_env(environment).await;
     };
     let packages = versions
         .iter()
@@ -741,6 +744,232 @@ mod run_tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// The registry the scripted lodash packument is served from, as an environment pair.
+    async fn lodash_registry() -> String {
+        let addr = scripted(vec![Answer::body(crate::ecosystem::npm::fixture(
+            "lodash-4.17.21.abbrev.json",
+        ))])
+        .await;
+        format!("http://{addr}")
+    }
+
+    /// A pinned line in the audit log for lodash at `version`.
+    fn logged(dir: &std::path::Path, version: &str) -> String {
+        let path = dir.join("audit.log");
+        std::fs::write(
+            &path,
+            format!(
+                "{{\"at\":\"\",\"path\":\"pinned\",\"ecosystem\":\"npm\",\"name\":\"lodash\",\
+                 \"version\":\"{version}\",\"action\":\"allow\"}}\n"
+            ),
+        )
+        .expect("writes");
+        path.display().to_string()
+    }
+
+    /// Two dates that differ are said before anything else.
+    #[tokio::test]
+    async fn two_dates_are_noted() {
+        let (dir, mut args) = written("diff-dates", "version: 9\n", "version: 1\n");
+        args.from_date = Some(crate::cli::When::On(jiff::civil::date(2026, 1, 1)));
+        args.to_date = Some(crate::cli::When::On(jiff::civil::date(2026, 2, 1)));
+        let run = run(&args, &with(&[])).await;
+        assert_eq!(
+            run.notes[0],
+            "<FROM> as of 2026-01-01, <TO> as of 2026-02-01"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Each thing read before the first package stops the run when it cannot be, and the
+    /// last note says which.
+    #[tokio::test]
+    async fn each_input_that_cannot_be_read_stops_the_run() {
+        use crate::env::testing::with_unreadable;
+        use crate::env::{AUDIT_LOG, DATABASE_URL, UPSTREAM_NPM};
+
+        let policy = "version: 1\ncooldown_days: 0\n";
+        let (dir, args) = written("diff-inputs", policy, policy);
+        let missing = dir.join("missing.log").display().to_string();
+        let mut no_lockfile = args.clone();
+        no_lockfile.lockfile = vec![dir.join("missing-lock.json")];
+        let mut snapshot = args.clone();
+        snapshot.snapshot = Some("s1".to_owned());
+
+        let cases = [
+            (
+                &args,
+                with_unreadable(&[], AUDIT_LOG),
+                AUDIT_LOG.name.to_owned(),
+            ),
+            (
+                &args,
+                with(&[(AUDIT_LOG, &missing)]),
+                format!("{missing}: "),
+            ),
+            (&no_lockfile, with(&[]), "missing-lock.json".to_owned()),
+            (
+                &args,
+                with(&[(DATABASE_URL, "not a url")]),
+                DATABASE_URL.name.to_owned(),
+            ),
+            (&snapshot, with(&[]), "--snapshot s1: ".to_owned()),
+            (
+                &args,
+                with(&[(UPSTREAM_NPM, "ftp://registry.example")]),
+                UPSTREAM_NPM.name.to_owned(),
+            ),
+        ];
+        for (args, environment, says) in &cases {
+            let run = run(args, environment).await;
+            assert_eq!(run.code, ERROR, "{says}");
+            assert!(run.report.is_empty());
+            let last = run.notes.last().expect("a note");
+            assert!(last.contains(says.as_str()), "{says}: {last}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The audit log lists what to compare over, and a version the registry no longer
+    /// publishes is noted and not judged.
+    #[tokio::test]
+    async fn the_audit_log_lists_the_packages() {
+        let policy = "version: 1\ncooldown_days: 0\n";
+        let (dir, mut args) = written("diff-audit", policy, policy);
+        args.lockfile.clear();
+        let registry = lodash_registry().await;
+
+        let published = logged(&dir, "4.17.21");
+        let environment = with(&[
+            (crate::env::AUDIT_LOG, &published),
+            (crate::env::UPSTREAM_NPM, &registry),
+        ]);
+        let judged = run(&args, &environment).await;
+        assert_eq!(judged.code, 0, "{:?}", judged.notes);
+        assert_eq!(judged.report, "1 packages evaluated\nnothing moved\n");
+
+        let gone = logged(&dir, "0.0.1");
+        let environment = with(&[
+            (crate::env::AUDIT_LOG, &gone),
+            (crate::env::UPSTREAM_NPM, &registry),
+        ]);
+        let unjudged = run(&args, &environment).await;
+        assert_eq!(
+            unjudged.notes,
+            ["pkg:npm/lodash@0.0.1: no longer published"]
+        );
+        assert_eq!(unjudged.code, ERROR);
+        assert_eq!(
+            unjudged.summary,
+            [
+                "0 loosened, 0 incomparable, 0 tightened, 0 could not be read",
+                "none of the 1 package versions listed was judged"
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// `--snapshot` judges with a kept snapshot and says which.
+    #[tokio::test]
+    async fn a_kept_snapshot_is_the_intel() {
+        use crate::intel::rows::Rows;
+        use crate::intel::snapshot_intel::testing::{advisory, affected, kept_path};
+
+        let malware = Rows {
+            affected: [affected("lodash", Some("4.17.21"))].into(),
+            ..advisory("MAL-1")
+        };
+        let (kept, id) = kept_path("diff-kept", &[("osv", vec![malware])]);
+        let (dir, mut args) = written(
+            "diff-snapshot",
+            "version: 1\ncooldown_days: 0\n",
+            "version: 1\ncooldown_days: 0\n",
+        );
+        args.snapshot = Some(id.clone());
+        let environment = with(&[
+            (crate::env::SNAPSHOT_DIR, &kept.display().to_string()),
+            (crate::env::UPSTREAM_NPM, &lodash_registry().await),
+        ]);
+        let run = run(&args, &environment).await;
+        assert_eq!(run.notes, [format!("intel snapshot {id}")]);
+        assert_eq!(run.report, "1 packages evaluated\nnothing moved\n");
+        assert_eq!(run.code, 0);
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&kept);
+    }
+
+    /// A store that fails partway stops the run with the package it failed on.
+    #[tokio::test]
+    async fn a_store_that_fails_stops_the_run() {
+        use crate::intel::store::testing::FixedIntel;
+
+        let policy = || Policy::parse("version: 1\ncooldown_days: 0\n").expect("loads");
+        let registry = with(&[(crate::env::UPSTREAM_NPM, &lodash_registry().await)]);
+        let comparison = Comparison {
+            policies: vec![policy(), policy()],
+            dates: [today(); 2],
+            versions: crate::lockfile::references([(
+                "npm".to_owned(),
+                "lodash".to_owned(),
+                "4.17.21".to_owned(),
+            )]),
+            store: Some(Box::new(FixedIntel(Err(())))),
+            clients: Clients::from_env(&registry).expect("clients"),
+            needs_times: false,
+            streams_recorded: true,
+        };
+        let run = comparison.report(Run::default()).await;
+        assert_eq!(run.code, ERROR);
+        assert!(run.report.is_empty());
+        assert_eq!(run.notes.len(), 1);
+        assert!(
+            run.notes[0].starts_with("pkg:npm/lodash@4.17.21: "),
+            "{:?}",
+            run.notes
+        );
+    }
+
+    /// A package whose ecosystem the snapshot has no stream for is counted as not read, and
+    /// the run goes on.
+    #[tokio::test]
+    async fn a_package_the_snapshot_does_not_cover_is_counted() {
+        use crate::intel::store::PackageIntel;
+        use crate::intel::store::testing::FixedIntel;
+
+        let addr = scripted(vec![Answer::body(crate::ecosystem::pypi::fixture())]).await;
+        let registry = with(&[(crate::env::UPSTREAM_PYPI, &format!("http://{addr}/simple"))]);
+        let policy = || Policy::parse("version: 1\ncooldown_days: 0\n").expect("loads");
+        let comparison = Comparison {
+            policies: vec![policy(), policy()],
+            dates: [today(); 2],
+            versions: crate::lockfile::references([(
+                "pypi".to_owned(),
+                "requests".to_owned(),
+                "0.2.0".to_owned(),
+            )]),
+            store: Some(Box::new(FixedIntel(Ok(Some(PackageIntel {
+                snapshot: "s1".to_owned(),
+                records: Vec::new(),
+                ranges: Vec::new(),
+                exploitation_loaded: false,
+            }))))),
+            clients: Clients::from_env(&registry).expect("clients"),
+            needs_times: false,
+            streams_recorded: true,
+        };
+        let run = comparison.report(Run::default()).await;
+        assert_eq!(run.code, ERROR, "{:?}", run.notes);
+        assert_eq!(run.notes.len(), 1);
+        assert!(
+            run.notes[0].starts_with("pkg:pypi/requests@0.2.0: `pypi` is served with no stream"),
+            "{:?}",
+            run.notes
+        );
+        assert_eq!(
+            run.summary[0],
+            "0 loosened, 0 incomparable, 0 tightened, 1 could not be read"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -750,6 +979,30 @@ mod tests {
     use crate::policy::decide::{Facts, Intel, decide};
 
     const TODAY: jiff::civil::Date = jiff::civil::date(2026, 9, 13);
+
+    /// An exception delivers the package as a pass does, so moving between them is no move.
+    #[test]
+    fn two_answers_that_deliver_alike_are_the_same() {
+        assert_eq!(compare(Shown::Pass, Shown::Excepted(0)), Strictness::Same);
+        assert_eq!(compare(Shown::Unenforced, Shown::Pass), Strictness::Same);
+    }
+
+    #[test]
+    fn each_strictness_has_its_label() {
+        let labels = [
+            Strictness::Stricter,
+            Strictness::Looser,
+            Strictness::Same,
+            Strictness::Incomparable,
+            Strictness::NotApplicable,
+            Strictness::Unset,
+        ]
+        .map(strictness);
+        assert_eq!(
+            labels,
+            ["stricter", "LOOSER", "same", "INCOMPARABLE", "n/a", "unset"]
+        );
+    }
 
     fn facts() -> Facts {
         Facts {

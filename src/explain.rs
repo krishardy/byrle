@@ -167,8 +167,10 @@ fn found(
         }
         Check::InstallScripts => "declares an install script".to_owned(),
         Check::Deprecated => match facts.deprecated.as_deref() {
-            Some(message) => format!("deprecated by its publisher: {message}"),
-            None => "deprecated by its publisher".to_owned(),
+            Some(message) if !message.is_empty() => {
+                format!("deprecated by its publisher: {message}")
+            }
+            _ => "deprecated by its publisher".to_owned(),
         },
         Check::Yanked => match facts.yanked.as_deref() {
             Some(reason) if !reason.is_empty() => format!("withdrawn by the registry: {reason}"),
@@ -319,15 +321,23 @@ async fn answer<L: Fn(&str) -> Option<OsString>>(
         ));
     };
     let policy = Policy::load(&path).map_err(|e| stopped(2, e))?;
-    let store = crate::intel::postgres::from_env(environment)
+    let store = crate::intel::postgres::intel_from_env(environment)
         .await
-        .map_err(|e| stopped(1, format!("{}: {e}", crate::env::DATABASE_URL)))?;
-    let store = store.as_ref().map(|store| store as &dyn IntelStore);
+        .map_err(|e| stopped(1, e))?;
+    answer_using(target, environment, &policy, store.as_deref()).await
+}
 
+/// [`answer`] with `policy` and `store` already open.
+async fn answer_using<L: Fn(&str) -> Option<OsString>>(
+    target: &crate::cli::Explain,
+    environment: &Env<L>,
+    policy: &Policy,
+    store: Option<&dyn IntelStore>,
+) -> Result<String, Stopped> {
     // `cli::Explain` holds `--policy` or a purl, never both and never neither.
     match target.purl.as_deref() {
-        Some(argument) => package_answer(&policy, store, argument, environment).await,
-        None => Ok(policy_report(&policy, consulted(store).await?)),
+        Some(argument) => package_answer(policy, store, argument, environment).await,
+        None => Ok(policy_report(policy, consulted(store).await?)),
     }
 }
 
@@ -523,6 +533,132 @@ mod run_tests {
             ["the registry does not publish pkg:npm/lodash@9.9.9"]
         );
     }
+    /// Each thing that stops `explain` before an answer, with the code it exits with.
+    #[tokio::test]
+    async fn each_stop_names_its_cause_and_exit_code() {
+        use crate::env::testing::with_unreadable;
+        use crate::env::{DATABASE_URL, POLICY, UPSTREAM_NPM};
+
+        let policy = written("explain-stops", "version: 1\ncooldown_days: 0\n");
+        let policy = policy.display().to_string();
+        let cooldown = written("explain-stops-cooldown", "version: 1\ncooldown_days: 1\n");
+        let cooldown = cooldown.display().to_string();
+        let unloadable = written("explain-stops-unloadable", "version: 9\n");
+        let unloadable = unloadable.display().to_string();
+        let closed = format!(
+            "http://{}",
+            crate::util::test_support::closing_server().await
+        );
+        let refused_times = scripted(vec![
+            Answer::body(crate::ecosystem::npm::fixture("lodash-4.17.21.abbrev.json")),
+            Answer::Status(500),
+        ])
+        .await;
+        let refused_times = format!("http://{refused_times}");
+        let lodash = Some("pkg:npm/lodash@4.17.21");
+
+        let cases = [
+            (with_unreadable(&[], POLICY), None, 2, POLICY.name),
+            (with(&[(POLICY, &unloadable)]), None, 2, "policy version 9"),
+            (
+                with(&[(POLICY, &policy), (DATABASE_URL, "not a url")]),
+                None,
+                1,
+                DATABASE_URL.name,
+            ),
+            (
+                with(&[(POLICY, &policy), (UPSTREAM_NPM, "ftp://registry.example")]),
+                lodash,
+                2,
+                UPSTREAM_NPM.name,
+            ),
+            (
+                with(&[(POLICY, &policy), (UPSTREAM_NPM, &closed)]),
+                lodash,
+                1,
+                "metadata could not be fetched",
+            ),
+            (
+                with(&[(POLICY, &cooldown), (UPSTREAM_NPM, &refused_times)]),
+                lodash,
+                1,
+                "publish times could not be fetched",
+            ),
+        ];
+        for (environment, purl, code, starts) in &cases {
+            let answered = run(&asked(*purl), environment).await;
+            assert_eq!(answered.code, *code, "{:?}", answered.notes);
+            assert!(answered.answer.is_empty());
+            assert_eq!(answered.notes.len(), 1);
+            assert!(
+                answered.notes[0].starts_with(starts),
+                "{starts}: {:?}",
+                answered.notes
+            );
+        }
+    }
+
+    /// With a store, `--policy` says whether the checks that need intel can be enforced, and
+    /// a package is judged with what the store knows. A store that errors stops both.
+    #[tokio::test]
+    async fn a_store_is_asked_for_its_snapshot_and_the_package() {
+        use crate::intel::store::testing::FixedIntel;
+        use crate::intel::store::{PackageIntel, Record};
+
+        let policy = Policy::parse("version: 1\ncooldown_days: 0\nkev: block\nprovenance: allow\n")
+            .expect("loads");
+        let malware = PackageIntel {
+            snapshot: "s1".to_owned(),
+            records: vec![(
+                Some("4.17.21".to_owned()),
+                Record {
+                    advisory_id: "MAL-1".to_owned(),
+                    aliases: Vec::new(),
+                    source: "osv".to_owned(),
+                    cvss: None,
+                    cvss_source: None,
+                    band: None,
+                    exploited: false,
+                    malware: true,
+                },
+            )],
+            ranges: Vec::new(),
+            exploitation_loaded: false,
+        };
+        let loaded = FixedIntel(Ok(Some(malware)));
+        let empty = FixedIntel(Ok(None));
+        let down = FixedIntel(Err(()));
+        let environment = with(&[]);
+
+        let policy_only = asked(None);
+        let answer = |store| answer_using(&policy_only, &environment, &policy, Some(store));
+        let consulted = answer(&loaded).await.map_err(|s| s.note).expect("answers");
+        assert!(
+            consulted.contains("unenforced, no exploitation stream"),
+            "{consulted}"
+        );
+        let not_consulted = answer(&empty).await.map_err(|s| s.note).expect("answers");
+        assert_ne!(consulted, not_consulted);
+        let stopped = answer(&down).await.expect_err("a store that errors");
+        assert_eq!(stopped.code, 1);
+
+        let addr = scripted(vec![Answer::body(crate::ecosystem::npm::fixture(
+            "lodash-4.17.21.abbrev.json",
+        ))])
+        .await;
+        let registry = with(&[(crate::env::UPSTREAM_NPM, &format!("http://{addr}"))]);
+        let lodash = asked(Some("pkg:npm/lodash@4.17.21"));
+        let judged = answer_using(&lodash, &registry, &policy, Some(&loaded))
+            .await
+            .map_err(|s| s.note)
+            .expect("answers");
+        assert!(judged.contains("verdict: block"), "{judged}");
+        assert!(judged.contains("reported as malware"), "{judged}");
+        let failed = answer_using(&lodash, &registry, &policy, Some(&down))
+            .await
+            .expect_err("a store that errors");
+        assert_eq!(failed.code, 1);
+    }
 }
 
 #[cfg(test)]
@@ -569,11 +705,8 @@ mod tests {
         let out = rendered("version: 1", &facts(), &[]);
 
         for check in Check::ALL {
-            assert!(
-                out.contains(check.as_str()),
-                "{} is missing from:\n{out}",
-                check.as_str()
-            );
+            let name = check.as_str();
+            assert!(out.contains(name), "{name} is missing from:\n{out}");
         }
     }
 
@@ -1018,6 +1151,14 @@ mod tests {
                 "version: 1\ndeprecated: block",
                 Facts {
                     deprecated: Some("no longer supported, use rimraf@4".to_owned()),
+                    ..consulted()
+                },
+            ),
+            case(
+                "deprecated, no message given",
+                "version: 1\ndeprecated: block",
+                Facts {
+                    deprecated: Some(String::new()),
                     ..consulted()
                 },
             ),
