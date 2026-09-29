@@ -61,6 +61,15 @@ replacing every source it is given. It locks
 `intel_source` first (`SHARE ROW EXCLUSIVE`, which a lookup's reads do not wait for), so a
 refresh of another source waits and then reads the new digest.
 
+`replace` is one transaction, so one refresh records one snapshot. A lookup during the load
+reads the previous rows, and a load that fails at any step leaves them in place. Rows are
+deleted by source, from both `advisory` and `exploited_cve`, so other sources are left
+alone and a source is replaced whole whichever kind it was; alias, affected and range rows
+go with their advisory by `ON DELETE CASCADE`. `advisory` is copied first, in 1 MiB
+`CopyData` messages, and the keys Postgres assigned are read back to build the other tables.
+A snapshot id already recorded keeps its row and takes the new `taken_at` and streams. Each
+stream is appended to `intel_ingestion`, loaded or not, in the same transaction.
+
 The bundles' sha256, etag and `last-modified` are recorded in `streams` and hashed into
 nothing. Two bundles that load the same rows are one snapshot.
 

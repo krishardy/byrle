@@ -1,8 +1,7 @@
-//! The Postgres implementation of [`Intel`].
+//! The Postgres implementation of [`Intel`], with queries checked against the schema at
+//! compile time by `sqlx::query_as!`.
 //!
-//! Queries are written as SQL and checked against the real schema at compile time by
-//! `sqlx::query_as!`. A renamed column or a changed type is a compile error rather than a
-//! runtime one. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
+//! See `docs/engineering_decisions/storage-sqlx-postgres.md`.
 
 use super::history::{Ingestion, NotLoaded};
 use super::load::{self, Encoded, Fetch, Kind};
@@ -14,8 +13,7 @@ use super::store::{Intel, IntelError, LoadedSnapshot, Lookup, PackageIntel, Reco
 use sqlx::{PgConnection, PgPool};
 use std::collections::HashMap;
 
-/// Bytes per `CopyData` message. Postgres accepts far larger; this bounds what one send
-/// holds in flight.
+/// Bytes per `CopyData` message, which bounds what one send holds in flight.
 const COPY_CHUNK: usize = 1 << 20;
 
 /// Rows written by [`PgIntel::replace`], and the snapshot the store contains after it.
@@ -36,8 +34,7 @@ pub struct Loaded {
 #[derive(Debug, Clone, Copy)]
 pub struct Replacement<'a> {
     pub encoded: &'a Encoded,
-    /// The rows `encoded` encodes when it contains advisories, which the other tables are built
-    /// from once Postgres has keyed them. Empty for exploited ids.
+    /// The rows `encoded` encodes, for the tables built once Postgres has keyed them.
     pub rows: &'a [Rows],
     /// The bundles the rows were read from. Recorded, and part of no digest.
     pub streams: &'a [StreamDigest],
@@ -93,8 +90,7 @@ pub(crate) fn described(e: &sqlx::Error) -> String {
 #[derive(Debug)]
 pub struct Refused {
     pub why: String,
-    /// 2 when the variable is unset, as for any other missing configuration, and 1 when
-    /// the store is there and cannot be reached or migrated.
+    /// 2 when the variable is unset, and 1 when the store cannot be reached or migrated.
     pub code: u8,
 }
 
@@ -166,29 +162,8 @@ impl PgIntel {
         .await
     }
 
-    /// Replace everything each source supplied with its rows, and record the snapshot the store
-    /// contains after it. `taken_at` is RFC 3339 UTC.
-    ///
-    /// One transaction, so one refresh records one snapshot. A lookup during the load reads the
-    /// previous rows, because Postgres shows a transaction's writes to nobody else until it
-    /// commits, and a load that fails at any step leaves them in place. Deleting by source
-    /// rather than swapping whole tables leaves other sources' rows alone. The alias, affected
-    /// and range rows go with their advisory by `ON DELETE CASCADE`.
-    ///
-    /// For advisories, `advisory` is copied first. The keys Postgres assigned are read back in
-    /// the same transaction, and the other tables are copied carrying them. Exploited ids are
-    /// one table, copied as encoded.
-    ///
-    /// The snapshot id is hashed from every source's `intel_source.digest`. The transaction
-    /// locks `intel_source` first, so a refresh of another source waits for this one to
-    /// commit and then reads this source's new digest.
-    ///
-    /// A snapshot id already recorded, which is the same rows loaded again, keeps its row and
-    /// takes the new `taken_at` and streams.
-    ///
-    /// Each stream in `sources` is appended to `intel_ingestion` as loaded, and each in
-    /// `not_loaded` as not, both with the snapshot, in the same transaction. A load that fails
-    /// appends nothing.
+    /// Replace everything each source supplied with its rows, in one transaction, and record
+    /// the snapshot the store then holds. See docs/engineering_decisions/snapshot-identity.md.
     pub async fn replace(
         &self,
         sources: &[Replacement<'_>],
@@ -197,8 +172,6 @@ impl PgIntel {
     ) -> Result<Loaded, IntelError> {
         let mut tx = self.pool.begin().await.map_err(IntelError::Backend)?;
 
-        // SHARE ROW EXCLUSIVE conflicts with itself and with any write to the table, and not
-        // with a read.
         sqlx::query!("LOCK TABLE intel_source IN SHARE ROW EXCLUSIVE MODE")
             .execute(&mut *tx)
             .await
@@ -288,7 +261,6 @@ async fn write_source(
 ) -> Result<(), IntelError> {
     let encoded = replacement.encoded;
     let source = encoded.source.as_str();
-    // Both tables, so a source is replaced whole whichever kind it was before.
     sqlx::query!("DELETE FROM advisory WHERE source = $1", source)
         .execute(&mut *conn)
         .await
@@ -304,7 +276,6 @@ async fn write_source(
         Kind::Advisories => write_advisories(conn, replacement, written).await?,
     }
 
-    // `::text` first, so the parameters are text and sqlx needs no date or JSON type.
     sqlx::query!(
         "INSERT INTO intel_source (source, digest, streams) \
          VALUES ($1, $2, $3::text::jsonb) \
@@ -363,7 +334,6 @@ async fn record_snapshot(
             .map(|s| (s.source.as_str(), s.digest.as_str())),
     );
     let snapshot = load::snapshot_id(&manifest);
-    // With no stream recorded, the aggregate is NULL and the column is not.
     sqlx::query!(
         "INSERT INTO intel_snapshot (digest, taken_at, streams) \
          SELECT $1, $2::text::timestamptz, COALESCE(jsonb_object_agg(e.key, e.value), '{}') \
@@ -412,7 +382,6 @@ async fn record_ingestions(
 
 /// Append one row to `intel_ingestion`.
 async fn record(conn: &mut PgConnection, entry: &Ingestion) -> Result<(), IntelError> {
-    // `::text` first, so the parameter is text and sqlx needs no date type.
     sqlx::query!(
         "INSERT INTO intel_ingestion \
          (taken_at, source, stream, sha256, etag, last_modified, rows_digest, snapshot, error) \
@@ -458,9 +427,6 @@ impl Intel for PgIntel {
         name: &'a str,
         version: &'a str,
     ) -> Lookup<'a, Vec<Record>> {
-        // Ranges compare by the ecosystem's version order, which SQL does not, so one version
-        // is answered the way the proxy answers every version: read the package, evaluate
-        // here.
         Box::pin(async move {
             Ok(self
                 .package(ecosystem, name)
@@ -477,9 +443,6 @@ impl Intel for PgIntel {
 
     fn snapshot(&self) -> Lookup<'_, Option<LoadedSnapshot>> {
         Box::pin(async move {
-            // One row per stream of the newest snapshot, or one row with no stream when it
-            // records none. A refresh writes `intel_source` and the newest snapshot in one
-            // transaction, so its sources are the newest snapshot's.
             let rows = sqlx::query!(
                 r#"
                 SELECT
@@ -512,8 +475,6 @@ impl Intel for PgIntel {
                 digest: first.digest.clone(),
                 taken_at: first.taken_at.clone(),
                 sources: first.sources.clone(),
-                // Refresh records a sha256 for every stream, so one without is not reported
-                // as if it had been verified.
                 streams: rows
                     .iter()
                     .filter_map(|row| {
@@ -535,15 +496,6 @@ impl Intel for PgIntel {
         name: &'a str,
     ) -> Lookup<'a, Option<PackageIntel>> {
         Box::pin(async move {
-            // One statement, so the snapshot id and the rows are read from the same
-            // committed state. A refresh replaces both in one transaction, and a second
-            // query could see the other side of it.
-            //
-            // `m` is every version-shaped row for the package: listed versions and every
-            // version from `advisory_affected`, intervals from `advisory_range`.
-            //
-            // An advisory is exploited when its id or an alias is in `exploited_cve`, the same
-            // match as `intel::is_named`.
             let rows = sqlx::query!(
                 r#"
                 SELECT
@@ -606,8 +558,6 @@ impl Intel for PgIntel {
                 exploitation_loaded: first.exploitation_loaded,
             };
             for row in rows {
-                // No advisory is the one row a snapshot with nothing against the package
-                // gives.
                 let (Some(advisory_id), Some(source), Some(exploited), Some(malware)) =
                     (row.advisory_id, row.source, row.exploited, row.malware)
                 else {

@@ -7,7 +7,9 @@
 ## Decision
 
 `doctor` reads the artifact URLs a lockfile records and reports any origin other than the
-proxy. A lockfile that records no URLs is not checked.
+proxy. A lockfile that records no URLs is not checked. The read is textual, not a parse of
+each format: every format checked writes a URL as `<key>: <url>` or `<key> "<url>"` on one
+line. A lockfile naming two origins installs from both, and only one is examined.
 
 | Lockfile | Key `doctor` reads | What the file records |
 |---|---|---|
