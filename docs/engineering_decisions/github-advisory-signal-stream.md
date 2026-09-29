@@ -30,6 +30,14 @@ behind it and how much has one.
 joined into one JSON array, which the stream's parse reads as one buffer and its ceiling
 bounds. Without a token the stream does not load, and the other streams still do.
 
+The ceiling is 64 MiB: 9,980 rows came to 5.6 MB on 2026-09-16. `securityVulnerabilities`
+returns one node per advisory and range, so `github::parse` groups the nodes by advisory.
+A range is written as one bound or a comma-separated pair: `>= 0.0.1, < 2.1.27`,
+`< 2.1.30`, `= 1.2.3`. An exact version is stored as a listed version, and a version is
+padded as OSV's are, so `1.5` matches the published `1.5.0`. An advisory with no range is
+every version, as OSV's `introduced: "0"` is. GitHub writes a score of 0.0 for an advisory
+it has not scored, and that is read as no score, so the band gives one.
+
 ## The schema change this needs
 
 Datadog did not hit this: it mints `DATADOG-npm-<name>`, an id space disjoint from anything

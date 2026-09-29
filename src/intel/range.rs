@@ -1,24 +1,7 @@
-//! OSV version ranges, ordered by each ecosystem's own rules.
+//! OSV version ranges, ordered by each ecosystem's own rules: SemVer 2.0 for npm, PEP 440
+//! for PyPI. Events are evaluated into intervals once, at load.
 //!
-//! [`VersionOrder`] is a row's field in [`crate::ecosystem::TABLE`]: SemVer 2.0 for npm, PEP
-//! 440 for PyPI. Every version in a range is read and compared by the order of the ecosystem
-//! the range is for.
-//!
-//! An OSV range is a list of events: `introduced`, `fixed` (the first version not affected)
-//! and `last_affected` (the last one affected). Sorted by version, each `introduced` opens an
-//! interval and the next `fixed` or `last_affected` closes it. An interval left open at the
-//! end has no upper bound. This is the evaluation in the OSV schema's pseudocode, done once at
-//! load so the store holds intervals rather than events.
-//!
-//! npm ranges are `SEMVER` or `ECOSYSTEM`, and both order by SemVer 2.0. Measured over
-//! `npm/all.zip` fetched 2026-09-13, the 31 `ECOSYSTEM` ranges contain versions such as `13.0`
-//! and `2026.04.1`. Each version is read by [`padded`], as osv.dev reads it, and stored
-//! padded, so a stored column is strict SemVer. A range containing a version that is still not
-//! SemVer is not stored rather than guessed at.
-//!
-//! SemVer 2.0 gives build metadata no precedence and the `semver` crate compares it, so it
-//! is removed before any comparison. Pre-releases order below their release, so
-//! `2.0.0-beta.1` is inside `introduced: 1.0.0, fixed: 2.0.0`.
+//! See docs/engineering_decisions/osv-ranges-and-scores.md.
 
 use semver::{BuildMetadata, Version};
 use std::collections::BTreeMap;
@@ -35,10 +18,7 @@ pub enum VersionOrder {
     Pep440,
 }
 
-/// A version as its ecosystem orders it.
-///
-/// Versions are compared within one ecosystem only. The derived order puts every SemVer
-/// version below every PEP 440 one, and nothing compares across the two.
+/// A version as its ecosystem orders it. Only versions of one ecosystem are compared.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Ordered {
     SemVer(Version),
@@ -85,7 +65,6 @@ pub fn padded(s: &str) -> Option<String> {
     let (numbers, rest) = s.split_at(s.find(['-', '+']).unwrap_or(s.len()));
     let mut parts = Vec::with_capacity(3);
     for part in numbers.split('.') {
-        // `-` and `+` are split off above, and parsing refuses anything else but digits.
         if parts.len() == 3 {
             return None;
         }
@@ -124,12 +103,7 @@ impl End<String> {
     }
 }
 
-/// One run of affected versions. `V` is `String` as stored and [`Ordered`] as compared.
-/// Where an interval starts.
-///
-/// OSV writes only inclusive lower bounds, so every OSV range is `First` or `Introduced`.
-/// GitHub writes `> 4.0.2`, which says 4.0.2 is the last version not affected; that is
-/// `After`, and storing it as `Introduced` would report 4.0.2 as vulnerable.
+/// Where an interval starts. `V` is `String` as stored and [`Ordered`] as compared.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Start<V> {
     /// From the first version. OSV's `introduced: "0"`.
@@ -201,7 +175,6 @@ impl Interval<Ordered> {
         let start = match (introduced, introduced_excluded) {
             (Some(s), false) => Start::Introduced(order.parse(s)?),
             (Some(s), true) => Start::After(order.parse(s)?),
-            // An excluded bound with no version is not a bound. The loader writes neither.
             (None, true) => return None,
             (None, false) => Start::First,
         };
@@ -221,7 +194,6 @@ pub enum Unstorable {
     /// A range type other than `SEMVER` or `ECOSYSTEM`, such as `GIT`.
     Type(String),
     /// An event naming something other than `introduced`, `fixed` or `last_affected`.
-    /// `limit` is one; no npm record carried it on 2026-09-13.
     Event(String),
     /// An event object with other than one key.
     Malformed,
@@ -258,7 +230,6 @@ pub fn intervals(
             "last_affected" => Kind::LastAffected,
             other => return Err(Unstorable::Event(other.to_owned())),
         };
-        // `0` is OSV's "before the first version", and only means that as a lower bound.
         let (at, written) = match (kind, value.as_str()) {
             (Kind::Introduced, "0") => (None, value.clone()),
             _ => {
@@ -270,8 +241,6 @@ pub fn intervals(
         };
         sorted.push((at, kind, written));
     }
-    // Stable, so events at the same version keep the order the record gave them, which is
-    // what the OSV pseudocode does with them.
     sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut out = Vec::new();
@@ -279,7 +248,6 @@ pub fn intervals(
     for (at, kind, value) in sorted {
         let written = at.map(|_| value.clone());
         match (kind, open.take()) {
-            // An `introduced` inside an open interval changes nothing.
             (Kind::Introduced, Some(from)) => open = Some(from),
             (Kind::Introduced, None) => open = Some(written),
             (Kind::Fixed, Some(from)) => out.push(Interval {
@@ -290,7 +258,6 @@ pub fn intervals(
                 start: Start::introduced(from),
                 end: End::LastAffected(value.clone()),
             }),
-            // An end with nothing open ends nothing.
             (Kind::Fixed | Kind::LastAffected, None) => {}
         }
     }
@@ -333,8 +300,10 @@ mod tests {
         });
         assert!(!after.contains(&sv("4.0.2").expect("parses")));
         assert!(after.contains(&sv("4.0.3").expect("parses")));
-        // A prerelease of the next patch sorts above 4.0.2, so it is affected.
-        assert!(after.contains(&sv("4.0.3-alpha").expect("parses")));
+        assert!(
+            after.contains(&sv("4.0.3-alpha").expect("parses")),
+            "a prerelease of the next patch sorts above 4.0.2"
+        );
 
         let introduced = parsed(&Interval {
             start: Start::Introduced("4.0.2".to_owned()),

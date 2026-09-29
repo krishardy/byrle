@@ -9,19 +9,6 @@ use crate::ecosystem::Fetched;
 use crate::identity::PackageKey;
 
 /// Fetches project indexes from one simple index.
-///
-/// Deliberately the same shape as `npm::Client` (an `http`, a base, a byte ceiling) and
-/// deliberately not sharing code with it. Stage 3 extracts the transport interface from
-/// the two once both work, and two concrete implementations side by side are what that
-/// extraction reads.
-///
-/// Where they differ is the useful part:
-///
-/// | | `npm::Client` | this |
-/// |---|---|---|
-/// | content negotiation | `Accept` picks abbreviated or full | `Accept` picks JSON over HTML, and an index may refuse |
-/// | redirects | the registry serves the name as given | PEP 503 301s to the normalised name, and `normalise` avoids the round trip |
-/// | encoding | asks for gzip and decodes it here | the same, for the same reason |
 #[derive(Debug, Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -37,8 +24,7 @@ pub enum FetchError {
     Status(reqwest::StatusCode),
     /// The body arrived and could not be decoded.
     Undecodable(crate::http::DecodeError),
-    /// The index served something other than PEP 691 JSON. Its own HTML is the likely
-    /// answer, which this build does not read.
+    /// The index served neither simple-index form. Carries its `Content-Type`.
     NotJson(Option<String>),
     /// The name or the body was unusable. Carries [`PypiError`] rather than restating it.
     Unreadable(PypiError),
@@ -87,15 +73,9 @@ impl Client {
         }
     }
 
-    /// Fetch one project's index and read it.
-    ///
-    /// The name is normalised before the request rather than after a redirect: PEP 503
-    /// says the index redirects a non-normalised name, so asking for the normalised one
-    /// saves the round trip and makes one project one request whatever the client spelled.
-    ///
-    /// Both simple-index forms are read: PEP 691 JSON, and the PEP 503 page an index that
-    /// has not implemented PEP 691 answers with. Anything else is an error rather than a
-    /// silent empty project.
+    /// Fetch one project's index, PEP 691 JSON or a PEP 503 page, and read it.
+    /// `name` is normalised before the request, so the index does not redirect.
+    /// Returns the project, or why it could not be fetched or read.
     pub async fn project(&self, name: &str) -> Result<Project, FetchError> {
         let url = index_url(&self.index, name).map_err(FetchError::Unreadable)?;
         let response = self
@@ -115,9 +95,6 @@ impl Client {
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok())
             .map(str::to_owned);
-        // PEP 691 names the type exactly. A plain `application/json` is accepted too: an
-        // index may serve the right document under the generic type. An index that has
-        // not implemented PEP 691 answers the PEP 503 page, which `html` reads.
         let format = match crate::ecosystem::of(crate::identity::Ecosystem::PyPI)
             .document(content_type.as_deref())
         {
@@ -166,15 +143,12 @@ mod tests {
         Client::new(reqwest::Client::new(), base)
     }
 
-    /// The whole path: the normalised name in the URL, the `Accept` header, the body,
-    /// the records. The handler asserts the header, because an index that is not asked
-    /// for JSON answers HTML and the parse would then fail for the wrong reason.
+    /// The normalised name in the URL, the `Accept` header, the body and the records.
+    /// The name the document gives wins over the one asked for.
     #[tokio::test]
     async fn asks_for_json_under_the_normalised_name_and_reads_the_index() {
         let body = String::from_utf8(fixture()).expect("the fixture is utf-8");
         let base = serve(Router::new().route(
-            // `Zope.Interface` normalises to this before the request is made, so no
-            // redirect is involved.
             "/zope-interface/",
             get(|headers: axum::http::HeaderMap| async move {
                 assert_eq!(
@@ -191,8 +165,6 @@ mod tests {
             .project("Zope.Interface")
             .await
             .expect("the index reads");
-        // The document names itself `requests`, and the document wins: it is what the
-        // index says this project is.
         assert_eq!(project.name, "requests");
         assert_eq!(project.versions().len(), 3);
     }
@@ -290,7 +262,6 @@ mod tests {
 
     #[tokio::test]
     async fn an_index_that_is_not_there_is_a_transport_error() {
-        // Bound and dropped, so the port refuses rather than answering.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("binds");

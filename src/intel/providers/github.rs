@@ -1,14 +1,6 @@
-//! GitHub's Advisory Database, read through the GraphQL API.
+//! GitHub's Advisory Database, read through the GraphQL API, as a signal stream beside OSV.
 //!
-//! A signal stream beside OSV rather than a replacement for it: both are checked
-//! independently and the decision vector reviews what each holds. OSV imports GHSA, so most
-//! ids appear twice, under source `osv/npm` and under source `github/npm`. That is corroboration,
-//! and `advisory` is keyed `(source, publisher_id)` so both rows exist. See
-//! `docs/engineering_decisions/github-advisory-signal-stream.md`.
-//!
-//! The API is a POST with `Authorization: bearer` and cursor pagination, where every other
-//! stream is one unauthenticated GET. `waharoa refresh` pages it and concatenates the
-//! response bodies into one JSON array, which is what [`parse`] reads.
+//! See `docs/engineering_decisions/github-advisory-signal-stream.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -25,17 +17,16 @@ pub const NPM_STREAM: &str = "github/npm";
 pub const PYPI_STREAM: &str = "github/pypi";
 pub const ENDPOINT: &str = "https://api.github.com/graphql";
 
-/// Bytes past which the concatenated pages are refused. 9,980 rows came to 5.6 MB on
-/// 2026-09-16; 64 MiB is an order of magnitude of headroom.
+/// Bytes past which the joined pages are refused.
 pub const MAX_BYTES: usize = 64 << 20;
+
+/// The score GitHub writes for an advisory it has not scored.
+const UNSCORED: f64 = 0.0;
 
 /// Advisories per page. 100 is GitHub's maximum for a connection.
 pub const PAGE: usize = 100;
 
 /// The query `waharoa refresh` sends, once per page, for GitHub's name of an ecosystem.
-///
-/// `securityVulnerabilities` returns one node per advisory-and-range, so an advisory with
-/// several affected ranges appears several times and [`parse`] groups them.
 macro_rules! query {
     ($ecosystem:literal) => {
         concat!(
@@ -154,10 +145,7 @@ struct Identifier {
     value: String,
 }
 
-/// One `vulnerableVersionRange`, as the store holds it.
-///
-/// GitHub writes a comma-separated pair of bounds, or one bound: `>= 0.0.1, < 2.1.27`,
-/// `< 2.1.30`, `= 1.2.3`. An exact version is a listed version rather than an interval.
+/// One `vulnerableVersionRange`, such as `>= 0.0.1, < 2.1.27`, as the store holds it.
 #[derive(Debug, PartialEq, Eq)]
 enum Bounds {
     /// `= X`.
@@ -174,7 +162,6 @@ fn bounds(order: VersionOrder, range: &str) -> Bounds {
         if let Some(v) = part.strip_prefix(">=") {
             start = Start::Introduced(stored(order, v.trim()));
         } else if let Some(v) = part.strip_prefix('>') {
-            // `> 4.0.2` says 4.0.2 is the last version not affected.
             start = Start::After(stored(order, v.trim()));
         } else if let Some(v) = part.strip_prefix("<=") {
             end = End::LastAffected(stored(order, v.trim()));
@@ -186,8 +173,6 @@ fn bounds(order: VersionOrder, range: &str) -> Bounds {
             return Bounds::Unexpressed;
         }
     }
-    // `split` yields at least one part, and each part above sets a bound or returns, so
-    // the interval has at least one end.
     Bounds::Interval(Interval { start, end })
 }
 
@@ -196,8 +181,7 @@ fn bounds(order: VersionOrder, range: &str) -> Bounds {
 /// advisory alike.
 fn score(advisory: &Advisory) -> (Option<f64>, Option<String>) {
     match advisory.cvss.as_ref().and_then(|c| c.score) {
-        // GitHub writes 0.0 for an advisory it has not scored, which is not a CVSS 0.0.
-        Some(score) if score > 0.0 => (Some(score), None),
+        Some(score) if score > UNSCORED => (Some(score), None),
         _ => match advisory.severity.as_deref().filter(|b| *b != "UNKNOWN") {
             Some(band) => (band_ceiling(band), Some(band.to_owned())),
             None => (None, None),
@@ -252,7 +236,6 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Vec<Rows>, GithubErro
                 Some(Bounds::Interval(interval)) => {
                     rows.ranges.insert(Ranged::new(purl_type, &name, interval));
                 }
-                // No range given is every version, as OSV's `introduced: "0"` is.
                 None => {
                     rows.affected.insert(Affected::new(purl_type, &name, None));
                 }
@@ -260,7 +243,6 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Vec<Rows>, GithubErro
             }
         }
     }
-    // An advisory with no version row at all says nothing about any package.
     by_id.retain(|_, r| !r.affected.is_empty() || !r.ranges.is_empty());
     if by_id.is_empty() {
         return Err(GithubError::Empty);
@@ -329,7 +311,6 @@ mod tests {
             bounds(VersionOrder::SemVer, "<= 1.5"),
             Bounds::Interval(Interval {
                 start: Start::First,
-                // Padded as OSV's listed versions are, so 1.5 matches the published 1.5.0.
                 end: End::LastAffected("1.5.0".to_owned()),
             })
         );
@@ -337,7 +318,6 @@ mod tests {
             bounds(VersionOrder::SemVer, "= 1.2.3"),
             Bounds::Exact("1.2.3".to_owned())
         );
-        // `> X` says X is the last version not affected, so it excludes its own bound.
         assert_eq!(
             bounds(VersionOrder::SemVer, "> 4.0.2"),
             Bounds::Interval(Interval {
@@ -507,9 +487,7 @@ mod tests {
         assert!(matches!(err, GithubError::Empty), "{err}");
     }
 
-    /// The three advisories GitHub holds that OSV's bundle lacks all write `>`, so this is
-    /// the whole of what the stream uniquely adds. See
-    /// docs/engineering_decisions/github-advisory-signal-stream.md.
+    /// `>` is what the three advisories GitHub holds and OSV's bundle lacks all write.
     #[test]
     fn an_exclusive_lower_bound_is_stored_and_does_not_cover_its_own_version() {
         let rows = parse(
