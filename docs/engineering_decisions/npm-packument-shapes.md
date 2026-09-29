@@ -40,6 +40,23 @@ document, September 2026. The set mixes current packages with ones published in 
 | `maintainers`, `repository` at package level | a fallback: the per-version copy is what was true at publish time, so it is used when present |
 | `deprecated` | the message `npm deprecate` set, in both documents. `npm deprecate pkg@range ""` clears it, and npm then omits the key |
 
+What each document carries, as `record::PackageRecord` reads it:
+
+| Field | Abbreviated | Full |
+|---|---|---|
+| name, version, `dist.*` | yes | yes |
+| `hasInstallScript` | yes | no, read `scripts` |
+| `dist.attestations`, `dist.signatures` | yes | yes |
+| publish time (`time`) | no | yes |
+| `maintainers`, `repository`, `_npmUser.trustedPublisher` | no | yes |
+| `scripts` bodies | no | yes |
+
+`record::DocumentDetail` says which document a record came from, so a `None` reads as "not
+fetched" from the abbreviated one and "the registry does not publish it" from the full one.
+A missing publish time must not read as old enough. `repository.url` is kept verbatim,
+`git+https://` included, and `directory` holds a monorepo package's subdirectory, such as
+`packages/babel-traverse` for `@babel/traverse`.
+
 `repository`'s deserializer is written by hand rather than `#[serde(untagged)]`. `untagged`
 buffers into an intermediate value and tries each variant, which discards
 `deny_unknown_fields` on the variants and turns a field error into "no variant matched". It

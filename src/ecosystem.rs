@@ -1,22 +1,7 @@
-//! Which registry answers a request, and what that registry does differently.
+//! Which registry answers a request, and what that registry does differently: one
+//! [`Registry`] row per ecosystem in [`TABLE`], so a field must be filled in for every one.
 //!
-//! Every ecosystem the proxy serves fills in one [`Registry`]. The table is the list of
-//! them, so adding a third ecosystem is a new entry rather than a new arm in each of the
-//! places that used to `match` on [`Ecosystem`].
-//!
-//! The answers here are a plain function of a path or a header, or a declaration: where a
-//! version's publish time comes from, and which advisory streams list the ecosystem's
-//! packages. Three dispatch points still match on [`Ecosystem`] directly, and each has a
-//! reason:
-//!
-//! | Dispatch point | Why it is not a field yet |
-//! |---|---|
-//! | `proxy::upstream_url` | picks `Proxy`'s per-ecosystem upstream field |
-//! | [`Clients::metadata`] | picks the ecosystem's client, and is `async` |
-//! | `proxy::handle`'s `match document` | npm's arm goes on to publish times, intel and the rewrite; PyPI's returns |
-//!
-//! A field added here without an entry in every row of [`TABLE`] does not compile, which
-//! is the property the table exists for.
+//! See docs/engineering_decisions/adapter-interface.md.
 
 pub mod npm;
 pub mod pypi;
@@ -32,15 +17,10 @@ use crate::record::PackageMetadata;
 use crate::route::{DocumentKind, RequestTarget};
 use std::collections::BTreeMap;
 
-/// Metadata the proxy fetched on its own behalf, as records. The outer error is the fetch,
-/// the inner one the document; both are said in the log and neither is propagated.
+/// Metadata the proxy fetched itself: the outer error is the fetch, the inner the document.
 pub type Fetched = Result<Result<PackageMetadata, String>, String>;
 
-/// Each ecosystem's registry client, for a caller that has a package key and no document.
-///
-/// The proxy fetches through this when a client asks for an artifact whose metadata it has
-/// not seen, and `waharoa explain` and `waharoa policy diff` fetch through it for every
-/// package they judge. The ecosystem comes from the key, so no caller chooses a client.
+/// Each ecosystem's registry client, chosen by the package key, for a caller with no document.
 #[derive(Debug, Clone)]
 pub struct Clients {
     npm: npm::Client,
@@ -112,12 +92,9 @@ pub fn fetched(result: Fetched) -> Result<PackageMetadata, String> {
 /// Where the policy reads a version's publish time from, for `cooldown_days`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishTimeSource {
-    /// The normaliser sets `published_at` on every record from the metadata document the
-    /// client asked for. Nothing is fetched.
+    /// The normaliser sets `published_at` from the document the client asked for.
     Record,
-    /// npm's full packument, fetched with `npm::Client::publish_times` because the
-    /// abbreviated document clients ask for carries no `time` map. Only npm's row declares
-    /// this: the fetch uses npm's client.
+    /// npm's full packument, fetched separately; the abbreviated one has no `time` map.
     FullPackument,
 }
 
@@ -145,8 +122,6 @@ pub fn cooldown_costs() -> Vec<(Ecosystem, &'static str)> {
 }
 
 /// What a metadata request answers when the intel snapshot has no stream for the ecosystem.
-///
-/// An artifact request answers 503 either way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UncoveredMetadata {
     /// 503.
@@ -177,17 +152,10 @@ pub struct Registry {
     /// The ecosystem this row is for.
     pub ecosystem: Ecosystem,
 
-    /// Path prefixes this registry claims. Empty means it answers whatever no other
-    /// registry claimed: see [`ROOT`].
-    ///
-    /// A prefix claims a path whatever the path turns out to name: `/simple/` itself and
-    /// `/packages/nonsense` are PyPI's to answer even though neither names a project.
-    /// Without that they would be forwarded to the npm registry, which is not where the
-    /// client is looking.
+    /// Path prefixes this registry claims, whatever the path names. Empty for [`ROOT`].
     pub prefixes: &'static [&'static str],
 
-    /// Origins the proxy may fetch from for this ecosystem whatever the operator
-    /// configured, because they are where the ecosystem's own packages live.
+    /// Origins the proxy may fetch from for this ecosystem whatever the operator configured.
     pub always_reachable: &'static [&'static str],
 
     /// What a request path under this registry refers to.
@@ -196,25 +164,16 @@ pub struct Registry {
     /// Which metadata document a response body is, read from its `Content-Type`.
     pub read_media_type: fn(Option<&str>) -> Option<DocumentKind>,
 
-    /// The media types [`Registry::read_media_type`] reads, for `waharoa status` to
-    /// report. Held beside the function because a function cannot be asked what it
-    /// accepts; `every_named_media_type_is_read` holds the two together.
+    /// The media types [`Registry::read_media_type`] reads, for `waharoa status` to report.
     pub documents: &'static [&'static str],
 
-    /// Whether a request that is neither metadata nor an artifact is a resolver probing
-    /// rather than a client installing, and is logged at DEBUG.
+    /// Whether a request that is neither metadata nor an artifact is a probe, logged at DEBUG.
     pub other_is_probe: bool,
 
     /// Where a version's publish time comes from.
     pub publish_times: PublishTimeSource,
 
-    /// The package-keyed advisory streams for this ecosystem. A grant scoped
-    /// [`stream::Scope::Listed`] applies to the ecosystems whose row lists its stream.
-    /// Catalogue streams such as KEV are keyed by CVE id, apply to every served ecosystem,
-    /// and are not listed.
-    ///
-    /// Empty means `waharoa doctor` and the startup log report the ecosystem as served with
-    /// no stream providing `match` or `malware`.
+    /// The package-keyed advisory streams for this ecosystem. Catalogues such as KEV are not.
     pub streams: &'static [&'static Stream],
 
     /// Lockfiles this ecosystem's clients write, by file name, and how each is read.
@@ -235,25 +194,20 @@ pub struct Registry {
     /// How this ecosystem's versions order, which advisory ranges are read by.
     pub versions: VersionOrder,
 
-    /// A registry name as a purl namespace and name. [`PackageKey::from_registry_name`]
-    /// calls it after refusing an empty name.
+    /// A non-empty registry name as a purl namespace and name.
     pub split_name: SplitName,
 
     /// A name as a policy selector compares it, prefix or exact.
     pub canonical_name: fn(&str) -> String,
 
-    /// The variable naming where this ecosystem's requests are forwarded. Its default is
-    /// the ecosystem's public registry.
+    /// The variable naming where this ecosystem's requests are forwarded.
     pub upstream: Var,
 
     /// Where a request path goes, given the upstream base.
     pub upstream_url: fn(&str, &str) -> String,
 }
 
-/// Each served ecosystem's upstream base, with no trailing slash.
-///
-/// One entry per row of [`TABLE`], so [`Upstreams::get`] has an answer for every ecosystem
-/// the proxy routes.
+/// Each served ecosystem's upstream base, with no trailing slash, one per [`TABLE`] row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Upstreams(BTreeMap<Ecosystem, String>);
 
@@ -330,12 +284,8 @@ pub fn canonical_name(ecosystem: &str, name: &str) -> String {
 pub type SplitName = fn(&str) -> Result<(Option<String>, String), IdentityError>;
 
 impl Registry {
-    /// Whether this registry claims `path`.
-    ///
-    /// The query is dropped first, so `/simple/requests/?foo=1` is claimed. `/simple` and
-    /// `/packages` without the trailing slash are npm packages by those names, and
-    /// `npm::paths::split_name` no longer turns `/simple/requests` into
-    /// `pkg:npm/simple/requests`, so nothing npm can serve lives under either prefix.
+    /// Whether this registry claims `path`, its query dropped. `/simple` and `/packages`
+    /// without the trailing slash are npm packages by those names.
     pub fn serves(&self, path: &str) -> bool {
         let path = path.split('?').next().unwrap_or(path);
         self.prefixes.iter().any(|prefix| path.starts_with(prefix))
@@ -352,11 +302,7 @@ impl Registry {
     }
 }
 
-/// The registry that answers a path no other registry claimed.
-///
-/// npm, because that is where a client configured with `registry=http://proxy/` looks: it
-/// asks for `/lodash`, with no prefix to claim. Stated here rather than left as the `else`
-/// of a prefix test, so a third ecosystem's prefix cannot lose to npm by falling through.
+/// The registry that answers a path no other registry claimed: npm, which asks for `/lodash`.
 pub const ROOT: Ecosystem = Ecosystem::Npm;
 
 pub const NPM: Registry = Registry {
@@ -366,8 +312,6 @@ pub const NPM: Registry = Registry {
     classify_path: npm::classify_path,
     read_media_type: npm::document_from_content_type,
     documents: &[npm::ABBREVIATED_ACCEPT, npm::FULL_ACCEPT],
-    // `/-/v1/search` and `/-/whoami` are a handful per install, and
-    // `scripts/make/retry-matrix.sh` counts their INFO lines.
     other_is_probe: false,
     publish_times: PublishTimeSource::FullPackument,
     streams: &[&stream::OSV_NPM, &stream::DATADOG_NPM, &stream::GITHUB_NPM],
@@ -389,17 +333,12 @@ pub const NPM: Registry = Registry {
 
 pub const PYPI: Registry = Registry {
     ecosystem: Ecosystem::PyPI,
-    // PEP 503 puts a project's index under `/simple/`. `/packages/` is where PyPI serves
-    // its files, and the proxy keeps that path so a rewritten file URL round-trips: the
-    // hash segments the index published are what locate the file upstream.
     prefixes: &[pypi::SIMPLE, "/packages/"],
     always_reachable: &[pypi::INDEX, pypi::FILES],
     classify_path: pypi::classify_path,
     read_media_type: pypi::document_from_content_type,
     documents: &[pypi::SIMPLE_JSON, pypi::SIMPLE_HTML, "text/html"],
-    // PEP 658 `<file>.metadata` requests.
     other_is_probe: true,
-    // `pypi::normalize` reads each file's `upload-time`.
     publish_times: PublishTimeSource::Record,
     streams: &[
         &stream::OSV_PYPI,
@@ -414,9 +353,6 @@ pub const PYPI: Registry = Registry {
         command: "pip config set global.index-url",
         path: pypi::SIMPLE,
     },
-    // pip retries an index 503 six times and then reports `No matching distribution found`,
-    // the message it gives for a 404. It reports a file 503 as `too many 503 error
-    // responses`. Measured with pip 26.1.1 on 2026-09-18: pypi-index-filtering.md.
     uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
     versions: VersionOrder::Pep440,
     split_name: pypi::paths::split_name,
@@ -425,8 +361,7 @@ pub const PYPI: Registry = Registry {
     upstream_url: pypi::paths::upstream_url,
 };
 
-/// Every ecosystem the proxy routes, one row each. `intel::served` reads this, so a row
-/// here is an ecosystem `waharoa doctor` reports advisory coverage for.
+/// Every ecosystem the proxy routes, one row each, for which intel coverage is reported.
 pub const TABLE: &[Registry] = &[NPM, PYPI];
 
 /// The row for `ecosystem`.
@@ -599,8 +534,6 @@ mod table {
             of(Ecosystem::PyPI).document(Some(npm::ABBREVIATED_ACCEPT)),
             None,
         );
-        // Every type a row names is one its reader reads: the field is for `status` to
-        // print, and a name that read as nothing would be a claim the code does not keep.
         for registry in TABLE {
             for media_type in registry.documents {
                 assert!(
@@ -615,7 +548,6 @@ mod table {
                 registry.ecosystem.as_str()
             );
         }
-        // PEP 503, which four public indexes still answer with: see `pypi::html`.
         assert_eq!(
             of(Ecosystem::PyPI).document(Some("text/html; charset=utf-8")),
             Some(DocumentKind::SimpleIndex(crate::route::IndexFormat::Html)),
@@ -638,9 +570,7 @@ mod table {
         }
     }
 
-    /// A stream is listed exactly when one of its grants is scoped to the listing. Listed
-    /// with no such grant, it would say nothing; granted and listed nowhere, it would say
-    /// nothing either, and no test would notice.
+    /// A stream is listed by a row exactly when one of its grants is scoped to the listing.
     #[test]
     fn a_stream_is_listed_by_one_row_exactly_when_a_grant_is_scoped_to_its_listing() {
         for declared in stream::ALL {
@@ -666,9 +596,7 @@ mod table {
         }
     }
 
-    /// A PyPI record carries its own `published_at`, so a cooldown asks no registry about
-    /// it. Before the table, `pip install idna` was dated from npm's `idna@0.0.1`. The
-    /// client points at an address nothing listens on, so any request would fail.
+    /// A PyPI record carries its own `published_at`, so a cooldown asks no registry about it.
     #[tokio::test]
     async fn publish_times_for_pypi_ask_nothing() {
         let nowhere = crate::util::test_support::NO_UPSTREAM;
