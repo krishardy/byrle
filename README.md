@@ -24,8 +24,8 @@ does nothing is worse than no tool at all. Rationale and the evidence behind it 
 **Pre-release, enforcing for npm and PyPI.** The proxy runs, decides on every metadata
 document and artifact, and refuses what its policy refuses. No outside team has run it
 yet: that is the exit criterion of the current stage. There is no published release;
-build it with `cargo build --release`. See [TODO.md](TODO.md) for the staged plan and
-current position.
+build it with `cargo build --release` and follow [docs/quickstart.md](docs/quickstart.md). See
+[TODO.md](TODO.md) for the staged plan and current position.
 
 | Ecosystem | Tier | Clients measured through it |
 |---|---|---|
@@ -228,6 +228,8 @@ adapter contributions are the scarce resource.
 
 ## Documentation
 
+* [docs/quickstart.md](docs/quickstart.md) takes npm and PyPI installs from observe mode to
+  enforcing.
 * [docs/project_plan.md](docs/project_plan.md) covers detection strategy, policy
   semantics, the threat model, and milestones.
 * [docs/request-flow.md](docs/request-flow.md) charts how the proxy answers a request,

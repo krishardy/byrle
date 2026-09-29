@@ -2706,6 +2706,8 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       Done 2026-09-29: npm and PyPI `enforcing`, cargo, Go and Maven not built, each tier
       defined in the README.
 - [ ] `[!]` Quickstart per ecosystem (npm, PyPI, cargo)
+  - [x] npm and PyPI: `docs/quickstart.md`, 2026-09-29, each step run against the binary.
+  - [ ] cargo, with Stage 6.
 - [x] `[!]` Policy reference doc with every rule and its monotonicity direction
       Done 2026-09-28: `docs/policy-reference.md`, its example checked by `policy check`.
 - [x] License: **Apache-2.0** (decided)
