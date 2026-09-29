@@ -1,10 +1,6 @@
-//! Fetching a stream's bundle: one GET, or GitHub's paged POST.
-//!
-//! The requests, the byte ceilings and the retries. What each stream's bytes mean is
-//! `crate::intel::providers`; which stream to fetch is `crate::intel::stream`.
-//!
-//! Progress and retry lines go to `notice` rather than to stdout, so `waharoa refresh`
-//! keeps its own output and a test can read what would have been printed.
+//! Fetching a stream's bundle: one GET, or GitHub's paged POST, with the byte ceilings and
+//! retries. Progress goes to `notice`, so `waharoa refresh` owns its output and a test can
+//! read it.
 
 use super::history::NotLoaded;
 use super::providers::osv::bundle::Tally;
@@ -59,7 +55,6 @@ pub async fn stream_bundle(
                 ))),
             },
         };
-        // `retried` is false on the last attempt, which therefore returns.
         match got {
             Ok(fetched) => return Ok(fetched),
             Err(failure) if retried(&failure, attempt) => {
@@ -340,8 +335,7 @@ mod tests {
     }
 
     /// A declared length over the ceiling is refused before the body is read, and a body
-    /// that passes it while arriving is refused as it arrives. `Content-Length` is the
-    /// host's claim, so both checks are needed.
+    /// with no declared length as it passes the ceiling.
     #[tokio::test]
     async fn a_bundle_over_the_ceiling_is_refused_by_either_check() {
         let declared = fetch_from(
@@ -362,7 +356,6 @@ mod tests {
         );
         assert!(!declared.again, "the same on every attempt");
 
-        // Chunked, so nothing declares a length and only the bytes arriving say it.
         let streamed = fetch_from(vec![Answer::Chunked(vec![b'a'; 200])], 100)
             .await
             .expect_err("200 bytes over a 100 byte ceiling");
@@ -399,9 +392,8 @@ mod tests {
         assert!(closed.again, "{}", closed.why);
     }
 
-    /// The stream is fetched again after a transient failure, and the notice says so.
-    /// This waits `RETRY_WAIT` for real: under `start_paused` the auto-advanced clock
-    /// fires `crate::http::CONNECT_TIMEOUT` before a local connection completes.
+    /// A transient failure is fetched again, and the notice says so. It waits `RETRY_WAIT`
+    /// for real: a paused clock fires the connect timeout before a local connection completes.
     #[tokio::test]
     async fn a_transient_failure_is_fetched_again() {
         let addr = scripted(vec![Answer::Close, Answer::body("{}")]).await;

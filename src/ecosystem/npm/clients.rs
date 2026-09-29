@@ -3,9 +3,7 @@
 use crate::doctor::{CacheBypass, CacheLocation, Client, RegistryQuery, RegistrySource};
 use crate::env::Process;
 
-/// npm, pnpm and yarn all read `registry` with `config get` and write it with `config set`.
-/// Each prints `undefined` for a key with no value. The value comes from a project `.npmrc`,
-/// then the user's, then the global one.
+/// How npm, pnpm and yarn print their registry: `config get`, `undefined` for no value.
 const CONFIG_GET_REGISTRY: RegistryQuery = RegistryQuery {
     args: &["config", "get", "registry"],
     unset: "undefined",
@@ -16,8 +14,6 @@ pub const NPM: Client = Client {
     name: "npm",
     registry: Some(RegistrySource::Asked(CONFIG_GET_REGISTRY)),
     set_registry: "npm config set registry",
-    // npm's cache directory holds _cacache, and every cached response is one file
-    // under its index.
     cache: CacheLocation::Asked {
         args: &["config", "get", "cache"],
         under: Some("_cacache/index-v5"),
@@ -26,13 +22,7 @@ pub const NPM: Client = Client {
     clear_cache: "npm cache clean --force",
 };
 
-/// What `bypass` is for each client was measured by installing the same package twice
-/// through the proxy with one cache, and counting what the proxy saw the second time:
-///
-/// | Client | Second install |
-/// |---|---|
-/// | npm 11, pnpm 10, bun 1.3 | nothing reached the proxy |
-/// | yarn 1, yarn 4 | the packument did, the artifact did not |
+/// The npm clients doctor checks. See docs/engineering_decisions/client-caches.md.
 pub const CLIENTS: &[Client] = &[
     NPM,
     Client {
@@ -57,8 +47,6 @@ pub const CLIENTS: &[Client] = &[
         bypass: CacheBypass::ArtifactsOnly,
         clear_cache: "yarn cache clean --force",
     },
-    // `bun pm cache` needs a package.json in the working directory, which doctor cannot
-    // assume, so bun's documented location is used. Its registry is not checked.
     Client {
         name: "bun",
         registry: None,

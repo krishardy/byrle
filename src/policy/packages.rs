@@ -1,26 +1,6 @@
-//! The `packages` tier: what each entry does to the policy it overrides, and what §5.5
-//! requires of an entry that loosens it.
-//!
-//! # Loosening here is the point, so it does not warn
-//!
-//! At the ecosystem tier a loosening is unexpected and warns. Here it is the tier's
-//! purpose, and a warning per entry would become noise that hides the ecosystem-tier
-//! warnings that matter. §5.5 asks for a required field instead, because a required field
-//! cannot be ignored the way a warning can. So an unjustified loosening is refused at
-//! load and nothing here warns about anything.
-//!
-//! # It may only loosen
-//!
-//! An entry that would tighten is a load-time error. Tightening one package is not what
-//! this tier is for, and admitting it would reopen questions about what outranks what
-//! that the design settled by not having them.
-//!
-//! # Why an expiry at all
-//!
-//! §5.5: a justification is true when written and silently stops being true later.
-//! Reviewed versions get superseded, internal packages change owners, the blocker gets
-//! fixed and nobody deletes the entry. An expiry inverts the default so an unexamined
-//! entry dies rather than persisting, which makes deletion the outcome of inattention.
+//! The `packages` tier: what each entry does to the settings above it. An entry may only
+//! loosen, needs a reason and an expiry or `permanent: true`, and warns about nothing. See
+//! docs/engineering_decisions/package-override-tier.md and policy-tier-resolution.md.
 
 use super::merge::{self, Rule, RuleValues};
 use super::strictness::Strictness;
@@ -30,8 +10,7 @@ use jiff::civil::Date;
 /// What one package entry does to one rule of the policy above it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Finding {
-    /// Index into `policy.packages`, which is how an entry is named in an error: the
-    /// selector may not be unique and the file has no other handle on it.
+    /// Index into `policy.packages`, which names an entry in an error, as no selector is unique.
     pub index: usize,
     pub ecosystem: String,
     pub rule: Rule,
@@ -97,8 +76,7 @@ pub fn changes_nothing(findings: &[Finding], index: usize) -> bool {
 /// Why a package entry was refused.
 #[derive(Debug, PartialEq)]
 pub enum PackageError {
-    /// It loosens the settings above it and says neither when it stops nor that it does
-    /// not stop.
+    /// It loosens and says neither when it stops nor that it is permanent.
     Unjustified { at: String, rule: Rule },
     /// It tightens, which this tier does not allow.
     Tightens { at: String, rule: Rule },
@@ -310,9 +288,8 @@ mod tests {
         );
     }
 
-    /// An entry that changes nothing is valid. It is almost always a selector that no
-    /// longer matches what it was written for, which is worth saying and not worth
-    /// refusing a policy over.
+    /// An entry that changes nothing loads, and is found: usually a selector that no longer
+    /// matches what it was written for.
     #[test]
     fn an_entry_that_changes_nothing_loads_and_is_detectable() {
         let p = policy(&entry("", "    permanent: true\n"));
@@ -332,10 +309,9 @@ mod tests {
 
     #[test]
     fn an_expiry_inside_the_ceiling_is_accepted_and_one_past_it_is_not() {
-        // 90 days from 2026-09-12 is 2026-12-11.
         assert!(
             checked("cooldown_days: 0", "    expires: \"2026-12-11\"\n").is_ok(),
-            "the ceiling day itself"
+            "the ceiling day itself, 90 days from 2026-09-12"
         );
         let error = checked("cooldown_days: 0", "    expires: \"2026-12-12\"\n").unwrap_err();
         assert!(matches!(error, PackageError::TooFarAhead { .. }));

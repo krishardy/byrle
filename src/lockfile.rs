@@ -1,10 +1,6 @@
-//! Package versions from a lockfile, for `waharoa policy diff`.
-//!
-//! The file name chooses the reader. Each row of [`crate::ecosystem::TABLE`] lists the
-//! lockfile names its ecosystem's clients write, in `lockfiles`, and the reader for each.
-//! A name no row lists is refused, naming every name that is read.
-//!
-//! See docs/engineering_decisions/policy-diff-lockfiles.md.
+//! Package versions from a lockfile, for `waharoa policy diff`. The file name chooses the
+//! reader from [`crate::ecosystem::TABLE`], and a name no row lists is refused. See
+//! docs/engineering_decisions/policy-diff-lockfiles.md.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -35,8 +31,7 @@ pub fn references(listed: impl IntoIterator<Item = Locked>) -> Vec<Reference> {
 /// Every registry package version one lockfile's text locks, or why it cannot be read.
 pub type Reader = fn(&str) -> Result<BTreeSet<Locked>, String>;
 
-/// Every registry artifact one lockfile's text locks, with where each is fetched and the
-/// platforms it installs on, or why it cannot be read.
+/// Every registry artifact a lockfile's text locks, with its path and platforms, or why not.
 pub type ArtifactReader = fn(&str) -> Result<Vec<LockedArtifact>, String>;
 
 /// One artifact a lockfile locks, for `waharoa warm`.
@@ -48,8 +43,7 @@ pub struct LockedArtifact {
     pub platform: Platform,
 }
 
-/// The platforms a locked package installs on, as npm records them. An empty list allows
-/// every value; a value starting `!` excludes it.
+/// The platforms a locked package installs on, as npm records them: empty allows all, `!` excludes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Platform {
     pub os: Vec<String>,
@@ -138,11 +132,9 @@ impl Target {
 pub struct Lockfile {
     pub name: &'static str,
     pub read: Reader,
-    /// Where each locked artifact is fetched and the platforms it installs on. `None` for
-    /// a format that records neither.
+    /// Each locked artifact's path and platforms, for a format that records them.
     pub artifacts: Option<ArtifactReader>,
-    /// How the file records artifact URLs, for `waharoa doctor`. `None` for a file doctor
-    /// does not check.
+    /// How the file records artifact URLs, for a file `waharoa doctor` checks.
     pub pins: Option<Pins>,
 }
 
