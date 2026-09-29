@@ -140,10 +140,12 @@ pub struct Lockfile {
 
 /// How a lockfile records the absolute artifact URLs it pins.
 pub struct Pins {
-    /// The key written before each URL on its line, as `<key>: <url>` or `<key> "<url>"`.
+    /// The text written before each URL on its line, such as `resolved` or bun's `": [`.
     pub key: &'static str,
     /// What `doctor` reports for a file that records no URL.
     pub when_absent: &'static str,
+    /// Whether a file that records no URL was resolved around the proxy, and so warns.
+    pub absent_is_off_proxy: bool,
     /// How to write the file again through the proxy.
     pub reinstall: &'static str,
 }

@@ -16,6 +16,7 @@ const REINSTALL: &str =
 const RESOLVED: Pins = Pins {
     key: "resolved",
     when_absent: "records no artifact URLs",
+    absent_is_off_proxy: false,
     reinstall: REINSTALL,
 };
 
@@ -48,6 +49,7 @@ pub const LOCKFILES: &[Lockfile] = &[
             when_absent: "records no artifact URLs, which is normal: pnpm derives them from \
                           the configured registry, so the lockfile is portable and is not \
                           evidence either way",
+            absent_is_off_proxy: false,
             reinstall: REINSTALL,
         }),
     },
@@ -55,7 +57,14 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "bun.lock",
         read: bun,
         artifacts: Some(bun_artifacts),
-        pins: None,
+        pins: Some(Pins {
+            key: "\": [",
+            when_absent: "records no artifact URLs: bun writes one for every registry but \
+                          registry.npmjs.org, so these packages were resolved there, not \
+                          through the proxy",
+            absent_is_off_proxy: true,
+            reinstall: REINSTALL,
+        }),
     },
 ];
 

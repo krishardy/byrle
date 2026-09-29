@@ -18,6 +18,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         pins: Some(Pins {
             key: "url",
             when_absent: "records no artifact URLs",
+            absent_is_off_proxy: false,
             reinstall: "delete uv.lock and the environment, then `uv lock` through the proxy",
         }),
     },
