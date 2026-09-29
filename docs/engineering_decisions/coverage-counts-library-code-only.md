@@ -42,12 +42,15 @@ not stable on rustc 1.98.1 (rust-lang/rust#84605).
 `log` when no tracing subscriber takes it, and that branch holds the event's fields. No test
 reached it: 381 of 803 missed regions on 2026-09-29 were in log calls.
 
-Test builds add `tracing`'s `log-always` feature, which takes the branch whenever the event
-is off, and a `log` logger that keeps nothing, installed before `main` with `ctor`. The test
-subscriber's filter is global, so an event a thread is not capturing is off where it is
-logged. A filter on the layer left every event on once the subscriber was installed. A log
-call is covered once a test reaches it without capturing its level. Release builds do not
-have `log-always` or the logger.
+Test builds add `tracing`'s `log-always` feature, and tests install no tracing subscriber,
+so every event is off where it is logged and takes that branch. A `log` logger, installed
+before `main` with `ctor`, receives each record, and `test_support::capture` keeps the
+records of the capturing thread at its level. A log call is covered once any test reaches
+it. Release builds do not have `log-always` or the logger.
+
+An earlier arrangement captured through a tracing subscriber with a per-thread filter. A
+filter on the fmt layer left every event on once installed, and a global filter left each
+captured event on, so a log call reached only by a capturing test stayed uncovered.
 
 ## Generic functions
 

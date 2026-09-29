@@ -14,6 +14,28 @@ use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored}
 use crate::integrity::Sri;
 use sqlx::PgPool;
 
+/// The stores a proxy decides with: the intel store, when one is configured, with the
+/// analyses kept beside it in the same database; otherwise the analyses in memory, at most
+/// `max_verified` of them.
+pub fn stores(
+    intel: Option<crate::intel::postgres::PgIntel>,
+    max_verified: usize,
+) -> (
+    Option<std::sync::Arc<dyn crate::intel::store::Intel>>,
+    std::sync::Arc<dyn Analyses>,
+) {
+    match intel {
+        Some(store) => {
+            let analyses = std::sync::Arc::new(PgAnalyses::new(store.pool().clone()));
+            (Some(std::sync::Arc::new(store)), analyses)
+        }
+        None => (
+            None,
+            std::sync::Arc::new(crate::analysis::store::InProcess::new(max_verified)),
+        ),
+    }
+}
+
 /// What the detectors found, kept across restarts and shared between proxies.
 #[derive(Debug, Clone)]
 pub struct PgAnalyses {

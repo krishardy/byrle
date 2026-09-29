@@ -727,9 +727,9 @@ impl VerifyingStream {
     /// Compare, and decide what the body ends with.
     fn finish(&mut self) -> Poll<Option<Result<Bytes, BoxError>>> {
         self.finished = true;
-        let Some(verifier) = self.verifier.take() else {
-            return Poll::Ready(None);
-        };
+        // `finished` is set here, and `poll_next` asks nothing of a finished stream, so this
+        // runs once and the verifier is still here.
+        let verifier = self.verifier.take().expect("the body ends once");
         match verifier.finish(self.bytes) {
             Ok(()) => {
                 // Recorded here and nowhere else: the digest is a claim until bytes have
@@ -777,9 +777,10 @@ impl futures_util::Stream for VerifyingStream {
             match this.inner.as_mut().poll_next(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Some(Ok(chunk))) => {
-                    if let Some(verifier) = this.verifier.as_mut() {
-                        verifier.update(&chunk);
-                    }
+                    this.verifier
+                        .as_mut()
+                        .expect("the verifier is taken only when the body ends")
+                        .update(&chunk);
                     this.bytes += chunk.len() as u64;
                     // An empty chunk carries nothing and must not count as "the next
                     // chunk arrived": reqwest ends a tarball stream with one, and letting

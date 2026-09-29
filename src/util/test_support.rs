@@ -11,17 +11,36 @@
 /// is for one whose store or configuration is meant to answer without any request.
 pub const NO_UPSTREAM: &str = "http://127.0.0.1:9";
 
-/// A `log` logger that keeps nothing. With `tracing`'s `log-always` in test builds, an event
-/// no tracing subscriber takes is handed to it, which is the branch `make coverage` otherwise
-/// cannot reach. See the `[dev-dependencies]` comment in Cargo.toml.
-struct Discard;
+/// The `log` logger for the test process. Tests install no tracing subscriber, so every
+/// event is off where it is logged, and `tracing`'s `log-always`, on in test builds, hands it
+/// here. That is the branch `make coverage` cannot otherwise reach: see the
+/// `[dev-dependencies]` comment in Cargo.toml. A thread that is [`capture`]-ing gets each
+/// record at its level or less verbose, one line each.
+struct Routing;
 
-impl log::Log for Discard {
+impl log::Log for Routing {
     fn enabled(&self, _: &log::Metadata<'_>) -> bool {
         true
     }
 
-    fn log(&self, _: &log::Record<'_>) {}
+    fn log(&self, record: &log::Record<'_>) {
+        let level = match record.level() {
+            log::Level::Error => tracing::Level::ERROR,
+            log::Level::Warn => tracing::Level::WARN,
+            log::Level::Info => tracing::Level::INFO,
+            log::Level::Debug => tracing::Level::DEBUG,
+            log::Level::Trace => tracing::Level::TRACE,
+        };
+        if let Some(buf) = capturing(&level) {
+            let line = format!(
+                "{:>5} {}: {}\n",
+                record.level(),
+                record.target(),
+                record.args()
+            );
+            buf.lock().unwrap().extend_from_slice(line.as_bytes());
+        }
+    }
 
     fn flush(&self) {}
 }
@@ -30,8 +49,8 @@ impl log::Log for Discard {
 ///
 /// Safety, as `ctor` asks: it touches only `log`'s two globals, which need nothing set up.
 #[ctor::ctor(unsafe)]
-fn discard_log_records() {
-    let _ = log::set_logger(&Discard);
+fn route_log_records() {
+    let _ = log::set_logger(&Routing);
     log::set_max_level(log::LevelFilter::Trace);
 }
 
@@ -219,61 +238,6 @@ fn capturing(level: &tracing::Level) -> Option<std::sync::Arc<std::sync::Mutex<V
     (level <= keeps).then(|| buf.clone())
 }
 
-/// One subscriber for the whole test process, installed once. Its filter is dynamic: it
-/// asks per event, so no callsite's interest is cached from the thread that first reached
-/// it. A per-thread default subscriber, and a cacheable `filter_fn`, both did that.
-///
-/// The filter is global rather than on the layer, so an event a thread is not capturing is
-/// off where it is logged and goes to [`Discard`]. A filter on the layer leaves the event on,
-/// and the branch that hands it to `log` is then never run.
-fn install() {
-    static INSTALLED: std::sync::Once = std::sync::Once::new();
-    INSTALLED.call_once(|| {
-        use tracing_subscriber::layer::SubscriberExt as _;
-        let keep = tracing_subscriber::filter::dynamic_filter_fn(|meta, _| {
-            capturing(meta.level()).is_some()
-        });
-        let routed = tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_writer(RoutedWriter);
-        tracing::subscriber::set_global_default(
-            tracing_subscriber::registry().with(keep).with(routed),
-        )
-        .expect("no other test sets a global subscriber");
-        tracing::callsite::rebuild_interest_cache();
-    });
-}
-
-/// Writes each event to the buffer of the thread that logged it.
-struct RoutedWriter;
-
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for RoutedWriter {
-    type Writer = Routed;
-
-    fn make_writer(&'a self) -> Routed {
-        Routed(None)
-    }
-
-    fn make_writer_for(&'a self, meta: &tracing::Metadata<'_>) -> Routed {
-        Routed(capturing(meta.level()))
-    }
-}
-
-struct Routed(Option<std::sync::Arc<std::sync::Mutex<Vec<u8>>>>);
-
-impl std::io::Write for Routed {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        if let Some(buf) = &self.0 {
-            buf.lock().unwrap().extend_from_slice(bytes);
-        }
-        Ok(bytes.len())
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
 /// Stops this thread's capture when dropped.
 pub struct Capture(std::thread::ThreadId);
 
@@ -286,10 +250,6 @@ impl Drop for Capture {
 /// Keep this thread's logs at `level` and above in the returned buffer, until the
 /// [`Capture`] drops.
 pub fn capture(level: tracing::Level) -> (Capture, std::sync::Arc<std::sync::Mutex<Vec<u8>>>) {
-    install();
-    // A callsite another thread registered while the subscriber was being installed can be
-    // cached as never enabled. The subscriber is in place now, so a rebuild settles it.
-    tracing::callsite::rebuild_interest_cache();
     let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let thread = std::thread::current().id();
     captures()

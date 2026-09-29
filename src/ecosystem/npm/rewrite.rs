@@ -506,13 +506,10 @@ mod tests {
     }
 
     /// What rewriting `json` warns about.
-    ///
-    /// Rewritten once more uncaptured, where each warning goes to `log` instead.
     fn warned(json: &str, origins: &OriginPolicy) -> String {
         let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
         rewrite_document(json, origins, Some(PROXY), &HashSet::new(), false);
         drop(guard);
-        rewrite_document(json, origins, Some(PROXY), &HashSet::new(), false);
         crate::util::test_support::text(&buf)
     }
 
