@@ -16,6 +16,20 @@ and matches a version equal to it in that order, so a listed PyPI `1.0` matches 
 PEP 440 is parsed and ordered by `pypi::version::Version`, written here: 344 lines, and 112
 of tests. It follows the `packaging` library, which is what pip resolves with.
 
+## Normalisation and order
+
+| Written | Normalised | Why |
+|---|---|---|
+| `V1.0` | `1.0` | case and a leading `v` are ignored |
+| `1.0-1` | `1.0.post1` | a number after `-` is a post-release |
+| `1.0alpha2`, `1.0-a.2` | `1.0a2` | alternative spellings and separators |
+| `1.0c1`, `1.0pre1` | `1.0rc1` | |
+| `1.0.dev` | `1.0.dev0` | a missing number is 0 |
+| `1.0+Ubuntu-1` | `1.0+ubuntu.1` | local segments are joined with `.` |
+
+Order, lowest first, for one release: `1.0.dev0`, `1.0a1.dev0`, `1.0a1`, `1.0rc1`, `1.0`,
+`1.0+local`, `1.0.post1.dev0`, `1.0.post1`. `1.0` and `1.0.0` are equal.
+
 ## Before
 
 Every range and every requested version was read as SemVer, with osv.dev's npm padding.

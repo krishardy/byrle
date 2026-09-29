@@ -1,14 +1,7 @@
 //! Where an artifact being analysed is written while the request that fetched it is open.
 //!
-//! A check that reads the artifact has to finish before the response starts, so the whole
-//! artifact is in hand first. It is written to a file here rather than held in memory,
-//! because nothing bounds how large an artifact gets. The file is deleted when the
-//! [`Spooled`] holding it is dropped. What outlives the request is the analysis, not the
-//! bytes. See `docs/engineering_decisions/artifact-spool.md`.
-//!
-//! [`Spool::open`] locks `.lock` in the directory and refuses when another process holds
-//! it. Holding the lock is what makes the startup sweep safe: a spool file present at
-//! startup belongs to a process that ended without deleting it.
+//! The file is deleted when the [`Spooled`] holding it is dropped. [`Spool::open`] locks the
+//! directory. See `docs/engineering_decisions/artifact-spool.md`.
 
 use std::fs::{self, File, TryLockError};
 use std::io;
@@ -23,8 +16,7 @@ use tracing::debug;
 
 const LOCK: &str = ".lock";
 
-/// Every spool file's name starts with this. The sweep removes nothing else, so a spool
-/// directory set to one that holds other files loses none of them.
+/// Every spool file's name starts with this, and the sweep removes nothing else.
 const PREFIX: &str = "artifact-";
 
 /// The directory the spool uses when none is configured: `waharoa-spool` in the OS
@@ -39,8 +31,7 @@ pub struct Spool {
     dir: PathBuf,
     /// The most bytes one artifact may write. See [`crate::env::MAX_ARTIFACT_BYTES`].
     ceiling: u64,
-    /// Numbers the files. Unique within this process, and the lock keeps any other
-    /// process out of the directory.
+    /// Numbers the files, unique within this process.
     next: AtomicU64,
     /// Held for its lock, which is released when the file is closed.
     _lock: File,
@@ -73,13 +64,11 @@ impl std::error::Error for OpenError {}
 /// Why an artifact was not written to the spool.
 #[derive(Debug)]
 pub enum WriteError {
-    /// The artifact is larger than the ceiling. `claimed` is true when `Content-Length`
-    /// said so before a byte was written.
+    /// The artifact is larger than the ceiling; `claimed` when `Content-Length` said so.
     TooLarge { ceiling: u64, claimed: bool },
     /// The upstream body ended in an error.
     Upstream(String),
-    /// The file could not be created or written: a full disk, or a directory removed
-    /// under the proxy.
+    /// The file could not be created or written.
     Io(io::Error),
 }
 
@@ -269,8 +258,6 @@ impl Drop for Spooled {
 /// lock, a directory, or a symlink, whatever it is named.
 fn sweep(dir: &Path) -> io::Result<usize> {
     let mut swept = 0;
-    // An entry that cannot be read is left where it is: sweeping is cleanup, and one file
-    // left behind is better than a spool that does not open.
     for entry in fs::read_dir(dir)?.flatten() {
         if entry.file_type().is_ok_and(|kind| kind.is_file())
             && entry.file_name().to_string_lossy().starts_with(PREFIX)
@@ -502,9 +489,8 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
-    /// A spool file left by a process that ended is removed. Anything else in the
-    /// directory is left alone, including a symlink and a directory named like a spool
-    /// file.
+    /// A spool file left by a process that ended is removed. A symlink and a directory
+    /// named like one are left alone.
     #[test]
     fn opening_removes_only_the_spool_files_left_behind() {
         let dir = tempdir("spool-sweep");

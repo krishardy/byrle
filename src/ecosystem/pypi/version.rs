@@ -1,21 +1,6 @@
 //! PEP 440 versions: what a PyPI version is, and how two of them order.
 //!
-//! Written here rather than taken from a crate. The rules are the "Version scheme" section of
-//! PEP 440 as the `packaging` library implements them, which is what pip resolves with.
-//! `examples/pep440_conformance.rs` compares this module with `packaging` over every version
-//! OSV lists for PyPI.
-//!
-//! | Written | Normalised | Why |
-//! |---|---|---|
-//! | `V1.0` | `1.0` | case and a leading `v` are ignored |
-//! | `1.0-1` | `1.0.post1` | a number after `-` is a post-release |
-//! | `1.0alpha2`, `1.0-a.2` | `1.0a2` | alternative spellings and separators |
-//! | `1.0c1`, `1.0pre1` | `1.0rc1` | |
-//! | `1.0.dev` | `1.0.dev0` | a missing number is 0 |
-//! | `1.0+Ubuntu-1` | `1.0+ubuntu.1` | local segments are joined with `.` |
-//!
-//! Order, lowest first, for one release: `1.0.dev0`, `1.0a1.dev0`, `1.0a1`, `1.0rc1`, `1.0`,
-//! `1.0+local`, `1.0.post1.dev0`, `1.0.post1`. `1.0` and `1.0.0` are equal.
+//! Follows the `packaging` library. See docs/engineering_decisions/pep440-version-order.md.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -38,8 +23,7 @@ impl Phase {
     }
 }
 
-/// Spellings PEP 440 accepts for each phase. A longer spelling is listed before the shorter
-/// one it starts with, so `alpha` is not read as `a` followed by `lpha`.
+/// Spellings PEP 440 accepts for each phase, each before any shorter one it starts with.
 const PHASES: &[(&str, Phase)] = &[
     ("alpha", Phase::Alpha),
     ("a", Phase::Alpha),
@@ -63,8 +47,7 @@ enum Local {
 /// Where the pre-release part puts a version among its release's versions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum PreKey {
-    /// A development release of the final release, such as `1.0.dev0`, orders below every
-    /// pre-release of it.
+    /// A development release of the final release, such as `1.0.dev0`.
     DevOfFinal,
     Pre(Phase, u64),
     Final,
@@ -77,8 +60,7 @@ enum DevKey {
     NotDev,
 }
 
-/// What two versions are compared by, most significant first. The derived order compares the
-/// fields in the order they are declared.
+/// What two versions are compared by, in field order, most significant first.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 struct Key<'a> {
     epoch: u64,
@@ -181,8 +163,7 @@ impl fmt::Display for Version {
     }
 }
 
-/// A cursor over a lowercased version string. It only moves over ASCII bytes, so every
-/// slice of `text` it takes is on a character boundary.
+/// A cursor over a lowercased version string, moving over ASCII bytes only.
 struct Reader {
     text: String,
     at: usize,
@@ -295,7 +276,6 @@ impl Reader {
             if part.is_empty() {
                 return None;
             }
-            // `part` is letters and digits only, so it parses when every one is a digit.
             parts.push(match part.parse::<u64>() {
                 Ok(n) => Local::Number(n),
                 Err(_) => Local::Text(part.to_owned()),
@@ -408,8 +388,6 @@ mod tests {
             "1!",
             "!1.0",
             "1.0post1rc1",
-            // `packaging` reads any size of number. This reads up to `u64::MAX`, and no
-            // version OSV lists for PyPI is larger.
             "18446744073709551616",
             "1.0+ü",
         ] {

@@ -139,7 +139,8 @@ an operator who never looks in the directory would never find out.
 The sweep removes regular files whose names start with `artifact-`, and nothing else: not
 `.lock`, not a directory, and not a symlink. The decision as first written defaulted to the
 OS temporary directory itself and removed every file in it, which on a default start would
-have emptied `/tmp`.
+have emptied `/tmp`. A directory entry that cannot be read is left in place, and the spool
+still opens.
 
 ## The ceiling, and what it is for
 

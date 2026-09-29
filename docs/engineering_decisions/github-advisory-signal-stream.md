@@ -23,6 +23,13 @@ Overlap with OSV is therefore a measurement, not a reason to build or not build.
 recorded below because it says how much of the npm advisory set has two independent streams
 behind it and how much has one.
 
+## Fetching
+
+`waharoa refresh` POSTs the GraphQL query with `Authorization: bearer` and the token from
+`WAHAROA_GITHUB_TOKEN`, paging by cursor until GitHub reports no next page. The pages are
+joined into one JSON array, which the stream's parse reads as one buffer and its ceiling
+bounds. Without a token the stream does not load, and the other streams still do.
+
 ## The schema change this needs
 
 Datadog did not hit this: it mints `DATADOG-npm-<name>`, an id space disjoint from anything

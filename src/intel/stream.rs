@@ -1,18 +1,7 @@
 //! What a refresh knows about each advisory stream before it fetches anything.
 //!
-//! One [`Stream`] per stream, in [`ALL`], holding the facts a refresh needs: where the
-//! bundle is, how large it may be, what it may say once loaded, and how its bytes become
-//! rows.
-//!
-//! Each stream is its own source in the store, so one stream's load replaces its own rows
-//! and nothing else. A stream that does not load keeps its last load, and the others load
-//! without it: `osv/pypi` failing does not hold back `osv/npm`.
-//!
-//! This is the declaration side. `waharoa refresh` does the fetching, because a fetch is
-//! network I/O and everything here is decidable from the bytes alone.
-//!
-//! Mirroring is not here. Serving a stream from a local copy is tracked separately; see
-//! "Local mirrors for all streams" in `TODO.md`.
+//! One [`Stream`] per stream, in [`ALL`]. `waharoa refresh` does the fetching.
+//! See docs/engineering_decisions/stream-descriptor-table.md.
 
 use std::collections::BTreeSet;
 
@@ -26,11 +15,9 @@ use crate::identity::Ecosystem;
 /// The ecosystems one grant covers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
-    /// The ecosystems whose [`crate::ecosystem::Registry::streams`] lists this stream. A
-    /// package-keyed stream is listed by the ecosystem its packages are in.
+    /// The ecosystems whose [`crate::ecosystem::Registry::streams`] lists this stream.
     Listed,
-    /// Every ecosystem this build serves. A catalogue entry carries a CVE id and no package
-    /// identifier, so what it says applies wherever a finding names that id.
+    /// Every ecosystem this build serves, for a catalogue keyed by CVE id.
     Served,
 }
 
@@ -39,10 +26,7 @@ pub enum Scope {
 pub enum Transport {
     /// One unauthenticated GET of `url`, whose body is the bundle.
     Get,
-    /// A POST of `query` to `url` with `Authorization: bearer`, paged by cursor
-    /// until GitHub reports no next page. The response bodies are concatenated into one JSON
-    /// array, so `parse` still reads one buffer, and `ceiling` bounds that whole array.
-    /// The token comes from `crate::env::GITHUB_TOKEN`; without it the stream does not load.
+    /// A POST of `query` to `url`, paged by cursor and joined into one JSON array.
     GithubGraphql { query: &'static str },
 }
 
@@ -85,16 +69,14 @@ impl Payload {
 #[derive(Debug)]
 pub struct Parsed {
     pub payload: Payload,
-    /// What the parse counted, for the refresh to print. `None` for a stream that counts
-    /// nothing.
+    /// What the parse counted, for the refresh to print.
     pub tally: Option<Tally>,
 }
 
 /// One advisory stream, as this build declares it.
 #[derive(Debug)]
 pub struct Stream {
-    /// The name a snapshot records the bundle under, and the source its rows are stored
-    /// under.
+    /// The name of the bundle in a snapshot, and the source of its rows in the store.
     pub stream: &'static str,
     /// Where the bundle is fetched from.
     pub url: &'static str,
@@ -191,9 +173,7 @@ fn datadog_manifest(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, String
         .map_err(|e| e.to_string())
 }
 
-/// GitHub's Advisory Database. A signal stream beside OSV: it publishes the same `GHSA-` ids
-/// OSV imports, and `advisory` is keyed `(source, publisher_id)` so both rows exist. A
-/// refresh without a token loads the rest.
+/// GitHub's Advisory Database, a signal stream beside OSV.
 pub const GITHUB_NPM: Stream = Stream {
     stream: github::NPM_STREAM,
     url: github::ENDPOINT,
@@ -338,10 +318,13 @@ mod tests {
         let bytes = std::fs::read(path).expect("the fixture is present");
         let parsed = (declared(bundle::NPM_STREAM).parse)(&bytes).expect("the bundle reads");
         let tally = parsed.tally.expect("the bundle counts its records");
-        // Seven records, of which the withdrawn one is counted and not stored.
         assert_eq!(tally.records(), 7);
         assert_eq!(tally.withdrawn, 1);
-        assert_eq!(parsed.payload.rows().len(), 6);
+        assert_eq!(
+            parsed.payload.rows().len(),
+            6,
+            "the withdrawn record is counted and not stored"
+        );
         assert_eq!(
             parsed.payload.encode(bundle::NPM_STREAM).kind,
             Kind::Advisories
