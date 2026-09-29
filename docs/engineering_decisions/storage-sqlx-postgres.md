@@ -52,7 +52,7 @@ abstract exactly that away.
 - **Migrations are SQL, not a Rust DSL.** Postgres has transactional DDL, so a failed
   migration rolls back whole.
 - **The repository trait stays**, unchanged by this. It was never about portability once
-  SQLite was dropped: the 95% unit coverage floor excludes corpus and live tests, so the
+  SQLite was dropped: the 100% unit coverage floor excludes corpus and live tests, so the
   policy engine and everything above the storage seam has to be testable with no database.
 - **No entity relations or lazy loading.** The data is advisories, aliases and packages,
   queried by exact key. Dynamic query building, if `explain` or `doctor` ever needs it,

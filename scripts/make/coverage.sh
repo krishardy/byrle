@@ -14,7 +14,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$repo_root"
 
-floor="${COVERAGE_FLOOR:-95}"
+floor="${COVERAGE_FLOOR:-100}"
 
 if ! cargo llvm-cov --version >/dev/null 2>&1; then
     echo "cargo-llvm-cov is not installed. Run 'make dev-setup'."

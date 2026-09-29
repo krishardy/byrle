@@ -237,7 +237,7 @@ database must not require it: the policy engine, the decision vector and
 everything above the repository trait are pure and stay that way.
 
 **The repository trait stays, for a different reason.** It was there for backend
-portability, which is now moot. It remains because §Standards requires 95% unit coverage
+portability, which is now moot. It remains because §Standards requires 100% unit coverage
 excluding corpus and live tests, so everything above the storage seam has to be testable
 with no database at all. Reading "one backend, no ORM" and deleting the trait would put the
 policy engine behind a container.
