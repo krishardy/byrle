@@ -71,11 +71,7 @@ pub fn parse(name: &str, page: &str, bytes: &[u8]) -> Result<Project, PypiError>
         name if !name.is_empty() => name,
         // `/simple/idna/` is the project pip asked for. A page served from somewhere with
         // no name in its path leaves the filenames, which all carry one.
-        _ => named_by(&page)
-            .or_else(|| named_by_file(&files))
-            .ok_or(PypiError::NotHtml(
-                "a page with no project name in its URL or its filenames",
-            ))?,
+        _ => named_by(&page).unwrap_or_else(|| named_by_file(&files)),
     };
     Ok(Project { name, files })
 }
@@ -86,10 +82,14 @@ fn named_by(page: &reqwest::Url) -> Option<String> {
     Some(normalise(segment)).filter(|name| !name.is_empty())
 }
 
-/// The project its files name. Every distribution filename starts with it.
-fn named_by_file(files: &[File]) -> Option<String> {
-    let (name, _, _) = filename_parts(&files.first()?.filename)?;
-    Some(normalise(&name)).filter(|name| !name.is_empty())
+/// The project its first file names. Every distribution filename starts with it, and
+/// [`parse`] keeps only files whose name reads, and refuses a page with none.
+fn named_by_file(files: &[File]) -> String {
+    files
+        .first()
+        .and_then(|file| filename_parts(&file.filename))
+        .map(|(name, _, _)| normalise(&name))
+        .unwrap_or_default()
 }
 
 /// `#sha256=<hex>`, the only digest PEP 503 defines a place for.
@@ -367,5 +367,70 @@ mod tests {
         let project = parse("a", "https://example.test/simple/a/", page.as_bytes()).expect("reads");
         assert_eq!(project.files.len(), 1);
         assert_eq!(project.files[0].filename, "a-1.0.tar.gz");
+    }
+
+    /// Each way a page fails to read names what was wrong.
+    #[test]
+    fn a_page_that_cannot_be_read_says_why() {
+        let page = "https://i/simple/x/";
+        for (bytes, url, why) in [
+            (&b"\xff"[..], page, "not UTF-8"),
+            (
+                b"<a href=\"x-1.0.tar.gz\">x-1.0.tar.gz</a>",
+                "not a url",
+                "the page has no URL",
+            ),
+            (b"<a>x-1.0.tar.gz</a>", page, "an anchor with no href"),
+            (
+                b"<a href=\"http://[bad\">x-1.0.tar.gz</a>",
+                page,
+                "an href that is not a URL",
+            ),
+            (
+                b"<a href=\"x-1.0.tar.gz\">x-1.0.tar.gz</a",
+                page,
+                "a closing tag that never closes",
+            ),
+        ] {
+            assert_eq!(
+                parse("x", url, bytes).expect_err(why).to_string(),
+                PypiError::NotHtml(why).to_string()
+            );
+        }
+        assert!(anchor_spans("<a href=\"x\">").is_err());
+    }
+
+    /// A page served from a URL with no name in its path, or none at all, is named by its
+    /// files.
+    #[test]
+    fn a_page_with_no_name_in_its_url_is_named_by_its_files() {
+        let body = b"<a href=\"https://f/Some_Pkg-1.0.tar.gz\">Some_Pkg-1.0.tar.gz</a>";
+        for page in ["https://i/", "data:text/html,x"] {
+            assert_eq!(
+                parse("", page, body).expect("reads").name,
+                "some-pkg",
+                "{page}"
+            );
+        }
+    }
+
+    /// Only `#sha256=` is a digest, and only with 64 hex digits.
+    #[test]
+    fn only_a_sha256_fragment_is_a_digest() {
+        assert_eq!(digest(None), None);
+        assert_eq!(digest(Some("md5=abc")), None);
+        assert_eq!(digest(Some("sha256=abc")), None);
+        let hex = "a".repeat(64);
+        assert_eq!(digest(Some(&format!("sha256={hex}"))), Some(hex));
+    }
+
+    /// `<a` at the very end is not an anchor, and an attribute with no name is dropped.
+    #[test]
+    fn an_unfinished_tag_and_a_nameless_attribute_are_not_read() {
+        assert_eq!(find_anchor("text <a"), None);
+        assert_eq!(
+            attributes(" =\"x\" href=\"y\"").expect("reads"),
+            [("href".to_owned(), Some("y".to_owned()))]
+        );
     }
 }

@@ -506,4 +506,36 @@ mod tests {
             "pkg:pypi/requests@2.34.2"
         );
     }
+
+    /// A key the constructors refuse, built directly, prints as what it is not.
+    #[test]
+    fn a_key_that_makes_no_purl_says_so() {
+        let invalid = PackageKey {
+            ecosystem: Ecosystem::Npm,
+            namespace: Some(String::new()),
+            name: String::new(),
+        };
+        assert!(
+            invalid.to_string().starts_with("<invalid purl: "),
+            "{invalid}"
+        );
+        let reference = PackageRef {
+            key: invalid,
+            version: "1.0.0".to_owned(),
+        };
+        assert!(
+            reference.to_string().starts_with("<invalid purl: "),
+            "{reference}"
+        );
+    }
+
+    /// A purl that does not parse, or names an ecosystem this build does not serve, is no
+    /// key.
+    #[test]
+    fn a_purl_that_is_not_one_or_of_another_ecosystem_is_no_key() {
+        for purl in ["not a purl", "pkg:cargo/serde"] {
+            assert!(purl.parse::<PackageKey>().is_err(), "{purl}");
+        }
+        assert!("pkg:cargo/serde@1.0.0".parse::<PackageRef>().is_err());
+    }
 }

@@ -315,4 +315,79 @@ mod tests {
         );
         assert!(!error.to_string().is_empty());
     }
+
+    /// Each way a fetch for a record fails, in the words `metadata` passes on.
+    #[tokio::test]
+    async fn each_failure_is_said_in_its_own_words() {
+        use crate::util::test_support::{Answer, closing_server, scripted};
+
+        let json =
+            |body: &'static [u8]| async move { ([(header::CONTENT_TYPE, SIMPLE_JSON)], body) };
+        let base = serve(
+            Router::new()
+                .route("/missing/", get(|| async { StatusCode::NOT_FOUND }))
+                .route(
+                    "/text/",
+                    get(|| async { ([(header::CONTENT_TYPE, "text/plain")], "hello") }),
+                )
+                .route("/untyped/", get(|| async { StatusCode::OK }))
+                .route(
+                    "/gzipped/",
+                    get(|| async {
+                        (
+                            [
+                                (header::CONTENT_TYPE, SIMPLE_JSON),
+                                (header::CONTENT_ENCODING, "gzip"),
+                            ],
+                            "not gzip",
+                        )
+                    }),
+                )
+                .route(
+                    "/nameless/",
+                    get(move || {
+                        json(
+                            br#"{"name": "", "files": [{"filename": "x-1.0.tar.gz",
+                            "url": "https://f/x-1.0.tar.gz", "hashes": {}}]}"#,
+                        )
+                    }),
+                ),
+        )
+        .await;
+        let key = |name: &str| {
+            PackageKey::from_registry_name(crate::identity::Ecosystem::PyPI, name).expect("a name")
+        };
+        let said = |result: Fetched| match result {
+            Ok(Ok(_)) => "read".to_owned(),
+            Ok(Err(e)) | Err(e) => e,
+        };
+        for (name, starts) in [
+            ("missing", "index answered 404"),
+            (
+                "text",
+                "the index served `text/plain` rather than PEP 691 JSON",
+            ),
+            (
+                "untyped",
+                "the index served `no content type` rather than PEP 691 JSON",
+            ),
+            ("gzipped", "index body could not be decoded: "),
+            ("nameless", "`` is not a usable project name"),
+        ] {
+            let got = said(client(&base).metadata(&key(name)).await);
+            assert!(got.starts_with(starts), "{name}: {got}");
+        }
+
+        let closed = format!("http://{}", closing_server().await);
+        let got = said(client(&closed).metadata(&key("x")).await);
+        assert!(got.starts_with("index request failed: "), "{got}");
+
+        let cut = scripted(vec![Answer::Body {
+            bytes: b"{".to_vec(),
+            declared: Some(64),
+        }])
+        .await;
+        let got = said(client(&format!("http://{cut}")).metadata(&key("x")).await);
+        assert!(got.starts_with("index request failed: "), "{got}");
+    }
 }

@@ -53,8 +53,10 @@ fn verified_identity(bundle: &Bundle, digest: &Sri) -> Result<String, String> {
         Algorithm::Sha384 => HashAlgorithm::Sha2384,
         Algorithm::Sha512 => HashAlgorithm::Sha2512,
     };
-    let digest = ArtifactDigest::new(algorithm, digest.digest()).map_err(|e| e.to_string())?;
-    let result = verifier()?
+    // An `Sri` holds a digest of its algorithm's length, which is all `new` checks.
+    let digest = ArtifactDigest::new(algorithm, digest.digest())
+        .expect("an Sri's digest is its algorithm's length");
+    let result = verifier()
         .verify(
             Artifact::from_digest(digest),
             bundle,
@@ -64,7 +66,7 @@ fn verified_identity(bundle: &Bundle, digest: &Sri) -> Result<String, String> {
     result
         .identity()
         .map(identity)
-        .ok_or_else(|| "the certificate names no identity".to_owned())
+        .ok_or("the certificate names no identity".to_owned())
 }
 
 /// The `sigstore-verify` version `Cargo.toml` pins. Checked against it by a test.
@@ -83,17 +85,15 @@ pub fn verifier_id() -> &'static str {
     })
 }
 
-/// The verifier for Sigstore's production root, built once.
-fn verifier() -> Result<&'static Verifier, String> {
-    static VERIFIER: OnceLock<Result<Verifier, String>> = OnceLock::new();
-    VERIFIER
-        .get_or_init(|| {
-            let root = TrustedRoot::from_json(SIGSTORE_PRODUCTION_TRUSTED_ROOT)
-                .map_err(|e| format!("the embedded trusted root: {e}"))?;
-            Verifier::new(&root).map_err(|e| format!("the embedded trusted root: {e}"))
-        })
-        .as_ref()
-        .map_err(Clone::clone)
+/// The verifier for Sigstore's production root, built once. The root is compiled in, and
+/// the tests verify real attestations with it.
+fn verifier() -> &'static Verifier {
+    static VERIFIER: OnceLock<Verifier> = OnceLock::new();
+    VERIFIER.get_or_init(|| {
+        let root = TrustedRoot::from_json(SIGSTORE_PRODUCTION_TRUSTED_ROOT)
+            .expect("the embedded trusted root parses");
+        Verifier::new(&root).expect("the embedded trusted root makes a verifier")
+    })
 }
 
 /// The repository and workflow file a certificate's identity names, without the scheme
@@ -147,14 +147,14 @@ impl Prior {
             record
                 .artifacts
                 .iter()
-                .filter(|a| a.attestation_url.is_some())
+                .filter_map(|a| Some((a, a.attestation_url.as_ref()?)))
         };
-        let file = attested()
-            .find(|a| !a.filename.ends_with(".whl"))
+        let (file, url) = attested()
+            .find(|(a, _)| !a.filename.ends_with(".whl"))
             .or_else(|| attested().next())?;
         Some(Self {
             version: record.package.version().to_owned(),
-            attestation_url: file.attestation_url.clone()?,
+            attestation_url: url.clone(),
             integrity: file.integrity.clone(),
         })
     }

@@ -652,10 +652,8 @@ impl AuditLog {
 
     /// Append one event. Failure is warned about once and otherwise ignored.
     pub fn write(&self, event: &Event) {
-        let Ok(mut line) = serde_json::to_vec(event) else {
-            self.warn_once("audit event could not be serialised");
-            return;
-        };
+        // An event is strings, numbers and lists of them, which always serialise.
+        let mut line = serde_json::to_vec(event).expect("an event serialises");
         line.push(b'\n');
 
         let mut file = match self.file.lock() {
@@ -1352,5 +1350,51 @@ not json
         );
         assert!(no_log.report.is_empty());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A log that cannot be written warns once, and the proxy goes on.
+    #[test]
+    fn a_log_that_cannot_be_written_warns_once() {
+        use crate::util::test_support::{capture, text};
+
+        let log = AuditLog::open(Path::new("/dev/full")).expect("opens");
+        let event = Event::pinned("npm", "lodash", "4.17.21", &decision("version: 1"), &[]);
+        let (_guard, buf) = capture(tracing::Level::WARN);
+        log.write(&event);
+        log.write(&event);
+        let logged = text(&buf);
+        assert_eq!(
+            logged
+                .matches("the audit log is incomplete from here on")
+                .count(),
+            1,
+            "{logged}"
+        );
+        assert!(
+            logged.contains("audit log could not be written"),
+            "{logged}"
+        );
+    }
+
+    /// A writer that panicked holding the lock does not stop the next event.
+    #[test]
+    fn a_lock_a_writer_panicked_holding_is_still_used() {
+        let path = crate::util::test_support::tempdir("audit-poisoned").join("audit.log");
+        let log = std::sync::Arc::new(AuditLog::open(&path).expect("opens"));
+        let held = log.clone();
+        let _ = std::thread::spawn(move || {
+            let _file = held.file.lock().unwrap();
+            panic!("poisons the lock");
+        })
+        .join();
+        assert!(log.file.is_poisoned());
+        log.write(&Event::pinned(
+            "npm",
+            "lodash",
+            "4.17.21",
+            &decision("version: 1"),
+            &[],
+        ));
+        assert_eq!(packages(&std::fs::read_to_string(&path).unwrap()).len(), 1);
     }
 }
