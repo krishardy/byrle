@@ -11,6 +11,30 @@
 /// is for one whose store or configuration is meant to answer without any request.
 pub const NO_UPSTREAM: &str = "http://127.0.0.1:9";
 
+/// A `log` logger that keeps nothing. With `tracing`'s `log-always` in test builds, an event
+/// no tracing subscriber takes is handed to it, which is the branch `make coverage` otherwise
+/// cannot reach. See the `[dev-dependencies]` comment in Cargo.toml.
+struct Discard;
+
+impl log::Log for Discard {
+    fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+        true
+    }
+
+    fn log(&self, _: &log::Record<'_>) {}
+
+    fn flush(&self) {}
+}
+
+/// Installed before `main`, so no event in any test runs before it.
+///
+/// Safety, as `ctor` asks: it touches only `log`'s two globals, which need nothing set up.
+#[ctor::ctor(unsafe)]
+fn discard_log_records() {
+    let _ = log::set_logger(&Discard);
+    log::set_max_level(log::LevelFilter::Trace);
+}
+
 /// An empty directory for one test. `label` has to differ between the tests that call this,
 /// because the directory is emptied first.
 pub fn tempdir(label: &str) -> std::path::PathBuf {
@@ -198,19 +222,24 @@ fn capturing(level: &tracing::Level) -> Option<std::sync::Arc<std::sync::Mutex<V
 /// One subscriber for the whole test process, installed once. Its filter is dynamic: it
 /// asks per event, so no callsite's interest is cached from the thread that first reached
 /// it. A per-thread default subscriber, and a cacheable `filter_fn`, both did that.
+///
+/// The filter is global rather than on the layer, so an event a thread is not capturing is
+/// off where it is logged and goes to [`Discard`]. A filter on the layer leaves the event on,
+/// and the branch that hands it to `log` is then never run.
 fn install() {
     static INSTALLED: std::sync::Once = std::sync::Once::new();
     INSTALLED.call_once(|| {
-        use tracing_subscriber::Layer as _;
         use tracing_subscriber::layer::SubscriberExt as _;
+        let keep = tracing_subscriber::filter::dynamic_filter_fn(|meta, _| {
+            capturing(meta.level()).is_some()
+        });
         let routed = tracing_subscriber::fmt::layer()
             .with_ansi(false)
-            .with_writer(RoutedWriter)
-            .with_filter(tracing_subscriber::filter::dynamic_filter_fn(|meta, _| {
-                capturing(meta.level()).is_some()
-            }));
-        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(routed))
-            .expect("no other test sets a global subscriber");
+            .with_writer(RoutedWriter);
+        tracing::subscriber::set_global_default(
+            tracing_subscriber::registry().with(keep).with(routed),
+        )
+        .expect("no other test sets a global subscriber");
         tracing::callsite::rebuild_interest_cache();
     });
 }

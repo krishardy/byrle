@@ -51,6 +51,17 @@ toml = { version = "1.1.6", default-features = false, features = ["parse", "serd
 # docs/engineering_decisions/sigstore-verifier.md.
 sigstore-verify = { version = "=0.13.0", default-features = false }
 
+[dev-dependencies]
+# Test builds only. `sqlx-core` turns on `tracing`'s `log` feature, which gives every event a
+# branch that hands it to `log` when no tracing subscriber takes it. `log-always` takes that
+# branch whenever the event is off, and `test_support` installs a `log` logger that keeps
+# nothing, with `ctor`, before any test runs. Without both, no test can reach the branch,
+# and `make coverage` counts it against every log call. See
+# docs/engineering_decisions/coverage-counts-library-code-only.md.
+tracing = { version = "0.1.44", features = ["log-always"] }
+log = "0.4.34"
+ctor = "1.0.13"
+
 [lints.rust]
 # `coverage` is set by cargo-llvm-cov, which `make coverage` runs. Declared so the
 # network- and corpus-dependent tests can be compiled out of a coverage build without

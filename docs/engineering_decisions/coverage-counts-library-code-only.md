@@ -36,6 +36,19 @@ not stable on rustc 1.98.1 (rust-lang/rust#84605).
 | Move tests to separate files and ignore them by name | every inline test module moved |
 | Keep 95% | the floor then hides library code with no test |
 
+## Log calls
+
+`sqlx-core` turns on `tracing`'s `log` feature. Each event then has a branch that hands it to
+`log` when no tracing subscriber takes it, and that branch holds the event's fields. No test
+reached it: 381 of 803 missed regions on 2026-09-29 were in log calls.
+
+Test builds add `tracing`'s `log-always` feature, which takes the branch whenever the event
+is off, and a `log` logger that keeps nothing, installed before `main` with `ctor`. The test
+subscriber's filter is global, so an event a thread is not capturing is off where it is
+logged. A filter on the layer left every event on once the subscriber was installed. A log
+call is covered once a test reaches it without capturing its level. Release builds do not
+have `log-always` or the logger.
+
 ## Consequences
 
 - `make dev-setup` installs the nightly and its `llvm-tools-preview`.
