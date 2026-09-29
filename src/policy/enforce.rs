@@ -129,8 +129,7 @@ fn unenforceable_given(
 }
 
 /// The decision with the checks this build cannot answer taken out: what the proxy acts
-/// on. See policy-tier-resolution.md. `decision` is the whole vector.
-/// `unenforceable` are the checks to take out. Returns the decision.
+/// on. See docs/engineering_decisions/policy-tier-resolution.md.
 pub fn enforced(decision: &Decision, unenforceable: &[Unenforceable]) -> Decision {
     let mut kept = decision.clone();
     kept.results

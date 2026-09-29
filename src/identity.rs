@@ -79,8 +79,6 @@ pub struct PackageKey {
 impl PackageKey {
     /// Build a key from a registry-reported package name, split by the ecosystem's
     /// `split_name`. Case is preserved.
-    /// `ecosystem` chooses the rule. `name` is as the registry spells it.
-    /// Returns the key, or why `name` is not one.
     pub fn from_registry_name(ecosystem: Ecosystem, name: &str) -> Result<Self, IdentityError> {
         let name = name.trim();
         if name.is_empty() {

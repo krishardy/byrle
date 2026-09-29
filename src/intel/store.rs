@@ -110,7 +110,6 @@ impl PackageIntel {
     /// The records that apply to one version, each advisory once per stream.
     /// `ecosystem` is the purl type, whose [`VersionOrder`] reads the versions.
     /// `version` matches a listed version equal to it in that order, or as written.
-    /// Returns the records.
     pub fn for_version(&self, ecosystem: &str, version: &str) -> Vec<&Record> {
         let order = VersionOrder::of(ecosystem);
         let parsed = order.and_then(|order| order.parse(version));

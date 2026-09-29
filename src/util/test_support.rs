@@ -74,7 +74,6 @@ impl Drop for Restricted<'_> {
 
 /// A server that accepts each connection and closes it without a response. It keeps
 /// the port bound until the runtime ends, so no other process can take it.
-/// Returns its address.
 pub async fn closing_server() -> std::net::SocketAddr {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -150,7 +149,6 @@ impl Answer {
 
 /// A server that answers requests with `answers` in order, repeating the last one once
 /// they run out. `answers` must not be empty.
-/// Returns its address.
 pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

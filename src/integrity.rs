@@ -77,7 +77,6 @@ impl std::error::Error for SriError {}
 impl Sri {
     /// Parse an SRI metadata string. When several supported algorithms appear, the
     /// strongest wins. `integrity` may hold whitespace-separated entries with `?options`.
-    /// Returns the claim, or why none could be read.
     pub fn parse(integrity: &str) -> Result<Self, SriError> {
         let mut best: Option<Sri> = None;
         let mut malformed: Option<String> = None;

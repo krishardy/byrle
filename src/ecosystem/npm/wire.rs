@@ -79,8 +79,6 @@ impl<'de> Deserialize<'de> for DirectSpecs {
 
 /// Whether a dependency specifier names where to fetch from rather than a version range,
 /// as npm-package-arg classifies them. See docs/engineering_decisions/bypass-self-detection.md.
-/// `spec` is the specifier as the packument writes it.
-/// Returns true for a git, URL or path specifier.
 pub fn is_direct(spec: &str) -> bool {
     const PREFIXES: [&str; 13] = [
         "git+",

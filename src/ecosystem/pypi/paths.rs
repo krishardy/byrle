@@ -32,7 +32,7 @@ pub fn canonical_name(name: &str) -> String {
 }
 
 /// A project name as PEP 503 normalises it: lowercased, with every run of `-`, `_` and `.`
-/// replaced by a single `-`. `name` is as written.
+/// replaced by a single `-`.
 /// Returns the name the index would redirect to.
 pub fn normalise(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
@@ -61,7 +61,7 @@ pub fn index_url(base: &str, name: &str) -> Result<String, PypiError> {
 }
 
 /// What a distribution filename says, a wheel's by PEP 427 and an sdist's by its last `-`.
-/// `filename` is the file's name. Eggs and installers give `None`.
+/// Eggs and installers give `None`.
 /// Returns the [`normalise`]d project name, the version and the kind of file.
 pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
     if let Some(stem) = filename.strip_suffix(".whl") {
@@ -89,8 +89,7 @@ pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
 /// Where a request under PyPI's prefixes goes upstream: `/simple/` to the index, `/packages/`
 /// to [`FILES`] with its path kept, and `/integrity/` to the index's host.
 /// `index` ends in the index path, such as `https://pypi.org/simple`, whose prefix the path
-/// loses. `path_and_query` is the request's.
-/// Returns the upstream URL.
+/// loses.
 pub fn upstream_url(index: &str, path_and_query: &str) -> String {
     if path_and_query.starts_with("/integrity/") {
         let host = index.strip_suffix("/simple").unwrap_or(index);
@@ -103,7 +102,6 @@ pub fn upstream_url(index: &str, path_and_query: &str) -> String {
 }
 
 /// Which simple-index form, PEP 691 JSON or a PEP 503 page, a body is.
-/// `content_type` is the header's value, if any.
 /// Returns `None` for any other media type.
 pub fn document_from_content_type(content_type: Option<&str>) -> Option<DocumentKind> {
     match crate::route::media_type(content_type)?.as_str() {

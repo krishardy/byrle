@@ -17,7 +17,6 @@ pub fn canonical_name(name: &str) -> String {
 
 /// Split an npm name into its scope and its name: `@babel/core` is `@babel` and `core`.
 /// `name` must be scoped when it contains a `/`.
-/// Returns the scope and name, or why `name` is not an npm name.
 pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError> {
     let Some((scope, rest)) = name.split_once('/') else {
         return Ok((None, name.to_owned()));
@@ -82,7 +81,6 @@ pub fn classify_path(path: &str) -> RequestTarget {
 }
 
 /// Which document a response body is, read from its `Content-Type`.
-/// `content_type` is the header's value, if any.
 /// Returns `None` for anything but the two packument media types.
 pub fn detail_from_content_type(content_type: Option<&str>) -> Option<DocumentDetail> {
     match crate::route::media_type(content_type)?.as_str() {

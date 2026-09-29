@@ -1,7 +1,7 @@
 //! What a version's attestations say, verified offline, and what that makes of the version
 //! against the versions before it. Nothing here is specific to an ecosystem.
-//!
-//! See `docs/engineering_decisions/provenance-check.md` and `sigstore-verifier.md`.
+//! See docs/engineering_decisions/provenance-check.md and
+//! docs/engineering_decisions/sigstore-verifier.md.
 
 use std::sync::OnceLock;
 
@@ -234,7 +234,6 @@ pub enum Answer {
 }
 
 /// What the version's attestations say against the versions before it.
-/// `this` is the version. `previous` is what it is compared against.
 /// `this_result` is what verifying its attestations found, `None` where nothing has.
 /// `prior_results` is each prior's, in the order of [`Previous::Known`].
 /// Returns the fact, or the verification results still needed.

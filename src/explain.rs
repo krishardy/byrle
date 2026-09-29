@@ -253,7 +253,6 @@ impl Answered {
 
 /// Answer `target`, a package or `--policy`, against the policy `environment` names.
 /// Metadata comes from the package's own registry, not a running proxy.
-/// Returns what to print and the exit code.
 pub async fn run<L: Fn(&str) -> Option<OsString>>(
     target: &crate::cli::Explain,
     environment: &Env<L>,
