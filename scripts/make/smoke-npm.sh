@@ -12,11 +12,18 @@
 #   4. every tarball's digest was known before the fetch and verified on the way past
 #   5. `npm ci`, which requests no packuments at all, still verifies every artifact
 #   6. policy filters a denied version on resolution and refuses it on a pinned fetch
+#   7. `install_scripts: block` refuses core-js@3.39.0's postinstall, and `allow` installs it
+#   8. eicar@1.0.0, which holds the EICAR test string, is served and verified
+#   9. `known_malware` refuses clinstestpackage against a real intel store, when Postgres
+#      is available
+# The packages in 7 to 9 are in docs/engineering_decisions/live-test-packages.md.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/make/lib/node.sh
 . "$repo_root/scripts/make/lib/node.sh"
+# shellcheck source=scripts/make/lib/postgres.sh
+. "$repo_root/scripts/make/lib/postgres.sh"
 waharoa_use_latest_node
 
 port="${WAHAROA_PORT:-8731}"
@@ -24,6 +31,7 @@ registry="http://127.0.0.1:${port}/"
 workdir="$(mktemp -d)"
 log="$workdir/proxy.log"
 proxy_pid=""
+database_url=""
 
 cleanup() {
     [[ -n "$proxy_pid" ]] && kill "$proxy_pid" 2>/dev/null || true
@@ -42,6 +50,7 @@ fail() { echo "FAIL: $*"; echo "--- proxy log ---"; cat "$log"; exit 1; }
 
 start_proxy() {
     WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_POLICY="${1:-}" \
+    WAHAROA_DATABASE_URL="$database_url" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
@@ -69,13 +78,13 @@ npm_install() {
         --no-audit --no-fund --loglevel=error)
 }
 
-echo "==> 1/6  install completes through the proxy"
+echo "==> 1/9  install completes through the proxy"
 start_proxy ""
 npm_install "$workdir/basic" lodash >/dev/null 2>&1 || fail "npm install lodash failed"
 [[ -d "$workdir/basic/node_modules/lodash" ]] || fail "lodash was not installed"
 echo "    ok"
 
-echo "==> 2/6  every package, transitive included, came through the proxy"
+echo "==> 2/9  every package, transitive included, came through the proxy"
 # @babel/code-frame is here for its scope: a scoped name becomes a percent-encoded purl
 # namespace, and that is the part of the identity type most likely to regress.
 npm_install "$workdir/deps" express @babel/code-frame >/dev/null 2>&1 \
@@ -90,7 +99,7 @@ missed="$(comm -23 <(echo "$on_disk") <(echo "$fetched") || true)"
 [[ -z "$missed" ]] || fail "these packages never came through the proxy: $(echo "$missed" | tr '\n' ' ')"
 echo "    ok ($(echo "$on_disk" | wc -l) packages, all intercepted)"
 
-echo "==> 3/6  every installed package was normalized to a PURL at the version on disk"
+echo "==> 3/9  every installed package was normalized to a PURL at the version on disk"
 clean_log="$workdir/clean.log"
 sed -E 's/\x1b\[[0-9;]*m//g' "$log" >"$clean_log"
 
@@ -120,7 +129,7 @@ fi
 normalized_count="$(grep -c 'packument normalized' "$clean_log")"
 echo "    ok ($(echo "$expected_purls" | wc -l) purls, $normalized_count packuments, 0 versions skipped)"
 
-echo "==> 4/6  every tarball digest was known before the fetch and verified"
+echo "==> 4/9  every tarball digest was known before the fetch and verified"
 # The digest comes from a packument seen earlier in the same run, which is what makes
 # cache-hit-versus-miss decidable before a byte is fetched (plan section 5).
 # A tarball nothing has analysed is deferred with a 503 until its analysis has finished,
@@ -152,7 +161,7 @@ fi
 echo "    ok ($tarballs tarballs, all with a known digest, all verified, none offsite, $deferred deferred for analysis)"
 stop_proxy
 
-echo "==> 5/6  npm ci verifies every artifact although it requests no packuments"
+echo "==> 5/9  npm ci verifies every artifact although it requests no packuments"
 # npm ci reads `resolved` and `integrity` from package-lock.json and asks for no
 # packuments at all. Measured before the proxy fetched them itself: 69 tarballs, zero
 # packument requests, nothing verified. A fresh proxy and a fresh npm cache here, so the
@@ -175,7 +184,7 @@ ci_fetched="$(grep -c 'on our own behalf' "$clean_log" || true)"
 echo "    ok ($ci_tarballs tarballs, $ci_fetched packuments fetched by the proxy, all verified)"
 stop_proxy
 
-echo "==> 6/6  policy refuses a version, both ways decision #4 says it should"
+echo "==> 6/9  policy refuses a version, both ways decision #4 says it should"
 # `ms` is a transitive dependency of `debug`, never a direct install target, so this also
 # proves policy reaches packages the user never named. 2.1.3 is a long-published version,
 # so the denial names something the registry really serves.
@@ -212,6 +221,80 @@ if sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -qE 'proxied.*url.path=/ms/-/ms-2\
     fail "the denied artifact was fetched upstream; the refusal came too late"
 fi
 echo "    ok (filtered on resolution, 403 on the pinned fetch, artifact never fetched)"
+stop_proxy
+
+# Asserts that the metadata document for $1 no longer offers $2, and that a pinned fetch of
+# its tarball, $3, answers 403 naming check $4 without being fetched upstream.
+refused_both_ways() {
+    local package="$1" version="$2" tarball="$3" check="$4"
+    local status
+    status=$(curl -s -o "$workdir/$package.json" -w '%{http_code}' "http://127.0.0.1:${port}/$package")
+    [[ "$status" == "200" ]] || fail "the $package document answered $status; it has to be a 200"
+    if python3 -c "import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1]))['versions'] else 1)" \
+        "$workdir/$package.json" "$version"; then
+        fail "$package@$version is still offered, so a resolver can still pick it"
+    fi
+    status=$(curl -s -o "$workdir/$package.out" -w '%{http_code}' "http://127.0.0.1:${port}$tarball")
+    [[ "$status" == "403" ]] || fail "a pinned fetch of $package@$version answered $status"
+    grep -q "$check" "$workdir/$package.out" || fail "the refusal of $package does not name $check"
+    if sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -qE "proxied.*url.path=$tarball"; then
+        fail "the refused $package tarball was fetched upstream"
+    fi
+}
+
+echo "==> 7/9  install_scripts refuses a postinstall, and allow installs it"
+printf 'version: 1\ncooldown_days: 0\ninstall_scripts: %s\n' block >"$workdir/block.yaml"
+printf 'version: 1\ncooldown_days: 0\ninstall_scripts: %s\n' allow >"$workdir/allow.yaml"
+start_proxy "$workdir/block.yaml"
+refused_both_ways core-js 3.39.0 /core-js/-/core-js-3.39.0.tgz install_scripts
+stop_proxy
+# ADBLOCK silences core-js's postinstall banner, and with it the file it writes to the
+# temporary directory.
+start_proxy "$workdir/allow.yaml"
+ADBLOCK=1 npm_install "$workdir/scripts" core-js@3.39.0 >/dev/null 2>&1 \
+    || fail "core-js@3.39.0 was not installed under install_scripts: allow"
+[[ -f "$workdir/scripts/node_modules/core-js/postinstall.js" ]] || fail "core-js was not installed"
+echo "    ok (block: filtered and 403; allow: installed)"
+stop_proxy
+
+echo "==> 8/9  a package holding the EICAR test string is served and verified"
+start_proxy ""
+npm_install "$workdir/eicar" eicar@1.0.0 >/dev/null 2>&1 || fail "npm install eicar@1.0.0 failed"
+grep -q 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE' "$workdir/eicar/node_modules/eicar/README.md" \
+    || fail "the installed eicar package does not hold the EICAR string"
+sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -q 'artifact digest verified.*pkg:npm/eicar@1.0.0' \
+    || fail "the eicar tarball was not verified"
+echo "    ok (installed, digest verified)"
+stop_proxy
+
+echo "==> 9/9  known_malware refuses a package a MAL record covers"
+# MAL-2022-1929 covers every version of clinstestpackage, which npm has replaced with its
+# empty 0.0.1-security placeholder. A refresh loads OSV's bundles, about a minute.
+if ! choose_postgres >/dev/null; then
+    echo "    skipped (neither docker nor initdb and pg_ctl are available)"
+else
+    pg_port="${WAHAROA_PG_PORT:-55435}"
+    start_postgres "waharoa-smoke-npm-pg-$$" "$pg_port" || fail "postgres did not start"
+    trap 'stop_postgres; cleanup' EXIT
+    database_url="$(postgres_url "$pg_port")"
+    # Exit 1 is an optional stream that did not load, such as GitHub's without a token.
+    # Readiness below says whether a snapshot loaded.
+    set +e
+    WAHAROA_DATABASE_URL="$database_url" cargo run --quiet --manifest-path "$repo_root/Cargo.toml" \
+        -- refresh >"$workdir/refresh.out" 2>&1
+    refresh_status=$?
+    set -e
+    [[ "$refresh_status" -le 1 ]] || fail "waharoa refresh exited $refresh_status:
+$(tail -20 "$workdir/refresh.out")"
+    printf 'version: 1\ncooldown_days: 0\n' >"$workdir/malware.yaml"
+    start_proxy "$workdir/malware.yaml"
+    ready=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/-/waharoa/ready")
+    [[ "$ready" == "200" ]] || fail "the proxy is not ready after the refresh ($ready)"
+    refused_both_ways clinstestpackage 0.0.1-security \
+        /clinstestpackage/-/clinstestpackage-0.0.1-security.tgz known_malware
+    echo "    ok (filtered and 403 against the loaded snapshot)"
+    stop_proxy
+fi
 
 echo
 echo "PASS: Stage 1 proxy behaves as the exit criterion requires."
