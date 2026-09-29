@@ -37,7 +37,11 @@ note "rust (clippy, release profile)"
 # `#[cfg(debug_assertions)]` code is removed. With only the debug profile checked, a
 # release build stopped compiling when that attribute ended up on the wrong module in
 # src/lib.rs (d648995), and nothing failed.
-if ! cargo clippy --manifest-path "$repo_root/Cargo.toml" --release --lib --bins "$@" -- -D warnings; then
+#
+# The complexity lints run here, over the library and binaries and not the tests, with
+# clippy's default thresholds: cognitive complexity 25 and 100 lines (TODO item 24).
+if ! cargo clippy --manifest-path "$repo_root/Cargo.toml" --release --lib --bins "$@" -- \
+    -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines; then
     failed=1
 fi
 
