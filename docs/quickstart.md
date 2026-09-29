@@ -85,9 +85,22 @@ With the proxy at `https://waharoa.example.com`:
 | pip | `pip config set global.index-url https://waharoa.example.com/simple/` |
 | uv | `UV_DEFAULT_INDEX=https://waharoa.example.com/simple`, or `index-url` in `uv.toml` |
 
-The run pointed npm and pip at the proxy, through `npm_config_registry` and
-`PIP_INDEX_URL`, which set the same values. The uv line is `doctor`'s own fix. The yarn 4
-and bun lines are those clients' documented settings, not run here.
+Each line was run on 2026-09-29, in a home directory of its own and against a fresh proxy
+at `http://127.0.0.1:18995`, then used to install one package:
+
+| Client | Version | Registry the client reported | Install |
+|---|---|---|---|
+| npm | 11.20.0 | `http://127.0.0.1:18995/` | served and verified |
+| pnpm | 10.34.5 | `http://127.0.0.1:18995/` | served and verified |
+| yarn 1 | 1.22.22 | `http://127.0.0.1:18995/` | failed on the first request's 503, served on the second install |
+| yarn 4 | 4.9.1 | `http://127.0.0.1:18995` | served and verified |
+| bun | 1.4.2 | `registry = "http://127.0.0.1:18995/"` | failed on the first request's 503, served on the second install |
+| pip | 26.2.1 | `http://127.0.0.1:18995/simple/` | served and verified |
+| uv | 0.12.19 | `UV_DEFAULT_INDEX` | served and verified |
+
+yarn 4 refuses a registry on plain HTTP unless its host is listed, as it was for this
+run: `unsafeHttpWhitelist: ["127.0.0.1"]` in `.yarnrc.yml`. Behind `https://` it needs
+nothing more.
 
 Then empty each client's cache once. An install supplied from the cache never asks the
 proxy: `npm cache clean --force`, `uv cache clean`, `bun pm cache rm`,
