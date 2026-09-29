@@ -53,6 +53,13 @@ if ! RUSTDOCFLAGS="-D warnings" cargo doc --manifest-path "$repo_root/Cargo.toml
     failed=1
 fi
 
+note "rust (comments)"
+# Only the three kinds of source comment TODO item 23 keeps, at their lengths. See
+# docs/engineering_decisions/source-comments.md.
+if ! "$repo_root/scripts/make/comments.py"; then
+    failed=1
+fi
+
 note "shell (shellcheck)"
 if ! command -v shellcheck >/dev/null 2>&1; then
     echo "shellcheck is not installed. Run 'make dev-setup'."
