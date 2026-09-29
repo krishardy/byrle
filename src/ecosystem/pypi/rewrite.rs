@@ -1,9 +1,6 @@
-//! Removing refused versions from a simple index, and pointing the rest at the proxy.
-//!
-//! A version is removed by removing every file that carries it. The policy decides on the
-//! version's record, whose `has_install_scripts` is true only when every file is an sdist,
-//! so a removed version is one whose every file the artifact request would refuse too.
-//! `pypi-index-filtering.md` has the reasoning.
+//! Removing refused versions from a simple index, and pointing the rest at the proxy. A
+//! version is removed with every file that carries it: see
+//! docs/engineering_decisions/pypi-index-filtering.md.
 
 use std::collections::HashSet;
 
@@ -31,17 +28,9 @@ pub struct Rewrite<'a> {
     pub path: &'a str,
 }
 
-/// Remove refused versions and point the remaining files at the proxy.
-///
-/// pip uses each file's `url` as written, so without the rewrite every file is fetched
-/// from `files.pythonhosted.org` and nothing about those bytes is observed. The path is
-/// kept, which is what makes the request that comes back one [`super::classify_path`]
-/// understands and [`super::upstream_url`] sends back to the same place.
-///
-/// `None` forwards the body exactly as it arrived. That happens when nothing is refused
-/// and there is no address to point at, the operator turned rewriting off, or nothing
-/// could be rewritten. Each says so in the log, because a forwarded index means that
-/// project's files go around the proxy.
+/// Remove refused versions and point the remaining files at the proxy, keeping each path.
+/// `r`: the index, its project, and what is refused.
+/// Returns `None` to forward the body as it came, which is logged: see pypi-simple-index.md.
 pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
     let kept: Vec<&str> = r
         .project
@@ -50,8 +39,6 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
         .filter(|file| !r.refused_by_policy.contains(&file.version))
         .map(|file| file.url.as_str())
         .collect();
-    // Always the filtered body once a version is refused, even when the rewrite below does
-    // nothing. Forwarding the original would put every refused version back.
     let filtered = if r.refused_by_policy.is_empty() {
         None
     } else {
@@ -150,8 +137,7 @@ fn remove_versions(
 #[derive(Debug)]
 pub enum RemoveError {
     Json(serde_json::Error),
-    /// A page that parsed as anchors and then did not, which cannot happen through
-    /// `rewrite_index`: the same bytes were read by `html::parse` first.
+    /// A page that parsed as anchors and then did not.
     Html(&'static str),
 }
 
@@ -363,9 +349,8 @@ mod tests {
         );
     }
 
-    /// Every file of a refused version goes, wheel and sdist alike, and the version goes
-    /// from `versions`. The other version's file and the keys this build does not read
-    /// stay.
+    /// Every file of a refused version goes, and so does the version in `versions`. The
+    /// other files and the keys this build does not read stay.
     #[test]
     fn a_refused_version_is_removed_with_every_file_that_carries_it() {
         let out = rewrite(TWO_VERSIONS, Some("http://p"), &["2.0"]).expect("filtered");
