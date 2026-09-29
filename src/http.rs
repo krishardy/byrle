@@ -1,8 +1,7 @@
-//! HTTP mechanics the proxy needs, separated from the proxy so they can be tested
-//! without a server.
+//! HTTP mechanics the proxy needs, testable without a server: which headers cross a hop,
+//! and turning an encoded response body into bytes something can parse.
 //!
-//! Two jobs: deciding which headers cross a hop, and turning an encoded response body
-//! into bytes something can parse.
+//! See docs/engineering_decisions/packument-body-inspection.md.
 
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -24,16 +23,10 @@ pub fn url_query(target: &str) -> Option<&str> {
 /// Past this, a host is not answering at all.
 pub const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// No bytes for this long is a stalled connection rather than a slow one.
-///
-/// Per read, reset by each one, so a download that keeps arriving is never cut off: OSV's
-/// 215,141,389-byte npm bundle took 9 s on 2026-09-17 and would take 36 minutes at 100 kB/s,
-/// both without a 30 s gap. A total timeout would have to be longer than that whole 36
-/// minutes to allow it, and would then let a stall run that long.
+/// No bytes for this long, per read, is a stalled connection rather than a slow one.
 pub const READ_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The forward proxy settings reqwest applies to every client, as the environment gives
-/// them: [`crate::env::Env::upstream_proxy`].
+/// The forward proxy settings reqwest applies to every client, from the environment.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct UpstreamProxy {
     pub https: Option<String>,
@@ -81,10 +74,7 @@ pub fn client_builder(read_timeout: Duration) -> reqwest::ClientBuilder {
         .read_timeout(read_timeout)
 }
 
-/// Headers that describe a single hop and must not be forwarded to the next one.
-///
-/// `Host` is not here because it is handled separately: reqwest sets it from the
-/// upstream URL, so the proxy drops the client's copy rather than filtering it.
+/// Headers that describe a single hop and must not be forwarded. `Host` is dropped separately.
 pub const HOP_BY_HOP: &[&str] = &[
     "connection",
     "keep-alive",
@@ -101,18 +91,6 @@ pub fn is_hop_by_hop(name: &str) -> bool {
 }
 
 /// Request headers that ask upstream to answer 304 instead of sending a body.
-///
-/// A 304 authorises the client to serve what it has cached. When the proxy rewrites
-/// bodies that is only safe for a body the proxy produced at this address, and only
-/// `If-None-Match` carries enough identity to tell: see [`unmark_if_none_match`]. The
-/// rest are dropped whole while rewriting, so the only conditional that reaches upstream
-/// is one this proxy issued the tag for.
-///
-/// yarn 4 sends `If-Modified-Since` alongside `If-None-Match` on every packument
-/// revalidation, measured over two installs of lodash. npm, pnpm, yarn 1 and bun sent no
-/// conditional at all in the same run: each served the second install from its own cache.
-/// RFC 9110 §13.1.3 has the server ignore the date when a tag is present, so dropping it
-/// changes nothing for yarn 4 and removes the case where a date arrives alone.
 pub const CONDITIONAL: &[&str] = &[
     "if-none-match",
     "if-match",
@@ -132,8 +110,7 @@ pub enum RequestedEncoding {
     Gzip,
     /// `Accept-Encoding: identity`.
     Identity,
-    /// The client accepts neither gzip nor identity. Forward its header untouched and
-    /// do not attempt to read the body.
+    /// The client accepts neither gzip nor identity: forward its header, and read nothing.
     Unreadable,
 }
 
@@ -147,14 +124,8 @@ impl RequestedEncoding {
     }
 }
 
-/// Pick the encoding to request upstream for a body the proxy needs to read.
-///
-/// registry.npmjs.org serves brotli when it is offered, and npm 9 asks for
-/// `gzip,deflate`. Narrowing the outbound request to gzip means only two encodings ever
-/// have to be decoded here, and the body can still be forwarded to the client byte for
-/// byte, because the client said it accepts gzip.
-///
-/// Identity is assumed acceptable when the header is absent, per RFC 9110 §12.5.3.
+/// Pick the encoding to request upstream for a body the proxy needs to read: gzip or
+/// identity, whichever `accept_encoding` allows.
 pub fn encoding_to_request(accept_encoding: Option<&str>) -> RequestedEncoding {
     let Some(header) = accept_encoding else {
         return RequestedEncoding::Identity;
@@ -172,9 +143,6 @@ pub fn encoding_to_request(accept_encoding: Option<&str>) -> RequestedEncoding {
         }
     }
 
-    // A wildcard covers gzip, but only if gzip was not itself named: an explicit
-    // `gzip;q=0` alongside `*` is a refusal of gzip, and the loop above has already
-    // returned for any acceptable gzip.
     if wildcard == Some(true) && !names_coding(header, "gzip") {
         return RequestedEncoding::Gzip;
     }
@@ -197,13 +165,7 @@ fn parse_coding(token: &str) -> (String, bool) {
     (coding, acceptable)
 }
 
-/// Whether a q-value means "not acceptable".
-///
-/// RFC 9110 §12.4.2 writes a qvalue as `0` or `0.` followed by up to three digits, so the
-/// zero forms are `0`, `0.`, `0.0`, `0.00` and `0.000`. Matched on the text rather than
-/// parsed as a float: the input is attacker-controlled, comparing against zero is the
-/// only question being asked, and float parsing brings rounding and NaN to a decision
-/// that has neither.
+/// Whether a q-value means "not acceptable", matched on its text rather than parsed.
 fn is_zero_qvalue(value: &str) -> bool {
     let Some(rest) = value.strip_prefix('0') else {
         return false;
@@ -225,8 +187,7 @@ pub enum DecodeError {
     UnsupportedEncoding(String),
     /// The compressed stream was invalid.
     Corrupt(String),
-    /// Decompressed output passed the limit. Carries the limit, not the real size,
-    /// which is not known without producing it.
+    /// Decompressed output passed the limit, which it carries.
     TooLarge(usize),
 }
 
@@ -242,14 +203,8 @@ impl std::fmt::Display for DecodeError {
 
 impl std::error::Error for DecodeError {}
 
-/// Decode a response body for parsing, refusing to produce more than `limit` bytes.
-///
-/// The limit is the point of this function. gzip compresses about 5x on a packument and
-/// far more on crafted input, so decompressing an attacker-influenced body without a
-/// ceiling turns a small response into unbounded memory.
-///
-/// The returned bytes are for inspection only. What gets forwarded to the client is the
-/// original encoded body, unchanged.
+/// Decode a response body for inspection, refusing to produce more than `limit` bytes.
+/// The client is sent the original encoded body.
 pub fn decode_for_parsing(
     body: &[u8],
     content_encoding: Option<&str>,
@@ -268,7 +223,6 @@ pub fn decode_for_parsing(
         return Err(DecodeError::UnsupportedEncoding(coding.to_owned()));
     }
 
-    // `limit + 1` so hitting the limit exactly is distinguishable from passing it.
     let mut out = Vec::new();
     let mut decoder = flate2::read::GzDecoder::new(body).take(limit as u64 + 1);
     decoder
@@ -281,12 +235,7 @@ pub fn decode_for_parsing(
     Ok(out)
 }
 
-/// Compress a body the proxy produced.
-///
-/// `fast` rather than `default`: on the largest packument measured (typescript, 8.7 MB)
-/// that is 17.7 ms against 117.3 ms, for 2.06 MB against 1.69 MB. A 22% larger body on a
-/// hop that is usually loopback or a LAN, for a sixth of the CPU time, on a path that
-/// runs for every packument.
+/// Compress a body the proxy produced, at the fast level.
 pub fn gzip(data: &[u8]) -> Vec<u8> {
     let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast());
     encoder
@@ -298,16 +247,9 @@ pub fn gzip(data: &[u8]) -> Vec<u8> {
 /// Marker on an `ETag` for a body this proxy rewrote.
 const ETAG_PREFIX: &str = "waharoa.";
 
-/// Label an upstream `ETag` as describing *our* version of the body.
-///
-/// A rewritten packument is not the document the upstream `ETag` names, and the URLs in
-/// it depend on the address the proxy answers on. `base` is mixed in so that a proxy
-/// reachable at a different address produces different tags: without that, a client
-/// revalidates, upstream answers 304, and the client keeps serving artifact URLs pointing
-/// at an address nobody listens on.
-///
-/// The weak marker keeps its position outside the quotes, and the prefix goes inside
-/// them, so `W/` round-trips exactly.
+/// Label an upstream `ETag` as describing this proxy's version of the body.
+/// See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+/// `etag` keeps a `W/` outside its quotes. `base` is the proxy's address, mixed in.
 pub fn mark_etag(etag: &str, base: &str) -> String {
     let etag = etag.trim();
     let (weak, tag) = match etag.strip_prefix("W/") {
@@ -321,25 +263,9 @@ pub fn mark_etag(etag: &str, base: &str) -> String {
 }
 
 /// Turn an `If-None-Match` the client got from us back into what upstream issued, keeping
-/// **only** the tags this proxy issued at this address.
-///
-/// A 304 authorises the client to serve the body it has cached. When the proxy rewrites
-/// bodies, that is only safe for a body the proxy itself produced here. Every other tag
-/// is dropped, so upstream answers 200 and the body is rewritten afresh. Returns `None`
-/// when nothing is left to send.
-///
-/// Dropped, and why each one matters:
-///
-/// - **A tag from this proxy at another address.** A 304 would leave the client serving
-///   artifact URLs pointing at an address nobody listens on.
-/// - **A tag the proxy never issued.** The client holds a body from somewhere else, with
-///   artifact URLs that were never pointed here. Measured: after enabling rewriting at an
-///   address that previously ran without it, npm sent the upstream's own tag, the registry
-///   answered 304, and the client kept its unrewritten copy. npm re-derives artifact URLs
-///   from the configured registry so it still came through the proxy, but pnpm, yarn and
-///   bun use the URL as written, so for them that cached copy sends every artifact to the
-///   origin registry.
-/// - **`*`**, which asks upstream to 304 if any representation exists at all.
+/// only the tags this proxy issued at `base`, and never `*`.
+/// See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+/// Returns `None` when nothing is left to send.
 pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
     let ours = format!("{ETAG_PREFIX}{}.", base_tag(base));
     let mut out = Vec::new();
@@ -455,9 +381,7 @@ mod tests {
         }
     }
 
-    /// The point of mixing the address in. A tag issued by a proxy at another address
-    /// must not be revalidated, or a 304 leaves the client serving artifact URLs
-    /// pointing at an address nobody listens on.
+    /// A tag issued by this proxy at another address is not revalidated.
     #[test]
     fn a_tag_from_another_address_is_not_forwarded() {
         let marked = mark_etag("\"abc123\"", "http://old.example");
@@ -468,13 +392,7 @@ mod tests {
         );
     }
 
-    /// A 304 lets the client serve what it has cached, which is only safe for a body this
-    /// proxy produced. A tag we never issued means the client holds a body whose artifact
-    /// URLs were never pointed here.
-    ///
-    /// Measured: after enabling rewriting at an address that previously ran without it,
-    /// npm sent the upstream's own tag and the registry answered 304, leaving the client
-    /// on its unrewritten copy.
+    /// A tag this proxy never issued is not revalidated.
     #[test]
     fn tags_we_did_not_issue_are_dropped() {
         let base = "http://127.0.0.1:8080";
@@ -587,9 +505,7 @@ mod tests {
         );
     }
 
-    /// A client refusing both gzip and identity gets its own header forwarded and its
-    /// body left alone. Rewriting it to something the client rejected would break the
-    /// install to satisfy our own inspection.
+    /// A client refusing both gzip and identity gets its header forwarded and its body left alone.
     #[test]
     fn a_client_refusing_gzip_and_identity_is_left_alone() {
         assert_eq!(
@@ -677,15 +593,7 @@ mod tests {
     }
 }
 
-/// Proofs about the q-value grammar.
-///
-/// [`is_zero_qvalue`] decides whether a client refused a coding, on text the client chose.
-/// It is the smallest piece of [`encoding_to_request`] that makes a decision, and the only
-/// one that allocates nothing, which is what makes it provable rather than sampled.
-///
-/// `encoding_to_request` itself is not proved here. It lowercases each token, and a heap
-/// allocation inside a symbolic loop puts it out of reach: three arbitrary bytes did not
-/// finish in two minutes. The tests cover it instead.
+/// Proofs about the q-value grammar; `encoding_to_request` allocates, so it is tested instead.
 #[cfg(kani)]
 mod proofs {
     use super::*;
@@ -693,15 +601,10 @@ mod proofs {
     /// The characters the grammar is written in, plus one that is not.
     const ALPHABET: [u8; 4] = [b'0', b'.', b'1', b'a'];
 
-    /// RFC 9110 §12.4.2 writes a qvalue as `0` or `0.` and up to three digits, so these
-    /// are every string that means "not acceptable".
+    /// Every q-value RFC 9110 §12.4.2 allows that means "not acceptable".
     const ZERO_FORMS: [&str; 5] = ["0", "0.", "0.0", "0.00", "0.000"];
 
-    /// Total, and true for exactly the zero forms.
-    ///
-    /// The right hand side is an explicit list rather than a restatement of the
-    /// implementation, so this compares the function against the grammar rather than
-    /// against itself.
+    /// Total, and true for exactly the zero forms, listed from the grammar.
     #[kani::proof]
     #[kani::unwind(6)]
     fn is_zero_qvalue_accepts_exactly_the_zero_forms() {
@@ -712,8 +615,7 @@ mod proofs {
         let len: usize = kani::any();
         kani::assume(len <= bytes.len());
 
-        // Every byte is ASCII, so this cannot fail.
-        let value = core::str::from_utf8(&bytes[..len]).unwrap();
+        let value = core::str::from_utf8(&bytes[..len]).expect("every byte is ASCII");
 
         assert_eq!(is_zero_qvalue(value), ZERO_FORMS.contains(&value));
     }
@@ -725,11 +627,8 @@ mod proofs {
     }
 }
 
-/// The instant an HTTP date names, or `None` when it is not one.
-///
-/// `Last-Modified` is an IMF-fixdate, `Sun, 15 Sep 2024 18:07:39 GMT`, which is RFC 2822's
-/// shape with a named zone. The two obsolete forms RFC 9110 still allows are not read: a
-/// host that writes one gives no publish time rather than a wrong one.
+/// The instant an IMF-fixdate such as `Sun, 15 Sep 2024 18:07:39 GMT` names.
+/// `value` in an obsolete form is not read. Returns `None` when it is not one.
 pub fn http_date(value: &str) -> Option<jiff::Timestamp> {
     let zoned = jiff::fmt::rfc2822::parse(value.trim()).ok()?;
     Some(zoned.timestamp())
@@ -751,7 +650,6 @@ mod http_date_tests {
                 "Wed, 24 Sep 2025 00:07:42 GMT",
                 Some("2025-09-24T00:07:42Z"),
             ),
-            // RFC 850, which RFC 9110 calls obsolete.
             ("Sunday, 15-Sep-24 18:07:39 GMT", None),
             ("not a date", None),
             ("", None),

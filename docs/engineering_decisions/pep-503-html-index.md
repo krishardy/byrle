@@ -93,7 +93,8 @@ download.pytorch.org writes it by its own convention.
 ## The file host answers what the index does not
 
 A pinned fetch of a record with no publish time asks the file host for one: a `HEAD`, and
-`Last-Modified`. For an immutable artifact that is when it was published. Measured against
+`Last-Modified`, read as an IMF-fixdate. The two obsolete forms RFC 9110 still allows are
+not read, so a host that writes one gives no publish time rather than a wrong one. For an immutable artifact that is when it was published. Measured against
 PyPI's own upload times on 2026-09-21:
 
 | File | Upload time | `Last-Modified` | Difference |

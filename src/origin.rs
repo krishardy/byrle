@@ -1,40 +1,19 @@
 //! Which origins the proxy fronts, and what happens to an artifact published elsewhere.
+//! The set is per deployment, never per ecosystem.
 //!
-//! Every ecosystem this proxy serves publishes artifacts on some host, and the questions
-//! are the same for all of them: is this URL one the proxy can fetch through, may the
-//! client go to it directly, or is it refused. npm's registry serves packuments and
-//! tarballs from one host and PyPI serves its index from `pypi.org` and its files from
-//! `files.pythonhosted.org`, so the set is per deployment and never per ecosystem.
+//! See docs/engineering_decisions/enforcement-tiers.md.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::record::PackageMetadata;
 use std::fmt;
 
-/// The origins whose artifacts the proxy serves.
-///
-/// One source of truth for two questions that must never disagree: which artifact URLs
-/// get pointed at the proxy ([`rewrite_artifact_origins`]), and which are reported as
-/// fetched directly ([`PackageMetadata::bypassing_origins`]). If those sets differed,
-/// an artifact could be rewritten and reported as bypassing, or left alone and reported
-/// as fine.
-///
-/// Always holds every configured upstream and every origin each row of
-/// [`crate::ecosystem::TABLE`] always reaches. The configured upstream is added beside
-/// those, not instead of them: npm rewrites `dist.tarball` to the configured registry when
-/// it names the default host, and a PyPI index published on a mirror still gives
-/// `files.pythonhosted.org` URLs for files it does not hold itself.
-///
-/// Additional origins are for a registry that serves
-/// artifacts from somewhere else, a CDN in front of a private registry being the case to
-/// expect. Zero of the 24,852 artifact URLs measured on registry.npmjs.org needed one.
+/// The origins whose artifacts the proxy serves, which both rewriting and bypass reports read.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReachableOrigins {
-    /// Every reachable origin, normalised to scheme, host and port. No path, no trailing
-    /// slash.
+    /// Every reachable origin, as scheme, host and port only.
     origins: Vec<String>,
-    /// The subset the operator added because the upstream does not serve them. Only these
-    /// are fetched from directly; see [`ReachableOrigins::routes_directly`].
+    /// The subset the operator added, the only origins fetched from directly.
     additional: Vec<String>,
 }
 
@@ -57,14 +36,8 @@ impl fmt::Display for OriginError {
 impl std::error::Error for OriginError {}
 
 impl ReachableOrigins {
-    /// Build from the configured upstreams plus any additional origins.
-    ///
-    /// Every row of [`crate::ecosystem::TABLE`] contributes its origins. Anything that is
-    /// not a URL with a host is an error rather than being dropped: an operator who names
-    /// an origin and has it silently ignored would believe those artifacts are covered.
-    ///
-    /// A packument can publish an artifact on any host, so which hosts the proxy can fetch
-    /// through is a different question from which ecosystems it routes.
+    /// Build from the configured upstreams, every [`crate::ecosystem::TABLE`] row's origins,
+    /// and any additional origins. Anything that is not a URL with a host is an error.
     pub fn new<'a, 'b>(
         upstreams: impl IntoIterator<Item = &'a str>,
         additional: impl IntoIterator<Item = &'b str>,
@@ -118,12 +91,7 @@ impl ReachableOrigins {
     }
 
     /// Whether an artifact on this origin should be fetched from it rather than from the
-    /// upstream.
-    ///
-    /// Only origins the operator added qualify. A packument that names the default
-    /// registry still routes to the configured upstream, because a private mirror
-    /// publishes artifact URLs on registry.npmjs.org while being the whole reason the
-    /// proxy was pointed somewhere else: fetching from npmjs.org would go around it.
+    /// upstream. Only an `origin` the operator added is.
     pub fn routes_directly(&self, origin: &str) -> bool {
         self.additional.iter().any(|o| o == origin)
     }
@@ -172,24 +140,13 @@ pub(crate) fn normalise_origin(base: &str) -> Result<String, OriginError> {
 pub enum Disposition {
     /// The proxy fetches it, so it can be examined.
     Served,
-    /// The client fetches it directly and nothing about it is observed. The operator has
-    /// said that is acceptable for this origin.
+    /// The client fetches it directly, unobserved, as the operator allowed for this origin.
     AllowedDirect(String),
     /// The proxy neither serves it nor permits it.
     Refused(String),
 }
 
 /// Which origins the proxy serves, and which it permits a client to fetch directly.
-///
-/// Three states, not two. Before the allow list the only escape from a refusal was to
-/// turn refusing off everywhere, which trades one origin's exemption for every origin's.
-///
-/// What counts as served depends on how the proxy is deployed. In reverse-proxy mode it
-/// is the upstream, the default registry and anything configured, because artifact URLs
-/// are rewritten to point here. In the terminating mode described in
-/// `docs/engineering_decisions/terminating-tls-certificates.md` it is the domains the
-/// proxy holds certificates for, because those are the connections it actually sees. The
-/// policy below does not change between them; only the set does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OriginPolicy {
     reachable: ReachableOrigins,
@@ -233,10 +190,7 @@ impl OriginPolicy {
     }
 
     /// What happens to an artifact published at this URL.
-    ///
-    /// A URL that does not parse is refused under its own text: it names no origin that
-    /// could be served or allowed, and an artifact that cannot be located cannot be
-    /// examined either.
+    /// `artifact_url` that does not parse is refused under its own text.
     pub fn disposition(&self, artifact_url: &str) -> Disposition {
         let Some(origin) = origin_of_url(artifact_url) else {
             return Disposition::Refused(artifact_url.to_owned());
@@ -252,19 +206,8 @@ impl OriginPolicy {
 }
 
 /// Where a client will actually fetch an artifact from, when that is not the proxy.
-///
-/// Returns the origin it will go to directly, or `None` when the request will arrive at
-/// the proxy.
-///
-/// npm rewrites `dist.tarball` to the configured registry **only when it names the
-/// default registry host**. Tested against npm 9.9.4 with a controlled registry serving
-/// the same package two ways: `https://registry.npmjs.org/...` was fetched through the
-/// configured proxy, and another origin was fetched from that origin, with no tarball
-/// request reaching the proxy at all.
-///
-/// So a registry that publishes artifacts on a host the proxy does not front has its
-/// artifacts fetched unexamined. The packument is visible, which makes this detectable
-/// at the moment the metadata goes past.
+/// See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+/// Returns the origin, or `None` when the request will arrive at the proxy.
 pub fn bypassing_origin(artifact_url: &str, reachable: &ReachableOrigins) -> Option<String> {
     let artifact = reqwest::Url::parse(artifact_url).ok()?;
     let found = origin_of(&artifact);
@@ -298,11 +241,9 @@ pub struct Rewritten {
     pub body: Vec<u8>,
     /// Distinct artifact URLs now pointing at the proxy.
     pub rewritten: usize,
-    /// How many places in the document were changed. Higher than `rewritten` when a URL
-    /// appears more than once: npm's `_resolved` repeats `dist.tarball` verbatim.
+    /// How many places in the document were changed, counting npm's `_resolved` copies.
     pub occurrences: usize,
     /// Artifacts left as they were, because their origin is not one the proxy fronts.
-    /// These are still fetched directly; see [`bypassing_origin`].
     pub left_alone: usize,
 }
 
@@ -312,10 +253,7 @@ pub enum RewriteError {
     NotUtf8(std::str::Utf8Error),
     /// The body did not parse as JSON. Only the filtering path parses.
     NotJson(serde_json::Error),
-    /// An artifact URL from the records was not found in the document as a complete
-    /// quoted string. The document is shaped in a way this does not understand, and a
-    /// partial rewrite would send some artifacts to the proxy and leave others pointing
-    /// at the registry.
+    /// An artifact URL was not found in the document as a complete quoted string.
     Incomplete { expected: usize, found: usize },
 }
 
@@ -335,46 +273,11 @@ impl fmt::Display for RewriteError {
 
 impl std::error::Error for RewriteError {}
 
-/// Point every artifact URL the proxy can serve at the proxy itself.
-///
-/// Necessary because clients disagree about `dist.tarball`. npm rewrites it to the
-/// configured registry; pnpm 10, yarn 1, yarn 4 and bun 1.3 use it verbatim and fetch
-/// from whatever host it names, so against a real registry their artifacts never reach
-/// the proxy at all. Rewriting here makes every client in the ecosystem behave the same
-/// way.
-///
-/// Only the **origin** changes. The path is kept, so the request that comes back is the
-/// one [`crate::ecosystem::npm::classify_path`] already understands and the proxy forwards it upstream unchanged.
-///
-/// An artifact whose origin is not in `reachable` is left alone. Rewriting those would
-/// mean the proxy fetching from an arbitrary host on a client's behalf, which is a
-/// capability worth not having; they stay visible through [`bypassing_origin`] instead.
-///
-/// `dist.integrity` is untouched, and the registry signature covers
-/// `<name>@<version>:<integrity>` rather than the URL (pacote `lib/registry.js`), so a
-/// rewritten document still verifies.
-///
-/// # How, and why not a JSON value tree
-///
-/// `artifacts` are the URLs already found during normalisation, so the document is not
-/// parsed again. Each is replaced wherever it appears as a **complete quoted string**,
-/// leaving every other byte alone.
-///
-/// Parsing into a `serde_json::Value` and re-serialising was the obvious approach and
-/// costs far more: the value tree dominated memory, with 24 simultaneous large packuments
-/// reaching 1,348 MB against 27.6 MB of encoded bodies, plus 36 ms to parse and 10 ms to
-/// serialise typescript. This walks the text once and allocates one output buffer.
-///
-/// It also produces a byte-identical document apart from the URLs, which re-serialising
-/// cannot promise, and it catches `_resolved`, an npm internal field repeating
-/// `dist.tarball` that a `dist.tarball`-only rewrite leaves pointing at the registry.
-///
-/// Measured against the corpus, both document kinds: of 49,704 artifact URLs, 49,702
-/// appear exactly once as a complete quoted string and 2 appear twice, both as
-/// `_resolved`. Escaped forward slashes occur in 2 of 94 documents and only inside README
-/// prose, never in a URL.
-///
-/// If any URL is not found, the whole rewrite fails rather than half of it landing.
+/// Point every artifact URL on a reachable origin at the proxy, keeping its path, by
+/// replacing each wherever it is a complete quoted string. Fails whole, never half done.
+/// See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+/// `artifacts` are the URLs normalisation found, so the document is not parsed again.
+/// `public_base` is the proxy's address the URLs are pointed at.
 pub fn rewrite_artifact_origins<'a>(
     json: &[u8],
     artifacts: impl IntoIterator<Item = &'a str>,
@@ -414,9 +317,6 @@ fn rewrite_listed(
         });
     }
 
-    // Every replaceable URL begins with one of these, so a scan per origin finds every
-    // candidate. Searching for each URL separately would be thousands of passes over
-    // megabytes.
     let prefixes: Vec<String> = reachable
         .as_slice()
         .iter()
@@ -429,7 +329,6 @@ fn rewrite_listed(
     let mut cursor = 0;
 
     while let Some(open) = next_candidate(text, cursor, &prefixes) {
-        // A URL contains no escaped quote, so the next quote ends the string.
         let Some(offset) = text[open + 1..].find('"') else {
             break;
         };
@@ -443,7 +342,6 @@ fn rewrite_listed(
                 found.insert(candidate);
                 occurrences += 1;
             }
-            // Some other string on the same origin: a repository URL, a homepage.
             None => out.push_str(candidate),
         }
         out.push('"');
@@ -474,12 +372,8 @@ fn next_candidate(text: &str, from: usize, prefixes: &[String]) -> Option<usize>
         .min()
 }
 
-/// The path to keep, when this URL names an origin the proxy fronts.
-///
-/// A fragment is kept too. A PEP 503 index writes the file's digest there,
-/// `...whl#sha256=<hex>`, and pip checks the bytes against it. An HTTP request never
-/// carries a fragment, so keeping it changes what the client verifies and not what it asks
-/// for.
+/// The path to keep, when this URL names an origin the proxy fronts, with its fragment,
+/// where a PEP 503 index writes the digest pip checks.
 pub(crate) fn reachable_path(url: &str, reachable: &ReachableOrigins) -> Option<String> {
     let parsed = reqwest::Url::parse(url).ok()?;
     if !reachable.contains(&origin_of(&parsed)) {
@@ -498,12 +392,8 @@ pub(crate) fn reachable_path(url: &str, reachable: &ReachableOrigins) -> Option<
 }
 
 impl PackageMetadata {
-    /// Artifact origins this document publishes that the proxy does not serve, split by
-    /// whether the operator has allowed them.
-    ///
-    /// Both maps count versions. The allowed one has to stay visible: it is an accepted
-    /// gap, and an accepted gap that stops being reported outlives the reason it was
-    /// added.
+    /// Artifact origins this document publishes that the proxy does not serve, allowed and
+    /// not, each with its count of versions. The allowed ones are still reported.
     pub fn unserved_origins(
         &self,
         policy: &OriginPolicy,
@@ -511,7 +401,6 @@ impl PackageMetadata {
         let mut allowed = BTreeMap::new();
         let mut refused = BTreeMap::new();
         for record in &self.records {
-            // A version the registry named no file for has no origin to be served from.
             let Some(artifact) = record.artifact() else {
                 continue;
             };
@@ -526,11 +415,8 @@ impl PackageMetadata {
 }
 
 impl PackageMetadata {
-    /// Artifact origins in this document that the proxy does not front, with how many
-    /// versions each accounts for. Empty in the normal case.
-    ///
-    /// A non-empty result means the client will fetch those artifacts directly, so
-    /// nothing about them is observed: not the digest check, not the policy engine.
+    /// Artifact origins in this document that the proxy does not front, which the client
+    /// fetches directly and unobserved, with how many versions each accounts for.
     pub fn bypassing_origins(&self, reachable: &ReachableOrigins) -> BTreeMap<String, usize> {
         let mut origins = BTreeMap::new();
         for record in &self.records {
@@ -580,9 +466,7 @@ mod tests {
         ReachableOrigins::new([UPSTREAM], additional.iter().copied()).expect("valid origins")
     }
 
-    /// A PEP 503 index writes the digest in the href's fragment, and pip checks the bytes
-    /// it downloads against it. The rewrite points the href at the proxy and leaves the
-    /// digest on it.
+    /// The rewrite keeps the digest a PEP 503 index writes in the href's fragment.
     #[test]
     fn a_rewritten_url_keeps_the_digest_a_simple_index_wrote_in_its_fragment() {
         let reachable = reachable(&[]);
@@ -636,9 +520,7 @@ mod tests {
         );
     }
 
-    /// The upstream and the default registry are always fronted, whatever else is
-    /// configured. npm rewrites `dist.tarball` to the configured registry when it
-    /// names the default host, so both are reachable by construction.
+    /// The upstream and the default registry are always fronted, whatever else is configured.
     #[test]
     fn the_upstream_and_the_default_registry_are_always_included() {
         let r = ReachableOrigins::new(["https://npm.corp.example"], std::iter::empty()).unwrap();
@@ -674,9 +556,7 @@ mod tests {
         );
     }
 
-    /// A packument naming the default registry still routes to the upstream. A
-    /// private mirror publishes registry.npmjs.org URLs and is the whole reason the
-    /// proxy was pointed somewhere else; fetching from npmjs.org would go around it.
+    /// A packument naming the default registry still routes to the upstream.
     #[test]
     fn only_origins_the_operator_added_are_fetched_from_directly() {
         let r = ReachableOrigins::new(["https://npm.corp.example"], ["https://cdn.corp.example"])
@@ -729,7 +609,6 @@ mod tests {
     #[test]
     fn blank_entries_are_skipped() {
         let r = ReachableOrigins::new([UPSTREAM], ["", "  ", "https://cdn.example"]).unwrap();
-        // UPSTREAM is the default registry here, so the two collapse into one.
         assert_eq!(
             r.as_slice(),
             [
@@ -816,9 +695,7 @@ mod tests {
         );
     }
 
-    /// [`PackageMetadata::unserved_origins`] and [`PackageMetadata::bypassing_origins`]
-    /// over whole documents. npm's normaliser builds the input because it is the shortest
-    /// route to a real one; nothing in the code under test names an ecosystem.
+    /// [`PackageMetadata::unserved_origins`] and `bypassing_origins` over whole npm documents.
     mod documents {
         use super::*;
         use crate::ecosystem::npm::{normalize_packument, normalized};

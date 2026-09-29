@@ -65,7 +65,17 @@ What it needs that does not exist yet:
 - ~~An operator-configured list of origins the proxy fronts.~~ Done:
   `WAHAROA_ARTIFACT_ORIGINS`. The upstream and the default registry are always included,
   and only origins the operator adds are fetched from directly, so a private mirror
-  publishing registry.npmjs.org URLs still routes to the mirror.
+  publishing registry.npmjs.org URLs still routes to the mirror. Every row of
+  `ecosystem::TABLE` adds the origins it always reaches, such as `files.pythonhosted.org`,
+  which a PyPI mirror still names for files it does not hold. An added origin is for a
+  registry that serves artifacts elsewhere, such as a CDN in front of a private registry;
+  none of 24,852 artifact URLs measured on registry.npmjs.org needed one. A configured
+  origin that is not a URL with a host refuses the start, rather than being ignored while
+  the operator believes it covered. `origin::ReachableOrigins` is the one set both the
+  rewrite and the bypass report read, so an artifact is never rewritten and also reported
+  as bypassing. In the terminating mode of
+  [terminating-tls-certificates](terminating-tls-certificates.md) the served set is the
+  domains the proxy holds certificates for; the three dispositions below are the same.
 - ~~A decision on the default.~~ Refusing is on, and the status is configurable by
   (ecosystem, client) with 403 as the default: `WAHAROA_REFUSAL_STATUS`. Clients bucket
   status codes rather than reading them, so an operator who finds one mishandling 403 can
