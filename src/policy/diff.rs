@@ -326,190 +326,45 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
 ) -> Run {
     let mut out = Run::default();
     let now = today();
-    let from_date = args.from_date.map_or(now, |when| when.date(now));
-    let to_date = args.to_date.map_or(now, |when| when.date(now));
-    if from_date != to_date {
-        out.notes
-            .push(format!("<FROM> as of {from_date}, <TO> as of {to_date}"));
-    }
-
-    let mut loaded = Vec::new();
-    for path in [&args.from, &args.to] {
-        match Policy::load(path) {
-            Ok(policy) => loaded.push(policy),
-            Err(e) => {
-                out.notes.push(format!("{}: {e}", path.display()));
-                return out.stop();
-            }
-        }
-    }
-
-    let log_path = match environment.audit_log() {
-        Ok(path) => path,
-        Err(e) => {
-            out.notes.push(e.to_string());
-            return out.stop();
-        }
-    };
-    if log_path.is_none() && args.lockfile.is_empty() {
+    let dates = [
+        args.from_date.map_or(now, |when| when.date(now)),
+        args.to_date.map_or(now, |when| when.date(now)),
+    ];
+    if dates[0] != dates[1] {
         out.notes.push(format!(
-            "set {} or pass --lockfile, for the packages to compare over",
-            crate::env::AUDIT_LOG
+            "<FROM> as of {}, <TO> as of {}",
+            dates[0], dates[1]
         ));
-        return out.stop();
     }
-    let mut listed = Vec::new();
-    if let Some(log_path) = log_path {
-        match std::fs::read_to_string(&log_path) {
-            Ok(log) => listed.extend(crate::audit::packages(&log)),
-            Err(e) => {
-                out.notes.push(format!("{}: {e}", log_path.display()));
-                return out.stop();
-            }
-        }
-    }
-    for path in &args.lockfile {
-        match crate::lockfile::read(path) {
-            Ok(locked) => listed.extend(locked),
-            Err(e) => {
-                out.notes.push(e.to_string());
-                return out.stop();
-            }
-        }
-    }
-
-    let versions = crate::lockfile::references(listed);
-
-    // A kept snapshot when one is named, so a changed result is the policy's and not an
-    // advisory published since. It is read for the packages above only.
-    let store: Option<Box<dyn Intel>> = match &args.snapshot {
-        Some(id) => {
-            let packages = versions
-                .iter()
-                .map(|(_, reference, _)| snapshot_intel::key_of(reference.key()))
-                .collect();
-            match snapshot_intel::kept(environment, id, packages) {
-                Ok(kept) => Some(Box::new(kept)),
-                Err(e) => {
-                    out.notes.push(format!("--snapshot {id}: {e}"));
-                    return out.stop();
-                }
-            }
-        }
-        None => match crate::intel::postgres::from_env(environment).await {
-            Ok(store) => store.map(|store| Box::new(store) as Box<dyn Intel>),
-            Err(e) => {
-                out.notes.push(format!("{}: {e}", crate::env::DATABASE_URL));
-                return out.stop();
-            }
-        },
-    };
-    if let Some(store) = &store
-        && let Ok(Some(snapshot)) = store.snapshot().await
-    {
-        out.notes
-            .push(format!("intel snapshot {}", snapshot.digest));
-    }
-
-    // Each package is asked of its own ecosystem's registry.
-    let clients = match Clients::from_env(environment) {
-        Ok(clients) => clients,
-        Err(e) => {
-            out.notes.push(e.to_string());
+    let comparison = match Comparison::read(args, environment, dates, &mut out.notes).await {
+        Ok(comparison) => comparison,
+        Err(note) => {
+            out.notes.push(note);
             return out.stop();
         }
     };
-    let needs_times = loaded.iter().any(Policy::needs_publish_times);
 
     let mut report = Report {
-        listed: versions.len(),
+        listed: comparison.versions.len(),
         ..Report::default()
     };
-    for (purl, reference, version) in &versions {
-        // Metadata that cannot be read is reported and counted, and the run goes on, so
-        // one bad package does not hide the rest. The count sets the exit's error bit.
-        let metadata = match crate::ecosystem::fetched(clients.metadata(reference.key()).await) {
-            Ok(metadata) => metadata,
-            Err(e) => {
+    for (purl, reference, version) in &comparison.versions {
+        match comparison.compare(reference, version).await {
+            Ok(Compared::Decided(decided)) => report.push(package(
+                purl,
+                (&decided[0].0, &decided[0].1),
+                (&decided[1].0, &decided[1].1),
+            )),
+            Ok(Compared::Unpublished) => out.notes.push(format!("{purl}: no longer published")),
+            Ok(Compared::Unread(e)) => {
                 out.notes.push(format!("{purl}: {e}"));
                 report.unread += 1;
-                continue;
             }
-        };
-        let Some(record) = metadata.version(version) else {
-            // The registry no longer publishes it. That is a real answer for a lockfile
-            // and is not a diff between two policies, so it is reported and skipped.
-            out.notes.push(format!("{purl}: no longer published"));
-            continue;
-        };
-
-        let times = if needs_times {
-            match clients.publish_times(reference.key()).await {
-                Ok(times) => times,
-                Err(e) => {
-                    out.notes.push(format!("{purl}: {e}"));
-                    report.unread += 1;
-                    continue;
-                }
+            Err(e) => {
+                out.notes.push(format!("{purl}: {e}"));
+                return out.stop();
             }
-        } else {
-            None
-        };
-        let (ecosystem, name) = snapshot_intel::key_of(reference.key());
-        let intel =
-            match store::for_command(store.as_deref(), &ecosystem, &name, args.snapshot.is_none())
-                .await
-            {
-                Ok(intel) => intel,
-                // Counted with the packages that could not be read, so the others are still
-                // compared and the exit's error bit is set.
-                Err(store::NoIntel::Uncovered(e)) => {
-                    out.notes.push(format!("{purl}: {e}"));
-                    report.unread += 1;
-                    continue;
-                }
-                Err(store::NoIntel::Failed(e)) => {
-                    out.notes.push(format!("{purl}: {e}"));
-                    return out.stop();
-                }
-            };
-        let decided: Vec<(super::decide::Decision, Vec<super::enforce::Unenforceable>)> = loaded
-            .iter()
-            .zip([from_date, to_date])
-            .map(|(policy, as_of)| {
-                // What the document answers without verifying anything, as `explain` and the
-                // proxy's resolution path decide it, over each policy's own window.
-                let provenance = crate::analysis::attestation::from_metadata(
-                    record,
-                    &crate::analysis::attestation::previous(
-                        &metadata.records,
-                        version,
-                        times.as_ref(),
-                        policy.provenance_window(),
-                    ),
-                );
-                let mut facts = super::decide::Facts::from_record_and_times(record, times.as_ref())
-                    .with_provenance(provenance);
-                if let Some(intel) = &intel {
-                    facts = facts.with_intel(intel);
-                }
-                (
-                    super::decide::decide(policy, &facts, as_of),
-                    super::enforce::unenforceable(
-                        policy,
-                        record,
-                        times.as_ref(),
-                        facts.intel,
-                        &facts.provenance,
-                    ),
-                )
-            })
-            .collect();
-        report.push(package(
-            purl,
-            (&decided[0].0, &decided[0].1),
-            (&decided[1].0, &decided[1].1),
-        ));
+        }
     }
 
     out.report = report.render();
@@ -531,6 +386,194 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
     }
     out.code = bits;
     out
+}
+
+/// What [`run`] compares the two policies with, read before any package is.
+struct Comparison {
+    /// `<FROM>` then `<TO>`.
+    policies: Vec<Policy>,
+    /// The date each policy is decided as of, in the order of `policies`.
+    dates: [jiff::civil::Date; 2],
+    versions: Vec<crate::lockfile::Reference>,
+    store: Option<Box<dyn Intel>>,
+    clients: Clients,
+    needs_times: bool,
+    /// False with `--snapshot`, whose kept snapshot records no streams.
+    streams_recorded: bool,
+}
+
+/// What reading one listed version came to.
+enum Compared {
+    /// Each policy's decision and what it could not enforce, in the order of
+    /// [`Comparison::policies`].
+    Decided(Vec<(Decision, Vec<Unenforceable>)>),
+    /// The registry no longer publishes the version.
+    Unpublished,
+    /// Its metadata, publish times or intel could not be read.
+    Unread(String),
+}
+
+impl Comparison {
+    /// Load both policies, the listed versions, the intel store and the registry clients.
+    /// `Err` is the note that stops the run. The intel snapshot is noted in `notes`.
+    async fn read<L: Fn(&str) -> Option<OsString>>(
+        args: &crate::cli::Diff,
+        environment: &Env<L>,
+        dates: [jiff::civil::Date; 2],
+        notes: &mut Vec<String>,
+    ) -> Result<Self, String> {
+        let policies = [&args.from, &args.to]
+            .into_iter()
+            .map(|path| Policy::load(path).map_err(|e| format!("{}: {e}", path.display())))
+            .collect::<Result<Vec<_>, _>>()?;
+        let versions = crate::lockfile::references(listed(args, environment)?);
+        let store = open_store(args, environment, &versions).await?;
+        if let Some(store) = &store
+            && let Ok(Some(snapshot)) = store.snapshot().await
+        {
+            notes.push(format!("intel snapshot {}", snapshot.digest));
+        }
+        // Each package is asked of its own ecosystem's registry.
+        let clients = Clients::from_env(environment).map_err(|e| e.to_string())?;
+        let needs_times = policies.iter().any(Policy::needs_publish_times);
+        Ok(Self {
+            policies,
+            dates,
+            versions,
+            store,
+            clients,
+            needs_times,
+            streams_recorded: args.snapshot.is_none(),
+        })
+    }
+
+    /// Read one listed version and decide it under both policies. `Err` is an intel store
+    /// that failed, which stops the run.
+    async fn compare(
+        &self,
+        reference: &crate::identity::PackageRef,
+        version: &str,
+    ) -> Result<Compared, String> {
+        // Metadata that cannot be read is reported and counted, and the run goes on, so
+        // one bad package does not hide the rest. The count sets the exit's error bit.
+        let metadata = match crate::ecosystem::fetched(self.clients.metadata(reference.key()).await)
+        {
+            Ok(metadata) => metadata,
+            Err(e) => return Ok(Compared::Unread(e)),
+        };
+        let Some(record) = metadata.version(version) else {
+            // The registry no longer publishes it. That is a real answer for a lockfile
+            // and is not a diff between two policies, so it is reported and skipped.
+            return Ok(Compared::Unpublished);
+        };
+        let times = if self.needs_times {
+            match self.clients.publish_times(reference.key()).await {
+                Ok(times) => times,
+                Err(e) => return Ok(Compared::Unread(e)),
+            }
+        } else {
+            None
+        };
+        let (ecosystem, name) = snapshot_intel::key_of(reference.key());
+        let intel = match store::for_command(
+            self.store.as_deref(),
+            &ecosystem,
+            &name,
+            self.streams_recorded,
+        )
+        .await
+        {
+            Ok(intel) => intel,
+            // Counted with the packages that could not be read, so the others are still
+            // compared and the exit's error bit is set.
+            Err(store::NoIntel::Uncovered(e)) => return Ok(Compared::Unread(e)),
+            Err(store::NoIntel::Failed(e)) => return Err(e),
+        };
+        Ok(Compared::Decided(
+            self.policies
+                .iter()
+                .zip(self.dates)
+                .map(|(policy, as_of)| {
+                    decide_under(
+                        policy,
+                        as_of,
+                        &metadata.records,
+                        record,
+                        version,
+                        times.as_ref(),
+                        intel.as_ref(),
+                    )
+                })
+                .collect(),
+        ))
+    }
+}
+
+/// The packages the audit log and the lockfiles list. `Err` is the note that stops the run.
+fn listed<L: Fn(&str) -> Option<OsString>>(
+    args: &crate::cli::Diff,
+    environment: &Env<L>,
+) -> Result<Vec<crate::lockfile::Locked>, String> {
+    let log_path = environment.audit_log().map_err(|e| e.to_string())?;
+    if log_path.is_none() && args.lockfile.is_empty() {
+        return Err(format!(
+            "set {} or pass --lockfile, for the packages to compare over",
+            crate::env::AUDIT_LOG
+        ));
+    }
+    let mut listed = Vec::new();
+    if let Some(log_path) = log_path {
+        let log = std::fs::read_to_string(&log_path)
+            .map_err(|e| format!("{}: {e}", log_path.display()))?;
+        listed.extend(crate::audit::packages(&log));
+    }
+    for path in &args.lockfile {
+        listed.extend(crate::lockfile::read(path).map_err(|e| e.to_string())?);
+    }
+    Ok(listed)
+}
+
+/// The kept snapshot `--snapshot` names, or else the intel store, if one is configured.
+/// `Err` is the note that stops the run.
+///
+/// A kept snapshot when one is named, so a changed result is the policy's and not an
+/// advisory published since. It is read for `versions` only.
+async fn open_store<L: Fn(&str) -> Option<OsString>>(
+    args: &crate::cli::Diff,
+    environment: &Env<L>,
+    versions: &[crate::lockfile::Reference],
+) -> Result<Option<Box<dyn Intel>>, String> {
+    let Some(id) = &args.snapshot else {
+        return crate::intel::postgres::from_env(environment)
+            .await
+            .map(|store| store.map(|store| Box::new(store) as Box<dyn Intel>))
+            .map_err(|e| format!("{}: {e}", crate::env::DATABASE_URL));
+    };
+    let packages = versions
+        .iter()
+        .map(|(_, reference, _)| snapshot_intel::key_of(reference.key()))
+        .collect();
+    snapshot_intel::kept(environment, id, packages)
+        .map(|kept| Some(Box::new(kept) as Box<dyn Intel>))
+        .map_err(|e| format!("--snapshot {id}: {e}"))
+}
+
+/// `record`, which is `version` of `records`, decided under `policy` as of `as_of`, and
+/// what `policy` could not enforce.
+fn decide_under(
+    policy: &Policy,
+    as_of: jiff::civil::Date,
+    records: &[crate::record::PackageRecord],
+    record: &crate::record::PackageRecord,
+    version: &str,
+    times: Option<&super::facts::PublishTimes>,
+    intel: Option<&crate::intel::store::PackageIntel>,
+) -> (Decision, Vec<Unenforceable>) {
+    let facts = super::decide::Facts::from_document(policy, records, record, version, times, intel);
+    (
+        super::decide::decide(policy, &facts, as_of),
+        super::enforce::unenforceable(policy, record, times, facts.intel, &facts.provenance),
+    )
 }
 
 #[cfg(test)]

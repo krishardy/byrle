@@ -783,21 +783,57 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
     );
     report.push('\n');
 
-    let mut findings = Vec::new();
+    let mut findings = proxy_findings(&proxy).await;
+    findings.extend(policy_findings(environment).await?);
+    findings.extend(registry_findings(environment, &proxy)?);
+    findings.extend(lockfile_findings(public.as_deref(), &proxy));
+    findings.extend(cache_findings(environment)?);
 
-    // Whether the thing at the other end is there at all, and what it says it does.
-    // Everything after this reads client configuration, which can be perfect while
-    // nothing is listening.
-    let health: Option<crate::proxy::Health> = probe::own(&proxy, crate::proxy::HEALTH_PATH).await;
-    findings.extend(check_proxy(health.as_ref(), &proxy));
+    for finding in &findings {
+        let _ = writeln!(report, "{finding}");
+    }
+    report.push('\n');
+
+    let code = match worst(&findings) {
+        Severity::Ok => {
+            let _ = writeln!(report, "Everything checked is pointing at the proxy.");
+            0
+        }
+        Severity::Warn => {
+            let _ = writeln!(report, "Installs reach the proxy, with the caveats above.");
+            0
+        }
+        Severity::Problem => {
+            let _ = writeln!(
+                report,
+                "Some installs are not going through the proxy. See above."
+            );
+            1
+        }
+    };
+    Ok(Checked { report, code })
+}
+
+/// Whether the thing at the other end is there at all, and what it says it does.
+/// Everything after this reads client configuration, which can be perfect while nothing is
+/// listening.
+async fn proxy_findings(proxy: &str) -> Vec<Finding> {
+    let health: Option<crate::proxy::Health> = probe::own(proxy, crate::proxy::HEALTH_PATH).await;
+    let mut findings = check_proxy(health.as_ref(), proxy);
     // A proxy that responds to the health request can still answer every package request
     // with 503 while its intel store is empty or down.
     if health.is_some() {
         let readiness: Option<crate::proxy::Readiness> =
-            probe::own(&proxy, crate::proxy::READY_PATH).await;
-        findings.push(check_readiness(readiness.as_ref(), &proxy));
+            probe::own(proxy, crate::proxy::READY_PATH).await;
+        findings.push(check_readiness(readiness.as_ref(), proxy));
     }
+    findings
+}
 
+/// The PyPI index form when a cooldown is configured, and the policy the proxy is
+/// configured with.
+async fn policy_findings(environment: &env::Process) -> Result<Vec<Finding>, env::EnvError> {
+    let mut findings = Vec::new();
     // Which form the PyPI index serves, and what a cooldown can be answered from. Asked
     // only when a cooldown is configured, because that is the check the answer changes.
     let uses_cooldown = match environment.policy()? {
@@ -829,45 +865,62 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
             loaded.as_ref().map_err(String::as_str),
         ));
     }
+    Ok(findings)
+}
 
+/// The registry and extra indexes each client is configured with.
+fn registry_findings(
+    environment: &env::Process,
+    proxy: &str,
+) -> Result<Vec<Finding>, env::EnvError> {
+    let mut findings = Vec::new();
     for client in clients() {
         match &client.registry {
             None => {}
             Some(RegistrySource::Asked(query)) => findings.push(check_registry(
                 client,
                 probe::configured_registry(client, query).as_deref(),
-                &proxy,
+                proxy,
             )),
             Some(RegistrySource::Read {
                 read, drop_extra, ..
             }) => match read(environment)? {
-                None => findings.push(check_registry(client, None, &proxy)),
+                None => findings.push(check_registry(client, None, proxy)),
                 Some(indexes) => {
-                    findings.push(check_registry(client, Some(&indexes.index), &proxy));
+                    findings.push(check_registry(client, Some(&indexes.index), proxy));
                     findings.push(check_extra_indexes(
                         client,
                         &indexes.extra,
                         &drop_extra(),
-                        &proxy,
+                        proxy,
                     ));
                 }
             },
         }
     }
+    Ok(findings)
+}
 
-    // Lockfiles in this directory are the record of what actually happened, as opposed to
-    // what is configured now.
+/// Lockfiles in this directory are the record of what actually happened, as opposed to
+/// what is configured now. The origins they record are checked against `public`.
+fn lockfile_findings(public: Option<&str>, proxy: &str) -> Vec<Finding> {
+    let mut findings = Vec::new();
     let mut recorded = std::collections::BTreeSet::new();
     for (lockfile, pins) in crate::lockfile::pinning() {
         let Ok(contents) = std::fs::read_to_string(lockfile.name) else {
             continue;
         };
         recorded.extend(recorded_origins(pins.key, &contents));
-        findings.push(check_lockfile(lockfile.name, pins, &contents, &proxy));
+        findings.push(check_lockfile(lockfile.name, pins, &contents, proxy));
     }
-    findings.push(check_public_url(public.as_deref(), &recorded));
-    // Every client caches, and what a warm cache supplies never reaches the proxy. How
-    // much it supplies differs, so each is reported with what was measured for it.
+    findings.push(check_public_url(public, &recorded));
+    findings
+}
+
+/// Every client caches, and what a warm cache supplies never reaches the proxy. How much
+/// it supplies differs, so each installed client is reported with what was measured for it.
+fn cache_findings(environment: &env::Process) -> Result<Vec<Finding>, env::EnvError> {
+    let mut findings = Vec::new();
     for client in clients() {
         if std::process::Command::new(client.name)
             .arg("--version")
@@ -878,30 +931,7 @@ pub async fn run(environment: &env::Process) -> Result<Checked, env::EnvError> {
             findings.push(check_cache(client, warm.as_deref()));
         }
     }
-
-    for finding in &findings {
-        let _ = writeln!(report, "{finding}");
-    }
-    report.push('\n');
-
-    let code = match worst(&findings) {
-        Severity::Ok => {
-            let _ = writeln!(report, "Everything checked is pointing at the proxy.");
-            0
-        }
-        Severity::Warn => {
-            let _ = writeln!(report, "Installs reach the proxy, with the caveats above.");
-            0
-        }
-        Severity::Problem => {
-            let _ = writeln!(
-                report,
-                "Some installs are not going through the proxy. See above."
-            );
-            1
-        }
-    };
-    Ok(Checked { report, code })
+    Ok(findings)
 }
 
 /// Asking an installed client about itself. The one part of `doctor` that runs programs.

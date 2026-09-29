@@ -283,142 +283,127 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
 ) -> Answered {
     let mut out = Answered::default();
-    let path = match environment.policy() {
-        Ok(path) => path,
-        Err(e) => {
-            out.notes.push(e.to_string());
-            return out.stop(2);
+    match answer(target, environment).await {
+        Ok(answer) => out.answer = answer,
+        Err(Stopped { code, note }) => {
+            out.notes.push(note);
+            return out.stop(code);
         }
-    };
-    let Some(path) = path else {
-        out.notes.push(format!(
-            "set {} to the policy file to explain",
-            crate::env::POLICY
-        ));
-        return out.stop(2);
-    };
-    let policy = match crate::policy::Policy::load(&path) {
-        Ok(policy) => policy,
-        Err(e) => {
-            out.notes.push(e.to_string());
-            return out.stop(2);
-        }
-    };
+    }
+    out
+}
 
-    let store = match crate::intel::postgres::from_env(environment).await {
-        Ok(store) => store,
-        Err(e) => {
-            out.notes.push(format!("{}: {e}", crate::env::DATABASE_URL));
-            return out.stop(1);
-        }
+/// Why `explain` answered nothing: the note it prints and the code it exits with.
+struct Stopped {
+    code: u8,
+    note: String,
+}
+
+fn stopped(code: u8, note: impl ToString) -> Stopped {
+    Stopped {
+        code,
+        note: note.to_string(),
+    }
+}
+
+/// What [`run`] prints on stdout.
+async fn answer<L: Fn(&str) -> Option<OsString>>(
+    target: &crate::cli::Explain,
+    environment: &Env<L>,
+) -> Result<String, Stopped> {
+    let path = environment.policy().map_err(|e| stopped(2, e))?;
+    let Some(path) = path else {
+        return Err(stopped(
+            2,
+            format!("set {} to the policy file to explain", crate::env::POLICY),
+        ));
     };
+    let policy = Policy::load(&path).map_err(|e| stopped(2, e))?;
+    let store = crate::intel::postgres::from_env(environment)
+        .await
+        .map_err(|e| stopped(1, format!("{}: {e}", crate::env::DATABASE_URL)))?;
+    let store = store.as_ref().map(|store| store as &dyn IntelStore);
 
     // `cli::Explain` holds `--policy` or a purl, never both and never neither.
-    let Some(argument) = target.purl.as_deref() else {
-        // A store with no snapshot answers nothing, so the checks that need one are
-        // reported as unenforced rather than as settings that will fire.
-        let intel = match &store {
-            Some(store) => match store.snapshot().await {
-                Ok(Some(snapshot)) => crate::policy::decide::Intel::Consulted {
-                    exploitation_loaded: snapshot.exploitation_loaded(),
-                },
-                Ok(None) => crate::policy::decide::Intel::NotConsulted,
-                Err(e) => {
-                    out.notes.push(e.to_string());
-                    return out.stop(1);
-                }
-            },
-            None => crate::policy::decide::Intel::NotConsulted,
-        };
-        out.answer = policy_report(&policy, intel);
-        return out;
-    };
+    match target.purl.as_deref() {
+        Some(argument) => package_answer(&policy, store, argument, environment).await,
+        None => Ok(policy_report(&policy, consulted(store).await?)),
+    }
+}
 
-    let reference = match argument.parse::<PackageRef>() {
-        Ok(reference) => reference,
-        Err(e) => {
-            out.notes
-                .push(format!("`{argument}` is not a package reference: {e}"));
-            return out.stop(2);
-        }
+/// Whether the checks that need intel can be enforced. A store with no snapshot answers
+/// nothing, so they are reported as unenforced rather than as settings that will fire.
+async fn consulted(store: Option<&dyn IntelStore>) -> Result<Intel, Stopped> {
+    let Some(store) = store else {
+        return Ok(Intel::NotConsulted);
     };
+    Ok(match store.snapshot().await.map_err(|e| stopped(1, e))? {
+        Some(snapshot) => Intel::Consulted {
+            exploitation_loaded: snapshot.exploitation_loaded(),
+        },
+        None => Intel::NotConsulted,
+    })
+}
+
+/// The decision `policy` makes about the package `argument` names, as of today.
+async fn package_answer<L: Fn(&str) -> Option<OsString>>(
+    policy: &Policy,
+    store: Option<&dyn IntelStore>,
+    argument: &str,
+    environment: &Env<L>,
+) -> Result<String, Stopped> {
+    let reference = argument
+        .parse::<PackageRef>()
+        .map_err(|e| stopped(2, format!("`{argument}` is not a package reference: {e}")))?;
 
     // The package is asked of its own ecosystem's registry.
-    let clients = match Clients::from_env(environment) {
-        Ok(clients) => clients,
-        Err(e) => {
-            out.notes.push(e.to_string());
-            return out.stop(2);
-        }
-    };
-    let metadata = match crate::ecosystem::fetched(clients.metadata(reference.key()).await) {
-        Ok(metadata) => metadata,
-        Err(e) => {
-            out.notes.push(e.to_string());
-            return out.stop(1);
-        }
-    };
+    let clients = Clients::from_env(environment).map_err(|e| stopped(2, e))?;
+    let metadata = crate::ecosystem::fetched(clients.metadata(reference.key()).await)
+        .map_err(|e| stopped(1, e))?;
     let Some(package) = metadata.version(reference.version()) else {
-        out.notes
-            .push(format!("the registry does not publish {argument}"));
-        return out.stop(1);
+        return Err(stopped(
+            1,
+            format!("the registry does not publish {argument}"),
+        ));
     };
 
     // Only when the policy asks for it, the same gate the proxy uses.
     // A cooldown that cannot be judged is an answer `explain` cannot give.
     let times = if policy.needs_publish_times() {
-        match clients.publish_times(reference.key()).await {
-            Ok(times) => times,
-            Err(e) => {
-                out.notes.push(e.to_string());
-                return out.stop(1);
-            }
-        }
+        clients
+            .publish_times(reference.key())
+            .await
+            .map_err(|e| stopped(1, e))?
     } else {
         None
     };
 
-    let store = store.as_ref().map(|store| store as &dyn IntelStore);
     let (ecosystem, name) = crate::intel::snapshot_intel::key_of(reference.key());
-    let intel = match crate::intel::store::for_command(store, &ecosystem, &name, true).await {
-        Ok(intel) => intel,
-        Err(e) => {
-            out.notes.push(e.to_string());
-            return out.stop(1);
-        }
-    };
-    // What the document answers without verifying anything, as the proxy's resolution path
-    // decides it: dropped provenance, or nothing to verify.
-    use crate::analysis::attestation;
-    let provenance = attestation::from_metadata(
+    let intel = crate::intel::store::for_command(store, &ecosystem, &name, true)
+        .await
+        .map_err(|e| stopped(1, e))?;
+    let facts = Facts::from_document(
+        policy,
+        &metadata.records,
         package,
-        &attestation::previous(
-            &metadata.records,
-            reference.version(),
-            times.as_ref(),
-            policy.provenance_window(),
-        ),
+        reference.version(),
+        times.as_ref(),
+        intel.as_ref(),
     );
-    let mut facts = crate::policy::decide::Facts::from_record_and_times(package, times.as_ref())
-        .with_provenance(provenance);
-    if let Some(intel) = &intel {
-        facts = facts.with_intel(intel);
-    }
     let as_of = crate::policy::today();
-    out.answer = decision(
-        &policy,
+    Ok(decision(
+        policy,
         &facts,
-        &crate::policy::decide::decide(&policy, &facts, as_of),
+        &decide::decide(policy, &facts, as_of),
         &crate::policy::enforce::unenforceable(
-            &policy,
+            policy,
             package,
             times.as_ref(),
             facts.intel,
             &facts.provenance,
         ),
         as_of,
-    );
-    out
+    ))
 }
 
 #[cfg(test)]

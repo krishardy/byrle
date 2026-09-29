@@ -143,82 +143,9 @@ impl Versions {
         for constraint in constraints.split('|') {
             read.push(self::constraint(order, ecosystem, constraint).map_err(&refuse)?);
         }
-        for pair in read.windows(2) {
-            match pair[0].1.cmp(&pair[1].1) {
-                Ordering::Less => {}
-                Ordering::Equal => {
-                    return Err(refuse(format!(
-                        "names one version twice, `{}` and `{}`",
-                        pair[0].2, pair[1].2
-                    )));
-                }
-                Ordering::Greater => {
-                    return Err(refuse(format!(
-                        "is not sorted: `{}` comes before `{}`",
-                        pair[0].2, pair[1].2
-                    )));
-                }
-            }
-        }
-        let bounds: Vec<&(Comparator, Ordered, String)> = read
-            .iter()
-            .filter(|(comparator, _, _)| *comparator != Comparator::NotEqual)
-            .collect();
-        for pair in bounds.windows(2) {
-            let (current, next) = (pair[0].0, pair[1].0);
-            let follows = if current.is_lower() {
-                next.is_upper()
-            } else {
-                next == Comparator::Equal || next.is_lower()
-            };
-            if !follows {
-                return Err(refuse(format!(
-                    "puts `{}` after `{}`. Leaving out `!=`, a bare version or `<`/`<=` is \
-                     followed by a version or `>`/`>=`, and `>`/`>=` by `<`/`<=`",
-                    pair[1].2, pair[0].2
-                )));
-            }
-        }
-
-        let mut spans = Vec::new();
-        let mut open: Option<Start<Ordered>> = None;
-        for (comparator, version, _) in &read {
-            let version = version.clone();
-            match comparator {
-                Comparator::Equal => spans.push(point(version)),
-                Comparator::Greater => open = Some(Start::After(version)),
-                Comparator::GreaterOrEqual => open = Some(Start::Introduced(version)),
-                Comparator::Less | Comparator::LessOrEqual => spans.push(Interval {
-                    start: open.take().unwrap_or(Start::First),
-                    end: if *comparator == Comparator::Less {
-                        End::Fixed(version)
-                    } else {
-                        End::LastAffected(version)
-                    },
-                }),
-                // Taken out of the spans below, once they are built.
-                Comparator::NotEqual => {}
-            }
-        }
-        if let Some(start) = open {
-            spans.push(Interval {
-                start,
-                end: End::Open,
-            });
-        }
-        if bounds.is_empty() {
-            spans.push(Interval {
-                start: Start::First,
-                end: End::Open,
-            });
-        }
-        for (comparator, version, _) in &read {
-            if *comparator == Comparator::NotEqual {
-                spans = without(spans, version);
-            }
-        }
+        in_order(&read).map_err(refuse)?;
         Ok(Self {
-            spans,
+            spans: spans(&read),
             written: written.to_owned(),
         })
     }
@@ -248,12 +175,99 @@ impl Versions {
     }
 }
 
+/// A constraint as [`constraint`] reads it: the comparator, the version, and the version as
+/// written.
+type Constraint = (Comparator, Ordered, String);
+
+/// Whether `read` is sorted, names no version twice, and alternates its bounds. `Err` is the
+/// reason it does not.
+fn in_order(read: &[Constraint]) -> Result<(), String> {
+    for pair in read.windows(2) {
+        match pair[0].1.cmp(&pair[1].1) {
+            Ordering::Less => {}
+            Ordering::Equal => {
+                return Err(format!(
+                    "names one version twice, `{}` and `{}`",
+                    pair[0].2, pair[1].2
+                ));
+            }
+            Ordering::Greater => {
+                return Err(format!(
+                    "is not sorted: `{}` comes before `{}`",
+                    pair[0].2, pair[1].2
+                ));
+            }
+        }
+    }
+    let bounds: Vec<&Constraint> = read
+        .iter()
+        .filter(|(comparator, _, _)| *comparator != Comparator::NotEqual)
+        .collect();
+    for pair in bounds.windows(2) {
+        let (current, next) = (pair[0].0, pair[1].0);
+        let follows = if current.is_lower() {
+            next.is_upper()
+        } else {
+            next == Comparator::Equal || next.is_lower()
+        };
+        if !follows {
+            return Err(format!(
+                "puts `{}` after `{}`. Leaving out `!=`, a bare version or `<`/`<=` is \
+                 followed by a version or `>`/`>=`, and `>`/`>=` by `<`/`<=`",
+                pair[1].2, pair[0].2
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The versions `read` names, which [`in_order`] has accepted.
+fn spans(read: &[Constraint]) -> Vec<Interval<Ordered>> {
+    let mut spans = Vec::new();
+    let mut open: Option<Start<Ordered>> = None;
+    for (comparator, version, _) in read {
+        let version = version.clone();
+        match comparator {
+            Comparator::Equal => spans.push(point(version)),
+            Comparator::Greater => open = Some(Start::After(version)),
+            Comparator::GreaterOrEqual => open = Some(Start::Introduced(version)),
+            Comparator::Less | Comparator::LessOrEqual => spans.push(Interval {
+                start: open.take().unwrap_or(Start::First),
+                end: if *comparator == Comparator::Less {
+                    End::Fixed(version)
+                } else {
+                    End::LastAffected(version)
+                },
+            }),
+            // Taken out of the spans below, once they are built.
+            Comparator::NotEqual => {}
+        }
+    }
+    if let Some(start) = open {
+        spans.push(Interval {
+            start,
+            end: End::Open,
+        });
+    }
+    if read
+        .iter()
+        .all(|(comparator, _, _)| *comparator == Comparator::NotEqual)
+    {
+        spans.push(Interval {
+            start: Start::First,
+            end: End::Open,
+        });
+    }
+    for (comparator, version, _) in read {
+        if *comparator == Comparator::NotEqual {
+            spans = without(spans, version);
+        }
+    }
+    spans
+}
+
 /// One constraint: its comparator, its version as ordered, and the constraint as written.
-fn constraint(
-    order: VersionOrder,
-    ecosystem: &str,
-    written: &str,
-) -> Result<(Comparator, Ordered, String), String> {
+fn constraint(order: VersionOrder, ecosystem: &str, written: &str) -> Result<Constraint, String> {
     if written.is_empty() {
         return Err("has an empty constraint, from a leading, trailing or doubled `|`".into());
     }
