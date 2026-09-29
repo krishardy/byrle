@@ -1,13 +1,7 @@
 //! Every environment variable waharoa reads: its name, default, help text and parsing.
 //!
-//! No variable name appears anywhere else in the Rust code. Other modules use the [`Var`]
-//! constants here, as values and inside messages, and
-//! `a_variable_name_appears_only_in_this_module` fails on a name written anywhere else. The
-//! defaults live here too, so `--help` is rendered from the values the code uses. See
-//! `docs/engineering_decisions/environment-variables.md`.
-//!
-//! An empty value is the same as an unset one. A value that does not parse is an
-//! [`EnvError`] naming the variable and the value, and the binary refuses to start on it.
+//! No variable name appears anywhere else in the Rust code. An empty value is unset.
+//! See environment-variables.md and default-ceilings.md in docs/engineering_decisions.
 
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
@@ -58,72 +52,31 @@ enum Default {
 
 pub const DEFAULT_LISTEN: &str = "127.0.0.1:8080";
 
-/// Default ceiling on a metadata document, applied both to the bytes buffered and to the
-/// bytes decompression is allowed to produce.
-///
-/// The largest packument measured is vite's full document, 38,950,704 bytes on 2026-09-26.
-/// This is 1.7x headroom on that. It was 32 MiB, sized at twice typescript's 15.7 MB, and
-/// vite outgrew it: a cooldown and the provenance check could not read its publish times.
-/// Over the limit the proxy forwards the response without normalising it, because an
-/// install must not fail on account of what the proxy could not inspect.
+/// Default ceiling on a metadata document, buffered and decompressed.
 pub const DEFAULT_MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 
 /// Default record store budget, in records rather than bytes.
-///
-/// Roughly five installs of the size measured in `store`. A record holds 0.9 to 1.4 KB of
-/// heap, measured by `examples/record_memory.rs`, so this is 45 to 70 MB.
-/// `RecordStore::records` reports the live count.
 pub const DEFAULT_MAX_RECORDS: usize = 50_000;
 
 /// Default verified-artifact budget, in artifacts.
-///
-/// An entry is an algorithm and a digest, on the order of 64 bytes, so this is a few
-/// megabytes. Larger than the record store's budget would be pointless: an artifact only
-/// reaches `verified` after a packument named it.
 pub const DEFAULT_MAX_VERIFIED: usize = 50_000;
 
 /// Default ceiling on how many metadata documents are decoded and rewritten at once.
-///
-/// Reading a packument costs far more than the bytes on the wire: the decoded copy, the
-/// JSON value tree the rewrite walks, the re-serialised output, and the gzip buffer are
-/// all live together. Measured with 24 simultaneous requests for the largest full
-/// packuments (typescript, @types/node, react, next, @angular/core, eslint, webpack,
-/// aws-sdk), the proxy peaked at 1,348 MB while the encoded bodies totalled 27.6 MB.
-/// That is roughly 56 MB per request in flight, and nothing bounded how many there were.
-///
-/// Eight kept the worst case near half a gigabyte when typescript's 15.7 MB was the largest
-/// packument. vite's full document is 38.9 MB: eight requests for it at once peaked the
-/// release build at 916 MB on 2026-09-26, about 113 MB each. A normal install does not reach
-/// it: npm's own request parallelism held a six-package install with 165 packuments to a
-/// 141 MB peak.
 pub const DEFAULT_MAX_CONCURRENT_METADATA: usize = 8;
 
-/// Default ceiling on how many artifacts are analysed at once, and so on how many spool
-/// files exist at once. Eight, as for [`DEFAULT_MAX_CONCURRENT_METADATA`]; at the default
-/// [`DEFAULT_MAX_ARTIFACT_BYTES`] the spool holds at most 8 GiB.
+/// Default ceiling on how many artifacts are analysed, and spool files exist, at once.
 pub const DEFAULT_MAX_CONCURRENT_ANALYSES: usize = 8;
 
-/// Default ceiling on how many client names a traffic window counts separately. Past it, a
-/// new name is counted as `other`, so a user-agent made up per request cannot grow the map.
-/// A proxy serving a team sees a handful: npm, pnpm, yarn, bun, pip and uv.
+/// Default ceiling on how many client names a traffic window counts before `other`.
 pub const DEFAULT_MAX_TRAFFIC_CLIENTS: usize = 256;
 
 /// Default ceiling on one artifact written to the spool.
-///
-/// The largest artifact a detector reads measured 81,802,749 bytes, `opencv-python`
-/// 5.0.0.93. This sits an order of magnitude above it, so it refuses an artifact whose
-/// length is a lie rather than one anybody publishes. See
-/// `docs/engineering_decisions/artifact-spool.md`.
 pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1 << 30;
 
 /// §5.5's ceiling on how far ahead a package entry may be dated.
-///
-/// Long enough to cover a review cycle, short enough that an entry nobody looked at
-/// again lapses within a quarter.
 pub const DEFAULT_EXPIRY_CEILING_DAYS: i64 = 90;
 
-/// A month of daily refreshes. npm's rows were 5,577,231 bytes gzipped on 2026-09-13, and a
-/// source whose rows did not change is not written again.
+/// The default number of snapshot manifests kept: a month of daily refreshes.
 pub const DEFAULT_SNAPSHOT_LIMIT: usize = 30;
 
 /// What §5 says a policy denial is: 403 means policy denied you.
@@ -551,8 +504,7 @@ pub fn help() -> String {
 /// A variable whose value could not be used.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvError {
-    /// The variable's name. The name rather than the [`Var`], which would make every
-    /// `Result` here several times larger.
+    /// The variable's name, not the [`Var`], which would make every `Result` larger.
     pub var: &'static str,
     pub value: String,
     pub reason: String,
@@ -659,10 +611,8 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     }
 
     /// Where each ecosystem's requests are forwarded: the row's `upstream` variable, or its
-    /// default.
-    ///
-    /// Each is an http or https URL with a host. The value is kept as given, path included,
-    /// so a registry served under a path keeps it.
+    /// default. Each is an http or https URL with a host, kept with its path.
+    /// Returns the upstreams, or the first variable that is not one.
     pub fn upstreams(&self) -> Result<crate::ecosystem::Upstreams, EnvError> {
         let mut upstreams = crate::ecosystem::Upstreams::defaults();
         for registry in crate::ecosystem::TABLE {
@@ -1133,7 +1083,6 @@ mod tests {
         );
     }
 
-    /// Each of these fell back to its default without a word before this module.
     /// Each name is read before its lowercase form, which is used when it is unset: the
     /// order reqwest reads them in.
     #[test]
@@ -1234,11 +1183,8 @@ mod tests {
         }
     }
 
-    /// `policy diff` and `explain` used to send every request to `nope`, and the proxy
-    /// panicked on it.
-    ///
-    /// Both upstreams are checked the same way, so the ecosystem the value belongs to is
-    /// the only difference and the message names the variable that carried it.
+    /// Both upstreams are refused the same way unless an http or https URL with a host,
+    /// and the message names the variable.
     #[test]
     fn an_upstream_is_an_http_or_https_url_with_a_host() {
         for (value, reason) in [
@@ -1349,9 +1295,10 @@ mod tests {
 
     #[test]
     fn process_reads_the_real_environment() {
-        // PATH is set wherever tests run, and no variable here is named PATH, so this checks
-        // only that `process` answers without panicking.
-        assert!(process().listen().is_ok());
+        assert!(
+            process().listen().is_ok(),
+            "`process` answers without panicking; no variable here is named PATH"
+        );
     }
 
     #[test]
@@ -1397,7 +1344,6 @@ mod tests {
         let found = named_outside(root, &files);
         assert!(found.is_empty(), "{found:#?}");
 
-        // And every WAHAROA_ name written here is one of `ALL`.
         let text = std::fs::read_to_string(&this).expect("readable");
         for (i, _) in text.match_indices("WAHAROA_") {
             let name: String = text[i..]

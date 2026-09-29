@@ -1,32 +1,6 @@
-//! `waharoa policy diff`: what changes if this policy replaces that one.
+//! `waharoa policy diff`: what changes if this policy replaces that one, compared per check.
 //!
-//! # Vectors, not verdicts
-//!
-//! Two policies can both answer `block` for different reasons. Comparing
-//! [`Decision::action`] reports no change there, and the change is real: one denial
-//! lapsed and another check started firing. So the comparison is per check, and the report
-//! names which check moved. That is the half an operator can act on.
-//!
-//! # A check that stops being enforced is a loosening
-//!
-//! `FAIL` to `unenforced` is not a loosening of the written policy. The setting is still
-//! there. It is a loosening of what happens, because the package now installs. The gate
-//! exists to stop a change slipping something through, so that is what it reports, and the
-//! report says `unenforced` rather than pretending the check passed.
-//!
-//! # What is not compared
-//!
-//! `n/a` moves only if the ecosystem did, and a package does not change ecosystem between
-//! two policies. A `n/a` on one side and anything else on the other is
-//! [`Strictness::Incomparable`], which fails the gate rather than being guessed at.
-//!
-//! # Exit bits
-//!
-//! The exit code is the OR of [`LOOSENED`], [`TIGHTENED`] and [`ERROR`], so a scheduled run can
-//! see a lapsing entry tighten a package while a CI gate still fails only on a loosening.
-//! [`ERROR`] is set when a listed version could not be read or none was judged, so a run that
-//! judged nothing cannot pass. An error before the report, such as a policy that does not load,
-//! exits [`ERROR`] alone. See docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
+//! See docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
 
 use std::ffi::OsString;
 
@@ -73,7 +47,6 @@ impl Shown {
     /// What the package actually gets. `None` where the check cannot be compared at all.
     fn effect(self) -> Option<Action> {
         match self {
-            // An unenforced check delivers the package, whatever the setting says.
             Self::Pass | Self::Excepted(_) | Self::Unenforced => Some(Action::Allow),
             Self::Fail(action) => Some(action),
             Self::NotApplicable => None,
@@ -110,8 +83,6 @@ pub struct Moved {
 pub fn compare(from: Shown, to: Shown) -> Strictness {
     match (from.effect(), to.effect()) {
         (None, None) => Strictness::NotApplicable,
-        // A package does not change ecosystem between two policies, so this is a
-        // disagreement rather than a move. Refused rather than guessed at.
         (None, Some(_)) | (Some(_), None) => Strictness::Incomparable,
         (Some(before), Some(after)) => match after.strength().cmp(&before.strength()) {
             std::cmp::Ordering::Greater => Strictness::Stricter,
@@ -132,10 +103,8 @@ pub struct Package {
 }
 
 impl Package {
-    /// Whether anything about this package got looser.
-    ///
-    /// Per check, not on the verdict. A package whose verdict stays `block` while one
-    /// check stopped firing has still loosened, and that is what the gate is for.
+    /// Whether any check on this package got looser, whatever the verdict did.
+    /// Returns true for a loosening.
     pub fn loosened(&self) -> bool {
         self.moved
             .iter()
@@ -223,11 +192,8 @@ impl Report {
     }
 
     /// The exit code: [`LOOSENED`] if a check loosened or cannot be compared,
-    /// [`TIGHTENED`] if one got stricter, and [`ERROR`] if a listed version could not be read
-    /// or none was judged, OR-ed.
-    ///
-    /// Incomparable sets the loosening bit: §5.5 is fail loud when tightening cannot be
-    /// proven, and a diff that cannot be decided is exactly that case.
+    /// [`TIGHTENED`] if one got stricter, and [`ERROR`] if a listed version could not be
+    /// read or none was judged, OR-ed.
     pub fn exit_bits(&self) -> u8 {
         let loosened = !self.loosened().is_empty() || !self.incomparable().is_empty();
         let tightened = !self.tightened().is_empty();
@@ -295,10 +261,7 @@ fn strictness(s: Strictness) -> &'static str {
     }
 }
 
-/// What a `waharoa policy diff` run prints and exits with.
-///
-/// `notes` and `summary` are stderr lines, before and after the report, without the
-/// command's prefix. The binary prints them and exits with `code`.
+/// What a `waharoa policy diff` run prints and exits with; `notes` and `summary` go to stderr.
 #[derive(Debug, Default)]
 pub struct Run {
     pub notes: Vec<String>,
@@ -316,10 +279,8 @@ impl Run {
 }
 
 /// Compare two policies over the packages the audit log and the lockfiles list.
-///
-/// Every package is asked of its own ecosystem's registry, and of the intel store or the
-/// kept snapshot `--snapshot` names. One package that cannot be read is counted and the
-/// rest are still compared, because the exit bit says a package was missed.
+/// `args` are the command's. `environment` names the registries and intel store.
+/// Returns what to print and the exit code.
 pub async fn run<L: Fn(&str) -> Option<OsString>>(
     args: &crate::cli::Diff,
     environment: &Env<L>,
@@ -361,8 +322,7 @@ struct Comparison {
 
 /// What reading one listed version came to.
 enum Compared {
-    /// Each policy's decision and what it could not enforce, in the order of
-    /// [`Comparison::policies`].
+    /// Each policy's decision and what it could not enforce, in [`Comparison::policies`] order.
     Decided(Vec<(Decision, Vec<Unenforceable>)>),
     /// The registry no longer publishes the version.
     Unpublished,
@@ -390,7 +350,6 @@ impl Comparison {
         {
             notes.push(format!("intel snapshot {}", snapshot.digest));
         }
-        // Each package is asked of its own ecosystem's registry.
         let clients = Clients::from_env(environment).map_err(|e| e.to_string())?;
         let needs_times = policies.iter().any(Policy::needs_publish_times);
         Ok(Self {
@@ -460,16 +419,12 @@ impl Comparison {
         reference: &crate::identity::PackageRef,
         version: &str,
     ) -> Result<Compared, String> {
-        // Metadata that cannot be read is reported and counted, and the run goes on, so
-        // one bad package does not hide the rest. The count sets the exit's error bit.
         let metadata = match crate::ecosystem::fetched(self.clients.metadata(reference.key()).await)
         {
             Ok(metadata) => metadata,
             Err(e) => return Ok(Compared::Unread(e)),
         };
         let Some(record) = metadata.version(version) else {
-            // The registry no longer publishes it. That is a real answer for a lockfile
-            // and is not a diff between two policies, so it is reported and skipped.
             return Ok(Compared::Unpublished);
         };
         let times = if self.needs_times {
@@ -490,8 +445,6 @@ impl Comparison {
         .await
         {
             Ok(intel) => intel,
-            // Counted with the packages that could not be read, so the others are still
-            // compared and the exit's error bit is set.
             Err(store::NoIntel::Uncovered(e)) => return Ok(Compared::Unread(e)),
             Err(store::NoIntel::Failed(e)) => return Err(e),
         };
@@ -684,8 +637,6 @@ mod run_tests {
             "version: 1\ncooldown_days: 1\n",
             "version: 1\ncooldown_days: 2\n",
         );
-        // The abbreviated packument answers first, then the full one is refused, which is
-        // the request a cooldown adds.
         let addr = scripted(vec![
             Answer::body(crate::ecosystem::npm::fixture("lodash-4.17.21.abbrev.json")),
             Answer::Status(500),
