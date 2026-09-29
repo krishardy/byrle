@@ -53,6 +53,21 @@ is refused; overlapping entries that cannot be ordered by subset containment are
 every `advisory_scores` entry needs `expires` or `permanent: true`, and not both; two
 `advisory_scores` entries with the same `advisory_id` are refused.
 
+## Why the shapes are what they are
+
+| Rule | Why |
+|---|---|
+| `version` is read first, and any other version refused | the schema is the security boundary. Without the probe, a version 2 document reports whichever version 1 key it lacks, which sends an operator editing keys instead of reading the version line. `version: "1"` is a string and is refused, not coerced |
+| the on/off checks default to `block`, `deprecated` to `allow` | an operator who has not thought about install scripts or KEV gets the strict answer, and turning one off is a line to write. Publishers deprecate whole release lines: `eslint` marks 405 of its 430 versions, measured 2026-09-20 |
+| `max_cvss` is a number, not a band | bands are not stable across CVSS versions |
+| the on/off checks refuse `quarantine` | it means refused now and allowed later, and waiting does not change whether a package has an install script or a known-exploited advisory |
+| a denial must name a version | one that names none would match nothing, and the operator would read it back and believe it in force |
+| every `advisory_scores` entry needs `expires` or `permanent` | every entry loosens: without it the advisory is refused |
+| `vuln_advisory_ids` rather than raising `max_cvss` | it ignores one named advisory, not every advisory the package has or later gets |
+| `ecosystem` is required on a selector | npm `requests` and PyPI `requests` are different projects |
+| an expiry is a calendar date, judged in UTC | two replicas, `explain`, `policy check` and `policy diff` then judge an expiry on the same day |
+| selectors are checked at load | the request that would expose an unordered pair may be months away |
+
 ## What is not frozen
 
 - Anything a policy file does not express: which intel streams are loaded, what `explain`

@@ -1,22 +1,7 @@
-//! The policy document: its schema, and loading it.
+//! The policy document: its schema, and loading it. Every struct refuses unknown fields,
+//! and no field is `#[serde(untagged)]`.
 //!
-//! A policy is global settings and per-package exceptions to them. Nothing is per
-//! ecosystem. See `docs/engineering_decisions/policy-tier-resolution.md`, which carries
-//! the decision flow chart this schema serves.
-//!
-//! # Fail closed on anything unrecognised
-//!
-//! `deny_unknown_fields` on every struct. A typo'd key in a security policy is not a
-//! harmless extra: `expiress` where `expires` was meant silently produces a rule that
-//! never expires, and `blcok` produces a rule that does nothing. Both read as working.
-//!
-//! # Never `#[serde(untagged)]`
-//!
-//! No field is polymorphic today. When one is, it needs a hand-written `Deserialize`
-//! rather than an `untagged` enum: untagged refuses a typo'd key but names neither the
-//! key nor the right line, reporting only that no variant matched and putting the caret
-//! on the line above the mistake. Measured in both formats by
-//! `spikes/config-format/src/bin/poly.rs`.
+//! See docs/engineering_decisions/policy-schema-v1-frozen.md.
 
 pub mod check;
 pub mod decide;
@@ -34,33 +19,20 @@ use serde::{Deserialize, Deserializer};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The only document version this understands.
-///
-/// A policy naming another version is refused rather than read as this one. The schema is
-/// the security boundary, so a document written against a different one is not something
-/// to interpret optimistically.
+/// The only document version this understands; any other is refused.
 pub const SUPPORTED_VERSION: u32 = 1;
 
-/// Today, in UTC.
-///
-/// The policy is written in civil dates, so a zone has to be chosen. UTC, so two replicas
-/// never land a day apart across midnight, and the proxy, `explain`, `policy check` and
-/// `policy diff` judge an expiry on the same day. See `policy::facts`.
+/// Today, in UTC, so every replica and command judges an expiry on the same day.
 pub fn today() -> jiff::civil::Date {
     jiff::Timestamp::now()
         .to_zoned(jiff::tz::TimeZone::UTC)
         .date()
 }
 
-/// Shipped defaults for the four settings, used when a policy does not name one.
-///
-/// Both checks block by default. An operator who has not thought about install scripts or
-/// known-exploited vulnerabilities is better served by the strict answer, and turning one
-/// off is a line they have to write.
+/// The shipped default for `cooldown_days`.
 pub const DEFAULT_COOLDOWN_DAYS: u32 = 7;
 pub const DEFAULT_MAX_CVSS: f64 = 6.9;
-/// Seven days, the cooldown's own default. Nx's 19 malicious versions came within two
-/// hours: see `docs/engineering_decisions/incident-benchmark.md`.
+/// The shipped default for `provenance_window_days`, the cooldown's own.
 pub const DEFAULT_PROVENANCE_WINDOW_DAYS: u32 = 7;
 
 fn default_cooldown_days() -> u32 {
@@ -195,12 +167,7 @@ impl fmt::Display for PolicyError {
 
 impl std::error::Error for PolicyError {}
 
-/// Read just the version, so a document written against another one is refused before
-/// its body is judged against a schema it was never written for.
-///
-/// Without this, a version 2 document reports whichever version 1 key it happens to be
-/// missing, which sends an operator editing keys rather than reading the version line.
-/// Unknown fields are allowed here and rejected by the real parse.
+/// Just the version, read before the body so another version is refused as that.
 #[derive(Deserialize)]
 struct VersionProbe {
     #[serde(default)]
@@ -208,10 +175,6 @@ struct VersionProbe {
 }
 
 /// Whatever the version line held, so the refusal can quote it back.
-///
-/// `serde-saphyr` has no document model to inspect, which is deliberate: it parses
-/// straight to Rust types. So the shape is captured here rather than borrowed from the
-/// parser.
 #[derive(Debug, PartialEq)]
 enum VersionValue {
     Number(i64),
@@ -239,8 +202,6 @@ impl<'de> Deserialize<'de> for VersionValue {
                     .unwrap_or_else(|_| VersionValue::Other(v.to_string())))
             }
 
-            // Everything else is reported as written rather than coerced. `version: "1"`
-            // is a string, and a policy that says so should be told, not guessed at.
             fn visit_str<E>(self, v: &str) -> Result<VersionValue, E> {
                 Ok(VersionValue::Other(format!("`{v}`")))
             }
@@ -252,10 +213,6 @@ impl<'de> Deserialize<'de> for VersionValue {
             fn visit_f64<E>(self, v: f64) -> Result<VersionValue, E> {
                 Ok(VersionValue::Other(v.to_string()))
             }
-
-            // No arm for an empty value: `version:` with nothing after it reaches the
-            // `Option` as `None` and never descends here, so it is reported as absent,
-            // which is what it says.
         }
 
         deserializer.deserialize_any(V)
@@ -268,54 +225,28 @@ impl<'de> Deserialize<'de> for VersionValue {
 pub struct Policy {
     pub version: u32,
 
-    /// How old a package must be before it is served. Produces `quarantine`, which lapses
-    /// on its own as the package ages.
+    /// How old a package must be before it is served. Produces `quarantine`.
     #[serde(default = "default_cooldown_days")]
     pub cooldown_days: u32,
-    /// The highest CVSS score a package may carry and still be served. At or below is
-    /// allowed, above is not.
-    ///
-    /// A number rather than a severity band: bands are not stable across CVSS versions,
-    /// where the same score falls in different ones under v2 and v3.
+    /// The highest CVSS score a package may carry and still be served.
     #[serde(default = "default_max_cvss")]
     pub max_cvss: f64,
     /// Whether a package carrying an install script is served. `block` or `allow`.
     #[serde(default = "default_block")]
     pub install_scripts: Action,
-    /// Whether a package carrying a known-exploited vulnerability is served. `block` or
-    /// `allow`.
+    /// Whether a package carrying a known-exploited vulnerability is served.
     #[serde(default = "default_block")]
     pub kev: Action,
-    /// Whether a version its publisher deprecated is served. `block` or `allow`, and
-    /// `allow` by default.
-    ///
-    /// npm's `deprecated`. npm installs a deprecated version after printing a warning and
-    /// no npm client skips one, and publishers deprecate whole release lines: `eslint`
-    /// marks 405 of its 430 versions, measured 2026-09-20. `block` is a choice an operator
-    /// makes. PyPI has no deprecation marker, and the check reports not-applicable there.
+    /// Whether a version its publisher deprecated is served. `allow` by default.
     #[serde(default = "default_allow")]
     pub deprecated: Action,
-    /// Whether a version the registry withdrew is served. `block` or `allow`.
-    ///
-    /// PyPI's PEP 592 yank. A resolver skips a yanked file unless the requirement pins
-    /// that version, so `block` is what a pinned install of a withdrawn version meets.
-    /// npm has no yank, and the check reports not-applicable there.
+    /// Whether a version the registry withdrew, PyPI's PEP 592 yank, is served.
     #[serde(default = "default_block")]
     pub yanked: Action,
-    /// Whether a version whose attestations contradict it is served. `block` or `allow`.
-    ///
-    /// Refused when an attestation it publishes fails verification, when it publishes none
-    /// and the version published before it did, or when its attestation names a different
-    /// repository or workflow file than the version published before it. A version with
-    /// no attestation after one with none passes: plan §5 does not require provenance.
-    /// See `docs/engineering_decisions/provenance-check.md`.
+    /// Whether a version whose attestations contradict the versions before it is served.
     #[serde(default = "default_block")]
     pub provenance: Action,
-    /// How far back `provenance` looks, in days. A version is compared with the version
-    /// published just before it, with every version published in this window before it,
-    /// and with the most recent attested version, however old. The window compares each
-    /// version in a burst with the identities of the others. 0 leaves the version just
-    /// before and the most recent attested one.
+    /// How far back `provenance` looks for versions to compare with, in days.
     #[serde(default = "default_provenance_window_days")]
     pub provenance_window_days: u32,
 
@@ -323,14 +254,11 @@ pub struct Policy {
     pub denials: Vec<Denial>,
     #[serde(default)]
     pub packages: Vec<PackageRule>,
-    /// Scores for advisories the streams gave none. `max_cvss` refuses an unscored
-    /// advisory until an entry here names it.
+    /// Scores for advisories the streams gave none, which `max_cvss` otherwise refuses.
     #[serde(default)]
     pub advisory_scores: Vec<AdvisoryScore>,
 
-    /// `sha256:` and the hex digest of the file's bytes, as loaded. The audit log records it
-    /// with every pinned decision, so a replay can find the policy a verdict was reached
-    /// under. Not a key in the file.
+    /// `sha256:` and the hex digest of the file's bytes, for the audit log. Not a key.
     #[serde(skip)]
     pub digest: String,
 }
@@ -370,12 +298,6 @@ impl Policy {
         Self::parse(&source)
     }
 
-    /// `install_scripts`, `kev`, `yanked`, `deprecated` and `provenance` take `block` or
-    /// `allow`, and nothing else.
-    ///
-    /// Refused rather than silently treated as one of the two. `quarantine` means "refused
-    /// now, allowed later", and neither of these lapses: waiting does not change whether a
-    /// package has an install script or a known-exploited vulnerability.
     /// [`Policy::provenance_window_days`] as a duration.
     pub fn provenance_window(&self) -> jiff::SignedDuration {
         window_of(self.provenance_window_days)
@@ -390,22 +312,14 @@ impl Policy {
                 .any(|entry| entry.set.cooldown_days.is_some_and(|days| days > 0))
     }
 
-    /// Whether any check reads publish times: a cooldown, or `provenance`, which compares a
-    /// version with the one published before it. An exception can only loosen, so
-    /// `provenance: allow` at the top level means no package is checked.
-    ///
-    /// Gates the full-packument fetch: publish times are only in the full document, and
-    /// fetching it is 1.7x to 3.6x the bytes plus a request the client never made. An
-    /// operator who has turned neither check on pays none of that.
+    /// Whether any check reads publish times, a cooldown or `provenance`, which decides
+    /// whether the full packument is fetched.
     pub fn needs_publish_times(&self) -> bool {
         self.uses_cooldown() || self.provenance == Action::Block
     }
 
-    /// Every denial names one version, in its purl, or a VERS range, in `version`, or the
-    /// file does not load.
-    ///
-    /// A denial with no version would match nothing. Refusing it at load is the difference
-    /// between a policy that is wrong and a policy that is silently doing nothing.
+    /// Every denial names one version, in its purl, or a VERS range, in `version`.
+    /// Returns which denial names neither.
     fn check_denials(&self) -> Result<(), PolicyError> {
         for (i, denial) in self.denials.iter().enumerate() {
             let at = format!("denials[{i}]");
@@ -423,11 +337,8 @@ impl Policy {
         Ok(())
     }
 
-    /// Each `advisory_scores` entry gives a CVSS score, says when it stops being true, and is
-    /// the only entry for its id.
-    ///
-    /// Every entry loosens: without it the advisory is refused. So every entry carries
-    /// `expires` or `permanent: true`, which a `packages` entry needs only when it loosens.
+    /// Each `advisory_scores` entry gives a CVSS score, says when it stops being true, and
+    /// is the only entry for its id. Returns the first that does not.
     fn check_advisory_scores(&self) -> Result<(), PolicyError> {
         for (i, score) in self.advisory_scores.iter().enumerate() {
             let at = AdvisoryScore::label(i);
@@ -456,6 +367,8 @@ impl Policy {
         Ok(())
     }
 
+    /// `install_scripts`, `kev`, `yanked`, `deprecated` and `provenance` take `block` or
+    /// `allow`, never `quarantine`, since none of them lapses.
     fn check_on_off_settings(&self) -> Result<(), PolicyError> {
         let mut checked: Vec<(String, Action)> = vec![
             ("install_scripts".to_owned(), self.install_scripts),
@@ -505,10 +418,7 @@ impl Policy {
     }
 
     /// Every selector is written in a shape containment can be decided on, and no two
-    /// entries leave most-specific-wins without an answer.
-    ///
-    /// At load, because the request that would expose an unordered pair may be months
-    /// away and the file is in front of the operator now.
+    /// entries leave most-specific-wins without an answer. Returns the first that does.
     fn check_selectors(&self) -> Result<(), PolicyError> {
         let mut canonical = Vec::with_capacity(self.packages.len());
         for (i, rule) in self.packages.iter().enumerate() {
@@ -556,13 +466,7 @@ fn describe_version(found: Option<VersionValue>) -> String {
     }
 }
 
-/// A calendar date an exception runs out on.
-///
-/// Parsed at load, so a policy that carries an unreadable date is refused rather than
-/// loaded with an entry whose expiry silently never arrives.
-///
-/// A plain calendar date, not an instant: `expires: "2026-11-30"` is a day, and which
-/// second of it the entry lapses on is not a question a policy file should have to answer.
+/// A calendar date an exception runs out on, parsed at load.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExpiryDate(pub jiff::civil::Date);
 
@@ -604,8 +508,7 @@ impl<'de> Deserialize<'de> for ExpiryDate {
     }
 }
 
-/// Permanent and absolute. There is no `expires` field, so an expiring denial is
-/// unrepresentable rather than merely discouraged, and no exception can undo one.
+/// A denial: permanent, with no `expires` field, and no exception undoes one.
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Denial {
@@ -617,15 +520,12 @@ pub struct Denial {
     pub reason: String,
 }
 
-/// What a check decides about a package.
-///
-/// `allow < quarantine < block`. There is no `warn`: nothing delivers-with-a-concern.
+/// What a check decides about a package: `allow < quarantine < block`.
 #[derive(Debug, Deserialize, PartialEq, Eq, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum Action {
     Allow,
-    /// Refused now, allowed later. Lapses without anyone doing anything, which is what
-    /// separates it from `Block`.
+    /// Refused now, allowed later, lapsing on its own.
     Quarantine,
     Block,
 }
@@ -653,8 +553,7 @@ pub struct PackageRule {
     #[serde(rename = "match")]
     pub selector: Selector,
     pub set: SetBlock,
-    /// Always required, on every entry. A required field cannot be ignored the way a
-    /// warning can, which is why this tier asks for one instead of warning.
+    /// Why the entry exists. Required on every entry.
     pub reason: String,
     #[serde(default)]
     pub expires: Option<ExpiryDate>,
@@ -664,10 +563,7 @@ pub struct PackageRule {
     pub added_by: Option<String>,
 }
 
-/// A CVSS score for an advisory that has none.
-///
-/// Used only while the advisory has no stored score. Once a stream scores it, the stream's
-/// score is compared and this entry does nothing.
+/// A CVSS score for an advisory, used only while no stream has scored it.
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct AdvisoryScore {
@@ -698,9 +594,7 @@ impl AdvisoryScore {
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Selector {
-    /// Required on every selector. Package names do not collide meaningfully across
-    /// registries, npm `requests` and PyPI `requests` being unrelated projects, so a
-    /// cross-ecosystem match is almost always a mistake.
+    /// Required on every selector: npm `requests` and PyPI `requests` are different projects.
     pub ecosystem: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -728,12 +622,7 @@ pub struct SetBlock {
     pub deprecated: Option<Action>,
     #[serde(default)]
     pub provenance: Option<Action>,
-    /// Specific vulnerability advisories to ignore for this package, by id. An id matches an
-    /// advisory's own id or any of its aliases, so a CVE id reaches a `GHSA-` advisory.
-    ///
-    /// The only exception keyed by something other than the package itself. Ignoring a
-    /// named advisory is narrower than raising `max_cvss`, which would apply to every advisory
-    /// the package carries and every one it acquires later.
+    /// Advisories to ignore for this package, by their id or any alias.
     #[serde(default)]
     pub vuln_advisory_ids: Vec<String>,
 }
@@ -755,9 +644,7 @@ mod tests {
         assert!(policy.packages.is_empty());
     }
 
-    /// A policy that says nothing gets the shipped settings, and both checks block.
-    /// An operator who has not thought about install scripts is better served by the
-    /// strict answer, and turning one off is a line they have to write.
+    /// A policy that says nothing gets the shipped settings, which block every on/off check.
     #[test]
     fn a_policy_that_says_nothing_blocks_every_on_off_check() {
         let policy = parse("").unwrap();
@@ -775,8 +662,6 @@ mod tests {
             policy.provenance_window(),
             jiff::SignedDuration::from_hours(168)
         );
-        // npm installs a deprecated version after a warning, and publishers deprecate whole
-        // release lines, so this one is a choice an operator makes rather than a default.
         assert_eq!(policy.deprecated, Action::Allow);
     }
 
@@ -797,9 +682,7 @@ mod tests {
         assert_eq!(policy.kev, Action::Allow);
     }
 
-    /// `install_scripts` and `kev` take `block` or `allow`. `quarantine` means "refused
-    /// now, allowed later", and neither lapses: waiting does not change whether a package
-    /// has an install script or a known-exploited vulnerability.
+    /// A setting that cannot lapse refuses `quarantine`.
     #[test]
     fn a_setting_that_cannot_lapse_refuses_quarantine() {
         for (at, body) in [
@@ -879,11 +762,8 @@ mod tests {
         }
     }
 
-    /// Version 1 is closed: `docs/engineering_decisions/policy-schema-v1-frozen.md`.
-    ///
-    /// Refusing an unknown key, serde names every key the struct accepts, so this pins the
-    /// key set at each of the five levels. A key added, removed or renamed fails here, and
-    /// belongs in `version: 2`.
+    /// The key set at each level is pinned by serde's list of the keys it accepts.
+    /// See docs/engineering_decisions/policy-schema-v1-frozen.md.
     #[test]
     fn the_version_1_key_set_is_closed() {
         let cases: [(&str, &str, &[&str]); 6] = [
@@ -990,7 +870,6 @@ mod tests {
             parse("kev: blcok\n").unwrap_err(),
             PolicyError::Invalid(_)
         ));
-        // `warn` left the lattice: nothing delivers-with-a-concern.
         assert!(matches!(
             parse("kev: warn\n").unwrap_err(),
             PolicyError::Invalid(_)
@@ -1026,7 +905,6 @@ mod tests {
             ("cooldown_days: 7\n", "absent"),
             ("version: \"1\"\n", "`1`"),
             ("version: true\n", "true"),
-            // An empty version line says no more than a missing one.
             ("version:\n", "absent"),
             ("version: 1.5\n", "1.5"),
             ("version: -1\n", "-1"),
@@ -1076,9 +954,6 @@ mod tests {
     }
 
     /// A denial with no version matches nothing, so the file does not load.
-    ///
-    /// The failure this prevents is silent: an operator writes the package they mean,
-    /// reads it back in the file, and it denies nobody.
     #[test]
     fn a_denial_that_names_no_version_is_refused_at_load() {
         let err = parse("denials:\n  - purl: pkg:npm/evil\n    reason: malware\n")
@@ -1088,7 +963,6 @@ mod tests {
         assert!(message.contains("names no version"), "{message}");
         assert!(message.contains("pkg:npm/evil@<version>"), "{message}");
 
-        // The same denial with a version loads, and so does one with a VERS range.
         assert!(parse("denials:\n  - purl: pkg:npm/evil@1.0.0\n    reason: malware\n").is_ok());
         assert!(
             parse("denials:\n  - purl: pkg:npm/evil\n    version: \"vers:npm/<2.0.0\"\n    reason: m\n")
@@ -1242,7 +1116,6 @@ mod tests {
                 "`{key}`: {error}"
             );
         }
-        // `provenance_required` was replaced by `provenance`, which does not require any.
         assert!(matches!(
             parse("provenance_required: true\n").unwrap_err(),
             PolicyError::Invalid(_)
