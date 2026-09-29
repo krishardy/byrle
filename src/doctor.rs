@@ -177,16 +177,14 @@ pub fn recorded_origins(key: &str, contents: &str) -> BTreeSet<String> {
         let Some(after) = line.split(key).nth(1) else {
             continue;
         };
-        let Some(start) = after.find("http") else {
-            continue;
-        };
-        let url: String = after[start..]
-            .chars()
-            .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | ',' | '}' | '#'))
-            .collect();
-        if let Some(origin) = crate::origin::origin_of_url(&url) {
-            origins.insert(origin);
-        }
+        let found = after.match_indices("http").find_map(|(start, _)| {
+            let url: String = after[start..]
+                .chars()
+                .take_while(|c| !c.is_whitespace() && !matches!(c, '"' | ',' | '}' | '#'))
+                .collect();
+            crate::origin::origin_of_url(&url)
+        });
+        origins.extend(found);
     }
     origins
 }
@@ -261,13 +259,15 @@ pub fn check_extra_indexes(
 
 /// Whether a lockfile is evidence that the proxy produced it.
 ///
-/// npm and yarn record the absolute artifact URL, so a lockfile written through the proxy
-/// contains it and CI can check that. pnpm omits the URL when it matches the configured
-/// registry, so its lockfiles are portable and prove nothing either way.
+/// npm, yarn and bun record the artifact URL, bun for every registry but npmjs.org.
+/// pnpm omits it for the configured registry, so its lockfiles prove nothing either way.
 pub fn check_lockfile(name: &str, pins: &Pins, contents: &str, proxy: &str) -> Finding {
     let title = name.to_owned();
     let origins = recorded_origins(pins.key, contents);
 
+    if origins.is_empty() && pins.absent_is_off_proxy {
+        return Finding::new(Severity::Warn, title, pins.when_absent).with_fix(pins.reinstall);
+    }
     if origins.is_empty() {
         return Finding::new(Severity::Ok, title, pins.when_absent);
     }
@@ -1389,6 +1389,28 @@ mod tests {
         );
     }
 
+    /// bun 1.4.2 writes the URL for any registry but registry.npmjs.org, where it writes `""`.
+    #[test]
+    fn a_bun_lockfile_records_the_registry_unless_it_is_npmjs() {
+        let through_proxy = r#"    "ms": ["ms@2.1.3", "http://127.0.0.1:8080/ms/-/ms-2.1.3.tgz", {}, "sha512-AAAA"],"#;
+        assert_eq!(
+            recorded_origins(pins("bun.lock").key, through_proxy),
+            origins(&["http://127.0.0.1:8080"])
+        );
+        let named_http = r#"    "httpie": ["httpie@1.0.0", "http://127.0.0.1:8080/httpie/-/httpie-1.0.0.tgz", {}, "sha512-AAAA"],"#;
+        assert_eq!(
+            recorded_origins(pins("bun.lock").key, named_http),
+            origins(&["http://127.0.0.1:8080"]),
+            "a name starting with http does not hide the URL after it"
+        );
+
+        let from_npmjs = r#"    "ms": ["ms@2.1.3", "", {}, "sha512-AAAA"],"#;
+        let finding = check_lockfile("bun.lock", pins("bun.lock"), from_npmjs, PROXY);
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(finding.detail.contains("not"), "got: {}", finding.detail);
+        assert!(finding.fix.is_some(), "a reinstall is suggested");
+    }
+
     #[test]
     fn a_pnpm_lockfile_with_tarball_urls_is_read() {
         let pnpm = "    resolution: {integrity: sha512-AAAA, tarball: https://registry.npmjs.org/a/-/a-1.0.0.tgz}\n";
@@ -1851,8 +1873,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The lockfiles checked before the table, plus `npm-shrinkwrap.json`, which records
-    /// `resolved` the same way `package-lock.json` does.
+    /// The lockfiles that record artifact URLs, each with the text before its URLs.
     #[test]
     fn the_checked_lockfiles_are_those_that_record_artifact_urls() {
         let checked: Vec<(&str, &str)> = crate::lockfile::pinning()
@@ -1865,6 +1886,7 @@ mod tests {
                 ("npm-shrinkwrap.json", "resolved"),
                 ("yarn.lock", "resolved"),
                 ("pnpm-lock.yaml", "tarball"),
+                ("bun.lock", "\": ["),
                 ("uv.lock", "url"),
             ]
         );
