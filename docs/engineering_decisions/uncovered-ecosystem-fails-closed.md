@@ -23,6 +23,7 @@ With a policy and a store, a package whose ecosystem has a gap in the snapshot i
 |---|---|
 | a stream provides `match` and one provides `malware` | decides with what the store knows |
 | no stream provides `match`, or none provides `malware` | 503, body names the ecosystem |
+| a stream its row lists is not in the snapshot, and its latest refresh did not record it as unconfigured | 503, body names the ecosystem |
 | replaced by a refresh between reading the records and reading the streams | 503, as a store that cannot answer |
 
 A gap is what `LoadedSnapshot::gaps` already reports at startup and in `waharoa doctor`,
@@ -36,6 +37,27 @@ No decision is made, so no audit entry is written. The log gets one ERROR line p
 ERROR `pypi` is served with no stream providing match, so a policy answers 503 for its
       packages. Nothing can originate a finding for it; answering 503
 ```
+
+## A listed stream the snapshot does not hold, 2026-09-29
+
+On 2026-09-29 `MAL-2026-16369` passed the OSV record ceiling, `osv/npm` did not load into a
+new store, and `datadog/npm` alone gave npm `match` and `malware`. The proxy served npm
+with no OSV advisories, and `known_malware` let `clinstestpackage` (MAL-2022-1929) through.
+So each stream an ecosystem's row lists is required as well:
+
+| Listed stream | Gap |
+|---|---|
+| in the snapshot, including an older load its latest refresh did not replace | no |
+| absent, and its latest refresh recorded it as not configured, such as GitHub's with no `WAHAROA_GITHUB_TOKEN` | no |
+| absent otherwise | yes: `` `npm` lists `osv/npm`, and the intel snapshot does not hold it `` |
+
+Decided with the user: a stream not configured is excused, a missing stream answers 503
+like any other gap, and a stream with an older load is not missing. The refresh records
+"not configured" in `intel_ingestion.unconfigured`, because the proxy's environment need
+not match the refresh's. Held by
+`a_listed_stream_the_snapshot_does_not_hold_is_a_gap_unless_unconfigured`,
+`a_listed_stream_the_snapshot_does_not_hold_is_a_503` and, against Postgres,
+`a_stream_left_unconfigured_is_reported_until_a_refresh_records_it_otherwise`.
 
 ## What is refused
 

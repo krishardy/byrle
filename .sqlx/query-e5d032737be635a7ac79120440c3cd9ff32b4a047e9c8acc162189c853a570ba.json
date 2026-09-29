@@ -1,0 +1,62 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT\n                    s.digest AS \"digest!\",\n                    to_char(s.taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')\n                        AS \"taken_at!\",\n                    ARRAY(SELECT source::text FROM intel_source ORDER BY source) AS \"sources!\",\n                    ARRAY(\n                        SELECT latest.stream::text\n                        FROM (\n                            SELECT DISTINCT ON (stream) stream, unconfigured\n                            FROM intel_ingestion\n                            ORDER BY stream, id DESC\n                        ) latest\n                        WHERE latest.unconfigured\n                        ORDER BY latest.stream\n                    ) AS \"unconfigured!\",\n                    e.key AS \"stream?\",\n                    e.value ->> 'sha256' AS \"sha256?\",\n                    e.value ->> 'etag' AS \"etag?\",\n                    e.value ->> 'last_modified' AS \"last_modified?\"\n                FROM (\n                    SELECT digest, taken_at, streams\n                    FROM intel_snapshot\n                    ORDER BY taken_at DESC\n                    LIMIT 1\n                ) s\n                LEFT JOIN LATERAL jsonb_each(s.streams) e ON TRUE\n                ORDER BY e.key\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "digest!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "taken_at!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "sources!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 3,
+        "name": "unconfigured!",
+        "type_info": "TextArray"
+      },
+      {
+        "ordinal": 4,
+        "name": "stream?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "sha256?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "etag?",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "last_modified?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "e5d032737be635a7ac79120440c3cd9ff32b4a047e9c8acc162189c853a570ba"
+}

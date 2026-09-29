@@ -172,6 +172,7 @@ mod tests {
                     last_modified: None,
                 })
                 .collect(),
+            unconfigured: Vec::new(),
         }
     }
 

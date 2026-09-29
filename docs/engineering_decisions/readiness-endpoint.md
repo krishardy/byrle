@@ -13,7 +13,8 @@
 |---|---|---|---|
 | none | any | 200 | `not_consulted` |
 | set | not configured | 200 | `not_consulted` |
-| set | holds a snapshot | 200 | `loaded` |
+| set | holds a snapshot with no gap for any served ecosystem | 200 | `loaded` |
+| set | holds a snapshot with a gap | 503, with `gaps` listing each | `loaded` |
 | set | holds no snapshot | 503 | `empty` |
 | set | cannot answer | 503 | `unavailable` |
 
@@ -21,12 +22,18 @@ The rows are the ones in [intel-in-decisions](intel-in-decisions.md): the proxy 
 exactly when a package request would not be answered with the intel 503. One function,
 `Proxy::consulted_intel`, decides for both.
 
+A gap is what [uncovered-ecosystem-fails-closed](uncovered-ecosystem-fails-closed.md)
+answers 503 for: a served ecosystem with no stream providing `match` or `malware`, or a
+stream its row lists that the snapshot does not hold. Until 2026-09-29 readiness ignored
+gaps, so a proxy answered 200 while every package of an uncovered ecosystem got the 503.
+
 The 200 body reports the snapshot that decisions use:
 
 ```json
 {"ready":true,"intel":"loaded","snapshot":{"digest":"sha256:...","taken_at":"2026-09-13T01:02:03Z",
  "sources":["cisa/kev","datadog","osv"],
- "streams":[{"stream":"osv/npm","sha256":"...","etag":"...","last_modified":null}]}}
+ "streams":[{"stream":"osv/npm","sha256":"...","etag":"...","last_modified":null}],
+ "unconfigured":["github/npm","github/pypi"]}}
 ```
 
 `sources` was added 2026-09-15: the sources the snapshot id is the digest of, read from

@@ -73,6 +73,9 @@ pub struct Readiness {
     pub intel: IntelState,
     /// The snapshot decisions use, when the store holds one.
     pub snapshot: Option<LoadedSnapshot>,
+    /// Why a loaded snapshot cannot answer for a served ecosystem, which is not ready.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gaps: Vec<String>,
 }
 
 /// What the intel store means for readiness.
@@ -425,6 +428,7 @@ impl Proxy {
                 ready: true,
                 intel: IntelState::NotConsulted,
                 snapshot: None,
+                gaps: Vec::new(),
             };
         };
         let (intel, snapshot) = match store.snapshot().await {
@@ -435,10 +439,15 @@ impl Proxy {
                 (IntelState::Unavailable, None)
             }
         };
+        let gaps: Vec<String> = snapshot
+            .as_ref()
+            .map(|s| s.gaps().iter().map(ToString::to_string).collect())
+            .unwrap_or_default();
         Readiness {
-            ready: intel == IntelState::Loaded,
+            ready: intel == IntelState::Loaded && gaps.is_empty(),
             intel,
             snapshot,
+            gaps,
         }
     }
 
@@ -4925,6 +4934,64 @@ mod tests {
         assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
     }
 
+    /// Every stream a served ecosystem lists, as a snapshot records them.
+    fn every_listed_stream() -> Vec<crate::intel::refresh::StreamDigest> {
+        crate::ecosystem::TABLE
+            .iter()
+            .flat_map(|registry| registry.streams.iter())
+            .map(|listed| crate::intel::refresh::StreamDigest {
+                stream: listed.stream.to_owned(),
+                sha256: "aa".to_owned(),
+                etag: None,
+                last_modified: None,
+            })
+            .collect()
+    }
+
+    /// A snapshot holding every listed stream but the one named, knowing nothing of any package.
+    struct EveryStream(Option<&'static str>);
+
+    impl Intel for EveryStream {
+        fn lookup<'a>(
+            &'a self,
+            _ecosystem: &'a str,
+            _name: &'a str,
+            _version: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Vec<crate::intel::store::Record>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn snapshot(&self) -> crate::intel::store::Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move {
+                Ok(Some(LoadedSnapshot {
+                    digest: "s1".to_owned(),
+                    taken_at: "2026-09-13T00:00:00Z".to_owned(),
+                    sources: Vec::new(),
+                    streams: every_listed_stream()
+                        .into_iter()
+                        .filter(|s| Some(s.stream.as_str()) != self.0)
+                        .collect(),
+                    unconfigured: Vec::new(),
+                }))
+            })
+        }
+
+        fn package<'a>(
+            &'a self,
+            _ecosystem: &'a str,
+            _name: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Option<PackageIntel>> {
+            Box::pin(async move {
+                Ok(Some(PackageIntel {
+                    snapshot: "s1".to_owned(),
+                    records: Vec::new(),
+                    ranges: Vec::new(),
+                    exploitation_loaded: false,
+                }))
+            })
+        }
+    }
+
     /// A snapshot that loaded no stream, so it covers no ecosystem.
     struct NoStreams;
 
@@ -4945,6 +5012,7 @@ mod tests {
                     taken_at: "2026-09-18T00:00:00Z".to_owned(),
                     sources: Vec::new(),
                     streams: Vec::new(),
+                    unconfigured: Vec::new(),
                 }))
             })
         }
@@ -4963,6 +5031,34 @@ mod tests {
                 }))
             })
         }
+    }
+
+    /// A snapshot missing one stream npm lists answers npm's packages 503, though the other
+    /// streams still cover npm.
+    #[tokio::test]
+    async fn a_listed_stream_the_snapshot_does_not_hold_is_a_503() {
+        let without_osv = Arc::new(EveryStream(Some("osv/npm")));
+        let proxy = offline(Some(without_osv.clone()), Some(NO_POLICY));
+        let (status, _) = answered(resolve_npm(&proxy, "lodash", LODASH).await).await;
+        assert_eq!(status, 503);
+        let readiness = offline(Some(without_osv), Some(NO_POLICY))
+            .readiness()
+            .await;
+        assert!(!readiness.ready);
+        assert!(
+            readiness.gaps.iter().any(|g| g.contains("lists `osv/npm`")),
+            "{:?}",
+            readiness.gaps
+        );
+
+        let proxy = offline(Some(Arc::new(EveryStream(None))), Some(NO_POLICY));
+        assert!(
+            matches!(
+                resolve_npm(&proxy, "lodash", LODASH).await,
+                DocumentStep::Forward { .. }
+            ),
+            "with every stream held, the same document is forwarded"
+        );
     }
 
     /// npm clients report a packument 503 as one, so npm's row keeps it.
@@ -4998,12 +5094,8 @@ mod tests {
                     digest: self.newest.to_owned(),
                     taken_at: "2026-09-17T00:00:00Z".to_owned(),
                     sources: Vec::new(),
-                    streams: vec![crate::intel::refresh::StreamDigest {
-                        stream: crate::intel::providers::osv::bundle::NPM_STREAM.to_owned(),
-                        sha256: "aa".to_owned(),
-                        etag: None,
-                        last_modified: None,
-                    }],
+                    streams: every_listed_stream(),
+                    unconfigured: Vec::new(),
                 }))
             })
         }
@@ -5083,9 +5175,15 @@ mod tests {
             ("no policy", down(), false, (true, IntelState::NotConsulted)),
             (
                 "loaded",
-                Some(malware_everywhere()),
+                Some(Arc::new(EveryStream(None)) as Arc<dyn Intel>),
                 true,
                 (true, IntelState::Loaded),
+            ),
+            (
+                "loaded, with PyPI uncovered",
+                Some(malware_everywhere()),
+                true,
+                (false, IntelState::Loaded),
             ),
             (
                 "empty",
@@ -5118,18 +5216,35 @@ mod tests {
             "the store's error is logged, not served"
         );
 
-        let (base, seen) = proxy_with_intel(malware_everywhere(), true).await;
+        let (base, seen) = proxy_with_intel(Arc::new(EveryStream(None)), true).await;
         let response = reqwest::get(format!("{base}{READY_PATH}?probe=1"))
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
-        assert_eq!(
-            response.text().await.unwrap(),
-            r#"{"ready":true,"intel":"loaded","snapshot":{"digest":"s1","taken_at":"2026-09-13T00:00:00Z","sources":[],"streams":[{"stream":"osv/npm","sha256":"aa","etag":null,"last_modified":null}]}}"#,
-            "the body a probe and the README describe"
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).expect("a JSON body");
+        assert_eq!(body["ready"], true);
+        assert_eq!(body["intel"], "loaded");
+        assert_eq!(body["snapshot"]["digest"], "s1");
+        assert!(
+            body.get("gaps").is_none(),
+            "no gaps, so none listed: {body}"
         );
-        let paths = &seen.lock().unwrap().paths;
+        let paths = seen.lock().unwrap().paths.clone();
         assert!(paths.is_empty(), "answered here, not forwarded: {paths:?}");
+
+        let (base, _) = proxy_with_intel(malware_everywhere(), true).await;
+        let response = reqwest::get(format!("{base}{READY_PATH}")).await.unwrap();
+        assert_eq!(response.status(), 503, "a gap is not ready");
+        let body: serde_json::Value =
+            serde_json::from_str(&response.text().await.unwrap()).expect("a JSON body");
+        assert_eq!(body["intel"], "loaded");
+        let gaps = body["gaps"].as_array().expect("the gaps are listed");
+        assert!(
+            gaps.iter()
+                .any(|g| g.as_str().is_some_and(|g| g.contains("`pypi` lists"))),
+            "{body}"
+        );
     }
 
     /// An upstream that sends no response is 502. §5 forbids any 4xx for a not-ready state,

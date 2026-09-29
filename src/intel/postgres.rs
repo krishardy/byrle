@@ -215,7 +215,8 @@ impl PgIntel {
             r#"
             SELECT
                 to_char(taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "taken_at!",
-                source, stream, sha256, etag, last_modified, rows_digest, snapshot, error
+                source, stream, sha256, etag, last_modified, rows_digest, snapshot, error,
+                unconfigured
             FROM intel_ingestion
             ORDER BY id DESC
             LIMIT $1
@@ -237,6 +238,7 @@ impl PgIntel {
                 rows: row.rows_digest,
                 snapshot: row.snapshot,
                 error: row.error,
+                unconfigured: row.unconfigured,
             })
             .collect())
     }
@@ -384,8 +386,9 @@ async fn record_ingestions(
 async fn record(conn: &mut PgConnection, entry: &Ingestion) -> Result<(), IntelError> {
     sqlx::query!(
         "INSERT INTO intel_ingestion \
-         (taken_at, source, stream, sha256, etag, last_modified, rows_digest, snapshot, error) \
-         VALUES ($1::text::timestamptz, $2, $3, $4, $5, $6, $7, $8, $9)",
+         (taken_at, source, stream, sha256, etag, last_modified, rows_digest, snapshot, error, \
+          unconfigured) \
+         VALUES ($1::text::timestamptz, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         entry.taken_at,
         entry.source,
         entry.stream,
@@ -394,7 +397,8 @@ async fn record(conn: &mut PgConnection, entry: &Ingestion) -> Result<(), IntelE
         entry.last_modified.as_deref(),
         entry.rows.as_deref(),
         entry.snapshot.as_deref(),
-        entry.error.as_deref()
+        entry.error.as_deref(),
+        entry.unconfigured
     )
     .execute(conn)
     .await
@@ -450,6 +454,16 @@ impl Intel for PgIntel {
                     to_char(s.taken_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
                         AS "taken_at!",
                     ARRAY(SELECT source::text FROM intel_source ORDER BY source) AS "sources!",
+                    ARRAY(
+                        SELECT latest.stream::text
+                        FROM (
+                            SELECT DISTINCT ON (stream) stream, unconfigured
+                            FROM intel_ingestion
+                            ORDER BY stream, id DESC
+                        ) latest
+                        WHERE latest.unconfigured
+                        ORDER BY latest.stream
+                    ) AS "unconfigured!",
                     e.key AS "stream?",
                     e.value ->> 'sha256' AS "sha256?",
                     e.value ->> 'etag' AS "etag?",
@@ -475,6 +489,7 @@ impl Intel for PgIntel {
                 digest: first.digest.clone(),
                 taken_at: first.taken_at.clone(),
                 sources: first.sources.clone(),
+                unconfigured: first.unconfigured.clone(),
                 streams: rows
                     .iter()
                     .filter_map(|row| {

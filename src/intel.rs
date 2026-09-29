@@ -258,7 +258,7 @@ impl Capabilities {
             .filter(|&&ecosystem| self.providers(ecosystem, capability).is_empty())
             .map(|&ecosystem| Gap {
                 ecosystem: ecosystem.to_owned(),
-                missing: capability,
+                missing: Missing::Capability(capability),
             })
             .collect()
     }
@@ -301,27 +301,44 @@ pub fn capabilities_of(streams: &[refresh::StreamDigest]) -> Capabilities {
     })
 }
 
-/// An ecosystem served with no stream able to say something about it.
+/// A served ecosystem the snapshot cannot answer for, and what it lacks.
 #[derive(Debug, PartialEq)]
 pub struct Gap {
     pub ecosystem: String,
-    pub missing: Capability,
+    pub missing: Missing,
+}
+
+/// What a [`Gap`] lacks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Missing {
+    /// No stream in the snapshot provides this capability.
+    Capability(Capability),
+    /// A stream the ecosystem lists that the snapshot does not hold, and that was configured.
+    Stream(String),
 }
 
 impl std::fmt::Display for Gap {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "`{}` is served with no stream providing {}, so a policy answers 503 for its \
-             packages. Nothing can {}",
-            self.ecosystem,
-            self.missing.as_str(),
-            match self.missing {
-                Capability::Match => "originate a finding for it",
-                Capability::Enrich => "add to a finding for it",
-                Capability::Malware => "report malware for it",
-            }
-        )
+        match &self.missing {
+            Missing::Capability(capability) => write!(
+                f,
+                "`{}` is served with no stream providing {}, so a policy answers 503 for its \
+                 packages. Nothing can {}",
+                self.ecosystem,
+                capability.as_str(),
+                match capability {
+                    Capability::Match => "originate a finding for it",
+                    Capability::Enrich => "add to a finding for it",
+                    Capability::Malware => "report malware for it",
+                }
+            ),
+            Missing::Stream(stream) => write!(
+                f,
+                "`{}` lists `{stream}`, and the intel snapshot does not hold it, so a policy \
+                 answers 503 for its packages. `waharoa intel history` says why it did not load",
+                self.ecosystem
+            ),
+        }
     }
 }
 
@@ -449,9 +466,9 @@ mod tests {
             recorded("cisa/kev"),
             recorded("datadog/npm"),
         ]);
-        let pypi_without = |missing| Gap {
+        let pypi_without = |capability| Gap {
             ecosystem: "pypi".to_owned(),
-            missing,
+            missing: Missing::Capability(capability),
         };
         assert_eq!(caps.gaps(&served()), [pypi_without(Capability::Match)]);
         assert_eq!(
@@ -609,7 +626,7 @@ mod tests {
 
         let gaps = caps.gaps(&["npm"]);
         assert_eq!(gaps.len(), 1);
-        assert_eq!(gaps[0].missing, Capability::Match);
+        assert_eq!(gaps[0].missing, Missing::Capability(Capability::Match));
         assert!(caps.providers("npm", Capability::Match).is_empty());
         assert_eq!(caps.providers("npm", Capability::Enrich), vec!["nvd"]);
     }
@@ -635,7 +652,7 @@ mod tests {
         assert!(caps.gaps(&["npm"]).is_empty());
         assert_eq!(
             caps.uncovered_by(&["npm"], Capability::Malware)[0].missing,
-            Capability::Malware
+            Missing::Capability(Capability::Malware)
         );
     }
 

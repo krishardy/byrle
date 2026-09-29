@@ -338,6 +338,7 @@ async fn the_newest_snapshot_is_the_one_reported() {
                     last_modified: None,
                 },
             ],
+            unconfigured: Vec::new(),
         }),
         "sorted by stream, to the second in UTC, and a stream with no sha256 left out"
     );
@@ -1175,6 +1176,59 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
     );
 }
 
+/// A stream a refresh did not read because it is not configured is recorded so, and the
+/// snapshot reports it until a later refresh records the stream otherwise.
+#[tokio::test]
+async fn a_stream_left_unconfigured_is_reported_until_a_refresh_records_it_otherwise() {
+    let intel = skip_without_database!("t_unconfigured");
+    let rows = [osv_fixture("MAL-2021-1")];
+    let encoded = load::encode(osv::bundle::NPM_STREAM, &rows);
+    let github = |unconfigured| NotLoaded {
+        source: "github/npm".to_owned(),
+        stream: "github/npm".to_owned(),
+        bundle: None,
+        error: format!(
+            "{} is unset, so this stream is not read",
+            waharoa::env::GITHUB_TOKEN
+        ),
+        unconfigured,
+    };
+    let load = |tag: &'static str, not_loaded: NotLoaded| {
+        let intel = &intel;
+        let encoded = &encoded;
+        let rows = &rows;
+        async move {
+            let f = fetch(tag);
+            intel
+                .replace(
+                    &[Replacement {
+                        encoded,
+                        rows,
+                        streams: &f.streams,
+                    }],
+                    std::slice::from_ref(&not_loaded),
+                    &f.taken_at,
+                )
+                .await
+                .expect("load");
+        }
+    };
+    load("u1", github(true)).await;
+    let snapshot = intel.snapshot().await.expect("answers").expect("loaded");
+    assert_eq!(snapshot.unconfigured, ["github/npm"]);
+    assert!(
+        intel.history(1).await.expect("reads")[0].unconfigured,
+        "the history row says so"
+    );
+
+    load("u2", github(false)).await;
+    let snapshot = intel.snapshot().await.expect("answers").expect("loaded");
+    assert!(
+        snapshot.unconfigured.is_empty(),
+        "the latest row says it was configured and failed"
+    );
+}
+
 /// A load appends a row per stream it tried, with the snapshot; a failed load appends
 /// nothing; a refresh that loaded nothing appends its streams with no snapshot.
 #[tokio::test]
@@ -1190,6 +1244,7 @@ async fn every_stream_a_refresh_tried_is_appended_to_the_history() {
         stream: kev::STREAM.to_owned(),
         bundle: None,
         error: "fetching: refused".to_owned(),
+        unconfigured: false,
     };
     let loaded = intel
         .replace(
@@ -1231,6 +1286,7 @@ async fn every_stream_a_refresh_tried_is_appended_to_the_history() {
         stream: s3.streams[0].stream.clone(),
         bundle: Some(s3.streams[0].clone()),
         error: "a record did not read".to_owned(),
+        unconfigured: false,
     };
     intel
         .record_not_loaded(std::slice::from_ref(&unread), &s3.taken_at)
