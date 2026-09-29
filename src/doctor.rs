@@ -4,7 +4,7 @@
 //! See docs/engineering_decisions/enforcement-tiers.md.
 
 use crate::env;
-use crate::lockfile::Pins;
+use crate::lockfile::{Lockfile, Pins};
 use crate::policy::check::Report;
 use crate::policy::packages;
 use crate::proxy::{IntelState, READY_PATH, Readiness};
@@ -261,11 +261,12 @@ pub fn check_extra_indexes(
 ///
 /// npm, yarn and bun record the artifact URL, bun for every registry but npmjs.org.
 /// pnpm omits it for the configured registry, so its lockfiles prove nothing either way.
-pub fn check_lockfile(name: &str, pins: &Pins, contents: &str, proxy: &str) -> Finding {
-    let title = name.to_owned();
+pub fn check_lockfile(lockfile: &Lockfile, pins: &Pins, contents: &str, proxy: &str) -> Finding {
+    let title = lockfile.name.to_owned();
     let origins = recorded_origins(pins.key, contents);
 
-    if origins.is_empty() && pins.absent_is_off_proxy {
+    let locks_nothing = || matches!((lockfile.read)(contents), Ok(locked) if locked.is_empty());
+    if origins.is_empty() && pins.absent_is_off_proxy && !locks_nothing() {
         return Finding::new(Severity::Warn, title, pins.when_absent).with_fix(pins.reinstall);
     }
     if origins.is_empty() {
@@ -877,7 +878,7 @@ fn lockfile_findings(dir: &std::path::Path, public: Option<&str>, proxy: &str) -
             continue;
         };
         recorded.extend(recorded_origins(pins.key, &contents));
-        findings.push(check_lockfile(lockfile.name, pins, &contents, proxy));
+        findings.push(check_lockfile(lockfile, pins, &contents, proxy));
     }
     findings.push(check_public_url(public, &recorded));
     findings
@@ -1262,6 +1263,13 @@ mod tests {
     }
     use crate::ecosystem::npm::clients::named;
 
+    fn lockfile(name: &str) -> &'static Lockfile {
+        crate::lockfile::pinning()
+            .find(|(lockfile, _)| lockfile.name == name)
+            .map(|(lockfile, _)| lockfile)
+            .expect("this lockfile records artifact URLs")
+    }
+
     fn pins(name: &str) -> &'static Pins {
         crate::lockfile::pinning()
             .find(|(lockfile, _)| lockfile.name == name)
@@ -1380,7 +1388,12 @@ mod tests {
         let pnpm = "  lodash@4.17.21:\n    resolution: {integrity: sha512-AAAA}\n";
         assert!(recorded_origins(pins("pnpm-lock.yaml").key, pnpm).is_empty());
 
-        let finding = check_lockfile("pnpm-lock.yaml", pins("pnpm-lock.yaml"), pnpm, PROXY);
+        let finding = check_lockfile(
+            lockfile("pnpm-lock.yaml"),
+            pins("pnpm-lock.yaml"),
+            pnpm,
+            PROXY,
+        );
         assert_eq!(finding.severity, Severity::Ok);
         assert!(
             finding.detail.contains("portable"),
@@ -1404,11 +1417,32 @@ mod tests {
             "a name starting with http does not hide the URL after it"
         );
 
-        let from_npmjs = r#"    "ms": ["ms@2.1.3", "", {}, "sha512-AAAA"],"#;
-        let finding = check_lockfile("bun.lock", pins("bun.lock"), from_npmjs, PROXY);
+        let from_npmjs = bun_lock(r#"    "ms": ["ms@2.1.3", "", {}, "sha512-AAAA"],"#);
+        let finding = check_lockfile(lockfile("bun.lock"), pins("bun.lock"), &from_npmjs, PROXY);
         assert_eq!(finding.severity, Severity::Warn);
         assert!(finding.detail.contains("not"), "got: {}", finding.detail);
         assert!(finding.fix.is_some(), "a reinstall is suggested");
+
+        let nothing_locked =
+            bun_lock("").replace("\"lockfileVersion\": 2", "\"lockfileVersion\": 1");
+        let finding = check_lockfile(
+            lockfile("bun.lock"),
+            pins("bun.lock"),
+            &nothing_locked,
+            PROXY,
+        );
+        assert_eq!(
+            finding.severity,
+            Severity::Ok,
+            "a bun.lock that locks no package says nothing about the registry"
+        );
+    }
+
+    /// A text `bun.lock` as bun 1.4.2 writes it, holding `packages`.
+    fn bun_lock(packages: &str) -> String {
+        format!(
+            "{{\n  \"lockfileVersion\": 2,\n  \"configVersion\": 1,\n  \"workspaces\": {{\n    \"\": {{\n      \"name\": \"t\",\n    }},\n  }},\n  \"packages\": {{\n{packages}\n  }}\n}}\n"
+        )
     }
 
     #[test]
@@ -1423,7 +1457,12 @@ mod tests {
     #[test]
     fn a_lockfile_pinned_to_the_proxy_is_evidence_it_was_used() {
         let npm = r#"{"packages":{"a":{"resolved":"http://127.0.0.1:8080/a/-/a-1.0.0.tgz"}}}"#;
-        let finding = check_lockfile("package-lock.json", pins("package-lock.json"), npm, PROXY);
+        let finding = check_lockfile(
+            lockfile("package-lock.json"),
+            pins("package-lock.json"),
+            npm,
+            PROXY,
+        );
         assert_eq!(finding.severity, Severity::Ok);
         assert!(finding.detail.contains("through the proxy"));
     }
@@ -1431,7 +1470,12 @@ mod tests {
     #[test]
     fn a_lockfile_pinned_elsewhere_says_so() {
         let npm = r#"{"packages":{"a":{"resolved":"https://registry.npmjs.org/a/-/a-1.0.0.tgz"}}}"#;
-        let finding = check_lockfile("package-lock.json", pins("package-lock.json"), npm, PROXY);
+        let finding = check_lockfile(
+            lockfile("package-lock.json"),
+            pins("package-lock.json"),
+            npm,
+            PROXY,
+        );
         assert_eq!(finding.severity, Severity::Warn);
         assert!(finding.fix.is_some());
     }
@@ -1442,7 +1486,7 @@ mod tests {
     fn an_address_with_no_origin_is_compared_as_written() {
         let npm = r#"{"packages":{"a":{"resolved":"https://registry.npmjs.org/a/-/a-1.0.0.tgz"}}}"#;
         let finding = check_lockfile(
-            "package-lock.json",
+            lockfile("package-lock.json"),
             pins("package-lock.json"),
             npm,
             "127.0.0.1:8080",
@@ -1469,7 +1513,12 @@ mod tests {
         let npm = r#"{"packages":{
             "a":{"resolved":"http://127.0.0.1:8080/a/-/a-1.0.0.tgz"},
             "b":{"resolved":"https://registry.npmjs.org/b/-/b-1.0.0.tgz"}}}"#;
-        let finding = check_lockfile("package-lock.json", pins("package-lock.json"), npm, PROXY);
+        let finding = check_lockfile(
+            lockfile("package-lock.json"),
+            pins("package-lock.json"),
+            npm,
+            PROXY,
+        );
         assert_eq!(finding.severity, Severity::Problem);
         assert!(finding.detail.contains("part of this install"));
     }
