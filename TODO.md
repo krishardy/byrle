@@ -314,6 +314,11 @@ Items that I've added that are not stage-bound.
       into it, 11 of them in `startup.rs`; none do now. The first count, 13 of 93, missed
       messages split across lines.
 
+26. [ ] Reach the 100% unit coverage floor. Raised 2026-09-29, when `make coverage` moved
+    from 95 to 100. The library was then at 96.42% of regions (1,796 missed), 96.96% of
+    functions (116) and 97.67% of lines (747). The largest gaps are in `proxy.rs`,
+    `doctor.rs`, `startup.rs`, `policy/diff.rs` and `env.rs`. `doctor::run` had no test.
+
 ## Architecture Refactor
 
 Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here
@@ -859,8 +864,9 @@ implementations.
             fails in that state, which is how the flag is tested.
 - [x] Unit test coverage tooling, for the CLAUDE.md floor. `make coverage` runs
       cargo-llvm-cov over the **library** with
-      `--fail-under-lines/-functions/-regions 95`; `COVERAGE_FLOOR` overrides it. The
-      library is at 97.5% lines, 97.0% regions, 98.0% functions. `src/main.rs` is printed
+      `--fail-under-lines/-functions/-regions 100`, raised from 95 on 2026-09-29 (item
+      26); `COVERAGE_FLOOR` overrides it. The library was at 97.5%
+      lines, 97.0% regions, 98.0% functions when the tooling landed. `src/main.rs` is printed
       for reference and is not part of the floor: it is startup wiring, covered by
       `make smoke-npm` and `make smoke-clients` running real clients through the binary.
       - [x] The network and corpus tests are compiled out under `cfg(coverage)`, which

@@ -37,7 +37,7 @@ binary.
   does not answer, runs them and tears it down. Tests that do not need a database must not
   require it.
 - **The repository trait stays, for a different reason.** It was backend portability,
-  which is moot. It remains because the 95% unit coverage floor excludes corpus and live
+  which is moot. It remains because the 100% unit coverage floor excludes corpus and live
   tests, so the policy engine and everything above the storage seam has to be testable
   with no database at all. Reading "one backend" and deleting the trait would put the
   policy engine behind a container.
