@@ -56,7 +56,19 @@ aliases so a `vuln_advisory_ids` exception can name it by CVE. See
 this they rebuilt facts from the record alone, which always read `NotConsulted`.
 
 The `Intel` trait returns boxed futures, so `Proxy` holds `Arc<dyn Intel>` and proxy tests
-use `FixedIntel`, a store with one fixed reply, with no container.
+use `FixedIntel`, a store with one fixed reply, with no container. The trait is kept with one
+backend so the decision engine is unit-tested with no database. A store that cannot answer
+returns an error, not an empty answer: empty means a stream was asked and knew nothing.
+
+`for_version` gives each advisory once per stream. An advisory stored against every version,
+a listed version and a range covering it is one answer. Two streams reporting one advisory
+are two signals, so the key is the stream and the id.
+
+| `IntelError` | Means |
+|---|---|
+| `Range` | a stored range does not parse. The loader writes none; matching it against nothing would drop the advisory |
+| `Unkeyed` | a row refers to an advisory the load did not key: a loader defect |
+| `Unread` | a kept snapshot was not read for this package, so "nothing known" would be wrong |
 
 ## Evidence
 

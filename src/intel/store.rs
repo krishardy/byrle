@@ -1,19 +1,7 @@
 //! Where advisories are kept, and the seam that lets everything above be tested without
-//! them.
+//! them. One lookup per package answers every check that reads advisories.
 //!
-//! # Why a trait, now that there is one backend
-//!
-//! Not portability. SQLite was dropped and Postgres is the only target. The trait is here
-//! because CLAUDE.md puts the unit coverage floor at 95% excluding corpus and live tests,
-//! so the policy engine and everything above this seam has to be testable with no database
-//! at all. Reading "one backend" and deleting the trait would put the decision engine
-//! behind a container.
-//!
-//! # What a lookup answers
-//!
-//! One question, asked per package version: what is known against it. The three checks
-//! that read advisories all answer from that one result, so the proxy makes one query per
-//! package rather than one per check.
+//! See docs/engineering_decisions/intel-in-decisions.md.
 
 use crate::intel::range::{Interval, Ordered, VersionOrder};
 use crate::intel::refresh::StreamDigest;
@@ -27,8 +15,7 @@ use std::pin::Pin;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Record {
     pub advisory_id: String,
-    /// The other ids the advisory is known by, sorted. A GHSA record's CVE id is here, and it
-    /// is what a `vuln_advisory_ids` exception names.
+    /// The other ids the advisory is known by, sorted, such as a GHSA record's CVE id.
     pub aliases: Vec<String>,
     pub source: String,
     pub cvss: Option<f64>,
@@ -40,10 +27,8 @@ pub struct Record {
 }
 
 impl Record {
-    /// Turn a stored row into a finding.
-    ///
-    /// A row is a `match`-stream result by construction: it names a package. See
-    /// `src/intel.rs` for why that matters and why an `Enrichment` cannot be built here.
+    /// Turn a stored row, which names a package and so is a `match`-stream result, into a
+    /// finding. Returns the finding.
     pub fn finding(&self) -> Finding {
         let mut finding = Finding::new(&self.source, &self.advisory_id).with_aliases(&self.aliases);
         if let Some(cvss) = self.cvss {
@@ -69,14 +54,11 @@ impl Record {
 pub enum IntelError {
     /// The database said no. Never treated as "nothing known": see `Intel::NotConsulted`.
     Backend(sqlx::Error),
-    /// A stored range does not parse. The loader writes none, so something else wrote the
-    /// row. Matching it against nothing would drop the advisory unannounced.
+    /// A stored range does not parse.
     Range { advisory_id: String },
-    /// A row refers to an advisory the load did not key. `advisory` is written first and
-    /// every other table joins on its key, so this is a loader defect, not bad input.
+    /// A row refers to an advisory the load did not key.
     Unkeyed { advisory_id: String },
-    /// A package a kept snapshot was not read for. Answering it as nothing known would be
-    /// wrong for any package with an advisory.
+    /// A package a kept snapshot was not read for.
     Unread { ecosystem: String, name: String },
 }
 
@@ -108,8 +90,7 @@ impl std::fmt::Display for IntelError {
 
 impl std::error::Error for IntelError {}
 
-/// A lookup in flight. Boxed so the proxy can hold a store as `dyn Intel`, which an
-/// `async fn` in a trait does not allow.
+/// A lookup in flight, boxed so the proxy can hold a `dyn Intel`.
 pub type Lookup<'a, T> = Pin<Box<dyn Future<Output = Result<T, IntelError>> + Send + 'a>>;
 
 /// Everything recorded against one package, read from one load.
@@ -121,24 +102,15 @@ pub struct PackageIntel {
     pub records: Vec<(Option<String>, Record)>,
     /// Each record with an interval of versions it is against.
     pub ranges: Vec<(Interval<Ordered>, Record)>,
-    /// Whether the snapshot includes the KEV catalogue. Without it, `exploited` is false on
-    /// every record because nothing was asked, and `kev` cannot be answered.
+    /// Whether the snapshot includes the KEV catalogue, without which `kev` cannot be answered.
     pub exploitation_loaded: bool,
 }
 
 impl PackageIntel {
-    /// The records that apply to one version, each advisory once.
-    ///
-    /// An advisory recorded against every version, this one, and a range holding it appears
-    /// three times. Which copy is kept does not matter: every field of [`Record`] comes from
-    /// the `advisory` row, keyed by id, and only the version or interval differs.
-    ///
-    /// `version` and the stored versions are read by the [`VersionOrder`] of `ecosystem`, the
-    /// purl type. A listed version matches one equal to it in that order, so a listed PyPI
-    /// `1.0` matches `1.0.0`. A version the order does not read, such as npm's `3.0.0rc1`, is
-    /// in no range and matches a listed version only as written. No npm packument version
-    /// seen is one: 0 in 103 packages on 2026-09-15, and `express` lists `3.0.0-rc1`, which
-    /// only its tarball name spells `3.0.0rc1`.
+    /// The records that apply to one version, each advisory once per stream.
+    /// `ecosystem` is the purl type, whose [`VersionOrder`] reads the versions.
+    /// `version` matches a listed version equal to it in that order, or as written.
+    /// Returns the records.
     pub fn for_version(&self, ecosystem: &str, version: &str) -> Vec<&Record> {
         let order = VersionOrder::of(ecosystem);
         let parsed = order.and_then(|order| order.parse(version));
@@ -154,10 +126,6 @@ impl PackageIntel {
             .ranges
             .iter()
             .filter(|(interval, _)| parsed.as_ref().is_some_and(|v| interval.contains(v)));
-        // Keyed on the stream as well as the id: one record reached by both a listed version
-        // and a range is one answer, but two streams reporting the same advisory are two
-        // signals, and the decision vector is reviewed over the set. Before `github/npm`
-        // every stream used its own id space, so the id alone was the same key.
         let mut seen = BTreeSet::new();
         listed
             .map(|(_, record)| record)
@@ -174,8 +142,7 @@ pub struct LoadedSnapshot {
     pub digest: String,
     /// When the refresh that wrote it ran. RFC 3339, UTC, to the second.
     pub taken_at: String,
-    /// Each source the snapshot id is the digest of, sorted. Absent from the readiness body of a
-    /// proxy older than the field.
+    /// Each source the snapshot id is the digest of, sorted.
     #[serde(default)]
     pub sources: Vec<String>,
     /// Each stream the sources' rows were read from, sorted by name.
@@ -193,11 +160,7 @@ impl LoadedSnapshot {
     }
 
     /// Each served ecosystem no stream in this snapshot can originate a finding for, then
-    /// each no stream can report malware for. The startup warning and `waharoa doctor` both
-    /// report these.
-    ///
-    /// `malware` too because `known_malware` is the one check with no exception, and without a
-    /// `malware` stream it never fires. Decided 2026-09-15.
+    /// each no stream can report malware for. Returns them, for startup and `doctor`.
     pub fn gaps(&self) -> Vec<crate::intel::Gap> {
         self.gaps_in(&crate::intel::served())
     }
@@ -216,11 +179,7 @@ impl LoadedSnapshot {
     }
 }
 
-/// What the decision engine asks of the mirror.
-///
-/// A failure is an error rather than an empty answer. An empty answer means a stream was
-/// asked and knew nothing; an error means nothing was asked, and the two have to stay
-/// distinguishable all the way up to `Facts::intel`.
+/// What the decision engine asks of the mirror. A failure is an error, never an empty answer.
 pub trait Intel: Send + Sync {
     /// Everything recorded against this exact version, a range holding it, or the package as
     /// a whole. [`PackageIntel::for_version`] over [`Intel::package`].
@@ -245,8 +204,7 @@ pub trait Intel: Send + Sync {
 /// Why a command has no intel to judge a package with.
 #[derive(Debug, PartialEq, Eq)]
 pub enum NoIntel {
-    /// The snapshot has no stream providing `match` or `malware` for the package's
-    /// ecosystem. The other packages can still be judged.
+    /// The snapshot has no `match` or `malware` stream for the package's ecosystem.
     Uncovered(String),
     /// The store errored, holds no snapshot, or was replaced while it was read.
     Failed(String),
@@ -348,9 +306,7 @@ pub mod testing {
         }
     }
 
-    /// Answers every question from one fixed reply. `Ok(None)` is a store with nothing
-    /// loaded, and `Err(())` is a store that cannot be reached. Its snapshot records
-    /// `osv/npm`, so npm is covered and PyPI is not.
+    /// One fixed reply: `Ok(None)` is nothing loaded, `Err(())` unreachable; covers npm only.
     pub struct FixedIntel(pub Result<Option<PackageIntel>, ()>);
 
     impl FixedIntel {
@@ -569,7 +525,6 @@ mod tests {
         assert_eq!(ids("1.5.0+build"), ["GHSA-1", "GHSA-2"]);
         assert_eq!(ids("2.0.0-rc.1"), ["GHSA-1", "GHSA-2"]);
         assert!(ids("2.0.0").is_empty());
-        // Not SemVer, so in no range.
         assert!(ids("1.5.0rc1").is_empty());
     }
 

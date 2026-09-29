@@ -52,6 +52,9 @@ enforces it with a redirect, measured:
 
 `normalise` does it before the request, so one project is one identity rather than one per
 spelling. A name that normalises to nothing is refused rather than turned into a path.
+A wheel writes `-` in a project name as `_`, so `zope_interface-...whl` is normalised to
+`zope-interface` too. A wheel's name and version are the first two of at least five fields;
+an sdist's name may contain `-`, so its version follows the last one.
 
 ## Files a resolver would never fetch
 
