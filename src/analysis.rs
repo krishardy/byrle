@@ -1,19 +1,7 @@
 //! What an artifact's own bytes say, as opposed to what its metadata claims.
 //!
-//! The record's `has_install_scripts` is the registry's claim: npm's `hasInstallScript` on
-//! the abbreviated packument, its `scripts` keys on the full one, and on PyPI whether the
-//! version offers only an sdist. The artifact is where the truth is, and the two can
-//! disagree: a packument that omits `hasInstallScript` for a tarball whose `package.json`
-//! runs `postinstall` is a package that installs code the metadata said nothing about.
-//!
-//! No request waits for a detector. [`run`] analyses an artifact in the background the
-//! first time it is fetched. The request is answered 503 only when the answer depends on
-//! the analysis, and the retry is decided on what was stored. See `docs/engineering_decisions/artifact-spool.md`.
-//!
-//! There is no cost tier. It decided whether a request waited for a detector, and none
-//! does. An expensive detector, source diffing, runs only when the cheap checks have not
-//! already refused the version: see `docs/engineering_decisions/policy-tier-resolution.md`,
-//! "Where the short circuit survives".
+//! See docs/engineering_decisions/install-scripts-from-the-artifact.md and
+//! docs/engineering_decisions/artifact-spool.md.
 
 pub mod attestation;
 pub mod postgres;
@@ -28,11 +16,9 @@ use crate::record::DocumentDetail;
 /// The lifecycle scripts an artifact declares, read from the artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InstallScripts {
-    /// The script names that run on install, in the order npm runs them, or `setup.py`
-    /// for an sdist.
+    /// The script names that run on install, in npm's order, or `setup.py` for an sdist.
     pub names: Vec<String>,
-    /// Each name's command, for an operator to read. npm writes them in `package.json`;
-    /// an sdist's `setup.py` is a file rather than a command, so this is empty there.
+    /// Each name's command, for an operator to read. Empty for an sdist.
     pub bodies: Vec<(String, String)>,
 }
 
@@ -42,8 +28,7 @@ impl InstallScripts {
     }
 }
 
-/// Why an artifact could not be read. A detector that cannot answer says so; it never
-/// answers "nothing found".
+/// Why an artifact could not be read, which is never the same as "nothing found".
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReadError {
     /// The bytes are not the archive the filename says.
@@ -66,19 +51,10 @@ impl std::fmt::Display for ReadError {
     }
 }
 
-/// The largest member this reads into memory. A `package.json` is kilobytes; anything
-/// past this is not one, and decompressing it is what a bomb wants.
+/// The largest member this reads into memory, far past any `package.json`.
 pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 
-/// The readers' version, stored with every analysis they write. A stored analysis is read
-/// back only when it matches, so this changes whenever a reader would find something it did
-/// not before, and every artifact is read again under the new one.
-/// `migrations/0011_artifact_analysis_reader.sql`.
-///
-/// | Version | Change |
-/// |---|---|
-/// | `install-scripts 1` | the first reader |
-/// | `install-scripts 2` | npm reads `<top>/package.json` only, not the first `package.json` anywhere |
+/// The readers' version, stored with each analysis; bumped whenever a reader's answer changes.
 pub const READER: &str = "install-scripts 2";
 
 /// Which reader an artifact is read by. A file no reader reads is never analysed.
@@ -116,9 +92,6 @@ const NPM_INSTALL_SCRIPTS: [&str; 3] = ["preinstall", "install", "postinstall"];
 ///
 /// One gzip stream and one JSON object: 0.4ms for `bufferutil` 4.1.0, 163,631 bytes.
 pub fn npm_install_scripts(tarball: &mut dyn Read) -> Result<InstallScripts, ReadError> {
-    // `<top>/package.json` and nothing deeper: npm strips the top directory when it unpacks
-    // a tarball, so a `package.json` under `node_modules/` belongs to a bundled dependency,
-    // and taking the first one listed let an earlier one stand in for the package's own.
     let manifest = member(tarball, &|path| {
         let path = path.strip_prefix("./").unwrap_or(path);
         matches!(path.split_once('/'), Some((top, "package.json")) if !top.is_empty())
@@ -159,7 +132,6 @@ pub fn sdist_install_scripts(sdist: &mut dyn Read) -> Result<InstallScripts, Rea
 fn member(bytes: &mut dyn Read, wanted: &dyn Fn(&str) -> bool) -> Result<Vec<u8>, ReadError> {
     let decoder = flate2::read::GzDecoder::new(bytes);
     let mut archive = tar::Archive::new(decoder);
-    // `entries` refuses only an archive already read from, and this one is new.
     let entries = archive.entries().expect("a new archive is at its start");
     for entry in entries {
         let entry = entry.map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
@@ -175,7 +147,6 @@ fn member(bytes: &mut dyn Read, wanted: &dyn Fn(&str) -> bool) -> Result<Vec<u8>
             });
         }
         let mut out = Vec::with_capacity(size);
-        // Bounded again while reading, because the size above is the archive's own claim.
         entry
             .take(MAX_MEMBER_BYTES as u64)
             .read_to_end(&mut out)
@@ -186,20 +157,13 @@ fn member(bytes: &mut dyn Read, wanted: &dyn Fn(&str) -> bool) -> Result<Vec<u8>
 }
 
 /// What the artifact says against what the metadata claimed.
-///
-/// The record's answer comes from the document the client asked for, which on npm is the
-/// abbreviated packument, where `hasInstallScript` is present only when true. A tarball
-/// that declares one the packument did not is the case worth a line in the log: the
-/// decision that was made on the metadata was made on a false claim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Claim {
     /// The artifact and the metadata agree.
     Kept,
     /// The artifact runs scripts and the metadata did not say so.
     Undeclared,
-    /// The metadata said so and the reader found none. Not a reason to drop the claim:
-    /// npm runs `node-gyp rebuild` for a `binding.gyp` that `package.json` never names,
-    /// and an sdist with no `setup.py` still runs its PEP 517 backend.
+    /// The metadata said so and the reader found none. The claim still stands.
     Overstated,
 }
 
@@ -207,8 +171,6 @@ impl Claim {
     pub fn of(found: &InstallScripts, claimed: bool, detail: DocumentDetail) -> Self {
         match (found.runs_on_install(), claimed) {
             (true, false) => Self::Undeclared,
-            // An abbreviated packument omits the key rather than writing `false`, so a
-            // version whose record came from one and says nothing is not overstating.
             (false, true) if detail == DocumentDetail::Full => Self::Overstated,
             _ => Self::Kept,
         }
@@ -292,10 +254,8 @@ mod tests {
             .collect()
     }
 
-    /// A reader that answers differently must bump [`READER`], or the analyses its old
-    /// answers wrote keep being read back. The golden file records both, and blessing
-    /// rewrites it only when [`READER`] changed, so a changed answer with an unchanged
-    /// version fails even with [`crate::env::BLESS`] set.
+    /// A changed answer with an unchanged [`READER`] fails, even with [`crate::env::BLESS`]
+    /// set, because stored analyses under the old version would keep being read back.
     #[test]
     fn a_reader_that_answers_differently_bumps_its_version() {
         let path = format!(
@@ -438,8 +398,6 @@ mod tests {
         let without = tarball(&[
             ("idna-3.10/PKG-INFO", b"Name: idna"),
             ("idna-3.10/pyproject.toml", b"[build-system]"),
-            // Not the sdist's own build: a file that happens to be called setup.py deeper
-            // in the tree is a test fixture or a vendored package.
             ("idna-3.10/tests/data/setup.py", b"setup()"),
         ]);
         assert!(
@@ -457,7 +415,6 @@ mod tests {
         let manifest = br#"{"scripts":{"postinstall":"a"}}"#;
         let padded = {
             let mut bytes = manifest.to_vec();
-            // Trailing whitespace is still the same JSON document.
             bytes.resize(MAX_MEMBER_BYTES, b' ');
             bytes
         };
@@ -504,11 +461,8 @@ mod tests {
         );
     }
 
-    /// The real tarballs, read from registry.npmjs.org and pypi.org. The synthetic
-    /// archives above hold the shapes; this holds that the shapes are the ones published.
-    ///
-    /// Ignored by default, and compiled out of coverage builds: `cargo test` must not
-    /// depend on the network.
+    /// The real tarballs, from registry.npmjs.org and pypi.org, have the shapes the
+    /// synthetic ones above do. Ignored by default, because it uses the network.
     #[cfg(not(coverage))]
     #[tokio::test]
     #[ignore = "hits registry.npmjs.org and files.pythonhosted.org"]
@@ -523,14 +477,12 @@ mod tests {
                 .to_vec()
         };
 
-        // `hasInstallScript: true` in its packument, `install: node-gyp-build` inside.
         let bufferutil =
             fetch("https://registry.npmjs.org/bufferutil/-/bufferutil-4.1.0.tgz").await;
         let found = npm_install_scripts(&mut &*bufferutil).expect("the tarball reads");
         assert_eq!(found.names, ["install"]);
         assert_eq!(found.bodies[0].1, "node-gyp-build");
 
-        // No `hasInstallScript` and a `test` script only.
         let node_gyp_build =
             fetch("https://registry.npmjs.org/node-gyp-build/-/node-gyp-build-4.8.4.tgz").await;
         assert!(
@@ -539,7 +491,6 @@ mod tests {
                 .runs_on_install()
         );
 
-        // An sdist with a setup.py at the root of its directory.
         let six = fetch(
             "https://files.pythonhosted.org/packages/94/e7/\
              b2c673351809dca68a0e064b6af791aa332cf192da575fd474ed7d6f16a2/six-1.17.0.tar.gz",
@@ -565,8 +516,6 @@ mod tests {
             (&runs, true, DocumentDetail::Abbreviated, Claim::Kept),
             (&runs, false, DocumentDetail::Abbreviated, Claim::Undeclared),
             (&none, false, DocumentDetail::Abbreviated, Claim::Kept),
-            // An abbreviated packument writes `hasInstallScript` only when it is true, so
-            // a record from one that claims none is not overstating anything.
             (&none, true, DocumentDetail::Abbreviated, Claim::Kept),
             (&none, true, DocumentDetail::Full, Claim::Overstated),
         ] {

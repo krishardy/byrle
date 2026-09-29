@@ -36,6 +36,16 @@ one rule nobody can override, which is a higher trust bar than reporting a vulne
 - Coverage gaps become computable: an enabled ecosystem with no `match`-capable stream
   is a firewall that cannot block anything. Startup warning plus a `waharoa doctor`
   check.
+- The capability is enforced by types. `intel::Finding` and `intel::Enrichment` are
+  different types with no conversion, and `EnrichStream` is asked about an advisory, with
+  no package argument, and cannot return a `Finding`. The `compile_fail` doctest in
+  `src/intel.rs` checks that an `Enrichment` does not become a `Finding`. An enrichment
+  applies when its id is the advisory's id or any alias. It can raise a score and mark an
+  advisory exploited, never the reverse, so the result does not depend on the order
+  enrichments arrive in. An originated finding is never exploited: that is what `enrich`
+  streams know. A score outside 0.0 to 10.0 is dropped and the finding kept.
+- A stream a snapshot records that this build does not know is granted nothing. The policy
+  has no `streams` block, so an operator cannot change the grants yet.
 - Plugins declare their own capabilities; operators may demote a stream they distrust.
   Promotion, especially into `malware`, is deliberately harder than demotion.
 

@@ -84,6 +84,7 @@ code, and the file names where.
 | [The artifact cache does not skip verification](verified-artifact-cache.md) | Implemented, Stage 1 |
 | [Deferral status codes](deferral-status-codes.md) | Measured, decision pending Stage 2 |
 | [Refusal status](refusal-status.md) | Implemented |
+| [Whether one policy value is stricter than another](strictness-comparison.md) | Implemented |
 | [Default ceilings](default-ceilings.md) | Implemented |
 | [What waharoa explain prints](explain-output.md) | Implemented |
 | [Which lockfiles doctor checks for the proxy's address](doctor-lockfile-urls.md) | Implemented |
