@@ -181,9 +181,7 @@ mod proofs {
     /// A target in scope for something, so the time comparison is what decides rather
     /// than `Scope::covers` short-circuiting every case to `None`.
     fn covered_target() -> RequestTarget {
-        RequestTarget::Metadata(
-            PackageKey::from_registry_name(crate::identity::Ecosystem::Npm, "w").unwrap(),
-        )
+        RequestTarget::Metadata(PackageKey::for_proof(crate::identity::Ecosystem::Npm, "w"))
     }
 
     fn any_deferral() -> DeferTest {
