@@ -1,3 +1,2 @@
 # Files not yet held to scripts/make/comments.py. Only ever shrinks.
-src/policy/decide.rs
 src/proxy.rs
