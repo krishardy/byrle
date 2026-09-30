@@ -4,6 +4,7 @@
 
 use crate::analysis::InstallScripts;
 use crate::analysis::attestation::{Attested, verifier_id};
+use crate::analysis::source::{COMPARER, Sourced};
 use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored};
 use crate::integrity::Sri;
 use sqlx::PgPool;
@@ -215,6 +216,42 @@ impl PgAnalyses {
     }
 }
 
+impl PgAnalyses {
+    async fn write_sourced(&self, digest: &Sri, sourced: &Sourced) -> Result<(), AnalysisError> {
+        let result = serde_json::to_string(sourced).expect("a result serializes");
+        sqlx::query!(
+            r#"
+            INSERT INTO artifact_source (digest, result, comparer)
+            VALUES ($1, $2, $3)
+            ON CONFLICT (digest) DO UPDATE SET
+                result      = EXCLUDED.result,
+                comparer    = EXCLUDED.comparer,
+                compared_at = now()
+            "#,
+            digest.to_string(),
+            result,
+            COMPARER,
+        )
+        .execute(&self.pool)
+        .await
+        .map(drop)
+        .map_err(AnalysisError::Backend)
+    }
+
+    /// A row this comparer wrote. One that no longer reads is not compared yet.
+    async fn read_sourced(&self, digest: &Sri) -> Result<Option<Sourced>, AnalysisError> {
+        let row = sqlx::query_scalar!(
+            "SELECT result FROM artifact_source WHERE digest = $1 AND comparer = $2",
+            digest.to_string(),
+            COMPARER,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        Ok(row.and_then(|result| serde_json::from_str(&result).ok()))
+    }
+}
+
 impl Analyses for PgAnalyses {
     fn get<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Analysis>> {
         Box::pin(self.read(digest))
@@ -230,5 +267,13 @@ impl Analyses for PgAnalyses {
 
     fn put_attested<'a>(&'a self, digest: &'a Sri, attested: &'a Attested) -> Stored<'a, ()> {
         Box::pin(self.write_attested(digest, attested))
+    }
+
+    fn sourced<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Sourced>> {
+        Box::pin(self.read_sourced(digest))
+    }
+
+    fn put_sourced<'a>(&'a self, digest: &'a Sri, sourced: &'a Sourced) -> Stored<'a, ()> {
+        Box::pin(self.write_sourced(digest, sourced))
     }
 }

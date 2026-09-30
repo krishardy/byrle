@@ -3,6 +3,7 @@
 //! See `docs/engineering_decisions/artifact-analysis-store.md`.
 
 use crate::analysis::attestation::Attested;
+use crate::analysis::source::Sourced;
 use crate::analysis::{InstallScripts, ReadError};
 use crate::integrity::Sri;
 use crate::util::lru::Lru;
@@ -85,15 +86,27 @@ pub trait Analyses: Send + Sync {
 
     /// Record what verifying them found, replacing what was held under the same digest.
     fn put_attested<'a>(&'a self, digest: &'a Sri, attested: &'a Attested) -> Stored<'a, ()>;
+
+    /// What comparing the artifact with this digest with its source found, by the current
+    /// [`crate::analysis::source::COMPARER`]. `Ok(None)` is an artifact not compared yet.
+    fn sourced<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Sourced>>;
+
+    /// Record what comparing it found, replacing what was held under the same digest.
+    fn put_sourced<'a>(&'a self, digest: &'a Sri, sourced: &'a Sourced) -> Stored<'a, ()>;
 }
 
 /// The analyses this process has made, least recently used evicted first.
-pub struct InProcess(Mutex<Lru<Sri, Analysis>>, Mutex<Lru<Sri, Attested>>);
+pub struct InProcess(
+    Mutex<Lru<Sri, Analysis>>,
+    Mutex<Lru<Sri, Attested>>,
+    Mutex<Lru<Sri, Sourced>>,
+);
 
 impl InProcess {
-    /// `max_entries` analyses, and as many attestation results.
+    /// `max_entries` analyses, and as many attestation and source results.
     pub fn new(max_entries: usize) -> Self {
         Self(
+            Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
         )
@@ -141,6 +154,27 @@ impl Analyses for InProcess {
                 .lock()
                 .expect("attestation store lock")
                 .insert(digest.clone(), attested.clone());
+            Ok(())
+        })
+    }
+
+    fn sourced<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Sourced>> {
+        Box::pin(async move {
+            Ok(self
+                .2
+                .lock()
+                .expect("source store lock")
+                .get(digest)
+                .cloned())
+        })
+    }
+
+    fn put_sourced<'a>(&'a self, digest: &'a Sri, sourced: &'a Sourced) -> Stored<'a, ()> {
+        Box::pin(async move {
+            self.2
+                .lock()
+                .expect("source store lock")
+                .insert(digest.clone(), sourced.clone());
             Ok(())
         })
     }
@@ -193,6 +227,15 @@ pub(crate) mod tests {
             "a different artifact"
         );
         assert_eq!(store.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_source_comparison_is_kept_until_replaced() {
+        let store = InProcess::new(4);
+        assert_eq!(store.sourced(&sri(1)).await.expect("answers"), None);
+        let not = Sourced::NotCompared("why".to_owned());
+        store.put_sourced(&sri(1), &not).await.expect("writes");
+        assert_eq!(store.sourced(&sri(1)).await.expect("answers"), Some(not));
     }
 
     /// Two clients asking for one artifact at once both analysed the same bytes.

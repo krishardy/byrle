@@ -1,7 +1,8 @@
-# Registry tarball against its source, measured
+# Registry tarball against its source, a weak signal
 
-- **Status:** Measured 2026-09-30, report only, not in the proxy. `src/analysis/source.rs`,
-  measured by `examples/source_diff.rs`.
+- **Status:** Implemented 2026-09-30 in the analysis tier for npm, report only.
+  `src/analysis/source.rs`, run by `src/analysis/run/sourcing.rs`, reported by
+  `heuristics::of_source`, measured by `examples/source_diff.rs`.
 - **Related:** [tier-1-false-positives](tier-1-false-positives.md),
   [install-scripts-from-the-artifact](install-scripts-from-the-artifact.md),
   [metadata-heuristics](metadata-heuristics.md),
@@ -40,6 +41,39 @@ headers state more than 512 MiB is not read.
 | only in the package | paths the source lacks |
 
 npm only. A PyPI record has no repository, and a wheel is built output.
+
+## In the analysis tier
+
+Decided with the user: the findings are a weak signal. They are logged and written to the
+audit line's `signals`, as the [metadata heuristics](metadata-heuristics.md) are, and never
+refuse.
+
+| Step | What happens |
+|---|---|
+| a pinned decision, or the watcher | reads the stored result for the artifact's digest. With none, starts a comparison and decides without it |
+| the comparison | its own 2 slots and in-flight set, so it never delays an analysis a deferred client waits on. The artifact is fetched, spooled and checked against its digest, then each reference is tried in turn |
+| the source archive | fetched from `WAHAROA_SOURCE_ARCHIVES`, spooled, and read as a stream. The last 8 archives are kept by URL, a 404 included |
+| stored | `Sourced` under the digest with `COMPARER`, in memory or `artifact_source`. A result from another comparer is not read |
+| the next decision | turns the stored result into signals |
+
+The job's record is the full document's, when the proxy fetched one: after a 304 the held
+record is abbreviated and names no repository or `gitHead`.
+
+| Finding | Signal | Why, from the results below |
+|---|---|---|
+| lifecycle scripts | yes | 0 of 207 and 0 of 473 |
+| dependencies | yes | 0 of 207 and 0 of 473 |
+| lifecycle files | yes | 2 of 5, both a build step or a tag |
+| differing | yes | 6 of 207 and 3 of 473: 8 versions, `qs` in both, 5 of them build steps |
+| optional dependencies | no, stored | platform binaries every time |
+| differing Markdown, only in the package | no, stored | build output and rewritten READMEs |
+
+| Outcome | Stored |
+|---|---|
+| compared | yes |
+| no `package.json` in the source names the package, an archive too large or not an archive, an artifact too large or not an archive | yes, as not compared, with the reason |
+| no commit or tag found | no. A tag is often pushed after the publish, so the next decision tries again |
+| a fetch that failed, a 5xx or 429, bytes that do not match the digest, past the 600 s deadline | no |
 
 ## Results
 
@@ -118,8 +152,12 @@ no build step.
   is not. In the install-script set, `qs` is a build step, `@swc/core` was compared with a
   tag, and `js-base64` is not explained. A check on them would need a list of known build
   patterns.
-- In the proxy this would fetch from `codeload.github.com`, a host the proxy does not reach
-  today.
+- The proxy now fetches from `codeload.github.com`. `WAHAROA_SOURCE_ARCHIVES=off` stops it,
+  and names a mirror otherwise ([threat-model](../threat-model.md)).
+- The first decision on an artifact has no source signal. The watcher compares a new version
+  before a client asks, so a version the proxy has served before usually has one.
+- The publisher chooses `repository` and `gitHead`. A publisher who controls a matching
+  repository gets no signal.
 
 ## Found on the way
 
@@ -137,6 +175,20 @@ shorthand whose owner has a dot, an archive at the limit, a lifecycle script the
 drops, and a quoted script target. The five on the publishable-manifest rule, the unscoped
 tag and the lifecycle target count were caught when written. `the_first_matching_member_is_read` holds the tar
 walker's early stop, which survived a mutant before it.
+
+| Test | Covers |
+|---|---|
+| `src/analysis/run/sourcing.rs` | the commit tried before the tag, a reference with an unsafe character skipped, the archive cache, each outcome stored as not compared, each one that stores nothing, the in-flight set, the deadline, a store that fails, a spool file that cannot be read |
+| `the_source_comparison_is_reported_on_a_later_request` | the audit line's signals on the second decision, with the full document held and with the abbreviated one |
+| `the_watcher_starts_the_source_comparison` | the watcher compares a version no client asked for |
+| `a_source_comparison_is_kept_under_its_digest` | `artifact_source` in Postgres, and a result from another comparer or one that no longer reads |
+
+14 hand mutants on the job and its wiring, each caught. Two hung on the first run: a test
+that waited for a comparison with no timeout, and an assertion that locked a mutex twice when
+it failed. Both waits are now bounded, and the assertion locks once.
+
+`examples/source_diff.rs` runs the analyser itself, and gave the same numbers as the
+standalone comparison above.
 
 To rerun, build the lockfiles as `examples/tier1_false_positives.py` does, one directory per
 set, then:

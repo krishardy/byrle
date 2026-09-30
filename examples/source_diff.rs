@@ -1,32 +1,30 @@
-//! Measure `analysis::source` on real packages: each npm version a lockfile locks, its
-//! published tarball against GitHub's archive of the commit or tag it names.
+//! Measure the analyser's source comparison on real packages: each npm version a lockfile
+//! locks, its published tarball against GitHub's archive of the commit or tag it names.
 //!
 //! Needs registry.npmjs.org and codeload.github.com. See
 //! docs/engineering_decisions/source-diff.md for the corpus and the results.
 //!
 //! Run: cargo run --release --example source_diff -- <package-lock.json>...
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use futures_util::StreamExt as _;
-use waharoa::analysis::source::{self, Comparison, Repo};
+use waharoa::analysis::run::{Analyser, SourceJob};
+use waharoa::analysis::source::{self, Sourced};
+use waharoa::analysis::store::InProcess;
 use waharoa::ecosystem::npm::transport::Client;
 use waharoa::identity::{Ecosystem, PackageKey};
-use waharoa::record::DocumentDetail;
-
-/// The member sizes a source archive may state, together.
-const MAX_SOURCE_BYTES: usize = 512 << 20;
+use waharoa::integrity::Sri;
+use waharoa::record::{DocumentDetail, PackageRecord};
 
 /// What one version came to.
-enum Outcome {
-    Compared {
-        by_commit: bool,
-        /// A `gitHead` was published, whether or not GitHub has it.
-        head: bool,
-        /// The registry says installing it runs a lifecycle script.
-        scripts: bool,
-        comparison: Comparison,
-    },
-    NotCompared(&'static str),
+struct Measured {
+    name: String,
+    version: String,
+    /// Why no job was made, when none was.
+    unjobbed: Option<&'static str>,
+    record: Option<PackageRecord>,
+    digest: Option<Sri>,
 }
 
 #[tokio::main]
@@ -46,109 +44,124 @@ async fn main() {
     }
     let http = reqwest::Client::new();
     let registry = Client::new(http.clone(), "https://registry.npmjs.org");
-    let outcomes: Vec<_> = futures_util::stream::iter(versions)
+    let spool_dir = std::env::temp_dir().join(format!("source-diff-{}", std::process::id()));
+    let (spool, _) = waharoa::spool::Spool::open(&spool_dir, 1 << 30).expect("a spool");
+    let analyser = Analyser::new(
+        http.clone(),
+        Arc::new(spool),
+        Arc::new(InProcess::new(versions.len().max(1))),
+        1,
+        16,
+    )
+    .with_sources(Some(source::ARCHIVES.to_owned()));
+
+    let measured: Vec<Measured> = futures_util::stream::iter(versions)
         .map(|(name, version)| {
-            let (http, registry) = (http.clone(), registry.clone());
-            async move {
-                let outcome = measure(&http, &registry, &name, &version).await;
-                (name, version, outcome)
-            }
+            let (registry, analyser) = (registry.clone(), analyser.clone());
+            async move { measure(&registry, &analyser, name, version).await }
         })
         .buffer_unordered(8)
         .collect()
         .await;
-    report(outcomes);
+    report(&analyser, measured).await;
+    let _ = std::fs::remove_dir_all(spool_dir);
 }
 
-/// Compare one version with its source.
-async fn measure(http: &reqwest::Client, registry: &Client, name: &str, version: &str) -> Outcome {
-    let Ok(key) = PackageKey::from_registry_name(Ecosystem::Npm, name) else {
-        return Outcome::NotCompared("name not read");
+/// Start comparing one version, and wait for it.
+async fn measure(
+    registry: &Client,
+    analyser: &Analyser,
+    name: String,
+    version: String,
+) -> Measured {
+    let unjobbed = |why| Measured {
+        name: name.clone(),
+        version: version.clone(),
+        unjobbed: Some(why),
+        record: None,
+        digest: None,
+    };
+    let Ok(key) = PackageKey::from_registry_name(Ecosystem::Npm, &name) else {
+        return unjobbed("name not read");
     };
     let Ok(Ok(metadata)) = registry.packument(&key, DocumentDetail::Full).await else {
-        return Outcome::NotCompared("packument not read");
+        return unjobbed("packument not read");
     };
-    let Some(record) = metadata.version(version) else {
-        return Outcome::NotCompared("version not listed");
+    let Some(record) = metadata.version(&version).cloned() else {
+        return unjobbed("version not listed");
     };
-    let Some(repository) = &record.repository else {
-        return Outcome::NotCompared("no repository");
-    };
-    let Some(repo) = Repo::from_url(&repository.url) else {
-        return Outcome::NotCompared("not on GitHub");
-    };
-    let Some(tarball) = fetch(http, &record.artifact().expect("a version has a file").url).await
+    let artifact = record.artifact().expect("a version has a file");
+    let Some(digest) = artifact
+        .integrity
+        .as_deref()
+        .and_then(|i| Sri::parse(i).ok())
     else {
-        return Outcome::NotCompared("tarball not fetched");
+        return unjobbed("no strong digest");
     };
-    let Ok(package) = source::tree(&mut &*tarball, MAX_SOURCE_BYTES) else {
-        return Outcome::NotCompared("tarball not read");
+    let Some(job) = SourceJob::of(&record, &digest, artifact.url.clone()) else {
+        return unjobbed("no repository on GitHub");
     };
-    let head = record.provenance.git_head.clone().unwrap_or_default();
-    for reference in source::references(record) {
-        let Some(archive) = fetch(http, &repo.archive_url(&reference)).await else {
+    if let Some(handle) = analyser.start_source(job) {
+        let _ = handle.await;
+    }
+    Measured {
+        name,
+        version,
+        unjobbed: None,
+        record: Some(record),
+        digest: Some(digest),
+    }
+}
+
+/// One line per version with a finding or not compared, then a count per outcome and finding.
+async fn report(analyser: &Analyser, measured: Vec<Measured>) {
+    let mut outcomes = BTreeMap::<String, usize>::new();
+    let (mut by_commit, mut head_missed, mut with_scripts, mut with_targets) = (0, 0, 0, 0);
+    let mut counts = [0usize; 7];
+    let total = measured.len();
+    for Measured {
+        name,
+        version,
+        unjobbed,
+        record,
+        digest,
+    } in measured
+    {
+        let (Some(record), Some(digest)) = (record, digest) else {
+            let why = unjobbed.expect("a version without a job says why");
+            *outcomes.entry(format!("not compared: {why}")).or_default() += 1;
+            println!("{name}@{version}\tnot compared: {why}");
             continue;
         };
-        let built = source::tree(&mut &*archive, MAX_SOURCE_BYTES)
-            .map(|tree| tree.package(name, repository.directory.as_deref()));
-        return match built {
-            Ok(Some(built)) => Outcome::Compared {
-                by_commit: reference == head,
-                head: !head.is_empty(),
-                scripts: record.has_install_scripts,
-                comparison: source::compare(&package, &built),
-            },
-            Ok(None) => Outcome::NotCompared("no package.json in the source names it"),
-            Err(waharoa::analysis::ReadError::TooLarge { .. }) => {
-                Outcome::NotCompared("source over the limit")
-            }
-            Err(_) => Outcome::NotCompared("source not read"),
-        };
-    }
-    if head.is_empty() {
-        Outcome::NotCompared("no gitHead, and no tag found")
-    } else {
-        Outcome::NotCompared("gitHead not on GitHub, and no tag found")
-    }
-}
-
-/// The body at `url`, or `None` for anything but a 200.
-async fn fetch(http: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
-    let response = http.get(url).send().await.ok()?;
-    if !response.status().is_success() {
-        return None;
-    }
-    Some(response.bytes().await.ok()?.to_vec())
-}
-
-/// One line per version with a finding, then a count per outcome and per finding.
-fn report(outcomes: Vec<(String, String, Outcome)>) {
-    let mut not_compared = std::collections::BTreeMap::<&str, usize>::new();
-    let (mut compared, mut by_commit, mut manifests) = (0, 0, 0);
-    let (mut head_missed, mut with_scripts, mut with_targets) = (0, 0, 0);
-    let mut counts = [0usize; 7];
-    for (name, version, outcome) in &outcomes {
-        let (by, found) = match outcome {
-            Outcome::NotCompared(why) => {
-                *not_compared.entry(why).or_default() += 1;
+        let head = record.provenance.git_head.clone().unwrap_or_default();
+        let (reference, found) = match analyser.sourced(&digest).await {
+            None => {
+                let why = if head.is_empty() {
+                    "no gitHead, and no tag found, or a fetch failed"
+                } else {
+                    "gitHead not on GitHub, and no tag found, or a fetch failed"
+                };
+                *outcomes.entry(format!("not compared: {why}")).or_default() += 1;
                 println!("{name}@{version}\tnot compared: {why}");
                 continue;
             }
-            Outcome::Compared {
-                by_commit: by,
-                head,
-                scripts,
-                comparison,
-            } => {
-                head_missed += usize::from(*head && !*by);
-                with_scripts += usize::from(*scripts);
-                with_targets += usize::from(comparison.lifecycle_targets > 0);
-                (*by, comparison)
+            Some(Sourced::NotCompared(why)) => {
+                let why = why.split(':').next().unwrap_or_default().to_owned();
+                *outcomes.entry(format!("not compared: {why}")).or_default() += 1;
+                println!("{name}@{version}\tnot compared: {why}");
+                continue;
             }
+            Some(Sourced::Compared {
+                reference,
+                comparison,
+                ..
+            }) => (reference, comparison),
         };
-        compared += 1;
-        by_commit += usize::from(by);
-        manifests += usize::from(found.manifests);
+        *outcomes.entry("compared".to_owned()).or_default() += 1;
+        by_commit += usize::from(reference == head);
+        head_missed += usize::from(!head.is_empty() && reference != head);
+        with_scripts += usize::from(record.has_install_scripts);
+        with_targets += usize::from(found.lifecycle_targets > 0);
         let each = [
             found.lifecycle_scripts.len(),
             found.dependencies.len(),
@@ -173,16 +186,11 @@ fn report(outcomes: Vec<(String, String, Outcome)>) {
             );
         }
     }
-    println!("\nversions\t{}", outcomes.len());
-    for (why, n) in &not_compared {
-        println!("not compared: {why}\t{n}");
+    println!("\nversions\t{total}");
+    for (outcome, n) in &outcomes {
+        println!("{outcome}\t{n}");
     }
-    println!(
-        "compared\t{compared}\nby gitHead\t{by_commit}\nby tag\t{}",
-        compared - by_commit
-    );
-    println!("by tag, with a gitHead GitHub lacks\t{head_missed}");
-    println!("both manifests\t{manifests}");
+    println!("by gitHead\t{by_commit}\nby tag, with a gitHead GitHub lacks\t{head_missed}");
     println!("declaring an install script\t{with_scripts}");
     println!("whose install scripts name a file in the package\t{with_targets}");
     for (label, n) in [

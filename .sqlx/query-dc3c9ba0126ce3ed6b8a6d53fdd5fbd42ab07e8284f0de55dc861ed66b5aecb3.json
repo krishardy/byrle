@@ -1,0 +1,23 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT result FROM artifact_source WHERE digest = $1 AND comparer = $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "result",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "dc3c9ba0126ce3ed6b8a6d53fdd5fbd42ab07e8284f0de55dc861ed66b5aecb3"
+}

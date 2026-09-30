@@ -19,6 +19,10 @@ use crate::integrity::{Mismatch, Sri};
 use crate::spool::{Spool, Spooled, WriteError};
 use crate::util::lru::Lru;
 
+mod sourcing;
+
+pub use sourcing::{SOURCE_SLOTS, SOURCE_TREES, SourceJob};
+
 /// How long one job may take, from its fetch starting to its analysis being stored.
 pub const DEADLINE: Duration = Duration::from_secs(600);
 
@@ -76,6 +80,8 @@ pub struct Analyser {
     ended: Arc<watch::Sender<u64>>,
     /// [`DEADLINE`], unless a test shortens it.
     deadline: Duration,
+    /// The source comparison, when it is on.
+    sources: Option<sourcing::Sources>,
 }
 
 impl Analyser {
@@ -95,6 +101,7 @@ impl Analyser {
             mismatched: Arc::new(Mutex::new(Lru::new(max_mismatches))),
             ended: Arc::new(watch::Sender::new(0)),
             deadline: DEADLINE,
+            sources: None,
         }
     }
 
@@ -288,7 +295,7 @@ impl Analyser {
     /// Fetch, spool, read and store `job`'s artifact, adding each phase to `timings`.
     async fn analyse(&self, job: &Job, reader: Reader, timings: &mut Timings) {
         let phase = Instant::now();
-        let Some(response) = self.fetch(job).await else {
+        let Some(response) = self.fetch(&job.url).await else {
             return;
         };
         timings.fetch_ms = ms(phase);
@@ -311,7 +318,10 @@ impl Analyser {
         timings: &mut Timings,
     ) -> Option<Scripts> {
         let phase = Instant::now();
-        let spooled = self.spool_verified(job, response).await;
+        let spooled = self
+            .spool_verified(&job.url, &job.digest, response)
+            .await
+            .map(|spooled| spooled.map_err(|too_large| Scripts::Unreadable(too_large.to_string())));
         timings.download_ms = ms(phase);
         match spooled? {
             Err(unreadable) => Some(unreadable),
@@ -325,34 +335,35 @@ impl Analyser {
         }
     }
 
-    /// The upstream's 2xx answer for `job`'s artifact. `None` when there is none.
-    async fn fetch(&self, job: &Job) -> Option<reqwest::Response> {
+    /// The upstream's 2xx answer for the artifact at `url`. `None` when there is none.
+    async fn fetch(&self, url: &str) -> Option<reqwest::Response> {
         match self
             .client
-            .get(&job.url)
+            .get(url)
             .send()
             .await
             .and_then(reqwest::Response::error_for_status)
         {
             Ok(response) => Some(response),
             Err(e) => {
-                warn!(url.full = %job.url, error.message = %e, "artifact analysis: fetch failed, nothing stored");
+                warn!(url.full = %url, error.message = %e, "artifact analysis: fetch failed, nothing stored");
                 None
             }
         }
     }
 
-    /// The artifact written to the spool and checked against the digest, or `Unreadable`
-    /// for one over the spool's ceiling.
+    /// The artifact at `url` written to the spool and checked against `digest`, or the
+    /// error for one over the spool's ceiling.
     /// Returns `None` when nothing should be stored: a mismatch, remembered, or a spool
     /// that failed.
     async fn spool_verified(
         &self,
-        job: &Job,
+        url: &str,
+        digest: &Sri,
         response: reqwest::Response,
-    ) -> Option<Result<Spooled, Scripts>> {
+    ) -> Option<Result<Spooled, WriteError>> {
         let claimed = response.content_length();
-        let mut verifier = job.digest.verifier();
+        let mut verifier = digest.verifier();
         let written = self
             .spool
             .write(response.bytes_stream(), claimed, |chunk| {
@@ -363,20 +374,20 @@ impl Analyser {
             Ok(spooled) => match verifier.finish(spooled.len()) {
                 Ok(()) => Some(Ok(spooled)),
                 Err(mismatch) => {
-                    warn!(url.full = %job.url, waharoa.artifact.digest_mismatch = %mismatch, "artifact analysis: digest mismatch");
+                    warn!(url.full = %url, waharoa.artifact.digest_mismatch = %mismatch, "artifact analysis: digest mismatch");
                     self.mismatched
                         .lock()
                         .expect("mismatch lock")
-                        .insert(job.digest.clone(), mismatch);
+                        .insert(digest.clone(), mismatch);
                     None
                 }
             },
             Err(too_large @ WriteError::TooLarge { .. }) => {
-                warn!(url.full = %job.url, error.message = %too_large, "artifact analysis: over the ceiling");
-                Some(Err(Scripts::Unreadable(too_large.to_string())))
+                warn!(url.full = %url, error.message = %too_large, "artifact analysis: over the ceiling");
+                Some(Err(too_large))
             }
             Err(e) => {
-                warn!(url.full = %job.url, error.message = %e, "artifact analysis: not spooled, nothing stored");
+                warn!(url.full = %url, error.message = %e, "artifact analysis: not spooled, nothing stored");
                 None
             }
         }
@@ -476,9 +487,10 @@ impl Drop for InFlight {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::analysis::attestation::Attested;
+    use crate::analysis::source::Sourced;
     use crate::analysis::store::{AnalysisError, InProcess, Stored};
     use crate::util::test_support::tarball;
     use crate::util::test_support::tempdir;
@@ -488,7 +500,7 @@ mod tests {
     const POSTINSTALL: &[u8] =
         br#"{"name":"widget","version":"1.0.0","scripts":{"postinstall":"node x.js"}}"#;
 
-    fn sri_of(data: &[u8]) -> Sri {
+    pub(crate) fn sri_of(data: &[u8]) -> Sri {
         use base64::Engine as _;
         use sha2::{Digest, Sha512};
         let encoded = base64::engine::general_purpose::STANDARD.encode(Sha512::digest(data));
@@ -512,7 +524,7 @@ mod tests {
         format!("http://{addr}/widget/-/widget-1.0.0.tgz")
     }
 
-    fn analyser(label: &str, ceiling: u64, store: Arc<dyn Analyses>) -> Analyser {
+    pub(crate) fn analyser(label: &str, ceiling: u64, store: Arc<dyn Analyses>) -> Analyser {
         let (spool, _) = Spool::open(&tempdir(label), ceiling).expect("opens");
         Analyser::new(reqwest::Client::new(), Arc::new(spool), store, 2, 16)
     }
@@ -883,6 +895,14 @@ mod tests {
         }
 
         fn put_attested<'a>(&'a self, _: &'a Sri, _: &'a Attested) -> Stored<'a, ()> {
+            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
+        }
+
+        fn sourced<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Sourced>> {
+            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
+        }
+
+        fn put_sourced<'a>(&'a self, _: &'a Sri, _: &'a Sourced) -> Stored<'a, ()> {
             Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
         }
     }

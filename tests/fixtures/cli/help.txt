@@ -60,6 +60,8 @@ Proxy configuration, all through the environment:
   WAHAROA_MAX_TRAFFIC_CLIENTS       client names counted apart in a traffic window (default 256)
   WAHAROA_WATCH_INTERVAL            seconds between checks of served packages for new versions to analyse
                                     before a client asks for them; 0 turns it off (default 900)
+  WAHAROA_SOURCE_ARCHIVES           host of the GitHub archives each artifact is compared with, the source
+                                    its metadata names; off turns the comparison off (default https://codeload.github.com)
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
                                     "default=403,npm/pnpm=451" (default 403)
   WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot

@@ -1,8 +1,9 @@
-//! Signals about a package version from its metadata: reported in the log, the audit line
-//! and `explain`, and never refused on until their false-positive rates are measured.
+//! Signals about a package version from its metadata and its source: reported in the log,
+//! the audit line and `explain`, and never refused on.
 //!
-//! See docs/engineering_decisions/metadata-heuristics.md.
+//! See docs/engineering_decisions/metadata-heuristics.md and source-diff.md.
 
+use crate::analysis::source::Sourced;
 use crate::identity::Ecosystem;
 use crate::record::{DocumentDetail, PackageMetadata, PackageRecord};
 
@@ -23,6 +24,8 @@ pub enum Signal {
     NoRepository,
     /// A served package's name is one edit away, or the same name in another case.
     NearName { served: String },
+    /// The artifact holds what its source, `at` as `owner/name@reference`, does not.
+    Source { at: String, finding: String },
 }
 
 impl std::fmt::Display for Signal {
@@ -37,8 +40,60 @@ impl std::fmt::Display for Signal {
             Self::NearName { served } => {
                 write!(f, "near name: one edit from `{served}`, served here")
             }
+            Self::Source { at, finding } => write!(f, "source {at}: {finding}"),
         }
     }
+}
+
+/// The signals a comparison with the source gives: install scripts, dependencies and
+/// install files the source lacks, and files that differ. Optional dependencies, Markdown and
+/// files only in the package are kept by the store and give none: see source-diff.md.
+pub fn of_source(sourced: &Sourced) -> Vec<Signal> {
+    let Sourced::Compared {
+        repository,
+        reference,
+        comparison,
+    } = sourced
+    else {
+        return Vec::new();
+    };
+    let files: Vec<&str> = comparison
+        .lifecycle_files
+        .iter()
+        .map(|(_, file)| file.as_str())
+        .collect();
+    let first = comparison.differing.first();
+    [
+        (!comparison.lifecycle_scripts.is_empty()).then(|| {
+            format!(
+                "install scripts it lacks or has otherwise: {}",
+                comparison.lifecycle_scripts.join(", ")
+            )
+        }),
+        (!comparison.dependencies.is_empty()).then(|| {
+            format!(
+                "dependencies it lacks: {}",
+                comparison.dependencies.join(", ")
+            )
+        }),
+        (!files.is_empty()).then(|| {
+            format!(
+                "install files it lacks or has otherwise: {}",
+                files.join(", ")
+            )
+        }),
+        first.map(|first| match comparison.differing.len() {
+            1 => format!("1 file differs from it: `{first}`"),
+            count => format!("{count} files differ from it, first `{first}`"),
+        }),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|finding| Signal::Source {
+        at: format!("{repository}@{reference}"),
+        finding,
+    })
+    .collect()
 }
 
 /// The signals for `record`, one version of the package whose held records are `records`.
@@ -313,5 +368,66 @@ mod tests {
         ] {
             assert_eq!(signal.to_string(), text);
         }
+    }
+
+    /// Install scripts, dependencies, install files and differing files each give a signal.
+    /// Optional dependencies, Markdown, files only in the package and no comparison do not.
+    #[test]
+    fn a_comparison_with_the_source_gives_its_signals() {
+        use crate::analysis::source::Comparison;
+        let comparison = Comparison {
+            manifests: true,
+            lifecycle_scripts: vec!["postinstall".to_owned()],
+            dependencies: vec!["a".to_owned(), "b".to_owned()],
+            optional_dependencies: vec!["c".to_owned()],
+            lifecycle_files: vec![("postinstall".to_owned(), "x.js".to_owned())],
+            lifecycle_targets: 1,
+            differing: vec!["x.js".to_owned(), "y.js".to_owned()],
+            differing_markdown: vec!["README.md".to_owned()],
+            only_in_package: vec!["dist/x.js".to_owned()],
+            same: 3,
+        };
+        let sourced = Sourced::Compared {
+            repository: "o/r".to_owned(),
+            reference: "v1".to_owned(),
+            comparison: Box::new(comparison),
+        };
+        let said: Vec<String> = of_source(&sourced)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(
+            said,
+            [
+                "source o/r@v1: install scripts it lacks or has otherwise: postinstall",
+                "source o/r@v1: dependencies it lacks: a, b",
+                "source o/r@v1: install files it lacks or has otherwise: x.js",
+                "source o/r@v1: 2 files differ from it, first `x.js`",
+            ]
+        );
+        let quiet = Sourced::Compared {
+            repository: "o/r".to_owned(),
+            reference: "v1".to_owned(),
+            comparison: Box::new(Comparison {
+                optional_dependencies: vec!["c".to_owned()],
+                differing_markdown: vec!["README.md".to_owned()],
+                only_in_package: vec!["dist/x.js".to_owned()],
+                ..Comparison::default()
+            }),
+        };
+        assert_eq!(of_source(&quiet), []);
+        let one = Sourced::Compared {
+            repository: "o/r".to_owned(),
+            reference: "v1".to_owned(),
+            comparison: Box::new(Comparison {
+                differing: vec!["x.js".to_owned()],
+                ..Comparison::default()
+            }),
+        };
+        assert_eq!(
+            of_source(&one)[0].to_string(),
+            "source o/r@v1: 1 file differs from it: `x.js`"
+        );
+        assert_eq!(of_source(&Sourced::NotCompared("why".to_owned())), []);
     }
 }
