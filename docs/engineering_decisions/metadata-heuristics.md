@@ -57,6 +57,41 @@ marked malicious:
 jq -r 'select(.signals) | .signals[] | sub(":.*"; "")' audit.jsonl | sort | uniq -c
 ```
 
+## Measured
+
+`examples/heuristics_rates.rs` on 2026-09-30, over the lockfiles of
+[source-diff](source-diff.md): 694 npm versions from the tier-1 set and the install-script
+set, and 34 PyPI versions from the tier-1 sets. None of them is reported as malicious.
+`near name` compares with every other name the lockfiles lock in the same ecosystem.
+
+| Signal | npm | PyPI |
+|---|---|---|
+| new package | 0 of 694 | 0 of 34 |
+| new publisher | 60 of 694 (8.6%) | cannot fire: the index names no publisher |
+| no repository | 1 of 694, `client-only` 0.0.1 | cannot fire |
+| near name | 12 of 694 (1.7%) | 0 of 34 |
+
+| New publisher | Versions |
+|---|---|
+| `GitHub Actions`, npm's trusted publishing: `_npmUser.trustedPublisher` is `github` | 12, such as `yargs` 18.2.0, `abbrev` 4.0.0, `proxy-addr` 2.0.8 |
+| `microsoft1es`, a release account | 21: `typescript` 7.0.2 and its 20 `@typescript/typescript-*` binaries |
+| a maintainer publishing where another did before | 27, such as `blakeembrey` on 5 `jshttp` packages, `lukekarrys` and `zkat` on npm CLI packages |
+
+The 12 near names are 6 pairs of packages that both appear in the lockfiles:
+`eventemitter2`/`eventemitter3`, `http-proxy-agent`/`https-proxy-agent`,
+`is-stream`/`isstream`, `pend`/`send`, `safe-buffer`/`safer-buffer`. Each fires on both
+sides.
+
+`new package` depends on the day: none of these packages had a first version in the last
+30 days. It measures nothing about a corpus of established packages.
+
+### Proposed
+
+None becomes a policy key. `new publisher` fires on 8.6% of established versions, and 12
+of those 60 are a move to trusted publishing, which is the safer way to publish. `near
+name` fires only on pairs of real packages here, so as a refusal it would refuse one of
+each pair. They stay signals.
+
 ## Tests
 
 `src/heuristics.rs` covers each signal firing and each case that suppresses it: 30 days old,
