@@ -5,6 +5,7 @@
 
 use crate::analysis::source::Sourced;
 use crate::identity::Ecosystem;
+use crate::policy::SignalWeights;
 use crate::record::{DocumentDetail, PackageMetadata, PackageRecord};
 
 /// A package whose first version is younger than this is new.
@@ -25,7 +26,115 @@ pub enum Signal {
     /// A served package's name is one edit away, or the same name in another case.
     NearName { served: String },
     /// The artifact holds what its source, `at` as `owner/name@reference`, does not.
-    Source { at: String, finding: String },
+    Source { at: String, finding: SourceFinding },
+}
+
+/// What a comparison with the source found that is a signal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SourceFinding {
+    /// Install scripts the source lacks, or has with another body.
+    InstallScripts(Vec<String>),
+    /// Dependencies the source lacks.
+    Dependencies(Vec<String>),
+    /// Files that run on install which the source lacks, or has otherwise.
+    InstallFiles(Vec<String>),
+    /// This many files differ from the source, `first` in path order.
+    Differing { count: usize, first: String },
+}
+
+impl std::fmt::Display for SourceFinding {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InstallScripts(names) => {
+                write!(
+                    f,
+                    "install scripts it lacks or has otherwise: {}",
+                    names.join(", ")
+                )
+            }
+            Self::Dependencies(names) => write!(f, "dependencies it lacks: {}", names.join(", ")),
+            Self::InstallFiles(files) => {
+                write!(
+                    f,
+                    "install files it lacks or has otherwise: {}",
+                    files.join(", ")
+                )
+            }
+            Self::Differing { count: 1, first } => write!(f, "1 file differs from it: `{first}`"),
+            Self::Differing { count, first } => {
+                write!(f, "{count} files differ from it, first `{first}`")
+            }
+        }
+    }
+}
+
+/// Each kind of signal, as `signal_weights` in a policy names it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SignalKind {
+    NewPackage,
+    NewPublisher,
+    NoRepository,
+    NearName,
+    SourceInstallScripts,
+    SourceDependencies,
+    SourceInstallFiles,
+    SourceDiffering,
+}
+
+impl SignalKind {
+    pub const ALL: [Self; 8] = [
+        Self::NewPackage,
+        Self::NewPublisher,
+        Self::NoRepository,
+        Self::NearName,
+        Self::SourceInstallScripts,
+        Self::SourceDependencies,
+        Self::SourceInstallFiles,
+        Self::SourceDiffering,
+    ];
+
+    /// The name a policy's `signal_weights` gives it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NewPackage => "new_package",
+            Self::NewPublisher => "new_publisher",
+            Self::NoRepository => "no_repository",
+            Self::NearName => "near_name",
+            Self::SourceInstallScripts => "source_install_scripts",
+            Self::SourceDependencies => "source_dependencies",
+            Self::SourceInstallFiles => "source_install_files",
+            Self::SourceDiffering => "source_differing",
+        }
+    }
+}
+
+impl Signal {
+    pub fn kind(&self) -> SignalKind {
+        match self {
+            Self::NewPackage { .. } => SignalKind::NewPackage,
+            Self::NewPublisher { .. } => SignalKind::NewPublisher,
+            Self::NoRepository => SignalKind::NoRepository,
+            Self::NearName { .. } => SignalKind::NearName,
+            Self::Source { finding, .. } => match finding {
+                SourceFinding::InstallScripts(_) => SignalKind::SourceInstallScripts,
+                SourceFinding::Dependencies(_) => SignalKind::SourceDependencies,
+                SourceFinding::InstallFiles(_) => SignalKind::SourceInstallFiles,
+                SourceFinding::Differing { .. } => SignalKind::SourceDiffering,
+            },
+        }
+    }
+}
+
+/// A version's risk score: the weight `policy` gives each kind of signal present, summed,
+/// each kind once however often it fires.
+pub fn score(signals: &[Signal], weights: &SignalWeights) -> u32 {
+    signals
+        .iter()
+        .map(Signal::kind)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|kind| weights.of(kind))
+        .sum()
 }
 
 impl std::fmt::Display for Signal {
@@ -57,35 +166,24 @@ pub fn of_source(sourced: &Sourced) -> Vec<Signal> {
     else {
         return Vec::new();
     };
-    let files: Vec<&str> = comparison
+    let files: Vec<String> = comparison
         .lifecycle_files
         .iter()
-        .map(|(_, file)| file.as_str())
+        .map(|(_, file)| file.clone())
         .collect();
-    let first = comparison.differing.first();
     [
-        (!comparison.lifecycle_scripts.is_empty()).then(|| {
-            format!(
-                "install scripts it lacks or has otherwise: {}",
-                comparison.lifecycle_scripts.join(", ")
-            )
-        }),
-        (!comparison.dependencies.is_empty()).then(|| {
-            format!(
-                "dependencies it lacks: {}",
-                comparison.dependencies.join(", ")
-            )
-        }),
-        (!files.is_empty()).then(|| {
-            format!(
-                "install files it lacks or has otherwise: {}",
-                files.join(", ")
-            )
-        }),
-        first.map(|first| match comparison.differing.len() {
-            1 => format!("1 file differs from it: `{first}`"),
-            count => format!("{count} files differ from it, first `{first}`"),
-        }),
+        (!comparison.lifecycle_scripts.is_empty())
+            .then(|| SourceFinding::InstallScripts(comparison.lifecycle_scripts.clone())),
+        (!comparison.dependencies.is_empty())
+            .then(|| SourceFinding::Dependencies(comparison.dependencies.clone())),
+        (!files.is_empty()).then_some(SourceFinding::InstallFiles(files)),
+        comparison
+            .differing
+            .first()
+            .map(|first| SourceFinding::Differing {
+                count: comparison.differing.len(),
+                first: first.clone(),
+            }),
     ]
     .into_iter()
     .flatten()
@@ -405,6 +503,13 @@ mod tests {
                 "source o/r@v1: 2 files differ from it, first `x.js`",
             ]
         );
+        assert_eq!(
+            of_source(&sourced)
+                .iter()
+                .map(Signal::kind)
+                .collect::<Vec<_>>(),
+            SignalKind::ALL[4..]
+        );
         let quiet = Sourced::Compared {
             repository: "o/r".to_owned(),
             reference: "v1".to_owned(),
@@ -429,5 +534,43 @@ mod tests {
             "source o/r@v1: 1 file differs from it: `x.js`"
         );
         assert_eq!(of_source(&Sourced::NotCompared("why".to_owned())), []);
+    }
+
+    /// A kind counts once however often it fires, and each kind adds its own weight.
+    #[test]
+    fn the_risk_score_sums_the_weight_of_each_kind_present() {
+        let weights = SignalWeights {
+            near_name: 4,
+            source_differing: 2,
+            ..SignalWeights::default()
+        };
+        let near = |served: &str| Signal::NearName {
+            served: served.to_owned(),
+        };
+        let differing = Signal::Source {
+            at: "o/r@v1".to_owned(),
+            finding: SourceFinding::Differing {
+                count: 2,
+                first: "x.js".to_owned(),
+            },
+        };
+        assert_eq!(score(&[], &weights), 0);
+        assert_eq!(score(&[near("a"), near("b")], &weights), 4);
+        assert_eq!(
+            score(&[near("a"), differing, Signal::NoRepository], &weights),
+            7
+        );
+        let kinds: Vec<SignalKind> = [
+            Signal::NewPackage { days: 1 },
+            Signal::NewPublisher {
+                publisher: "m".to_owned(),
+            },
+            Signal::NoRepository,
+            near("a"),
+        ]
+        .iter()
+        .map(Signal::kind)
+        .collect();
+        assert_eq!(kinds, SignalKind::ALL[..4]);
     }
 }

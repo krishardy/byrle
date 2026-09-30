@@ -104,7 +104,7 @@ fn report(mut found: Vec<(String, String, String, Option<Vec<Signal>>)>, now: ji
         };
         let mut kinds = BTreeSet::new();
         for signal in signals {
-            kinds.insert(kind(signal));
+            kinds.insert(signal.kind().as_str());
         }
         for kind in kinds {
             *counts.entry((ecosystem.clone(), kind)).or_default() += 1;
@@ -116,20 +116,9 @@ fn report(mut found: Vec<(String, String, String, Option<Vec<Signal>>)>, now: ji
     }
     for (ecosystem, (versions, unread)) in &totals {
         println!("\n== {ecosystem}\nversions\t{versions}\nnot read\t{unread}");
-        for kind in ["new package", "new publisher", "no repository", "near name"] {
+        for kind in ["new_package", "new_publisher", "no_repository", "near_name"] {
             let n = counts.get(&(ecosystem.clone(), kind)).copied().unwrap_or(0);
             println!("{kind}\t{n}");
         }
-    }
-}
-
-/// The signal's name, as its text begins.
-fn kind(signal: &Signal) -> &'static str {
-    match signal {
-        Signal::NewPackage { .. } => "new package",
-        Signal::NewPublisher { .. } => "new publisher",
-        Signal::NoRepository => "no repository",
-        Signal::NearName { .. } => "near name",
-        Signal::Source { .. } => "source",
     }
 }

@@ -83,6 +83,9 @@ pub struct Event {
     /// What the metadata heuristics reported, which no verdict uses. Pinned events only.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub signals: Vec<String>,
+    /// The signals' risk score under the policy's `signal_weights`. Absent with no signal.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_score: Option<u32>,
 }
 
 /// What a pinned verdict was decided on.
@@ -289,6 +292,7 @@ impl Default for Event {
             answered: None,
             inputs: None,
             signals: Vec::new(),
+            risk_score: None,
         }
     }
 }
@@ -321,6 +325,7 @@ impl Event {
             answered: None,
             inputs: None,
             signals: Vec::new(),
+            risk_score: None,
         }
     }
 
@@ -353,9 +358,14 @@ impl Event {
         self
     }
 
-    /// Add what the metadata heuristics reported.
-    pub fn with_signals(mut self, signals: &[crate::heuristics::Signal]) -> Self {
+    /// Add the signals reported, and their risk score under `weights` when there is any.
+    pub fn with_signals(
+        mut self,
+        signals: &[crate::heuristics::Signal],
+        weights: &crate::policy::SignalWeights,
+    ) -> Self {
         self.signals = signals.iter().map(ToString::to_string).collect();
+        self.risk_score = (!signals.is_empty()).then(|| crate::heuristics::score(signals, weights));
         self
     }
 
@@ -398,6 +408,7 @@ impl Event {
             answered: None,
             inputs: None,
             signals: Vec::new(),
+            risk_score: None,
         }
     }
 }
@@ -1414,5 +1425,15 @@ not json
             &[],
         ));
         assert_eq!(packages(&std::fs::read_to_string(&path).unwrap()).len(), 1);
+    }
+
+    /// A line with signals carries their score, and one without carries none.
+    #[test]
+    fn the_risk_score_is_written_only_with_signals() {
+        let weights = crate::policy::SignalWeights::default();
+        let event = Event::pinned("npm", "lodash", "4.17.21", &decision("version: 1"), &[]);
+        assert_eq!(event.clone().with_signals(&[], &weights).risk_score, None);
+        let signals = [crate::heuristics::Signal::NoRepository];
+        assert_eq!(event.with_signals(&signals, &weights).risk_score, Some(1));
     }
 }

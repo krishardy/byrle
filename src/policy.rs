@@ -219,6 +219,67 @@ impl<'de> Deserialize<'de> for VersionValue {
     }
 }
 
+/// Each kind of signal's weight in a risk score, [`DEFAULT_SIGNAL_WEIGHT`] unless set.
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SignalWeights {
+    #[serde(default = "default_signal_weight")]
+    pub new_package: u32,
+    #[serde(default = "default_signal_weight")]
+    pub new_publisher: u32,
+    #[serde(default = "default_signal_weight")]
+    pub no_repository: u32,
+    #[serde(default = "default_signal_weight")]
+    pub near_name: u32,
+    #[serde(default = "default_signal_weight")]
+    pub source_install_scripts: u32,
+    #[serde(default = "default_signal_weight")]
+    pub source_dependencies: u32,
+    #[serde(default = "default_signal_weight")]
+    pub source_install_files: u32,
+    #[serde(default = "default_signal_weight")]
+    pub source_differing: u32,
+}
+
+/// What a kind of signal weighs when the policy does not say.
+pub const DEFAULT_SIGNAL_WEIGHT: u32 = 1;
+
+fn default_signal_weight() -> u32 {
+    DEFAULT_SIGNAL_WEIGHT
+}
+
+impl Default for SignalWeights {
+    fn default() -> Self {
+        Self {
+            new_package: DEFAULT_SIGNAL_WEIGHT,
+            new_publisher: DEFAULT_SIGNAL_WEIGHT,
+            no_repository: DEFAULT_SIGNAL_WEIGHT,
+            near_name: DEFAULT_SIGNAL_WEIGHT,
+            source_install_scripts: DEFAULT_SIGNAL_WEIGHT,
+            source_dependencies: DEFAULT_SIGNAL_WEIGHT,
+            source_install_files: DEFAULT_SIGNAL_WEIGHT,
+            source_differing: DEFAULT_SIGNAL_WEIGHT,
+        }
+    }
+}
+
+impl SignalWeights {
+    /// The weight of `kind`.
+    pub fn of(&self, kind: crate::heuristics::SignalKind) -> u32 {
+        use crate::heuristics::SignalKind;
+        match kind {
+            SignalKind::NewPackage => self.new_package,
+            SignalKind::NewPublisher => self.new_publisher,
+            SignalKind::NoRepository => self.no_repository,
+            SignalKind::NearName => self.near_name,
+            SignalKind::SourceInstallScripts => self.source_install_scripts,
+            SignalKind::SourceDependencies => self.source_dependencies,
+            SignalKind::SourceInstallFiles => self.source_install_files,
+            SignalKind::SourceDiffering => self.source_differing,
+        }
+    }
+}
+
 /// Global settings, and per-package exceptions to them.
 #[derive(Debug, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -257,6 +318,9 @@ pub struct Policy {
     /// Scores for advisories the streams gave none, which `max_cvss` otherwise refuses.
     #[serde(default)]
     pub advisory_scores: Vec<AdvisoryScore>,
+    /// What each kind of signal adds to a version's risk score, which no verdict reads.
+    #[serde(default)]
+    pub signal_weights: SignalWeights,
 
     /// `sha256:` and the hex digest of the file's bytes, for the audit log. Not a key.
     #[serde(skip)]
@@ -762,11 +826,44 @@ mod tests {
         }
     }
 
+    /// A weight is 1 unless set and a whole number, and each name is its kind's name.
+    #[test]
+    fn signal_weights_default_to_1_and_are_whole_numbers() {
+        use crate::heuristics::SignalKind;
+        assert_eq!(parse("").unwrap().signal_weights, SignalWeights::default());
+        assert!(
+            SignalKind::ALL
+                .iter()
+                .all(|kind| SignalWeights::default().of(*kind) == 1)
+        );
+        let set = parse("signal_weights: { near_name: 0, source_install_files: 5 }\n")
+            .unwrap()
+            .signal_weights;
+        assert_eq!(
+            (set.near_name, set.source_install_files, set.new_package),
+            (0, 5, 1)
+        );
+        for bad in ["-1", "1.5", "high"] {
+            assert!(
+                parse(&format!("signal_weights: {{ near_name: {bad} }}\n")).is_err(),
+                "{bad}"
+            );
+        }
+        for (weight, kind) in (10..).zip(SignalKind::ALL) {
+            let policy = parse(&format!(
+                "signal_weights: {{ {}: {weight} }}\n",
+                kind.as_str()
+            ))
+            .unwrap_or_else(|e| panic!("{}: {e}", kind.as_str()));
+            assert_eq!(policy.signal_weights.of(kind), weight, "{}", kind.as_str());
+        }
+    }
+
     /// The key set at each level is pinned by serde's list of the keys it accepts.
     /// See docs/engineering_decisions/policy-schema-v1-frozen.md.
     #[test]
     fn the_version_1_key_set_is_closed() {
-        let cases: [(&str, &str, &[&str]); 6] = [
+        let cases: [(&str, &str, &[&str]); 7] = [
             (
                 "top level",
                 "unknown: 1\n",
@@ -783,6 +880,7 @@ mod tests {
                     "denials",
                     "packages",
                     "advisory_scores",
+                    "signal_weights",
                 ],
             ),
             (
@@ -832,6 +930,20 @@ mod tests {
                     "deprecated",
                     "provenance",
                     "vuln_advisory_ids",
+                ],
+            ),
+            (
+                "signal_weights",
+                "signal_weights: { unknown: 1 }\n",
+                &[
+                    "new_package",
+                    "new_publisher",
+                    "no_repository",
+                    "near_name",
+                    "source_install_scripts",
+                    "source_dependencies",
+                    "source_install_files",
+                    "source_differing",
                 ],
             ),
         ];

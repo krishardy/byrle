@@ -11,6 +11,16 @@ settings
   packages         0
   advisory_scores  0
 
+signal weights, for the risk score
+  new_package             1
+  new_publisher           1
+  no_repository           1
+  near_name               1
+  source_install_scripts  1
+  source_dependencies     1
+  source_install_files    1
+  source_differing        1
+
 checks
   denials           enforced
   known_malware     unenforced, no advisory stream
@@ -22,7 +32,7 @@ checks
   deprecated        enforced
   provenance        enforced
 
-=== version: 1, cooldown_days: 0, no store
+=== version: 1, cooldown_days: 0, near_name weighing 2, no store
 settings
   cooldown_days    0
   max_cvss         6.9
@@ -34,6 +44,16 @@ settings
   denials          0
   packages         0
   advisory_scores  0
+
+signal weights, for the risk score
+  new_package             1
+  new_publisher           1
+  no_repository           1
+  near_name               2
+  source_install_scripts  1
+  source_dependencies     1
+  source_install_files    1
+  source_differing        1
 
 checks
   denials           enforced
@@ -58,6 +78,16 @@ settings
   denials          2
   packages         3
   advisory_scores  0
+
+signal weights, for the risk score
+  new_package             1
+  new_publisher           1
+  no_repository           1
+  near_name               1
+  source_install_scripts  1
+  source_dependencies     1
+  source_install_files    1
+  source_differing        1
 
 checks
   denials           enforced
@@ -88,6 +118,16 @@ settings
   denials          2
   packages         3
   advisory_scores  0
+
+signal weights, for the risk score
+  new_package             1
+  new_publisher           1
+  no_repository           1
+  near_name               1
+  source_install_scripts  1
+  source_dependencies     1
+  source_install_files    1
+  source_differing        1
 
 checks
   denials           enforced

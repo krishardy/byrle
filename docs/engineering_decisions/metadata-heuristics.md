@@ -88,7 +88,9 @@ sides.
 ### Decision
 
 Decided with the user 2026-09-30: none becomes a policy key. Each stays a signal, an
-input to a score of a package's potential risk. `new publisher` fires on 8.6% of established versions, and 12
+input to a score of a package's potential risk. The score is the sum of the policy's
+`signal_weights`, 1 each by default, for the kinds present
+([policy-reference](../policy-reference.md#signal_weights)). `new publisher` fires on 8.6% of established versions, and 12
 of those 60 are a move to trusted publishing, which is the safer way to publish. `near
 name` fires only on pairs of real packages here, so as a refusal it would refuse one of
 each pair. They stay signals.

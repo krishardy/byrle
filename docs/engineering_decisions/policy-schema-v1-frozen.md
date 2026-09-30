@@ -13,15 +13,19 @@ with `PolicyError::UnsupportedVersion`.
 A default or the meaning of an existing key is part of what a written file says. Changing
 either changes a file nobody edited, so that is a `version: 2` change too.
 
+Amended 2026-09-30, with the user: `signal_weights` was added to version 1 itself. Version 1
+had not been deployed, so no written file changes meaning.
+
 ## The keys
 
 | Level | Keys |
 |---|---|
-| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `deprecated`, `yanked`, `provenance`, `provenance_window_days`, `denials`, `packages`, `advisory_scores` |
+| top level | `version`, `cooldown_days`, `max_cvss`, `install_scripts`, `kev`, `deprecated`, `yanked`, `provenance`, `provenance_window_days`, `denials`, `packages`, `advisory_scores`, `signal_weights` |
 | a `denials` entry | `purl`, `version`, `reason` |
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
+| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing` |
 | `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `vuln_advisory_ids` |
 
 | Key | Value | Default |
@@ -46,6 +50,7 @@ either changes a file nobody edited, so that is a `version: 2` change too.
 | `set.vuln_advisory_ids` | advisory ids, each matched against an advisory's id and its aliases | empty |
 | `advisory_scores[].advisory_id` | an advisory id, matched against an advisory's id and its aliases | required |
 | `advisory_scores[].cvss` | a number, 0.0 to 10.0 | required |
+| `signal_weights.*` | a whole number, 0 or more | 1 |
 
 The rules the keys obey are fixed with them: every key refused when unknown, at every level;
 a `packages` entry that loosens needs `expires` or `permanent: true`; an entry that tightens
