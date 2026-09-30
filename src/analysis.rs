@@ -6,6 +6,7 @@
 pub mod attestation;
 pub mod postgres;
 pub mod run;
+pub mod source;
 pub mod store;
 
 use std::io::Read;
@@ -86,7 +87,7 @@ impl Reader {
 }
 
 /// npm's install lifecycle, in the order npm runs them.
-const NPM_INSTALL_SCRIPTS: [&str; 3] = ["preinstall", "install", "postinstall"];
+pub const NPM_INSTALL_SCRIPTS: [&str; 3] = ["preinstall", "install", "postinstall"];
 
 /// The scripts an npm tarball's own `package.json` declares.
 ///
@@ -130,30 +131,61 @@ pub fn sdist_install_scripts(sdist: &mut dyn Read) -> Result<InstallScripts, Rea
 
 /// The first member of a gzipped tar whose path `wanted` accepts.
 fn member(bytes: &mut dyn Read, wanted: &dyn Fn(&str) -> bool) -> Result<Vec<u8>, ReadError> {
-    let decoder = flate2::read::GzDecoder::new(bytes);
-    let mut archive = tar::Archive::new(decoder);
-    let entries = archive.entries().expect("a new archive is at its start");
-    for entry in entries {
-        let entry = entry.map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
-        let path = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
-        if !wanted(&path) {
-            continue;
+    let mut found = None;
+    walk(bytes, &mut |path, member| {
+        if !wanted(path) {
+            return Ok(false);
         }
-        let size = entry.size() as usize;
+        let size = member.size as usize;
         if size > MAX_MEMBER_BYTES {
             return Err(ReadError::TooLarge {
-                member: path,
+                member: path.to_owned(),
                 limit: MAX_MEMBER_BYTES,
             });
         }
         let mut out = Vec::with_capacity(size);
-        entry
+        member
+            .bytes
             .take(MAX_MEMBER_BYTES as u64)
             .read_to_end(&mut out)
             .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
-        return Ok(out);
+        found = Some(out);
+        Ok(true)
+    })?;
+    found.ok_or(ReadError::NothingToRead)
+}
+
+/// One member of a tar, as [`walk`] hands it over.
+struct Member<'a> {
+    /// Whether it is a regular file, not a directory or a link.
+    file: bool,
+    /// The size its header states.
+    size: u64,
+    bytes: &'a mut dyn Read,
+}
+
+/// Each member of a gzipped tar in order, with its path, until `visit` returns `true`.
+/// Errors when the bytes are not a gzipped tar, or with what `visit` errors with.
+fn walk(
+    bytes: &mut dyn Read,
+    visit: &mut dyn FnMut(&str, Member<'_>) -> Result<bool, ReadError>,
+) -> Result<(), ReadError> {
+    let decoder = flate2::read::GzDecoder::new(bytes);
+    let mut archive = tar::Archive::new(decoder);
+    let entries = archive.entries().expect("a new archive is at its start");
+    for entry in entries {
+        let mut entry = entry.map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+        let path = String::from_utf8_lossy(&entry.path_bytes()).into_owned();
+        let member = Member {
+            file: entry.header().entry_type().is_file(),
+            size: entry.size(),
+            bytes: &mut entry,
+        };
+        if visit(&path, member)? {
+            break;
+        }
     }
-    Err(ReadError::NothingToRead)
+    Ok(())
 }
 
 /// What the artifact says against what the metadata claimed.
@@ -252,6 +284,17 @@ mod tests {
                 Err(e) => format!("{case}: error: {e}\n"),
             })
             .collect()
+    }
+
+    /// The first manifest is the one read, and the walk stops there.
+    #[test]
+    fn the_first_matching_member_is_read() {
+        let archive = tarball(&[
+            ("package/package.json", br#"{"scripts":{"install":"x"}}"#),
+            ("other/package.json", b"{}"),
+        ]);
+        let found = npm_install_scripts(&mut &*archive).expect("reads");
+        assert_eq!(found.names, ["install"]);
     }
 
     /// A changed answer with an unchanged [`READER`] fails, even with [`crate::env::BLESS`]
