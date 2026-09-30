@@ -10,7 +10,8 @@ use tracing::{info, warn};
 
 use super::{Analyser, InFlight};
 use crate::analysis::ReadError;
-use crate::analysis::source::{self, MAX_SOURCE_BYTES, Repo, Sourced, Tree};
+use crate::analysis::source::{self, Layout, MAX_SOURCE_BYTES, Repo, Sourced, Tree};
+use crate::identity::Ecosystem;
 use crate::integrity::Sri;
 use crate::record::PackageRecord;
 use crate::spool::{Spooled, WriteError};
@@ -31,7 +32,10 @@ pub struct SourceJob {
     pub url: String,
     /// The package's name, as the source's manifest spells it.
     pub name: String,
-    pub repo: Repo,
+    pub ecosystem: Ecosystem,
+    pub layout: Layout,
+    /// The repository the npm metadata names. `None` for PyPI, whose artifact names it.
+    pub repo: Option<Repo>,
     /// The metadata's `repository.directory`, for a package in a monorepo.
     pub directory: Option<String>,
     /// The commit or tags to try, in order, from [`source::references`].
@@ -39,16 +43,29 @@ pub struct SourceJob {
 }
 
 impl SourceJob {
-    /// The job for `record`'s artifact with `digest`, fetched from `url`.
-    /// Returns `None` when the record names no repository on GitHub.
-    pub fn of(record: &PackageRecord, digest: &Sri, url: String) -> Option<Self> {
-        let repository = record.repository.as_ref()?;
+    /// The job for `record`'s artifact `filename` with `digest`, fetched from `url`.
+    /// Returns `None` for an npm record naming no repository on GitHub, or a file this does
+    /// not read.
+    pub fn of(record: &PackageRecord, filename: &str, digest: &Sri, url: String) -> Option<Self> {
+        let ecosystem = record.package.key().ecosystem();
+        let (repo, directory) = match ecosystem {
+            Ecosystem::Npm => {
+                let repository = record.repository.as_ref()?;
+                (
+                    Some(Repo::from_url(&repository.url)?),
+                    repository.directory.clone(),
+                )
+            }
+            Ecosystem::PyPI => (None, None),
+        };
         Some(Self {
             digest: digest.clone(),
             url,
             name: record.package.key().registry_name(),
-            repo: Repo::from_url(&repository.url)?,
-            directory: repository.directory.clone(),
+            ecosystem,
+            layout: Layout::of(ecosystem, filename)?,
+            repo,
+            directory,
             references: source::references(record),
         })
     }
@@ -162,7 +179,7 @@ impl Analyser {
     async fn compared(&self, job: &SourceJob, sources: &Sources) -> Option<Sourced> {
         let response = self.fetch(&job.url).await?;
         let package = match self.spool_verified(&job.url, &job.digest, response).await {
-            Some(Ok(spooled)) => tree_of(spooled).await,
+            Some(Ok(spooled)) => tree_of(spooled, job.layout).await,
             Some(Err(too_large)) => Some(Err(format!("the artifact: {too_large}"))),
             None => None,
         };
@@ -170,8 +187,18 @@ impl Analyser {
             Ok(package) => package,
             Err(why) => return Some(Sourced::NotCompared(why)),
         };
+        let Some(repo) = job.repo.clone().or_else(|| {
+            package
+                .metadata
+                .as_deref()
+                .and_then(source::pypi_repository)
+        }) else {
+            return Some(Sourced::NotCompared(
+                "the artifact's metadata names no repository on GitHub".to_owned(),
+            ));
+        };
         for reference in &job.references {
-            let Some(url) = job.repo.archive_url(&sources.base, reference) else {
+            let Some(url) = repo.archive_url(&sources.base, reference) else {
                 continue;
             };
             let built = match self.archive(sources, &url).await? {
@@ -179,15 +206,25 @@ impl Analyser {
                 Archive::Unreadable(why) => return Some(Sourced::NotCompared(why)),
                 Archive::Tree(tree) => tree,
             };
-            return Some(match built.package(&job.name, job.directory.as_deref()) {
-                Some(built) => Sourced::Compared {
-                    repository: format!("{}/{}", job.repo.owner, job.repo.name),
-                    reference: reference.clone(),
-                    comparison: Box::new(source::compare(&package, &built)),
-                },
-                None => Sourced::NotCompared(
-                    "no package.json in the source names the package".to_owned(),
+            let (comparison, unfound) = match job.ecosystem {
+                Ecosystem::Npm => (
+                    built
+                        .package(&job.name, job.directory.as_deref())
+                        .map(|built| source::compare(&package, &built)),
+                    "no package.json in the source names the package",
                 ),
+                Ecosystem::PyPI => (
+                    source::compare_pypi(&package, &built, job.layout),
+                    "none of the package's Python files is in the source",
+                ),
+            };
+            return Some(match comparison {
+                Some(comparison) => Sourced::Compared {
+                    repository: format!("{}/{}", repo.owner, repo.name),
+                    reference: reference.clone(),
+                    comparison: Box::new(comparison),
+                },
+                None => Sourced::NotCompared(unfound.to_owned()),
             });
         }
         info!(url.full = %job.url, "source comparison: no commit or tag found yet, nothing stored");
@@ -225,7 +262,7 @@ impl Analyser {
                 .write(response.bytes_stream(), claimed, |_| {})
                 .await
             {
-                Ok(spooled) => tree_of(spooled).await.map(|read| match read {
+                Ok(spooled) => tree_of(spooled, Layout::Tar).await.map(|read| match read {
                     Ok(tree) => Archive::Tree(Arc::new(tree)),
                     Err(why) => Archive::Unreadable(format!("the source archive: {why}")),
                 }),
@@ -275,13 +312,13 @@ impl Analyser {
 
 /// The spooled archive read as a [`Tree`], or why it could not be.
 /// Returns `None` when the spool file could not be opened.
-async fn tree_of(spooled: Spooled) -> Option<Result<Tree, String>> {
+async fn tree_of(spooled: Spooled, layout: Layout) -> Option<Result<Tree, String>> {
     let read = tokio::task::spawn_blocking(move || {
-        let file = spooled.reader()?;
-        Ok(source::tree(
-            &mut std::io::BufReader::new(file),
-            MAX_SOURCE_BYTES,
-        ))
+        let file = std::io::BufReader::new(spooled.reader()?);
+        Ok(match layout {
+            Layout::Tar => source::tree(&mut { file }, MAX_SOURCE_BYTES),
+            Layout::Wheel => source::wheel_tree(file, MAX_SOURCE_BYTES),
+        })
     })
     .await
     .map_err(std::io::Error::other)
@@ -354,10 +391,12 @@ mod tests {
             digest: sri_of(bytes),
             url: format!("{base}/pkg/-/pkg-1.0.0.tgz"),
             name: "pkg".to_owned(),
-            repo: Repo {
+            ecosystem: Ecosystem::Npm,
+            layout: Layout::Tar,
+            repo: Some(Repo {
                 owner: "o".to_owned(),
                 name: "r".to_owned(),
-            },
+            }),
             directory: None,
             references: references.iter().map(|r| (*r).to_owned()).collect(),
         }
@@ -617,7 +656,76 @@ mod tests {
                 std::fs::remove_file(path).expect("removes");
             }
         }
-        assert!(tree_of(spooled).await.is_none());
+        assert!(tree_of(spooled, Layout::Tar).await.is_none());
+    }
+
+    /// A wheel is compared with the repository its own metadata names, and one naming none,
+    /// or whose files the source does not have, is stored as not compared.
+    #[tokio::test]
+    async fn a_wheel_is_compared_with_the_repository_its_metadata_names() {
+        use crate::util::test_support::zip_of;
+        let named = zip_of(&[
+            ("pkg/__init__.py", b"published"),
+            (
+                "pkg-1.0.dist-info/METADATA",
+                b"Name: pkg\nProject-URL: Source, https://github.com/o/r\n",
+            ),
+        ]);
+        let unnamed = zip_of(&[
+            ("pkg/__init__.py", b"x"),
+            ("pkg-1.0.dist-info/METADATA", b"Name: pkg\n"),
+        ]);
+        let elsewhere = zip_of(&[
+            ("other/__init__.py", b"x"),
+            (
+                "other-1.0.dist-info/METADATA",
+                b"Project-URL: Source, https://github.com/o/r\n",
+            ),
+        ]);
+        let source = tarball(&[("r-v1/src/pkg/__init__.py", b"source")]);
+        let (base, _) = server(vec![
+            ("/named.whl".to_owned(), 200, named.clone()),
+            ("/unnamed.whl".to_owned(), 200, unnamed.clone()),
+            ("/elsewhere.whl".to_owned(), 200, elsewhere.clone()),
+            ("/o/r/tar.gz/v1.0".to_owned(), 200, source),
+        ])
+        .await;
+        let analyser = comparing("source-wheel", &base, 1 << 20);
+        let wheel = |file: &str, bytes: &[u8]| SourceJob {
+            url: format!("{base}/{file}"),
+            ecosystem: Ecosystem::PyPI,
+            layout: Layout::Wheel,
+            repo: None,
+            ..job(&base, bytes, &["v1.0"])
+        };
+        let Some(Sourced::Compared {
+            repository,
+            comparison,
+            ..
+        }) = run(&analyser, wheel("named.whl", &named)).await
+        else {
+            panic!("compared");
+        };
+        assert_eq!(repository, "o/r");
+        assert_eq!(comparison.differing, ["pkg/__init__.py"]);
+        for (file, bytes, why) in [
+            (
+                "unnamed.whl",
+                &unnamed,
+                "the artifact's metadata names no repository on GitHub",
+            ),
+            (
+                "elsewhere.whl",
+                &elsewhere,
+                "none of the package's Python files is in the source",
+            ),
+        ] {
+            assert_eq!(
+                run(&analyser, wheel(file, bytes)).await,
+                Some(Sourced::NotCompared(why.to_owned())),
+                "{file}"
+            );
+        }
     }
 
     /// A job is made from a record naming a GitHub repository, and not from one that does not.
@@ -630,18 +738,39 @@ mod tests {
         .version("8.0.5")
         .unwrap()
         .clone();
-        let made = SourceJob::of(&record, &sri_of(b"x"), "u".to_owned()).expect("a job");
+        let made = SourceJob::of(&record, "x.tgz", &sri_of(b"x"), "u".to_owned()).expect("a job");
         assert_eq!(
-            (made.repo.owner.as_str(), made.repo.name.as_str()),
-            ("babel", "babel")
+            made.repo,
+            Some(Repo {
+                owner: "babel".to_owned(),
+                name: "babel".to_owned()
+            })
         );
+        assert_eq!(made.layout, Layout::Tar);
         assert_eq!(made.directory.as_deref(), Some("packages/babel-traverse"));
         assert_eq!(made.name, "@babel/traverse");
         let mut elsewhere = record.clone();
         elsewhere.repository.as_mut().unwrap().url = "https://gitlab.com/o/r".to_owned();
-        assert!(SourceJob::of(&elsewhere, &sri_of(b"x"), "u".to_owned()).is_none());
+        assert!(SourceJob::of(&elsewhere, "x.tgz", &sri_of(b"x"), "u".to_owned()).is_none());
         elsewhere.repository = None;
-        assert!(SourceJob::of(&elsewhere, &sri_of(b"x"), "u".to_owned()).is_none());
+        assert!(SourceJob::of(&elsewhere, "x.tgz", &sri_of(b"x"), "u".to_owned()).is_none());
+
+        let mut pypi = record.clone();
+        pypi.repository = None;
+        pypi.package = crate::identity::PackageKey::from_registry_name(Ecosystem::PyPI, "idna")
+            .and_then(|key| key.at_version("3.10"))
+            .unwrap();
+        let wheel = SourceJob::of(
+            &pypi,
+            "idna-3.10-py3-none-any.whl",
+            &sri_of(b"x"),
+            "u".to_owned(),
+        )
+        .expect("a PyPI job needs no repository from its record");
+        assert_eq!((wheel.repo, wheel.layout), (None, Layout::Wheel));
+        let sdist = SourceJob::of(&pypi, "idna-3.10.tar.gz", &sri_of(b"x"), "u".to_owned());
+        assert_eq!(sdist.map(|job| job.layout), Some(Layout::Tar));
+        assert!(SourceJob::of(&pypi, "idna-3.10.zip", &sri_of(b"x"), "u".to_owned()).is_none());
     }
 
     /// A store whose every call fails.

@@ -204,6 +204,19 @@ pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
 }
 
 /// A gzipped tar holding `files`, as an npm tarball or an sdist is.
+/// A stored (uncompressed) zip, so a test can place exact bytes in it.
+pub fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
+    use std::io::Write as _;
+    let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    for (name, bytes) in entries {
+        writer.start_file(*name, options).expect("start entry");
+        writer.write_all(bytes).expect("write entry");
+    }
+    writer.finish().expect("finish archive").into_inner()
+}
+
 pub fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut builder = tar::Builder::new(Vec::new());
     for (path, bytes) in files {

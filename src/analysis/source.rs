@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{MAX_MEMBER_BYTES, NPM_INSTALL_SCRIPTS, ReadError, walk};
+use crate::identity::Ecosystem;
 use crate::record::PackageRecord;
 
 /// The comparer's version, stored with each result; bumped whenever a result would change.
@@ -144,6 +145,8 @@ pub struct Tree {
     pub files: BTreeMap<String, [u8; 32]>,
     /// Each `package.json` that is JSON, by the directory holding it: `""` for the root.
     pub manifests: BTreeMap<String, serde_json::Value>,
+    /// A PyPI artifact's core metadata: an sdist's `PKG-INFO`, a wheel's `METADATA`.
+    pub metadata: Option<String>,
 }
 
 impl Tree {
@@ -189,6 +192,7 @@ impl Tree {
                     Some((relative(dir, directory)?.to_owned(), manifest.clone()))
                 })
                 .collect(),
+            metadata: None,
         }
     }
 }
@@ -226,17 +230,56 @@ pub fn tree(archive: &mut dyn Read, limit: usize) -> Result<Tree, ReadError> {
         if !member.file || path.is_empty() {
             return Ok(false);
         }
+        tree.add(path, member.bytes, path == "PKG-INFO")?;
+        Ok(false)
+    })?;
+    Ok(tree)
+}
+
+/// Read a wheel, a zip whose paths are where they install, into a [`Tree`]. `limit` bounds
+/// the sizes its entries state, together.
+/// Errors when the bytes are not a zip, or state more than `limit`.
+pub fn wheel_tree<R: Read + std::io::Seek>(archive: R, limit: usize) -> Result<Tree, ReadError> {
+    let not_a_zip = |e: zip::result::ZipError| ReadError::NotAnArchive(e.to_string());
+    let mut zip = zip::ZipArchive::new(archive).map_err(not_a_zip)?;
+    let mut tree = Tree::default();
+    let mut stated = 0u64;
+    for index in 0..zip.len() {
+        let mut entry = zip.by_index(index).map_err(not_a_zip)?;
+        stated += entry.size();
+        if stated > limit as u64 {
+            return Err(ReadError::TooLarge {
+                member: "the archive".to_owned(),
+                limit,
+            });
+        }
+        if !entry.is_file() {
+            continue;
+        }
+        let path = entry.name().to_owned();
+        let metadata = path
+            .split_once('/')
+            .is_some_and(|(top, rest)| top.ends_with(".dist-info") && rest == "METADATA");
+        tree.add(&path, &mut entry, metadata)?;
+    }
+    Ok(tree)
+}
+
+impl Tree {
+    /// Add the file at `path`, hashed as its `bytes` stream, keeping a `package.json` parsed
+    /// and, when `metadata`, its text as [`Tree::metadata`].
+    /// Errors when the bytes cannot be read.
+    fn add(&mut self, path: &str, bytes: &mut dyn Read, metadata: bool) -> Result<(), ReadError> {
         let manifest = match path.rsplit_once('/') {
             Some((directory, "package.json")) => Some(directory),
             None if path == "package.json" => Some(""),
             _ => None,
         };
         let mut hasher = Sha256::new();
-        let mut kept = manifest.map(|_| Vec::new());
+        let mut kept = (manifest.is_some() || metadata).then(Vec::new);
         let mut chunk = [0u8; 8192];
         loop {
-            let read = member
-                .bytes
+            let read = bytes
                 .read(&mut chunk)
                 .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
             if read == 0 {
@@ -255,15 +298,19 @@ pub fn tree(archive: &mut dyn Read, limit: usize) -> Result<Tree, ReadError> {
                 kept = None;
             }
         }
-        if let (Some(directory), Some(bytes)) = (manifest, kept)
-            && let Ok(manifest) = serde_json::from_slice(&bytes)
-        {
-            tree.manifests.insert(directory.to_owned(), manifest);
+        if let Some(bytes) = kept {
+            if let Some(directory) = manifest
+                && let Ok(manifest) = serde_json::from_slice(&bytes)
+            {
+                self.manifests.insert(directory.to_owned(), manifest);
+            }
+            if metadata {
+                self.metadata = Some(String::from_utf8_lossy(&bytes).into_owned());
+            }
         }
-        tree.files.insert(path.to_owned(), hasher.finalize().into());
-        Ok(false)
-    })?;
-    Ok(tree)
+        self.files.insert(path.to_owned(), hasher.finalize().into());
+        Ok(())
+    }
 }
 
 /// What the published package holds that its source does not.
@@ -326,11 +373,14 @@ pub fn compare(package: &Tree, source: &Tree) -> Comparison {
             }
         }
     }
-    for (path, digest) in package
-        .files
-        .iter()
-        .filter(|(path, _)| *path != "package.json")
-    {
+    files(package, source, &mut found, &|path| path == "package.json");
+    found
+}
+
+/// Sort each file of `package` that `skip` does not name into `found`: in `source` with the
+/// same bytes, differing, differing Markdown, or only in the package.
+fn files(package: &Tree, source: &Tree, found: &mut Comparison, skip: &dyn Fn(&str) -> bool) {
+    for (path, digest) in package.files.iter().filter(|(path, _)| !skip(path)) {
         match source.files.get(path) {
             None => found.only_in_package.push(path.clone()),
             Some(built) if built == digest => found.same += 1,
@@ -340,7 +390,120 @@ pub fn compare(package: &Tree, source: &Tree) -> Comparison {
             Some(_) => found.differing.push(path.clone()),
         }
     }
-    found
+}
+
+/// How an artifact's files are laid out, which says how it is read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Layout {
+    /// A gzipped tar, first component `package/` for npm and `{name}-{version}/` for an sdist.
+    Tar,
+    /// A wheel: a zip whose paths are where they install.
+    Wheel,
+}
+
+impl Layout {
+    /// The layout of the artifact `filename` in `ecosystem`. `None` for one this does not
+    /// read, such as a zip sdist.
+    pub fn of(ecosystem: Ecosystem, filename: &str) -> Option<Self> {
+        match ecosystem {
+            Ecosystem::Npm => Some(Self::Tar),
+            Ecosystem::PyPI if filename.ends_with(".whl") => Some(Self::Wheel),
+            Ecosystem::PyPI if filename.ends_with(".tar.gz") => Some(Self::Tar),
+            Ecosystem::PyPI => None,
+        }
+    }
+}
+
+/// The GitHub repository a PyPI core metadata file names: a `Project-URL` whose label says
+/// source, repository or code, then any other `Project-URL`, then `Home-page`.
+pub fn pypi_repository(metadata: &str) -> Option<Repo> {
+    let headers = metadata.split("\n\n").next().unwrap_or(metadata);
+    let (mut labelled, mut others, mut home) = (Vec::new(), Vec::new(), None);
+    for line in headers.lines() {
+        if let Some(value) = line.strip_prefix("Project-URL:") {
+            let (label, url) = value.split_once(',').unwrap_or(("", value));
+            let label = label.to_ascii_lowercase();
+            if ["source", "repo", "code"].iter().any(|w| label.contains(w)) {
+                labelled.push(url.trim());
+            } else {
+                others.push(url.trim());
+            }
+        } else if let Some(url) = line.strip_prefix("Home-page:") {
+            home = Some(url.trim());
+        }
+    }
+    labelled
+        .into_iter()
+        .chain(others)
+        .chain(home)
+        .find_map(Repo::from_url)
+}
+
+/// Whether `path` in a PyPI artifact is packaging metadata rather than the project's files:
+/// `PKG-INFO`, and anything in a `.dist-info` or `.egg-info` directory.
+fn pypi_metadata(path: &str) -> bool {
+    path == "PKG-INFO"
+        || path
+            .split('/')
+            .any(|part| part.ends_with(".dist-info") || part.ends_with(".egg-info"))
+}
+
+/// `package`, a PyPI artifact read with `layout`, against `source`, its repository's whole
+/// tree. The code that runs on install is an sdist's `setup.py` and a wheel's `.pth` files.
+/// Returns `None` when none of the package's Python files is in the source.
+pub fn compare_pypi(package: &Tree, source: &Tree, layout: Layout) -> Option<Comparison> {
+    let built = source.at(&located(package, source)?);
+    let mut found = Comparison::default();
+    let (runs, when): (fn(&str) -> bool, &str) = match layout {
+        Layout::Tar => (|path| path == "setup.py", "build"),
+        Layout::Wheel => (
+            |path| !path.contains('/') && path.ends_with(".pth"),
+            "startup",
+        ),
+    };
+    for file in package.files.keys().filter(|path| runs(path)) {
+        found.lifecycle_targets += 1;
+        if built.files.get(file) != package.files.get(file) {
+            found.lifecycle_files.push((when.to_owned(), file.clone()));
+        }
+    }
+    files(package, &built, &mut found, &pypi_metadata);
+    Some(found)
+}
+
+/// The directory of `source` the package's files are in: the one holding the most of its
+/// Python files, found from the shallowest one the source has. `src/`, a monorepo's
+/// subdirectory, or `""` for the root.
+/// Returns `None` when none of them is in the source.
+fn located(package: &Tree, source: &Tree) -> Option<String> {
+    let mut python: Vec<&String> = package
+        .files
+        .keys()
+        .filter(|path| path.ends_with(".py") && !pypi_metadata(path))
+        .collect();
+    python.sort_by_key(|path| (path.matches('/').count(), path.len()));
+    let under = |prefix: &str, path: &str| match prefix {
+        "" => path.to_owned(),
+        prefix => format!("{prefix}/{path}"),
+    };
+    python.iter().find_map(|anchor| {
+        source
+            .files
+            .keys()
+            .filter_map(|path| match path.strip_suffix(anchor.as_str())? {
+                "" => Some(""),
+                prefix => prefix.strip_suffix('/'),
+            })
+            .map(|prefix| {
+                let held = python
+                    .iter()
+                    .filter(|path| source.files.contains_key(&under(prefix, path)))
+                    .count();
+                (held, std::cmp::Reverse(prefix.matches('/').count()), prefix)
+            })
+            .max()
+            .map(|(_, _, prefix)| prefix.to_owned())
+    })
 }
 
 /// The body of the script `name` in `manifest`, when it has one.
@@ -722,5 +885,215 @@ mod tests {
         let bare = compare(&read(&[("package/x.js", b"x")]), &Tree::default());
         assert_eq!(bare.only_in_package, ["x.js"]);
         assert!(bare.lifecycle_files.is_empty());
+    }
+
+    fn wheel(files: &[(&str, &[u8])]) -> Tree {
+        wheel_tree(
+            std::io::Cursor::new(crate::util::test_support::zip_of(files)),
+            1 << 20,
+        )
+        .expect("a wheel")
+    }
+
+    /// A wheel's paths are kept as they install, its `METADATA` is kept as text, and a
+    /// wheel over the limit or not a zip is refused.
+    #[test]
+    fn a_wheel_reads_as_files_where_they_install() {
+        let installed = wheel(&[
+            ("idna/__init__.py", b"a\r\n"),
+            ("idna-3.10.dist-info/METADATA", b"Name: idna\r\n"),
+            ("idna-3.10.dist-info/RECORD", b"x"),
+        ]);
+        assert_eq!(
+            installed.files.keys().collect::<Vec<_>>(),
+            [
+                "idna-3.10.dist-info/METADATA",
+                "idna-3.10.dist-info/RECORD",
+                "idna/__init__.py"
+            ]
+        );
+        assert_eq!(installed.metadata.as_deref(), Some("Name: idna\n"));
+
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        writer
+            .add_directory("idna/", zip::write::SimpleFileOptions::default())
+            .unwrap();
+        let directory = writer.finish().unwrap().into_inner();
+        assert!(
+            wheel_tree(std::io::Cursor::new(directory), 1 << 20)
+                .unwrap()
+                .files
+                .is_empty()
+        );
+
+        let big = crate::util::test_support::zip_of(&[("a", &[0; 10]), ("b", &[0; 10])]);
+        assert_eq!(
+            wheel_tree(std::io::Cursor::new(big), 15),
+            Err(ReadError::TooLarge {
+                member: "the archive".to_owned(),
+                limit: 15
+            })
+        );
+        assert!(matches!(
+            wheel_tree(std::io::Cursor::new(b"not a zip".to_vec()), 15),
+            Err(ReadError::NotAnArchive(_))
+        ));
+        let good = crate::util::test_support::zip_of(&[("a", b"hello")]);
+        let mut no_header = good.clone();
+        no_header[0] = b'X';
+        let mut bad_crc = good.clone();
+        bad_crc[31] ^= 0xff;
+        for broken in [no_header, bad_crc] {
+            assert!(matches!(
+                wheel_tree(std::io::Cursor::new(broken), 1 << 20),
+                Err(ReadError::NotAnArchive(_))
+            ));
+        }
+        let sdist = read(&[("idna-3.10/PKG-INFO", b"Name: idna\n")]);
+        assert_eq!(sdist.metadata.as_deref(), Some("Name: idna\n"));
+    }
+
+    #[test]
+    fn a_layout_follows_the_filename() {
+        for (ecosystem, filename, expected) in [
+            (Ecosystem::Npm, "x-1.0.0.tgz", Some(Layout::Tar)),
+            (
+                Ecosystem::PyPI,
+                "x-1.0-py3-none-any.whl",
+                Some(Layout::Wheel),
+            ),
+            (Ecosystem::PyPI, "x-1.0.tar.gz", Some(Layout::Tar)),
+            (Ecosystem::PyPI, "x-1.0.zip", None),
+        ] {
+            assert_eq!(Layout::of(ecosystem, filename), expected, "{filename}");
+        }
+    }
+
+    /// A source-labelled `Project-URL` first, then any other, then `Home-page`, and only a
+    /// GitHub repository, from the headers and not the description after them.
+    #[test]
+    fn pypi_metadata_names_its_repository() {
+        let repo = |metadata: &str| {
+            pypi_repository(metadata).map(|repo| format!("{}/{}", repo.owner, repo.name))
+        };
+        assert_eq!(
+            repo("Name: x\nProject-URL: Documentation, https://github.com/d/docs\nProject-URL: Source Code, https://github.com/o/r\nHome-page: https://github.com/h/h\n")
+                .as_deref(),
+            Some("o/r")
+        );
+        assert_eq!(
+            repo("Project-URL: Changelog, https://github.com/c/c/blob/main/CHANGES\nHome-page: https://github.com/h/h\n").as_deref(),
+            Some("c/c")
+        );
+        assert_eq!(
+            repo("Home-page: https://github.com/h/h\n").as_deref(),
+            Some("h/h")
+        );
+        assert_eq!(
+            repo("Project-URL: https://github.com/n/n\n").as_deref(),
+            Some("n/n")
+        );
+        assert_eq!(repo("Home-page: https://example.test\n"), None);
+        assert_eq!(
+            repo("Name: x\n\nHome-page: https://github.com/d/d\n"),
+            None,
+            "the description"
+        );
+    }
+
+    /// An sdist at the source's root and a wheel from `src/`, past a generated file. `setup.py`
+    /// and `.pth` run on install, and packaging metadata is left out.
+    #[test]
+    fn a_pypi_artifact_is_compared_with_its_source() {
+        let source = read(&[
+            ("r-v1/setup.py", b"setup()"),
+            ("r-v1/setup.cfg", b"[metadata]"),
+            ("r-v1/src/pkg/__init__.py", b"init"),
+            ("r-v1/src/pkg/core.py", b"core"),
+            ("r-v1/tests/pkg/__init__.py", b"other"),
+            ("r-v1/src/pkg/core_module.py", b"module"),
+            ("r-v1/VERSION", b"1"),
+            ("r-v1/z.py", b"z"),
+            ("r-v1/vendor/a/deep/x.py", b"x"),
+        ]);
+        let sdist = read(&[
+            ("pkg-1.0/PKG-INFO", b"Name: pkg"),
+            ("pkg-1.0/setup.py", b"setup(evil)"),
+            ("pkg-1.0/setup.cfg", b"[metadata]\n[egg_info]"),
+            ("pkg-1.0/src/pkg/__init__.py", b"init"),
+            ("pkg-1.0/src/pkg.egg-info/PKG-INFO", b"Name: pkg"),
+        ]);
+        let found = compare_pypi(&sdist, &source, Layout::Tar).expect("located");
+        assert_eq!(
+            found.lifecycle_files,
+            [("build".to_owned(), "setup.py".to_owned())]
+        );
+        let kept = read(&[
+            ("pkg-1.0/setup.py", b"setup()"),
+            ("pkg-1.0/src/pkg/core.py", b"core"),
+        ]);
+        let found_kept = compare_pypi(&kept, &source, Layout::Tar).expect("located");
+        assert_eq!(
+            (
+                found_kept.lifecycle_targets,
+                found_kept.lifecycle_files.len()
+            ),
+            (1, 0)
+        );
+        assert_eq!(found.lifecycle_targets, 1);
+        assert_eq!(found.differing, ["setup.cfg", "setup.py"]);
+        assert_eq!(found.same, 1);
+        assert!(
+            found.only_in_package.is_empty(),
+            "PKG-INFO and .egg-info are packaging"
+        );
+
+        let installed = wheel(&[
+            ("pkg/__init__.py", b"init"),
+            ("pkg/core.py", b"core"),
+            ("pkg/_generated.py", b"x"),
+            ("_a.py", b"generated at build"),
+            ("pkg-startup.pth", b"import os"),
+            ("pkg/data.pth", b"not at the top, so not read at startup"),
+            ("VERSION", b"1"),
+            ("pkg-1.0.dist-info/METADATA", b"Name: pkg"),
+        ]);
+        let found = compare_pypi(&installed, &source, Layout::Wheel).expect("located in src");
+        assert_eq!(
+            found.lifecycle_files,
+            [("startup".to_owned(), "pkg-startup.pth".to_owned())]
+        );
+        assert_eq!(found.same, 2);
+        assert_eq!(
+            found.only_in_package,
+            [
+                "VERSION",
+                "_a.py",
+                "pkg-startup.pth",
+                "pkg/_generated.py",
+                "pkg/data.pth"
+            ],
+            "VERSION at the source's root anchors nothing: only Python files do"
+        );
+
+        let two = wheel(&[
+            ("pkg/__init__.py", b"init"),
+            ("pkg/core_module.py", b"module"),
+        ]);
+        let found = compare_pypi(&two, &source, Layout::Wheel).expect("located");
+        assert_eq!(found.same, 2, "src holds two of its files and tests one");
+
+        let deep = wheel(&[("a/deep/x.py", b"x"), ("z.py", b"z")]);
+        let found = compare_pypi(&deep, &source, Layout::Wheel).expect("located");
+        assert_eq!(
+            found.only_in_package,
+            ["a/deep/x.py"],
+            "the shallowest file anchors first"
+        );
+
+        let elsewhere = wheel(&[("other/__init__.py", b"x")]);
+        assert_eq!(compare_pypi(&elsewhere, &source, Layout::Wheel), None);
+        let no_python = wheel(&[("data.txt", b"x")]);
+        assert_eq!(compare_pypi(&no_python, &source, Layout::Wheel), None);
     }
 }
