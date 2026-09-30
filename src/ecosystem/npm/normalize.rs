@@ -188,6 +188,7 @@ fn provenance(entry: &WireVersion, dist: &WireDist) -> Provenance {
             .and_then(|u| u.trusted_publisher.as_ref())
             .map(|t| TrustedPublisher { id: t.id.clone() }),
         publisher: entry.npm_user.as_ref().and_then(|u| u.name.clone()),
+        git_head: entry.git_head.clone(),
     }
 }
 
@@ -219,7 +220,6 @@ pub fn parse_publish_times(
 mod tests {
     use super::super::{fixture, normalized};
     use super::*;
-    use crate::record::Repository;
 
     /// The specifier forms npm-package-arg treats as fetched from where they point, and
     /// the near-misses it resolves through the registry.
@@ -564,6 +564,61 @@ mod tests {
         assert_eq!(publisher.id, "github");
     }
 
+    /// `react`'s `"deprecated": false` and `qs`'s `"repository": {}` read as absent, and the
+    /// rest of the document still reads.
+    #[test]
+    fn a_malformed_field_reads_as_absent() {
+        let body = serde_json::json!({
+            "name": "x",
+            "repository": {},
+            "versions": {"1.0.0": {
+                "version": "1.0.0",
+                "deprecated": false,
+                "repository": {"type": "git"},
+                "gitHead": 5,
+                "dist": {"tarball": "https://registry.npmjs.org/x/-/x-1.0.0.tgz",
+                    "integrity": "sha512-AAAA"},
+            }},
+        });
+        let metadata = normalize_packument(body.to_string().as_bytes(), DocumentDetail::Full)
+            .expect("the document reads");
+        let record = metadata.version("1.0.0").expect("the version reads");
+        assert_eq!(record.deprecated, None);
+        assert_eq!(record.repository, None);
+        assert_eq!(record.provenance.git_head, None);
+        for cut in [
+            r#"{"name":"x","versions":{"1.0.0":{"deprecated":"#,
+            r#"{"name":"x","versions":{"1.0.0":{"repository":"#,
+            r#"{"name":"x","versions":{"1.0.0":{"gitHead":"#,
+            r#"{"name":"x","repository":"#,
+        ] {
+            assert!(normalize_packument(cut.as_bytes(), DocumentDetail::Full).is_err());
+        }
+    }
+
+    /// The commit a version was published from, which source diffing fetches.
+    #[test]
+    fn git_head_is_full_only() {
+        let head = |detail| {
+            normalized("lodash-4.17.21.abbrev.json", detail)
+                .version("4.17.21")
+                .unwrap()
+                .provenance
+                .git_head
+                .clone()
+        };
+        assert_eq!(head(DocumentDetail::Abbreviated), None);
+        let full = normalized("lodash-4.17.21.full.json", DocumentDetail::Full);
+        assert_eq!(
+            full.version("4.17.21")
+                .unwrap()
+                .provenance
+                .git_head
+                .as_deref(),
+            Some("c6e281b878b315c7a10d90f9c2af4cdb112d9625")
+        );
+    }
+
     /// A monorepo package points at a subdirectory of its repository. Without it, source
     /// diffing compares the wrong tree.
     #[test]
@@ -572,27 +627,6 @@ mod tests {
         let repo = p.version("8.0.5").unwrap().repository.clone().unwrap();
         assert_eq!(repo.url, "https://github.com/babel/babel.git");
         assert_eq!(repo.directory.as_deref(), Some("packages/babel-traverse"));
-    }
-
-    /// npm accepts the shorthand string form. The object form is what registries
-    /// normally serve, and both have to land in the same type.
-    #[test]
-    fn repository_parses_both_string_and_object_forms() {
-        let object: Repository =
-            serde_json::from_str(r#"{"type":"git","url":"git+https://x/y.git","extra":1}"#)
-                .unwrap();
-        assert_eq!(object.url, "git+https://x/y.git");
-        assert_eq!(object.kind.as_deref(), Some("git"));
-
-        let shorthand: Repository = serde_json::from_str(r#""github:user/repo""#).unwrap();
-        assert_eq!(shorthand.url, "github:user/repo");
-        assert_eq!(shorthand.kind, None);
-
-        let no_url = serde_json::from_str::<Repository>(r#"{"type":"git"}"#);
-        assert!(
-            no_url.is_err(),
-            "an object without a url is not a repository"
-        );
     }
 
     /// A registry adding a field must not break an install passing through the proxy.

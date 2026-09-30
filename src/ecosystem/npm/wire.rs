@@ -2,9 +2,8 @@
 //! further than this ecosystem. See docs/engineering_decisions/npm-packument-shapes.md.
 
 use std::collections::BTreeMap;
-use std::fmt;
 
-use serde::de::{self, MapAccess, Visitor};
+use serde::de;
 use serde::{Deserialize, Deserializer};
 
 use crate::record::Repository;
@@ -22,7 +21,7 @@ pub(super) struct WirePackument {
     /// Package-level fallbacks for the per-version copies.
     #[serde(default)]
     pub(super) maintainers: Option<Vec<WireMaintainer>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "repository")]
     pub(super) repository: Option<Repository>,
 }
 
@@ -33,18 +32,22 @@ pub(super) struct WireVersion {
     /// Abbreviated only, and present only when true.
     #[serde(default, rename = "hasInstallScript")]
     pub(super) has_install_script: Option<bool>,
-    /// The message `npm deprecate` set, in both documents.
-    #[serde(default)]
+    /// The message `npm deprecate` set, in both documents. `react` writes `false`.
+    #[serde(default, deserialize_with = "lenient")]
     pub(super) deprecated: Option<String>,
     /// Full only.
     #[serde(default)]
     pub(super) scripts: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub(super) maintainers: Option<Vec<WireMaintainer>>,
-    #[serde(default)]
+    /// `qs` writes `{}`.
+    #[serde(default, deserialize_with = "repository")]
     pub(super) repository: Option<Repository>,
     #[serde(default, rename = "_npmUser")]
     pub(super) npm_user: Option<WireNpmUser>,
+    /// Full only.
+    #[serde(default, rename = "gitHead", deserialize_with = "lenient")]
+    pub(super) git_head: Option<String>,
     /// Only the entries a client fetches from where they point, kept as they are read.
     #[serde(default)]
     pub(super) dependencies: DirectSpecs,
@@ -52,6 +55,14 @@ pub(super) struct WireVersion {
     pub(super) optional_dependencies: DirectSpecs,
     #[serde(default, rename = "peerDependencies")]
     pub(super) peer_dependencies: DirectSpecs,
+}
+
+/// A field read as `T`, or `None` when it has another shape, so that a malformed field
+/// does not make the whole document unreadable.
+fn lenient<'de, D: Deserializer<'de>, T: de::DeserializeOwned>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    Ok(T::deserialize(serde_json::Value::deserialize(deserializer)?).ok())
 }
 
 /// A dependency map, keeping only the entries [`is_direct`] accepts.
@@ -172,50 +183,26 @@ pub(super) struct WireTrustedPublisher {
     pub(super) id: String,
 }
 
-/// `repository` as an object or a shorthand string, such as `github:user/repo`.
-impl<'de> Deserialize<'de> for Repository {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct RepositoryVisitor;
-
-        impl<'de> Visitor<'de> for RepositoryVisitor {
-            type Value = Repository;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a repository URL string or an object with a `url` field")
-            }
-
-            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                Ok(Repository {
-                    url: value.to_owned(),
-                    kind: None,
-                    directory: None,
-                })
-            }
-
-            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
-                let mut url = None;
-                let mut kind = None;
-                let mut directory = None;
-                while let Some(field) = map.next_key::<String>()? {
-                    match field.as_str() {
-                        "url" => url = map.next_value::<Option<String>>()?,
-                        "type" => kind = map.next_value::<Option<String>>()?,
-                        "directory" => directory = map.next_value::<Option<String>>()?,
-                        _ => {
-                            map.next_value::<de::IgnoredAny>()?;
-                        }
-                    }
-                }
-                Ok(Repository {
-                    url: url.ok_or_else(|| de::Error::missing_field("url"))?,
-                    kind,
-                    directory,
-                })
-            }
+/// `repository` as an object with a string `url`, or a shorthand string such as
+/// `github:user/repo`. `None` for any other shape, such as `qs`'s `{}`.
+/// Errors only when the JSON itself is broken.
+fn repository<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Repository>, D::Error> {
+    let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
+    Ok(match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::String(url) => Some(Repository {
+            url,
+            kind: None,
+            directory: None,
+        }),
+        serde_json::Value::Object(fields) => {
+            fields.get("url").and_then(text).map(|url| Repository {
+                url,
+                kind: fields.get("type").and_then(text),
+                directory: fields.get("directory").and_then(text),
+            })
         }
-
-        deserializer.deserialize_any(RepositoryVisitor)
-    }
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -223,34 +210,41 @@ impl<'de> Deserialize<'de> for Repository {
 mod tests {
     use super::*;
 
-    /// The visitor's `expecting` is what a operator sees when `repository` is neither
-    /// shape, so it has to describe both.
+    /// Each shape `repository` takes, and broken JSON, which is still an error.
     #[test]
-    fn a_repository_of_the_wrong_type_says_what_was_expected() {
-        let err =
-            serde_json::from_str::<Repository>("42").expect_err("a number is not a repository");
-        let message = err.to_string();
-        assert!(message.contains("repository URL string"), "got: {message}");
-        assert!(message.contains("object"), "got: {message}");
-    }
-
-    /// A repository or dependency map whose JSON is broken, or whose fields have the wrong
-    /// type, is an error from the deserializer rather than a value.
-    #[test]
-    fn broken_json_in_a_repository_or_dependency_map_is_an_error() {
-        for json in [
-            r#"{"url": 5}"#,
-            r#"{"url": "u", "type": 5}"#,
-            r#"{"url": "u", "directory": 5}"#,
-            r#"{"url": "u", "other": }"#,
-            r#"{"url": "u", "#,
-            r#"{"type": "git"}"#,
-        ] {
-            assert!(
-                serde_json::from_slice::<Repository>(json.as_bytes()).is_err(),
-                "{json}"
-            );
+    fn a_repository_reads_each_shape_and_nothing_else() {
+        #[derive(Deserialize)]
+        struct Holder {
+            #[serde(deserialize_with = "repository")]
+            repository: Option<Repository>,
         }
+        let read = |json: &str| {
+            serde_json::from_str::<Holder>(&format!(r#"{{"repository": {json}}}"#))
+                .map(|holder| holder.repository)
+        };
+        let repo = |url: &str, kind: Option<&str>, directory: Option<&str>| {
+            Some(Repository {
+                url: url.to_owned(),
+                kind: kind.map(str::to_owned),
+                directory: directory.map(str::to_owned),
+            })
+        };
+        assert_eq!(
+            read(r#""github:o/r""#).unwrap(),
+            repo("github:o/r", None, None)
+        );
+        assert_eq!(
+            read(r#"{"url": "u", "type": "git", "directory": "d", "other": 1}"#).unwrap(),
+            repo("u", Some("git"), Some("d"))
+        );
+        assert_eq!(
+            read(r#"{"url": "u", "type": 5, "directory": 5}"#).unwrap(),
+            repo("u", None, None)
+        );
+        for json in [r#"{"url": 5}"#, r#"{"type": "git"}"#, "{}", "42"] {
+            assert_eq!(read(json).unwrap(), None, "{json}");
+        }
+        assert!(read(r#"{"url": "u", "#).is_err());
         assert!(serde_json::from_slice::<DirectSpecs>(b"{").is_err());
     }
 }

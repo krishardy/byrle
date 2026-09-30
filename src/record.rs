@@ -119,6 +119,8 @@ pub struct Provenance {
     pub trusted_publisher: Option<TrustedPublisher>,
     /// `_npmUser.name`, the account that published this version. Full only.
     pub publisher: Option<String>,
+    /// npm's `gitHead`, the commit this version was published from. Full only.
+    pub git_head: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

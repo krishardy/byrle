@@ -31,6 +31,8 @@ document, September 2026. The set mixes current packages with ones published in 
 | `hasInstallScript` | `true` on 901 versions, absent on the rest, never `false` | absence reads as no install script |
 | `repository` | an object 24,477 times, a string 5 times (`bower@1.8.11`–`1.8.14`, `rimraf@1.0.0`) | its deserializer takes both |
 | install scripts, abbreviated against full | agreed on all 24,852 pairs | |
+| `deprecated` | `false` in the full documents of `react` (1,079 versions), `react-dom` and `scheduler`, 2026-09-30 | read as absent. As a string field, it made each whole document unreadable |
+| `repository` | `{}`, with no `url`, in `qs` | read as absent, as any `repository` or `gitHead` of another shape is. It made the document unreadable |
 
 `real_packuments_normalise_without_skipping_anything` checks this against a corpus on disk.
 
@@ -48,7 +50,7 @@ What each document carries, as `record::PackageRecord` reads it:
 | `hasInstallScript` | yes | no, read `scripts` |
 | `dist.attestations`, `dist.signatures` | yes | yes |
 | publish time (`time`) | no | yes |
-| `maintainers`, `repository`, `_npmUser.trustedPublisher` | no | yes |
+| `maintainers`, `repository`, `_npmUser`, `gitHead` | no | yes |
 | `scripts` bodies | no | yes |
 
 `record::DocumentDetail` says which document a record came from, so a `None` reads as "not
