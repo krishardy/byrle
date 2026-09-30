@@ -2506,9 +2506,16 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         have not already refused the version. See
         `docs/engineering_decisions/policy-tier-resolution.md`, "Where the short circuit
         survives".
-  - [ ] Resolve repo URL and matching tag from package metadata
-  - [ ] Normalize for expected build artifacts and packaging noise
-  - [ ] Tune until the false-positive rate is publishable
+  - [x] Resolve repo URL and matching tag from package metadata: `gitHead`, then tags,
+        from GitHub's archive ([source-diff](docs/engineering_decisions/source-diff.md)).
+        182 of 271 versions by `gitHead`, 24 by tag.
+  - [x] Normalize for expected build artifacts and packaging noise: the package's own
+        `package.json` in a monorepo, line endings, Markdown and optional dependencies
+        apart.
+  - [x] Measure the false-positive rate: 0 of 206 for lifecycle scripts, lifecycle files
+        and dependencies; 6 of 206 (2.9%) for differing files, 5 of them build steps.
+  - [ ] Decide which findings become checks, and whether the proxy may reach
+        `codeload.github.com`.
 - [x] Metadata heuristics, report only
       ([metadata-heuristics](docs/engineering_decisions/metadata-heuristics.md)): new
       package, new publisher, no repository, and a name one edit from a served package.
