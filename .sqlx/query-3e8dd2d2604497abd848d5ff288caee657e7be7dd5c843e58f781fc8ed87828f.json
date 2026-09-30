@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_source (digest, result, comparer)\n            VALUES ($1, $2, $3)\n            ON CONFLICT (digest) DO UPDATE SET\n                result      = EXCLUDED.result,\n                comparer    = EXCLUDED.comparer,\n                compared_at = now()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Text",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "3e8dd2d2604497abd848d5ff288caee657e7be7dd5c843e58f781fc8ed87828f"
+}

@@ -2515,8 +2515,9 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
   - [x] Measure the false-positive rate on the tier-1 set and a set with install scripts:
         lifecycle scripts and dependencies added, 0 of 207 and 0 of 473; lifecycle files,
         2 of the 5 that name one; differing files, 6 of 207 and 3 of 473.
-  - [ ] Decide which findings become checks, and whether the proxy may reach
-        `codeload.github.com`.
+  - [x] Decide which findings become checks: a weak signal, in the analysis tier. npm
+        done; `WAHAROA_SOURCE_ARCHIVES` names the archive host or turns it off.
+  - [ ] PyPI: wheels and sdists, the repository from their own metadata.
 - [x] Metadata heuristics, report only
       ([metadata-heuristics](docs/engineering_decisions/metadata-heuristics.md)): new
       package, new publisher, no repository, and a name one edit from a served package.

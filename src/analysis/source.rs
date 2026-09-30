@@ -6,10 +6,33 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{NPM_INSTALL_SCRIPTS, ReadError, walk};
+use super::{MAX_MEMBER_BYTES, NPM_INSTALL_SCRIPTS, ReadError, walk};
 use crate::record::PackageRecord;
+
+/// The comparer's version, stored with each result; bumped whenever a result would change.
+pub const COMPARER: &str = "source 1";
+
+/// The member sizes one archive may state, together.
+pub const MAX_SOURCE_BYTES: usize = 512 << 20;
+
+/// GitHub's archive host, which [`crate::env::SOURCE_ARCHIVES`] replaces.
+pub const ARCHIVES: &str = "https://codeload.github.com";
+
+/// What comparing one artifact with its source came to, as the analysis store keeps it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Sourced {
+    /// Compared with `repository`, `owner/name`, at `reference`.
+    Compared {
+        repository: String,
+        reference: String,
+        comparison: Box<Comparison>,
+    },
+    /// Not compared, and why, such as no repository on GitHub.
+    NotCompared(String),
+}
 
 /// A repository on GitHub.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,19 +69,42 @@ impl Repo {
         let owner = parts.next()?;
         let name = parts.next()?;
         let name = name.strip_suffix(".git").unwrap_or(name);
-        (!name.is_empty()).then(|| Self {
+        (github_name(owner) && github_name(name)).then(|| Self {
             owner: owner.to_owned(),
             name: name.to_owned(),
         })
     }
 
-    /// GitHub's archive of this repository at `reference`, a commit or a tag.
-    pub fn archive_url(&self, reference: &str) -> String {
-        format!(
-            "https://codeload.github.com/{}/{}/tar.gz/{reference}",
-            self.owner, self.name
-        )
+    /// The archive at `base`, GitHub's host or a mirror of it, of this repository at
+    /// `reference`, a commit or a tag.
+    /// Returns `None` for a reference with a character a tag from metadata should not have.
+    pub fn archive_url(&self, base: &str, reference: &str) -> Option<String> {
+        let safe = !reference.is_empty()
+            && !reference.starts_with('/')
+            && !reference.contains("..")
+            && !reference.contains("//")
+            && reference
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "._-@/+".contains(c));
+        safe.then(|| {
+            format!(
+                "{}/{}/{}/tar.gz/{reference}",
+                base.trim_end_matches('/'),
+                self.owner,
+                self.name
+            )
+        })
     }
+}
+
+/// Whether `part` can be a GitHub owner or repository name.
+fn github_name(part: &str) -> bool {
+    !part.is_empty()
+        && part != "."
+        && part != ".."
+        && part
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
 }
 
 /// `Some` when `authority`, with any user and port, is GitHub's host.
@@ -70,8 +116,8 @@ fn github_host(authority: &str) -> Option<()> {
     matches!(host, "github.com" | "www.github.com").then_some(())
 }
 
-/// The references to fetch `record`'s source at, in order: `gitHead`, then the tags a release
-/// is usually given, with and without a scope.
+/// The references to fetch `record`'s source at, in order: `gitHead` when it is a commit
+/// hash, then the tags a release is usually given, with and without a scope.
 pub fn references(record: &PackageRecord) -> Vec<String> {
     let version = record.package.version();
     let key = record.package.key();
@@ -81,7 +127,7 @@ pub fn references(record: &PackageRecord) -> Vec<String> {
         .provenance
         .git_head
         .iter()
-        .filter(|head| !head.is_empty())
+        .filter(|head| head.len() == 40 && head.chars().all(|c| c.is_ascii_hexdigit()))
         .cloned()
         .chain([
             format!("v{version}"),
@@ -180,31 +226,48 @@ pub fn tree(archive: &mut dyn Read, limit: usize) -> Result<Tree, ReadError> {
         if !member.file || path.is_empty() {
             return Ok(false);
         }
-        let mut bytes = Vec::with_capacity(member.size as usize);
-        member
-            .bytes
-            .read_to_end(&mut bytes)
-            .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
-        bytes.retain(|&byte| byte != b'\r');
         let manifest = match path.rsplit_once('/') {
             Some((directory, "package.json")) => Some(directory),
             None if path == "package.json" => Some(""),
             _ => None,
         };
-        if let Some(directory) = manifest
+        let mut hasher = Sha256::new();
+        let mut kept = manifest.map(|_| Vec::new());
+        let mut chunk = [0u8; 8192];
+        loop {
+            let read = member
+                .bytes
+                .read(&mut chunk)
+                .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+            if read == 0 {
+                break;
+            }
+            for piece in chunk[..read].split(|&byte| byte == b'\r') {
+                hasher.update(piece);
+                if let Some(bytes) = kept.as_mut() {
+                    bytes.extend_from_slice(piece);
+                }
+            }
+            if kept
+                .as_ref()
+                .is_some_and(|bytes| bytes.len() > MAX_MEMBER_BYTES)
+            {
+                kept = None;
+            }
+        }
+        if let (Some(directory), Some(bytes)) = (manifest, kept)
             && let Ok(manifest) = serde_json::from_slice(&bytes)
         {
             tree.manifests.insert(directory.to_owned(), manifest);
         }
-        tree.files
-            .insert(path.to_owned(), Sha256::digest(&bytes).into());
+        tree.files.insert(path.to_owned(), hasher.finalize().into());
         Ok(false)
     })?;
     Ok(tree)
 }
 
 /// What the published package holds that its source does not.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Comparison {
     /// Whether both trees have a `package.json` to compare. The next three are empty when not.
     pub manifests: bool,
@@ -346,6 +409,9 @@ mod tests {
             ("example.com/r", None),
             ("https://github.com/o", None),
             ("https://github.com/o/.git", None),
+            ("https://github.com/o/r%20x", None),
+            ("https://github.com/../r", None),
+            ("https://github.com/o/..", None),
             ("https://github.com", None),
             ("https://github.com/", None),
             ("github", None),
@@ -353,10 +419,27 @@ mod tests {
             let repo = Repo::from_url(url).map(|r| format!("{}/{}", r.owner, r.name));
             assert_eq!(repo.as_deref(), expected, "{url}");
         }
-        assert_eq!(
-            Repo::from_url("o/r").unwrap().archive_url("abc"),
-            "https://codeload.github.com/o/r/tar.gz/abc"
-        );
+        let repo = Repo::from_url("o/r").unwrap();
+        for (reference, expected) in [
+            ("abc", Some("https://codeload.github.com/o/r/tar.gz/abc")),
+            (
+                "@s/p@1.0.0+b",
+                Some("https://codeload.github.com/o/r/tar.gz/@s/p@1.0.0+b"),
+            ),
+            ("", None),
+            ("/abc", None),
+            ("a/../b", None),
+            ("a//b", None),
+            ("a?b", None),
+            ("a b", None),
+        ] {
+            assert_eq!(
+                repo.archive_url(&format!("{ARCHIVES}/"), reference)
+                    .as_deref(),
+                expected,
+                "{reference:?}"
+            );
+        }
     }
 
     #[test]
@@ -377,6 +460,10 @@ mod tests {
                 "lodash@4.17.21"
             ]
         );
+        record.provenance.git_head = Some("c6e281b".to_owned());
+        assert_eq!(references(&record).len(), 3, "a short hash is no commit");
+        record.provenance.git_head = Some("z".repeat(40));
+        assert_eq!(references(&record).len(), 3, "not hex");
         record.provenance.git_head = Some(String::new());
         assert_eq!(
             references(&record).len(),
@@ -414,6 +501,23 @@ mod tests {
         );
         assert_eq!(package.manifest(), Some(&serde_json::json!({"name": "x"})));
         assert_eq!(package.manifests.len(), 1, "not JSON");
+        let oversized = format!(
+            r#"{{"name":"x","pad":"{}"}}"#,
+            " ".repeat(MAX_MEMBER_BYTES + 1)
+        );
+        let big = tree(
+            &mut &*tarball(&[("package/package.json", oversized.as_bytes())]),
+            MAX_SOURCE_BYTES,
+        )
+        .expect("a tarball");
+        assert!(
+            big.manifest().is_none(),
+            "a manifest over the ceiling is not parsed"
+        );
+        assert!(
+            big.files.contains_key("package.json"),
+            "and is still a file"
+        );
         let unix = read(&[("package/index.js", b"a\nb\n")]);
         assert_eq!(package.files["index.js"], unix.files["index.js"]);
 

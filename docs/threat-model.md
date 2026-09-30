@@ -40,6 +40,7 @@ package manager and the registry, and serves an artifact only after deciding on 
 | An artifact on an origin the proxy does not serve, which the client would fetch directly | the version is removed from the metadata, and a pinned fetch is refused | [enforcement-tiers](engineering_decisions/enforcement-tiers.md), tier 3 |
 | Serving before anything was checked | nothing is served until its analysis has finished; no strong digest, or no metadata, is not served | [request-flow](request-flow.md) |
 | The intel store cannot answer | 503, not a serve | [uncovered-ecosystem-fails-closed](engineering_decisions/uncovered-ecosystem-fails-closed.md) |
+| A tarball built from other code than its repository holds | reported, not refused: each npm artifact is compared with GitHub's archive of the commit or tag it names, and what it adds is a signal in the log and the audit line. The publisher chooses `repository` and `gitHead`, so a publisher can name a repository that matches, which is why it is a signal | [source-diff](engineering_decisions/source-diff.md) |
 | A verdict that cannot be explained later | each pinned audit line records every input; `waharoa audit verify` decides it again | [reproducible-verdicts](engineering_decisions/reproducible-verdicts.md) |
 
 ## Attacks on the proxy itself
@@ -55,6 +56,8 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 | Concurrent work | 8 metadata documents and 8 analyses at once | `WAHAROA_MAX_CONCURRENT_METADATA`, `WAHAROA_MAX_CONCURRENT_ANALYSES` |
 | An upstream that stops sending | 10 s to connect, 30 s between reads | `http::client_builder` |
 | A URL the metadata names | fetched only on an origin the proxy serves: the upstream, the default registry, or `WAHAROA_ARTIFACT_ORIGINS`; attestations too | [enforcement-tiers](engineering_decisions/enforcement-tiers.md) |
+| A repository and reference the metadata names | fetched only from `WAHAROA_SOURCE_ARCHIVES`, `https://codeload.github.com` by default, as `/{owner}/{repo}/tar.gz/{ref}`; owner and repository are GitHub's name characters, `gitHead` 40 hex characters, and a tag has no `..`, `//` or characters outside `A-Z a-z 0-9 . _ - @ / +`. `off` fetches nothing | `analysis::source` |
+| A source archive | spooled under `WAHAROA_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less; each member is hashed as it streams | `analysis::source::MAX_SOURCE_BYTES` |
 
 - **Credentials.** The client's `Authorization` header is never forwarded upstream.
 - **What the health endpoint shows.** `/-/waharoa/health` reports configuration and

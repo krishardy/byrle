@@ -1116,6 +1116,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
             "artifact_analysis.unreadable",
             "artifact_attestation.failure",
             "artifact_install_script.body",
+            "artifact_source.result",
             "intel_ingestion.etag",
             "intel_ingestion.last_modified",
             "intel_ingestion.error"
@@ -1142,6 +1143,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "artifact_analysis",
         "artifact_attestation",
         "artifact_install_script",
+        "artifact_source",
         "exploited_cve",
         "intel_ingestion",
         "intel_snapshot",
@@ -1793,6 +1795,52 @@ async fn an_attestation_result_is_kept_under_its_digest() {
         store.attested(&sri(1)).await.expect("answers"),
         Some(failed)
     );
+}
+
+/// A source comparison is kept under its digest until replaced. One another comparer wrote,
+/// or one that no longer reads, is not read back.
+#[tokio::test]
+async fn a_source_comparison_is_kept_under_its_digest() {
+    use waharoa::analysis::source::{Comparison, Sourced};
+    let intel = skip_without_database!("t_source");
+    let store = analyses(&intel);
+    let compared = Sourced::Compared {
+        repository: "o/r".to_owned(),
+        reference: "v1.0.0".to_owned(),
+        comparison: Box::new(Comparison {
+            differing: vec!["x.js".to_owned()],
+            same: 2,
+            ..Comparison::default()
+        }),
+    };
+    let not = Sourced::NotCompared("no package.json in the source names the package".to_owned());
+    assert_eq!(store.sourced(&sri(1)).await.expect("answers"), None);
+    store.put_sourced(&sri(1), &compared).await.expect("writes");
+    store.put_sourced(&sri(2), &not).await.expect("writes");
+    assert_eq!(
+        store.sourced(&sri(1)).await.expect("answers"),
+        Some(compared.clone())
+    );
+    assert_eq!(
+        store.sourced(&sri(2)).await.expect("answers"),
+        Some(not.clone())
+    );
+    store.put_sourced(&sri(1), &not).await.expect("replaces");
+    assert_eq!(store.sourced(&sri(1)).await.expect("answers"), Some(not));
+
+    for (column, value) in [("comparer", "source 0"), ("result", "not json")] {
+        store.put_sourced(&sri(3), &compared).await.expect("writes");
+        sqlx::query(&format!("UPDATE artifact_source SET {column} = $1 WHERE id = (SELECT max(id) FROM artifact_source)"))
+            .bind(value)
+            .execute(intel.pool())
+            .await
+            .expect("updates");
+        assert_eq!(
+            store.sourced(&sri(3)).await.expect("answers"),
+            None,
+            "{column}"
+        );
+    }
 }
 
 /// An analysis another reader wrote, or one written before readers were recorded, is not

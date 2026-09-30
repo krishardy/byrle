@@ -253,6 +253,15 @@ pub const WATCH_INTERVAL: Var = runtime(
     ],
 )
 .with_default(Default::Number(DEFAULT_WATCH_INTERVAL_SECONDS));
+pub const SOURCE_ARCHIVES: Var = runtime(
+    "WAHAROA_SOURCE_ARCHIVES",
+    "",
+    &[
+        "host of the GitHub archives each artifact is compared with, the source",
+        "its metadata names; off turns the comparison off",
+    ],
+)
+.with_default(Default::Text(crate::analysis::source::ARCHIVES));
 pub const REFUSAL_STATUS: Var = runtime(
     "WAHAROA_REFUSAL_STATUS",
     "",
@@ -393,7 +402,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 50] = [
+pub const ALL: [Var; 51] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -419,6 +428,7 @@ pub const ALL: [Var; 50] = [
     MAX_CONCURRENT_ANALYSES,
     MAX_TRAFFIC_CLIENTS,
     WATCH_INTERVAL,
+    SOURCE_ARCHIVES,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     MODE,
@@ -697,6 +707,14 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         Ok((seconds > 0).then(|| std::time::Duration::from_secs(seconds)))
     }
 
+    /// Where source archives are fetched from, or `None` when the comparison is off.
+    pub fn source_archives(&self) -> Result<Option<String>, EnvError> {
+        Ok(match self.text(SOURCE_ARCHIVES)? {
+            Some(off) if off == "off" => None,
+            value => Some(value.unwrap_or_else(|| crate::analysis::source::ARCHIVES.to_owned())),
+        })
+    }
+
     pub fn max_concurrent_analyses(&self) -> Result<usize, EnvError> {
         self.count(MAX_CONCURRENT_ANALYSES, DEFAULT_MAX_CONCURRENT_ANALYSES)
     }
@@ -969,6 +987,10 @@ mod tests {
         assert_eq!(
             env.max_traffic_clients().unwrap(),
             DEFAULT_MAX_TRAFFIC_CLIENTS
+        );
+        assert_eq!(
+            env.source_archives().unwrap().as_deref(),
+            Some(crate::analysis::source::ARCHIVES)
         );
         assert_eq!(
             env.max_artifact_bytes().unwrap(),
@@ -1334,6 +1356,26 @@ mod tests {
         assert_eq!(
             interval("15m").unwrap_err().to_string(),
             "WAHAROA_WATCH_INTERVAL: `15m` is not a whole number of seconds"
+        );
+    }
+
+    /// A mirror replaces GitHub's archive host, and `off` turns the comparison off.
+    #[test]
+    fn source_archives_name_a_host_or_are_off() {
+        let archives = |value: &str| {
+            testing::with(&[(SOURCE_ARCHIVES, value)])
+                .source_archives()
+                .unwrap()
+        };
+        assert_eq!(
+            archives("https://mirror.test").as_deref(),
+            Some("https://mirror.test")
+        );
+        assert_eq!(archives("off"), None);
+        assert!(
+            testing::with_unreadable(&[], SOURCE_ARCHIVES)
+                .source_archives()
+                .is_err()
         );
     }
 

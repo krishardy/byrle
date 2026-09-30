@@ -5,7 +5,8 @@
 
 use crate::analysis::Claim;
 use crate::analysis::attestation;
-use crate::analysis::run::{Analyser, Attestation, Job, Known};
+use crate::analysis::run::{Analyser, Attestation, Job, Known, SourceJob};
+use crate::analysis::source::Sourced;
 use crate::analysis::store::Scripts;
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
@@ -1220,8 +1221,10 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Err(answer) => return *answer,
     };
     let (fetch, unservable) = deciding.fetch_plan(&record);
-    let Dated { times, full } = deciding.dated(&record).await;
-    let signals = deciding.signals(&record, full.as_ref());
+    let dated = deciding.dated(&record).await;
+    let sourced = deciding.sourced(dated.describing(&record), &fetch).await;
+    let signals = deciding.signals(&record, dated.full.as_ref(), sourced.as_ref());
+    let times = dated.times;
     let Analysed {
         record,
         provenance,
@@ -1268,6 +1271,16 @@ struct Dated {
     full: Option<PackageMetadata>,
 }
 
+impl Dated {
+    /// `record` as the full document describes it, when it lists the version.
+    fn describing<'a>(&'a self, record: &'a PackageRecord) -> &'a PackageRecord {
+        self.full
+            .as_ref()
+            .and_then(|full| full.version(record.package.version()))
+            .unwrap_or(record)
+    }
+}
+
 /// One artifact GET while [`decide_artifact`] decides it.
 struct Deciding<'a> {
     proxy: &'a Proxy,
@@ -1294,17 +1307,49 @@ impl<'a> Deciding<'a> {
     /// What the metadata heuristics report for `record`, logged when there is any.
     /// See docs/engineering_decisions/metadata-heuristics.md.
     /// `full` is the full document, when one was fetched for this request.
-    fn signals(&self, record: &PackageRecord, full: Option<&PackageMetadata>) -> Vec<Signal> {
-        let signals = self.proxy.store.lock().expect("record store lock").signals(
+    fn signals(
+        &self,
+        record: &PackageRecord,
+        full: Option<&PackageMetadata>,
+        sourced: Option<&Sourced>,
+    ) -> Vec<Signal> {
+        let mut signals = self.proxy.store.lock().expect("record store lock").signals(
             record,
             full,
             jiff::Timestamp::now(),
         );
+        signals.extend(
+            sourced
+                .map(crate::heuristics::of_source)
+                .unwrap_or_default(),
+        );
         if !signals.is_empty() {
             let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
-            warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, "metadata heuristics reported signals; they refuse nothing");
+            warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, "signals reported; they refuse nothing");
         }
         signals
+    }
+
+    /// What comparing the artifact with its source found, when it was compared before. When
+    /// not, the comparison starts, and a later request reports it. `record` is the version
+    /// as the full document describes it, which names the repository and commit.
+    /// See docs/engineering_decisions/source-diff.md.
+    async fn sourced(&self, record: &PackageRecord, fetch: &ArtifactFetch) -> Option<Sourced> {
+        let analyser = self.proxy.config.analyser.as_deref()?;
+        let digest = fetch.digest.as_ref()?;
+        if let Some(sourced) = analyser.sourced(digest).await {
+            return Some(sourced);
+        }
+        let url = upstream_url(
+            self.proxy,
+            self.request.ecosystem,
+            self.request.path,
+            fetch.origin.as_deref(),
+        );
+        if let Some(job) = SourceJob::of(record, digest, url) {
+            analyser.start_source(job);
+        }
+        None
     }
 
     /// The record for the requested file, from the metadata held or fetched now.
@@ -2722,7 +2767,9 @@ impl Proxy {
             },
         );
         let (fetch, _) = deciding.fetch_plan(record);
-        let times = deciding.dated(record).await.times;
+        let dated = deciding.dated(record).await;
+        deciding.sourced(dated.describing(record), &fetch).await;
+        let times = dated.times;
         let analysed = deciding.analysed(record, &fetch, times.as_ref()).await;
         let (AnalysisState::Pending(job), Some(analyser)) = (analysed.state, &self.config.analyser)
         else {
@@ -7808,6 +7855,170 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    const SOURCE_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+    /// A registry serving `widget` 1.0.0, whose `postinstall` and `x.js` its source at
+    /// [`SOURCE_HEAD`] lacks, and GitHub's archive of that source. Returns the proxy with an
+    /// audit log at the returned path, its analyser, and the full packument.
+    async fn sourcing(
+        label: &str,
+    ) -> (Proxy, Arc<Analyser>, std::path::PathBuf, serde_json::Value) {
+        let artifact = crate::util::test_support::tarball(&[
+            (
+                "package/package.json",
+                br#"{"name":"widget","version":"1.0.0","scripts":{"postinstall":"node x.js"}}"#,
+            ),
+            ("package/x.js", b"published"),
+        ]);
+        let source = crate::util::test_support::tarball(&[
+            (
+                "r-head/package.json",
+                br#"{"name":"widget","version":"1.0.0"}"#,
+            ),
+            ("r-head/x.js", b"source"),
+        ]);
+        let packument = serde_json::json!({
+            "name": "widget",
+            "time": {"1.0.0": "2020-01-01T00:00:00.000Z"},
+            "versions": {"1.0.0": {
+                "name": "widget", "version": "1.0.0", "gitHead": SOURCE_HEAD,
+                "repository": {"type": "git", "url": "git+https://github.com/o/r.git"},
+                "scripts": {"postinstall": "node x.js"},
+                "dist": {
+                    "tarball": "https://registry.npmjs.org/widget/-/widget-1.0.0.tgz",
+                    "integrity": sri_of(&artifact).to_string(),
+                },
+            }},
+        });
+        let document = packument.to_string();
+        let router = Router::new()
+            .route(
+                "/widget",
+                get(move || {
+                    let body = document.clone();
+                    async move { body }
+                }),
+            )
+            .route(
+                "/widget/-/widget-1.0.0.tgz",
+                get(move || {
+                    let bytes = artifact.clone();
+                    async move { bytes }
+                }),
+            )
+            .route(
+                &format!("/o/r/tar.gz/{SOURCE_HEAD}"),
+                get(move || {
+                    let bytes = source.clone();
+                    async move { bytes }
+                }),
+            );
+        let upstream = serve(router).await;
+        let (spool, _) =
+            crate::spool::Spool::open(&crate::util::test_support::tempdir(label), 1 << 20)
+                .expect("opens");
+        let analyser = Arc::new(
+            Analyser::new(
+                reqwest::Client::new(),
+                Arc::new(spool),
+                Arc::new(crate::analysis::store::InProcess::new(8)),
+                2,
+                8,
+            )
+            .with_sources(Some(upstream.clone())),
+        );
+        let path =
+            crate::util::test_support::tempdir(&format!("{label}-audit")).join("audit.jsonl");
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, upstream)
+            .with_analyser(Some(analyser.clone()))
+            .with_policy(Some(policy(
+                "version: 1\ncooldown_days: 0\ninstall_scripts: allow\nprovenance: allow\n",
+            )))
+            .with_audit_log(Some(Arc::new(AuditLog::open(&path).expect("opens"))));
+        (proxy, analyser, path, packument)
+    }
+
+    /// A decision starts the comparison without waiting for it, and a later one reports it,
+    /// with the full document held or the abbreviated one, which names no repository.
+    #[tokio::test]
+    async fn the_source_comparison_is_reported_on_a_later_request() {
+        for detail in [
+            crate::record::DocumentDetail::Full,
+            crate::record::DocumentDetail::Abbreviated,
+        ] {
+            let (proxy, analyser, path, packument) = sourcing(&format!("source-{detail:?}")).await;
+            let mut held = packument.clone();
+            if detail == crate::record::DocumentDetail::Abbreviated {
+                held.as_object_mut().unwrap().remove("time");
+                let version = &mut held["versions"]["1.0.0"];
+                for field in ["gitHead", "repository", "scripts"] {
+                    version.as_object_mut().unwrap().remove(field);
+                }
+            }
+            hold_document(&proxy, held.to_string().as_bytes(), detail);
+
+            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                analyser.sources_ended(1),
+            )
+            .await
+            .expect("the comparison ends");
+            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+
+            let lines: Vec<audit::Event> = std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            let at = format!("source o/r@{SOURCE_HEAD}");
+            let sourced: Vec<&String> = lines[1]
+                .signals
+                .iter()
+                .filter(|s| s.starts_with("source "))
+                .collect();
+            assert!(
+                !lines[0].signals.iter().any(|s| s.starts_with("source ")),
+                "{detail:?}: not compared yet"
+            );
+            assert_eq!(
+                sourced,
+                [
+                    &format!("{at}: install scripts it lacks or has otherwise: postinstall"),
+                    &format!("{at}: install files it lacks or has otherwise: x.js"),
+                    &format!("{at}: 1 file differs from it: `x.js`"),
+                ],
+                "{detail:?}"
+            );
+        }
+    }
+
+    /// The watcher starts the comparison for a version no client has asked for.
+    #[tokio::test]
+    async fn the_watcher_starts_the_source_comparison() {
+        let (proxy, analyser, _, packument) = sourcing("source-watched").await;
+        hold_document(
+            &proxy,
+            br#"{"name":"widget","versions":{}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        proxy.watch().await;
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            analyser.sources_ended(1),
+        )
+        .await
+        .expect("the comparison ends");
+        let integrity = packument["versions"]["1.0.0"]["dist"]["integrity"]
+            .as_str()
+            .unwrap();
+        assert!(matches!(
+            analyser.sourced(&Sri::parse(integrity).unwrap()).await,
+            Some(crate::analysis::source::Sourced::Compared { .. })
+        ));
     }
 
     /// One full packument request serves the heuristics and a cooldown, a held full one

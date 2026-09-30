@@ -18,6 +18,7 @@
 | `WAHAROA_MAX_TRAFFIC_CLIENTS` | 256 | a new client name past it is counted as `other`, so a user-agent made up per request cannot grow the map. A team's proxy sees a handful: npm, pnpm, yarn, bun, pip and uv |
 | `WAHAROA_MAX_ARTIFACT_BYTES` | 1 GiB | an order of magnitude above the largest artifact a detector reads, `opencv-python` 5.0.0.93 at 81,802,749 bytes, so it refuses an artifact whose length is a lie rather than one anybody publishes |
 | `WAHAROA_WATCH_INTERVAL` | 900 seconds | one metadata request per served package per pass, about one every 2 seconds for 500 packages. 0 turns the watcher off ([watcher](watcher.md)) |
+| `WAHAROA_SOURCE_ARCHIVES` | `https://codeload.github.com` | the host of GitHub's archives, which each artifact is compared with. 2 comparisons run at once, apart from the analyses, and the last 8 archives read are kept so one repository's packages fetch it once. `off` turns it off ([source-diff](source-diff.md)) |
 | `WAHAROA_EXPIRY_CEILING_DAYS` | 90 | long enough for a review cycle, and an entry nobody looks at again lapses within a quarter |
 | `WAHAROA_SNAPSHOT_LIMIT` | 30 | a month of daily refreshes. npm's rows were 5,577,231 bytes gzipped on 2026-09-13, and a source whose rows did not change is not written again |
 

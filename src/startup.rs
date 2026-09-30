@@ -89,13 +89,16 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_upstreams(upstreams)
         .with_intel(intel)
         .with_spool(Some(spool.clone()))
-        .with_analyser(Some(Arc::new(Analyser::new(
-            client,
-            spool,
-            analyses,
-            environment.max_concurrent_analyses()?,
-            max_verified,
-        ))))
+        .with_analyser(Some(Arc::new(
+            Analyser::new(
+                client,
+                spool,
+                analyses,
+                environment.max_concurrent_analyses()?,
+                max_verified,
+            )
+            .with_sources(environment.source_archives()?),
+        )))
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
         .with_mode(mode)
@@ -896,6 +899,7 @@ mod tests {
             (vec![], env::SPOOL_DIR),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_ARTIFACT_BYTES),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_CONCURRENT_ANALYSES),
+            (vec![(env::SPOOL_DIR, &spool)], env::SOURCE_ARCHIVES),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_TRAFFIC_CLIENTS),
             (vec![(env::SPOOL_DIR, &spool)], env::WATCH_INTERVAL),
         ];
