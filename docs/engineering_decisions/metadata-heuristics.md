@@ -85,9 +85,10 @@ sides.
 `new package` depends on the day: none of these packages had a first version in the last
 30 days. It measures nothing about a corpus of established packages.
 
-### Proposed
+### Decision
 
-None becomes a policy key. `new publisher` fires on 8.6% of established versions, and 12
+Decided with the user 2026-09-30: none becomes a policy key. Each stays a signal, an
+input to a score of a package's potential risk. `new publisher` fires on 8.6% of established versions, and 12
 of those 60 are a move to trusted publishing, which is the safer way to publish. `near
 name` fires only on pairs of real packages here, so as a refusal it would refuse one of
 each pair. They stay signals.
