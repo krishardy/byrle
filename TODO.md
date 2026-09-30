@@ -2528,8 +2528,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         pairs of real packages; no repository 1; new package 0.
   - [x] Decide whether any becomes a policy key: none. Each stays a signal, an input to a
         risk score.
-- [ ] A risk score per package version, from its signals: the metadata heuristics and the
-      source comparison. Report only, like the signals it is made of.
+- [x] A risk score per package version, from its signals: the metadata heuristics and the
+      source comparison. Report only, like the signals it is made of. Each kind weighs 1
+      unless the policy's `signal_weights` says otherwise; logged, audited as
+      `risk_score`, printed by `explain`.
 - [ ] Pluggable detector interface for third-party/commercial feeds
   - [ ] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector
 - [x] Benchmark each control against known 2025–26 incidents (shai-hulud, tinycolor,

@@ -54,6 +54,10 @@ advisory_scores:
     cvss: 5.3
     reason: "the vendor advisory scores it 5.3"
     expires: "2026-12-01"
+
+signal_weights:
+  near_name: 2
+  source_install_files: 3
 ```
 
 ## Settings
@@ -152,6 +156,28 @@ them.
 | `added_by` | no | who added it |
 
 The same advisory scored twice is refused.
+
+## `signal_weights`
+
+What each kind of signal adds to a version's risk score. The score is the sum of the weights
+of the kinds present, each kind once however often it fires. It is logged, written to the
+audit line as `risk_score`, and printed by `explain`. No verdict reads it, so a weight loosens
+and tightens nothing.
+
+| Key | Signal | Default |
+|---|---|---|
+| `new_package` | the first version was published under 30 days ago | 1 |
+| `new_publisher` | no earlier version was published by this account | 1 |
+| `no_repository` | a full npm document names no repository | 1 |
+| `near_name` | a package this proxy served has a name one edit away | 1 |
+| `source_install_scripts` | install scripts the source lacks or has otherwise | 1 |
+| `source_dependencies` | dependencies the source lacks | 1 |
+| `source_install_files` | install files the source lacks or has otherwise | 1 |
+| `source_differing` | files that differ from the source | 1 |
+
+Each weight is a whole number, 0 or more. The signals are in
+[metadata-heuristics](engineering_decisions/metadata-heuristics.md) and
+[source-diff](engineering_decisions/source-diff.md).
 
 ## Actions
 

@@ -202,6 +202,15 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
         policy.advisory_scores.len()
     ));
 
+    out.push_str("\nsignal weights, for the risk score\n");
+    for kind in crate::heuristics::SignalKind::ALL {
+        out.push_str(&format!(
+            "  {:22}  {}\n",
+            kind.as_str(),
+            policy.signal_weights.of(kind)
+        ));
+    }
+
     out.push_str("\nchecks\n");
     for check in Check::ALL {
         let state = match (check, intel) {
@@ -382,26 +391,40 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         ),
         as_of,
     );
-    answer.push_str(&signals(&crate::heuristics::signals(
-        &metadata.records,
-        package,
-        full.as_ref(),
-        [],
-        jiff::Timestamp::now(),
-    )));
+    answer.push_str(&signals(
+        &crate::heuristics::signals(
+            &metadata.records,
+            package,
+            full.as_ref(),
+            [],
+            jiff::Timestamp::now(),
+        ),
+        &policy.signal_weights,
+    ));
     Ok(answer)
 }
 
 /// The heuristics' signals, which refuse nothing, under the verdict, read from the full
 /// packument when there is one. `explain` holds no served names, so no near name.
-fn signals(signals: &[crate::heuristics::Signal]) -> String {
+/// `weights` are the policy's, which give the risk score.
+fn signals(
+    signals: &[crate::heuristics::Signal],
+    weights: &crate::policy::SignalWeights,
+) -> String {
     if signals.is_empty() {
         return "  signals: none\n".to_owned();
     }
     let mut out = "  signals, which refuse nothing:\n".to_owned();
     for signal in signals {
-        out.push_str(&format!("    {signal}\n"));
+        out.push_str(&format!(
+            "    {signal} (weight {})\n",
+            weights.of(signal.kind())
+        ));
     }
+    out.push_str(&format!(
+        "  risk score: {}\n",
+        crate::heuristics::score(signals, weights)
+    ));
     out
 }
 
@@ -518,20 +541,28 @@ mod run_tests {
         );
         assert!(
             answered.answer.ends_with(
-                "  signals, which refuse nothing:\n    new package: first published 2 days ago\n"
+                "  signals, which refuse nothing:\n    new package: first published 2 days ago (weight 1)\n  risk score: 1\n"
             ),
             "the full packument's publish time: {}",
             answered.answer
         );
     }
 
+    /// Each signal gets a line with its weight, and the score closes the block.
     #[test]
     fn each_signal_gets_a_line_under_the_verdict() {
         use crate::heuristics::Signal;
-        assert_eq!(signals(&[]), "  signals: none\n");
+        let weights = crate::policy::SignalWeights {
+            no_repository: 3,
+            ..crate::policy::SignalWeights::default()
+        };
+        assert_eq!(signals(&[], &weights), "  signals: none\n");
         assert_eq!(
-            signals(&[Signal::NoRepository, Signal::NewPackage { days: 1 }]),
-            "  signals, which refuse nothing:\n    no repository: the metadata names none\n    new package: first published 1 day ago\n"
+            signals(
+                &[Signal::NoRepository, Signal::NewPackage { days: 1 }],
+                &weights
+            ),
+            "  signals, which refuse nothing:\n    no repository: the metadata names none (weight 3)\n    new package: first published 1 day ago (weight 1)\n  risk score: 4\n"
         );
     }
 
@@ -1345,8 +1376,8 @@ mod tests {
                 Intel::NotConsulted,
             ),
             (
-                "version: 1, cooldown_days: 0, no store",
-                loaded("version: 1\ncooldown_days: 0"),
+                "version: 1, cooldown_days: 0, near_name weighing 2, no store",
+                loaded("version: 1\ncooldown_days: 0\nsignal_weights: { near_name: 2 }"),
                 Intel::NotConsulted,
             ),
             (

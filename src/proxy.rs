@@ -1325,7 +1325,15 @@ impl<'a> Deciding<'a> {
         );
         if !signals.is_empty() {
             let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
-            warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, "signals reported; they refuse nothing");
+            let weights = self
+                .proxy
+                .config
+                .policy
+                .as_deref()
+                .map(|policy| policy.signal_weights.clone())
+                .unwrap_or_default();
+            let score = crate::heuristics::score(&signals, &weights);
+            warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, waharoa.risk_score = score, "signals reported; they refuse nothing");
         }
         signals
     }
@@ -2085,7 +2093,7 @@ fn audit_pinned(proxy: &Proxy, pinned: &Pinned<'_>, answered: audit::Answered, s
         .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
         .answered(answered)
         .with_inputs(audit::Inputs::of(policy, &facts, today))
-        .with_signals(signals),
+        .with_signals(signals, &policy.signal_weights),
     );
 }
 
@@ -7967,7 +7975,11 @@ mod tests {
             )
             .await
             .expect("the comparison ends");
+            let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
             let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            drop(guard);
+            let log = crate::util::test_support::text(&buf);
+            assert!(log.contains("waharoa.risk_score=3"), "{detail:?}: {log}");
 
             let lines: Vec<audit::Event> = std::fs::read_to_string(&path)
                 .unwrap()
@@ -7983,6 +7995,11 @@ mod tests {
             assert!(
                 !lines[0].signals.iter().any(|s| s.starts_with("source ")),
                 "{detail:?}: not compared yet"
+            );
+            assert_eq!(
+                lines[1].risk_score,
+                Some(lines[0].risk_score.unwrap_or(0) + 3),
+                "{detail:?}: three source kinds, weight 1 each"
             );
             assert_eq!(
                 sourced,
