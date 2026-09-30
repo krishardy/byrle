@@ -312,6 +312,20 @@ pub const FORWARD_EXCEPT: Var = runtime(
 pub const FORWARD_HTTPS_LOWER: Var = other(Kind::External, "https_proxy", &["as HTTPS_PROXY"]);
 pub const FORWARD_HTTP_LOWER: Var = other(Kind::External, "http_proxy", &["as HTTP_PROXY"]);
 pub const FORWARD_EXCEPT_LOWER: Var = other(Kind::External, "no_proxy", &["as NO_PROXY"]);
+pub const DETECTORS: Var = runtime(
+    "WAHAROA_DETECTORS",
+    "",
+    &[
+        "detectors run on each version served, `name=command argument...`, separated by `;`;",
+        "{ecosystem}, {name} and {version} in the arguments are replaced. A detector is given",
+        "PATH, HOME, SOCKS and the forward proxies, and nothing else",
+    ],
+);
+pub const DETECTOR_SOCKS: Var = other(
+    Kind::External,
+    "SOCKS",
+    &["a SOCKS5 proxy, host:port, passed to detectors"],
+);
 pub const LOG_FORMAT: Var = runtime(
     "WAHAROA_LOG_FORMAT",
     "",
@@ -402,7 +416,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 51] = [
+pub const ALL: [Var; 53] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -429,6 +443,8 @@ pub const ALL: [Var; 51] = [
     MAX_TRAFFIC_CLIENTS,
     WATCH_INTERVAL,
     SOURCE_ARCHIVES,
+    DETECTORS,
+    DETECTOR_SOCKS,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     MODE,
@@ -713,6 +729,41 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
             Some(off) if off == "off" => None,
             value => Some(value.unwrap_or_else(|| crate::analysis::source::ARCHIVES.to_owned())),
         })
+    }
+
+    /// Each detector's spec, `name=command argument...`. Empty when none is set.
+    pub fn detectors(&self) -> Result<Vec<String>, EnvError> {
+        Ok(self
+            .text(DETECTORS)?
+            .map(|specs| {
+                specs
+                    .split(';')
+                    .map(str::trim)
+                    .filter(|spec| !spec.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// All a detector is given of this environment: `PATH`, `HOME`, `SOCKS` and the forward
+    /// proxies, those that are set. Nothing else, so no credential reaches it.
+    pub fn detector_environment(&self) -> Vec<(String, OsString)> {
+        let passed = [
+            DETECTOR_SOCKS,
+            FORWARD_HTTPS,
+            FORWARD_HTTP,
+            FORWARD_EXCEPT,
+            FORWARD_HTTPS_LOWER,
+            FORWARD_HTTP_LOWER,
+            FORWARD_EXCEPT_LOWER,
+        ]
+        .map(|var| var.name);
+        ["PATH", "HOME"]
+            .into_iter()
+            .chain(passed)
+            .filter_map(|name| Some((name.to_owned(), (self.lookup)(name)?)))
+            .collect()
     }
 
     pub fn max_concurrent_analyses(&self) -> Result<usize, EnvError> {
@@ -1356,6 +1407,40 @@ mod tests {
         assert_eq!(
             interval("15m").unwrap_err().to_string(),
             "WAHAROA_WATCH_INTERVAL: `15m` is not a whole number of seconds"
+        );
+    }
+
+    /// Detectors are split on `;`, blanks dropped, and a detector is given PATH, HOME, SOCKS
+    /// and the forward proxies that are set, nothing else.
+    #[test]
+    fn detectors_are_listed_and_given_little_of_the_environment() {
+        let set = testing::with(&[
+            (DETECTORS, " a=x ; ;b=y {name}"),
+            (DETECTOR_SOCKS, "socks.test:1080"),
+            (FORWARD_HTTPS, "http://proxy.test:3128"),
+            (GITHUB_TOKEN, "secret"),
+        ]);
+        assert_eq!(set.detectors().unwrap(), ["a=x", "b=y {name}"]);
+        let given: Vec<String> = set
+            .detector_environment()
+            .into_iter()
+            .map(|(name, value)| format!("{name}={}", value.to_string_lossy()))
+            .collect();
+        assert_eq!(
+            given,
+            [
+                "SOCKS=socks.test:1080",
+                "HTTPS_PROXY=http://proxy.test:3128"
+            ]
+        );
+        assert_eq!(
+            testing::with(&[]).detectors().unwrap(),
+            Vec::<String>::new()
+        );
+        assert!(
+            testing::with_unreadable(&[], DETECTORS)
+                .detectors()
+                .is_err()
         );
     }
 

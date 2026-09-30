@@ -1,0 +1,26 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT result FROM version_detection WHERE detector = $1 AND detector_version = $2 AND ecosystem = $3 AND name = $4 AND version = $5",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "result",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "21ccfbb704c17168f27e143bcf588baf37c94e6df047f43cfad5841664b3b3db"
+}

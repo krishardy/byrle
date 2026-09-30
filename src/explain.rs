@@ -418,7 +418,7 @@ fn signals(
     for signal in signals {
         out.push_str(&format!(
             "    {signal} (weight {})\n",
-            weights.of(signal.kind())
+            signal.weight(weights)
         ));
     }
     out.push_str(&format!(

@@ -3,6 +3,7 @@
 //! See `docs/engineering_decisions/artifact-analysis-store.md`.
 
 use crate::analysis::attestation::Attested;
+use crate::analysis::detector::Detection;
 use crate::analysis::source::Sourced;
 use crate::analysis::{InstallScripts, ReadError};
 use crate::integrity::Sri;
@@ -49,6 +50,18 @@ pub struct Analysis {
     pub scripts: Scripts,
 }
 
+/// Which run of which detector on which version a [`Detection`] is kept under.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct DetectionKey {
+    pub detector: String,
+    /// The detector's version. A result another version wrote is not read back.
+    pub detector_version: String,
+    pub ecosystem: String,
+    /// The registry name, as `PackageKey::registry_name` gives it.
+    pub name: String,
+    pub version: String,
+}
+
 /// Why an analysis could not be read or written.
 #[derive(Debug)]
 pub enum AnalysisError {
@@ -93,6 +106,16 @@ pub trait Analyses: Send + Sync {
 
     /// Record what comparing it found, replacing what was held under the same digest.
     fn put_sourced<'a>(&'a self, digest: &'a Sri, sourced: &'a Sourced) -> Stored<'a, ()>;
+
+    /// What the detector run `key` names found. `Ok(None)` is a run not made yet.
+    fn detected<'a>(&'a self, key: &'a DetectionKey) -> Stored<'a, Option<Detection>>;
+
+    /// Record what it found, replacing what an earlier run of any version wrote.
+    fn put_detected<'a>(
+        &'a self,
+        key: &'a DetectionKey,
+        detection: &'a Detection,
+    ) -> Stored<'a, ()>;
 }
 
 /// The analyses this process has made, least recently used evicted first.
@@ -100,12 +123,14 @@ pub struct InProcess(
     Mutex<Lru<Sri, Analysis>>,
     Mutex<Lru<Sri, Attested>>,
     Mutex<Lru<Sri, Sourced>>,
+    Mutex<Lru<DetectionKey, Detection>>,
 );
 
 impl InProcess {
-    /// `max_entries` analyses, and as many attestation and source results.
+    /// `max_entries` analyses, and as many attestation, source and detector results.
     pub fn new(max_entries: usize) -> Self {
         Self(
+            Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
@@ -178,12 +203,71 @@ impl Analyses for InProcess {
             Ok(())
         })
     }
+
+    fn detected<'a>(&'a self, key: &'a DetectionKey) -> Stored<'a, Option<Detection>> {
+        Box::pin(async move {
+            Ok(self
+                .3
+                .lock()
+                .expect("detection store lock")
+                .get(key)
+                .cloned())
+        })
+    }
+
+    fn put_detected<'a>(
+        &'a self,
+        key: &'a DetectionKey,
+        detection: &'a Detection,
+    ) -> Stored<'a, ()> {
+        Box::pin(async move {
+            self.3
+                .lock()
+                .expect("detection store lock")
+                .insert(key.clone(), detection.clone());
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
     use super::*;
+
+    /// A store that answers every read and write with an error.
+    pub struct Broken;
+
+    fn broken<'a, T: Send + 'a>() -> Stored<'a, T> {
+        Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
+    }
+
+    impl Analyses for Broken {
+        fn get<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Analysis>> {
+            broken()
+        }
+        fn put<'a>(&'a self, _: &'a Sri, _: &'a Analysis) -> Stored<'a, ()> {
+            broken()
+        }
+        fn attested<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Attested>> {
+            broken()
+        }
+        fn put_attested<'a>(&'a self, _: &'a Sri, _: &'a Attested) -> Stored<'a, ()> {
+            broken()
+        }
+        fn sourced<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Sourced>> {
+            broken()
+        }
+        fn put_sourced<'a>(&'a self, _: &'a Sri, _: &'a Sourced) -> Stored<'a, ()> {
+            broken()
+        }
+        fn detected<'a>(&'a self, _: &'a DetectionKey) -> Stored<'a, Option<Detection>> {
+            broken()
+        }
+        fn put_detected<'a>(&'a self, _: &'a DetectionKey, _: &'a Detection) -> Stored<'a, ()> {
+            broken()
+        }
+    }
 
     pub fn sri(seed: u8) -> Sri {
         use base64::Engine as _;
@@ -227,6 +311,28 @@ pub(crate) mod tests {
             "a different artifact"
         );
         assert_eq!(store.len(), 1);
+    }
+
+    /// A detector's result is kept under its run: another detector version reads nothing.
+    #[tokio::test]
+    async fn a_detection_is_kept_under_its_run() {
+        let store = InProcess::new(4);
+        let key = DetectionKey {
+            detector: "guarddog".to_owned(),
+            detector_version: "3.2.0".to_owned(),
+            ecosystem: "npm".to_owned(),
+            name: "widget".to_owned(),
+            version: "1.0.0".to_owned(),
+        };
+        assert_eq!(store.detected(&key).await.expect("answers"), None);
+        let found = Detection::default();
+        store.put_detected(&key, &found).await.expect("writes");
+        assert_eq!(store.detected(&key).await.expect("answers"), Some(found));
+        let newer = DetectionKey {
+            detector_version: "3.3.0".to_owned(),
+            ..key
+        };
+        assert_eq!(store.detected(&newer).await.expect("answers"), None);
     }
 
     #[tokio::test]

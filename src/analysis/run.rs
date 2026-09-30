@@ -19,8 +19,10 @@ use crate::integrity::{Mismatch, Sri};
 use crate::spool::{Spool, Spooled, WriteError};
 use crate::util::lru::Lru;
 
+pub(crate) mod detecting;
 mod sourcing;
 
+pub use detecting::DETECTOR_SLOTS;
 pub use sourcing::{SOURCE_SLOTS, SOURCE_TREES, SourceJob};
 
 /// How long one job may take, from its fetch starting to its analysis being stored.
@@ -82,6 +84,8 @@ pub struct Analyser {
     deadline: Duration,
     /// The source comparison, when it is on.
     sources: Option<sourcing::Sources>,
+    /// The detectors, when any is set.
+    detectors: Option<detecting::Detectors>,
 }
 
 impl Analyser {
@@ -102,6 +106,7 @@ impl Analyser {
             ended: Arc::new(watch::Sender::new(0)),
             deadline: DEADLINE,
             sources: None,
+            detectors: None,
         }
     }
 
@@ -170,7 +175,7 @@ impl Analyser {
         }
         let guard = InFlight {
             set: self.in_flight.clone(),
-            digest: job.digest.clone(),
+            key: job.digest.clone(),
             ended: self.ended.clone(),
         };
         let analyser = self.clone();
@@ -471,16 +476,16 @@ fn ms(since: Instant) -> u64 {
     since.elapsed().as_millis() as u64
 }
 
-/// Takes a digest out of the in-flight set when its job ends, however it ends.
-struct InFlight {
-    set: Arc<Mutex<HashSet<Sri>>>,
-    digest: Sri,
+/// Takes a job's key out of its in-flight set when the job ends, however it ends.
+struct InFlight<K: Eq + std::hash::Hash> {
+    set: Arc<Mutex<HashSet<K>>>,
+    key: K,
     ended: Arc<watch::Sender<u64>>,
 }
 
-impl Drop for InFlight {
+impl<K: Eq + std::hash::Hash> Drop for InFlight<K> {
     fn drop(&mut self) {
-        let _ = self.set.lock().map(|mut set| set.remove(&self.digest));
+        let _ = self.set.lock().map(|mut set| set.remove(&self.key));
         self.ended.send_modify(|ended| *ended += 1);
     }
 }
@@ -490,8 +495,7 @@ impl Drop for InFlight {
 pub(crate) mod tests {
     use super::*;
     use crate::analysis::attestation::Attested;
-    use crate::analysis::source::Sourced;
-    use crate::analysis::store::{AnalysisError, InProcess, Stored};
+    use crate::analysis::store::InProcess;
     use crate::util::test_support::tarball;
     use crate::util::test_support::tempdir;
     use axum::Router;
@@ -878,41 +882,16 @@ pub(crate) mod tests {
         assert_eq!(analyser.attested(&digest).await, None);
     }
 
-    /// A store that answers every read and write with an error.
-    struct Broken;
-
-    impl Analyses for Broken {
-        fn get<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Analysis>> {
-            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
-        }
-
-        fn put<'a>(&'a self, _: &'a Sri, _: &'a Analysis) -> Stored<'a, ()> {
-            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
-        }
-
-        fn attested<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Attested>> {
-            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
-        }
-
-        fn put_attested<'a>(&'a self, _: &'a Sri, _: &'a Attested) -> Stored<'a, ()> {
-            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
-        }
-
-        fn sourced<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Sourced>> {
-            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
-        }
-
-        fn put_sourced<'a>(&'a self, _: &'a Sri, _: &'a Sourced) -> Stored<'a, ()> {
-            Box::pin(async { Err(AnalysisError::Backend(sqlx::Error::PoolClosed)) })
-        }
-    }
-
     #[tokio::test]
     async fn a_store_that_cannot_answer_is_unknown_and_its_failed_write_is_logged() {
         let tarball = tarball(&[("package/package.json", POSTINSTALL)]);
         let digest = sri_of(&tarball);
         let url = upstream(200, tarball).await;
-        let analyser = analyser("run-broken", 1 << 20, Arc::new(Broken));
+        let analyser = analyser(
+            "run-broken",
+            1 << 20,
+            Arc::new(crate::analysis::store::tests::Broken),
+        );
         assert_eq!(analyser.known(&digest).await, Known::Unknown);
         analyser
             .start(job(&digest, &url))
@@ -927,7 +906,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_store_that_cannot_keep_attestations_is_logged() {
         use crate::util::test_support::{capture, text};
-        let analyser = analyser("run-broken-attest", 1 << 20, Arc::new(Broken));
+        let analyser = analyser(
+            "run-broken-attest",
+            1 << 20,
+            Arc::new(crate::analysis::store::tests::Broken),
+        );
         let digest = crate::analysis::store::tests::sri(7);
         let (guard, buf) = capture(tracing::Level::WARN);
         assert_eq!(analyser.attested(&digest).await, None);

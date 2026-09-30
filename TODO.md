@@ -2533,8 +2533,17 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
       source comparison. Report only, like the signals it is made of. Each kind weighs 1
       unless the policy's `signal_weights` says otherwise; logged, audited as
       `risk_score`, printed by `explain`.
-- [ ] Pluggable detector interface for third-party/commercial feeds
-  - [ ] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector
+- [x] Pluggable detector interface for third-party/commercial feeds
+      ([detectors](docs/engineering_decisions/detectors.md)): a `Detector` trait, report
+      only, and a command adapter configured by `WAHAROA_DETECTORS`.
+  - [x] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector:
+        by name, every rule a signal of weight 1. On 694 npm versions a rule fired on 400,
+        a `threat-*` rule on 28.
+  - [ ] Measure GuardDog's two email-domain rules once the sandbox has a SOCKS5 proxy
+        allowing WHOIS, TCP port 43.
+  - [ ] Put the metadata heuristics and the source comparison behind the `Detector` trait,
+        or record why they stay apart: one reads metadata synchronously, the other is keyed
+        by digest.
 - [x] Benchmark each control against known 2025–26 incidents (shai-hulud, tinycolor,
       chalk, nx, eslint-config-prettier) and publish the results
       ([incident-benchmark](docs/engineering_decisions/incident-benchmark.md)). A 7-day

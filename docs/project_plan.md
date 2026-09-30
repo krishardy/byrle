@@ -690,7 +690,9 @@ rare, and arguably correct, since a waiver is an explicit acceptance of risk.
   silently does nothing is worse than having no tool, because the user believes they
   are protected.
 - Unrecognized `version` -> refuse to start, never fall back to permissive.
-- Detector or intel-source failure -> configurable, defaults to fail closed.
+- Intel-source failure, or failure of a detector that decides verdicts -> configurable,
+  defaults to fail closed. A detector that only reports signals fails open
+  ([detectors](engineering_decisions/detectors.md)).
 
 ## 6. UX principles
 

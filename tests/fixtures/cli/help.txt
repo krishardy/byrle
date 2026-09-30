@@ -62,6 +62,9 @@ Proxy configuration, all through the environment:
                                     before a client asks for them; 0 turns it off (default 900)
   WAHAROA_SOURCE_ARCHIVES           host of the GitHub archives each artifact is compared with, the source
                                     its metadata names; off turns the comparison off (default https://codeload.github.com)
+  WAHAROA_DETECTORS                 detectors run on each version served, `name=command argument...`, separated by `;`;
+                                    {ecosystem}, {name} and {version} in the arguments are replaced. A detector is given
+                                    PATH, HOME, SOCKS and the forward proxies, and nothing else
   WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
                                     "default=403,npm/pnpm=451" (default 403)
   WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot

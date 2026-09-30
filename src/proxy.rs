@@ -1223,7 +1223,8 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     let (fetch, unservable) = deciding.fetch_plan(&record);
     let dated = deciding.dated(&record).await;
     let sourced = deciding.sourced(&fetch).await;
-    let signals = deciding.signals(&record, dated.full.as_ref(), sourced.as_ref());
+    let detected = deciding.detected(&record).await;
+    let signals = deciding.signals(&record, dated.full.as_ref(), sourced.as_ref(), &detected);
     let described = dated.describing(&record).clone();
     let times = dated.times;
     let Analysed {
@@ -1242,6 +1243,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     if sourced.is_none() {
         deciding.compare_source(&described, &fetch, refusal.as_ref());
     }
+    deciding.detect(&record, &detected, refusal.as_ref());
     let (answered, step) = deciding.answer(refusal.as_ref(), unservable, fetch, state);
     audit_pinned(
         proxy,
@@ -1265,6 +1267,22 @@ struct Dated {
     times: Option<facts::PublishTimes>,
     /// The full document's records, for the heuristics.
     full: Option<PackageMetadata>,
+}
+
+/// Whether `refusal` blocks the version, which does not lapse, so it is never served and
+/// needs no background analysis.
+fn blocks(refusal: Option<&enforce::Refusal>) -> bool {
+    refusal.is_some_and(|refusal| refusal.action == crate::policy::Action::Block)
+}
+
+/// The version a detector is asked about.
+fn target(record: &PackageRecord) -> crate::analysis::detector::Target {
+    let key = record.package.key();
+    crate::analysis::detector::Target {
+        ecosystem: key.ecosystem(),
+        name: key.registry_name(),
+        version: record.package.version().to_owned(),
+    }
 }
 
 impl Dated {
@@ -1303,11 +1321,13 @@ impl<'a> Deciding<'a> {
     /// What the metadata heuristics report for `record`, logged when there is any.
     /// See docs/engineering_decisions/metadata-heuristics.md.
     /// `full` is the full document, when one was fetched for this request.
+    /// `detected` is what each detector found about the version, by detector name.
     fn signals(
         &self,
         record: &PackageRecord,
         full: Option<&PackageMetadata>,
         sourced: Option<&Sourced>,
+        detected: &[(String, crate::analysis::detector::Detection)],
     ) -> Vec<Signal> {
         let mut signals = self.proxy.store.lock().expect("record store lock").signals(
             record,
@@ -1319,6 +1339,7 @@ impl<'a> Deciding<'a> {
                 .map(crate::heuristics::of_source)
                 .unwrap_or_default(),
         );
+        signals.extend(crate::heuristics::of_detections(detected));
         if !signals.is_empty() {
             let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
             let weights = self
@@ -1332,6 +1353,31 @@ impl<'a> Deciding<'a> {
             warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, waharoa.risk_score = score, "signals reported; they refuse nothing");
         }
         signals
+    }
+
+    /// What each detector found about `record`'s version when it ran before, by detector name.
+    /// See docs/engineering_decisions/detectors.md.
+    async fn detected(
+        &self,
+        record: &PackageRecord,
+    ) -> Vec<(String, crate::analysis::detector::Detection)> {
+        match self.proxy.config.analyser.as_deref() {
+            Some(analyser) => analyser.detected(&target(record)).await,
+            None => Vec::new(),
+        }
+    }
+
+    /// Start each detector with no result in `detected` on `record`'s version, unless
+    /// `refusal` blocks it.
+    fn detect(
+        &self,
+        record: &PackageRecord,
+        detected: &[(String, crate::analysis::detector::Detection)],
+        refusal: Option<&enforce::Refusal>,
+    ) {
+        if let (false, Some(analyser)) = (blocks(refusal), self.proxy.config.analyser.as_deref()) {
+            analyser.start_detecting(&target(record), detected);
+        }
     }
 
     /// What comparing the artifact with its source found, when it was compared before.
@@ -1350,7 +1396,7 @@ impl<'a> Deciding<'a> {
         fetch: &ArtifactFetch,
         refusal: Option<&enforce::Refusal>,
     ) {
-        if refusal.is_some_and(|refusal| refusal.action == crate::policy::Action::Block) {
+        if blocks(refusal) {
             return;
         }
         let (Some(analyser), Some(digest)) =
@@ -2813,7 +2859,14 @@ impl Proxy {
         let analysed = deciding
             .analysed(record, &fetch, dated.times.as_ref())
             .await;
-        if deciding.sourced(&fetch).await.is_none() {
+        let sourced = deciding.sourced(&fetch).await;
+        let detected = deciding.detected(record).await;
+        let undetected = self
+            .config
+            .analyser
+            .as_deref()
+            .is_some_and(|analyser| detected.len() < analyser.detector_count());
+        if sourced.is_none() || undetected {
             let refusal = deciding
                 .refusal(
                     &analysed.record,
@@ -2824,7 +2877,10 @@ impl Proxy {
                 .await
                 .ok()
                 .and_then(|(_, refusal)| refusal);
-            deciding.compare_source(dated.describing(record), &fetch, refusal.as_ref());
+            if sourced.is_none() {
+                deciding.compare_source(dated.describing(record), &fetch, refusal.as_ref());
+            }
+            deciding.detect(record, &detected, refusal.as_ref());
         }
         let (AnalysisState::Pending(job), Some(analyser)) = (analysed.state, &self.config.analyser)
         else {
@@ -7918,6 +7974,101 @@ mod tests {
     const SOURCE_POLICY: &str =
         "version: 1\ncooldown_days: 0\ninstall_scripts: allow\nprovenance: allow\n";
 
+    /// A decision starts the detectors without waiting for them, and a later one reports
+    /// each rule that fired. A blocked version starts none, and the watcher starts them.
+    #[tokio::test]
+    async fn a_detectors_rules_are_reported_on_a_later_request() {
+        use crate::analysis::run::detecting::tests::Fake;
+        let blocked =
+            format!("{SOURCE_POLICY}denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: r\n");
+        for (label, yaml, started) in [
+            ("served", SOURCE_POLICY, 1),
+            ("blocked", blocked.as_str(), 0),
+        ] {
+            let detector = Fake::firing(&["threat-process-hooks"]);
+            let (proxy, analyser, path, packument) =
+                sourcing(&format!("detect-{label}"), yaml, vec![detector]).await;
+            hold_document(
+                &proxy,
+                packument.to_string().as_bytes(),
+                crate::record::DocumentDetail::Full,
+            );
+            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            assert_eq!(analyser.detections_started(), started, "{label}");
+            if started == 0 {
+                continue;
+            }
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                analyser.detections_ended(1),
+            )
+            .await
+            .expect("the detector ends");
+            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            assert_eq!(analyser.detections_started(), 1, "read back, not run again");
+            let lines: Vec<audit::Event> = std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            assert!(!lines[0].signals.iter().any(|s| s.starts_with("guarddog")));
+            assert!(
+                lines[1]
+                    .signals
+                    .contains(&"guarddog: threat-process-hooks".to_owned()),
+                "{:?}",
+                lines[1].signals
+            );
+        }
+
+        let (proxy, analyser, _, _) = sourcing(
+            "detect-watched",
+            SOURCE_POLICY,
+            vec![Fake::firing(&["threat-process-hooks"])],
+        )
+        .await;
+        hold_document(
+            &proxy,
+            br#"{"name":"widget","versions":{}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        proxy.watch().await;
+        assert_eq!(analyser.detections_started(), 1, "the watcher starts it");
+
+        let failing = Arc::new(Fake {
+            answer: Err("no".to_owned()),
+            delay: std::time::Duration::ZERO,
+            runs: std::sync::atomic::AtomicU64::new(0),
+        });
+        let (proxy, analyser, _, _) =
+            sourcing("detect-watched-failing", SOURCE_POLICY, vec![failing]).await;
+        for pass in 1..=2 {
+            hold_document(
+                &proxy,
+                br#"{"name":"widget","versions":{}}"#,
+                crate::record::DocumentDetail::Abbreviated,
+            );
+            proxy.watch().await;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                analyser.sources_ended(1),
+            )
+            .await
+            .expect("the comparison ends");
+            tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                analyser.detections_ended(pass),
+            )
+            .await
+            .expect("the detector ends");
+        }
+        assert_eq!(
+            (analyser.sources_started(), analyser.detections_started()),
+            (1, 2),
+            "the comparison is stored; the failed detector runs again"
+        );
+    }
+
     /// A version the policy blocks is not compared with its source, by a request or the
     /// watcher. One it quarantines is: the quarantine lapses, and then it is served.
     #[tokio::test]
@@ -7927,7 +8078,8 @@ mod tests {
         let quarantined = SOURCE_POLICY.replace("cooldown_days: 0", "cooldown_days: 36500");
         for (label, yaml, compared) in [("blocked", &blocked, 0), ("quarantined", &quarantined, 1)]
         {
-            let (proxy, analyser, _, packument) = sourcing(&format!("source-{label}"), yaml).await;
+            let (proxy, analyser, _, packument) =
+                sourcing(&format!("source-{label}"), yaml, vec![]).await;
             hold_document(
                 &proxy,
                 packument.to_string().as_bytes(),
@@ -7940,7 +8092,8 @@ mod tests {
                 "{label}, by a request"
             );
 
-            let (proxy, analyser, _, _) = sourcing(&format!("source-{label}-watched"), yaml).await;
+            let (proxy, analyser, _, _) =
+                sourcing(&format!("source-{label}-watched"), yaml, vec![]).await;
             hold_document(
                 &proxy,
                 br#"{"name":"widget","versions":{}}"#,
@@ -7961,6 +8114,7 @@ mod tests {
     async fn sourcing(
         label: &str,
         yaml: &str,
+        detectors: Vec<Arc<dyn crate::analysis::detector::Detector>>,
     ) -> (Proxy, Arc<Analyser>, std::path::PathBuf, serde_json::Value) {
         let artifact = crate::util::test_support::tarball(&[
             (
@@ -8024,7 +8178,8 @@ mod tests {
                 2,
                 8,
             )
-            .with_sources(Some(upstream.clone())),
+            .with_sources(Some(upstream.clone()))
+            .with_detectors(detectors),
         );
         let path =
             crate::util::test_support::tempdir(&format!("{label}-audit")).join("audit.jsonl");
@@ -8045,7 +8200,7 @@ mod tests {
             crate::record::DocumentDetail::Abbreviated,
         ] {
             let (proxy, analyser, path, packument) =
-                sourcing(&format!("source-{detail:?}"), SOURCE_POLICY).await;
+                sourcing(&format!("source-{detail:?}"), SOURCE_POLICY, vec![]).await;
             let mut held = packument.clone();
             if detail == crate::record::DocumentDetail::Abbreviated {
                 held.as_object_mut().unwrap().remove("time");
@@ -8109,7 +8264,8 @@ mod tests {
     /// The watcher starts the comparison for a version no client has asked for.
     #[tokio::test]
     async fn the_watcher_starts_the_source_comparison() {
-        let (proxy, analyser, _, packument) = sourcing("source-watched", SOURCE_POLICY).await;
+        let (proxy, analyser, _, packument) =
+            sourcing("source-watched", SOURCE_POLICY, vec![]).await;
         hold_document(
             &proxy,
             br#"{"name":"widget","versions":{}}"#,

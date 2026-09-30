@@ -27,6 +27,8 @@ pub enum Signal {
     NearName { served: String },
     /// The artifact holds what its source, `at` as `owner/name@reference`, does not.
     Source { at: String, finding: SourceFinding },
+    /// A detector's rule fired on the version.
+    Detected { detector: String, rule: String },
 }
 
 /// What a comparison with the source found that is a signal.
@@ -109,8 +111,9 @@ impl SignalKind {
 }
 
 impl Signal {
-    pub fn kind(&self) -> SignalKind {
-        match self {
+    /// Its built-in kind. `None` for a detector's rule, which [`Signal::key`] names.
+    pub fn kind(&self) -> Option<SignalKind> {
+        Some(match self {
             Self::NewPackage { .. } => SignalKind::NewPackage,
             Self::NewPublisher { .. } => SignalKind::NewPublisher,
             Self::NoRepository => SignalKind::NoRepository,
@@ -121,20 +124,53 @@ impl Signal {
                 SourceFinding::InstallFiles(_) => SignalKind::SourceInstallFiles,
                 SourceFinding::Differing { .. } => SignalKind::SourceDiffering,
             },
+            Self::Detected { .. } => return None,
+        })
+    }
+
+    /// The name `signal_weights` weighs it under: its kind's, or `detector.rule`.
+    pub fn key(&self) -> String {
+        match (self, self.kind()) {
+            (Self::Detected { detector, rule }, _) => format!("{detector}.{rule}"),
+            (_, kind) => kind
+                .expect("every other signal has a kind")
+                .as_str()
+                .to_owned(),
+        }
+    }
+
+    /// What it weighs under `weights`.
+    pub fn weight(&self, weights: &SignalWeights) -> u32 {
+        match self.kind() {
+            Some(kind) => weights.of(kind),
+            None => weights.of_rule(&self.key()),
         }
     }
 }
 
-/// A version's risk score: the weight `policy` gives each kind of signal present, summed,
-/// each kind once however often it fires.
+/// A version's risk score: the weight `weights` gives each kind of signal present, summed,
+/// each kind, and each detector rule, once however often it fires.
 pub fn score(signals: &[Signal], weights: &SignalWeights) -> u32 {
+    let mut seen = std::collections::BTreeSet::new();
     signals
         .iter()
-        .map(Signal::kind)
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .map(|kind| weights.of(kind))
+        .filter(|signal| seen.insert(signal.key()))
+        .map(|signal| signal.weight(weights))
         .sum()
+}
+
+/// The signals `detections`, each a detector's name and what it found, give: one per rule
+/// that fired.
+pub fn of_detections(detections: &[(String, crate::analysis::detector::Detection)]) -> Vec<Signal> {
+    detections
+        .iter()
+        .flat_map(|(detector, detection)| {
+            detection.findings.iter().map(|finding| Signal::Detected {
+                detector: detector.clone(),
+                rule: finding.rule.clone(),
+            })
+        })
+        .collect()
 }
 
 impl std::fmt::Display for Signal {
@@ -150,6 +186,7 @@ impl std::fmt::Display for Signal {
                 write!(f, "near name: one edit from `{served}`, served here")
             }
             Self::Source { at, finding } => write!(f, "source {at}: {finding}"),
+            Self::Detected { detector, rule } => write!(f, "{detector}: {rule}"),
         }
     }
 }
@@ -506,7 +543,7 @@ mod tests {
         assert_eq!(
             of_source(&sourced)
                 .iter()
-                .map(Signal::kind)
+                .filter_map(Signal::kind)
                 .collect::<Vec<_>>(),
             SignalKind::ALL[4..]
         );
@@ -569,8 +606,57 @@ mod tests {
             near("a"),
         ]
         .iter()
-        .map(Signal::kind)
+        .filter_map(Signal::kind)
         .collect();
         assert_eq!(kinds, SignalKind::ALL[..4]);
+    }
+
+    /// Each rule a detector fired is a signal, weighed by its own `detector.rule` weight,
+    /// once however many detections repeat it.
+    #[test]
+    fn a_detector_rule_is_a_signal_with_its_own_weight() {
+        use crate::analysis::detector::{Detection, Finding};
+        let fired = |rules: &[&str]| Detection {
+            findings: rules
+                .iter()
+                .map(|rule| Finding {
+                    rule: (*rule).to_owned(),
+                    detail: String::new(),
+                })
+                .collect(),
+            errors: vec![Finding {
+                rule: "e".to_owned(),
+                detail: "no dns".to_owned(),
+            }],
+        };
+        let detected = [
+            (
+                "guarddog".to_owned(),
+                fired(&["threat-process-hooks", "bundled_binary"]),
+            ),
+            ("guarddog".to_owned(), fired(&["bundled_binary"])),
+        ];
+        let signals = of_detections(&detected);
+        assert_eq!(
+            signals.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [
+                "guarddog: threat-process-hooks",
+                "guarddog: bundled_binary",
+                "guarddog: bundled_binary"
+            ]
+        );
+        assert_eq!(signals[0].kind(), None);
+        assert_eq!(signals[0].key(), "guarddog.threat-process-hooks");
+        assert_eq!(Signal::NoRepository.key(), "no_repository");
+        let mut weights = SignalWeights::default();
+        weights
+            .detectors
+            .insert("guarddog.threat-process-hooks".to_owned(), 4);
+        assert_eq!(signals[0].weight(&weights), 4);
+        assert_eq!(
+            score(&signals, &weights),
+            5,
+            "4, and bundled_binary once at 1"
+        );
     }
 }

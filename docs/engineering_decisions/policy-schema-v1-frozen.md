@@ -25,7 +25,7 @@ had not been deployed, so no written file changes meaning.
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
-| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing` |
+| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
 | `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `vuln_advisory_ids` |
 
 | Key | Value | Default |

@@ -16,6 +16,7 @@ pub mod vers;
 
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -220,33 +221,63 @@ impl<'de> Deserialize<'de> for VersionValue {
 }
 
 /// Each kind of signal's weight in a risk score, [`DEFAULT_SIGNAL_WEIGHT`] unless set.
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SignalWeights {
-    #[serde(default = "default_signal_weight")]
     pub new_package: u32,
-    #[serde(default = "default_signal_weight")]
     pub new_publisher: u32,
-    #[serde(default = "default_signal_weight")]
     pub no_repository: u32,
-    #[serde(default = "default_signal_weight")]
     pub near_name: u32,
-    #[serde(default = "default_signal_weight")]
     pub source_install_scripts: u32,
-    #[serde(default = "default_signal_weight")]
     pub source_dependencies: u32,
-    #[serde(default = "default_signal_weight")]
     pub source_install_files: u32,
-    #[serde(default = "default_signal_weight")]
     pub source_differing: u32,
+    /// A detector's rules, as `detector.rule`, such as `guarddog.threat-process-hooks`.
+    pub detectors: BTreeMap<String, u32>,
+}
+
+/// The keys `signal_weights` takes besides a detector's rules.
+const SIGNAL_WEIGHT_KEYS: [&str; 8] = [
+    "new_package",
+    "new_publisher",
+    "no_repository",
+    "near_name",
+    "source_install_scripts",
+    "source_dependencies",
+    "source_install_files",
+    "source_differing",
+];
+
+/// A built-in kind, or a `detector.rule` that `detector::KNOWN` lists; nothing else.
+impl<'de> Deserialize<'de> for SignalWeights {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let set = BTreeMap::<String, u32>::deserialize(deserializer)?;
+        let mut weights = Self::default();
+        for (key, weight) in set {
+            let field = match key.as_str() {
+                "new_package" => &mut weights.new_package,
+                "new_publisher" => &mut weights.new_publisher,
+                "no_repository" => &mut weights.no_repository,
+                "near_name" => &mut weights.near_name,
+                "source_install_scripts" => &mut weights.source_install_scripts,
+                "source_dependencies" => &mut weights.source_dependencies,
+                "source_install_files" => &mut weights.source_install_files,
+                "source_differing" => &mut weights.source_differing,
+                rule if crate::analysis::detector::knows(rule) => {
+                    weights.detectors.insert(key, weight);
+                    continue;
+                }
+                _ => {
+                    return Err(serde::de::Error::unknown_field(&key, &SIGNAL_WEIGHT_KEYS));
+                }
+            };
+            *field = weight;
+        }
+        Ok(weights)
+    }
 }
 
 /// What a kind of signal weighs when the policy does not say.
 pub const DEFAULT_SIGNAL_WEIGHT: u32 = 1;
-
-fn default_signal_weight() -> u32 {
-    DEFAULT_SIGNAL_WEIGHT
-}
 
 impl Default for SignalWeights {
     fn default() -> Self {
@@ -259,11 +290,20 @@ impl Default for SignalWeights {
             source_dependencies: DEFAULT_SIGNAL_WEIGHT,
             source_install_files: DEFAULT_SIGNAL_WEIGHT,
             source_differing: DEFAULT_SIGNAL_WEIGHT,
+            detectors: BTreeMap::new(),
         }
     }
 }
 
 impl SignalWeights {
+    /// The weight of a detector's `rule`, named `detector.rule`.
+    pub fn of_rule(&self, rule: &str) -> u32 {
+        self.detectors
+            .get(rule)
+            .copied()
+            .unwrap_or(DEFAULT_SIGNAL_WEIGHT)
+    }
+
     /// The weight of `kind`.
     pub fn of(&self, kind: crate::heuristics::SignalKind) -> u32 {
         use crate::heuristics::SignalKind;
@@ -847,6 +887,21 @@ mod tests {
             assert!(
                 parse(&format!("signal_weights: {{ near_name: {bad} }}\n")).is_err(),
                 "{bad}"
+            );
+        }
+        let rules = parse(
+            "signal_weights: { guarddog.threat-process-hooks: 5, guarddog.bundled_binary: 0 }\n",
+        )
+        .unwrap()
+        .signal_weights;
+        assert_eq!(rules.of_rule("guarddog.threat-process-hooks"), 5);
+        assert_eq!(rules.of_rule("guarddog.bundled_binary"), 0);
+        assert_eq!(rules.of_rule("guarddog.typosquatting"), 1, "unset");
+        for unknown in ["guarddog.threat-proces-hooks", "other.rule", "guarddog"] {
+            let error = parse(&format!("signal_weights: {{ {unknown}: 2 }}\n")).unwrap_err();
+            assert!(
+                error.to_string().contains("unknown field"),
+                "{unknown}: {error}"
             );
         }
         for (weight, kind) in (10..).zip(SignalKind::ALL) {

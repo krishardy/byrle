@@ -3,6 +3,7 @@
 //! Logs what each `crate::env` value means as the proxy starts. `main` keeps the logging
 //! setup, the listener and the exit codes.
 
+use crate::analysis::detector::{Command, Detector};
 use std::ffi::OsString;
 use std::path::Path;
 use std::sync::Arc;
@@ -97,7 +98,8 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
                 environment.max_concurrent_analyses()?,
                 max_verified,
             )
-            .with_sources(environment.source_archives()?),
+            .with_sources(environment.source_archives()?)
+            .with_detectors(detectors(environment).await?),
         )))
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
@@ -312,6 +314,26 @@ async fn warn_enforcement(store: Option<&dyn Intel>) {
     for gap in snapshot.gaps() {
         warn!(waharoa.intel.gap = %gap, "the intel snapshot has a gap");
     }
+}
+
+/// The detectors [`env::DETECTORS`] names, each asked its version.
+/// Errors when one does not parse or does not print a version.
+async fn detectors<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
+    let mut configured: Vec<Arc<dyn Detector>> = Vec::new();
+    for spec in environment.detectors()? {
+        let detector = Command::configured(&spec, environment.detector_environment())
+            .await
+            .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DETECTORS)))?;
+        info!(
+            waharoa.detector = detector.name(),
+            waharoa.detector.version = detector.version(),
+            "detector on: each version served is run through it, and each rule it fires is a signal"
+        );
+        configured.push(Arc::new(detector));
+    }
+    Ok(configured)
 }
 
 /// The spool at [`env::SPOOL_DIR`], with the files an earlier process left removed.
@@ -611,8 +633,36 @@ mod tests {
         assert!(!started, "{log}");
     }
 
-    /// An audit log is opened and said to be, and one that cannot be opened refuses the
-    /// start, naming the variable.
+    /// A detector that says its version is on and said to be, and one that does not refuses
+    /// the start, naming the variable.
+    #[tokio::test]
+    async fn a_detector_is_asked_its_version_or_refuses_the_start() {
+        let fake = crate::analysis::detector::tests::installed(
+            "startup-detector",
+            crate::analysis::detector::tests::FAKE,
+        );
+        let spec = format!(
+            "fake={} scan {{ecosystem}} {{name}} {{version}}",
+            fake.display()
+        );
+        let (started, log) = logged("startup-detector-on", &[(env::DETECTORS, &spec)]).await;
+        assert!(started, "{log}");
+        assert!(
+            log.contains("detector on") && log.contains("waharoa.detector.version=\"9.9.9\""),
+            "{log}"
+        );
+
+        let (dir, environment) = spooled(
+            "startup-detector-bad",
+            &[(env::DETECTORS, "fake=/nonexistent/detector")],
+        );
+        let Err(StartupError::Unusable(why)) = proxy(&environment).await.map(drop) else {
+            panic!("a detector that does not start refuses the start");
+        };
+        assert!(why.starts_with(&env::DETECTORS.to_string()), "{why}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn a_watch_interval_of_0_turns_the_watcher_off() {
         let (started, log) = logged("startup-watch-off", &[(env::WATCH_INTERVAL, "0")]).await;
@@ -620,6 +670,8 @@ mod tests {
         assert!(log.contains("watcher off"), "{log}");
     }
 
+    /// An audit log is opened and said to be, and one that cannot be opened refuses the
+    /// start, naming the variable.
     #[tokio::test]
     async fn an_audit_log_is_opened_or_refuses_the_start() {
         let dir = crate::util::test_support::tempdir("startup-audit-file");
@@ -900,6 +952,7 @@ mod tests {
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_ARTIFACT_BYTES),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_CONCURRENT_ANALYSES),
             (vec![(env::SPOOL_DIR, &spool)], env::SOURCE_ARCHIVES),
+            (vec![(env::SPOOL_DIR, &spool)], env::DETECTORS),
             (vec![(env::SPOOL_DIR, &spool)], env::MAX_TRAFFIC_CLIENTS),
             (vec![(env::SPOOL_DIR, &spool)], env::WATCH_INTERVAL),
         ];
