@@ -1222,30 +1222,26 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     };
     let (fetch, unservable) = deciding.fetch_plan(&record);
     let dated = deciding.dated(&record).await;
-    let sourced = deciding.sourced(dated.describing(&record), &fetch).await;
+    let sourced = deciding.sourced(&fetch).await;
     let signals = deciding.signals(&record, dated.full.as_ref(), sourced.as_ref());
+    let described = dated.describing(&record).clone();
     let times = dated.times;
     let Analysed {
         record,
         provenance,
         state,
     } = deciding.analysed(&record, &fetch, times.as_ref()).await;
-    let intel = match intel_for(proxy, deciding.request.key, deciding.request.path).await {
-        Ok(intel) => intel,
+    let today = crate::policy::today();
+    let (intel, refusal) = match deciding
+        .refusal(&record, times.as_ref(), &provenance, today)
+        .await
+    {
+        Ok(decided) => decided,
         Err(unavailable) => return ArtifactStep::Answer(unavailable.response()),
     };
-    let today = crate::policy::today();
-    let refusal = match enforce::artifact(
-        proxy.config.policy.as_deref(),
-        &record,
-        times.as_ref(),
-        intel.as_ref(),
-        &provenance,
-        today,
-    ) {
-        enforce::Verdict::Refuse(refusal) => Some(refusal),
-        enforce::Verdict::Serve => None,
-    };
+    if sourced.is_none() {
+        deciding.compare_source(&described, &fetch, refusal.as_ref());
+    }
     let (answered, step) = deciding.answer(refusal.as_ref(), unservable, fetch, state);
     audit_pinned(
         proxy,
@@ -1338,16 +1334,30 @@ impl<'a> Deciding<'a> {
         signals
     }
 
-    /// What comparing the artifact with its source found, when it was compared before. When
-    /// not, the comparison starts, and a later request reports it. `record` is the version
-    /// as the full document describes it, which names the repository and commit.
+    /// What comparing the artifact with its source found, when it was compared before.
     /// See docs/engineering_decisions/source-diff.md.
-    async fn sourced(&self, record: &PackageRecord, fetch: &ArtifactFetch) -> Option<Sourced> {
+    async fn sourced(&self, fetch: &ArtifactFetch) -> Option<Sourced> {
         let analyser = self.proxy.config.analyser.as_deref()?;
-        let digest = fetch.digest.as_ref()?;
-        if let Some(sourced) = analyser.sourced(digest).await {
-            return Some(sourced);
+        analyser.sourced(fetch.digest.as_ref()?).await
+    }
+
+    /// Start comparing the artifact with its source, unless `refusal` blocks it: a block does
+    /// not lapse, so nothing would be served. `record` is the version as the full document
+    /// describes it, which names the repository and commit.
+    fn compare_source(
+        &self,
+        record: &PackageRecord,
+        fetch: &ArtifactFetch,
+        refusal: Option<&enforce::Refusal>,
+    ) {
+        if refusal.is_some_and(|refusal| refusal.action == crate::policy::Action::Block) {
+            return;
         }
+        let (Some(analyser), Some(digest)) =
+            (self.proxy.config.analyser.as_deref(), fetch.digest.as_ref())
+        else {
+            return;
+        };
         let url = upstream_url(
             self.proxy,
             self.request.ecosystem,
@@ -1357,7 +1367,31 @@ impl<'a> Deciding<'a> {
         if let Some(job) = SourceJob::of(record, self.request.filename, digest, url) {
             analyser.start_source(job);
         }
-        None
+    }
+
+    /// The intel the policy reads for this package, and the policy's refusal of `record`
+    /// with its publish `times` and `provenance`, as of `today`.
+    /// Errors with why the intel store cannot answer.
+    async fn refusal(
+        &self,
+        record: &PackageRecord,
+        times: Option<&facts::PublishTimes>,
+        provenance: &Provenance,
+        today: jiff::civil::Date,
+    ) -> Result<(Option<PackageIntel>, Option<enforce::Refusal>), NotReady> {
+        let intel = intel_for(self.proxy, self.request.key, self.request.path).await?;
+        let refusal = match enforce::artifact(
+            self.proxy.config.policy.as_deref(),
+            record,
+            times,
+            intel.as_ref(),
+            provenance,
+            today,
+        ) {
+            enforce::Verdict::Refuse(refusal) => Some(refusal),
+            enforce::Verdict::Serve => None,
+        };
+        Ok((intel, refusal))
     }
 
     /// The record for the requested file, from the metadata held or fetched now.
@@ -2776,9 +2810,22 @@ impl Proxy {
         );
         let (fetch, _) = deciding.fetch_plan(record);
         let dated = deciding.dated(record).await;
-        deciding.sourced(dated.describing(record), &fetch).await;
-        let times = dated.times;
-        let analysed = deciding.analysed(record, &fetch, times.as_ref()).await;
+        let analysed = deciding
+            .analysed(record, &fetch, dated.times.as_ref())
+            .await;
+        if deciding.sourced(&fetch).await.is_none() {
+            let refusal = deciding
+                .refusal(
+                    &analysed.record,
+                    dated.times.as_ref(),
+                    &analysed.provenance,
+                    crate::policy::today(),
+                )
+                .await
+                .ok()
+                .and_then(|(_, refusal)| refusal);
+            deciding.compare_source(dated.describing(record), &fetch, refusal.as_ref());
+        }
         let (AnalysisState::Pending(job), Some(analyser)) = (analysed.state, &self.config.analyser)
         else {
             return false;
@@ -7867,11 +7914,53 @@ mod tests {
 
     const SOURCE_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
 
+    /// A policy that serves the widget [`sourcing`] publishes.
+    const SOURCE_POLICY: &str =
+        "version: 1\ncooldown_days: 0\ninstall_scripts: allow\nprovenance: allow\n";
+
+    /// A version the policy blocks is not compared with its source, by a request or the
+    /// watcher. One it quarantines is: the quarantine lapses, and then it is served.
+    #[tokio::test]
+    async fn a_blocked_version_is_not_compared_with_its_source() {
+        let blocked =
+            format!("{SOURCE_POLICY}denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: r\n");
+        let quarantined = SOURCE_POLICY.replace("cooldown_days: 0", "cooldown_days: 36500");
+        for (label, yaml, compared) in [("blocked", &blocked, 0), ("quarantined", &quarantined, 1)]
+        {
+            let (proxy, analyser, _, packument) = sourcing(&format!("source-{label}"), yaml).await;
+            hold_document(
+                &proxy,
+                packument.to_string().as_bytes(),
+                crate::record::DocumentDetail::Full,
+            );
+            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            assert_eq!(
+                analyser.sources_started(),
+                compared,
+                "{label}, by a request"
+            );
+
+            let (proxy, analyser, _, _) = sourcing(&format!("source-{label}-watched"), yaml).await;
+            hold_document(
+                &proxy,
+                br#"{"name":"widget","versions":{}}"#,
+                crate::record::DocumentDetail::Abbreviated,
+            );
+            proxy.watch().await;
+            assert_eq!(
+                analyser.sources_started(),
+                compared,
+                "{label}, by the watcher"
+            );
+        }
+    }
+
     /// A registry serving `widget` 1.0.0, whose `postinstall` and `x.js` its source at
     /// [`SOURCE_HEAD`] lacks, and GitHub's archive of that source. Returns the proxy with an
     /// audit log at the returned path, its analyser, and the full packument.
     async fn sourcing(
         label: &str,
+        yaml: &str,
     ) -> (Proxy, Arc<Analyser>, std::path::PathBuf, serde_json::Value) {
         let artifact = crate::util::test_support::tarball(&[
             (
@@ -7942,9 +8031,7 @@ mod tests {
         let proxy = Proxy::new(reqwest::Client::new())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_analyser(Some(analyser.clone()))
-            .with_policy(Some(policy(
-                "version: 1\ncooldown_days: 0\ninstall_scripts: allow\nprovenance: allow\n",
-            )))
+            .with_policy(Some(policy(yaml)))
             .with_audit_log(Some(Arc::new(AuditLog::open(&path).expect("opens"))));
         (proxy, analyser, path, packument)
     }
@@ -7957,7 +8044,8 @@ mod tests {
             crate::record::DocumentDetail::Full,
             crate::record::DocumentDetail::Abbreviated,
         ] {
-            let (proxy, analyser, path, packument) = sourcing(&format!("source-{detail:?}")).await;
+            let (proxy, analyser, path, packument) =
+                sourcing(&format!("source-{detail:?}"), SOURCE_POLICY).await;
             let mut held = packument.clone();
             if detail == crate::record::DocumentDetail::Abbreviated {
                 held.as_object_mut().unwrap().remove("time");
@@ -7981,6 +8069,11 @@ mod tests {
             let log = crate::util::test_support::text(&buf);
             assert!(log.contains("waharoa.risk_score=3"), "{detail:?}: {log}");
 
+            assert_eq!(
+                analyser.sources_started(),
+                1,
+                "{detail:?}: the second decision reads the stored comparison"
+            );
             let lines: Vec<audit::Event> = std::fs::read_to_string(&path)
                 .unwrap()
                 .lines()
@@ -8016,7 +8109,7 @@ mod tests {
     /// The watcher starts the comparison for a version no client has asked for.
     #[tokio::test]
     async fn the_watcher_starts_the_source_comparison() {
-        let (proxy, analyser, _, packument) = sourcing("source-watched").await;
+        let (proxy, analyser, _, packument) = sourcing("source-watched", SOURCE_POLICY).await;
         hold_document(
             &proxy,
             br#"{"name":"widget","versions":{}}"#,
@@ -8036,6 +8129,18 @@ mod tests {
             analyser.sourced(&Sri::parse(integrity).unwrap()).await,
             Some(crate::analysis::source::Sourced::Compared { .. })
         ));
+
+        hold_document(
+            &proxy,
+            br#"{"name":"widget","versions":{}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        proxy.watch().await;
+        assert_eq!(
+            analyser.sources_started(),
+            1,
+            "compared once, then read back"
+        );
     }
 
     /// One full packument request serves the heuristics and a cooldown, a held full one

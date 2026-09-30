@@ -443,7 +443,9 @@ why it survived everything else in that section.
 
 ### Where the short circuit survives
 
-In front of expensive analysis, and nowhere else. None of the seven checks here costs
+In front of expensive analysis, and nowhere else. The source comparison is not started for
+a version the policy blocks; a quarantined one is compared, since the quarantine lapses
+([source-diff](source-diff.md)). None of the seven checks here costs
 anything worth deferring for once its facts are in hand: denials and malware are set
 lookups, KEV and advisories are lookups in a local mirror, age is arithmetic, install
 scripts is a packument field. No extraction among them.
