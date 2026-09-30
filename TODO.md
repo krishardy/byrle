@@ -2501,9 +2501,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
   - [x] Log every deferral, with a count per digest, and `returned after a deferral` with
         `after_ms` when a request finds the analysis stored, which turns the compatibility
         table into evidence. A digest that never returns is a client that gave up.
-- [ ] **Registry tarball vs. git source diffing** — expensive tier (git clone, ~tens of s)
-  - [ ] Short circuit, moved from the cost tier: the job diffs only when the cheap checks
-        have not already refused the version. See
+- [x] **Registry tarball vs. git source diffing** — expensive tier (git clone, ~tens of s)
+  - [x] Short circuit, moved from the cost tier: the job diffs only when the cheap checks
+        have not already refused the version. A `block` is not compared; a `quarantine`
+        is, since it lapses. See
         `docs/engineering_decisions/policy-tier-resolution.md`, "Where the short circuit
         survives".
   - [x] Resolve repo URL and matching tag from package metadata: `gitHead`, then tags,

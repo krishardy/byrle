@@ -80,6 +80,8 @@ pub(super) struct Sources {
     in_flight: Arc<Mutex<HashSet<Sri>>>,
     /// The archives read, by URL.
     archives: Arc<Mutex<Lru<String, Archive>>>,
+    /// How many comparisons have started.
+    started: Arc<std::sync::atomic::AtomicU64>,
     ended: Arc<watch::Sender<u64>>,
 }
 
@@ -91,6 +93,7 @@ impl Sources {
             slots: Arc::new(Semaphore::new(SOURCE_SLOTS)),
             in_flight: Arc::default(),
             archives: Arc::new(Mutex::new(Lru::new(SOURCE_TREES))),
+            started: Arc::default(),
             ended: Arc::new(watch::Sender::new(0)),
         }
     }
@@ -138,6 +141,9 @@ impl Analyser {
         {
             return None;
         }
+        sources
+            .started
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let guard = InFlight {
             set: sources.in_flight.clone(),
             digest: job.digest.clone(),
@@ -160,6 +166,13 @@ impl Analyser {
                 }
             }
         }))
+    }
+
+    /// How many comparisons have started since this analyser was made. 0 when it is off.
+    pub fn sources_started(&self) -> u64 {
+        self.sources.as_ref().map_or(0, |sources| {
+            sources.started.load(std::sync::atomic::Ordering::Relaxed)
+        })
     }
 
     /// Wait until `count` comparisons have ended since this analyser was made.
@@ -471,6 +484,7 @@ mod tests {
             None,
             "bytes that do not match"
         );
+        assert_eq!(analyser.sources_started(), 3);
         let asked = asked.lock().unwrap().clone();
         assert_eq!(
             asked.iter().filter(|p| p.contains("tar.gz")).count(),
@@ -589,6 +603,7 @@ mod tests {
     async fn a_comparison_runs_once_at_a_time_within_its_deadline() {
         let off = analyser("source-off", 1 << 20, Arc::new(InProcess::new(8)));
         assert!(off.start_source(job("http://x", b"x", &[])).is_none());
+        assert_eq!(off.sources_started(), 0);
         off.sources_ended(1).await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

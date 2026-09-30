@@ -50,11 +50,15 @@ refuse.
 
 | Step | What happens |
 |---|---|
-| a pinned decision, or the watcher | reads the stored result for the artifact's digest. With none, starts a comparison and decides without it |
+| a pinned decision, or the watcher | reads the stored result for the artifact's digest. With none, and a verdict that is not `block`, starts a comparison and decides without it |
 | the comparison | its own 2 slots and in-flight set, so it never delays an analysis a deferred client waits on. The artifact is fetched, spooled and checked against its digest, then each reference is tried in turn |
 | the source archive | fetched from `WAHAROA_SOURCE_ARCHIVES`, spooled, and read as a stream. The last 8 archives are kept by URL, a 404 included |
 | stored | `Sourced` under the digest with `COMPARER`, in memory or `artifact_source`. A result from another comparer is not read |
 | the next decision | turns the stored result into signals |
+
+A `block` does not lapse, so a blocked version is never served and is not compared. A
+`quarantine` lapses, and the version is compared: every version the watcher finds is new,
+and inside the default 7-day cooldown.
 
 The job's record is the full document's, when the proxy fetched one: after a 304 the held
 record is abbreviated and names no repository or `gitHead`.
