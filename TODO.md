@@ -2517,7 +2517,8 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         2 of the 5 that name one; differing files, 6 of 207 and 3 of 473.
   - [x] Decide which findings become checks: a weak signal, in the analysis tier. npm
         done; `WAHAROA_SOURCE_ARCHIVES` names the archive host or turns it off.
-  - [ ] PyPI: wheels and sdists, the repository from their own metadata.
+  - [x] PyPI: wheels and sdists, the repository from their own metadata. 33 of 34 of
+        each compared; differing files 9 of 33 sdists, 1 of 33 wheels.
 - [x] Metadata heuristics, report only
       ([metadata-heuristics](docs/engineering_decisions/metadata-heuristics.md)): new
       package, new publisher, no repository, and a name one edit from a served package.

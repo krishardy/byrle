@@ -187,17 +187,7 @@ mod tests {
         std::fs::read(path).expect("fixture is missing")
     }
 
-    /// A stored (uncompressed) archive, so a test can place exact bytes in it.
-    fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
-        let mut writer = zip::ZipWriter::new(Cursor::new(Vec::new()));
-        let options =
-            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
-        for (name, bytes) in entries {
-            writer.start_file(*name, options).expect("start entry");
-            writer.write_all(bytes).expect("write entry");
-        }
-        writer.finish().expect("finish archive").into_inner()
-    }
+    use crate::util::test_support::zip_of;
 
     /// 215,141,389 bytes on 2026-09-17, so the ceiling holds it with room to grow.
     #[test]

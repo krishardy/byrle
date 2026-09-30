@@ -1346,7 +1346,7 @@ impl<'a> Deciding<'a> {
             self.request.path,
             fetch.origin.as_deref(),
         );
-        if let Some(job) = SourceJob::of(record, digest, url) {
+        if let Some(job) = SourceJob::of(record, self.request.filename, digest, url) {
             analyser.start_source(job);
         }
         None

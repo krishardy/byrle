@@ -1,6 +1,6 @@
 # Registry tarball against its source, a weak signal
 
-- **Status:** Implemented 2026-09-30 in the analysis tier for npm, report only.
+- **Status:** Implemented 2026-09-30 in the analysis tier for npm and PyPI, report only.
   `src/analysis/source.rs`, run by `src/analysis/run/sourcing.rs`, reported by
   `heuristics::of_source`, measured by `examples/source_diff.rs`.
 - **Related:** [tier-1-false-positives](tier-1-false-positives.md),
@@ -40,7 +40,7 @@ headers state more than 512 MiB is not read.
 | differing Markdown | the same for `.md` files |
 | only in the package | paths the source lacks |
 
-npm only. A PyPI record has no repository, and a wheel is built output.
+PyPI is compared as described under [PyPI](#pypi).
 
 ## In the analysis tier
 
@@ -159,6 +159,50 @@ no build step.
 - The publisher chooses `repository` and `gitHead`. A publisher who controls a matching
   repository gets no signal.
 
+## PyPI
+
+A PyPI record names no repository: the simple index carries none. The artifact does, in
+its own core metadata, an sdist's `PKG-INFO` or a wheel's `*.dist-info/METADATA`. The
+repository is the first GitHub one among the `Project-URL` entries whose label contains
+source, repo or code, then the other `Project-URL` entries, then `Home-page`. There is no
+`gitHead`, so only the tags are tried.
+
+| | sdist (`.tar.gz`) | wheel (`.whl`) |
+|---|---|---|
+| read as | a tar, first component dropped | a zip, paths as they install |
+| left out | `PKG-INFO`, anything in `.egg-info` | anything in `.dist-info` |
+| code that runs on install | `setup.py` | a top-level `.pth`, which Python runs at startup |
+
+Either is compared with the source directory holding the most of its Python files, found
+from the shallowest Python file the source has: the root, `src/`, or a monorepo's
+subdirectory. A zip sdist is not read. Dependencies are not compared: `Requires-Dist` and
+`pyproject.toml` spell them differently.
+
+### Measured
+
+The PyPI sets of [tier-1-false-positives](tier-1-false-positives.md), `requests flask
+django` and `numpy pandas scikit-learn matplotlib`, resolved by uv on 2026-09-30: 34
+versions, each version's first wheel and its sdist.
+
+| | sdists | wheels |
+|---|---|---|
+| compared, all by tag | 33 of 34 | 33 of 34 |
+| not compared | `certifi` 2026.7.22: its tag is `2026.07.22`, which the normalised version does not spell | the same |
+| code that runs on install | `setup.py` in 9, none differing | no `.pth` |
+| differing | 9 | 1 |
+| only in the package | 16 | 13 |
+
+| Differing | Where | Why |
+|---|---|---|
+| `setup.cfg` | sdists of `asgiref`, `fonttools`, `python-dateutil`, `six`, `tzdata` | setuptools rewrites it: `six`'s gains an `[egg_info]` section and respaced keys |
+| `pandas/_version.py` | the sdist and the wheel | versioneer's `$Format:%H$` placeholders are filled in when the archive is made, and the published copy was filled in differently |
+| `.git_archival.txt` | the `matplotlib` sdist | the same kind of placeholders |
+| `pyproject.toml` | the `narwhals` and `sqlparse` sdists | not examined |
+| `Makefile`, `uv.lock` | the `sqlparse` sdist | not examined |
+
+A differing file is a weak signal for an sdist, 9 of 33 here, most from the build. For a
+wheel it was 1 of 33.
+
 ## Found on the way
 
 `react`, `react-dom` and `scheduler` write `"deprecated": false`, and `qs` writes
@@ -186,6 +230,13 @@ walker's early stop, which survived a mutant before it.
 14 hand mutants on the job and its wiring, each caught. Two hung on the first run: a test
 that waited for a comparison with no timeout, and an assertion that locked a mutex twice when
 it failed. Both waits are now bounded, and the assertion locks once.
+
+The PyPI code has its own tests: the wheel reader and its errors, the layout by filename,
+the repository from metadata, and the comparison of an sdist and a `src/` wheel.
+`a_wheel_is_compared_with_the_repository_its_metadata_names` runs a job end to end. 15 hand
+mutants, each caught after cases were added for packaging metadata, a `.pth` below the top,
+a non-Python file at the source's root, the depth order, and the file count between two
+candidate directories.
 
 `examples/source_diff.rs` runs the analyser itself, and gave the same numbers as the
 standalone comparison above.

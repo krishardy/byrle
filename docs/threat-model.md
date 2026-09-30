@@ -40,7 +40,7 @@ package manager and the registry, and serves an artifact only after deciding on 
 | An artifact on an origin the proxy does not serve, which the client would fetch directly | the version is removed from the metadata, and a pinned fetch is refused | [enforcement-tiers](engineering_decisions/enforcement-tiers.md), tier 3 |
 | Serving before anything was checked | nothing is served until its analysis has finished; no strong digest, or no metadata, is not served | [request-flow](request-flow.md) |
 | The intel store cannot answer | 503, not a serve | [uncovered-ecosystem-fails-closed](engineering_decisions/uncovered-ecosystem-fails-closed.md) |
-| A tarball built from other code than its repository holds | reported, not refused: each npm artifact is compared with GitHub's archive of the commit or tag it names, and what it adds is a signal in the log and the audit line. The publisher chooses `repository` and `gitHead`, so a publisher can name a repository that matches, which is why it is a signal | [source-diff](engineering_decisions/source-diff.md) |
+| An artifact built from other code than its repository holds | reported, not refused: each npm tarball, PyPI wheel and sdist is compared with GitHub's archive of the commit or tag it names, and what it adds is a signal in the log and the audit line. The publisher chooses the repository and the commit, so a publisher can name a repository that matches, which is why it is a signal | [source-diff](engineering_decisions/source-diff.md) |
 | A verdict that cannot be explained later | each pinned audit line records every input; `waharoa audit verify` decides it again | [reproducible-verdicts](engineering_decisions/reproducible-verdicts.md) |
 
 ## Attacks on the proxy itself
