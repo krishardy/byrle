@@ -20,6 +20,10 @@ const MAX_SOURCE_BYTES: usize = 512 << 20;
 enum Outcome {
     Compared {
         by_commit: bool,
+        /// A `gitHead` was published, whether or not GitHub has it.
+        head: bool,
+        /// The registry says installing it runs a lifecycle script.
+        scripts: bool,
         comparison: Comparison,
     },
     NotCompared(&'static str),
@@ -90,6 +94,8 @@ async fn measure(http: &reqwest::Client, registry: &Client, name: &str, version:
         return match built {
             Ok(Some(built)) => Outcome::Compared {
                 by_commit: reference == head,
+                head: !head.is_empty(),
+                scripts: record.has_install_scripts,
                 comparison: source::compare(&package, &built),
             },
             Ok(None) => Outcome::NotCompared("no package.json in the source names it"),
@@ -99,7 +105,11 @@ async fn measure(http: &reqwest::Client, registry: &Client, name: &str, version:
             Err(_) => Outcome::NotCompared("source not read"),
         };
     }
-    Outcome::NotCompared("no commit or tag found")
+    if head.is_empty() {
+        Outcome::NotCompared("no gitHead, and no tag found")
+    } else {
+        Outcome::NotCompared("gitHead not on GitHub, and no tag found")
+    }
 }
 
 /// The body at `url`, or `None` for anything but a 200.
@@ -115,6 +125,7 @@ async fn fetch(http: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
 fn report(outcomes: Vec<(String, String, Outcome)>) {
     let mut not_compared = std::collections::BTreeMap::<&str, usize>::new();
     let (mut compared, mut by_commit, mut manifests) = (0, 0, 0);
+    let (mut head_missed, mut with_scripts, mut with_targets) = (0, 0, 0);
     let mut counts = [0usize; 7];
     for (name, version, outcome) in &outcomes {
         let (by, found) = match outcome {
@@ -125,8 +136,15 @@ fn report(outcomes: Vec<(String, String, Outcome)>) {
             }
             Outcome::Compared {
                 by_commit: by,
+                head,
+                scripts,
                 comparison,
-            } => (*by, comparison),
+            } => {
+                head_missed += usize::from(*head && !*by);
+                with_scripts += usize::from(*scripts);
+                with_targets += usize::from(comparison.lifecycle_targets > 0);
+                (*by, comparison)
+            }
         };
         compared += 1;
         by_commit += usize::from(by);
@@ -163,7 +181,10 @@ fn report(outcomes: Vec<(String, String, Outcome)>) {
         "compared\t{compared}\nby gitHead\t{by_commit}\nby tag\t{}",
         compared - by_commit
     );
+    println!("by tag, with a gitHead GitHub lacks\t{head_missed}");
     println!("both manifests\t{manifests}");
+    println!("declaring an install script\t{with_scripts}");
+    println!("whose install scripts name a file in the package\t{with_targets}");
     for (label, n) in [
         "lifecycle scripts added or changed",
         "dependencies added",

@@ -2508,12 +2508,13 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
         survives".
   - [x] Resolve repo URL and matching tag from package metadata: `gitHead`, then tags,
         from GitHub's archive ([source-diff](docs/engineering_decisions/source-diff.md)).
-        182 of 271 versions by `gitHead`, 24 by tag.
+        Tier-1 set: 182 of 271 versions by `gitHead`, 25 by tag.
   - [x] Normalize for expected build artifacts and packaging noise: the package's own
-        `package.json` in a monorepo, line endings, Markdown and optional dependencies
-        apart.
-  - [x] Measure the false-positive rate: 0 of 206 for lifecycle scripts, lifecycle files
-        and dependencies; 6 of 206 (2.9%) for differing files, 5 of them build steps.
+        publishable `package.json` in a monorepo, line endings, Markdown and optional
+        dependencies apart.
+  - [x] Measure the false-positive rate on the tier-1 set and a set with install scripts:
+        lifecycle scripts and dependencies added, 0 of 207 and 0 of 473; lifecycle files,
+        2 of the 5 that name one; differing files, 6 of 207 and 3 of 473.
   - [ ] Decide which findings become checks, and whether the proxy may reach
         `codeload.github.com`.
 - [x] Metadata heuristics, report only
