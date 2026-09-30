@@ -71,10 +71,12 @@ fn github_host(authority: &str) -> Option<()> {
 }
 
 /// The references to fetch `record`'s source at, in order: `gitHead`, then the tags a release
-/// is usually given.
+/// is usually given, with and without a scope.
 pub fn references(record: &PackageRecord) -> Vec<String> {
     let version = record.package.version();
-    let name = record.package.key().registry_name();
+    let key = record.package.key();
+    let name = key.registry_name();
+    let unscoped = key.namespace().map(|_| format!("{}@{version}", key.name()));
     record
         .provenance
         .git_head
@@ -86,6 +88,7 @@ pub fn references(record: &PackageRecord) -> Vec<String> {
             version.to_owned(),
             format!("{name}@{version}"),
         ])
+        .chain(unscoped)
         .collect()
 }
 
@@ -103,15 +106,16 @@ impl Tree {
         self.manifests.get("")
     }
 
-    /// The package `name`, as a tree rooted at the first directory whose `package.json` names
-    /// it: `directory`, then the root, then the shallowest other.
-    /// Returns `None` when no `package.json` names it.
+    /// The package `name`, rooted at the first directory whose publishable `package.json`, one
+    /// with a `version` and not `private`, names it: `directory`, the root, the shallowest.
+    /// Returns `None` when no such `package.json` names it.
     pub fn package(&self, name: &str, directory: Option<&str>) -> Option<Tree> {
         let names = |dir: &&str| {
-            self.manifests
-                .get(*dir)
-                .and_then(|manifest| manifest.get("name")?.as_str())
-                == Some(name)
+            self.manifests.get(*dir).is_some_and(|manifest| {
+                manifest.get("name").and_then(|n| n.as_str()) == Some(name)
+                    && manifest.get("version").is_some_and(|v| v.is_string())
+                    && manifest.get("private") != Some(&serde_json::Value::Bool(true))
+            })
         };
         let given = directory.map(|directory| directory.trim_matches('/'));
         let found = given.into_iter().chain([""]).find(names).or_else(|| {
@@ -212,6 +216,8 @@ pub struct Comparison {
     pub optional_dependencies: Vec<String>,
     /// `(script, file)`: a file a lifecycle script names that the source lacks or differs on.
     pub lifecycle_files: Vec<(String, String)>,
+    /// How many files the lifecycle scripts name, which `lifecycle_files` is out of.
+    pub lifecycle_targets: usize,
     /// Paths in both whose bytes differ, `package.json` and Markdown aside.
     pub differing: Vec<String>,
     /// Markdown files in both whose bytes differ, which publishing often rewrites.
@@ -251,6 +257,7 @@ pub fn compare(package: &Tree, source: &Tree) -> Comparison {
             continue;
         };
         for file in targets(body, package) {
+            found.lifecycle_targets += 1;
             if source.files.get(&file) != package.files.get(&file) {
                 found.lifecycle_files.push((name.to_owned(), file));
             }
@@ -304,6 +311,7 @@ fn targets(body: &str, package: &Tree) -> Vec<String> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+    use crate::identity::{Ecosystem, PackageKey};
     use crate::util::test_support::tarball;
 
     fn read(files: &[(&str, &[u8])]) -> Tree {
@@ -375,6 +383,18 @@ mod tests {
             3,
             "an empty gitHead is no commit"
         );
+        record.package = PackageKey::from_registry_name(Ecosystem::Npm, "@rolldown/pluginutils")
+            .and_then(|key| key.at_version("1.0.1"))
+            .unwrap();
+        assert_eq!(
+            references(&record),
+            [
+                "v1.0.1",
+                "1.0.1",
+                "@rolldown/pluginutils@1.0.1",
+                "pluginutils@1.0.1"
+            ]
+        );
     }
 
     /// The first component is dropped, `\r` does not count, only regular files are kept,
@@ -416,19 +436,54 @@ mod tests {
     #[test]
     fn a_package_is_found_by_the_manifest_naming_it() {
         let source = read(&[
-            ("r-abc/package.json", br#"{"name":"root"}"#),
-            ("r-abc/packages/x/package.json", br#"{"name":"x"}"#),
+            (
+                "r-abc/package.json",
+                br#"{"name":"root","version":"0.0.0"}"#,
+            ),
+            (
+                "r-abc/packages/x/package.json",
+                br#"{"name":"x","version":"1"}"#,
+            ),
             ("r-abc/packages/x/index.js", b"x"),
             ("r-abc/packages/xy/index.js", b"y"),
-            ("r-abc/test/fixtures/x/package.json", br#"{"name":"x"}"#),
+            (
+                "r-abc/test/fixtures/x/package.json",
+                br#"{"name":"x","version":"1"}"#,
+            ),
             ("r-abc/unnamed/package.json", b"{}"),
+            (
+                "r-abc/a/package.json",
+                br#"{"name":"x","version":"1","private":true}"#,
+            ),
+            ("r-abc/b/package.json", br#"{"name":"x","version":1}"#),
+            ("r-abc/c/package.json", br#"{"name":"x"}"#),
+            (
+                "r-abc/d/package.json",
+                br#"{"name":"x","version":"1","private":false}"#,
+            ),
+            (
+                "r-abc/d/deeper/package.json",
+                br#"{"name":"d","version":"1"}"#,
+            ),
         ]);
         let files =
             |tree: Option<Tree>| tree.map(|tree| tree.files.into_keys().collect::<Vec<_>>());
         let x = Some(vec!["index.js".to_owned(), "package.json".to_owned()]);
         assert_eq!(files(source.package("x", Some("/packages/x/"))), x);
-        assert_eq!(files(source.package("x", None)), x, "the shallowest");
-        assert_eq!(files(source.package("x", Some("elsewhere"))), x);
+        assert_eq!(
+            files(source.package("x", None)),
+            Some(vec![
+                "deeper/package.json".to_owned(),
+                "package.json".to_owned()
+            ]),
+            "the shallowest publishable: private, a version that is no string and no version are not"
+        );
+        for skipped in ["a", "b", "c"] {
+            assert_eq!(
+                files(source.package("x", Some(skipped))),
+                files(source.package("x", None))
+            );
+        }
         assert_eq!(
             files(source.package("x", Some("test/fixtures/x"))),
             Some(vec!["package.json".to_owned()]),
@@ -438,13 +493,13 @@ mod tests {
             source
                 .package("root", Some("/"))
                 .map(|tree| tree.files.len()),
-            Some(6),
+            Some(11),
             "`/` is the root"
         );
         assert_eq!(source.package("absent", None), None);
         assert_eq!(
-            source.package("x", None).unwrap().manifest(),
-            Some(&serde_json::json!({"name": "x"}))
+            source.package("x", Some("packages/x")).unwrap().manifest(),
+            Some(&serde_json::json!({"name": "x", "version": "1"}))
         );
     }
 
@@ -520,6 +575,7 @@ mod tests {
                     ("postinstall".to_owned(), "quoted.js".to_owned()),
                     ("postinstall".to_owned(), "setup.js".to_owned())
                 ],
+                lifecycle_targets: 3,
                 differing: vec!["lib.js".to_owned()],
                 differing_markdown: vec!["README.md".to_owned()],
                 only_in_package: vec![
@@ -550,6 +606,7 @@ mod tests {
             found.lifecycle_files,
             [("preinstall".to_owned(), "x.js".to_owned())]
         );
+        assert_eq!(found.lifecycle_targets, 1);
         assert_eq!(found.differing, ["x.js"]);
 
         let unscripted = read(&[("package/package.json", b"{}")]);
