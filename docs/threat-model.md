@@ -56,6 +56,7 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 | Concurrent work | 8 metadata documents and 8 analyses at once | `WAHAROA_MAX_CONCURRENT_METADATA`, `WAHAROA_MAX_CONCURRENT_ANALYSES` |
 | An upstream that stops sending | 10 s to connect, 30 s between reads | `http::client_builder` |
 | A URL the metadata names | fetched only on an origin the proxy serves: the upstream, the default registry, or `WAHAROA_ARTIFACT_ORIGINS`; attestations too | [enforcement-tiers](engineering_decisions/enforcement-tiers.md) |
+| A package name and version a detector is run on | no shell; one argument each; a value starting with `-` is refused. The program gets `PATH`, `HOME`, `SOCKS` and the forward proxies, nothing else, a directory of its own, 300 s and 16 MiB of output | [detectors](engineering_decisions/detectors.md) |
 | A repository and reference the metadata names | fetched only from `WAHAROA_SOURCE_ARCHIVES`, `https://codeload.github.com` by default, as `/{owner}/{repo}/tar.gz/{ref}`; owner and repository are GitHub's name characters, `gitHead` 40 hex characters, and a tag has no `..`, `//` or characters outside `A-Z a-z 0-9 . _ - @ / +`. `off` fetches nothing | `analysis::source` |
 | A source archive | spooled under `WAHAROA_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less; each member is hashed as it streams | `analysis::source::MAX_SOURCE_BYTES` |
 
@@ -66,6 +67,11 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
   says otherwise. Anyone who can reach the port can use it; it has no authentication.
 - **The audit log.** A local JSON Lines file. It is not signed, so whoever can write the
   file can change it.
+
+- **Detectors.** GuardDog downloads each version it scans from `registry.npmjs.org` or
+  `pypi.org` itself, and fetches `hugovk.dev` and `packages.ecosyste.ms`. Those hosts learn
+  which packages the organisation uses, as the intel streams do
+  ([detectors](engineering_decisions/detectors.md)).
 
 ## Bypasses
 

@@ -175,6 +175,10 @@ and tightens nothing.
 | `source_install_files` | install files the source lacks or has otherwise | 1 |
 | `source_differing` | files that differ from the source | 1 |
 
+A detector's rule is weighed as `detector.rule`, such as `guarddog.threat-process-hooks: 3`,
+1 unless set. A rule the detector does not have is refused, as an unknown key is. The rules
+are in [detectors](engineering_decisions/detectors.md).
+
 Each weight is a whole number, 0 or more. The signals are in
 [metadata-heuristics](engineering_decisions/metadata-heuristics.md) and
 [source-diff](engineering_decisions/source-diff.md).

@@ -92,7 +92,7 @@ async fn measure<'a>(
 fn report(mut found: Vec<(String, String, String, Option<Vec<Signal>>)>, now: jiff::Timestamp) {
     found.sort_by(|a, b| (&a.0, &a.1, &a.2).cmp(&(&b.0, &b.1, &b.2)));
     println!("as of {now}");
-    let mut counts = BTreeMap::<(String, &str), usize>::new();
+    let mut counts = BTreeMap::<(String, String), usize>::new();
     let mut totals = BTreeMap::<String, (usize, usize)>::new();
     for (ecosystem, name, version, signals) in &found {
         let total = totals.entry(ecosystem.clone()).or_default();
@@ -104,7 +104,7 @@ fn report(mut found: Vec<(String, String, String, Option<Vec<Signal>>)>, now: ji
         };
         let mut kinds = BTreeSet::new();
         for signal in signals {
-            kinds.insert(signal.kind().as_str());
+            kinds.insert(signal.key());
         }
         for kind in kinds {
             *counts.entry((ecosystem.clone(), kind)).or_default() += 1;
@@ -117,7 +117,10 @@ fn report(mut found: Vec<(String, String, String, Option<Vec<Signal>>)>, now: ji
     for (ecosystem, (versions, unread)) in &totals {
         println!("\n== {ecosystem}\nversions\t{versions}\nnot read\t{unread}");
         for kind in ["new_package", "new_publisher", "no_repository", "near_name"] {
-            let n = counts.get(&(ecosystem.clone(), kind)).copied().unwrap_or(0);
+            let n = counts
+                .get(&(ecosystem.clone(), kind.to_owned()))
+                .copied()
+                .unwrap_or(0);
             println!("{kind}\t{n}");
         }
     }

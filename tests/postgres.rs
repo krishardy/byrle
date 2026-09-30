@@ -1119,7 +1119,8 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
             "artifact_source.result",
             "intel_ingestion.etag",
             "intel_ingestion.last_modified",
-            "intel_ingestion.error"
+            "intel_ingestion.error",
+            "version_detection.result"
         ]
     );
 
@@ -1148,6 +1149,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "intel_ingestion",
         "intel_snapshot",
         "intel_source",
+        "version_detection",
     ];
     for table in tables {
         assert!(
@@ -1795,6 +1797,56 @@ async fn an_attestation_result_is_kept_under_its_digest() {
         store.attested(&sri(1)).await.expect("answers"),
         Some(failed)
     );
+}
+
+/// A detector's result is kept under its version's name, replaced by a later run, and read
+/// back only for the detector version that wrote it.
+#[tokio::test]
+async fn a_detection_is_kept_under_its_version() {
+    use waharoa::analysis::detector::{Detection, Finding};
+    use waharoa::analysis::store::DetectionKey;
+    let intel = skip_without_database!("t_detection");
+    let store = analyses(&intel);
+    let key = DetectionKey {
+        detector: "guarddog".to_owned(),
+        detector_version: "3.2.0".to_owned(),
+        ecosystem: "npm".to_owned(),
+        name: "widget".to_owned(),
+        version: "1.0.0".to_owned(),
+    };
+    let fired = Detection {
+        findings: vec![Finding {
+            rule: "threat-process-hooks".to_owned(),
+            detail: "found".to_owned(),
+        }],
+        errors: Vec::new(),
+    };
+    assert_eq!(store.detected(&key).await.expect("answers"), None);
+    store.put_detected(&key, &fired).await.expect("writes");
+    assert_eq!(store.detected(&key).await.expect("answers"), Some(fired));
+    let newer = DetectionKey {
+        detector_version: "3.3.0".to_owned(),
+        ..key.clone()
+    };
+    assert_eq!(store.detected(&newer).await.expect("answers"), None);
+    store
+        .put_detected(&newer, &Detection::default())
+        .await
+        .expect("replaces");
+    assert_eq!(
+        store.detected(&key).await.expect("answers"),
+        None,
+        "replaced"
+    );
+    assert_eq!(
+        store.detected(&newer).await.expect("answers"),
+        Some(Detection::default())
+    );
+    sqlx::query("UPDATE version_detection SET result = 'not json'")
+        .execute(intel.pool())
+        .await
+        .expect("updates");
+    assert_eq!(store.detected(&newer).await.expect("answers"), None);
 }
 
 /// A source comparison is kept under its digest until replaced. One another comparer wrote,

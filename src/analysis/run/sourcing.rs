@@ -146,7 +146,7 @@ impl Analyser {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let guard = InFlight {
             set: sources.in_flight.clone(),
-            digest: job.digest.clone(),
+            key: job.digest.clone(),
             ended: sources.ended.clone(),
         };
         let analyser = self.clone();
@@ -350,7 +350,7 @@ async fn tree_of(spooled: Spooled, layout: Layout) -> Option<Result<Tree, String
 mod tests {
     use super::*;
     use crate::analysis::run::tests::{analyser, sri_of};
-    use crate::analysis::store::{Analyses, InProcess};
+    use crate::analysis::store::InProcess;
     use crate::util::test_support::tarball;
     use std::collections::HashMap;
     use std::time::Duration;
@@ -636,8 +636,12 @@ mod tests {
         ])
         .await;
         let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
-        let broken =
-            analyser("source-broken", 1 << 20, Arc::new(Broken)).with_sources(Some(base.clone()));
+        let broken = analyser(
+            "source-broken",
+            1 << 20,
+            Arc::new(crate::analysis::store::tests::Broken),
+        )
+        .with_sources(Some(base.clone()));
         assert_eq!(
             run(&broken, job(&base, &package(), &["v1.0.0"])).await,
             None
@@ -786,59 +790,5 @@ mod tests {
         let sdist = SourceJob::of(&pypi, "idna-3.10.tar.gz", &sri_of(b"x"), "u".to_owned());
         assert_eq!(sdist.map(|job| job.layout), Some(Layout::Tar));
         assert!(SourceJob::of(&pypi, "idna-3.10.zip", &sri_of(b"x"), "u".to_owned()).is_none());
-    }
-
-    /// A store whose every call fails.
-    struct Broken;
-
-    impl Analyses for Broken {
-        fn get<'a>(
-            &'a self,
-            _: &'a Sri,
-        ) -> crate::analysis::store::Stored<'a, Option<crate::analysis::store::Analysis>> {
-            unreachable!("a comparison reads no analysis")
-        }
-        fn put<'a>(
-            &'a self,
-            _: &'a Sri,
-            _: &'a crate::analysis::store::Analysis,
-        ) -> crate::analysis::store::Stored<'a, ()> {
-            unreachable!("a comparison writes no analysis")
-        }
-        fn attested<'a>(
-            &'a self,
-            _: &'a Sri,
-        ) -> crate::analysis::store::Stored<'a, Option<crate::analysis::attestation::Attested>>
-        {
-            unreachable!("a comparison reads no attestation")
-        }
-        fn put_attested<'a>(
-            &'a self,
-            _: &'a Sri,
-            _: &'a crate::analysis::attestation::Attested,
-        ) -> crate::analysis::store::Stored<'a, ()> {
-            unreachable!("a comparison writes no attestation")
-        }
-        fn sourced<'a>(
-            &'a self,
-            _: &'a Sri,
-        ) -> crate::analysis::store::Stored<'a, Option<Sourced>> {
-            Box::pin(async {
-                Err(crate::analysis::store::AnalysisError::Backend(
-                    sqlx::Error::PoolClosed,
-                ))
-            })
-        }
-        fn put_sourced<'a>(
-            &'a self,
-            _: &'a Sri,
-            _: &'a Sourced,
-        ) -> crate::analysis::store::Stored<'a, ()> {
-            Box::pin(async {
-                Err(crate::analysis::store::AnalysisError::Backend(
-                    sqlx::Error::PoolClosed,
-                ))
-            })
-        }
     }
 }
