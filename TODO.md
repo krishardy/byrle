@@ -2526,7 +2526,10 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
   - [x] Measure each signal's rate on packages intel never marks malicious: new publisher
         60 of 694 npm versions, 12 of them moves to trusted publishing; near name 12, 6
         pairs of real packages; no repository 1; new package 0.
-  - [ ] Decide whether any becomes a policy key. Proposed: none.
+  - [x] Decide whether any becomes a policy key: none. Each stays a signal, an input to a
+        risk score.
+- [ ] A risk score per package version, from its signals: the metadata heuristics and the
+      source comparison. Report only, like the signals it is made of.
 - [ ] Pluggable detector interface for third-party/commercial feeds
   - [ ] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector
 - [x] Benchmark each control against known 2025–26 incidents (shai-hulud, tinycolor,
