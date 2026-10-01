@@ -16,6 +16,19 @@ A version that cannot be normalised is kept in `PackageMetadata::skipped` rather
 dropped. A version that vanishes between the registry and the policy engine is a version
 nothing gates.
 
+Each version is read on its own, from its raw JSON, so a field of the wrong type skips that
+version and not the document. Until 2026-10-01 the whole map was read at once, and one bad
+`scripts`, `maintainers` or `_npmUser` anywhere made the document unreadable, so the proxy
+forwarded it unfiltered. A skipped version's tarball is refused as not listed, 403, so a
+malformed `scripts` cannot pass `install_scripts: block` as "no install scripts". Decided
+with the user. At package level, `time` and `dist-tags` keep only their string entries, and a
+malformed `maintainers` reads as absent.
+
+Reading each version on its own costs about a quarter more: `typescript`'s full packument,
+15.7 MB and 3,839 versions, normalises in 27.9 ms against 22.5 ms, `next`'s 31.3 MB in 63.2
+ms against 50.0 ms. The full packuments of the 613 npm packages in the
+[source-diff](source-diff.md) lockfiles, 92,722 versions, normalise with none skipped.
+
 ## What was measured
 
 24,852 versions across 47 packages, each fetched as both the abbreviated and the full
