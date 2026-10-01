@@ -1,2 +1,0 @@
-src/npm.rs:83:30: replace && with || in key_from_name
-src/npm.rs:83:33: delete ! in key_from_name

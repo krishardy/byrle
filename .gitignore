@@ -1,5 +1,7 @@
 target/
 vendor/
+mutants.out/
+mutants.out.old/
 
 # Never commit a credential. `make trufflehog` scans the working tree and does not read
 # this file, so a token here fails that gate as well as risking a commit.
