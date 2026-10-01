@@ -2806,6 +2806,12 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       find-and-replace plus the registry check above run again on the new name, so do this
       early enough in the stage that a rename is not competing with the announcement.
       See the plan header.
+- [ ] Rename the project from `waharoa` to `byrle`. Decided by the user 2026-10-01. It
+      makes the cultural consultation above moot. The name is in the crate and binary, the
+      `WAHAROA_*` environment variables, the `x-waharoa-*` headers, the `waharoa.*` log
+      fields, `/-/waharoa/` paths, the `waharoa-detector-` scratch directories, the docs and
+      `docs/engineering_decisions/project-name-waharoa.md`. Run the registry check on
+      `byrle` first.
 - [ ] Migration guide from Socket Firewall Free / pkggate
 - [ ] CONTRIBUTING.md, adapter authoring guide, detector authoring guide, and a stream
       authoring guide for third-party advisory sources. The last moved from Stage 2: it
