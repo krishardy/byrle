@@ -1,0 +1,31 @@
+{
+  "lockfileVersion": 2,
+  "configVersion": 1,
+  "workspaces": {
+    "": {
+      "name": "app",
+      "dependencies": {
+        "is-number": "github:jonschlinkert/is-number#7.0.0",
+        "localdir": "file:../localdir",
+        "ms": "2.1.3",
+        "tarpkg": "file:../tarpkg-2.0.0.tgz",
+        "wsp": "*",
+      },
+    },
+    "packages/wsp": {
+      "name": "wsp",
+      "version": "0.1.0",
+    },
+  },
+  "packages": {
+    "is-number": ["is-number@github:jonschlinkert/is-number#98e8ff1", {}, "jonschlinkert-is-number-98e8ff1", "sha512-VRiId6WxXNzVNsf8kootsozLJ3nE+6fNmpwihMjEudNZbnSjqsRZDgvAIgzdsl5qk714XNJqG6QzO4cQ/WhULQ=="],
+
+    "localdir": ["localdir@file:../localdir", {}],
+
+    "ms": ["ms@2.1.3", "", {}, "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA=="],
+
+    "tarpkg": ["tarpkg@../tarpkg-2.0.0.tgz", {}, "sha512-YEAUsqGZTmqF1Row+TJjz7Gf0OStT3ZbMTHQ2hZtkLyWgD+ysTVGp4qKw2i+ifsJx9Q9oo9q7yC1PK1YVk+kTw=="],
+
+    "wsp": ["wsp@workspace:packages/wsp"],
+  }
+}

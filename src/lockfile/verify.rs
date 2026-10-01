@@ -329,6 +329,81 @@ mod tests {
         );
     }
 
+    /// Real lockfiles with git, outside directory and tarball, and workspace dependencies:
+    /// each is from elsewhere but the workspace, and `policy diff` reads only the registry's.
+    #[test]
+    fn git_and_path_dependencies_are_from_elsewhere() {
+        let dir = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/lockfiles/unregistered/"
+        );
+        for (name, proxy, report, registry) in [
+            (
+                "package-lock.json",
+                "https://registry.npmjs.org",
+                "4 artifacts, 1 through the proxy, 3 from elsewhere\n\
+                 \x20 is-number@7.0.0\tgit+ssh://git@github.com/jonschlinkert/is-number.git#98e8ff1da1a89f93d1397a24d7413ed15421c139\n\
+                 \x20 localdir@1.0.0\t../localdir\n\
+                 \x20 tarpkg@2.0.0\tfile:../tarpkg-2.0.0.tgz\n",
+                "ms",
+            ),
+            (
+                "bun.lock",
+                "https://registry.npmjs.org",
+                "4 artifacts, 0 through the proxy, 4 from elsewhere\n\
+                 \x20 is-number@github:jonschlinkert/is-number#98e8ff1\tgithub:jonschlinkert/is-number#98e8ff1\n\
+                 \x20 localdir@file:../localdir\tfile:../localdir\n\
+                 \x20 ms@2.1.3\thttps://registry.npmjs.org\n\
+                 \x20 tarpkg@../tarpkg-2.0.0.tgz\t../tarpkg-2.0.0.tgz\n",
+                "ms",
+            ),
+            (
+                "pnpm-lock.yaml",
+                "https://registry.npmjs.org",
+                "4 artifacts, 0 through the proxy, 3 from elsewhere, 1 with no URL recorded\n\
+                 \x20 is-number@7.0.0\thttps://codeload.github.com\n\
+                 \x20 localdir@file:../localdir\tfile:../localdir\n\
+                 \x20 tarpkg@2.0.0\tfile:../tarpkg-2.0.0.tgz\n",
+                "ms",
+            ),
+            (
+                "yarn.lock",
+                "https://registry.npmjs.org",
+                "4 artifacts, 1 through the proxy, 3 from elsewhere\n\
+                 \x20 is-number@7.0.0\thttps://codeload.github.com\n\
+                 \x20 localdir@1.0.0\tfile:../localdir\n\
+                 \x20 tarpkg@2.0.0\tfile:../tarpkg-2.0.0.tgz#3302cafef861b63a804358c6f27b02d011c3bcd2\n",
+                "ms",
+            ),
+            (
+                "uv.lock",
+                "https://files.pythonhosted.org",
+                "5 artifacts, 2 through the proxy, 3 from elsewhere\n\
+                 \x20 localpy@1.0.0\t../localpy\n\
+                 \x20 six@1.16.0\tgit+https://github.com/benjaminp/six?rev=1.16.0#65486e4383f9f411da95937451205d3c7b61b9e1\n\
+                 \x20 tarpy@2.0.0\t../dist/tarpy-2.0.0.tar.gz\n",
+                "idna",
+            ),
+        ] {
+            let path = PathBuf::from(format!("{dir}{name}"));
+            let verified = run(std::slice::from_ref(&path), Some(proxy), &with(&[]));
+            assert_eq!(
+                verified.report,
+                format!("{}: {report}", path.display()),
+                "{name}"
+            );
+            assert_eq!(verified.code & ELSEWHERE, ELSEWHERE, "{name}");
+            let read = crate::lockfile::read(&path).expect("reads");
+            assert_eq!(
+                read.iter()
+                    .map(|(_, name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+                [registry],
+                "{name}"
+            );
+        }
+    }
+
     /// The proxy defaults to the public URL. No proxy, one not HTTP, a format that records no
     /// URLs, and a file that does not read or parse are each an error on its own.
     #[test]

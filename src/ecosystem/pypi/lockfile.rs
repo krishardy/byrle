@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use serde::Deserialize;
 
 use crate::identity::Ecosystem;
-use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Unread};
+use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Unread, own_source};
 
 /// Each lockfile name, the reader it chooses, and how it records artifact URLs.
 pub const LOCKFILES: &[Lockfile] = &[
@@ -84,54 +84,78 @@ struct TomlFile {
     url: Option<String>,
 }
 
+/// uv's `source` keys for a package not from a registry, each with its requirement prefix.
+const UV_UNREGISTERED: [(&str, &str); 6] = [
+    ("git", "git+"),
+    ("url", ""),
+    ("path", ""),
+    ("directory", ""),
+    ("editable", ""),
+    ("virtual", ""),
+];
+
 /// uv's lockfile. A package is kept when its source is a registry.
 fn uv(text: &str) -> Result<BTreeSet<Locked>, String> {
-    Ok(uv_registry(text)?
+    Ok(uv_packages(text)?
         .iter()
+        .filter(|package| uv_source(package).is_some_and(|s| s.contains_key("registry")))
         .map(|package| locked(&package.name, &package.version))
         .collect())
 }
 
-/// The packages in uv's lockfile whose source is a registry.
-fn uv_registry(text: &str) -> Result<Vec<TomlPackage>, String> {
+fn uv_packages(text: &str) -> Result<Vec<TomlPackage>, String> {
     let lock: TomlLock = toml::from_str(text).map_err(|e| e.to_string())?;
-    Ok(lock
-        .package
+    Ok(lock.package)
+}
+
+/// `package`'s `source` table, which uv writes on every package.
+fn uv_source(package: &TomlPackage) -> Option<&toml::Table> {
+    package.source.as_ref()?.as_table()
+}
+
+/// For `waharoa lockfile verify`: each file uv's lockfile records for a registry package, its
+/// sdist and every wheel, with its URL; a file with no `url` records none. Each package from
+/// elsewhere is named by its source, unless that is a path inside the project.
+fn uv_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    Ok(uv_packages(text)?
         .into_iter()
-        .filter(|package| {
-            package
-                .source
-                .as_ref()
-                .and_then(|source| source.as_table())
-                .is_some_and(|source| source.contains_key("registry"))
+        .flat_map(|package| {
+            let locked = locked(&package.name, &package.version);
+            let source = uv_source(&package);
+            if source.is_some_and(|s| s.contains_key("registry")) {
+                return uv_files(locked, package);
+            }
+            let spec = source.and_then(|source| {
+                UV_UNREGISTERED.iter().find_map(|(key, prefix)| {
+                    Some(format!("{prefix}{}", source.get(*key)?.as_str()?))
+                })
+            });
+            spec.filter(|spec| !own_source(spec))
+                .map(|spec| LockedArtifact::unregistered(locked, &spec))
+                .into_iter()
+                .collect()
         })
         .collect())
 }
 
-/// Each file uv's lockfile records for a registry package, its sdist and every wheel, with
-/// its URL, for `waharoa lockfile verify`. A file with no `url` records none.
-fn uv_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {
-    Ok(uv_registry(text)?
+/// A registry package's sdist and wheels, each with the URL it records.
+fn uv_files(locked: Locked, package: TomlPackage) -> Vec<LockedArtifact> {
+    package
+        .sdist
         .into_iter()
-        .flat_map(|package| {
-            let locked = locked(&package.name, &package.version);
-            package
-                .sdist
-                .into_iter()
-                .chain(package.wheels)
-                .map(move |file| LockedArtifact {
-                    locked: locked.clone(),
-                    path: file
-                        .url
-                        .as_deref()
-                        .and_then(|url| reqwest::Url::parse(url).ok())
-                        .map(|url| url.path().to_owned())
-                        .unwrap_or_default(),
-                    platform: Default::default(),
-                    url: file.url,
-                })
+        .chain(package.wheels)
+        .map(move |file| LockedArtifact {
+            locked: locked.clone(),
+            path: file
+                .url
+                .as_deref()
+                .and_then(|url| reqwest::Url::parse(url).ok())
+                .map(|url| url.path().to_owned())
+                .unwrap_or_default(),
+            platform: Default::default(),
+            url: file.url,
         })
-        .collect())
+        .collect()
 }
 
 /// poetry's lockfile. A package with no `[package.source]` came from the default index; one
@@ -241,6 +265,50 @@ mod tests {
             "the git package and the project itself are not from a registry"
         );
         assert_eq!(locked.iter().next().expect("one").0, "pypi");
+    }
+
+    /// For `lockfile verify`, a package from elsewhere is named by its source, and the project
+    /// and a path inside it are not artifacts.
+    #[test]
+    fn uv_names_a_package_from_elsewhere_by_its_source() {
+        let text = r#"
+[[package]]
+name = "app"
+version = "1.0.0"
+source = { virtual = "." }
+
+[[package]]
+name = "member"
+version = "1.0.0"
+source = { editable = "member" }
+
+[[package]]
+name = "direct"
+version = "2.0.0"
+source = { url = "https://example.test/direct-2.0.0.tar.gz" }
+
+[[package]]
+name = "unsourced"
+version = "3.0.0"
+
+[[package]]
+name = "odd"
+version = "4.0.0"
+source = { git = 1 }
+"#;
+        let named: Vec<_> = uv_urls(text)
+            .expect("reads")
+            .into_iter()
+            .map(|a| (a.locked.1, a.url))
+            .collect();
+        assert_eq!(
+            named,
+            [(
+                "direct".to_owned(),
+                Some("https://example.test/direct-2.0.0.tar.gz".to_owned())
+            )]
+        );
+        assert_eq!(uv(text), Ok(BTreeSet::new()));
     }
 
     /// poetry 2.2.1. Its git package carries `[package.source] type = "git"`.
