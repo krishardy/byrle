@@ -127,6 +127,16 @@ PROBLEM  uv registry: points at https://pypi.org/simple, not the proxy at http:/
          fix: npm cache clean --force
 ```
 
+When nothing answers at the public URL, `doctor` says whether its host resolves on this
+machine, and to which addresses. An IP address is not looked up:
+
+```
+PROBLEM  proxy: nothing answered at https://waharoa.invalid: waharoa.invalid does not resolve on this machine: failed to lookup address information: Name or service not known
+         fix: check the host in WAHAROA_PUBLIC_URL, and the DNS this machine uses
+PROBLEM  proxy: nothing answered at http://127.0.0.1:1/-/waharoa/health: the request failed: error sending request for url (http://127.0.0.1:1/-/waharoa/health): client error (Connect): tcp connect error: Connection refused (os error 111)
+         fix: start the proxy, or point this at the address clients actually use
+```
+
 ## 7. Install, and warm the lockfiles
 
 The first request for any artifact is answered 503 until the proxy has analysed it. npm,

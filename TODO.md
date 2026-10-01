@@ -2675,9 +2675,11 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 - [x] The publish-time store is per-process too. Removed 2026-09-19: a cooldown policy asks
       npm for the full packument on each metadata request, and nothing is kept
       ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
-- [ ] `waharoa doctor` should check that the configured public URL resolves
+- [x] `waharoa doctor` should check that the configured public URL resolves
       and matches what lockfiles in the project record. This is the failure
-      an operator will actually hit.
+      an operator will actually hit. The lockfile comparison was already
+      `check_lockfile`. A proxy that does not answer now reports whether its host
+      resolves on this machine, and to what, with the error's causes.
 - [x] CI lockfile verification: every resolved URL in a project's lockfile points at the
       proxy. `waharoa lockfile verify`
       ([lockfile-verify](docs/engineering_decisions/lockfile-verify.md)): npm, yarn, pnpm,
