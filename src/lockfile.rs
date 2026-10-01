@@ -47,6 +47,47 @@ pub struct LockedArtifact {
     pub url: Option<String>,
 }
 
+impl LockedArtifact {
+    /// A package installed from `spec`, a git or local path spec that is not a registry's, for
+    /// `waharoa lockfile verify`. It has no registry path.
+    pub fn unregistered(locked: Locked, spec: &str) -> Self {
+        Self {
+            locked,
+            path: String::new(),
+            platform: Platform::default(),
+            url: Some(spec.to_owned()),
+        }
+    }
+}
+
+/// Whether `spec` is a path inside the project: a workspace member or a directory committed
+/// with it, which is the project's own source and not fetched. A `file:`, `link:` or
+/// `workspace:` prefix is read as a path; a spec with any other scheme, an absolute path or
+/// one leaving the project is not.
+pub fn own_source(spec: &str) -> bool {
+    let path = spec
+        .strip_prefix("file:")
+        .or_else(|| spec.strip_prefix("link:"))
+        .or_else(|| spec.strip_prefix("workspace:"))
+        .unwrap_or(spec);
+    if path.is_empty() || path.contains(':') {
+        return false;
+    }
+    let mut depth = 0_usize;
+    for component in Path::new(path).components() {
+        depth = match component {
+            std::path::Component::Normal(_) => depth + 1,
+            std::path::Component::CurDir => depth,
+            std::path::Component::ParentDir => match depth.checked_sub(1) {
+                Some(depth) => depth,
+                None => return false,
+            },
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => return false,
+        };
+    }
+    true
+}
+
 /// The platforms a locked package installs on, as npm records them: empty allows all, `!` excludes.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Platform {
@@ -272,6 +313,31 @@ mod tests {
             os: owned(os),
             cpu: owned(cpu),
             libc: owned(libc),
+        }
+    }
+
+    /// A path inside the project is its own source; one leaving it, absolute, or with a
+    /// scheme is not.
+    #[test]
+    fn own_source_is_a_path_inside_the_project() {
+        for (spec, own) in [
+            ("packages/ws", true),
+            ("file:vendor/a.tgz", true),
+            ("link:packages/ws", true),
+            ("workspace:packages/ws", true),
+            (".", true),
+            ("./a/../b", true),
+            ("a/../../b", false),
+            ("./../b", false),
+            ("../localdir", false),
+            ("file:../a.tgz", false),
+            ("/abs/dir", false),
+            ("", false),
+            ("github:o/r#abc", false),
+            ("git+ssh://git@github.com/o/r.git", false),
+            ("https://example.test/a.tgz", false),
+        ] {
+            assert_eq!(own_source(spec), own, "{spec}");
         }
     }
 

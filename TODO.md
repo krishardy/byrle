@@ -2684,7 +2684,8 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       proxy. `waharoa lockfile verify`
       ([lockfile-verify](docs/engineering_decisions/lockfile-verify.md)): npm, yarn, pnpm,
       bun and uv lockfiles; exit 1 for an artifact from elsewhere, 2 for one with no URL.
-  - [ ] Git and file dependencies, which bypass the proxy and the readers leave out. Moved from Stage 2, where it predated any CI. The parser is built
+  - [x] Git and file dependencies, which bypass the proxy and the readers leave out. Done
+      2026-10-01: from elsewhere, unless a path inside the project. Moved from Stage 2, where it predated any CI. The parser is built
       (`src/lockfile.rs` reads `resolved` for npm, pnpm, yarn and bun), and this is the
       check a team runs to catch an install that bypassed the proxy. It sits beside the
       doctor item above, which is the same comparison from the other end.

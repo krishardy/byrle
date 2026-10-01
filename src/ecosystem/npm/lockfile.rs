@@ -7,7 +7,7 @@ use serde::de::IgnoredAny;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::identity::Ecosystem;
-use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Platform, Unread};
+use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Platform, Unread, own_source};
 
 const REINSTALL: &str =
     "delete the lockfile and node_modules, then install again through the proxy";
@@ -26,28 +26,28 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "package-lock.json",
         read: npm,
         artifacts: Some(npm_artifacts),
-        urls: Some(npm_artifacts),
+        urls: Some(npm_urls),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "npm-shrinkwrap.json",
         read: npm,
         artifacts: Some(npm_artifacts),
-        urls: Some(npm_artifacts),
+        urls: Some(npm_urls),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "yarn.lock",
         read: yarn,
         artifacts: Some(yarn_artifacts),
-        urls: Some(yarn_artifacts),
+        urls: Some(yarn_urls),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "pnpm-lock.yaml",
         read: pnpm,
         artifacts: Some(pnpm_artifacts),
-        urls: Some(pnpm_artifacts),
+        urls: Some(pnpm_urls),
         pins: Some(Pins {
             key: "tarball",
             when_absent: "records no artifact URLs, which is normal: pnpm derives them from \
@@ -61,7 +61,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "bun.lock",
         read: bun,
         artifacts: Some(bun_artifacts),
-        urls: Some(bun_artifacts),
+        urls: Some(bun_urls),
         pins: Some(Pins {
             key: "\": [",
             when_absent: "records no artifact URLs: bun writes one for every registry but \
@@ -109,7 +109,7 @@ fn artifact(
 }
 
 /// A lockfile's `os`, `cpu` or `libc`: a list, or one value.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 #[serde(untagged)]
 enum Values {
     #[default]
@@ -129,7 +129,7 @@ impl Values {
 }
 
 /// The platform fields npm, pnpm and bun write on a package.
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 struct Platforms {
     #[serde(default)]
     os: Values,
@@ -170,6 +170,13 @@ fn registry(version: &str, resolved: Option<&str>) -> bool {
         && resolved.is_none_or(|r| r.starts_with("https://") || r.starts_with("http://"))
 }
 
+/// Whether a yarn descriptor's `range` asks a registry: a semver range, a tag or an `npm:`
+/// alias. yarn 1 resolves `github:o/r` to an HTTP URL and its `package.json` version, which
+/// [`registry`] alone takes for a registry's.
+fn registry_range(range: &str) -> bool {
+    range.starts_with("npm:") || !range.contains([':', '/'])
+}
+
 #[derive(Deserialize)]
 struct NpmLock {
     #[serde(rename = "lockfileVersion")]
@@ -193,6 +200,17 @@ fn npm(text: &str) -> Result<BTreeSet<Locked>, String> {
 }
 
 fn npm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    npm_read(text, false)
+}
+
+/// The registry artifacts, and each package installed from git or a path outside the project.
+fn npm_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    npm_read(text, true)
+}
+
+/// Each registry artifact, and with `unregistered` each package installed from elsewhere: a
+/// `resolved` that is not an HTTP URL, or a link outside the project, named by its target.
+fn npm_read(text: &str, unregistered: bool) -> Result<Vec<LockedArtifact>, String> {
     let lock: NpmLock = serde_json::from_str(text).map_err(|e| e.to_string())?;
     if !matches!(lock.version, 2 | 3) {
         return Err(format!(
@@ -202,21 +220,30 @@ fn npm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     }
     let packages = lock.packages.ok_or("`packages` is missing")?;
     let mut out = Vec::new();
-    for (key, entry) in packages {
-        let (Some((_, installed)), Some(version)) =
-            (key.rsplit_once("node_modules/"), entry.version)
-        else {
+    for (key, entry) in &packages {
+        let Some((_, installed)) = key.rsplit_once("node_modules/") else {
             continue;
         };
-        if !entry.link && registry(&version, entry.resolved.as_deref()) {
-            let name = entry.name.as_deref().unwrap_or(installed);
-            let platform = entry.platforms.platform();
-            out.push(artifact(
-                name,
-                &version,
-                entry.resolved.as_deref(),
-                platform,
-            ));
+        let name = entry.name.as_deref().unwrap_or(installed);
+        let resolved = entry.resolved.as_deref();
+        if entry.link {
+            if let Some(target) = resolved.filter(|r| unregistered && !own_source(r)) {
+                let version = packages.get(target).and_then(|t| t.version.as_deref());
+                out.push(LockedArtifact::unregistered(
+                    locked(name, version.unwrap_or(target)),
+                    target,
+                ));
+            }
+            continue;
+        }
+        let Some(version) = entry.version.as_deref() else {
+            continue;
+        };
+        if registry(version, resolved) {
+            let platform = entry.platforms.clone().platform();
+            out.push(artifact(name, version, resolved, platform));
+        } else if let Some(spec) = resolved.filter(|r| unregistered && !own_source(r)) {
+            out.push(LockedArtifact::unregistered(locked(name, version), spec));
         }
     }
     Ok(out)
@@ -226,6 +253,8 @@ fn npm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
 struct YarnEntry<'a> {
     line: usize,
     name: &'a str,
+    /// The first descriptor's range: a registry's, or else a spec such as a local path.
+    range: &'a str,
     version: Option<&'a str>,
     resolved: Option<&'a str>,
 }
@@ -234,8 +263,18 @@ fn yarn(text: &str) -> Result<BTreeSet<Locked>, String> {
     yarn_artifacts(text).map(locked_set)
 }
 
-/// yarn 1 records no platform, so every entry allows every platform.
 fn yarn_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    yarn_read(text, false)
+}
+
+/// The registry artifacts, and each package installed from git or a path outside the project.
+fn yarn_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    yarn_read(text, true)
+}
+
+/// yarn 1 records no platform, so every entry allows every platform. With `unregistered`,
+/// each entry from elsewhere too: its `resolved`, or without one its range.
+fn yarn_read(text: &str, unregistered: bool) -> Result<Vec<LockedArtifact>, String> {
     if !text.lines().any(|line| line == "# yarn lockfile v1") {
         return Err("not a yarn 1 lockfile: `# yarn lockfile v1` is missing".to_owned());
     }
@@ -256,7 +295,7 @@ fn yarn_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
             }
             continue;
         }
-        yarn_entry(&mut out, entry.take())?;
+        yarn_entry(&mut out, entry.take(), unregistered)?;
         let descriptors = line
             .strip_suffix(':')
             .ok_or_else(|| format!("line {i}: `{line}` is neither an entry nor a field"))?;
@@ -270,11 +309,12 @@ fn yarn_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
         entry = Some(YarnEntry {
             line: i,
             name,
+            range,
             version: None,
             resolved: None,
         });
     }
-    yarn_entry(&mut out, entry)?;
+    yarn_entry(&mut out, entry, unregistered)?;
     Ok(out)
 }
 
@@ -284,20 +324,32 @@ fn unquote(s: &str) -> &str {
         .unwrap_or(s)
 }
 
-fn yarn_entry(out: &mut Vec<LockedArtifact>, entry: Option<YarnEntry>) -> Result<(), String> {
+fn yarn_entry(
+    out: &mut Vec<LockedArtifact>,
+    entry: Option<YarnEntry>,
+    unregistered: bool,
+) -> Result<(), String> {
     let Some(entry) = entry else {
         return Ok(());
     };
     let version = entry
         .version
         .ok_or_else(|| format!("line {}: the entry has no version", entry.line))?;
-    if registry(version, Some(entry.resolved.unwrap_or_default())) {
+    if registry_range(entry.range) && registry(version, Some(entry.resolved.unwrap_or_default())) {
         out.push(artifact(
             entry.name,
             version,
             entry.resolved,
             Platform::default(),
         ));
+    } else {
+        let spec = entry.resolved.unwrap_or(entry.range);
+        if unregistered && !own_source(spec) {
+            out.push(LockedArtifact::unregistered(
+                locked(entry.name, version),
+                spec,
+            ));
+        }
     }
     Ok(())
 }
@@ -317,6 +369,9 @@ struct PnpmPackage {
     /// `tarball` is written only when the URL is not the configured registry's.
     #[serde(default)]
     resolution: Option<PnpmResolution>,
+    /// The version a package not from a registry has, whose key records its spec instead.
+    #[serde(default)]
+    version: Option<String>,
     #[serde(flatten)]
     _rest: BTreeMap<String, IgnoredAny>,
 }
@@ -331,9 +386,19 @@ fn pnpm(text: &str) -> Result<BTreeSet<Locked>, String> {
     pnpm_artifacts(text).map(locked_set)
 }
 
-/// pnpm omits the tarball URL for the configured registry, so each path is that URL's or,
-/// without one, the registry's own for the package.
 fn pnpm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    pnpm_read(text, false)
+}
+
+/// The registry artifacts, and each package installed from git or a path outside the project.
+fn pnpm_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    pnpm_read(text, true)
+}
+
+/// pnpm omits the tarball URL for the configured registry, so each path is that URL's or,
+/// without one, the registry's own for the package. With `unregistered`, each package from
+/// elsewhere too, named by the spec its key records in place of a version.
+fn pnpm_read(text: &str, unregistered: bool) -> Result<Vec<LockedArtifact>, String> {
     let lock: PnpmLock = serde_saphyr::from_str(text).map_err(|e| e.to_string())?;
     if lock.version.split('.').next() != Some("9") {
         return Err(format!(
@@ -347,14 +412,17 @@ fn pnpm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
         .filter_map(|(key, package)| {
             let (name, version) = split(&key)?;
             let tarball = package.resolution.and_then(|r| r.tarball);
-            registry(version, tarball.as_deref()).then(|| {
-                artifact(
+            if registry(version, tarball.as_deref()) {
+                return Some(artifact(
                     name,
                     version,
                     tarball.as_deref(),
                     package.platforms.platform(),
-                )
-            })
+                ));
+            }
+            let label = package.version.as_deref().unwrap_or(version);
+            (unregistered && !own_source(version))
+                .then(|| LockedArtifact::unregistered(locked(name, label), version))
         })
         .collect())
 }
@@ -371,9 +439,19 @@ fn bun(text: &str) -> Result<BTreeSet<Locked>, String> {
     bun_artifacts(text).map(locked_set)
 }
 
-/// bun records an empty URL for registry.npmjs.org, and the artifact's for any other: the
-/// entry's second element. The platform is in its third.
 fn bun_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    bun_read(text, false)
+}
+
+/// The registry artifacts, and each package installed from git or a path outside the project.
+fn bun_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    bun_read(text, true)
+}
+
+/// bun records an empty URL for registry.npmjs.org, and the artifact's for any other: the
+/// entry's second element. The platform is in its third. With `unregistered`, each package
+/// from elsewhere too, named by the spec after its name: `github:o/r#abc`, `../x.tgz`.
+fn bun_read(text: &str, unregistered: bool) -> Result<Vec<LockedArtifact>, String> {
     let lock: BunLock = serde_saphyr::from_str(text).map_err(|e| e.to_string())?;
     if lock.version > 3 {
         return Err(format!(
@@ -396,6 +474,8 @@ fn bun_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
                 .platform();
             let url = entry.get(1).and_then(serde_json::Value::as_str);
             out.push(artifact(name, version, url, platform));
+        } else if unregistered && !own_source(version) {
+            out.push(LockedArtifact::unregistered(locked(name, version), version));
         }
     }
     Ok(out)
@@ -461,6 +541,85 @@ mod tests {
             .iter()
             .map(|(name, version)| locked(name, version))
             .collect()
+    }
+
+    /// Each format names a package from elsewhere by its spec, and not a path inside the
+    /// project. npm names a link by its target, with the target's version where recorded.
+    #[test]
+    fn each_format_names_a_package_from_elsewhere_and_not_the_projects_own() {
+        let named = |artifacts: Vec<LockedArtifact>| -> Vec<(String, Option<String>)> {
+            artifacts
+                .into_iter()
+                .map(|a| (format!("{}@{}", a.locked.1, a.locked.2), a.url))
+                .collect()
+        };
+        let pair = |label: &str, spec: &str| (label.to_owned(), Some(spec.to_owned()));
+        let npm = r#"{"lockfileVersion": 3, "packages": {
+            "../out": {"version": "1.0.0"},
+            "node_modules/out": {"resolved": "../out", "link": true},
+            "node_modules/bare": {"resolved": "../bare", "link": true},
+            "node_modules/nowhere": {"link": true},
+            "node_modules/unversioned": {"resolved": "../unversioned"},
+            "node_modules/ws": {"resolved": "packages/ws", "link": true},
+            "node_modules/vendored": {"version": "2.0.0", "resolved": "file:vendor/v.tgz"},
+            "node_modules/tag": {"version": "latest"}
+        }}"#;
+        assert_eq!(
+            named(npm_urls(npm).unwrap()),
+            [pair("bare@../bare", "../bare"), pair("out@1.0.0", "../out")]
+        );
+        assert_eq!(npm_artifacts(npm), Ok(Vec::new()));
+
+        let yarn = "# yarn lockfile v1\n\n\
+            \"gh@github:o/gh\":\n  version \"1.0.0\"\n  resolved \"https://codeload.github.com/o/gh/tar.gz/abc\"\n\n\
+            short@o/short:\n  version \"4.0.0\"\n  resolved \"https://codeload.github.com/o/short/tar.gz/abc\"\n\n\
+            \"vendored@file:vendor/v.tgz\":\n  version \"2.0.0\"\n  resolved \"file:vendor/v.tgz#abc\"\n\n\
+            \"inside@file:packages/inside\":\n  version \"3.0.0\"\n";
+        assert_eq!(
+            named(yarn_urls(yarn).unwrap()),
+            [
+                pair("gh@1.0.0", "https://codeload.github.com/o/gh/tar.gz/abc"),
+                pair(
+                    "short@4.0.0",
+                    "https://codeload.github.com/o/short/tar.gz/abc"
+                )
+            ],
+            "a github range is not a registry's, whatever its URL"
+        );
+        assert_eq!(yarn_artifacts(yarn), Ok(Vec::new()));
+
+        let pnpm = "lockfileVersion: '9.0'
+packages:
+              git@git+https://example.test/o/git.git#abc:
+                resolution: {type: git, repo: 'https://example.test/o/git.git', commit: abc}
+              inside@file:packages/inside:
+                resolution: {directory: packages/inside, type: directory}
+              vendored@file:vendor/v.tgz:
+                resolution: {tarball: 'file:vendor/v.tgz'}
+                version: 2.0.0
+";
+        assert_eq!(
+            named(pnpm_urls(pnpm).unwrap()),
+            [pair(
+                "git@git+https://example.test/o/git.git#abc",
+                "git+https://example.test/o/git.git#abc"
+            )]
+        );
+        assert_eq!(pnpm_artifacts(pnpm), Ok(Vec::new()));
+
+        let bun = r#"{"lockfileVersion": 1, "packages": {
+            "inside": ["inside@file:packages/inside", {}],
+            "vendored": ["vendored@vendor/v.tgz", {}, "sha512-x"],
+            "url": ["url@https://example.test/u.tgz", {}, "sha512-y"]
+        }}"#;
+        assert_eq!(
+            named(bun_urls(bun).unwrap()),
+            [pair(
+                "url@https://example.test/u.tgz",
+                "https://example.test/u.tgz"
+            )]
+        );
+        assert_eq!(bun_artifacts(bun), Ok(Vec::new()));
     }
 
     #[test]

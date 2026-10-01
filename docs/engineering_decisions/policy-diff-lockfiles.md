@@ -74,7 +74,7 @@ A version from a registry is kept. The rest are not versions a packument lists.
 |---|---|
 | all | a version that does not start with a digit: `file:../x`, `link:`, `workspace:`, `github:o/r#abc`, a tarball URL, `latest` |
 | npm | an entry outside `node_modules` (the project, a workspace), a `link`, one `resolved` from other than `http://` or `https://` |
-| yarn 1 | an entry with no `resolved` or one from other than `http://` or `https://`. yarn 1 writes `resolved` for every registry entry |
+| yarn 1 | an entry with no `resolved` or one from other than `http://` or `https://`. yarn 1 writes `resolved` for every registry entry. Also an entry whose range has a `:` or `/` and is not an `npm:` alias: yarn 1.22 resolves `github:o/r#7.0.0` to a codeload.github.com URL and the repository's `version`, which read as a registry's until 2026-10-01 |
 | uv | a package whose `source` is not `{ registry = ... }`: `{ git = ... }`, a path, and `{ virtual = "." }`, which is the project itself |
 | poetry | a package whose `[package.source]` has a `type` other than `legacy`, which is another index. `git`, `url` and `directory` are not |
 | `requirements.txt` | a line that is not an `==` pin: a range, `name @ url`, `name @ git+...`, `-e .`, an option. A file with lines and no pin at all is refused, because reading it as no packages would say the project depends on nothing |
