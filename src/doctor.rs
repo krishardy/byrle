@@ -436,18 +436,12 @@ pub fn check_cache(client: &Client, cache: Option<&std::path::Path>) -> Finding 
 }
 
 /// Whether the proxy is there, and whether it is configured the way this check expects.
-/// `health` is what [`crate::proxy::HEALTH_PATH`] returned, `None` when nothing answered.
-pub fn check_proxy(health: Option<&crate::proxy::Health>, proxy: &str) -> Vec<Finding> {
+/// `health` is what [`crate::proxy::HEALTH_PATH`] returned, or why nothing answered.
+pub fn check_proxy(health: Result<&crate::proxy::Health, &Unreached>, proxy: &str) -> Vec<Finding> {
     let title = "proxy".to_owned();
-    let Some(health) = health else {
-        return vec![
-            Finding::new(
-                Severity::Problem,
-                title,
-                format!("nothing answered at {proxy}{}", crate::proxy::HEALTH_PATH),
-            )
-            .with_fix("start the proxy, or point this at the address clients actually use"),
-        ];
+    let health = match health {
+        Ok(health) => health,
+        Err(unreached) => return vec![unanswered(title, unreached, proxy)],
     };
 
     let upstreams = crate::ecosystem::written(
@@ -612,6 +606,65 @@ pub fn check_readiness(readiness: Option<&Readiness>, proxy: &str) -> Finding {
             "not ready: the intel store cannot answer, so every package request is answered 503",
         )
         .with_fix("the proxy's log gives the cause"),
+    }
+}
+
+/// Why the proxy's health endpoint gave no answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Unreached {
+    /// Its host does not resolve on this machine, and why.
+    Unresolved(String),
+    /// Its host resolves, or is an address, and nothing answered there, and why.
+    Unanswered(String),
+}
+
+/// The problem `title` reports when nothing answered at `proxy`, and the fix for `unreached`.
+fn unanswered(title: String, unreached: &Unreached, proxy: &str) -> Finding {
+    match unreached {
+        Unreached::Unresolved(why) => Finding::new(
+            Severity::Problem,
+            title,
+            format!("nothing answered at {proxy}: {why}"),
+        )
+        .with_fix(format!(
+            "check the host in {}, and the DNS this machine uses",
+            env::PUBLIC_URL
+        )),
+        Unreached::Unanswered(why) => Finding::new(
+            Severity::Problem,
+            title,
+            format!(
+                "nothing answered at {proxy}{}: {why}",
+                crate::proxy::HEALTH_PATH
+            ),
+        )
+        .with_fix("start the proxy, or point this at the address clients actually use"),
+    }
+}
+
+/// Why nothing answered at `proxy`, given the probe's error `why`: whether its host
+/// resolves here, and to what. An address is not looked up.
+pub async fn unreached(proxy: &str, why: String) -> Unreached {
+    let Some((host, port)) = reqwest::Url::parse(proxy)
+        .ok()
+        .and_then(|url| Some((url.host_str()?.to_owned(), url.port_or_known_default()?)))
+        .filter(|(host, _)| {
+            host.trim_matches(['[', ']'])
+                .parse::<std::net::IpAddr>()
+                .is_err()
+        })
+    else {
+        return Unreached::Unanswered(why);
+    };
+    match tokio::net::lookup_host((host.as_str(), port)).await {
+        Err(e) => Unreached::Unresolved(format!("{host} does not resolve on this machine: {e}")),
+        Ok(addresses) => {
+            let addresses: Vec<String> = addresses.map(|a| a.ip().to_string()).collect();
+            Unreached::Unanswered(format!(
+                "{host} resolves to {}, and {why}",
+                addresses.join(", ")
+            ))
+        }
     }
 }
 
@@ -797,11 +850,21 @@ pub async fn run(machine: &Machine<'_>) -> Result<Checked, env::EnvError> {
 /// Everything after this reads client configuration, which can be perfect while nothing is
 /// listening.
 async fn proxy_findings(proxy: &str) -> Vec<Finding> {
-    let health: Option<crate::proxy::Health> = probe::own(proxy, crate::proxy::HEALTH_PATH).await;
-    let mut findings = check_proxy(health.as_ref(), proxy);
-    if health.is_some() {
+    let health: Result<crate::proxy::Health, String> =
+        probe::own(proxy, crate::proxy::HEALTH_PATH).await;
+    let unreached = match &health {
+        Ok(_) => None,
+        Err(why) => Some(unreached(proxy, why.clone()).await),
+    };
+    let mut findings = check_proxy(
+        health
+            .as_ref()
+            .map_err(|_| unreached.as_ref().expect("set when the probe failed")),
+        proxy,
+    );
+    if health.is_ok() {
         let readiness: Option<crate::proxy::Readiness> =
-            probe::own(proxy, crate::proxy::READY_PATH).await;
+            probe::own(proxy, crate::proxy::READY_PATH).await.ok();
         findings.push(check_readiness(readiness.as_ref(), proxy));
     }
     findings
@@ -982,15 +1045,29 @@ pub mod probe {
 
     /// Ask the proxy about itself at `path`, whatever the status, since readiness answers
     /// with its JSON on a 503. Async, because a blocking client's own runtime panics when
-    /// dropped inside doctor's. Returns `None` when nothing answers with the JSON expected.
-    pub async fn own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Option<T> {
+    /// dropped inside doctor's. Errors with why nothing answered with the JSON expected.
+    pub async fn own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Result<T, String> {
         let response = reqwest::Client::new()
             .get(format!("{proxy}{path}"))
             .timeout(TIMEOUT)
             .send()
             .await
-            .ok()?;
-        serde_json::from_str(&response.text().await.ok()?).ok()
+            .map_err(|e| format!("the request failed: {}", causes(&e)))?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|e| format!("the answer did not arrive: {}", causes(&e)))?;
+        serde_json::from_str(&body)
+            .map_err(|_| format!("it answered {status}, which is not the proxy's {path}"))
+    }
+
+    /// `error` and each error under it, joined, since reqwest's own text stops at the first.
+    fn causes(error: &dyn std::error::Error) -> String {
+        std::iter::successors(Some(error), |e| e.source())
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(": ")
     }
 
     /// The client's cache when it holds something, `Ok(None)` when it is empty or absent.
@@ -1094,30 +1171,32 @@ pub mod probe {
             );
         }
 
-        /// The proxy's own JSON, or `None` when nothing there answers with it.
+        /// The proxy's own JSON, or why nothing there answered with it.
         #[tokio::test]
         async fn the_proxy_is_asked_about_itself() {
             use crate::util::test_support::{Answer, closing_server, scripted};
+            let ask = |addr: std::net::SocketAddr| async move {
+                own::<serde_json::Value>(&format!("http://{addr}"), "/-/waharoa/ready").await
+            };
 
             let serving = scripted(vec![Answer::body(r#"{"ready":true}"#)]).await;
-            let answer: Option<serde_json::Value> =
-                own(&format!("http://{serving}"), "/-/waharoa/ready").await;
-            assert_eq!(answer, Some(serde_json::json!({"ready": true})));
-
-            let text = scripted(vec![Answer::body("not json")]).await;
-            let not_json: Option<serde_json::Value> =
-                own(&format!("http://{text}"), "/-/waharoa/ready").await;
-            assert_eq!(not_json, None, "anything that is not a waharoa");
-
-            let cut = scripted(vec![Answer::cut_short()]).await;
-            let short: Option<serde_json::Value> =
-                own(&format!("http://{cut}"), "/-/waharoa/ready").await;
-            assert_eq!(short, None, "a body cut short");
-
-            let silent = closing_server().await;
-            let nothing: Option<serde_json::Value> =
-                own(&format!("http://{silent}"), "/-/waharoa/ready").await;
-            assert_eq!(nothing, None, "nothing is listening for this");
+            assert_eq!(ask(serving).await, Ok(serde_json::json!({"ready": true})));
+            let not_json = ask(scripted(vec![Answer::body("not json")]).await).await;
+            assert_eq!(
+                not_json,
+                Err("it answered 200 OK, which is not the proxy's /-/waharoa/ready".to_owned()),
+                "anything that is not a waharoa"
+            );
+            let short = ask(scripted(vec![Answer::cut_short()]).await)
+                .await
+                .unwrap_err();
+            assert!(short.starts_with("the answer did not arrive"), "{short}");
+            let nothing = ask(closing_server().await).await.unwrap_err();
+            assert!(nothing.starts_with("the request failed"), "{nothing}");
+            assert!(
+                nothing.ends_with("connection closed before message completed"),
+                "the cause reqwest's own text leaves out: {nothing}"
+            );
         }
 
         #[test]
@@ -1703,15 +1782,67 @@ mod tests {
         }
     }
 
+    /// A host that does not resolve is said to, with a fix naming the public URL; an address
+    /// and a URL with no host give the probe's own reason.
+    #[tokio::test]
+    async fn an_unanswered_proxy_says_whether_its_host_resolves() {
+        let unresolved = unreached("http://proxy.invalid:8080", "why".to_owned()).await;
+        assert!(
+            matches!(&unresolved, Unreached::Unresolved(why) if why.starts_with("proxy.invalid does not resolve on this machine")),
+            "{unresolved:?}"
+        );
+        let finding = &check_proxy(Err(&unresolved), "http://proxy.invalid:8080")[0];
+        assert_eq!(finding.severity, Severity::Problem);
+        assert!(
+            finding
+                .fix
+                .as_deref()
+                .is_some_and(|fix| fix.contains(env::PUBLIC_URL.name)),
+            "{finding:?}"
+        );
+        assert_eq!(
+            unreached("http://localhost:1", "refused".to_owned()).await,
+            Unreached::Unanswered(format!(
+                "localhost resolves to {}, and refused",
+                tokio::net::lookup_host(("localhost", 1))
+                    .await
+                    .expect("localhost resolves")
+                    .map(|a| a.ip().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        );
+        for address in ["http://127.0.0.1:1", "http://[::1]:1"] {
+            assert_eq!(
+                unreached(address, "refused".to_owned()).await,
+                Unreached::Unanswered("refused".to_owned()),
+                "{address} is not looked up"
+            );
+        }
+        for no_host_or_port in ["not a url", "data:text/plain,x", "proxy://proxy.invalid"] {
+            assert_eq!(
+                unreached(no_host_or_port, "why".to_owned()).await,
+                Unreached::Unanswered("why".to_owned()),
+                "{no_host_or_port}"
+            );
+        }
+    }
+
     /// Every other check reads what a client is configured to do. This one asks whether
     /// the thing at the other end exists.
     #[test]
     fn a_proxy_that_does_not_answer_is_a_problem() {
-        let findings = check_proxy(None, PROXY);
+        let findings = check_proxy(Err(&Unreached::Unanswered("refused".to_owned())), PROXY);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].severity, Severity::Problem);
-        assert!(findings[0].detail.contains("nothing answered"));
-        assert!(findings[0].fix.is_some());
+        assert_eq!(
+            findings[0].detail,
+            format!("nothing answered at {PROXY}/-/waharoa/health: refused")
+        );
+        assert_eq!(
+            findings[0].fix.as_deref(),
+            Some("start the proxy, or point this at the address clients actually use")
+        );
     }
 
     const MATCH: (&str, &str) = ("match", "originate a finding for it");
@@ -1844,7 +1975,7 @@ mod tests {
 
     #[test]
     fn a_healthy_proxy_reports_what_it_forwards_to() {
-        let findings = check_proxy(Some(&health()), PROXY);
+        let findings = check_proxy(Ok(&health()), PROXY);
         assert_eq!(worst(&findings), Severity::Ok);
         assert!(findings[0].detail.contains("waharoa 0.1.0"));
         assert!(
@@ -1860,7 +1991,7 @@ mod tests {
     fn a_proxy_answering_at_a_different_address_than_it_advertises_warns() {
         let mut h = health();
         h.public_base = Some("https://npm.corp.example".into());
-        let findings = check_proxy(Some(&h), PROXY);
+        let findings = check_proxy(Ok(&h), PROXY);
         assert_eq!(worst(&findings), Severity::Warn);
         assert!(
             findings
@@ -1871,7 +2002,7 @@ mod tests {
 
         h.public_base = None;
         assert!(
-            check_proxy(Some(&h), PROXY)
+            check_proxy(Ok(&h), PROXY)
                 .iter()
                 .any(|f| f.detail.contains("whatever Host")),
         );
@@ -1887,7 +2018,7 @@ mod tests {
         h.mode = "observe".into();
         h.allowed_direct_origins = vec!["https://cdn.example".into()];
 
-        let findings = check_proxy(Some(&h), PROXY);
+        let findings = check_proxy(Ok(&h), PROXY);
         assert_eq!(worst(&findings), Severity::Warn);
         let text: String = findings.iter().map(|f| f.detail.clone()).collect();
         assert!(text.contains("every client except npm"), "{text}");
