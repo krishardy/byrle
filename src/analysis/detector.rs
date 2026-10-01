@@ -330,12 +330,22 @@ case "$3" in
 esac
 "#;
 
-    /// `script` written to an executable file in a directory of `label`'s own.
+    /// `script` written to an executable file in a directory of `label`'s own, and run once.
+    /// Another test's fork can hold the file open for writing just after it is written, which
+    /// refuses an exec with "Text file busy"; once one run starts, none can.
     pub(crate) fn installed(label: &str, script: &str) -> PathBuf {
         use std::os::unix::fs::PermissionsExt;
         let path = crate::util::test_support::tempdir(label).join("detector");
         std::fs::write(&path, script).expect("writes");
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).expect("chmods");
+        for _ in 0..100 {
+            match std::process::Command::new(&path).arg("--version").output() {
+                Err(e) if e.raw_os_error() == Some(26) => {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                _ => break,
+            }
+        }
         path
     }
 

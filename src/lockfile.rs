@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 
 use crate::ecosystem::TABLE;
 
+pub mod verify;
+
 /// Ecosystem, name and version, as `audit::packages` gives them.
 pub type Locked = (String, String, String);
 
@@ -41,6 +43,8 @@ pub struct LockedArtifact {
     /// The artifact's path on a registry, which the proxy serves at the same path.
     pub path: String,
     pub platform: Platform,
+    /// The URL the lockfile records for it, as written. `None` when it records none.
+    pub url: Option<String>,
 }
 
 /// The platforms a locked package installs on, as npm records them: empty allows all, `!` excludes.
@@ -134,6 +138,8 @@ pub struct Lockfile {
     pub read: Reader,
     /// Each locked artifact's path and platforms, for a format that records them.
     pub artifacts: Option<ArtifactReader>,
+    /// Each locked artifact with the URL the file records, for `waharoa lockfile verify`.
+    pub urls: Option<ArtifactReader>,
     /// How the file records artifact URLs, for a file `waharoa doctor` checks.
     pub pins: Option<Pins>,
 }
