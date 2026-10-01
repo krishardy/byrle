@@ -88,6 +88,7 @@ code, and the file names where.
 | [Metadata heuristics report signals and refuse nothing](metadata-heuristics.md) | Implemented, report only |
 | [Registry tarball against its source, measured](source-diff.md) | Measured, not in the proxy |
 | [Detectors report signals, and GuardDog is the first](detectors.md) | Implemented, report only |
+| [`waharoa lockfile verify` checks a lockfile installs through the proxy](lockfile-verify.md) | Implemented |
 | [Real packages that are safe to test against](live-test-packages.md) | Decided |
 | [The audit log](audit-log.md) | Implemented |
 | [Whether one policy value is stricter than another](strictness-comparison.md) | Implemented |

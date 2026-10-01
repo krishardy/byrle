@@ -141,6 +141,17 @@ waharoa warm --lockfile package-lock.json --proxy https://waharoa.example.com
 It warms the platform it runs on. Pass `--platform linux-x64` for each other platform
 installs run on, or `--all-platforms`. Run it in CI when a lockfile changes.
 
+In the same job, `waharoa lockfile verify` fails when a committed lockfile fetches anything
+from elsewhere, such as one resolved against the public registry:
+
+```
+waharoa lockfile verify --lockfile package-lock.json --proxy https://waharoa.example.com
+package-lock.json: 66 artifacts, 66 through the proxy
+```
+
+It exits 1 for an artifact from elsewhere, and 2 for one the lockfile records no URL for,
+as pnpm does for its configured registry ([lockfile-verify](engineering_decisions/lockfile-verify.md)).
+
 ## 8. Read what it would refuse
 
 In observe mode, each refusal is a WARN line starting `observe:`, and the audit log holds

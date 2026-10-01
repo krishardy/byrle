@@ -36,6 +36,9 @@ pub enum Command {
     /// Work with policy files
     #[command(subcommand)]
     Policy(PolicyCommand),
+    /// Work with lockfiles
+    #[command(subcommand)]
+    Lockfile(LockfileCommand),
     #[command(
         about = "Ask a running proxy for every artifact a lockfile locks, so each is \
                        analysed before a client asks for it. The exit code is the OR of 1 for \
@@ -118,6 +121,26 @@ pub struct Explain {
     pub policy: bool,
     /// One package version, for example pkg:npm/lodash@4.17.21
     pub purl: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Subcommand)]
+pub enum LockfileCommand {
+    #[command(
+        about = "Check that every artifact a lockfile locks is fetched through the proxy, for \
+                       a CI job. The exit code is the OR of 1 for an artifact from elsewhere, 2 \
+                       for one whose lockfile records no URL, and 4 on its own for an error"
+    )]
+    Verify(VerifyLockfile),
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct VerifyLockfile {
+    /// A lockfile to verify. Repeatable
+    #[arg(long, value_name = "PATH", required = true)]
+    pub lockfile: Vec<PathBuf>,
+    /// The proxy's address, as lockfiles record it [default: the public URL]
+    #[arg(long, value_name = "URL")]
+    pub proxy: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Subcommand)]

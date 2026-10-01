@@ -26,24 +26,28 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "package-lock.json",
         read: npm,
         artifacts: Some(npm_artifacts),
+        urls: Some(npm_artifacts),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "npm-shrinkwrap.json",
         read: npm,
         artifacts: Some(npm_artifacts),
+        urls: Some(npm_artifacts),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "yarn.lock",
         read: yarn,
         artifacts: Some(yarn_artifacts),
+        urls: Some(yarn_artifacts),
         pins: Some(RESOLVED),
     },
     Lockfile {
         name: "pnpm-lock.yaml",
         read: pnpm,
         artifacts: Some(pnpm_artifacts),
+        urls: Some(pnpm_artifacts),
         pins: Some(Pins {
             key: "tarball",
             when_absent: "records no artifact URLs, which is normal: pnpm derives them from \
@@ -57,6 +61,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "bun.lock",
         read: bun,
         artifacts: Some(bun_artifacts),
+        urls: Some(bun_artifacts),
         pins: Some(Pins {
             key: "\": [",
             when_absent: "records no artifact URLs: bun writes one for every registry but \
@@ -99,6 +104,7 @@ fn artifact(
         locked: locked(name, version),
         path,
         platform,
+        url: resolved.filter(|r| !r.is_empty()).map(str::to_owned),
     }
 }
 
@@ -308,16 +314,25 @@ struct PnpmLock {
 struct PnpmPackage {
     #[serde(flatten)]
     platforms: Platforms,
+    /// `tarball` is written only when the URL is not the configured registry's.
+    #[serde(default)]
+    resolution: Option<PnpmResolution>,
     #[serde(flatten)]
     _rest: BTreeMap<String, IgnoredAny>,
+}
+
+#[derive(Deserialize)]
+struct PnpmResolution {
+    #[serde(default)]
+    tarball: Option<String>,
 }
 
 fn pnpm(text: &str) -> Result<BTreeSet<Locked>, String> {
     pnpm_artifacts(text).map(locked_set)
 }
 
-/// pnpm omits the tarball URL for the configured registry, so each path is the registry's
-/// own for the package.
+/// pnpm omits the tarball URL for the configured registry, so each path is that URL's or,
+/// without one, the registry's own for the package.
 fn pnpm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     let lock: PnpmLock = serde_saphyr::from_str(text).map_err(|e| e.to_string())?;
     if lock.version.split('.').next() != Some("9") {
@@ -331,8 +346,15 @@ fn pnpm_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
         .into_iter()
         .filter_map(|(key, package)| {
             let (name, version) = split(&key)?;
-            registry(version, None)
-                .then(|| artifact(name, version, None, package.platforms.platform()))
+            let tarball = package.resolution.and_then(|r| r.tarball);
+            registry(version, tarball.as_deref()).then(|| {
+                artifact(
+                    name,
+                    version,
+                    tarball.as_deref(),
+                    package.platforms.platform(),
+                )
+            })
         })
         .collect())
 }
@@ -349,8 +371,8 @@ fn bun(text: &str) -> Result<BTreeSet<Locked>, String> {
     bun_artifacts(text).map(locked_set)
 }
 
-/// bun records an empty URL for the configured registry, so each path is the registry's own
-/// for the package. The platform is in the entry's third element.
+/// bun records an empty URL for registry.npmjs.org, and the artifact's for any other: the
+/// entry's second element. The platform is in its third.
 fn bun_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
     let lock: BunLock = serde_saphyr::from_str(text).map_err(|e| e.to_string())?;
     if lock.version > 3 {
@@ -372,7 +394,8 @@ fn bun_artifacts(text: &str) -> Result<Vec<LockedArtifact>, String> {
                 .and_then(|meta| Platforms::deserialize(meta).ok())
                 .unwrap_or_default()
                 .platform();
-            out.push(artifact(name, version, None, platform));
+            let url = entry.get(1).and_then(serde_json::Value::as_str);
+            out.push(artifact(name, version, url, platform));
         }
     }
     Ok(out)

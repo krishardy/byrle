@@ -7,7 +7,7 @@ use std::collections::BTreeSet;
 use serde::Deserialize;
 
 use crate::identity::Ecosystem;
-use crate::lockfile::{Locked, Lockfile, Pins, Unread};
+use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Unread};
 
 /// Each lockfile name, the reader it chooses, and how it records artifact URLs.
 pub const LOCKFILES: &[Lockfile] = &[
@@ -15,6 +15,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "uv.lock",
         read: uv,
         artifacts: None,
+        urls: Some(uv_urls),
         pins: Some(Pins {
             key: "url",
             when_absent: "records no artifact URLs",
@@ -26,18 +27,21 @@ pub const LOCKFILES: &[Lockfile] = &[
         name: "poetry.lock",
         read: poetry,
         artifacts: None,
+        urls: None,
         pins: None,
     },
     Lockfile {
         name: "requirements.txt",
         read: requirements,
         artifacts: None,
+        urls: None,
         pins: None,
     },
     Lockfile {
         name: "Pipfile.lock",
         read: pipenv,
         artifacts: None,
+        urls: None,
         pins: None,
     },
 ];
@@ -66,14 +70,34 @@ struct TomlPackage {
     /// Where the package came from. poetry omits it for its default index.
     #[serde(default)]
     source: Option<toml::Value>,
+    /// uv's sdist, and its URL.
+    #[serde(default)]
+    sdist: Option<TomlFile>,
+    /// uv's wheels, and their URLs.
+    #[serde(default)]
+    wheels: Vec<TomlFile>,
+}
+
+#[derive(Deserialize)]
+struct TomlFile {
+    #[serde(default)]
+    url: Option<String>,
 }
 
 /// uv's lockfile. A package is kept when its source is a registry.
 fn uv(text: &str) -> Result<BTreeSet<Locked>, String> {
+    Ok(uv_registry(text)?
+        .iter()
+        .map(|package| locked(&package.name, &package.version))
+        .collect())
+}
+
+/// The packages in uv's lockfile whose source is a registry.
+fn uv_registry(text: &str) -> Result<Vec<TomlPackage>, String> {
     let lock: TomlLock = toml::from_str(text).map_err(|e| e.to_string())?;
     Ok(lock
         .package
-        .iter()
+        .into_iter()
         .filter(|package| {
             package
                 .source
@@ -81,7 +105,32 @@ fn uv(text: &str) -> Result<BTreeSet<Locked>, String> {
                 .and_then(|source| source.as_table())
                 .is_some_and(|source| source.contains_key("registry"))
         })
-        .map(|package| locked(&package.name, &package.version))
+        .collect())
+}
+
+/// Each file uv's lockfile records for a registry package, its sdist and every wheel, with
+/// its URL, for `waharoa lockfile verify`. A file with no `url` records none.
+fn uv_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {
+    Ok(uv_registry(text)?
+        .into_iter()
+        .flat_map(|package| {
+            let locked = locked(&package.name, &package.version);
+            package
+                .sdist
+                .into_iter()
+                .chain(package.wheels)
+                .map(move |file| LockedArtifact {
+                    locked: locked.clone(),
+                    path: file
+                        .url
+                        .as_deref()
+                        .and_then(|url| reqwest::Url::parse(url).ok())
+                        .map(|url| url.path().to_owned())
+                        .unwrap_or_default(),
+                    platform: Default::default(),
+                    url: file.url,
+                })
+        })
         .collect())
 }
 

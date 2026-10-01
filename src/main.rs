@@ -72,6 +72,16 @@ fn run_audit_verify(args: cli::Verify) -> std::process::ExitCode {
 }
 
 /// `waharoa warm`: ask the proxy for every artifact the lockfiles lock.
+fn run_lockfile_verify(args: cli::VerifyLockfile) -> std::process::ExitCode {
+    let verified =
+        waharoa::lockfile::verify::run(&args.lockfile, args.proxy.as_deref(), &env::process());
+    for note in &verified.notes {
+        eprintln!("waharoa lockfile verify: {note}");
+    }
+    print!("{}", verified.report);
+    std::process::ExitCode::from(verified.code)
+}
+
 async fn run_warm(args: cli::Warm) -> std::process::ExitCode {
     let targets = match (args.all_platforms, args.platform.is_empty()) {
         (true, _) => None,
@@ -282,5 +292,6 @@ async fn main() -> std::process::ExitCode {
         cli::Command::Intel(cli::IntelCommand::History(args)) => run_intel_history(args).await,
         cli::Command::Refresh => run_refresh().await,
         cli::Command::Warm(args) => run_warm(args).await,
+        cli::Command::Lockfile(cli::LockfileCommand::Verify(args)) => run_lockfile_verify(args),
     }
 }
