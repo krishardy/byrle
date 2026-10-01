@@ -8299,6 +8299,35 @@ mod tests {
         );
     }
 
+    /// A version the normaliser skipped, here for a `scripts` of the wrong type, is refused
+    /// as not listed, and the rest of its document is decided as usual.
+    #[tokio::test]
+    async fn a_malformed_version_is_refused_as_not_listed() {
+        let proxy = offline(None, Some(ALLOW_ALL));
+        let integrity = sri_of(b"widget");
+        let version = |v: &str, extra: &str| {
+            format!(
+                r#""{v}":{{"version":"{v}",{extra}"dist":{{"tarball":"https://registry.npmjs.org/widget/-/widget-{v}.tgz","integrity":"{integrity}"}}}}"#
+            )
+        };
+        let body = format!(
+            r#"{{"name":"widget","versions":{{{},{}}}}}"#,
+            version("1.0.0", ""),
+            version("2.0.0", r#""scripts":{"install":5},"#)
+        );
+        hold_document(&proxy, body.as_bytes(), crate::record::DocumentDetail::Full);
+        let (status, said) = refused(pinned(&proxy, "/widget/-/widget-2.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
+        assert!(said.contains("does not list this version"), "{said}");
+        match pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await {
+            ArtifactStep::Answer(answer) => {
+                let (_, said) = refused(ArtifactStep::Answer(answer)).await;
+                assert!(!said.contains("does not list"), "{said}");
+            }
+            ArtifactStep::Fetch(_) => {}
+        }
+    }
+
     /// One full packument request serves the heuristics and a cooldown, a held full one
     /// asks nothing, and records that do not normalise leave the heuristics the held one.
     #[tokio::test]

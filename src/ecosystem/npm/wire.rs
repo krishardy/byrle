@@ -11,15 +11,16 @@ use crate::record::Repository;
 #[derive(Debug, Deserialize)]
 pub(super) struct WirePackument {
     pub(super) name: String,
-    #[serde(default, rename = "dist-tags")]
+    #[serde(default, rename = "dist-tags", deserialize_with = "strings")]
     pub(super) dist_tags: BTreeMap<String, String>,
+    /// Each version as written, read one at a time: a malformed one skips only itself.
     #[serde(default)]
-    pub(super) versions: BTreeMap<String, WireVersion>,
+    pub(super) versions: BTreeMap<String, Box<serde_json::value::RawValue>>,
     /// Full packument only. Keyed by version, plus `created` and `modified`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "strings")]
     pub(super) time: BTreeMap<String, String>,
     /// Package-level fallbacks for the per-version copies.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub(super) maintainers: Option<Vec<WireMaintainer>>,
     #[serde(default, deserialize_with = "repository")]
     pub(super) repository: Option<Repository>,
@@ -63,6 +64,21 @@ fn lenient<'de, D: Deserializer<'de>, T: de::DeserializeOwned>(
     deserializer: D,
 ) -> Result<Option<T>, D::Error> {
     Ok(T::deserialize(serde_json::Value::deserialize(deserializer)?).ok())
+}
+
+/// A map of strings, keeping only the entries whose value is one: a malformed `time` or
+/// `dist-tags` entry does not make the whole document unreadable.
+pub(super) fn strings<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, String>, D::Error> {
+    let map = BTreeMap::<String, serde_json::Value>::deserialize(deserializer)?;
+    Ok(map
+        .into_iter()
+        .filter_map(|(key, value)| match value {
+            serde_json::Value::String(text) => Some((key, text)),
+            _ => None,
+        })
+        .collect())
 }
 
 /// A dependency map, keeping only the entries [`is_direct`] accepts.
@@ -246,5 +262,8 @@ mod tests {
         }
         assert!(read(r#"{"url": "u", "#).is_err());
         assert!(serde_json::from_slice::<DirectSpecs>(b"{").is_err());
+        for cut in [r#"{"deprecated":"#, r#"{"gitHead":"#, r#"{"dependencies":"#] {
+            assert!(serde_json::from_str::<WireVersion>(cut).is_err(), "{cut}");
+        }
     }
 }

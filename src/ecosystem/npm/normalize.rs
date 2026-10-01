@@ -35,8 +35,10 @@ fn normalize_wire(
     let mut records = Vec::with_capacity(wire.versions.len());
     let mut skipped = Vec::new();
 
-    for (version, entry) in &wire.versions {
-        match version_record(&key, version, entry, &wire, detail) {
+    for (version, raw) in &wire.versions {
+        let entry = serde_json::from_str::<WireVersion>(raw.get())
+            .map_err(|e| format!("version is not readable: {e}"));
+        match entry.and_then(|entry| version_record(&key, version, &entry, &wire, detail)) {
             Ok(record) => records.push(record),
             Err(reason) => skipped.push(SkippedVersion {
                 version: version.clone(),
@@ -195,7 +197,7 @@ fn provenance(entry: &WireVersion, dist: &WireDist) -> Provenance {
 /// Only the `time` map, out of a full packument, without building its records.
 #[derive(Deserialize)]
 struct WireTimes {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::wire::strings")]
     time: BTreeMap<String, String>,
 }
 
@@ -564,6 +566,54 @@ mod tests {
         assert_eq!(publisher.id, "github");
     }
 
+    /// A version with a field of the wrong type is skipped with serde's reason, and the rest
+    /// read. A malformed `time`, `dist-tags` or package-level `maintainers` is dropped.
+    #[test]
+    fn a_malformed_version_is_skipped_and_the_rest_read() {
+        let dist = |v: &str| {
+            serde_json::json!({"tarball": format!("https://registry.npmjs.org/x/-/x-{v}.tgz"),
+                "integrity": "sha512-AAAA"})
+        };
+        let body = serde_json::json!({
+            "name": "x",
+            "dist-tags": {"latest": 5, "next": "1.0.0"},
+            "time": {"1.0.0": "2020-01-01T00:00:00Z", "2.0.0": {"not": "a time"}},
+            "maintainers": "not a list",
+            "versions": {
+                "1.0.0": {"version": "1.0.0", "dist": dist("1.0.0")},
+                "2.0.0": {"version": "2.0.0", "scripts": {"install": 5}, "dist": dist("2.0.0")},
+                "3.0.0": {"version": "3.0.0", "maintainers": "someone", "dist": dist("3.0.0")},
+            },
+        });
+        let metadata = normalize_packument(body.to_string().as_bytes(), DocumentDetail::Full)
+            .expect("the document reads");
+        assert_eq!(
+            metadata
+                .records
+                .iter()
+                .map(|r| r.package.version())
+                .collect::<Vec<_>>(),
+            ["1.0.0"]
+        );
+        assert_eq!(metadata.latest, None, "a `latest` that is not a string");
+        assert!(metadata.version("1.0.0").unwrap().published_at.is_some());
+        let skipped: Vec<(&str, bool)> = metadata
+            .skipped
+            .iter()
+            .map(|s| {
+                (
+                    s.version.as_str(),
+                    s.reason
+                        .starts_with("version is not readable: invalid type"),
+                )
+            })
+            .collect();
+        assert_eq!(skipped, [("2.0.0", true), ("3.0.0", true)]);
+        assert!(parse_publish_times(br#"{"time":"#).is_err());
+        let times = parse_publish_times(body.to_string().as_bytes()).expect("the time map reads");
+        assert_eq!(times.keys().collect::<Vec<_>>(), ["1.0.0"]);
+    }
+
     /// `react`'s `"deprecated": false` and `qs`'s `"repository": {}` read as absent, and the
     /// rest of the document still reads.
     #[test]
@@ -591,6 +641,9 @@ mod tests {
             r#"{"name":"x","versions":{"1.0.0":{"repository":"#,
             r#"{"name":"x","versions":{"1.0.0":{"gitHead":"#,
             r#"{"name":"x","repository":"#,
+            r#"{"name":"x","maintainers":"#,
+            r#"{"name":"x","time":"#,
+            r#"{"name":"x","dist-tags":"#,
         ] {
             assert!(normalize_packument(cut.as_bytes(), DocumentDetail::Full).is_err());
         }
