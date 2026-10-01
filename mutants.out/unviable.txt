@@ -1,1 +1,0 @@
-src/npm.rs:82:5: replace key_from_name -> Result<PackageKey, IdentityError> with Ok(Default::default())
