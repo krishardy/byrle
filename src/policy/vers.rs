@@ -127,7 +127,7 @@ impl Versions {
 
         let mut read = Vec::new();
         for constraint in constraints.split('|') {
-            read.push(self::constraint(order, ecosystem, constraint).map_err(&refuse)?);
+            read.push(self::constraint(order, ecosystem, constraint).map_err(refuse)?);
         }
         in_order(&read).map_err(refuse)?;
         Ok(Self {
