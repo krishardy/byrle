@@ -16,7 +16,6 @@ pub mod explain;
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod golden;
-pub mod heuristics;
 pub mod http;
 pub mod identity;
 pub mod integrity;
@@ -29,6 +28,7 @@ pub mod proxy;
 pub mod record;
 pub mod refusal;
 pub mod route;
+pub mod signal;
 pub mod spool;
 pub mod startup;
 pub mod status;

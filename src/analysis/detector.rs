@@ -1,8 +1,11 @@
 //! Detectors that report findings about a package version, which become signals in its risk
-//! score and refuse nothing. A detector is a command run on the version by name, GuardDog
-//! first. See docs/engineering_decisions/detectors.md.
+//! score and refuse nothing. Two are built in, the metadata heuristics and the source
+//! comparison. Others are commands run on the version by name, GuardDog first.
+//! See docs/engineering_decisions/detectors.md.
 
 pub mod guarddog;
+pub mod metadata;
+pub mod source;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -11,6 +14,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
@@ -19,15 +23,45 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::identity::Ecosystem;
 
 /// The detectors whose rules a policy may weight, and those rules.
-pub const KNOWN: [(&str, &[&str]); 1] = [("guarddog", &guarddog::RULES)];
+pub const KNOWN: [(&str, &[&str]); 3] = [
+    (metadata::NAME, &metadata::RULES),
+    (source::NAME, &source::RULES),
+    ("guarddog", &guarddog::RULES),
+];
 
-/// Whether `rule`, written `detector.rule`, is a rule of a detector [`KNOWN`] lists.
-pub fn knows(rule: &str) -> bool {
-    rule.split_once('.').is_some_and(|(detector, rule)| {
-        KNOWN
-            .iter()
-            .any(|(name, rules)| *name == detector && rules.contains(&rule))
-    })
+/// The detectors built in, whose rules a policy names without the detector's name.
+pub const BUILT_IN: [&str; 2] = [metadata::NAME, source::NAME];
+
+/// The rules of the detectors built in, as a policy names them.
+pub const BUILT_IN_RULES: [&str; 8] = joined(&metadata::RULES, &source::RULES);
+
+/// `a` then `b`, in an array of their length together.
+const fn joined<const N: usize>(a: &[&'static str], b: &[&'static str]) -> [&'static str; N] {
+    assert!(a.len() + b.len() == N);
+    let mut out = [""; N];
+    let mut i = 0;
+    while i < N {
+        out[i] = if i < a.len() { a[i] } else { b[i - a.len()] };
+        i += 1;
+    }
+    out
+}
+
+/// The name `signal_weights` gives `detector`'s `rule`: the rule alone for a detector
+/// built in, else `detector.rule`.
+pub fn key(detector: &str, rule: &str) -> String {
+    if BUILT_IN.contains(&detector) {
+        rule.to_owned()
+    } else {
+        format!("{detector}.{rule}")
+    }
+}
+
+/// Whether `key` names a rule of a detector [`KNOWN`] lists, as [`key`] writes it.
+pub fn knows(key: &str) -> bool {
+    KNOWN
+        .iter()
+        .any(|(detector, rules)| rules.iter().any(|rule| self::key(detector, rule) == key))
 }
 
 /// How long one run of a command may take before it is killed.
@@ -66,16 +100,39 @@ pub struct Target {
 /// A run in flight, boxed so the analyser can hold a `dyn Detector`.
 pub type Detecting<'a> = Pin<Box<dyn Future<Output = Result<Detection, String>> + Send + 'a>>;
 
-/// Something that reports findings about a package version.
-pub trait Detector: Send + Sync {
-    /// Its name, which prefixes its rules in `signal_weights`.
+/// Something that reports findings about a package version, read from `S`.
+pub trait Detector<S: ?Sized = Target>: Send + Sync {
+    /// Its name, which prefixes its rules in `signal_weights` unless it is built in.
     fn name(&self) -> &str;
 
     /// Its version. A result another version wrote is not read back.
     fn version(&self) -> &str;
 
-    /// Run it on `target`. Errors when it could not run at all, which stores nothing.
-    fn detect<'a>(&'a self, target: &'a Target) -> Detecting<'a>;
+    /// Run it on `subject`: a [`Target`] for a command, what the proxy holds for one built
+    /// in. Each caller decides when it runs and whether its result is stored.
+    /// Errors when it could not run at all, which stores nothing.
+    fn detect<'a>(&'a self, subject: &'a S) -> Detecting<'a>;
+}
+
+/// The result of `detecting` when it answers on its first poll, as the detectors built in
+/// do, so a caller holding a lock need not wait. `None` from one that would wait.
+pub fn at_once(mut detecting: Detecting<'_>) -> Option<Result<Detection, String>> {
+    match detecting
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()))
+    {
+        Poll::Ready(result) => Some(result),
+        Poll::Pending => None,
+    }
+}
+
+/// What a detector built in found about `subject`, by its name. Nothing when it would wait
+/// or could not run, which none built in does.
+pub fn built_in<S: ?Sized>(detector: &dyn Detector<S>, subject: &S) -> (String, Detection) {
+    let detection = at_once(detector.detect(subject))
+        .and_then(Result::ok)
+        .unwrap_or_default();
+    (detector.name().to_owned(), detection)
 }
 
 /// A detector that is a command printing GuardDog's JSON, run as detectors.md says.
@@ -116,6 +173,9 @@ impl Command {
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
         {
             return Err(format!("`{name}` is not a detector name: a-z, 0-9 and -"));
+        }
+        if BUILT_IN.contains(&name) {
+            return Err(format!("`{name}` is the name of a detector built in"));
         }
         let mut words = command.split_whitespace();
         let program = PathBuf::from(
@@ -381,6 +441,23 @@ esac
             guarddog::RULES.windows(2).all(|pair| pair[0] < pair[1]),
             "sorted"
         );
+        assert!(knows("new_package"), "a rule built in is named alone");
+        assert!(knows("source_differing"));
+        assert!(!knows("metadata.new_package"));
+        assert_eq!(key("source", "source_differing"), "source_differing");
+        assert_eq!(key("guarddog", "bundled_binary"), "guarddog.bundled_binary");
+        assert_eq!(BUILT_IN_RULES[..4], metadata::RULES);
+        assert_eq!(BUILT_IN_RULES[4..], source::RULES);
+        assert_eq!(joined::<3>(&["a"], &["b", "c"]), ["a", "b", "c"]);
+    }
+
+    /// A detector built in answers on the first poll. One that would wait gives `None`.
+    #[test]
+    fn only_a_detection_ready_on_the_first_poll_is_read_at_once() {
+        let ready: Detecting<'_> = Box::pin(std::future::ready(Ok(Detection::default())));
+        assert_eq!(at_once(ready), Some(Ok(Detection::default())));
+        let waiting: Detecting<'_> = Box::pin(std::future::pending());
+        assert_eq!(at_once(waiting), None);
     }
 
     /// The version is the last line `--version` prints, and a scan's rules that found
@@ -513,6 +590,8 @@ esac
             ("no equals sign", "is not name=command"),
             ("Bad=prog", "is not a detector name"),
             ("=prog", "is not a detector name"),
+            ("metadata=prog", "is the name of a detector built in"),
+            ("source=prog", "is the name of a detector built in"),
             ("name=", "names no program"),
             ("name=/nonexistent/program", "did not start"),
             (silent.as_str(), "printed no version"),

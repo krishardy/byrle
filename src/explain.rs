@@ -4,6 +4,8 @@
 
 use std::ffi::OsString;
 
+use crate::analysis::detector::built_in;
+use crate::analysis::detector::metadata::{Listing, Metadata};
 use crate::ecosystem::Clients;
 use crate::env::Env;
 use crate::identity::PackageRef;
@@ -203,11 +205,10 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
     ));
 
     out.push_str("\nsignal weights, for the risk score\n");
-    for kind in crate::heuristics::SignalKind::ALL {
+    for rule in crate::analysis::detector::BUILT_IN_RULES {
         out.push_str(&format!(
-            "  {:22}  {}\n",
-            kind.as_str(),
-            policy.signal_weights.of(kind)
+            "  {rule:22}  {}\n",
+            policy.signal_weights.of(rule)
         ));
     }
 
@@ -391,26 +392,24 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         ),
         as_of,
     );
+    let listing = Listing {
+        records: &metadata.records,
+        record: package,
+        full: full.as_ref(),
+        served: Vec::new(),
+        now: jiff::Timestamp::now(),
+    };
     answer.push_str(&signals(
-        &crate::heuristics::signals(
-            &metadata.records,
-            package,
-            full.as_ref(),
-            [],
-            jiff::Timestamp::now(),
-        ),
+        &crate::signal::of_detections(&[built_in(&Metadata, &listing)]),
         &policy.signal_weights,
     ));
     Ok(answer)
 }
 
-/// The heuristics' signals, which refuse nothing, under the verdict, read from the full
+/// The metadata heuristics' signals, which refuse nothing, under the verdict, read from the full
 /// packument when there is one. `explain` holds no served names, so no near name.
 /// `weights` are the policy's, which give the risk score.
-fn signals(
-    signals: &[crate::heuristics::Signal],
-    weights: &crate::policy::SignalWeights,
-) -> String {
+fn signals(signals: &[crate::signal::Signal], weights: &crate::policy::SignalWeights) -> String {
     if signals.is_empty() {
         return "  signals: none\n".to_owned();
     }
@@ -423,7 +422,7 @@ fn signals(
     }
     out.push_str(&format!(
         "  risk score: {}\n",
-        crate::heuristics::score(signals, weights)
+        crate::signal::score(signals, weights)
     ));
     out
 }
@@ -551,15 +550,20 @@ mod run_tests {
     /// Each signal gets a line with its weight, and the score closes the block.
     #[test]
     fn each_signal_gets_a_line_under_the_verdict() {
-        use crate::heuristics::Signal;
-        let weights = crate::policy::SignalWeights {
-            no_repository: 3,
-            ..crate::policy::SignalWeights::default()
+        use crate::signal::Signal;
+        let weights = crate::policy::SignalWeights::of_pairs(&[("no_repository", 3)]);
+        let metadata = |rule: &str, detail: &str| Signal {
+            detector: "metadata".to_owned(),
+            rule: rule.to_owned(),
+            detail: detail.to_owned(),
         };
         assert_eq!(signals(&[], &weights), "  signals: none\n");
         assert_eq!(
             signals(
-                &[Signal::NoRepository, Signal::NewPackage { days: 1 }],
+                &[
+                    metadata("no_repository", "the metadata names none"),
+                    metadata("new_package", "first published 1 day ago")
+                ],
                 &weights
             ),
             "  signals, which refuse nothing:\n    no repository: the metadata names none (weight 3)\n    new package: first published 1 day ago (weight 1)\n  risk score: 4\n"

@@ -220,103 +220,45 @@ impl<'de> Deserialize<'de> for VersionValue {
     }
 }
 
-/// Each kind of signal's weight in a risk score, [`DEFAULT_SIGNAL_WEIGHT`] unless set.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SignalWeights {
-    pub new_package: u32,
-    pub new_publisher: u32,
-    pub no_repository: u32,
-    pub near_name: u32,
-    pub source_install_scripts: u32,
-    pub source_dependencies: u32,
-    pub source_install_files: u32,
-    pub source_differing: u32,
-    /// A detector's rules, as `detector.rule`, such as `guarddog.threat-process-hooks`.
-    pub detectors: BTreeMap<String, u32>,
-}
+/// Each detector rule's weight in a risk score, by [`crate::analysis::detector::key`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SignalWeights(BTreeMap<String, u32>);
 
-/// The keys `signal_weights` takes besides a detector's rules.
-const SIGNAL_WEIGHT_KEYS: [&str; 8] = [
-    "new_package",
-    "new_publisher",
-    "no_repository",
-    "near_name",
-    "source_install_scripts",
-    "source_dependencies",
-    "source_install_files",
-    "source_differing",
-];
-
-/// A built-in kind, or a `detector.rule` that `detector::KNOWN` lists; nothing else.
+/// A rule built in, or a `detector.rule` that `detector::KNOWN` lists; nothing else.
 impl<'de> Deserialize<'de> for SignalWeights {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let set = BTreeMap::<String, u32>::deserialize(deserializer)?;
-        let mut weights = Self::default();
-        for (key, weight) in set {
-            let field = match key.as_str() {
-                "new_package" => &mut weights.new_package,
-                "new_publisher" => &mut weights.new_publisher,
-                "no_repository" => &mut weights.no_repository,
-                "near_name" => &mut weights.near_name,
-                "source_install_scripts" => &mut weights.source_install_scripts,
-                "source_dependencies" => &mut weights.source_dependencies,
-                "source_install_files" => &mut weights.source_install_files,
-                "source_differing" => &mut weights.source_differing,
-                rule if crate::analysis::detector::knows(rule) => {
-                    weights.detectors.insert(key, weight);
-                    continue;
-                }
-                _ => {
-                    return Err(serde::de::Error::unknown_field(&key, &SIGNAL_WEIGHT_KEYS));
-                }
-            };
-            *field = weight;
+        if let Some(unknown) = set
+            .keys()
+            .find(|key| !crate::analysis::detector::knows(key))
+        {
+            return Err(serde::de::Error::unknown_field(
+                unknown,
+                &crate::analysis::detector::BUILT_IN_RULES,
+            ));
         }
-        Ok(weights)
+        Ok(Self(set))
     }
 }
 
-/// What a kind of signal weighs when the policy does not say.
+/// What a rule weighs when the policy does not say.
 pub const DEFAULT_SIGNAL_WEIGHT: u32 = 1;
 
-impl Default for SignalWeights {
-    fn default() -> Self {
-        Self {
-            new_package: DEFAULT_SIGNAL_WEIGHT,
-            new_publisher: DEFAULT_SIGNAL_WEIGHT,
-            no_repository: DEFAULT_SIGNAL_WEIGHT,
-            near_name: DEFAULT_SIGNAL_WEIGHT,
-            source_install_scripts: DEFAULT_SIGNAL_WEIGHT,
-            source_dependencies: DEFAULT_SIGNAL_WEIGHT,
-            source_install_files: DEFAULT_SIGNAL_WEIGHT,
-            source_differing: DEFAULT_SIGNAL_WEIGHT,
-            detectors: BTreeMap::new(),
-        }
-    }
-}
-
 impl SignalWeights {
-    /// The weight of a detector's `rule`, named `detector.rule`.
-    pub fn of_rule(&self, rule: &str) -> u32 {
-        self.detectors
-            .get(rule)
-            .copied()
-            .unwrap_or(DEFAULT_SIGNAL_WEIGHT)
+    /// The weight of the rule `key` names, [`DEFAULT_SIGNAL_WEIGHT`] unless set.
+    pub fn of(&self, key: &str) -> u32 {
+        self.0.get(key).copied().unwrap_or(DEFAULT_SIGNAL_WEIGHT)
     }
 
-    /// The weight of `kind`.
-    pub fn of(&self, kind: crate::heuristics::SignalKind) -> u32 {
-        use crate::heuristics::SignalKind;
-        match kind {
-            SignalKind::NewPackage => self.new_package,
-            SignalKind::NewPublisher => self.new_publisher,
-            SignalKind::NoRepository => self.no_repository,
-            SignalKind::NearName => self.near_name,
-            SignalKind::SourceInstallScripts => self.source_install_scripts,
-            SignalKind::SourceDependencies => self.source_dependencies,
-            SignalKind::SourceInstallFiles => self.source_install_files,
-            SignalKind::SourceDiffering => self.source_differing,
-        }
+    /// Weights set as `pairs`, of a key and its weight, for a test.
+    #[cfg(test)]
+    pub fn of_pairs(pairs: &[(&str, u32)]) -> Self {
+        Self(
+            pairs
+                .iter()
+                .map(|(key, weight)| ((*key).to_owned(), *weight))
+                .collect(),
+        )
     }
 }
 
@@ -869,18 +811,22 @@ mod tests {
     /// A weight is 1 unless set and a whole number, and each name is its kind's name.
     #[test]
     fn signal_weights_default_to_1_and_are_whole_numbers() {
-        use crate::heuristics::SignalKind;
+        use crate::analysis::detector::BUILT_IN_RULES;
         assert_eq!(parse("").unwrap().signal_weights, SignalWeights::default());
         assert!(
-            SignalKind::ALL
+            BUILT_IN_RULES
                 .iter()
-                .all(|kind| SignalWeights::default().of(*kind) == 1)
+                .all(|rule| SignalWeights::default().of(rule) == 1)
         );
         let set = parse("signal_weights: { near_name: 0, source_install_files: 5 }\n")
             .unwrap()
             .signal_weights;
         assert_eq!(
-            (set.near_name, set.source_install_files, set.new_package),
+            (
+                set.of("near_name"),
+                set.of("source_install_files"),
+                set.of("new_package")
+            ),
             (0, 5, 1)
         );
         for bad in ["-1", "1.5", "high"] {
@@ -894,23 +840,25 @@ mod tests {
         )
         .unwrap()
         .signal_weights;
-        assert_eq!(rules.of_rule("guarddog.threat-process-hooks"), 5);
-        assert_eq!(rules.of_rule("guarddog.bundled_binary"), 0);
-        assert_eq!(rules.of_rule("guarddog.typosquatting"), 1, "unset");
-        for unknown in ["guarddog.threat-proces-hooks", "other.rule", "guarddog"] {
+        assert_eq!(rules.of("guarddog.threat-process-hooks"), 5);
+        assert_eq!(rules.of("guarddog.bundled_binary"), 0);
+        assert_eq!(rules.of("guarddog.typosquatting"), 1, "unset");
+        for unknown in [
+            "guarddog.threat-proces-hooks",
+            "other.rule",
+            "guarddog",
+            "metadata.new_package",
+        ] {
             let error = parse(&format!("signal_weights: {{ {unknown}: 2 }}\n")).unwrap_err();
             assert!(
                 error.to_string().contains("unknown field"),
                 "{unknown}: {error}"
             );
         }
-        for (weight, kind) in (10..).zip(SignalKind::ALL) {
-            let policy = parse(&format!(
-                "signal_weights: {{ {}: {weight} }}\n",
-                kind.as_str()
-            ))
-            .unwrap_or_else(|e| panic!("{}: {e}", kind.as_str()));
-            assert_eq!(policy.signal_weights.of(kind), weight, "{}", kind.as_str());
+        for (weight, rule) in (10..).zip(BUILT_IN_RULES) {
+            let policy = parse(&format!("signal_weights: {{ {rule}: {weight} }}\n"))
+                .unwrap_or_else(|e| panic!("{rule}: {e}"));
+            assert_eq!(policy.signal_weights.of(rule), weight, "{rule}");
         }
     }
 
