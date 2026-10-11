@@ -1,6 +1,7 @@
 # Reporting: accounts, installed dependencies and notifications
 
-- **Status:** Decided 2026-09-19. Not yet implemented. TODO Stage 8.
+- **Status:** Decided 2026-09-19. Not yet implemented. Accounts and the request log in TODO
+  Stage 4.9 ([admin-plan](../admin-plan.md)); the per-user list and email in Stage 8.
 - **Related:** [account-identification](account-identification.md),
   [snapshot-identity](snapshot-identity.md), [ingestion-history](ingestion-history.md)
 
