@@ -822,6 +822,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [`policy diff`: a date per policy, and exit bits](engineering_decisions/policy-diff-dates-and-exit-bits.md) | `--from-date` and `--to-date` replace `--as-of`; exit is the OR of 1 loosening and 2 tightening, or 4 alone for an error |
 | n/a | [`policy diff` reads lockfiles](engineering_decisions/policy-diff-lockfiles.md) | `--lockfile <path>`, repeatable, adds the registry versions of `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` v1, `pnpm-lock.yaml` 9 or `bun.lock` to the audit log's |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
+| n/a | [Ecosystems in every build](engineering_decisions/no-ecosystem-features.md) | No Cargo feature per ecosystem; every build serves every ecosystem |
 | 10 | [Fetch path](engineering_decisions/fetch-path-branching.md) | Branch decided before fetching; npm and pnpm retry a deferred tarball, yarn 1 and bun fail the first install ([deferral-status-codes](engineering_decisions/deferral-status-codes.md)) |
 
 ### Staging
