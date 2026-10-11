@@ -2587,6 +2587,18 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 
 ---
 
+## Stage 4.8: Sign, smoke test and push
+
+1. [ ] Sign all commits. Re-signing rewrites every commit hash, so it is done before the
+       first push.
+2. [ ] Smoke test the proxy against live workloads.
+3. [ ] Git push. The remote is not set up yet; the GitHub home is
+       `github.com/krishardy/byrle`.
+
+**Exit:** every item in this stage is done.
+
+---
+
 ## Stage 5 — Hardening
 
 **Goal:** make it something a real team will run in blocking mode.
