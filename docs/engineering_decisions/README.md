@@ -100,8 +100,9 @@ code, and the file names where.
 | [Enforcement tiers](enforcement-tiers.md) | Open question |
 | [Terminating TLS: pre-issued certificates](terminating-tls-certificates.md) | Decided, not implemented |
 | [Stage structure](stage-structure.md) | Staging |
-| [Fetch path branching](fetch-path-branching.md) | Staging |
-| [Project name: waharoa](project-name-waharoa.md) | Staging, cultural consultation (Stage 7) |
+| [Fetch path branching](fetch-path-branching.md) | Decided |
+| [Project name: waharoa](project-name-waharoa.md) | Superseded by [project-name-byrle](project-name-byrle.md) |
+| [Project name: byrle](project-name-byrle.md) | Staging, the rename (Stage 7) |
 
 ## Adding one
 

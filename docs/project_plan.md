@@ -1,36 +1,16 @@
-# waharoa — Open Source Dependency Firewall
+# byrle: Open Source Dependency Firewall
 
-> **Working name: `waharoa`** — te reo Māori for the carved gateway of a pā, literally
-> the *long entrance*. The metaphor is exact: the gate you pass through before you are
-> inside the walls.
+> **Name: `byrle`.** Decided 2026-10-01, replacing the working name `waharoa`
+> ([project-name-byrle](engineering_decisions/project-name-byrle.md)). The code, the
+> environment variables, the headers and the commands in this plan still use `waharoa`
+> until the rename item in Stage 7 of `TODO.md` is done. An informal cultural consultation
+> on `waharoa`, in September 2026, was not in favour of it; the result is in
+> [project-name-waharoa](engineering_decisions/project-name-waharoa.md#consultation-result).
 >
-> ✅ **Registry availability VERIFIED (Sept 2026).** Checked by direct exact-name lookup,
-> which is definitive in a way search never is. All four return 404: `crates.io`, the npm
-> registry, PyPI, and the `waharoa` GitHub org. Known-existing names were checked in the
-> same run and return 200, so the 404s are real absences rather than a broken probe; the
-> same probe confirms the npm `yett` collision noted below. Only known collision is the
-> Waikato town, which will not compete in technical search results.
->
-> ⚠ **Cultural check outstanding.** A waharoa is often the most significant carving on a
-> marae, so this is not neutral vocabulary. Worth running past someone with standing to
-> advise — not as box-ticking, but because the difference between a name that lands well
-> and one that reads as appropriation is context a dictionary will not give you.
->
-> **Ruled out, with reasons — do not relitigate:**
-> - **portcullis** — crowded, and crowded in this exact neighbourhood. Docker ships a
->   `portcullis` secrets-redaction library; `imjasonh/portcullis` is a CLI that verifies
->   trust via Sigstore/Rekor before execution (conceptually adjacent enough to confuse);
->   Portcullis Labs is Cisco's EMEA security R&D arm. The GitHub org handle is taken.
-> - **waha** (the root word, *mouth/entrance*) — `devlikeapro/waha`, a WhatsApp HTTP API,
->   is an established self-hosted server tool distributed via Docker with its own domain
->   and docs site. Different ecosystem, but the same distribution channel and better SEO.
-> - **anything containing "-gate"** — the scandal suffix has gone international.
-> - **pkggate** — already an existing OSS competitor (see §2).
->
-> **Fallback shortlist**, if waharoa fails a check: `yett` (Scots, the iron lattice gate
-> of a tower house — but an npm package of that name exists, a third-party script
-> execution controller, uncomfortably adjacent), `ravelin`, `barmkin`, `merlon`,
-> `cordon`.
+> Registry check, 2026-10-11, by exact-name lookup: crates.io, the npm registry and PyPI
+> return 404 for `byrle`. The GitHub handle `byrle` is a user account created 2021-11-11
+> with no public repositories. `serde`, `lodash`, `requests` and `rust-lang` returned 200
+> in the same run.
 
 A self-hosted proxy that evaluates packages against a security policy **before** they
 are downloaded, extracted, or executed. Blocks known malware and policy violations
@@ -842,14 +822,14 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [`policy diff`: a date per policy, and exit bits](engineering_decisions/policy-diff-dates-and-exit-bits.md) | `--from-date` and `--to-date` replace `--as-of`; exit is the OR of 1 loosening and 2 tightening, or 4 alone for an error |
 | n/a | [`policy diff` reads lockfiles](engineering_decisions/policy-diff-lockfiles.md) | `--lockfile <path>`, repeatable, adds the registry versions of `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` v1, `pnpm-lock.yaml` 9 or `bun.lock` to the audit log's |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
+| 10 | [Fetch path](engineering_decisions/fetch-path-branching.md) | Branch decided before fetching; npm and pnpm retry a deferred tarball, yarn 1 and bun fail the first install ([deferral-status-codes](engineering_decisions/deferral-status-codes.md)) |
 
 ### Staging
 
 | # | Decision | Remaining gate |
 |---|---|---|
 | 9 | [Stage structure](engineering_decisions/stage-structure.md) | M1 transport, M2 policy. Spike dissolved |
-| 10 | [Fetch path](engineering_decisions/fetch-path-branching.md) | Branch decided before fetching; npm retry behaviour untested |
-| 13 | [Name](engineering_decisions/project-name-waharoa.md) | Registry checks passed; cultural consultation outstanding |
+| 13 | [Name](engineering_decisions/project-name-byrle.md) | `byrle`, replacing `waharoa`; the code is not yet renamed and the GitHub handle is taken |
 
 ### Open questions
 

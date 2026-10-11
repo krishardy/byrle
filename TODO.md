@@ -2805,7 +2805,14 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 - [x] Name availability check across npm, PyPI, crates.io, GitHub. Done in Stage 1: all
       four exact-name lookups return 404, with known-existing controls returning 200 in
       the same run.
-- [ ] `[!]` **Cultural consultation on the name `waharoa`.** A human conversation, not a
+- [x] `[!]` **Cultural consultation on the name `waharoa`.** An informal consultation, for
+      a first reaction to the name, was held in September 2026. The person consulted was not enthusiastic about the name, was concerned that the
+      project has no Māori developers, and suggested something akin to Kaitiaki, which is
+      heavily overloaded. A te reo Māori name would have to be asked for; that may be
+      revisited if the project gains support and local Māori engineers become involved.
+      The project is renamed to `byrle`, the item below
+      ([project-name-waharoa](docs/engineering_decisions/project-name-waharoa.md#consultation-result)).
+      Original item: a human conversation, not a
       lookup, and the remaining gate on the name. Moved here from Stage 1 because it
       blocks release rather than development: until then the name appears only in a binary
       nobody outside this repository runs. If the answer is no, the rename is a
@@ -2816,8 +2823,11 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       makes the cultural consultation above moot. The name is in the crate and binary, the
       `WAHAROA_*` environment variables, the `x-waharoa-*` headers, the `waharoa.*` log
       fields, `/-/waharoa/` paths, the `waharoa-detector-` scratch directories, the docs and
-      `docs/engineering_decisions/project-name-waharoa.md`. Run the registry check on
-      `byrle` first.
+      `docs/engineering_decisions/project-name-waharoa.md`.
+  - [x] Registry check on `byrle`, 2026-10-11: crates.io, npm and PyPI return 404. The
+        GitHub handle is a user account created 2021-11-11 with no public repositories
+        ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md)).
+  - [ ] Choose the GitHub home, since the `byrle` handle is taken.
 - [ ] Migration guide from Socket Firewall Free / pkggate
 - [ ] CONTRIBUTING.md, adapter authoring guide, detector authoring guide, and a stream
       authoring guide for third-party advisory sources. The last moved from Stage 2: it

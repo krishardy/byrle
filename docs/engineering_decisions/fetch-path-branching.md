@@ -1,6 +1,6 @@
 # Fetch path: branch before fetching
 
-- **Status:** Staging
+- **Status:** Decided
 - **Plan reference:** decision #10
 
 ## Decision

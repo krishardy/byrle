@@ -1,7 +1,7 @@
 # Project name: waharoa
 
-- **Status:** Staging. Registry checks passed; cultural consultation outstanding, and
-  scheduled for Stage 7 as a pre-release gate.
+- **Status:** Superseded 2026-10-01 by [project-name-byrle](project-name-byrle.md), after
+  an informal cultural consultation. See "Consultation result" below.
 - **Plan reference:** decision #13, and the plan header.
 
 ## Decision
@@ -28,6 +28,21 @@ nobody outside this repository runs, so nothing built before launch depends on t
 answer, and a "no" costs a find-and-replace plus rerunning the registry checks on the
 replacement. It is scheduled in Stage 7, early enough that a rename is not competing with
 the announcement.
+
+## Consultation result
+
+An informal cultural consultation on `waharoa` was held in September 2026, to get a first
+reaction to the name. It was not a formal consultation. The person consulted:
+
+- was not enthusiastic about the name.
+- was concerned that the project has no Māori developers.
+- said a name akin to Kaitiaki would fit better. Kaitiaki is heavily overloaded, so it
+  is not a candidate as it stands.
+
+A te reo Māori name would have to be asked for, given to the project, not chosen by it.
+That request is not being made for this project now. It may be revisited if the project
+gains support and local Māori engineers become involved. Until then the project is
+`byrle`.
 
 ## Alternatives rejected
 
