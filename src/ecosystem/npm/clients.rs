@@ -1,4 +1,4 @@
-//! The package managers that install from an npm registry, as `waharoa doctor` checks them.
+//! The package managers that install from an npm registry, as `byrle doctor` checks them.
 
 use crate::doctor::{CacheBypass, CacheLocation, Client, RegistryQuery, RegistrySource};
 use crate::env::Process;

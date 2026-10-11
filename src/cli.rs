@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 #[derive(Debug, PartialEq, Parser)]
 #[command(
-    name = "waharoa",
+    name = "byrle",
     version,
     about = "Dependency firewall",
     after_help = crate::env::help()
@@ -99,7 +99,7 @@ pub struct Warm {
 
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum IntelCommand {
-    /// Each stream every `waharoa refresh` loaded or did not, newest first
+    /// Each stream every `byrle refresh` loaded or did not, newest first
     History(History),
 }
 
@@ -260,7 +260,7 @@ mod tests {
     use clap::error::ErrorKind;
 
     fn parse(args: &[&str]) -> Result<Cli, clap::Error> {
-        Cli::try_parse_from(std::iter::once("waharoa").chain(args.iter().copied()))
+        Cli::try_parse_from(std::iter::once("byrle").chain(args.iter().copied()))
     }
 
     fn diff(args: &[&str]) -> Result<Diff, clap::Error> {
@@ -427,7 +427,7 @@ mod tests {
     #[test]
     fn a_malformed_policy_diff_exits_its_error_bit_and_other_commands_exit_2() {
         let code = |args: &[&str]| {
-            let argv: Vec<std::ffi::OsString> = std::iter::once("waharoa")
+            let argv: Vec<std::ffi::OsString> = std::iter::once("byrle")
                 .chain(args.iter().copied())
                 .map(Into::into)
                 .collect();

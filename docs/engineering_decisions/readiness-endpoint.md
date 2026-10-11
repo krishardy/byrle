@@ -7,7 +7,7 @@
 
 ## Decision
 
-`GET /-/waharoa/ready` answers:
+`GET /-/byrle/ready` answers:
 
 | Policy | Intel store | Status | `intel` |
 |---|---|---|---|
@@ -39,13 +39,13 @@ The 200 body reports the snapshot that decisions use:
 `sources` was added 2026-09-15: the sources the snapshot id is the digest of, read from
 `intel_source`. `doctor` reads a body without it as no sources.
 
-The response carries `Cache-Control: no-store`, as `/-/waharoa/health` does. A store error
+The response carries `Cache-Control: no-store`, as `/-/byrle/health` does. A store error
 is logged and not served, because a database error can carry the database's address.
 
 ## No percentage
 
 Plan §3 asked for "the percentage complete" in the 503 body and per-stream progress at the
-endpoint. `waharoa refresh` is a separate process, and `PgIntel::replace_source` deletes a
+endpoint. `byrle refresh` is a separate process, and `PgIntel::replace_source` deletes a
 source's rows, copies the new ones in and records the snapshot in one transaction. A proxy
 reads the previous snapshot or the new one, never part of one, so the store has no progress
 to report. Per stream, the endpoint reports what is loaded: the sha256, etag and
@@ -62,7 +62,7 @@ It is one query, `jsonb_each` over the newest `intel_snapshot.streams`. `taken_a
 reported in UTC to the second. A stream recorded with no `sha256` is left out; refresh
 writes one for every stream.
 
-## `waharoa doctor`
+## `byrle doctor`
 
 `doctor` reads the endpoint after the health request answers:
 

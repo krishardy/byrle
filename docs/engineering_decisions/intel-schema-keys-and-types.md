@@ -34,7 +34,7 @@ A value longer than its column fails the refresh. The transaction rolls back, th
 load stays, and the error names the table, line and column from Postgres's `where` field:
 
 ```
-waharoa refresh: nothing loaded: intel store: error returned from database: value too long for type character varying(512) (COPY advisory_affected, line 1, column name: "xxxx...")
+byrle refresh: nothing loaded: intel store: error returned from database: value too long for type character varying(512) (COPY advisory_affected, line 1, column name: "xxxx...")
 ```
 
 Postgres cuts the quoted value at 100 characters. The context was reproduced with `psql` against
@@ -72,7 +72,7 @@ Live, 2026-09-13, debug build, Postgres 17, the same bundle as
 | affected rows | 233,239 | 233,239 |
 | ranges | 10,326 | 10,326 |
 | snapshot | `sha256:cf3822e6...3c392f` | `sha256:cf3822e6...3c392f` |
-| `waharoa refresh` | 46.9s | 49.4s |
+| `byrle refresh` | 46.9s | 49.4s |
 
 All 228,245 advisories have `modified`. The database is 106 MB. The lookup by package uses both
 indexes:
@@ -102,7 +102,7 @@ checksum of each applied migration, so a database that applied the old files fai
 migration 1 was previously applied but has been modified
 ```
 
-Drop that database and run `waharoa refresh`. The store is a mirror of the advisory streams, so
+Drop that database and run `byrle refresh`. The store is a mirror of the advisory streams, so
 nothing is lost that a refresh does not restore.
 
 ## Rejected

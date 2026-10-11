@@ -122,7 +122,7 @@ Measured end to end against a stub HTML index that carries no dates, under
 
 ```
 INFO publish time read from the file's Last-Modified path=/packages/.../idna-3.10-py3-none-any.whl
-403 waharoa: pkg:pypi/idna@3.10 is held by policy
+403 byrle: pkg:pypi/idna@3.10 is held by policy
       - cooldown_days: published too recently, installable on 2124-08-22
 ```
 
@@ -130,7 +130,7 @@ A check that is dropped is reported, never passed silently. Three places say so:
 
 | Where | What it says |
 |---|---|
-| `waharoa doctor` | asks the configured index with a `HEAD` and reports its form. `WARN pypi index form: ... serves PEP 503 HTML, which carries no publish time, so cooldown_days is answered on the artifact request rather than while filtering the index` |
+| `byrle doctor` | asks the configured index with a `HEAD` and reports its form. `WARN pypi index form: ... serves PEP 503 HTML, which carries no publish time, so cooldown_days is answered on the artifact request rather than while filtering the index` |
 | the proxy's log, once per document | `cooldown_days cannot be answered while filtering this document; a pinned fetch of one of these versions is decided on the file's own date` |
 | the audit log, per decision | `unenforceable=['cooldown_days', ...]` |
 
@@ -139,7 +139,7 @@ pinned 3.10 action=block unenforceable=['cooldown_days', 'known_malware', 'kev',
 ```
 
 An index on a different origin from its files needs that origin added with
-`WAHAROA_ARTIFACT_ORIGINS`, or its files are left pointing at it: `download.pytorch.org`
+`BYRLE_ARTIFACT_ORIGINS`, or its files are left pointing at it: `download.pytorch.org`
 writes `href`s on `download-r2.pytorch.org`, which the proxy does not front by default.
 
 ## Measured after the change
@@ -147,8 +147,8 @@ writes `href`s on `download-r2.pytorch.org`, which the proxy does not front by d
 Same stub index, a denial of `pkg:pypi/idna@3.10`:
 
 ```
-x-waharoa-filtered-versions: 1
-x-waharoa-filtered-checks: denials
+x-byrle-filtered-versions: 1
+x-byrle-filtered-checks: denials
 $ pip install --index-url http://127.0.0.1:8129/simple/ idna
 ERROR: Could not find a version that satisfies the requirement idna (from versions: none)
 ```

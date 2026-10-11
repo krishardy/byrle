@@ -1,30 +1,30 @@
 //! The repository traits against a real Postgres: the advisory mirror and the analyses.
 //!
-//! `make test-integration` sets `waharoa::env::TEST_DATABASE_URL`; without it each test is
+//! `make test-integration` sets `byrle::env::TEST_DATABASE_URL`; without it each test is
 //! skipped. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
 
 #![cfg(not(coverage))]
 
+use byrle::analysis::InstallScripts;
+use byrle::analysis::postgres::PgAnalyses;
+use byrle::analysis::store::{Analyses, Analysis, Scripts};
+use byrle::integrity::Sri;
+use byrle::intel::history::{Ingestion, NotLoaded};
+use byrle::intel::load::{self, Fetch};
+use byrle::intel::postgres::{Loaded, PgIntel, Replacement};
+use byrle::intel::providers::osv::{self, Parsed};
+use byrle::intel::providers::{datadog, kev};
+use byrle::intel::refresh::StreamDigest;
+use byrle::intel::rows::{self, Rows};
+use byrle::intel::snapshot_dir::SnapshotDir;
+use byrle::intel::snapshot_intel::SnapshotIntel;
+use byrle::intel::store::{Intel, IntelError, LoadedSnapshot, PackageIntel};
 use sqlx::PgPool;
 use std::collections::BTreeSet;
-use waharoa::analysis::InstallScripts;
-use waharoa::analysis::postgres::PgAnalyses;
-use waharoa::analysis::store::{Analyses, Analysis, Scripts};
-use waharoa::integrity::Sri;
-use waharoa::intel::history::{Ingestion, NotLoaded};
-use waharoa::intel::load::{self, Fetch};
-use waharoa::intel::postgres::{Loaded, PgIntel, Replacement};
-use waharoa::intel::providers::osv::{self, Parsed};
-use waharoa::intel::providers::{datadog, kev};
-use waharoa::intel::refresh::StreamDigest;
-use waharoa::intel::rows::{self, Rows};
-use waharoa::intel::snapshot_dir::SnapshotDir;
-use waharoa::intel::snapshot_intel::SnapshotIntel;
-use waharoa::intel::store::{Intel, IntelError, LoadedSnapshot, PackageIntel};
 
 /// The database to test against, or nothing, in which case the test is skipped.
 fn url() -> Option<String> {
-    waharoa::env::process()
+    byrle::env::process()
         .test_database_url()
         .unwrap_or_else(|e| panic!("{e}"))
 }
@@ -99,11 +99,11 @@ async fn insert(intel: &PgIntel, sql: &'static str) {
 /// proxy with no store, which is a different state from a store that cannot answer.
 #[tokio::test]
 async fn a_store_is_built_from_the_environment_or_is_absent() {
-    use waharoa::env::{DATABASE_URL, Env};
+    use byrle::env::{DATABASE_URL, Env};
 
     let unset = Env::from_lookup(|_| None);
     assert!(
-        waharoa::intel::postgres::from_env(&unset)
+        byrle::intel::postgres::from_env(&unset)
             .await
             .expect("an unset variable is not an error")
             .is_none()
@@ -113,7 +113,7 @@ async fn a_store_is_built_from_the_environment_or_is_absent() {
     let set = Env::from_lookup(move |name| {
         (name == DATABASE_URL.name).then(|| std::ffi::OsString::from(url.clone()))
     });
-    let intel = waharoa::intel::postgres::from_env(&set)
+    let intel = byrle::intel::postgres::from_env(&set)
         .await
         .expect("the database is there")
         .expect("the variable is set");
@@ -127,10 +127,10 @@ async fn a_store_is_built_from_the_environment_or_is_absent() {
 /// any other missing configuration does.
 #[tokio::test]
 async fn a_command_without_a_store_is_refused_with_the_variable_to_set() {
-    use waharoa::env::{DATABASE_URL, Env};
+    use byrle::env::{DATABASE_URL, Env};
 
     let unset = Env::from_lookup(|_| None);
-    let refused = match waharoa::intel::postgres::required(&unset).await {
+    let refused = match byrle::intel::postgres::required(&unset).await {
         Err(refused) => refused,
         Ok(_) => panic!("an unset variable is no store"),
     };
@@ -145,7 +145,7 @@ async fn a_command_without_a_store_is_refused_with_the_variable_to_set() {
         (name == DATABASE_URL.name).then(|| std::ffi::OsString::from(url.clone()))
     });
     assert!(
-        waharoa::intel::postgres::required(&set).await.is_ok(),
+        byrle::intel::postgres::required(&set).await.is_ok(),
         "the database is there"
     );
 }
@@ -372,7 +372,7 @@ fn osv_fixture(id: &str) -> Rows {
         env!("CARGO_MANIFEST_DIR")
     );
     match osv::parse(
-        waharoa::identity::Ecosystem::Npm,
+        byrle::identity::Ecosystem::Npm,
         &std::fs::read(path).expect("fixture is missing"),
     )
     .expect("fixture parses")
@@ -1024,7 +1024,7 @@ async fn a_vulnerability_record_loads_with_its_score_and_aliases() {
             ]}]
         }]
     }"#;
-    let Parsed::Rows(rows) = osv::parse(waharoa::identity::Ecosystem::Npm, record).expect("parses")
+    let Parsed::Rows(rows) = osv::parse(byrle::identity::Ecosystem::Npm, record).expect("parses")
     else {
         panic!("should be stored");
     };
@@ -1193,7 +1193,7 @@ async fn a_stream_left_unconfigured_is_reported_until_a_refresh_records_it_other
         bundle: None,
         error: format!(
             "{} is unset, so this stream is not read",
-            waharoa::env::GITHUB_TOKEN
+            byrle::env::GITHUB_TOKEN
         ),
         unconfigured,
     };
@@ -1443,7 +1443,7 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
     let (every, _) = target(&rows[0]);
     let (listed, _) = target(&rows[1]);
     let manifest = datadog::parse(
-        waharoa::identity::Ecosystem::Npm,
+        byrle::identity::Ecosystem::Npm,
         format!(r#"{{"{every}": null, "{listed}": ["1.0"]}}"#).as_bytes(),
     )
     .expect("parses");
@@ -1474,7 +1474,7 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
         .await
         .expect("load");
 
-    let path = std::env::temp_dir().join(format!("waharoa-it-kept-{}", std::process::id()));
+    let path = std::env::temp_dir().join(format!("byrle-it-kept-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&path);
     let dir = SnapshotDir::open(&path).expect("opens");
     for rows in [&encoded, &exploited, &flagged] {
@@ -1764,7 +1764,7 @@ async fn re_analysing_an_artifact_replaces_its_scripts() {
 /// an earlier one, and a digest nothing verified is `None` rather than either.
 #[tokio::test]
 async fn an_attestation_result_is_kept_under_its_digest() {
-    use waharoa::analysis::attestation::Attested;
+    use byrle::analysis::attestation::Attested;
     let intel = skip_without_database!("t_attestation");
     let store = analyses(&intel);
     let verified = Attested::Verified {
@@ -1803,8 +1803,8 @@ async fn an_attestation_result_is_kept_under_its_digest() {
 /// back only for the detector version that wrote it.
 #[tokio::test]
 async fn a_detection_is_kept_under_its_version() {
-    use waharoa::analysis::detector::{Detection, Finding};
-    use waharoa::analysis::store::DetectionKey;
+    use byrle::analysis::detector::{Detection, Finding};
+    use byrle::analysis::store::DetectionKey;
     let intel = skip_without_database!("t_detection");
     let store = analyses(&intel);
     let key = DetectionKey {
@@ -1853,7 +1853,7 @@ async fn a_detection_is_kept_under_its_version() {
 /// or one that no longer reads, is not read back.
 #[tokio::test]
 async fn a_source_comparison_is_kept_under_its_digest() {
-    use waharoa::analysis::source::{Comparison, Sourced};
+    use byrle::analysis::source::{Comparison, Sourced};
     let intel = skip_without_database!("t_source");
     let store = analyses(&intel);
     let compared = Sourced::Compared {
@@ -1932,7 +1932,7 @@ async fn an_analysis_from_another_reader_is_not_read() {
 /// verifier bug does not outlive the upgrade that fixes it.
 #[tokio::test]
 async fn an_attestation_result_from_another_verifier_is_not_read() {
-    use waharoa::analysis::attestation::Attested;
+    use byrle::analysis::attestation::Attested;
     let intel = skip_without_database!("t_attestation_verifier");
     let store = analyses(&intel);
     sqlx::query(

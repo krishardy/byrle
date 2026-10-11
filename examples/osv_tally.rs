@@ -8,8 +8,8 @@
 //! PyPI's is `https://osv-vulnerabilities.storage.googleapis.com/PyPI/all.zip`.
 //!
 //! Run: cargo run --example osv_tally -- all.zip [npm|pypi]
-use waharoa::identity::Ecosystem;
-use waharoa::intel::providers::osv::bundle;
+use byrle::identity::Ecosystem;
+use byrle::intel::providers::osv::bundle;
 
 fn main() {
     // The rule below guards against trusting argv for security decisions. This is a

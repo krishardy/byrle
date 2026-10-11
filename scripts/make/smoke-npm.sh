@@ -24,9 +24,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$repo_root/scripts/make/lib/node.sh"
 # shellcheck source=scripts/make/lib/postgres.sh
 . "$repo_root/scripts/make/lib/postgres.sh"
-waharoa_use_latest_node
+byrle_use_latest_node
 
-port="${WAHAROA_PORT:-8731}"
+port="${BYRLE_PORT:-8731}"
 registry="http://127.0.0.1:${port}/"
 workdir="$(mktemp -d)"
 log="$workdir/proxy.log"
@@ -42,19 +42,19 @@ trap cleanup EXIT
 command -v npm >/dev/null || { echo "npm is required for this check"; exit 1; }
 
 if ss -ltn 2>/dev/null | grep -q ":${port} "; then
-    echo "port ${port} is already in use; set WAHAROA_PORT to something free"
+    echo "port ${port} is already in use; set BYRLE_PORT to something free"
     exit 1
 fi
 
 fail() { echo "FAIL: $*"; echo "--- proxy log ---"; cat "$log"; exit 1; }
 
 start_proxy() {
-    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_POLICY="${1:-}" \
-    WAHAROA_DATABASE_URL="$database_url" \
+    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" BYRLE_POLICY="${1:-}" \
+    BYRLE_DATABASE_URL="$database_url" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
-        grep -q "waharoa listening" "$log" && return 0
+        grep -q "byrle listening" "$log" && return 0
         kill -0 "$proxy_pid" 2>/dev/null || fail "proxy exited during startup"
         sleep 1
     done
@@ -113,14 +113,14 @@ expected_purls="$(
 )"
 [[ -n "$expected_purls" ]] || fail "could not read any installed package versions"
 
-observed_purls="$(grep -oE 'waharoa.package.claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u)"
+observed_purls="$(grep -oE 'byrle.package.claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u)"
 unnormalized="$(comm -23 <(echo "$expected_purls") <(echo "$observed_purls") || true)"
 [[ -z "$unnormalized" ]] \
     || fail "installed but never normalized to a purl: $(echo "$unnormalized" | tr '\n' ' ')"
 
 # The packument side: every package had its document parsed, and no version inside any
 # of those documents was skipped. A skip means a shape the normalizer cannot read.
-grep -q 'packument normalized.*waharoa.package.purl=pkg:npm/%40babel/code-frame' "$clean_log" \
+grep -q 'packument normalized.*byrle.package.purl=pkg:npm/%40babel/code-frame' "$clean_log" \
     || fail "the scoped packument was never normalized"
 if grep -oE 'packument normalized.*skipped=[0-9]+' "$clean_log" | grep -qv 'skipped=0'; then
     fail "a packument had versions the normalizer could not read:
@@ -273,22 +273,22 @@ echo "==> 9/9  known_malware refuses a package a MAL record covers"
 if ! choose_postgres >/dev/null; then
     echo "    skipped (neither docker nor initdb and pg_ctl are available)"
 else
-    pg_port="${WAHAROA_PG_PORT:-55435}"
-    start_postgres "waharoa-smoke-npm-pg-$$" "$pg_port" || fail "postgres did not start"
+    pg_port="${BYRLE_PG_PORT:-55435}"
+    start_postgres "byrle-smoke-npm-pg-$$" "$pg_port" || fail "postgres did not start"
     trap 'stop_postgres; cleanup' EXIT
     database_url="$(postgres_url "$pg_port")"
     # Exit 1 is an optional stream that did not load, such as GitHub's without a token.
     # Readiness below says whether a snapshot loaded.
     set +e
-    WAHAROA_DATABASE_URL="$database_url" cargo run --quiet --manifest-path "$repo_root/Cargo.toml" \
+    BYRLE_DATABASE_URL="$database_url" cargo run --quiet --manifest-path "$repo_root/Cargo.toml" \
         -- refresh >"$workdir/refresh.out" 2>&1
     refresh_status=$?
     set -e
-    [[ "$refresh_status" -le 1 ]] || fail "waharoa refresh exited $refresh_status:
+    [[ "$refresh_status" -le 1 ]] || fail "byrle refresh exited $refresh_status:
 $(tail -20 "$workdir/refresh.out")"
     printf 'version: 1\ncooldown_days: 0\n' >"$workdir/malware.yaml"
     start_proxy "$workdir/malware.yaml"
-    ready=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/-/waharoa/ready")
+    ready=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/-/byrle/ready")
     [[ "$ready" == "200" ]] || fail "the proxy is not ready after the refresh ($ready)"
     refused_both_ways clinstestpackage 0.0.1-security \
         /clinstestpackage/-/clinstestpackage-0.0.1-security.tgz known_malware

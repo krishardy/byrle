@@ -1,5 +1,5 @@
 //! Fetching a stream's bundle: one GET, or GitHub's paged POST, with the byte ceilings and
-//! retries. Progress goes to `notice`, so `waharoa refresh` owns its output and a test can
+//! retries. Progress goes to `notice`, so `byrle refresh` owns its output and a test can
 //! read it.
 
 use super::history::NotLoaded;

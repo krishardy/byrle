@@ -1,7 +1,7 @@
 # Observe mode is one switch for the whole proxy, and enforce is the default
 
 - **Status:** Implemented 2026-09-28. `refusal::Mode`, `env::MODE`, `Deciding::answer` and
-  `Deciding::observed`, `policy_refused_versions`, and `mode` in `/-/waharoa/health`.
+  `Deciding::observed`, `policy_refused_versions`, and `mode` in `/-/byrle/health`.
   Replaces the plan's "warn mode is the default" (§6).
 - **Related:** [policy-tier-resolution](policy-tier-resolution.md),
   [quarantine-filter-metadata](quarantine-filter-metadata.md),
@@ -10,7 +10,7 @@
 
 ## Decision
 
-`WAHAROA_MODE` takes `enforce` or `observe`, and is `enforce` when unset. It applies to the
+`BYRLE_MODE` takes `enforce` or `observe`, and is `enforce` when unset. It applies to the
 whole proxy.
 
 | Mode | What the proxy decides and audits | What it answers |
@@ -50,7 +50,7 @@ A metadata document:
 | resolution audit line | written | written, with `answered: served` |
 | remove versions the policy refuses | yes | no, and WARN `observe: the policy refuses these versions; left in the document` |
 | remove versions on an origin the proxy does not serve | yes | yes: left in, the client would fetch them without the proxy |
-| `x-waharoa-filtered-versions` and `x-waharoa-filtered-checks` | sent when a version was removed | not sent |
+| `x-byrle-filtered-versions` and `x-byrle-filtered-checks` | sent when a version was removed | not sent |
 | rewrite artifact URLs to the proxy | yes | yes |
 
 An artifact request: the policy's refusal is logged at WARN, `observe: the policy refuses
@@ -62,6 +62,6 @@ failing, not the policy.
 `answered: served` beside a refusing action is how a line says the refusal was not made.
 No separate field was added.
 
-`/-/waharoa/health` reports `mode`, and `waharoa doctor` warns when it is `observe`.
-`waharoa status` reports what the build does, not how a proxy is configured, so it does
+`/-/byrle/health` reports `mode`, and `byrle doctor` warns when it is `observe`.
+`byrle status` reports what the build does, not how a proxy is configured, so it does
 not.

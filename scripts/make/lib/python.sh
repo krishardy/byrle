@@ -4,7 +4,7 @@
 # Sourced, not executed. Each function prints an install command, one argument per line,
 # so a caller can run it directly or under `timeout`:
 #
-#   mapfile -t cmd < <(waharoa_pip_command "$venv" "$index" requests); "${cmd[@]}"
+#   mapfile -t cmd < <(byrle_pip_command "$venv" "$index" requests); "${cmd[@]}"
 #
 # PIP_CONFIG_FILE=/dev/null because a configured `extra-index-url` is queried alongside
 # the proxy and serves its own file URLs. Measured: with the operator's own pip.conf in
@@ -18,14 +18,14 @@
 # --disable-pip-version-check because the check asks the index for `/simple/pip/`, a
 # request that is not the install's.
 
-waharoa_pip_command() {
+byrle_pip_command() {
     local venv="$1" index="$2"; shift 2
     printf '%s\n' env PIP_CONFIG_FILE=/dev/null "$venv/bin/pip" install \
         --index-url "$index" --trusted-host 127.0.0.1 \
         --no-cache-dir --disable-pip-version-check "$@"
 }
 
-waharoa_uv_command() {
+byrle_uv_command() {
     local venv="$1" index="$2"; shift 2
     printf '%s\n' env "VIRTUAL_ENV=$venv" UV_NO_CONFIG=1 uv pip install \
         --index-url "$index" --allow-insecure-host 127.0.0.1 --no-cache "$@"

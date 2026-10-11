@@ -1,4 +1,4 @@
-//! waharoa: a dependency firewall. The binary is in `main.rs`, and every command it runs is
+//! byrle: a dependency firewall. The binary is in `main.rs`, and every command it runs is
 //! here, where it can be tested without a network.
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]

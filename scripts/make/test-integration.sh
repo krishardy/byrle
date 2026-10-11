@@ -11,20 +11,20 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-port="${WAHAROA_PG_PORT:-55433}"
+port="${BYRLE_PG_PORT:-55433}"
 # shellcheck source=scripts/make/lib/postgres.sh
 . "$repo_root/scripts/make/lib/postgres.sh"
 
 note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 if ! choose_postgres; then
-    echo "Or point WAHAROA_TEST_DATABASE_URL at a database and run: cargo test --test postgres"
+    echo "Or point BYRLE_TEST_DATABASE_URL at a database and run: cargo test --test postgres"
     exit 1
 fi
 
 note "postgres ($postgres_where) on port $port"
-start_postgres "waharoa-test-pg-$$" "$port"
+start_postgres "byrle-test-pg-$$" "$port"
 
 note "cargo test --test postgres"
-WAHAROA_TEST_DATABASE_URL="$(postgres_url "$port")" \
+BYRLE_TEST_DATABASE_URL="$(postgres_url "$port")" \
     cargo test --manifest-path "$repo_root/Cargo.toml" --test postgres -- --test-threads=1

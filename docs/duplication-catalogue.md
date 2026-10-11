@@ -33,8 +33,8 @@ The Action column uses three values:
 | P1 | Packument GET: `Accept`, `Accept-Encoding: gzip`, status check, `Content-Encoding`, `decode_for_parsing`. 13 lines | `npm.rs:1236-1266` (`packument`), `npm.rs:1278-1300` (`publish_times`) | consolidate | one private fetch taking the `Accept` value, returning decoded bytes |
 | P2 | Lock `.expect` messages: `"record store lock"` 6, `"verified artifacts lock"` 3; `"publish times lock"` 2, removed with the cache | `proxy.rs:294, 597, 608, 629, 989, 1126`; `308, 455, 816`; `1313, 1339` | helper | one method per mutex on the proxy state that locks and expects |
 | P3 | Today's date: `jiff::Timestamp::now().to_zoned(TimeZone::UTC).date()` | `main.rs:189-193` (`run_policy_diff`), `main.rs:404-406` (`run_explain`), `proxy.rs:1289` (`fn today`) | done | `policy::today()`, with `policy check`. `report_policy` used `jiff::Zoned::now().date()`, local time, and now uses it too |
-| P4 | User agent `concat!("waharoa/", env!("CARGO_PKG_VERSION"))` | `main.rs:555`, `main.rs:708` | consolidate | one `const USER_AGENT` |
-| P5 | Command error output: 20 `eprintln!("waharoa <command>: ...")` and 23 `ExitCode::from(n)`. Repeated literals: `"waharoa explain: {e}"` (324, 345, 396), `"waharoa refresh: {e}"` (560, 568, 599), `"waharoa policy diff: {}: {e}"` (205, 215, 231), `"waharoa refresh: nothing loaded: {e}"` (576, 608) | `main.rs` | helper | a function taking the command name, message and exit code, alongside `or_exit` |
+| P4 | User agent `concat!("byrle/", env!("CARGO_PKG_VERSION"))` | `main.rs:555`, `main.rs:708` | consolidate | one `const USER_AGENT` |
+| P5 | Command error output: 20 `eprintln!("byrle <command>: ...")` and 23 `ExitCode::from(n)`. Repeated literals: `"byrle explain: {e}"` (324, 345, 396), `"byrle refresh: {e}"` (560, 568, 599), `"byrle policy diff: {}: {e}"` (205, 215, 231), `"byrle refresh: nothing loaded: {e}"` (576, 608) | `main.rs` | helper | a function taking the command name, message and exit code, alongside `or_exit` |
 | P6 | `"packument is not valid JSON: {e}"` | `npm.rs:439`, `npm.rs:756` (`NormalizeError::Json`) | consolidate | one `const` or a shared `Display` arm |
 | P7 | `"delete the lockfile and node_modules, then install again through the proxy"` | `doctor.rs:208`, `doctor.rs:219` | consolidate | `const` |
 | P8 | Finding title `"proxy public URL"` | `doctor.rs:362`, `doctor.rs:376` | consolidate | `const` |
@@ -77,7 +77,7 @@ A reworded message fails these tests, so the copies cannot drift. Action: leave.
 |---|---|---|---|---|
 | S1 | `note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }` | `check-deps.sh:25`, `lint.sh:19`, `semgrep.sh:114`, `sqlx-prepare.sh:18`, `test-integration.sh:18`, `update-deps.sh:19` | helper | `scripts/make/lib/note.sh` |
 | S2 | Postgres container: start, `pg_isready` wait, cleanup trap. 17 lines | `sqlx-prepare.sh:26-45`, `test-integration.sh:24-43` | done | `scripts/make/lib/postgres.sh`, with the `pg_isready` fix |
-| S3 | Proxy start and wait for `waharoa listening`. 21 lines | `retry-matrix.sh:57-84`, `smoke-clients.sh:41-74`; the wait alone in `inspect.sh`, `smoke-npm.sh` | consolidate | `scripts/make/lib/proxy.sh` |
+| S3 | Proxy start and wait for `byrle listening`. 21 lines | `retry-matrix.sh:57-84`, `smoke-clients.sh:41-74`; the wait alone in `inspect.sh`, `smoke-npm.sh` | consolidate | `scripts/make/lib/proxy.sh` |
 | S4 | `mktemp -d` work directory and a cleanup trap that kills the proxy. 11 lines | `retry-matrix.sh:39-54`, `smoke-clients.sh:24-38` | helper | with S3 |
 | S5 | `package.json` and `.yarnrc.yml` heredocs. 9 lines | `offsite-urls.sh:66-74`, `retry-matrix.sh:86-94`, `smoke-clients.sh:76-88` | consolidate | one function writing a client project directory |
 | S6 | `repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"` | 17 scripts | leave | one line, and it must run before anything can be sourced |

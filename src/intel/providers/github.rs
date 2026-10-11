@@ -26,7 +26,7 @@ const UNSCORED: f64 = 0.0;
 /// Advisories per page. 100 is GitHub's maximum for a connection.
 pub const PAGE: usize = 100;
 
-/// The query `waharoa refresh` sends, once per page, for GitHub's name of an ecosystem.
+/// The query `byrle refresh` sends, once per page, for GitHub's name of an ecosystem.
 macro_rules! query {
     ($ecosystem:literal) => {
         concat!(
@@ -255,7 +255,7 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Vec<Rows>, GithubErro
 mod tests {
     use super::*;
 
-    /// One page holding the nodes given, as `waharoa refresh` concatenates them.
+    /// One page holding the nodes given, as `byrle refresh` concatenates them.
     fn pages(nodes: &[serde_json::Value]) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!([{
             "data": {"securityVulnerabilities": {

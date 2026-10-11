@@ -30,14 +30,14 @@ note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 # fails the whole target, so the advisory half stops running and the failure gets read as
 # noise.
 #
-# WAHAROA_ADVISORY_DB points at a local checkout. Otherwise the fallback below fetches the
+# BYRLE_ADVISORY_DB points at a local checkout. Otherwise the fallback below fetches the
 # database over plain HTTPS, where no git configuration applies.
 audit_args=()
 # Tracked separately from audit_args: strict mode adds flags of its own, so "are we using
 # a local database" cannot be read off whether the array is empty.
 local_db=""
-if [[ -n "${WAHAROA_ADVISORY_DB:-}" ]]; then
-    local_db="$WAHAROA_ADVISORY_DB"
+if [[ -n "${BYRLE_ADVISORY_DB:-}" ]]; then
+    local_db="$BYRLE_ADVISORY_DB"
     audit_args+=(--db "$local_db" -n)
     echo "using advisory database at $local_db (no fetch)"
 fi

@@ -1,6 +1,6 @@
 # Quickstart
 
-From a checkout to installs through waharoa in enforcing mode, for npm and PyPI. Every
+From a checkout to installs through byrle in enforcing mode, for npm and PyPI. Every
 command here was run on 2026-09-29, and each excerpt below is that run's output.
 
 The order is: run the proxy in observe mode, point clients at it, check with `doctor`,
@@ -12,20 +12,20 @@ warm the lockfiles, then enforce.
 cargo build --release
 ```
 
-The binary is `target/release/waharoa`. There is no published release yet.
+The binary is `target/release/byrle`. There is no published release yet.
 
 ## 2. An intel store
 
-`known_malware`, `max_cvss` and `kev` are decided from a Postgres store that `waharoa
-refresh` fills. Without one, those checks are unenforceable, and `waharoa status` says so.
+`known_malware`, `max_cvss` and `kev` are decided from a Postgres store that `byrle
+refresh` fills. Without one, those checks are unenforceable, and `byrle status` says so.
 
 ```
-export WAHAROA_DATABASE_URL=postgres://user:password@localhost/waharoa
-waharoa refresh
+export BYRLE_DATABASE_URL=postgres://user:password@localhost/byrle
+byrle refresh
 ```
 
 It loads OSV, Datadog's malicious-packages dataset and CISA KEV, and the GitHub Advisory
-Database when `WAHAROA_GITHUB_TOKEN` is set. The run above took 48 s. Run it on a schedule;
+Database when `BYRLE_GITHUB_TOKEN` is set. The run above took 48 s. Run it on a schedule;
 each run is a new snapshot, and the proxy decides with the latest.
 
 ## 3. A policy
@@ -39,52 +39,52 @@ version: 1
 That refuses known malware, a version published in the last 7 days, install scripts, an
 advisory scored above 6.9, a known-exploited vulnerability, a yanked PyPI file, and
 contradicted provenance. [policy-reference](policy-reference.md) lists every key.
-`waharoa policy check policy.yaml` loads it as the proxy does.
+`byrle policy check policy.yaml` loads it as the proxy does.
 
 ## 4. Run the proxy in observe mode
 
 ```
-export WAHAROA_POLICY=/etc/waharoa/policy.yaml
-export WAHAROA_AUDIT_LOG=/var/log/waharoa/audit.jsonl
-export WAHAROA_PUBLIC_URL=https://waharoa.example.com
-export WAHAROA_MODE=observe
-waharoa daemon
+export BYRLE_POLICY=/etc/byrle/policy.yaml
+export BYRLE_AUDIT_LOG=/var/log/byrle/audit.jsonl
+export BYRLE_PUBLIC_URL=https://byrle.example.com
+export BYRLE_MODE=observe
+byrle daemon
 ```
 
-- **`WAHAROA_PUBLIC_URL`** is the address written into lockfiles. Set it to a name every
+- **`BYRLE_PUBLIC_URL`** is the address written into lockfiles. Set it to a name every
   machine that installs from a lockfile can reach: see the README's deployment note.
-- **`WAHAROA_LISTEN`** is where it listens, `127.0.0.1:8080` by default. Put TLS in
+- **`BYRLE_LISTEN`** is where it listens, `127.0.0.1:8080` by default. Put TLS in
   front of it for a proxy reached by name: [fronting-tls](fronting-tls.md) has a Caddy
   and an nginx configuration, both tested.
-- **`WAHAROA_MODE=observe`** serves what the policy refuses and logs it at WARN, so
+- **`BYRLE_MODE=observe`** serves what the policy refuses and logs it at WARN, so
   nothing breaks while you learn what it would refuse.
 
 Startup names each check that can fire, and prints the command to point each client at
 it:
 
 ```
-WARN observe mode: what the policy refuses is served and logged, not refused waharoa.config.variable=WAHAROA_MODE
+WARN observe mode: what the policy refuses is served and logged, not refused byrle.config.variable=BYRLE_MODE
 WARN ENFORCED: known_malware and max_cvss, from the intel store, and kev once the store has loaded the KEV catalogue. ...
-INFO point a client at the proxy waharoa.client.name="npm" waharoa.client.command=npm config set registry http://127.0.0.1:18990/
-INFO point a client at the proxy waharoa.client.name="pip" waharoa.client.command=pip config set global.index-url http://127.0.0.1:18990/simple/
+INFO point a client at the proxy byrle.client.name="npm" byrle.client.command=npm config set registry http://127.0.0.1:18990/
+INFO point a client at the proxy byrle.client.name="pip" byrle.client.command=pip config set global.index-url http://127.0.0.1:18990/simple/
 ```
 
-`GET /-/waharoa/ready` answers 200 once the store holds a snapshot. Point a readiness probe
+`GET /-/byrle/ready` answers 200 once the store holds a snapshot. Point a readiness probe
 at it.
 
 ## 5. Point each client at it
 
-With the proxy at `https://waharoa.example.com`:
+With the proxy at `https://byrle.example.com`:
 
 | Client | Configuration |
 |---|---|
-| npm | `npm config set registry https://waharoa.example.com/` |
-| pnpm | `pnpm config set registry https://waharoa.example.com/` |
-| yarn 1 | `yarn config set registry https://waharoa.example.com/` |
-| yarn 4 | `npmRegistryServer: "https://waharoa.example.com"` in `.yarnrc.yml` |
-| bun | `registry = "https://waharoa.example.com/"` under `[install]` in `bunfig.toml` |
-| pip | `pip config set global.index-url https://waharoa.example.com/simple/` |
-| uv | `UV_DEFAULT_INDEX=https://waharoa.example.com/simple`, or `index-url` in `uv.toml` |
+| npm | `npm config set registry https://byrle.example.com/` |
+| pnpm | `pnpm config set registry https://byrle.example.com/` |
+| yarn 1 | `yarn config set registry https://byrle.example.com/` |
+| yarn 4 | `npmRegistryServer: "https://byrle.example.com"` in `.yarnrc.yml` |
+| bun | `registry = "https://byrle.example.com/"` under `[install]` in `bunfig.toml` |
+| pip | `pip config set global.index-url https://byrle.example.com/simple/` |
+| uv | `UV_DEFAULT_INDEX=https://byrle.example.com/simple`, or `index-url` in `uv.toml` |
 
 Each line was run on 2026-09-29, in a home directory of its own and against a fresh proxy
 at `http://127.0.0.1:18995`, then used to install one package:
@@ -110,7 +110,7 @@ proxy: `npm cache clean --force`, `uv cache clean`, `bun pm cache rm`,
 ## 6. Check with `doctor`
 
 ```
-WAHAROA_PUBLIC_URL=https://waharoa.example.com waharoa doctor
+BYRLE_PUBLIC_URL=https://byrle.example.com byrle doctor
 ```
 
 It checks the proxy, its readiness and policy, what each installed client points at, and
@@ -131,31 +131,31 @@ When nothing answers at the public URL, `doctor` says whether its host resolves 
 machine, and to which addresses. An IP address is not looked up:
 
 ```
-PROBLEM  proxy: nothing answered at https://waharoa.invalid: waharoa.invalid does not resolve on this machine: failed to lookup address information: Name or service not known
-         fix: check the host in WAHAROA_PUBLIC_URL, and the DNS this machine uses
-PROBLEM  proxy: nothing answered at http://127.0.0.1:1/-/waharoa/health: the request failed: error sending request for url (http://127.0.0.1:1/-/waharoa/health): client error (Connect): tcp connect error: Connection refused (os error 111)
+PROBLEM  proxy: nothing answered at https://byrle.invalid: byrle.invalid does not resolve on this machine: failed to lookup address information: Name or service not known
+         fix: check the host in BYRLE_PUBLIC_URL, and the DNS this machine uses
+PROBLEM  proxy: nothing answered at http://127.0.0.1:1/-/byrle/health: the request failed: error sending request for url (http://127.0.0.1:1/-/byrle/health): client error (Connect): tcp connect error: Connection refused (os error 111)
          fix: start the proxy, or point this at the address clients actually use
 ```
 
 ## 7. Install, and warm the lockfiles
 
 The first request for any artifact is answered 503 until the proxy has analysed it. npm,
-pnpm, yarn 4, pip and uv retry and succeed. bun and yarn 1 give up. `waharoa warm` asks
+pnpm, yarn 4, pip and uv retry and succeed. bun and yarn 1 give up. `byrle warm` asks
 the proxy for everything a lockfile locks, ahead of the first install:
 
 ```
-waharoa warm --lockfile package-lock.json --proxy https://waharoa.example.com
+byrle warm --lockfile package-lock.json --proxy https://byrle.example.com
 66 warmed, 0 refused, 0 not listed, 0 not ready, 0 still being analysed, 0 failed; 0 skipped for other platforms
 ```
 
 It warms the platform it runs on. Pass `--platform linux-x64` for each other platform
 installs run on, or `--all-platforms`. Run it in CI when a lockfile changes.
 
-In the same job, `waharoa lockfile verify` fails when a committed lockfile fetches anything
+In the same job, `byrle lockfile verify` fails when a committed lockfile fetches anything
 from elsewhere, such as one resolved against the public registry:
 
 ```
-waharoa lockfile verify --lockfile package-lock.json --proxy https://waharoa.example.com
+byrle lockfile verify --lockfile package-lock.json --proxy https://byrle.example.com
 package-lock.json: 66 artifacts, 66 through the proxy
 ```
 
@@ -165,10 +165,10 @@ as pnpm does for its configured registry ([lockfile-verify](engineering_decision
 ## 8. Read what it would refuse
 
 In observe mode, each refusal is a WARN line starting `observe:`, and the audit log holds
-one line per decision. `waharoa explain` answers for one package:
+one line per decision. `byrle explain` answers for one package:
 
 ```
-waharoa explain pkg:npm/express@4.21.2
+byrle explain pkg:npm/express@4.21.2
 
   denials          pass
   known_malware    pass
@@ -183,20 +183,20 @@ waharoa explain pkg:npm/express@4.21.2
   verdict: allow
 ```
 
-`waharoa explain --policy` shows the policy in force. A package you need that the policy
+`byrle explain --policy` shows the policy in force. A package you need that the policy
 refuses gets a `packages` exception, with a reason and an expiry:
 [policy-reference](policy-reference.md).
 
 ## 9. Enforce
 
-Unset `WAHAROA_MODE` and restart the proxy. After that, a changed policy file takes
+Unset `BYRLE_MODE` and restart the proxy. After that, a changed policy file takes
 effect on `kill -HUP <pid>`, without a restart.
 
-`waharoa audit verify` decides each logged pinned request again from what it recorded,
+`byrle audit verify` decides each logged pinned request again from what it recorded,
 and reports any that come out differently. From the run, after installs in both modes:
 
 ```
-waharoa audit verify /var/log/waharoa/audit.jsonl --policy /etc/waharoa/policy.yaml
+byrle audit verify /var/log/byrle/audit.jsonl --policy /etc/byrle/policy.yaml
 281 reproduced, 0 differ, 0 not replayable
 ```
 

@@ -53,7 +53,7 @@ refuse.
 |---|---|
 | a pinned decision, or the watcher | reads the stored result for the artifact's digest. With none, and a verdict that is not `block`, starts a comparison and decides without it |
 | the comparison | its own 2 slots and in-flight set, so it never delays an analysis a deferred client waits on. The artifact is fetched, spooled and checked against its digest, then each reference is tried in turn |
-| the source archive | fetched from `WAHAROA_SOURCE_ARCHIVES`, spooled, and read as a stream. The last 8 archives are kept by URL, a 404 included |
+| the source archive | fetched from `BYRLE_SOURCE_ARCHIVES`, spooled, and read as a stream. The last 8 archives are kept by URL, a 404 included |
 | stored | `Sourced` under the digest with `COMPARER`, in memory or `artifact_source`. A result from another comparer is not read |
 | the next decision | turns the stored result into signals |
 
@@ -157,7 +157,7 @@ no build step.
   is not. In the install-script set, `qs` is a build step, `@swc/core` was compared with a
   tag, and `js-base64` is not explained. A check on them would need a list of known build
   patterns.
-- The proxy now fetches from `codeload.github.com`. `WAHAROA_SOURCE_ARCHIVES=off` stops it,
+- The proxy now fetches from `codeload.github.com`. `BYRLE_SOURCE_ARCHIVES=off` stops it,
   and names a mirror otherwise ([threat-model](../threat-model.md)).
 - The first decision on an artifact has no source signal. The watcher compares a new version
   before a client asks, so a version the proxy has served before usually has one.

@@ -1,4 +1,4 @@
-//! Building the proxy from the environment, the way `waharoa` runs it.
+//! Building the proxy from the environment, the way `byrle` runs it.
 //!
 //! Logs what each `crate::env` value means as the proxy starts. `main` keeps the logging
 //! setup, the listener and the exit codes.
@@ -124,11 +124,11 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let watch = environment.watch_interval()?;
     match watch {
         Some(every) => info!(
-            waharoa.config.variable = %env::WATCH_INTERVAL,
-            waharoa.watch.interval_s = every.as_secs(),
+            byrle.config.variable = %env::WATCH_INTERVAL,
+            byrle.watch.interval_s = every.as_secs(),
             "watcher on: served packages are read for new versions, which are analysed before a client asks"
         ),
-        None => info!(waharoa.config.variable = %env::WATCH_INTERVAL, "watcher off"),
+        None => info!(byrle.config.variable = %env::WATCH_INTERVAL, "watcher off"),
     }
     Ok(Started {
         proxy,
@@ -156,9 +156,9 @@ fn upstream_client<L: Fn(&str) -> Option<OsString>>(
     let certificates =
         tls::load_bundle(&path).map_err(|e| StartupError::Unusable(e.to_string()))?;
     info!(
-        waharoa.tls.bundle = %path.display(),
-        waharoa.tls.certificates = certificates.len(),
-        waharoa.tls.mode = ?mode,
+        byrle.tls.bundle = %path.display(),
+        byrle.tls.certificates = certificates.len(),
+        byrle.tls.mode = ?mode,
         "upstream CA bundle loaded"
     );
     if exclusive {
@@ -182,8 +182,8 @@ fn artifact_urls<L: Fn(&str) -> Option<OsString>>(
         );
     } else if public_base.is_none() {
         warn!(
-            waharoa.config.variable = %env::PUBLIC_URL,
-            waharoa.config.consequence = doctor::WITHOUT_PUBLIC_URL,
+            byrle.config.variable = %env::PUBLIC_URL,
+            byrle.config.consequence = doctor::WITHOUT_PUBLIC_URL,
             "not set: `npm ci` fails if the address lockfiles record later becomes \
              unreachable. Set it to a stable name"
         );
@@ -198,7 +198,7 @@ fn refusal_status<L: Fn(&str) -> Option<OsString>>(
     let refusal = environment.refusal_status()?;
     for status in refusal.misleading() {
         warn!(
-            waharoa.refusal.status = status,
+            byrle.refusal.status = status,
             "a refusal configured with this status will read as the proxy being broken rather \
              than as policy denying the request (plan §5 reserves 5xx for not-ready)"
         );
@@ -212,9 +212,9 @@ fn report_forward_proxy<L: Fn(&str) -> Option<OsString>>(
 ) -> Result<(), StartupError> {
     if let Some([https, http, direct]) = environment.upstream_proxy()?.fields() {
         info!(
-            waharoa.forward_proxy.https = https,
-            waharoa.forward_proxy.http = http,
-            waharoa.forward_proxy.direct = direct,
+            byrle.forward_proxy.https = https,
+            byrle.forward_proxy.http = http,
+            byrle.forward_proxy.direct = direct,
             "upstream traffic goes through a forward proxy"
         );
     }
@@ -229,14 +229,14 @@ fn serving<L: Fn(&str) -> Option<OsString>>(
     let mode = environment.mode()?;
     if mode == crate::refusal::Mode::Observe {
         warn!(
-            waharoa.config.variable = %env::MODE,
+            byrle.config.variable = %env::MODE,
             "observe mode: what the policy refuses is served and logged, not refused"
         );
     }
     let refuse_unservable = environment.refuse_unservable()?;
     if !refuse_unservable {
         warn!(
-            waharoa.config.variable = %env::REFUSE_UNSERVABLE,
+            byrle.config.variable = %env::REFUSE_UNSERVABLE,
             "set to 0: artifacts published off this registry are forwarded, and the client \
              fetches them without the proxy seeing them"
         );
@@ -251,8 +251,8 @@ fn defer_test<L: Fn(&str) -> Option<OsString>>(
 ) -> Result<Option<crate::defer::DeferTest>, StartupError> {
     Ok(environment.defer_test()?.inspect(|deferral| {
         warn!(
-            waharoa.defer_test = %deferral,
-            waharoa.config.variable = %env::DEFER_TEST,
+            byrle.defer_test = %deferral,
+            byrle.config.variable = %env::DEFER_TEST,
             "set: matching requests are answered with a deferral and never fetched. This is \
              a measurement harness, not a feature"
         );
@@ -277,14 +277,14 @@ fn policy_and_audit<L: Fn(&str) -> Option<OsString>>(
             let log = AuditLog::open(&path).map_err(|e| {
                 StartupError::Unusable(format!("{} {}: {e}", env::AUDIT_LOG, path.display()))
             })?;
-            info!(waharoa.audit.path = %path.display(), "audit log open");
+            info!(byrle.audit.path = %path.display(), "audit log open");
             Some(Arc::new(log))
         }
         None => None,
     };
     if audit.is_none() && policy.is_some() {
         warn!(
-            waharoa.config.variable = %env::AUDIT_LOG,
+            byrle.config.variable = %env::AUDIT_LOG,
             "no audit log configured, so policy decisions are not recorded"
         );
     }
@@ -296,14 +296,14 @@ fn policy_and_audit<L: Fn(&str) -> Option<OsString>>(
 async fn warn_enforcement(store: Option<&dyn Intel>) {
     let Some(store) = store else {
         warn!(
-            waharoa.config.variable = %env::DATABASE_URL,
+            byrle.config.variable = %env::DATABASE_URL,
             "NOT ENFORCED: known_malware, max_cvss and kev. The variable is not set, so there \
              is no intel store to ask"
         );
         return;
     };
     warn!(
-        waharoa.config.variable = %env::DATABASE_URL,
+        byrle.config.variable = %env::DATABASE_URL,
         "ENFORCED: known_malware and max_cvss, from the intel store, and kev once the store \
          has loaded the KEV catalogue. A store that cannot answer, or holds no snapshot, is a \
          503 for every package"
@@ -312,7 +312,7 @@ async fn warn_enforcement(store: Option<&dyn Intel>) {
         return;
     };
     for gap in snapshot.gaps() {
-        warn!(waharoa.intel.gap = %gap, "the intel snapshot has a gap");
+        warn!(byrle.intel.gap = %gap, "the intel snapshot has a gap");
     }
 }
 
@@ -327,8 +327,8 @@ async fn detectors<L: Fn(&str) -> Option<OsString>>(
             .await
             .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DETECTORS)))?;
         info!(
-            waharoa.detector = detector.name(),
-            waharoa.detector.version = detector.version(),
+            byrle.detector = detector.name(),
+            byrle.detector.version = detector.version(),
             "detector on: each version served is run through it, and each rule it fires is a signal"
         );
         configured.push(Arc::new(detector));
@@ -345,9 +345,9 @@ fn open_spool<L: Fn(&str) -> Option<OsString>>(
     let (spool, swept) = Spool::open(&spool_dir, environment.max_artifact_bytes()?)
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::SPOOL_DIR)))?;
     info!(
-        waharoa.spool.path = %spool_dir.display(),
-        waharoa.spool.ceiling = spool.ceiling(),
-        waharoa.spool.swept = swept,
+        byrle.spool.path = %spool_dir.display(),
+        byrle.spool.ceiling = spool.ceiling(),
+        byrle.spool.swept = swept,
         "spool open; files left by an earlier process removed"
     );
     Ok(Arc::new(spool))
@@ -362,14 +362,14 @@ fn report_policy(path: &Path, ceiling: i64) -> Result<Arc<Policy>, StartupError>
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::POLICY)))?;
 
     info!(
-        waharoa.policy.path = %path.display(),
-        waharoa.policy.cooldown_days = policy.cooldown_days,
-        waharoa.policy.max_cvss = policy.max_cvss,
-        waharoa.policy.install_scripts = %policy.install_scripts,
-        waharoa.policy.kev = %policy.kev,
-        waharoa.policy.provenance = %policy.provenance,
-        waharoa.policy.denials = policy.denials.len(),
-        waharoa.policy.exceptions = policy.packages.len(),
+        byrle.policy.path = %path.display(),
+        byrle.policy.cooldown_days = policy.cooldown_days,
+        byrle.policy.max_cvss = policy.max_cvss,
+        byrle.policy.install_scripts = %policy.install_scripts,
+        byrle.policy.kev = %policy.kev,
+        byrle.policy.provenance = %policy.provenance,
+        byrle.policy.denials = policy.denials.len(),
+        byrle.policy.exceptions = policy.packages.len(),
         "policy loaded and validated"
     );
 
@@ -390,28 +390,28 @@ fn warn_cooldown_costs(policy: &Policy) {
     }
     for (ecosystem, cost) in crate::ecosystem::cooldown_costs() {
         warn!(
-            waharoa.policy.cooldown_days = policy.cooldown_days,
-            waharoa.ecosystem = %ecosystem,
-            waharoa.cooldown.cost = cost,
+            byrle.policy.cooldown_days = policy.cooldown_days,
+            byrle.ecosystem = %ecosystem,
+            byrle.cooldown.cost = cost,
             "cooldown_days is enforced, at a cost to the ecosystem"
         );
     }
 }
 
-/// Warn about each exception that changes nothing or never wins, as `waharoa policy check`
+/// Warn about each exception that changes nothing or never wins, as `byrle policy check`
 /// and `doctor` report them.
 fn warn_idle_exceptions(policy: &Policy, report: &check::Report) {
     for &index in &report.unchanged {
         warn!(
-            waharoa.policy.exception = packages::label(index),
-            waharoa.policy.exception_reason = %policy.packages[index].reason,
+            byrle.policy.exception = packages::label(index),
+            byrle.policy.exception_reason = %policy.packages[index].reason,
             "policy exception changes nothing, so nothing it matches is affected by it"
         );
     }
     for shadowed in report.never_wins() {
         warn!(
-            waharoa.policy.exception = packages::label(shadowed.index),
-            waharoa.policy.exception_cover = %shadowed.cover(),
+            byrle.policy.exception = packages::label(shadowed.index),
+            byrle.policy.exception_cover = %shadowed.cover(),
             "policy exception never wins"
         );
     }
@@ -434,10 +434,10 @@ pub fn reload_policy<L: Fn(&str) -> Option<OsString>>(proxy: &Proxy, environment
         Ok(policy) => {
             let new = digest(Some(&policy));
             proxy.replace_policy(Some(policy));
-            info!(waharoa.policy.digest_from = %old, waharoa.policy.digest_to = %new, "policy reloaded");
+            info!(byrle.policy.digest_from = %old, byrle.policy.digest_to = %new, "policy reloaded");
         }
         Err(why) => {
-            error!(waharoa.policy.digest = %old, waharoa.reason = %why, "policy not reloaded")
+            error!(byrle.policy.digest = %old, byrle.reason = %why, "policy not reloaded")
         }
     }
 }
@@ -587,12 +587,12 @@ mod tests {
         assert!(started, "{log}");
         assert!(
             log.contains("policy exception changes nothing")
-                && log.contains("waharoa.policy.exception=\"packages[6]\""),
+                && log.contains("byrle.policy.exception=\"packages[6]\""),
             "{log}"
         );
         assert!(
             log.contains("policy exception never wins")
-                && log.contains("waharoa.policy.exception=\"packages[0]\""),
+                && log.contains("byrle.policy.exception=\"packages[0]\""),
             "{log}"
         );
 
@@ -648,7 +648,7 @@ mod tests {
         let (started, log) = logged("startup-detector-on", &[(env::DETECTORS, &spec)]).await;
         assert!(started, "{log}");
         assert!(
-            log.contains("detector on") && log.contains("waharoa.detector.version=\"9.9.9\""),
+            log.contains("detector on") && log.contains("byrle.detector.version=\"9.9.9\""),
             "{log}"
         );
 
@@ -848,7 +848,7 @@ mod tests {
                 (env::LISTEN, "127.0.0.1:9999"),
                 (env::UPSTREAM_NPM, "https://npm.mirror.example/"),
                 (env::UPSTREAM_PYPI, "https://pypi.mirror.example/simple"),
-                (env::PUBLIC_URL, "http://waharoa.corp.example"),
+                (env::PUBLIC_URL, "http://byrle.corp.example"),
                 (env::ARTIFACT_ORIGINS, "https://cdn.example"),
                 (env::ALLOW_DIRECT_ORIGINS, "https://direct.example"),
                 (env::REWRITE_ARTIFACTS, "0"),
@@ -873,7 +873,7 @@ mod tests {
         );
         assert_eq!(
             health.public_base.as_deref(),
-            Some("http://waharoa.corp.example")
+            Some("http://byrle.corp.example")
         );
         assert!(!health.rewrite_artifacts && !health.refuse_unservable);
         assert_eq!(health.mode, "observe");
@@ -904,7 +904,7 @@ mod tests {
     /// A policy that loads is in force, and its exceptions are reported.
     #[tokio::test]
     async fn a_policy_that_loads_is_carried_into_the_proxy() {
-        let path = std::env::temp_dir().join(format!("waharoa-policy-{}.yaml", std::process::id()));
+        let path = std::env::temp_dir().join(format!("byrle-policy-{}.yaml", std::process::id()));
         std::fs::write(&path, "version: 1\ncooldown_days: 7\n").expect("writes");
         let (dir, environment) = spooled(
             "startup-policy",

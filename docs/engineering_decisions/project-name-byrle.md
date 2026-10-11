@@ -1,6 +1,6 @@
 # Project name: byrle
 
-- **Status:** Staging. The code still uses `waharoa`; the rename is in Stage 4.5 of `TODO.md`.
+- **Status:** Implemented 2026-10-11. The code and docs use `byrle`.
 - **Plan reference:** decision #13, and the plan header.
 - **Supersedes:** [project-name-waharoa](project-name-waharoa.md).
 
@@ -25,11 +25,19 @@ Run 2026-10-11 by exact-name lookup, the same probe as for `waharoa`:
 The GitHub handle `byrle` is a user account created 2021-11-11, with no public
 repositories, no name and no followers.
 
-## Outstanding gate
+## Rename
 
-The rename itself. `waharoa` is in the crate and binary, the `WAHAROA_*` environment
-variables, the `x-waharoa-*` headers, the `waharoa.*` log fields, the `/-/waharoa/` paths,
-the `waharoa-detector-` scratch directories and the docs.
+Done 2026-10-11. `waharoa` became `byrle` in the crate and binary, the environment
+variables (`WAHAROA_*` to `BYRLE_*`), the `x-byrle-*` headers, the `byrle.*` log fields,
+the `/-/byrle/` paths, the `byrle-detector-` scratch directories, the scripts and the docs.
+The old names are not accepted.
+
+Left as `waharoa`:
+
+| Where | Why |
+|---|---|
+| `migrations/*.sql` | sqlx checksums each applied migration, comments included, and refuses a database whose applied file changed. `0012` also matches the stored string `WAHAROA_GITHUB_TOKEN is unset, ...` |
+| [project-name-waharoa](project-name-waharoa.md) and the text about the old name | It records the old name |
 
 ## GitHub home
 

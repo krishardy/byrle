@@ -11,7 +11,7 @@
 //!   # where equal versions share a rank.
 //!
 //! Run: cargo run --example pep440_conformance -- /path/to/pep440_expected.tsv
-use waharoa::ecosystem::pypi::version::Version;
+use byrle::ecosystem::pypi::version::Version;
 
 fn main() {
     // The rule below guards against trusting argv for security decisions. This is a

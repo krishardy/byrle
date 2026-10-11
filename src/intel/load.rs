@@ -18,10 +18,10 @@ pub const RANGE: &str = "COPY advisory_range (advisory_id, ecosystem, name, intr
 pub const EXPLOITED: &str = "COPY exploited_cve (source, cve_id) FROM STDIN (FORMAT csv)";
 
 /// The first line of an [`encode`]d source. A change to the encoding changes this line.
-pub const FORMAT: &str = "waharoa intel rows 2";
+pub const FORMAT: &str = "byrle intel rows 2";
 
 /// The first line of an [`encode_exploited`] source.
-pub const EXPLOITED_FORMAT: &str = "waharoa intel exploited 1";
+pub const EXPLOITED_FORMAT: &str = "byrle intel exploited 1";
 
 /// What a source's encoding contains.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -937,8 +937,8 @@ mod tests {
             (b"\xff\n".to_vec(), "a line is not UTF-8"),
             (
                 good.replacen("rows 2", "rows 1", 1).into_bytes(),
-                "the first line is `waharoa intel rows 1`, not `waharoa intel rows 2` or \
-                 `waharoa intel exploited 1`",
+                "the first line is `byrle intel rows 1`, not `byrle intel rows 2` or \
+                 `byrle intel exploited 1`",
             ),
             (
                 good.replacen("source osv", "origin osv", 1).into_bytes(),
@@ -1167,7 +1167,7 @@ mod tests {
         assert_eq!(
             text(&encoded.bytes),
             format!(
-                "waharoa intel rows 2\nsource osv\n\
+                "byrle intel rows 2\nsource osv\n\
                  advisory {}\n{advisory}\
                  advisory_alias {}\n{alias}\
                  advisory_affected {}\n{affected}\
@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(
             text(&encoded.bytes),
             format!(
-                "waharoa intel exploited 1\nsource cisa/kev\nexploited_cve {}\n{csv}",
+                "byrle intel exploited 1\nsource cisa/kev\nexploited_cve {}\n{csv}",
                 csv.len()
             )
         );

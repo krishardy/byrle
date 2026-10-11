@@ -1,4 +1,4 @@
-# A waharoa policy: global settings, and per-package exceptions to them.
+# A byrle policy: global settings, and per-package exceptions to them.
 #
 # Nothing here is per ecosystem. Which ecosystems run which check is a property of the
 # ecosystem, not something you set: `install_scripts` is asked of npm and not of Go,

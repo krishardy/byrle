@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# waharoa behind Caddy and behind nginx on TLS, with the configurations in
+# byrle behind Caddy and behind nginx on TLS, with the configurations in
 # docs/fronting-tls.md, checked with curl, npm and pip.
 #
 # A local CA signs a certificate for localhost. For each front on PATH, `caddy` and
-# `nginx`, the proxy runs with WAHAROA_PUBLIC_URL set to the front's address. Asserts, per
+# `nginx`, the proxy runs with BYRLE_PUBLIC_URL set to the front's address. Asserts, per
 # front:
-#   1. /-/waharoa/health answers 200 through it
-#   2. an artifact nothing has analysed is a 503 with Retry-After and x-waharoa-not-ready
+#   1. /-/byrle/health answers 200 through it
+#   2. an artifact nothing has analysed is a 503 with Retry-After and x-byrle-not-ready
 #   3. npm installs through it, and the lockfile records the front's https address
 #   4. pip installs through it
 # A front that is not installed is reported and skipped.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-proxy_port="${WAHAROA_PORT:-8771}"
+proxy_port="${BYRLE_PORT:-8771}"
 workdir="$(mktemp -d)"
 pids=()
 failed=0
@@ -28,9 +28,9 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*"; failed=1; }
 
 cargo build --release --quiet --manifest-path "$repo_root/Cargo.toml"
-binary="$repo_root/target/release/waharoa"
+binary="$repo_root/target/release/byrle"
 
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=waharoa test CA" \
+openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=byrle test CA" \
     -keyout "$workdir/ca.key" -out "$workdir/ca.pem" 2>/dev/null
 openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" \
     -keyout "$workdir/key.pem" -out "$workdir/cert.csr" 2>/dev/null
@@ -73,11 +73,11 @@ check() {
     fi
     checked=$((checked + 1))
     mkdir -p "$dir/app"
-    WAHAROA_PUBLIC_URL="$front" WAHAROA_LISTEN="127.0.0.1:$proxy_port" \
-        WAHAROA_SPOOL_DIR="$dir/spool" "$binary" daemon >"$dir/proxy.log" 2>&1 &
+    BYRLE_PUBLIC_URL="$front" BYRLE_LISTEN="127.0.0.1:$proxy_port" \
+        BYRLE_SPOOL_DIR="$dir/spool" "$binary" daemon >"$dir/proxy.log" 2>&1 &
     local proxy=$!
     pids+=("$proxy")
-    for _ in $(seq 1 60); do grep -q "waharoa listening" "$dir/proxy.log" && break; sleep 0.5; done
+    for _ in $(seq 1 60); do grep -q "byrle listening" "$dir/proxy.log" && break; sleep 0.5; done
     case "$name" in
         caddy)
             caddyfile "$port" >"$dir/Caddyfile"
@@ -92,21 +92,21 @@ check() {
     pids+=("$front_pid")
     local curl=(curl -s --noproxy '*' --cacert "$workdir/ca.pem")
     for _ in $(seq 1 30); do
-        "${curl[@]}" -o /dev/null "$front/-/waharoa/health" && break
+        "${curl[@]}" -o /dev/null "$front/-/byrle/health" && break
         sleep 0.5
     done
     echo "==> $name, $front"
 
     local status
-    status="$("${curl[@]}" -o /dev/null -w '%{http_code}' "$front/-/waharoa/health")"
+    status="$("${curl[@]}" -o /dev/null -w '%{http_code}' "$front/-/byrle/health")"
     [[ "$status" == 200 ]] || fail "$name: health answered $status"
 
     local headers
     headers="$("${curl[@]}" -o /dev/null -D - "$front/ms/-/ms-2.1.3.tgz" | tr -d '\r')"
     grep -qE '^HTTP/[0-9.]+ 503' <<<"$headers" || fail "$name: an unanalysed artifact was not a 503"
     grep -qi '^retry-after: 1' <<<"$headers" || fail "$name: Retry-After did not pass through"
-    grep -qi '^x-waharoa-not-ready: artifact-analysis' <<<"$headers" \
-        || fail "$name: x-waharoa-not-ready did not pass through"
+    grep -qi '^x-byrle-not-ready: artifact-analysis' <<<"$headers" \
+        || fail "$name: x-byrle-not-ready did not pass through"
 
     printf '{"name":"a","version":"1.0.0","private":true}\n' >"$dir/app/package.json"
     (cd "$dir/app" && NODE_EXTRA_CA_CERTS="$workdir/ca.pem" npm install debug@4.4.1 \

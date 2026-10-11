@@ -1,4 +1,4 @@
-//! `waharoa explain`: the whole decision vector, not just the verdict.
+//! `byrle explain`: the whole decision vector, not just the verdict.
 //!
 //! See docs/engineering_decisions/explain-output.md.
 
@@ -245,7 +245,7 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
     out
 }
 
-/// What `waharoa explain` prints and exits with: `notes` to stderr, `answer` to stdout.
+/// What `byrle explain` prints and exits with: `notes` to stderr, `answer` to stdout.
 #[derive(Debug, Default)]
 pub struct Answered {
     pub notes: Vec<String>,

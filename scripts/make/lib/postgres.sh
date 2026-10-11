@@ -16,7 +16,7 @@
 # bytes, got 0 bytes at EOF`, as `make test-integration` and `make sqlx-prepare` both did
 # on 2026-09-13.
 
-postgres_image="${WAHAROA_PG_IMAGE:-postgres:17-alpine}"
+postgres_image="${BYRLE_PG_IMAGE:-postgres:17-alpine}"
 postgres_container=""
 postgres_local_dir=""
 postgres_bin=""
@@ -25,7 +25,7 @@ postgres_where=""
 
 # The URL for the server on port $1. `sslmode=disable`: it serves no TLS.
 postgres_url() {
-    printf 'postgres://waharoa:waharoa@127.0.0.1:%s/waharoa?sslmode=disable' "$1"
+    printf 'postgres://byrle:byrle@127.0.0.1:%s/byrle?sslmode=disable' "$1"
 }
 
 # The directory holding `initdb`, `pg_ctl` and `createdb`: the PATH first, then Alpine's
@@ -99,11 +99,11 @@ start_postgres_container() {
     local port="$2"
 
     docker run -d --name "$postgres_container" \
-        -e POSTGRES_PASSWORD=waharoa -e POSTGRES_USER=waharoa -e POSTGRES_DB=waharoa \
+        -e POSTGRES_PASSWORD=byrle -e POSTGRES_USER=byrle -e POSTGRES_DB=byrle \
         -p "$port:5432" "$postgres_image" >/dev/null
 
     for _ in $(seq 1 60); do
-        if docker exec "$postgres_container" pg_isready -h 127.0.0.1 -U waharoa >/dev/null 2>&1; then
+        if docker exec "$postgres_container" pg_isready -h 127.0.0.1 -U byrle >/dev/null 2>&1; then
             return 0
         fi
         sleep 1
@@ -122,7 +122,7 @@ start_postgres_local() {
     local data="$postgres_local_dir/data"
     local log="$postgres_local_dir/server.log"
 
-    if ! "$postgres_bin/initdb" -D "$data" -U waharoa --auth=trust >"$log" 2>&1; then
+    if ! "$postgres_bin/initdb" -D "$data" -U byrle --auth=trust >"$log" 2>&1; then
         echo "initdb failed"
         tail -20 "$log"
         return 1
@@ -135,5 +135,5 @@ start_postgres_local() {
         tail -20 "$log"
         return 1
     fi
-    "$postgres_bin/createdb" -h 127.0.0.1 -p "$port" -U waharoa waharoa
+    "$postgres_bin/createdb" -h 127.0.0.1 -p "$port" -U byrle byrle
 }

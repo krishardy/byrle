@@ -80,7 +80,7 @@ and eslint-plugin-prettier's 5.5.1 23.2 days before. With the most recent attest
 the check refuses a version with no attestation whenever any earlier version had one, which
 catches all 6. The removed versions are no longer in the packuments, so these counts come
 from the registry's `time` map and the rule, not from the proxy. On the 311 benign
-versions, run through `waharoa policy diff`, it refuses the same single one.
+versions, run through `byrle policy diff`, it refuses the same single one.
 
 ## Sources
 

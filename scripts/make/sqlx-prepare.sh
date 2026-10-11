@@ -9,7 +9,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-port="${WAHAROA_PG_PORT:-55434}"
+port="${BYRLE_PG_PORT:-55434}"
 check=0
 [[ "${1:-}" == "--check" ]] && check=1
 # shellcheck source=scripts/make/lib/postgres.sh
@@ -24,7 +24,7 @@ fi
 choose_postgres || exit 1
 
 note "postgres ($postgres_where) on port $port"
-start_postgres "waharoa-prepare-pg-$$" "$port"
+start_postgres "byrle-prepare-pg-$$" "$port"
 
 DATABASE_URL="$(postgres_url "$port")"
 export DATABASE_URL

@@ -1,4 +1,4 @@
-# waharoa resolves no version ranges
+# byrle resolves no version ranges
 
 - **Status:** Decided 2026-09-20. Stage 3, where the item was moved so the answer would be
   designed against two ecosystems rather than npm alone.
@@ -8,7 +8,7 @@
 
 ## Decision
 
-Nothing in waharoa turns a range or a tag into a version. The client's resolver does that,
+Nothing in byrle turns a range or a tag into a version. The client's resolver does that,
 against the document this proxy filtered, and the proxy decides about versions and files
 that are named to it.
 
@@ -18,8 +18,8 @@ that are named to it.
 |---|---|---|
 | The metadata request | a document with every version | no: each record is decided, and refused ones are removed |
 | The artifact request | a filename and a version | no: that is the version being installed |
-| `waharoa explain <purl>` | a purl with `@version` | no |
-| `waharoa policy diff` | lockfile entries and audit log versions | no: both are exact. An npm lockfile entry with `"version": "latest"` has no `resolved` URL and is dropped by the reader |
+| `byrle explain <purl>` | a purl with `@version` | no |
+| `byrle policy diff` | lockfile entries and audit log versions | no: both are exact. An npm lockfile entry with `"version": "latest"` has no `resolved` URL and is dropped by the reader |
 | `denials` and `match.version` | a VERS range | no: every version in the document is tested against the range ([policy-version-ranges](policy-version-ranges.md)) |
 
 ## Why resolving would be wrong, not merely unnecessary
@@ -56,5 +56,5 @@ the adapter interface and npm's was missed.
 ## When to revisit
 
 A control that has to know what a client would resolve to, rather than what it did resolve
-to. `waharoa policy diff` over a manifest of ranges rather than a lockfile would be one, and
+to. `byrle policy diff` over a manifest of ranges rather than a lockfile would be one, and
 it would need a resolver per ecosystem, matching each client's own algorithm.

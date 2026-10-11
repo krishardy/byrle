@@ -4,20 +4,20 @@ How the proxy answers one request, and where each status code comes from. Read f
 `handle` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document` in
 `src/proxy.rs`, on 2026-09-28.
 
-With `WAHAROA_MODE=observe`, a refusal by policy is logged at WARN and the request goes on
+With `BYRLE_MODE=observe`, a refusal by policy is logged at WARN and the request goes on
 to the next check, and a metadata document keeps the versions the policy refuses. Every
 other answer is the same in both modes
 ([observe-mode](engineering_decisions/observe-mode.md)).
 
-"Refusal status" is `WAHAROA_REFUSAL_STATUS`: 403 by default, settable per ecosystem and
+"Refusal status" is `BYRLE_REFUSAL_STATUS`: 403 by default, settable per ecosystem and
 client to any code from 400 to 599. Every 503 carries `Retry-After: 1` and
-`x-waharoa-not-ready` naming the case.
+`x-byrle-not-ready` naming the case.
 
 ```mermaid
 flowchart TD
     REQ([request]) --> OWN{path}
-    OWN -->|/-/waharoa/health| H200[200: counters]
-    OWN -->|/-/waharoa/ready| READY{intel store configured<br/>and not loaded?}
+    OWN -->|/-/byrle/health| H200[200: counters]
+    OWN -->|/-/byrle/ready| READY{intel store configured<br/>and not loaded?}
     READY -->|no| R200[200]
     READY -->|yes| R503[503]
     OWN -->|anything else| KIND{what the path names}
@@ -57,7 +57,7 @@ flowchart TD
     VERIFY -->|no| CUT[200 sent, body cut off<br/>before its last chunk]
 
     BODY -->|other, or not readable| PASS
-    BODY -->|document| BUF{buffered under<br/>WAHAROA_MAX_METADATA_BYTES?}
+    BODY -->|document| BUF{buffered under<br/>BYRLE_MAX_METADATA_BYTES?}
     BUF -->|over it| PASS
     BUF -->|body failed, or 30 s<br/>without a byte| D502[502]
     BUF -->|yes| DINTEL{intel store}
@@ -73,7 +73,7 @@ flowchart TD
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
 | refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest; the metadata names neither the version nor the file |
 | 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest |
-| 503 | proxy | not ready: `intel-store`, `no-stream-for-ecosystem`, `artifact-analysis`; `/-/waharoa/ready` before intel has loaded |
+| 503 | proxy | not ready: `intel-store`, `no-stream-for-ecosystem`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
 
 An artifact whose bytes do not match the digest has already been sent a 200. The last
 chunk is held back, so the body ends short and the client's install fails. The 502 for a
@@ -88,5 +88,5 @@ A request the policy refuses is refused before anything is fetched. A version th
 refuses is also removed from the metadata document, so a resolver picks another version
 and never asks for it.
 
-Debug builds also answer `WAHAROA_DEFER_TEST`'s scripted deferrals before any of this. See
+Debug builds also answer `BYRLE_DEFER_TEST`'s scripted deferrals before any of this. See
 [deferral-status-codes](engineering_decisions/deferral-status-codes.md).

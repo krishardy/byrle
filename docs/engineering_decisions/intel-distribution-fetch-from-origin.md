@@ -49,7 +49,7 @@ binary.
   [osv-malware-load](osv-malware-load.md).
 - **Multi-instance concerns are production concerns**, not optional extras for large
   deployments: every deployment is Postgres. Refresh coordination needs advisory-lock
-  leader election, or a separate `waharoa refresh` run as a cron job with the proxies
+  leader election, or a separate `byrle refresh` run as a cron job with the proxies
   read-only, and `intel_snapshot_id` must be read from the database rather than computed
   locally.
 - **Cold start returns 503, never 403.** A 403 while warming looks like a policy

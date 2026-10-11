@@ -2,14 +2,14 @@
 
 - **Status:** Implemented. `src/intel/providers/kev.rs`, `migrations/0003_exploited.sql`,
   `load::encode_exploited`, `PgIntel::replace`, `SnapshotIntel::read`,
-  `enforce::unenforceable`, `waharoa refresh`.
+  `enforce::unenforceable`, `byrle refresh`.
 - **Related:** [alias-matching](alias-matching.md), [snapshot-identity](snapshot-identity.md),
   [advisory-stream-licences](advisory-stream-licences.md),
   [intel-in-decisions](intel-in-decisions.md)
 
 ## Decision
 
-`waharoa refresh` fetches CISA's Known Exploited Vulnerabilities catalogue after OSV's npm
+`byrle refresh` fetches CISA's Known Exploited Vulnerabilities catalogue after OSV's npm
 bundle and stores its CVE ids as source `cisa/kev` in `exploited_cve`. A lookup marks an
 advisory exploited when its `publisher_id` or one of its aliases is listed, the match
 `intel::is_named` makes. `kev` is enforced once a snapshot includes `cisa/kev`.
@@ -53,7 +53,7 @@ The ceiling is 16 MiB, 9.7 times the 1,722,859-byte catalogue of 2026-09-14.
 A kept `cisa/kev` rows file is its own format, so the advisory format was left unchanged by it:
 
 ```text
-waharoa intel exploited 1
+byrle intel exploited 1
 source cisa/kev
 exploited_cve 47189
 (47,189 bytes of CSV)
@@ -88,7 +88,7 @@ asks `intel_source` in its statement. A kept snapshot records no streams, so str
 be the one record.
 
 Live, 2026-09-15, `examples/policy.yaml`: `explain --policy` printed `kev unenforced, no advisory
-stream` on an empty store and `kev enforced` after a refresh, and `GET /-/waharoa/ready` answered
+stream` on an empty store and `kev enforced` after a refresh, and `GET /-/byrle/ready` answered
 200 with `"sources":["cisa/kev","datadog","osv"]`. `make mutants` over the change: 14 mutants, 4
 caught, 9 unviable, 1 missed, `run_explain` in `main.rs` returning a default exit code, which
 has no unit tests.
@@ -104,7 +104,7 @@ the open unscored-advisories item in TODO.md.
 
 ## Evidence
 
-`waharoa refresh` into an empty Postgres 17, 2026-09-15:
+`byrle refresh` into an empty Postgres 17, 2026-09-15:
 
 ```text
 advisories written                 228289
@@ -134,10 +134,10 @@ exploited, each by its CVE alias, and each has a score, so none is left out of `
 | `GHSA-qqvq-6xgj-jw8g` | 8.8 | electron |
 | `GHSA-v98v-ff95-f3cp` | 9.9 | n8n |
 
-With `examples/policy.yaml`, `waharoa explain --policy` prints `kev               enforced`, and:
+With `examples/policy.yaml`, `byrle explain --policy` prints `kev               enforced`, and:
 
 ```text
-$ waharoa explain pkg:npm/jquery@3.4.1
+$ byrle explain pkg:npm/jquery@3.4.1
   kev              FAIL block        GHSA-jpcq-cgw6-v4j6
   max_cvss         pass
   verdict: block
@@ -151,7 +151,7 @@ A second refresh with `HTTPS_PROXY` at a closed port and OSV's host in `NO_PROXY
 the catalogue fetch fails:
 
 ```text
-waharoa refresh: cisa/kev is not loaded, and its last load stays: fetching https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json: error sending request for url (...)
+byrle refresh: cisa/kev is not loaded, and its last load stays: fetching https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json: error sending request for url (...)
 advisories written                 228289
 exploited CVE ids written               0
 snapshot sha256:351dfb792d8cf70a002968c5dd68496c7a65d75b273ac0636d7827887f10e8e5
@@ -174,6 +174,6 @@ printed `kev FAIL block`.
 `make mutants` over the change: 100 mutants, 53 caught, 22 unviable, 25 missed. 14 are in
 `main.rs`, which has no unit tests; the refresh and `explain` paths were run live above. 10 are
 `+=` counts in `PgIntel::replace`, which `make mutants` tests without a database. With
-`WAHAROA_TEST_DATABASE_URL` set, `cargo mutants --file src/intel/postgres.rs --re
+`BYRLE_TEST_DATABASE_URL` set, `cargo mutants --file src/intel/postgres.rs --re
 PgIntel::replace` caught all 10. The last, `16 << 20` as `16 >> 20` in `MAX_CATALOGUE_BYTES`,
 is caught by `the_ceiling_is_sixteen_mebibytes`.

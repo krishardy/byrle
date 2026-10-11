@@ -3,9 +3,9 @@
 Every key a policy file takes, what each does, and which way it loosens. The reasoning is in
 [policy-tier-resolution](engineering_decisions/policy-tier-resolution.md).
 
-The file is YAML, named by `WAHAROA_POLICY`. The proxy loads it at startup and again on
-`SIGHUP` ([break-glass](break-glass.md)). `waharoa policy check <file>` loads it as the proxy
-does, and exits 1 if the proxy would refuse it. `waharoa policy diff <old> <new>` reports
+The file is YAML, named by `BYRLE_POLICY`. The proxy loads it at startup and again on
+`SIGHUP` ([break-glass](break-glass.md)). `byrle policy check <file>` loads it as the proxy
+does, and exits 1 if the proxy would refuse it. `byrle policy diff <old> <new>` reports
 what a change loosens and tightens. An unknown key, or a value of the wrong kind, refuses the
 whole file.
 
@@ -103,7 +103,7 @@ Exceptions: a setting loosened for the packages a selector matches.
 | `match` | yes | the selector, below |
 | `set` | yes | the settings it loosens, below |
 | `reason` | yes | why |
-| `expires` | one of these two, for any entry that loosens | `YYYY-MM-DD`, at most 90 days ahead (`WAHAROA_EXPIRY_CEILING_DAYS`) |
+| `expires` | one of these two, for any entry that loosens | `YYYY-MM-DD`, at most 90 days ahead (`BYRLE_EXPIRY_CEILING_DAYS`) |
 | `permanent` | | `true`, for an exception that does not stop being true |
 | `added_by` | no | who added it |
 
@@ -139,7 +139,7 @@ Names and versions compare the ecosystem's way: a PyPI name by PEP 503, so `Djan
   selector matches a strict subset of the other's applies, and the wider one's `set` does
   not merge in. Two entries that overlap with neither inside the other are refused, and
   so are two identical selectors.
-- **Entries that do nothing load.** `waharoa policy check` reports an entry that changes
+- **Entries that do nothing load.** `byrle policy check` reports an entry that changes
   nothing and one that never wins. `--strict` exits 1 on either.
 
 ## `advisory_scores`

@@ -62,7 +62,7 @@ When a kani release bundles rustc 1.94 or later:
 ## RUSTSEC-2023-0071
 
 The advisory is against `rsa`: a timing side channel (the Marvin Attack) that can recover an
-RSA private key. `rsa` reaches `Cargo.lock` through `sqlx-mysql`. waharoa enables only the
+RSA private key. `rsa` reaches `Cargo.lock` through `sqlx-mysql`. byrle enables only the
 `postgres` feature, so neither `sqlx-mysql` nor `rsa` is compiled. cargo-audit reads
 `Cargo.lock`, not the build, so it reports `rsa` anyway.
 

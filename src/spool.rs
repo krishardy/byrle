@@ -19,10 +19,10 @@ const LOCK: &str = ".lock";
 /// Every spool file's name starts with this, and the sweep removes nothing else.
 const PREFIX: &str = "artifact-";
 
-/// The directory the spool uses when none is configured: `waharoa-spool` in the OS
+/// The directory the spool uses when none is configured: `byrle-spool` in the OS
 /// temporary directory. A directory of its own, because the sweep empties it.
 pub fn default_dir() -> PathBuf {
-    std::env::temp_dir().join("waharoa-spool")
+    std::env::temp_dir().join("byrle-spool")
 }
 
 /// A spool directory, locked while this value lives.
@@ -568,7 +568,7 @@ mod tests {
 
     #[test]
     fn the_default_is_a_directory_of_its_own_in_the_temporary_directory() {
-        assert_eq!(default_dir(), std::env::temp_dir().join("waharoa-spool"));
+        assert_eq!(default_dir(), std::env::temp_dir().join("byrle-spool"));
     }
 
     /// A writer that refuses its writes, or accepts them and refuses the flush.

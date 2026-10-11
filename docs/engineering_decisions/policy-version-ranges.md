@@ -12,7 +12,7 @@
 A policy writes a version range as a VERS string, the version range specifier from the
 Package-URL project (`github.com/package-url/vers-spec`, Clause 5, read 2026-09-18 at
 `f98c4c6`). One syntax covers every ecosystem. The VERS type names how the versions order,
-and waharoa orders them by the ecosystem's `VersionOrder`.
+and byrle orders them by the ecosystem's `VersionOrder`.
 
 ```yaml
 denials:

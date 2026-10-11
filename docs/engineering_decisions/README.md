@@ -27,7 +27,7 @@ code, and the file names where.
 | [Storage: sqlx over Postgres, no ORM](storage-sqlx-postgres.md) | Implemented, lookup path only |
 | [sqlx held at 0.8, RUSTSEC-2023-0071 accepted while `rsa` is not built](sqlx-0-8-and-rsa-advisory.md) | Implemented |
 | [What CI gates, and what it does not](ci-gates.md) | Implemented, unverified until first push |
-| [Loading OSV malware records](osv-malware-load.md) | Implemented, `waharoa refresh` |
+| [Loading OSV malware records](osv-malware-load.md) | Implemented, `byrle refresh` |
 | [Intel in decisions: one lookup per package, fail closed](intel-in-decisions.md) | Implemented |
 | [An ecosystem no stream covers fails closed](uncovered-ecosystem-fails-closed.md) | Implemented |
 | [A PyPI index is filtered by policy, with or without intel](pypi-index-filtering.md) | Implemented |
@@ -40,7 +40,7 @@ code, and the file names where.
 | [A yanked file is refused, and the policy can allow it](yanked-files.md) | Implemented |
 | [One library crate and one binary, not a workspace](one-crate.md) | Decided |
 | [Every build carries every ecosystem](no-ecosystem-features.md) | Decided |
-| [waharoa resolves no version ranges](no-range-resolution.md) | Decided |
+| [byrle resolves no version ranges](no-range-resolution.md) | Decided |
 | [The PEP 503 HTML index is read, not forwarded](pep-503-html-index.md) | Implemented |
 | [PyPI provenance: the index says where the bundle is](pypi-provenance.md) | Implemented, verified by the provenance check |
 | [Install scripts are read from the artifact](install-scripts-from-the-artifact.md) | Implemented, the reader |
@@ -55,7 +55,7 @@ code, and the file names where.
 | [Observe mode is one switch for the whole proxy, and enforce is the default](observe-mode.md) | Implemented |
 | [Upstream traffic honours the forward proxy variables, as reqwest reads them](upstream-forward-proxy.md) | Implemented |
 | [The policy reloads on SIGHUP, and each request keeps the policy it started with](policy-reload.md) | Implemented |
-| [`waharoa warm` asks a running proxy for what a lockfile locks](warm.md) | Implemented |
+| [`byrle warm` asks a running proxy for what a lockfile locks](warm.md) | Implemented |
 | [Install latency through the proxy, measured](latency-benchmarks.md) | Measured, budget not set |
 | [Every log value is a field with an OpenTelemetry name, and the daemon can write OpenTelemetry log records](structured-logs.md) | Implemented |
 | [`main.rs` holds `main` and the runners](main-is-a-thin-wrapper.md) | Implemented |
@@ -67,13 +67,13 @@ code, and the file names where.
 | [OSV version ranges and CVSS scores](osv-ranges-and-scores.md) | Implemented |
 | [Advisory aliases are matched, not merged](alias-matching.md) | Implemented |
 | [GitHub Advisory is a signal stream beside OSV](github-advisory-signal-stream.md) | Decided, being built |
-| [The CISA KEV catalogue is a source of its own, joined at lookup](kev-stream.md) | Implemented, `waharoa refresh` |
-| [Datadog's npm manifest is a malware source of its own](datadog-stream.md) | Implemented, `waharoa refresh` |
-| [Ingestion history: a row per stream per refresh, appended](ingestion-history.md) | Implemented, `waharoa intel history` |
-| [Every advisory stream is declared in one table](stream-descriptor-table.md) | Implemented, `waharoa refresh` |
+| [The CISA KEV catalogue is a source of its own, joined at lookup](kev-stream.md) | Implemented, `byrle refresh` |
+| [Datadog's npm manifest is a malware source of its own](datadog-stream.md) | Implemented, `byrle refresh` |
+| [Ingestion history: a row per stream per refresh, appended](ingestion-history.md) | Implemented, `byrle intel history` |
+| [Every advisory stream is declared in one table](stream-descriptor-table.md) | Implemented, `byrle refresh` |
 | [Intel schema: surrogate keys and sized types](intel-schema-keys-and-types.md) | Implemented |
 | [Policy schema version 1 is frozen](policy-schema-v1-frozen.md) | Decided |
-| [`waharoa policy check`](policy-check.md) | Implemented |
+| [`byrle policy check`](policy-check.md) | Implemented |
 | [Readiness endpoint](readiness-endpoint.md) | Implemented |
 | [Snapshot identity](snapshot-identity.md) | Implemented; import not built |
 | [`policy diff` reads lockfiles](policy-diff-lockfiles.md) | Implemented |
@@ -89,12 +89,12 @@ code, and the file names where.
 | [Metadata heuristics report signals and refuse nothing](metadata-heuristics.md) | Implemented, report only |
 | [Registry tarball against its source, measured](source-diff.md) | Measured, not in the proxy |
 | [Detectors report signals, and GuardDog is the first](detectors.md) | Implemented, report only |
-| [`waharoa lockfile verify` checks a lockfile installs through the proxy](lockfile-verify.md) | Implemented |
+| [`byrle lockfile verify` checks a lockfile installs through the proxy](lockfile-verify.md) | Implemented |
 | [Real packages that are safe to test against](live-test-packages.md) | Decided |
 | [The audit log](audit-log.md) | Implemented |
 | [Whether one policy value is stricter than another](strictness-comparison.md) | Implemented |
 | [Default ceilings](default-ceilings.md) | Implemented |
-| [What waharoa explain prints](explain-output.md) | Implemented |
+| [What byrle explain prints](explain-output.md) | Implemented |
 | [Which lockfiles doctor checks for the proxy's address](doctor-lockfile-urls.md) | Implemented |
 | [Policy shape and how a package is judged](policy-tier-resolution.md) | Decided |
 | [Advisory stream data licences](advisory-stream-licences.md) | Verified, two streams outstanding |
@@ -103,7 +103,7 @@ code, and the file names where.
 | [Stage structure](stage-structure.md) | Staging |
 | [Fetch path branching](fetch-path-branching.md) | Decided |
 | [Project name: waharoa](project-name-waharoa.md) | Superseded by [project-name-byrle](project-name-byrle.md) |
-| [Project name: byrle](project-name-byrle.md) | Staging, the rename (Stage 4.5) |
+| [Project name: byrle](project-name-byrle.md) | Implemented |
 
 ## Adding one
 

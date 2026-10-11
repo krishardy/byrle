@@ -5,14 +5,14 @@
 //! Run: `cargo run --release --example heuristics_rates -- <lockfile>...`
 use std::collections::{BTreeMap, BTreeSet};
 
+use byrle::analysis::detector::built_in;
+use byrle::analysis::detector::metadata::{Listing, Metadata, RULES};
+use byrle::ecosystem::npm::transport::Client;
+use byrle::ecosystem::pypi::transport::Client as PypiClient;
+use byrle::identity::{Ecosystem, PackageKey};
+use byrle::record::DocumentDetail;
+use byrle::signal::{Signal, of_detections};
 use futures_util::StreamExt as _;
-use waharoa::analysis::detector::built_in;
-use waharoa::analysis::detector::metadata::{Listing, Metadata, RULES};
-use waharoa::ecosystem::npm::transport::Client;
-use waharoa::ecosystem::pypi::transport::Client as PypiClient;
-use waharoa::identity::{Ecosystem, PackageKey};
-use waharoa::record::DocumentDetail;
-use waharoa::signal::{Signal, of_detections};
 
 #[tokio::main]
 async fn main() {
@@ -21,7 +21,7 @@ async fn main() {
     assert!(!paths.is_empty(), "usage: heuristics_rates <lockfile>...");
     let mut versions = BTreeSet::new();
     for path in &paths {
-        let locked = waharoa::lockfile::read(std::path::Path::new(path)).expect("a lockfile");
+        let locked = byrle::lockfile::read(std::path::Path::new(path)).expect("a lockfile");
         versions.extend(
             locked
                 .into_iter()
@@ -37,7 +37,7 @@ async fn main() {
     }
     let http = reqwest::Client::new();
     let registry = Client::new(http.clone(), "https://registry.npmjs.org");
-    let index = PypiClient::new(http, waharoa::ecosystem::pypi::INDEX);
+    let index = PypiClient::new(http, byrle::ecosystem::pypi::INDEX);
     let now = jiff::Timestamp::now();
 
     let found: Vec<(String, String, String, Option<Vec<Signal>>)> =

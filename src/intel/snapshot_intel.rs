@@ -1,4 +1,4 @@
-//! An intel store read from a kept snapshot, for `waharoa policy diff --snapshot`.
+//! An intel store read from a kept snapshot, for `byrle policy diff --snapshot`.
 //!
 //! Keeps only the records of the packages given up front; any other is an error.
 //! See docs/engineering_decisions/snapshot-identity.md.

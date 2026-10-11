@@ -64,19 +64,19 @@ pub fn read_packument(
             };
             info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                waharoa.package.purl = %p.key,
-                waharoa.package.detail = ?detail,
-                waharoa.package.versions = p.records.len(),
-                waharoa.package.skipped_versions = p.skipped.len(),
+                byrle.package.purl = %p.key,
+                byrle.package.detail = ?detail,
+                byrle.package.versions = p.records.len(),
+                byrle.package.skipped_versions = p.skipped.len(),
                 install_script_versions_listed =
                     p.records.iter().filter(|r| r.has_install_scripts).count(),
-                waharoa.package.deprecated_versions = p.records.iter().filter(|r| r.deprecated.is_some()).count(),
-                waharoa.package.latest = %p.latest.as_deref().unwrap_or("-"),
-                waharoa.metadata.bytes = encoded_bytes,
-                waharoa.metadata.parse_ms = parse_started.elapsed().as_millis() as u64,
-                waharoa.package.offsite_versions = refused.values().sum::<usize>() + allowed_direct.values().sum::<usize>(),
-                waharoa.store.packages = held_packages,
-                waharoa.store.records = held_records,
+                byrle.package.deprecated_versions = p.records.iter().filter(|r| r.deprecated.is_some()).count(),
+                byrle.package.latest = %p.latest.as_deref().unwrap_or("-"),
+                byrle.metadata.bytes = encoded_bytes,
+                byrle.metadata.parse_ms = parse_started.elapsed().as_millis() as u64,
+                byrle.package.offsite_versions = refused.values().sum::<usize>() + allowed_direct.values().sum::<usize>(),
+                byrle.store.packages = held_packages,
+                byrle.store.records = held_records,
                 "packument normalized"
             );
             Some(p)

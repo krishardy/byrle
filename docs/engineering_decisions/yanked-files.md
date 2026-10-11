@@ -71,11 +71,11 @@ key absent and one with `true`.
 The refusal the client reads and the proxy's log line both carry it:
 
 ```
-waharoa: pkg:pypi/x@1.0 is blocked by policy
+byrle: pkg:pypi/x@1.0 is blocked by policy
   - yanked: withdrawn, broken sdist
 ```
 
-`waharoa explain` prints the same string beside the check, and a yank with no reason reads
+`byrle explain` prints the same string beside the check, and a yank with no reason reads
 `withdrawn by the registry`.
 
 ## npm's `deprecated` is logged, and refused only if asked

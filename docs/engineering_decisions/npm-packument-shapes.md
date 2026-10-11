@@ -88,7 +88,7 @@ than being dropped, since the number of maintainers is itself a signal.
 
 `real_packuments_normalise_without_skipping_anything` runs over a corpus on disk and is
 ignored by default. Fill one directory per document kind and name them in
-`WAHAROA_NPM_CORPUS` (abbreviated) and `WAHAROA_NPM_CORPUS_FULL`:
+`BYRLE_NPM_CORPUS` (abbreviated) and `BYRLE_NPM_CORPUS_FULL`:
 
 ```text
 curl -H "Accept: application/vnd.npm.install-v1+json" \

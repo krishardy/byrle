@@ -11,12 +11,12 @@ Report a vulnerability privately, by either:
 Do not open a public issue for it.
 
 Include what you found, how to reproduce it, and the version or commit. A report of a way
-past the proxy is in scope: a package installed without waharoa deciding on it, other
+past the proxy is in scope: a package installed without byrle deciding on it, other
 than the bypasses [docs/threat-model.md](docs/threat-model.md) already lists.
 
 ## What happens next
 
-waharoa is pre-release, maintained without a fixed response time. A report is answered as
+byrle is pre-release, maintained without a fixed response time. A report is answered as
 soon as it can be.
 
 A vulnerability is disclosed when a fixed release is published, with credit to the
@@ -28,5 +28,5 @@ Only the latest release and `main` receive security fixes.
 
 ## Scope
 
-[docs/threat-model.md](docs/threat-model.md) says what waharoa defends against, what it
+[docs/threat-model.md](docs/threat-model.md) says what byrle defends against, what it
 trusts, and what it does not cover.

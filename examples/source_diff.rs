@@ -5,15 +5,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use byrle::analysis::run::{Analyser, SourceJob};
+use byrle::analysis::source::{self, Sourced};
+use byrle::analysis::store::InProcess;
+use byrle::ecosystem::npm::transport::Client;
+use byrle::ecosystem::pypi::transport::Client as PypiClient;
+use byrle::identity::{Ecosystem, PackageKey};
+use byrle::integrity::Sri;
+use byrle::record::{DocumentDetail, PackageRecord};
 use futures_util::StreamExt as _;
-use waharoa::analysis::run::{Analyser, SourceJob};
-use waharoa::analysis::source::{self, Sourced};
-use waharoa::analysis::store::InProcess;
-use waharoa::ecosystem::npm::transport::Client;
-use waharoa::ecosystem::pypi::transport::Client as PypiClient;
-use waharoa::identity::{Ecosystem, PackageKey};
-use waharoa::integrity::Sri;
-use waharoa::record::{DocumentDetail, PackageRecord};
 
 /// What one file came to.
 struct Measured {
@@ -31,20 +31,20 @@ struct Measured {
 async fn main() {
     // nosemgrep: rust.lang.security.args.args
     let paths: Vec<String> = std::env::args().skip(1).collect();
-    tracing::subscriber::set_global_default(waharoa::logging::subscriber(
+    tracing::subscriber::set_global_default(byrle::logging::subscriber(
         tracing_subscriber::EnvFilter::new(
-            waharoa::env::process()
+            byrle::env::process()
                 .log_filter()
                 .expect("a readable log filter"),
         ),
-        waharoa::logging::Format::Text,
+        byrle::logging::Format::Text,
         std::io::stderr,
     ))
     .expect("the only subscriber");
     assert!(!paths.is_empty(), "usage: source_diff <lockfile>...");
     let mut versions = BTreeSet::new();
     for path in &paths {
-        let locked = waharoa::lockfile::read(std::path::Path::new(path)).expect("a lockfile");
+        let locked = byrle::lockfile::read(std::path::Path::new(path)).expect("a lockfile");
         versions.extend(
             locked
                 .into_iter()
@@ -53,9 +53,9 @@ async fn main() {
     }
     let http = reqwest::Client::new();
     let registry = Client::new(http.clone(), "https://registry.npmjs.org");
-    let index = PypiClient::new(http.clone(), waharoa::ecosystem::pypi::INDEX);
+    let index = PypiClient::new(http.clone(), byrle::ecosystem::pypi::INDEX);
     let spool_dir = std::env::temp_dir().join(format!("source-diff-{}", std::process::id()));
-    let (spool, _) = waharoa::spool::Spool::open(&spool_dir, 1 << 30).expect("a spool");
+    let (spool, _) = byrle::spool::Spool::open(&spool_dir, 1 << 30).expect("a spool");
     let analyser = Analyser::new(
         http.clone(),
         Arc::new(spool),
@@ -125,7 +125,7 @@ async fn measure(
     let Some(record) = metadata.and_then(|metadata| metadata.version(&version).cloned()) else {
         return unjobbed(kind, "metadata not read, or the version not listed");
     };
-    let files: Vec<(&'static str, &waharoa::record::Artifact)> = if pypi {
+    let files: Vec<(&'static str, &byrle::record::Artifact)> = if pypi {
         let first = |suffix: &str| {
             record
                 .artifacts

@@ -73,7 +73,7 @@ their input with npm's normaliser, which is a test dependency and not a producti
 | `streams` | which package-keyed advisory streams cover it | `osv/npm`, `datadog/npm`, `github/npm` | none yet |
 | `lockfiles` | which lockfile names `policy diff` reads, and with which reader | `npm::lockfile::LOCKFILES` | none yet |
 | `unread_lockfiles` | which lockfile names are refused with a specific reason | `bun.lockb` | none |
-| `clients` | which package managers `waharoa doctor` checks, how to ask each for its registry and cache, and how to fix each | npm, pnpm, yarn, bun | none yet |
+| `clients` | which package managers `byrle doctor` checks, how to ask each for its registry and cache, and how to fix each | npm, pnpm, yarn, bun | none yet |
 
 npm's empty `prefixes` is the root fallback, and `ecosystem::ROOT` names it. Before the
 table, `route::classify` was `if pypi::serves(path) { PyPI } else { Npm }`: a third
@@ -88,7 +88,7 @@ makes `ecosystem::of` safe to call on the request path.
 
 `TABLE` is also the served set. `intel::served` reads it, so every row is an ecosystem
 `LoadedSnapshot::gaps` checks, and a row with no `streams` is reported at startup and by
-`waharoa doctor` as served with no stream providing `match` or `malware`. This replaced
+`byrle doctor` as served with no stream providing `match` or `malware`. This replaced
 `Ecosystem::ALL`, a hand-written list that held npm alone after the proxy served PyPI.
 
 ### Publish times
@@ -104,7 +104,7 @@ which `facts::published_date` reads before any fetched times.
 
 `ecosystem::Clients` holds npm's and PyPI's clients, and `metadata` and `publish_times`
 choose between them by the key's ecosystem. The proxy uses it for an artifact whose
-metadata it has not seen. `waharoa explain` and `waharoa policy diff` use it for every
+metadata it has not seen. `byrle explain` and `byrle policy diff` use it for every
 package they judge, so `explain pkg:pypi/requests@2.32.3` asks PyPI. Before, both commands
 built an `npm::Client` whatever the purl said.
 
@@ -165,7 +165,7 @@ such as `not served` with `why="the registry gave no metadata for it"`. "Packume
 meant: `DocumentKind::Packument`, the npm arm of `handle`, and `publish_times_for`'s
 full-packument fetch.
 
-`WAHAROA_MAX_METADATA_BYTES`, `WAHAROA_MAX_CONCURRENT_METADATA` and the health JSON's
+`BYRLE_MAX_METADATA_BYTES`, `BYRLE_MAX_CONCURRENT_METADATA` and the health JSON's
 `packages_held` were `..._PACKUMENT_BYTES`, `..._CONCURRENT_PACKUMENTS` and
 `packuments_held` until 2026-09-19. No build had been deployed, so no configuration or reader
 from another build held the old names.

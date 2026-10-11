@@ -1,4 +1,4 @@
-//! Every environment variable waharoa reads: its name, default, help text and parsing.
+//! Every environment variable byrle reads: its name, default, help text and parsing.
 //!
 //! No variable name appears anywhere else in the Rust code. An empty value is unset.
 //! See environment-variables.md and default-ceilings.md in docs/engineering_decisions.
@@ -85,21 +85,21 @@ pub const DEFAULT_SNAPSHOT_LIMIT: usize = 30;
 /// What §5 says a policy denial is: 403 means policy denied you.
 pub const DEFAULT_REFUSAL_STATUS: u16 = 403;
 
-pub const DEFAULT_LOG_FILTER: &str = "waharoa=info";
+pub const DEFAULT_LOG_FILTER: &str = "byrle=info";
 
-pub const LISTEN: Var = runtime("WAHAROA_LISTEN", "", &["address to listen on"])
+pub const LISTEN: Var = runtime("BYRLE_LISTEN", "", &["address to listen on"])
     .with_default(Default::Text(DEFAULT_LISTEN));
 /// Defaults to npm's public registry.
-pub const UPSTREAM_NPM: Var = runtime("WAHAROA_UPSTREAM_NPM", "", &["npm registry to forward to"])
+pub const UPSTREAM_NPM: Var = runtime("BYRLE_UPSTREAM_NPM", "", &["npm registry to forward to"])
     .with_default(Default::Text(crate::ecosystem::npm::DEFAULT_REGISTRY));
 pub const UPSTREAM_PYPI: Var = runtime(
-    "WAHAROA_UPSTREAM_PYPI",
+    "BYRLE_UPSTREAM_PYPI",
     "",
     &["PyPI simple index to forward to"],
 )
 .with_default(Default::Text(crate::ecosystem::pypi::INDEX));
 pub const PUBLIC_URL: Var = runtime(
-    "WAHAROA_PUBLIC_URL",
+    "BYRLE_PUBLIC_URL",
     "",
     &[
         "address written into artifact URLs, and therefore",
@@ -108,12 +108,12 @@ pub const PUBLIC_URL: Var = runtime(
     ],
 );
 pub const ARTIFACT_ORIGINS: Var = runtime(
-    "WAHAROA_ARTIFACT_ORIGINS",
+    "BYRLE_ARTIFACT_ORIGINS",
     "",
     &["comma-separated origins this proxy also serves"],
 );
 pub const ALLOW_DIRECT_ORIGINS: Var = runtime(
-    "WAHAROA_ALLOW_DIRECT_ORIGINS",
+    "BYRLE_ALLOW_DIRECT_ORIGINS",
     "",
     &[
         "comma-separated origins the proxy does not serve and",
@@ -121,7 +121,7 @@ pub const ALLOW_DIRECT_ORIGINS: Var = runtime(
     ],
 );
 pub const REWRITE_ARTIFACTS: Var = runtime(
-    "WAHAROA_REWRITE_ARTIFACTS",
+    "BYRLE_REWRITE_ARTIFACTS",
     "=0",
     &[
         "do not point artifact URLs at the proxy. pnpm and",
@@ -130,67 +130,63 @@ pub const REWRITE_ARTIFACTS: Var = runtime(
     ],
 );
 pub const CA_BUNDLE: Var = runtime(
-    "WAHAROA_CA_BUNDLE",
+    "BYRLE_CA_BUNDLE",
     "",
     &["PEM bundle for the upstream connection"],
 );
 pub const CA_BUNDLE_EXCLUSIVE: Var = runtime(
-    "WAHAROA_CA_BUNDLE_EXCLUSIVE",
+    "BYRLE_CA_BUNDLE_EXCLUSIVE",
     "=1",
     &["trust only that bundle, not the public roots"],
 );
 pub const MAX_METADATA_BYTES: Var = runtime(
-    "WAHAROA_MAX_METADATA_BYTES",
+    "BYRLE_MAX_METADATA_BYTES",
     "",
     &["ceiling on a metadata document"],
 )
 .with_default(Default::Bytes(DEFAULT_MAX_METADATA_BYTES));
-pub const MAX_RECORDS: Var = runtime(
-    "WAHAROA_MAX_RECORDS",
-    "",
-    &["package records held in memory"],
-)
-.with_default(Default::Number(DEFAULT_MAX_RECORDS as u64));
+pub const MAX_RECORDS: Var = runtime("BYRLE_MAX_RECORDS", "", &["package records held in memory"])
+    .with_default(Default::Number(DEFAULT_MAX_RECORDS as u64));
 pub const MAX_VERIFIED: Var = runtime(
-    "WAHAROA_MAX_VERIFIED",
+    "BYRLE_MAX_VERIFIED",
     "",
     &["verified artifact digests remembered"],
 )
 .with_default(Default::Number(DEFAULT_MAX_VERIFIED as u64));
 pub const DATABASE_URL: Var = runtime(
-    "WAHAROA_DATABASE_URL",
+    "BYRLE_DATABASE_URL",
     "",
     &[
-        "Postgres holding intel from `waharoa refresh`. With a",
+        "Postgres holding intel from `byrle refresh`. With a",
         "policy, known_malware is enforced from it, and a",
         "store that cannot answer is a 503",
     ],
 );
 pub const GITHUB_TOKEN: Var = runtime(
-    "WAHAROA_GITHUB_TOKEN",
+    "BYRLE_GITHUB_TOKEN",
     "",
     &[
-        "token `waharoa refresh` reads GitHub's Advisory",
+        "token `byrle refresh` reads GitHub's Advisory",
         "Database with. Unset, that one stream does not load",
         "and the others still do",
     ],
 );
 pub const SNAPSHOT_DIR: Var = runtime(
-    "WAHAROA_SNAPSHOT_DIR",
+    "BYRLE_SNAPSHOT_DIR",
     "",
     &[
-        "directory `waharoa refresh` keeps each snapshot in,",
+        "directory `byrle refresh` keeps each snapshot in,",
         "for `policy diff --snapshot`. Unset, none is kept",
     ],
 );
 pub const SNAPSHOT_LIMIT: Var = runtime(
-    "WAHAROA_SNAPSHOT_LIMIT",
+    "BYRLE_SNAPSHOT_LIMIT",
     "",
     &["most snapshots kept there; a refresh removes older ones"],
 )
 .with_default(Default::Number(DEFAULT_SNAPSHOT_LIMIT as u64));
 pub const POLICY: Var = runtime(
-    "WAHAROA_POLICY",
+    "BYRLE_POLICY",
     "",
     &[
         "path to a policy file. Loaded, validated and",
@@ -198,7 +194,7 @@ pub const POLICY: Var = runtime(
     ],
 );
 pub const AUDIT_LOG: Var = runtime(
-    "WAHAROA_AUDIT_LOG",
+    "BYRLE_AUDIT_LOG",
     "",
     &[
         "path for one JSON line per policy decision,",
@@ -206,46 +202,46 @@ pub const AUDIT_LOG: Var = runtime(
     ],
 );
 pub const EXPIRY_CEILING_DAYS: Var = runtime(
-    "WAHAROA_EXPIRY_CEILING_DAYS",
+    "BYRLE_EXPIRY_CEILING_DAYS",
     "",
     &["how many days ahead a `packages` entry may be dated"],
 )
 .with_default(Default::Number(DEFAULT_EXPIRY_CEILING_DAYS as u64));
 pub const MAX_CONCURRENT_METADATA: Var = runtime(
-    "WAHAROA_MAX_CONCURRENT_METADATA",
+    "BYRLE_MAX_CONCURRENT_METADATA",
     "",
     &["metadata documents decoded at once"],
 )
 .with_default(Default::Number(DEFAULT_MAX_CONCURRENT_METADATA as u64));
 pub const SPOOL_DIR: Var = runtime(
-    "WAHAROA_SPOOL_DIR",
+    "BYRLE_SPOOL_DIR",
     "",
     &[
         "directory an artifact is written to while it is",
         "analysed. Locked; spool files left in it are removed",
-        "at startup (default waharoa-spool in the OS temp dir)",
+        "at startup (default byrle-spool in the OS temp dir)",
     ],
 );
 pub const MAX_ARTIFACT_BYTES: Var = runtime(
-    "WAHAROA_MAX_ARTIFACT_BYTES",
+    "BYRLE_MAX_ARTIFACT_BYTES",
     "",
     &["ceiling on an artifact written to the spool"],
 )
 .with_default(Default::Bytes(DEFAULT_MAX_ARTIFACT_BYTES as usize));
 pub const MAX_CONCURRENT_ANALYSES: Var = runtime(
-    "WAHAROA_MAX_CONCURRENT_ANALYSES",
+    "BYRLE_MAX_CONCURRENT_ANALYSES",
     "",
     &["artifacts analysed at once"],
 )
 .with_default(Default::Number(DEFAULT_MAX_CONCURRENT_ANALYSES as u64));
 pub const MAX_TRAFFIC_CLIENTS: Var = runtime(
-    "WAHAROA_MAX_TRAFFIC_CLIENTS",
+    "BYRLE_MAX_TRAFFIC_CLIENTS",
     "",
     &["client names counted apart in a traffic window"],
 )
 .with_default(Default::Number(DEFAULT_MAX_TRAFFIC_CLIENTS as u64));
 pub const WATCH_INTERVAL: Var = runtime(
-    "WAHAROA_WATCH_INTERVAL",
+    "BYRLE_WATCH_INTERVAL",
     "",
     &[
         "seconds between checks of served packages for new versions to analyse",
@@ -254,7 +250,7 @@ pub const WATCH_INTERVAL: Var = runtime(
 )
 .with_default(Default::Number(DEFAULT_WATCH_INTERVAL_SECONDS));
 pub const SOURCE_ARCHIVES: Var = runtime(
-    "WAHAROA_SOURCE_ARCHIVES",
+    "BYRLE_SOURCE_ARCHIVES",
     "",
     &[
         "host of the GitHub archives each artifact is compared with, the source",
@@ -263,7 +259,7 @@ pub const SOURCE_ARCHIVES: Var = runtime(
 )
 .with_default(Default::Text(crate::analysis::source::ARCHIVES));
 pub const REFUSAL_STATUS: Var = runtime(
-    "WAHAROA_REFUSAL_STATUS",
+    "BYRLE_REFUSAL_STATUS",
     "",
     &[
         "status a refusal answers with, per client, e.g.",
@@ -272,7 +268,7 @@ pub const REFUSAL_STATUS: Var = runtime(
 )
 .with_default(Default::Number(DEFAULT_REFUSAL_STATUS as u64));
 pub const REFUSE_UNSERVABLE: Var = runtime(
-    "WAHAROA_REFUSE_UNSERVABLE",
+    "BYRLE_REFUSE_UNSERVABLE",
     "=0",
     &[
         "forward versions whose artifacts this proxy cannot",
@@ -280,7 +276,7 @@ pub const REFUSE_UNSERVABLE: Var = runtime(
     ],
 );
 pub const MODE: Var = runtime(
-    "WAHAROA_MODE",
+    "BYRLE_MODE",
     "",
     &["\"observe\" serves what the policy refuses and logs it"],
 )
@@ -313,7 +309,7 @@ pub const FORWARD_HTTPS_LOWER: Var = other(Kind::External, "https_proxy", &["as 
 pub const FORWARD_HTTP_LOWER: Var = other(Kind::External, "http_proxy", &["as HTTP_PROXY"]);
 pub const FORWARD_EXCEPT_LOWER: Var = other(Kind::External, "no_proxy", &["as NO_PROXY"]);
 pub const DETECTORS: Var = runtime(
-    "WAHAROA_DETECTORS",
+    "BYRLE_DETECTORS",
     "",
     &[
         "detectors run on each version served, `name=command argument...`, separated by `;`;",
@@ -327,7 +323,7 @@ pub const DETECTOR_SOCKS: Var = other(
     &["a SOCKS5 proxy, host:port, passed to detectors"],
 );
 pub const LOG_FORMAT: Var = runtime(
-    "WAHAROA_LOG_FORMAT",
+    "BYRLE_LOG_FORMAT",
     "",
     &["\"json\" writes one OpenTelemetry log record per line"],
 )
@@ -337,7 +333,7 @@ pub const LOG_FILTER: Var = runtime("RUST_LOG", "", &["log filter, in tracing's 
 pub const DEFER_TEST: Var = Var {
     kind: Kind::Debug,
     ..runtime(
-        "WAHAROA_DEFER_TEST",
+        "BYRLE_DEFER_TEST",
         "",
         &[
             "DEBUG BUILDS ONLY: answer every matching request with",
@@ -351,22 +347,22 @@ pub const DEFER_TEST: Var = Var {
 
 pub const BLESS: Var = other(
     Kind::Test,
-    "WAHAROA_BLESS",
+    "BYRLE_BLESS",
     &["rewrite golden files instead of comparing against them"],
 );
 pub const NPM_CORPUS: Var = other(
     Kind::Test,
-    "WAHAROA_NPM_CORPUS",
+    "BYRLE_NPM_CORPUS",
     &["directory of abbreviated packuments for the ignored corpus test"],
 );
 pub const NPM_CORPUS_FULL: Var = other(
     Kind::Test,
-    "WAHAROA_NPM_CORPUS_FULL",
+    "BYRLE_NPM_CORPUS_FULL",
     &["directory of full packuments for the ignored corpus test"],
 );
 pub const TEST_DATABASE_URL: Var = other(
     Kind::Test,
-    "WAHAROA_TEST_DATABASE_URL",
+    "BYRLE_TEST_DATABASE_URL",
     &["Postgres the integration tests run against, set by `make test-integration`"],
 );
 pub const HOME_DIR: Var = other(
@@ -1074,7 +1070,7 @@ mod tests {
         assert_eq!(env.bun_install_cache_dir().unwrap(), None);
     }
 
-    /// `WAHAROA_LISTEN=` used to be bound as the empty address, and failed there.
+    /// `BYRLE_LISTEN=` used to be bound as the empty address, and failed there.
     #[test]
     fn empty_is_unset() {
         let env = with(&[(LISTEN, ""), (MAX_RECORDS, ""), (POLICY, ""), (BLESS, "")]);
@@ -1100,12 +1096,12 @@ mod tests {
             (MAX_RECORDS, "10"),
             (MAX_VERIFIED, "20"),
             (MAX_CONCURRENT_METADATA, "2"),
-            (SPOOL_DIR, "/var/spool/waharoa"),
+            (SPOOL_DIR, "/var/spool/byrle"),
             (MAX_ARTIFACT_BYTES, "4096"),
             (MAX_CONCURRENT_ANALYSES, "3"),
             (MAX_TRAFFIC_CLIENTS, "12"),
             (DATABASE_URL, "postgres://db"),
-            (SNAPSHOT_DIR, "/var/lib/waharoa"),
+            (SNAPSHOT_DIR, "/var/lib/byrle"),
             (SNAPSHOT_LIMIT, "7"),
             (POLICY, "policy.yaml"),
             (AUDIT_LOG, "audit.jsonl"),
@@ -1147,10 +1143,7 @@ mod tests {
         assert_eq!(env.max_records().unwrap(), 10);
         assert_eq!(env.max_verified().unwrap(), 20);
         assert_eq!(env.max_concurrent_metadata().unwrap(), 2);
-        assert_eq!(
-            env.spool_dir().unwrap(),
-            PathBuf::from("/var/spool/waharoa")
-        );
+        assert_eq!(env.spool_dir().unwrap(), PathBuf::from("/var/spool/byrle"));
         assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
         assert_eq!(env.max_concurrent_analyses().unwrap(), 3);
         assert_eq!(env.max_traffic_clients().unwrap(), 12);
@@ -1160,7 +1153,7 @@ mod tests {
         );
         assert_eq!(
             env.snapshot_dir().unwrap(),
-            Some(PathBuf::from("/var/lib/waharoa"))
+            Some(PathBuf::from("/var/lib/byrle"))
         );
         assert_eq!(env.snapshot_limit().unwrap(), 7);
         assert_eq!(env.policy().unwrap(), Some(PathBuf::from("policy.yaml")));
@@ -1229,55 +1222,55 @@ mod tests {
         let cases: [(Result<(), EnvError>, &str); 13] = [
             (
                 env.max_records().map(drop),
-                "WAHAROA_MAX_RECORDS: `5O000` is not a whole number",
+                "BYRLE_MAX_RECORDS: `5O000` is not a whole number",
             ),
             (
                 env.max_metadata_bytes().map(drop),
-                "WAHAROA_MAX_METADATA_BYTES: `-1` is not a whole number",
+                "BYRLE_MAX_METADATA_BYTES: `-1` is not a whole number",
             ),
             (
                 env.max_verified().map(drop),
-                "WAHAROA_MAX_VERIFIED: `1e6` is not a whole number",
+                "BYRLE_MAX_VERIFIED: `1e6` is not a whole number",
             ),
             (
                 env.max_concurrent_metadata().map(drop),
-                "WAHAROA_MAX_CONCURRENT_METADATA: `eight` is not a whole number",
+                "BYRLE_MAX_CONCURRENT_METADATA: `eight` is not a whole number",
             ),
             (
                 env.expiry_ceiling_days().map(drop),
-                "WAHAROA_EXPIRY_CEILING_DAYS: `-5` is not a whole number of days",
+                "BYRLE_EXPIRY_CEILING_DAYS: `-5` is not a whole number of days",
             ),
             (
                 env.ca_bundle_exclusive().map(drop),
-                "WAHAROA_CA_BUNDLE_EXCLUSIVE: `yes` is not 0 or 1",
+                "BYRLE_CA_BUNDLE_EXCLUSIVE: `yes` is not 0 or 1",
             ),
             (
                 env.rewrite_artifacts().map(drop),
-                "WAHAROA_REWRITE_ARTIFACTS: `false` is not 0 or 1",
+                "BYRLE_REWRITE_ARTIFACTS: `false` is not 0 or 1",
             ),
             (
                 env.refuse_unservable().map(drop),
-                "WAHAROA_REFUSE_UNSERVABLE: `no` is not 0 or 1",
+                "BYRLE_REFUSE_UNSERVABLE: `no` is not 0 or 1",
             ),
             (
                 env.mode().map(drop),
-                "WAHAROA_MODE: `warn` is not `enforce` or `observe`",
+                "BYRLE_MODE: `warn` is not `enforce` or `observe`",
             ),
             (
                 env.log_format().map(drop),
-                "WAHAROA_LOG_FORMAT: `logfmt` is not `text` or `json`",
+                "BYRLE_LOG_FORMAT: `logfmt` is not `text` or `json`",
             ),
             (
                 env.snapshot_limit().map(drop),
-                "WAHAROA_SNAPSHOT_LIMIT: `0` is not a whole number above 0",
+                "BYRLE_SNAPSHOT_LIMIT: `0` is not a whole number above 0",
             ),
             (
                 env.max_artifact_bytes().map(drop),
-                "WAHAROA_MAX_ARTIFACT_BYTES: `0` is not a whole number above 0",
+                "BYRLE_MAX_ARTIFACT_BYTES: `0` is not a whole number above 0",
             ),
             (
                 env.max_traffic_clients().map(drop),
-                "WAHAROA_MAX_TRAFFIC_CLIENTS: `0` is not a whole number above 0",
+                "BYRLE_MAX_TRAFFIC_CLIENTS: `0` is not a whole number above 0",
             ),
         ];
         for (result, expected) in cases {
@@ -1298,14 +1291,14 @@ mod tests {
             let npm = with(&[(UPSTREAM_NPM, value)]).upstreams().expect_err(value);
             assert_eq!(
                 npm.to_string(),
-                format!("WAHAROA_UPSTREAM_NPM: `{value}` is not usable: {reason}")
+                format!("BYRLE_UPSTREAM_NPM: `{value}` is not usable: {reason}")
             );
             let pypi = with(&[(UPSTREAM_PYPI, value)])
                 .upstreams()
                 .expect_err(value);
             assert_eq!(
                 pypi.to_string(),
-                format!("WAHAROA_UPSTREAM_PYPI: `{value}` is not usable: {reason}")
+                format!("BYRLE_UPSTREAM_PYPI: `{value}` is not usable: {reason}")
             );
         }
         let mirror = "https://artifacts.example/api/npm/npm-remote/";
@@ -1359,14 +1352,14 @@ mod tests {
         assert!(
             refusal
                 .to_string()
-                .starts_with("WAHAROA_REFUSAL_STATUS: `npm=403` "),
+                .starts_with("BYRLE_REFUSAL_STATUS: `npm=403` "),
             "{refusal}"
         );
         #[cfg(debug_assertions)]
         {
             let defer = env.defer_test().expect_err("malformed");
             assert!(
-                defer.to_string().starts_with("WAHAROA_DEFER_TEST: `nope` "),
+                defer.to_string().starts_with("BYRLE_DEFER_TEST: `nope` "),
                 "{defer}"
             );
         }
@@ -1390,7 +1383,7 @@ mod tests {
         let env = Env::from_lookup(|_: &str| Some(OsString::from_vec(vec![0x66, 0xff])));
         assert_eq!(
             env.policy().expect_err("not UTF-8").to_string(),
-            "WAHAROA_POLICY: `f\u{fffd}` is not UTF-8"
+            "BYRLE_POLICY: `f\u{fffd}` is not UTF-8"
         );
         assert!(!env.bless());
     }
@@ -1406,7 +1399,7 @@ mod tests {
         assert_eq!(interval("0").unwrap(), None);
         assert_eq!(
             interval("15m").unwrap_err().to_string(),
-            "WAHAROA_WATCH_INTERVAL: `15m` is not a whole number of seconds"
+            "BYRLE_WATCH_INTERVAL: `15m` is not a whole number of seconds"
         );
     }
 
@@ -1516,13 +1509,13 @@ mod tests {
         assert!(found.is_empty(), "{found:#?}");
 
         let text = std::fs::read_to_string(&this).expect("readable");
-        for (i, _) in text.match_indices("WAHAROA_") {
+        for (i, _) in text.match_indices("BYRLE_") {
             let name: String = text[i..]
                 .chars()
                 .take_while(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || *c == '_')
                 .collect();
             assert!(
-                name == "WAHAROA_" || ALL.iter().any(|var| var.name == name),
+                name == "BYRLE_" || ALL.iter().any(|var| var.name == name),
                 "{name} is written in env.rs but is not in ALL"
             );
         }
@@ -1538,7 +1531,7 @@ mod tests {
                 let named = ALL
                     .iter()
                     .map(|var| var.name)
-                    .chain(["WAHAROA_"])
+                    .chain(["BYRLE_"])
                     .filter(|name| contains_name(line, name));
                 for name in named {
                     let path = file.strip_prefix(root).unwrap_or(file);
@@ -1560,7 +1553,7 @@ mod tests {
             named_outside(&root, std::slice::from_ref(&file)),
             [
                 format!("elsewhere.rs:2: {name}"),
-                "elsewhere.rs:2: WAHAROA_".to_owned()
+                "elsewhere.rs:2: BYRLE_".to_owned()
             ]
         );
         let _ = std::fs::remove_dir_all(&root);
@@ -1617,7 +1610,7 @@ mod tests {
         assert_eq!(MAX_RECORDS.default_text(), None, "a number");
     }
 
-    /// `name` in `line` with no identifier character on either side. `WAHAROA_` matches as a
+    /// `name` in `line` with no identifier character on either side. `BYRLE_` matches as a
     /// prefix, so a name missing from `ALL` is found too.
     fn contains_name(line: &str, name: &str) -> bool {
         let identifier = |c: char| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_';

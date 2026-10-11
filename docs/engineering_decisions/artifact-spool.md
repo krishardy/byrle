@@ -14,7 +14,7 @@ The first fetch of an artifact that no analysis is stored for starts a job that 
 the artifact from upstream, writes it to the spool, checks its digest, reads it, and stores
 the analysis under the digest.
 
-The request is answered 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready:
+The request is answered 503 at once, with `Retry-After: 1` and `x-byrle-not-ready:
 artifact-analysis`, under any policy and with none. Nothing is served until its analysis
 has finished. Decided 2026-09-27, replacing a 503 only when the answer depended on the
 analysis: an artifact the proxy has not assessed is never served. The retry is decided on
@@ -55,12 +55,12 @@ needs neither, and holds no connection open while the analysis runs.
 | A PyPI wheel | the metadata's claim, which for a wheel is none |
 
 Each job ends with one INFO line, `analysis job timed`, giving milliseconds for each
-phase under `waharoa.analysis.`: `queued_ms` waiting for one of
-`WAHAROA_MAX_CONCURRENT_ANALYSES` slots, `fetch_ms` to the upstream's headers,
+phase under `byrle.analysis.`: `queued_ms` waiting for one of
+`BYRLE_MAX_CONCURRENT_ANALYSES` slots, `fetch_ms` to the upstream's headers,
 `download_ms` spooling and hashing the body, with `bytes`, `read_ms`, `store_ms`, and
 `attest_ms` for its `attestations`, then `total_ms` and whether it `completed` before the
-deadline. Each attestation's own line adds `waharoa.attestation.fetch_ms` and
-`waharoa.attestation.verify_ms`.
+deadline. Each attestation's own line adds `byrle.attestation.fetch_ms` and
+`byrle.attestation.verify_ms`.
 
 A job that fails to fetch, cannot write the spool, or runs past its ten-minute deadline
 stores nothing, and the next request starts another. That includes an upstream that
@@ -70,7 +70,7 @@ connection after 10s without connecting or 30s without a byte, `http::CONNECT_TI
 `http::READ_TIMEOUT`, since 2026-09-28. It sets no total timeout, so an upstream that
 trickles would otherwise hold a job slot, and its digest would be answered 503 for as long
 as it trickles. The deadline bounds that. A job whose bytes do not match the digest stores nothing and is remembered
-in this process only, bounded by `WAHAROA_MAX_VERIFIED`, because a mismatch is about one
+in this process only, bounded by `BYRLE_MAX_VERIFIED`, because a mismatch is about one
 upstream at one time rather than about the bytes.
 
 ### Why the reader needs the whole artifact
@@ -85,7 +85,7 @@ at the first `package.json`. That prefix is not small enough to bound: of 78 npm
 | Rule | Why |
 |---|---|
 | one job per digest at a time | a client retrying, and an install asking for one artifact from several places, start one job between them |
-| at most `WAHAROA_MAX_CONCURRENT_ANALYSES` jobs run; the rest wait for a slot | bounds how much of the spool is in use. A request never waits |
+| at most `BYRLE_MAX_CONCURRENT_ANALYSES` jobs run; the rest wait for a slot | bounds how much of the spool is in use. A request never waits |
 | a job ends after 10 minutes (`analysis::run::DEADLINE`), and its spool file is deleted | the upstream client ends a stall after `http::READ_TIMEOUT` with no bytes and sets no total timeout, so an upstream that trickles would hold a slot, and its digest would answer 503, for as long as it trickled. 10 minutes is a 1 GiB artifact at under 2 MB/s |
 | a digest whose fetch did not match is remembered in this process only, bounded by count | a mismatch is about one upstream at one time, not about the bytes |
 | an analysis store that cannot answer reads as not analysed | the artifact is analysed again |
@@ -132,7 +132,7 @@ and skips the analysis, not the fetch.
 
 | | |
 |---|---|
-| Directory | `WAHAROA_SPOOL_DIR`, defaulting to `waharoa-spool` in the OS temporary directory, created with mode `0700` |
+| Directory | `BYRLE_SPOOL_DIR`, defaulting to `byrle-spool` in the OS temporary directory, created with mode `0700` |
 | Name | `artifact-<pid>-<n>` |
 | Created | `O_CREAT` with `O_EXCL`, mode `0600` |
 | Deleted | by a guard when the request ends, on every path: served, refused, or failed |
@@ -155,7 +155,7 @@ still opens.
 
 ## The ceiling, and what it is for
 
-`Content-Length` is a claim. The write is bounded by `WAHAROA_MAX_ARTIFACT_BYTES`,
+`Content-Length` is a claim. The write is bounded by `BYRLE_MAX_ARTIFACT_BYTES`,
 defaulting to 1 GiB. An artifact past it is stored as unreadable, with the ceiling and the
 variable named, so the retry is decided rather than deferred again.
 
@@ -165,8 +165,8 @@ a package anyone publishes, and a job that trips it is logged at WARN for that r
 `analysis::MAX_MEMBER_BYTES`, 4 MiB, is the separate bound on one member inside the archive,
 which is what a decompression bomb needs.
 
-Disk is sized by the ceiling times the concurrency bound. `WAHAROA_MAX_CONCURRENT_ANALYSES`
-defaults to 8, as `WAHAROA_MAX_CONCURRENT_METADATA` does, so a proxy at its bounds holds
+Disk is sized by the ceiling times the concurrency bound. `BYRLE_MAX_CONCURRENT_ANALYSES`
+defaults to 8, as `BYRLE_MAX_CONCURRENT_METADATA` does, so a proxy at its bounds holds
 8 GiB.
 
 ## A full disk stores nothing

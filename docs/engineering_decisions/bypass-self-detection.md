@@ -2,14 +2,14 @@
 
 - **Status:** Implemented 2026-09-26. `proxy::report_direct_dependencies`,
   `proxy::Traffic` and `Proxy::report_traffic`, the 304 branch of `Exchange::forward_artifact`, and five
-  counters in `/-/waharoa/health`.
+  counters in `/-/byrle/health`.
 - **Related:** [packument-body-inspection](packument-body-inspection.md),
   [packument-tarball-url-rewriting](packument-tarball-url-rewriting.md),
   [artifact-digest-verification](artifact-digest-verification.md)
 
 ## Decision
 
-Each signal is logged and counted in `/-/waharoa/health`, and none refuses anything. Each
+Each signal is logged and counted in `/-/byrle/health`, and none refuses anything. Each
 says what the proxy did not see, which a check cannot decide on.
 
 | Signal | Certain or heuristic | Log | Health |
@@ -65,6 +65,6 @@ one document request and two artifact requests.
 
 Counts are kept by the client name the user-agent gives, `refusal::client_name`. The server
 does not keep the peer address, and behind a load balancer it would be the balancer's, so
-every machine running one client shares a count. `WAHAROA_MAX_TRAFFIC_CLIENTS`, 256 by
+every machine running one client shares a count. `BYRLE_MAX_TRAFFIC_CLIENTS`, 256 by
 default, bounds the names a window counts apart; past it a new name counts as `other`. HEAD
 requests and bun's resolver probes are not counted.

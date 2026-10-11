@@ -1,6 +1,6 @@
 # The audit log
 
-- **Status:** Implemented. `src/audit.rs`, written where `WAHAROA_AUDIT_LOG` points.
+- **Status:** Implemented. `src/audit.rs`, written where `BYRLE_AUDIT_LOG` points.
 - **Related:** [reproducible-verdicts](reproducible-verdicts.md),
   [quarantine-filter-metadata](quarantine-filter-metadata.md),
   [policy-diff-dates-and-exit-bits](policy-diff-dates-and-exit-bits.md)

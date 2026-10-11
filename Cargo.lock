@@ -201,6 +201,37 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
+name = "byrle"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "base64 0.23.1",
+ "bytes",
+ "clap",
+ "ctor",
+ "cvss",
+ "flate2",
+ "futures-util",
+ "jiff",
+ "log",
+ "purl",
+ "reqwest",
+ "semver",
+ "serde",
+ "serde-saphyr",
+ "serde_json",
+ "sha2 0.11.0",
+ "sigstore-verify",
+ "sqlx",
+ "tar",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-subscriber",
+ "zip",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3097,37 +3128,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "waharoa"
-version = "0.1.0"
-dependencies = [
- "axum",
- "base64 0.23.1",
- "bytes",
- "clap",
- "ctor",
- "cvss",
- "flate2",
- "futures-util",
- "jiff",
- "log",
- "purl",
- "reqwest",
- "semver",
- "serde",
- "serde-saphyr",
- "serde_json",
- "sha2 0.11.0",
- "sigstore-verify",
- "sqlx",
- "tar",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "zip",
-]
 
 [[package]]
 name = "walkdir"

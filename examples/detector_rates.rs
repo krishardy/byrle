@@ -5,9 +5,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
+use byrle::analysis::detector::{Command, Detector, Target};
+use byrle::identity::{Ecosystem, PackageKey};
 use futures_util::StreamExt as _;
-use waharoa::analysis::detector::{Command, Detector, Target};
-use waharoa::identity::{Ecosystem, PackageKey};
 
 /// One run: the ecosystem, `name@version`, the rules that fired or why it failed, and seconds.
 type Ran = (String, String, Result<Vec<String>, String>, f64);
@@ -19,12 +19,12 @@ async fn main() {
     let (spec, paths) = args
         .split_first()
         .expect("usage: detector_rates '<name=command ...>' <lockfile>...");
-    let detector = Command::configured(spec, waharoa::env::process().detector_environment())
+    let detector = Command::configured(spec, byrle::env::process().detector_environment())
         .await
         .expect("the detector says its version");
     let mut versions = BTreeSet::new();
     for path in paths {
-        let locked = waharoa::lockfile::read(std::path::Path::new(path)).expect("a lockfile");
+        let locked = byrle::lockfile::read(std::path::Path::new(path)).expect("a lockfile");
         versions.extend(
             locked
                 .into_iter()

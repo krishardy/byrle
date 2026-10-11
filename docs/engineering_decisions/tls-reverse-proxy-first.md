@@ -20,9 +20,9 @@ an enterprise anti-bypass feature rather than a starting point.
 - Reverse proxy mode is advisory: a developer who resets their registry URL defeats it.
   Plan §7 records this as a known bypass vector.
 - Custom CA bundle support for the upstream connection is implemented (`src/tls.rs`).
-  `WAHAROA_CA_BUNDLE` merges a PEM bundle with the platform roots, for a private registry
+  `BYRLE_CA_BUNDLE` merges a PEM bundle with the platform roots, for a private registry
   with an internal CA or a TLS-inspecting corporate middlebox.
-  `WAHAROA_CA_BUNDLE_EXCLUSIVE=1` trusts only the bundle and drops every public root,
+  `BYRLE_CA_BUNDLE_EXCLUSIVE=1` trusts only the bundle and drops every public root,
   which pins the upstream so a compromise of any public CA cannot impersonate the
   registry. Verified against registry.npmjs.org with a self-signed CA: merged it connects,
   exclusive it fails at the handshake.

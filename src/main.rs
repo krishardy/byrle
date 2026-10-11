@@ -1,19 +1,19 @@
-//! The `waharoa` binary: parse the command line, run the command, print what it returns.
+//! The `byrle` binary: parse the command line, run the command, print what it returns.
 //!
 //! Each command is in the library. `make smoke-npm`, `make smoke-python` and
 //! `make smoke-clients` cover this file by running real clients through the proxy.
 
+use byrle::cli;
+use byrle::doctor;
+use byrle::env;
+use byrle::explain;
 use clap::Parser as _;
 use tracing::info;
-use waharoa::cli;
-use waharoa::doctor;
-use waharoa::env;
-use waharoa::explain;
 
-use waharoa::intel::postgres;
-use waharoa::intel::refresh;
-use waharoa::policy::{check, diff, today};
-use waharoa::startup;
+use byrle::intel::postgres;
+use byrle::intel::refresh;
+use byrle::policy::{check, diff, today};
+use byrle::startup;
 
 /// A variable that does not parse ends the process with exit 2, as a malformed command line
 /// does: the operator asked for something, and continuing without it would hide that.
@@ -24,12 +24,12 @@ fn or_exit<T>(result: Result<T, env::EnvError>) -> T {
 /// [`or_exit`] with `code`, for a command whose exit 2 means something else.
 fn or_exit_with<T>(result: Result<T, env::EnvError>, code: u8) -> T {
     result.unwrap_or_else(|e| {
-        eprintln!("waharoa: {e}");
+        eprintln!("byrle: {e}");
         std::process::exit(i32::from(code))
     })
 }
 
-/// `waharoa policy check <path> [--as-of YYYY-MM-DD] [--strict] [--fetch]`.
+/// `byrle policy check <path> [--as-of YYYY-MM-DD] [--strict] [--fetch]`.
 ///
 /// The same load as the proxy at startup, with the same expiry ceiling, so a policy this
 /// accepts is one the proxy starts with.
@@ -39,15 +39,15 @@ async fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
     let (policy, mut report) = match check::load(&args.path, as_of, ceiling) {
         Ok(loaded) => loaded,
         Err(e) => {
-            eprintln!("waharoa policy check: {}: {e}", args.path.display());
+            eprintln!("byrle policy check: {}: {e}", args.path.display());
             return std::process::ExitCode::from(e.exit_code());
         }
     };
     if args.fetch {
-        let clients = or_exit(waharoa::ecosystem::Clients::from_env(&env::process()));
+        let clients = or_exit(byrle::ecosystem::Clients::from_env(&env::process()));
         let (outlived, notes) = check::outlived_waivers(&policy, &clients, as_of).await;
         for note in notes {
-            eprintln!("waharoa policy check: {note}");
+            eprintln!("byrle policy check: {note}");
         }
         report.outlived = outlived;
     }
@@ -55,28 +55,28 @@ async fn run_policy_check(args: cli::Check) -> std::process::ExitCode {
     if args.strict
         && let Some(failure) = report.strict_failure()
     {
-        eprintln!("\nwaharoa policy check: --strict: {failure}");
+        eprintln!("\nbyrle policy check: --strict: {failure}");
         return std::process::ExitCode::from(1);
     }
     std::process::ExitCode::SUCCESS
 }
 
-/// `waharoa audit verify`: decide each pinned line of an audit log again.
+/// `byrle audit verify`: decide each pinned line of an audit log again.
 fn run_audit_verify(args: cli::Verify) -> std::process::ExitCode {
-    let verified = waharoa::audit::verify(&args.log, &args.policy);
+    let verified = byrle::audit::verify(&args.log, &args.policy);
     for note in &verified.notes {
-        eprintln!("waharoa audit verify: {note}");
+        eprintln!("byrle audit verify: {note}");
     }
     print!("{}", verified.report);
     std::process::ExitCode::from(verified.code)
 }
 
-/// `waharoa warm`: ask the proxy for every artifact the lockfiles lock.
+/// `byrle warm`: ask the proxy for every artifact the lockfiles lock.
 fn run_lockfile_verify(args: cli::VerifyLockfile) -> std::process::ExitCode {
     let verified =
-        waharoa::lockfile::verify::run(&args.lockfile, args.proxy.as_deref(), &env::process());
+        byrle::lockfile::verify::run(&args.lockfile, args.proxy.as_deref(), &env::process());
     for note in &verified.notes {
-        eprintln!("waharoa lockfile verify: {note}");
+        eprintln!("byrle lockfile verify: {note}");
     }
     print!("{}", verified.report);
     std::process::ExitCode::from(verified.code)
@@ -85,10 +85,10 @@ fn run_lockfile_verify(args: cli::VerifyLockfile) -> std::process::ExitCode {
 async fn run_warm(args: cli::Warm) -> std::process::ExitCode {
     let targets = match (args.all_platforms, args.platform.is_empty()) {
         (true, _) => None,
-        (false, true) => Some(vec![waharoa::lockfile::Target::this_machine()]),
+        (false, true) => Some(vec![byrle::lockfile::Target::this_machine()]),
         (false, false) => Some(args.platform),
     };
-    let warmed = waharoa::warm::run(
+    let warmed = byrle::warm::run(
         &args.lockfile,
         args.proxy.as_deref(),
         targets.as_deref(),
@@ -97,7 +97,7 @@ async fn run_warm(args: cli::Warm) -> std::process::ExitCode {
     )
     .await;
     for note in &warmed.notes {
-        eprintln!("waharoa warm: {note}");
+        eprintln!("byrle warm: {note}");
     }
     print!("{}", warmed.report);
     std::process::ExitCode::from(warmed.code)
@@ -106,20 +106,20 @@ async fn run_warm(args: cli::Warm) -> std::process::ExitCode {
 async fn run_policy_diff(args: cli::Diff) -> std::process::ExitCode {
     let outcome = diff::run(&args, &env::process()).await;
     for note in &outcome.notes {
-        eprintln!("waharoa policy diff: {note}");
+        eprintln!("byrle policy diff: {note}");
     }
     print!("{}", outcome.report);
     for note in &outcome.summary {
-        eprintln!("waharoa policy diff: {note}");
+        eprintln!("byrle policy diff: {note}");
     }
     std::process::ExitCode::from(outcome.code)
 }
 
-/// `waharoa explain`: what the policy says, or what it says about one package.
+/// `byrle explain`: what the policy says, or what it says about one package.
 async fn run_explain(target: cli::Explain) -> std::process::ExitCode {
     let answered = explain::run(&target, &env::process()).await;
     for note in &answered.notes {
-        eprintln!("waharoa explain: {note}");
+        eprintln!("byrle explain: {note}");
     }
     print!("{}", answered.answer);
     std::process::ExitCode::from(answered.code)
@@ -131,7 +131,7 @@ async fn run_doctor() -> std::process::ExitCode {
     let checked = match doctor::run(&doctor::Machine::this(&environment, &dir)).await {
         Ok(checked) => checked,
         Err(e) => {
-            eprintln!("waharoa: {e}");
+            eprintln!("byrle: {e}");
             return std::process::ExitCode::from(2);
         }
     };
@@ -139,70 +139,70 @@ async fn run_doctor() -> std::process::ExitCode {
     std::process::ExitCode::from(checked.code)
 }
 
-/// `waharoa status`: what this build does for each ecosystem, and which streams cover it.
+/// `byrle status`: what this build does for each ecosystem, and which streams cover it.
 async fn run_status() -> std::process::ExitCode {
     let environment = env::process();
     let upstreams = or_exit(environment.upstreams());
-    use waharoa::intel::store::Intel as _;
+    use byrle::intel::store::Intel as _;
     let snapshot = match postgres::from_env(&environment).await {
         Ok(Some(store)) => match store.snapshot().await {
             Ok(snapshot) => snapshot,
             Err(e) => {
-                eprintln!("waharoa status: the intel store could not be read: {e}");
+                eprintln!("byrle status: the intel store could not be read: {e}");
                 None
             }
         },
         Ok(None) => None,
         Err(e) => {
-            eprintln!("waharoa status: {}: {e}", env::DATABASE_URL);
+            eprintln!("byrle status: {}: {e}", env::DATABASE_URL);
             None
         }
     };
-    print!("{}", waharoa::status::report(&upstreams, snapshot.as_ref()));
+    print!("{}", byrle::status::report(&upstreams, snapshot.as_ref()));
     std::process::ExitCode::SUCCESS
 }
 
-/// `waharoa intel history`: the newest entries of the ingestion history.
+/// `byrle intel history`: the newest entries of the ingestion history.
 async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
     let intel = match postgres::required(&env::process()).await {
         Ok(intel) => intel,
         Err(refused) => {
-            eprintln!("waharoa intel history: {refused}");
+            eprintln!("byrle intel history: {refused}");
             return std::process::ExitCode::from(refused.code);
         }
     };
     match intel.history(args.limit).await {
         Ok(entries) => {
-            print!("{}", waharoa::intel::history::render(&entries));
+            print!("{}", byrle::intel::history::render(&entries));
             std::process::ExitCode::SUCCESS
         }
         Err(e) => {
-            eprintln!("waharoa intel history: {e}");
+            eprintln!("byrle intel history: {e}");
             std::process::ExitCode::from(1)
         }
     }
 }
 
 /// The snapshot `--snapshot` names, read from the snapshot directory without its lock.
-/// `waharoa refresh`: load every stream into the intel store, and append what each stream
+/// `byrle refresh`: load every stream into the intel store, and append what each stream
 /// did to the ingestion history.
 async fn run_refresh() -> std::process::ExitCode {
-    let notice = |line: &str| eprintln!("waharoa refresh: {line}");
+    let notice = |line: &str| eprintln!("byrle refresh: {line}");
     let run = refresh::run(&env::process(), &notice).await;
     print!("{}", run.report);
     std::process::ExitCode::from(run.code)
 }
 
-/// `waharoa daemon`: serve the proxy until the process is stopped.
+/// `byrle daemon`: serve the proxy until the process is stopped.
 async fn run_daemon() -> std::process::ExitCode {
     let environment = env::process();
     let filter = or_exit(environment.log_filter());
     let filter = tracing_subscriber::EnvFilter::try_new(&filter).unwrap_or_else(|e| {
-        eprintln!("waharoa: {}: `{filter}` {e}", env::LOG_FILTER);
+        eprintln!("byrle: {}: `{filter}` {e}", env::LOG_FILTER);
         std::process::exit(2)
     });
     let format = or_exit(environment.log_format());
-    tracing::subscriber::set_global_default(waharoa::logging::subscriber(
+    tracing::subscriber::set_global_default(byrle::logging::subscriber(
         filter,
         format,
         std::io::stdout,
@@ -212,7 +212,7 @@ async fn run_daemon() -> std::process::ExitCode {
     let started = match startup::proxy(&environment).await {
         Ok(started) => started,
         Err(startup::StartupError::Env(e)) => {
-            eprintln!("waharoa: {e}");
+            eprintln!("byrle: {e}");
             return std::process::ExitCode::from(2);
         }
         Err(startup::StartupError::Unusable(why)) => panic!("{why}"),
@@ -227,16 +227,16 @@ async fn run_daemon() -> std::process::ExitCode {
     info!(
         server.address = address,
         server.port = port.parse::<u16>().unwrap_or_default(),
-        waharoa.upstreams = %proxy.upstreams(),
-        waharoa.artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
-        waharoa.allowed_direct_origins = ?proxy.origin_policy().allowed_direct(),
-        "waharoa listening"
+        byrle.upstreams = %proxy.upstreams(),
+        byrle.artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
+        byrle.allowed_direct_origins = ?proxy.origin_policy().allowed_direct(),
+        "byrle listening"
     );
-    for registry in waharoa::ecosystem::TABLE {
+    for registry in byrle::ecosystem::TABLE {
         let setup = &registry.setup;
         info!(
-            waharoa.client.name = setup.client,
-            waharoa.client.command = %setup.command_line(&listen),
+            byrle.client.name = setup.client,
+            byrle.client.command = %setup.command_line(&listen),
             "point a client at the proxy"
         );
     }
@@ -245,7 +245,7 @@ async fn run_daemon() -> std::process::ExitCode {
     tokio::spawn(startup::reload_on_hangup(proxy.clone(), env::process()));
     let reporting = proxy.clone();
     tokio::spawn(async move {
-        let mut every = tokio::time::interval(waharoa::proxy::TRAFFIC_WINDOW);
+        let mut every = tokio::time::interval(byrle::proxy::TRAFFIC_WINDOW);
         every.tick().await;
         loop {
             every.tick().await;

@@ -1,6 +1,6 @@
 # Snapshot identity
 
-- **Status:** Implemented 2026-09-14: the id, the snapshot files `waharoa refresh` writes, and
+- **Status:** Implemented 2026-09-14: the id, the snapshot files `byrle refresh` writes, and
   `policy diff --snapshot`, which reads them. Import is not built. `load::encode`,
   `load::Decoder`, `load::manifest` and `load::snapshot_id` in `src/intel/load.rs`,
   `PgIntel::replace_encoded` in `src/intel/postgres.rs`, `intel_source` in
@@ -16,7 +16,7 @@
 | Use | Where | What it needs from the id |
 |---|---|---|
 | Audit attribution | `intel_snapshot` on each audit line | same id, same rows read |
-| Replica agreement | plan §3, `GET /-/waharoa/ready`, `waharoa doctor` | same id, same rows in the database |
+| Replica agreement | plan §3, `GET /-/byrle/ready`, `byrle doctor` | same id, same rows in the database |
 | One `intel_snapshot` row per set of rows | `ON CONFLICT (digest)` in `replace_source` | same rows, same id |
 | `policy diff --snapshot` | reads a kept snapshot | an older snapshot to select |
 | Air-gapped export and import | plan §7, Stage 5 | a file an import can check |
@@ -36,7 +36,7 @@ The id is a hash over every source's stored rows.
 `load::encode` writes one source's rows as below, and its sha256 is `intel_source.digest`:
 
 ```text
-waharoa intel rows 2
+byrle intel rows 2
 source osv
 advisory 23771415
 (23,771,415 bytes of CSV)
@@ -53,7 +53,7 @@ Records are sorted by publisher id. A child row carries its advisory's position 
 order, from 1.
 
 `load::encode_exploited` writes a source of exploited CVE ids, such as `cisa/kev`, as
-`waharoa intel exploited 1` and one `exploited_cve` table. See [kev-stream](kev-stream.md).
+`byrle intel exploited 1` and one `exploited_cve` table. See [kev-stream](kev-stream.md).
 
 `load::snapshot_id` hashes one `source digest` line per `intel_source` row, sorted, and that
 is `intel_snapshot.digest`. `PgIntel::replace` computes both inside its transaction, after
@@ -116,7 +116,7 @@ gzip rather than zstd: `flate2` is already a dependency, and the `zip` features 
 
 ## Snapshot directory
 
-With `WAHAROA_SNAPSHOT_DIR` set, `waharoa refresh` keeps each snapshot there. Every file is
+With `BYRLE_SNAPSHOT_DIR` set, `byrle refresh` keeps each snapshot there. Every file is
 named by the sha256 of what it contains:
 
 | File | Contains |
@@ -147,8 +147,8 @@ file another refresh had written and not yet named in a manifest.
 
 ## Reading a kept snapshot
 
-`waharoa policy diff --snapshot <id>` reads snapshot `<id>` from `WAHAROA_SNAPSHOT_DIR` and
-answers every package from it instead of Postgres. `WAHAROA_DATABASE_URL` is not needed.
+`byrle policy diff --snapshot <id>` reads snapshot `<id>` from `BYRLE_SNAPSHOT_DIR` and
+answers every package from it instead of Postgres. `BYRLE_DATABASE_URL` is not needed.
 
 | Step | What is checked |
 |---|---|
@@ -179,7 +179,7 @@ fetches packuments and can run for minutes.
 
 A kept snapshot records no streams, and its `taken_at` is when the manifest was last written.
 
-`WAHAROA_SNAPSHOT_LIMIT`, default 30, is the most manifests the directory keeps. A prune
+`BYRLE_SNAPSHOT_LIMIT`, default 30, is the most manifests the directory keeps. A prune
 keeps the newest by modification time and removes the rest. A manifest loaded again is written again, so it counts as the newest.
 Two manifests with the same time are ordered by name, so two prunes of one directory agree.
 A modification time outside jiff's range, years -9999 to 9999, reads as the end of the
@@ -200,7 +200,7 @@ recreated.
 
 ## Evidence
 
-`waharoa refresh` twice against Postgres 17, debug build, the same bundle (etag
+`byrle refresh` twice against Postgres 17, debug build, the same bundle (etag
 `"b4c5724078934a1570170d39825325c2"`):
 
 ```
@@ -222,7 +222,7 @@ intel_source    osv  sha256:dad3f11d255aa4b00a3819d9c9631b101e7fa9a2daeb64d86879
 One row in each. The same load took 46.9s and 49.4s under the bundle-digest id
 ([intel-schema-keys-and-types](intel-schema-keys-and-types.md)).
 
-With `WAHAROA_SNAPSHOT_DIR` set, the same bundle, debug build. The first run took 51.9s; later
+With `BYRLE_SNAPSHOT_DIR` set, the same bundle, debug build. The first run took 51.9s; later
 runs shared the machine with a test run and are not timings.
 
 ```
@@ -243,7 +243,7 @@ osv sha256:dad3f11d255aa4b00a3819d9c9631b101e7fa9a2daeb64d86879014210b16ee5
 ```
 
 An older snapshot and its rows were then placed in the directory, dated a day earlier, and
-the refresh run again with `WAHAROA_SNAPSHOT_LIMIT=1`. It printed `snapshot files removed 1`
+the refresh run again with `BYRLE_SNAPSHOT_LIMIT=1`. It printed `snapshot files removed 1`
 and `rows files removed 1`, and left the two files above.
 
 Reading that snapshot back, against Postgres holding the same load. A temporary example read
@@ -262,8 +262,8 @@ left-pad 1.3.0), debug build:
 | Store | Report | Exit | Time | Peak RSS |
 |---|---|---|---|---|
 | Postgres | `nothing moved` | 0 | 0.5s | 28 MB |
-| `--snapshot`, `WAHAROA_DATABASE_URL` unset, every package read | `nothing moved`, identical | 0 | 3.8s | 468 MB |
-| `--snapshot`, `WAHAROA_DATABASE_URL` unset, the 4 packages read | `nothing moved`, identical | 0 | 3.0s | 103 MB |
+| `--snapshot`, `BYRLE_DATABASE_URL` unset, every package read | `nothing moved`, identical | 0 | 3.8s | 468 MB |
+| `--snapshot`, `BYRLE_DATABASE_URL` unset, the 4 packages read | `nothing moved`, identical | 0 | 3.0s | 103 MB |
 
 Both policies had an effective `max_cvss` under 7.9, so nothing moved. With `max_cvss: 7.0`
 against `max_cvss: 9.0`, `--snapshot` gives:
@@ -274,7 +274,7 @@ pkg:npm/lodash@4.17.20  block -> allow
 pkg:npm/lodash@4.17.21  block -> allow
     max_cvss          FAIL block -> pass  (LOOSER)
 
-waharoa policy diff: 2 loosened, 0 incomparable
+byrle policy diff: 2 loosened, 0 incomparable
 ```
 
 and exits 1. With no store and no snapshot the same two policies give `nothing moved`.
@@ -283,7 +283,7 @@ Refused, each exit 2 when run, and 4 since
 [policy-diff-dates-and-exit-bits](policy-diff-dates-and-exit-bits.md):
 
 ```
---snapshot sha256:2251...: WAHAROA_SNAPSHOT_DIR is not set, so there is no kept snapshot to read
+--snapshot sha256:2251...: BYRLE_SNAPSHOT_DIR is not set, so there is no kept snapshot to read
 --snapshot latest: `latest` is not `sha256:` and 64 lowercase hex digits
 --snapshot sha256:0000...: .../0000...0000.snapshot: No such file or directory (os error 2)
 ```
@@ -330,7 +330,7 @@ The snapshot directory, each caught:
 | `.partial` files left in place | the same |
 | A digest longer than 64 digits, or with letters past `f`, made into a path | `a_value_that_is_not_a_digest_never_becomes_a_path` |
 | `.partial` never renamed | 6 tests, `a_load_is_kept_as_rows_named_by_digest_and_a_snapshot_named_by_id` among them |
-| `WAHAROA_SNAPSHOT_LIMIT=0` accepted | `a_value_that_does_not_parse_is_an_error_naming_the_variable_and_the_value` |
+| `BYRLE_SNAPSHOT_LIMIT=0` accepted | `a_value_that_does_not_parse_is_an_error_naming_the_variable_and_the_value` |
 
 Reading a kept snapshot, when every record was decoded to `Rows` and every package kept, each
 caught:

@@ -1,9 +1,9 @@
 .PHONY: help dev-setup build lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front bench retry-matrix offsite-urls inspect spike-config duplicates
 
 help:
-	@echo "waharoa targets:"
+	@echo "byrle targets:"
 	@echo "  dev-setup      install development dependencies"
-	@echo "  build          build the waharoa binary (release profile)"
+	@echo "  build          build the byrle binary (release profile)"
 	@echo "  lint           rustfmt, clippy and shellcheck, warnings as errors"
 	@echo "  semgrep        pattern-based static analysis"
 	@echo "  trufflehog     credential scanning (working tree and git history)"

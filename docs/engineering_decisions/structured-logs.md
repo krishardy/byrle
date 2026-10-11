@@ -5,12 +5,12 @@
 
 ## Decision
 
-- `WAHAROA_LOG_FORMAT=json` writes one JSON object per line in OpenTelemetry's log record
+- `BYRLE_LOG_FORMAT=json` writes one JSON object per line in OpenTelemetry's log record
   shape: `timestamp`, `severity_text`, `severity_number`, `body`, and `attributes` holding
   every field. `text`, the default, is the format the daemon wrote before, colour codes
   included.
 - A field is named by OpenTelemetry's semantic conventions where one fits, and under
-  `waharoa.` otherwise, as the conventions advise for an application's own attributes.
+  `byrle.` otherwise, as the conventions advise for an application's own attributes.
 - Every log message is a fixed string. A value goes in a field, so a search for a message
   finds every occurrence of that event, whatever its values. An environment variable a
   line is about is in the `variable` field.
@@ -26,7 +26,7 @@ The scripts that match log text were updated with them.
 |---|---|
 | `not served: <why>` | `not served`, with `why` |
 | `UNINSPECTED: <reason>` from `report_uninspected` | `UNINSPECTED`, with `reason` |
-| `deferred (WAHAROA_DEFER_TEST)` | `deferred by the defer test`, with `variable` |
+| `deferred (BYRLE_DEFER_TEST)` | `deferred by the defer test`, with `variable` |
 | `upstream traffic goes through a forward proxy: https via …` | `upstream traffic goes through a forward proxy`, with `https`, `http` and `direct` |
 | `point npm at it with:  <command>` | `point a client at the proxy`, with `client` and `command` |
 
@@ -53,9 +53,9 @@ A request target is split by `http::url_path` and `http::url_query`. `url.query`
 `Option`, and tracing records nothing for `None`, so a line for a request with no query has
 no `url.query` at all.
 
-Every other field is under `waharoa.`, grouped by what it describes: `waharoa.package.*`,
-`waharoa.artifact.*`, `waharoa.analysis.*`, `waharoa.attestation.*`, `waharoa.policy.*`,
-`waharoa.deferral.*`, `waharoa.intel.*`, `waharoa.config.*` and a few others. 323 fields in
+Every other field is under `byrle.`, grouped by what it describes: `byrle.package.*`,
+`byrle.artifact.*`, `byrle.analysis.*`, `byrle.attestation.*`, `byrle.policy.*`,
+`byrle.deferral.*`, `byrle.intel.*`, `byrle.config.*` and a few others. 323 fields in
 114 log calls were renamed. The scripts and tests that match log text use the full names.
 
 `severity_number` is the first number of each level's OpenTelemetry range: TRACE 1, DEBUG

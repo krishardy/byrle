@@ -12,7 +12,7 @@ npm):
 | Case | Behaviour |
 |---|---|
 | Analysed before (cache hit) | Decide on the analysis, then stream through. Flat memory, no added latency. |
-| Novel | Answer `503` with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis` at once, and analyse in the background. The client's retry is a cache hit. Refused at once instead when the metadata already refuses it. |
+| Novel | Answer `503` with `Retry-After: 1` and `x-byrle-not-ready: artifact-analysis` at once, and analyse in the background. The client's retry is a cache hit. Refused at once instead when the metadata already refuses it. |
 | No strong digest, or no metadata listing the version | Not served: refused, or 502 when the registry gave no metadata. Nothing can be assessed. |
 | Read by no detector (a PyPI wheel) | Stream through, decided on the metadata. |
 

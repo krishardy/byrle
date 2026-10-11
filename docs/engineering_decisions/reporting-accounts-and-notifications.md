@@ -13,8 +13,8 @@ is critical or high.
 | Question | Decided | Rejected |
 |---|---|---|
 | How a request names its account | A token per account, sent as each client sends a registry credential: [account-identification](account-identification.md) | a token in the path, which four lockfiles record; `user:pass@` in the URL, which npm, pnpm and yarn drop on artifact requests and bun never sends; the network address |
-| Where accounts and installs live | New tables in the intel Postgres, the database `WAHAROA_DATABASE_URL` names: accounts, tokens stored hashed, installs. A refresh replaces advisory tables only | a second Postgres; the audit log file, which listing and matching would scan whole |
-| How email is sent | waharoa writes each notification to an outbox table in the same database, and an external mailer sends it and marks it sent. No email code in waharoa | an SMTP client crate; one provider's HTTP API |
+| Where accounts and installs live | New tables in the intel Postgres, the database `BYRLE_DATABASE_URL` names: accounts, tokens stored hashed, installs. A refresh replaces advisory tables only | a second Postgres; the audit log file, which listing and matching would scan whole |
+| How email is sent | byrle writes each notification to an outbox table in the same database, and an external mailer sends it and marks it sent. No email code in byrle | an SMTP client crate; one provider's HTTP API |
 | What is new for an account | After each refresh, every account's installed versions are matched against the current advisories, and a notification is written for each (account, advisory, version) not written before. When an account is created, its existing matches are recorded as already sent | notifying on the difference a refresh made, which loses a notification whenever sending fails |
 
 "Critical or high" is a CVSS score of 7.0 or more, or a band of `HIGH` or `CRITICAL` where no

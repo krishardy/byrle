@@ -8,16 +8,16 @@
 #
 # Pinned, so a nightly that stops building this crate is chosen by editing this line rather
 # than met on the next run. Builds, tests, lint and release stay on stable.
-waharoa_coverage_toolchain="nightly-2026-09-28"
+byrle_coverage_toolchain="nightly-2026-09-28"
 
-waharoa_install_coverage_toolchain() {
-    echo "==> $waharoa_coverage_toolchain (the toolchain 'make coverage' runs on)"
-    if rustup run "$waharoa_coverage_toolchain" rustc --version >/dev/null 2>&1; then
+byrle_install_coverage_toolchain() {
+    echo "==> $byrle_coverage_toolchain (the toolchain 'make coverage' runs on)"
+    if rustup run "$byrle_coverage_toolchain" rustc --version >/dev/null 2>&1; then
         echo "    already installed"
         return 0
     fi
     # cargo-llvm-cov reads the instrumentation this toolchain's rustc emits, so its
     # llvm-tools component comes with it.
-    rustup toolchain install "$waharoa_coverage_toolchain" --profile minimal \
+    rustup toolchain install "$byrle_coverage_toolchain" --profile minimal \
         --component llvm-tools-preview 2>&1 | sed 's/^/    /'
 }

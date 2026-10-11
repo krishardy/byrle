@@ -131,7 +131,7 @@ impl Analyser {
         match self.store.put_detected(key, &detection).await {
             Ok(()) => log_ran(key, &detection),
             Err(e) => {
-                warn!(waharoa.detector = %key.detector, error.message = %e, "detector: not stored");
+                warn!(byrle.detector = %key.detector, error.message = %e, "detector: not stored");
             }
         }
     }
@@ -149,7 +149,7 @@ impl Analyser {
             Ok(Err(why)) => why,
             Err(_) => "past its deadline".to_owned(),
         };
-        warn!(waharoa.detector = %key.detector, waharoa.package.name = %key.name, waharoa.package.version = %key.version, error.message = %why, "detector did not run, nothing stored");
+        warn!(byrle.detector = %key.detector, byrle.package.name = %key.name, byrle.package.version = %key.version, error.message = %why, "detector did not run, nothing stored");
         None
     }
 
@@ -183,7 +183,7 @@ impl Analyser {
 fn log_ran(key: &DetectionKey, detection: &Detection) {
     let rules: Vec<&str> = detection.findings.iter().map(|f| f.rule.as_str()).collect();
     let errors: Vec<&str> = detection.errors.iter().map(|f| f.rule.as_str()).collect();
-    info!(waharoa.detector = %key.detector, waharoa.package.name = %key.name, waharoa.package.version = %key.version, waharoa.detector.findings = ?rules, waharoa.detector.errors = ?errors, "detector ran");
+    info!(byrle.detector = %key.detector, byrle.package.name = %key.name, byrle.package.version = %key.version, byrle.detector.findings = ?rules, byrle.detector.errors = ?errors, "detector ran");
 }
 
 #[cfg(test)]

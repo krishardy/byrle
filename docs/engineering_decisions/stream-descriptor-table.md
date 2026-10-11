@@ -1,6 +1,6 @@
 # Every advisory stream is declared in one table
 
-- **Status:** Implemented. `src/intel/stream.rs`, `intel::capabilities_of`, `waharoa refresh`.
+- **Status:** Implemented. `src/intel/stream.rs`, `intel::capabilities_of`, `byrle refresh`.
 - **Related:** [nvd-role-and-stream-capabilities](nvd-role-and-stream-capabilities.md),
   [kev-stream](kev-stream.md),
   [datadog-stream](datadog-stream.md),
@@ -20,7 +20,7 @@ needs to know before it fetches, and how to read the bundle once it has one:
 | `grants` | what the stream may say, and for which ecosystems: `Listed` (the rows of `ecosystem::TABLE` whose `streams` list it) or `Served` (every row) |
 | `parse` | the bundle's bytes as `Parsed { payload, tally }` |
 
-`waharoa refresh` loops over `ALL` in order. `intel::capabilities_of` reads `grants`. Neither
+`byrle refresh` loops over `ALL` in order. `intel::capabilities_of` reads `grants`. Neither
 holds a branch naming a stream.
 
 A stream that does not fetch or parse keeps its last load, the others load, and the refresh
@@ -45,7 +45,7 @@ An ecosystem whose stream has never loaded is uncovered and fails closed:
 `Payload::rows` is empty for `Exploited`, which is what `PgIntel::replace` already expected of
 a catalogue.
 
-## Fetching stays in `waharoa refresh`
+## Fetching stays in `byrle refresh`
 
 Everything a descriptor holds is decidable from the bytes, so `src/intel/stream.rs` is at
 100% lines with no network.
@@ -74,7 +74,7 @@ Before this, a refresh with a stalled connection ran until the host closed it. M
 2026-09-17: 12 minutes with the connection established, nothing queued and no bytes read,
 while `curl` fetched the same bundle in 9 s.
 
-`waharoa refresh` also keeps the reporting that no single stream can produce.
+`byrle refresh` also keeps the reporting that no single stream can produce.
 `datadog::disagreements` compares OSV's rows to Datadog's, so it belongs to neither
 descriptor. `Parsed::tally` is `Some` only for OSV, which counts records as it reads them;
 `None` for a catalogue and a manifest, which count nothing. A stream that counts nothing
@@ -122,9 +122,9 @@ Three refreshes against one Postgres 17, 2026-09-16, OSV's npm bundle 215,055,71
 All three streams load:
 
 ```text
-waharoa refresh: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip
-waharoa refresh: fetching https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
-waharoa refresh: fetching https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json
+byrle refresh: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip
+byrle refresh: fetching https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+byrle refresh: fetching https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json
 advisories written                 276639
 aliases written                     37988
 affected rows written              284811
@@ -142,8 +142,8 @@ The three fetch lines are in `ALL`'s order. `advisory` held 228,323 `osv` rows a
 `HTTPS_PROXY` at a closed port, so the OSV fetch fails:
 
 ```text
-waharoa refresh: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip
-waharoa refresh: nothing loaded: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip: error sending request for url (...)
+byrle refresh: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip
+byrle refresh: nothing loaded: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip: error sending request for url (...)
 refresh exit 1
 ```
 
@@ -154,7 +154,7 @@ bundles it would not load. Every stream now loads or fails alone. `advisory` sti
 The same proxy with OSV's and CISA's hosts in `NO_PROXY`, so only the manifest fetch fails:
 
 ```text
-waharoa refresh: datadog/npm is not loaded, and its last load stays: fetching https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json: error sending request for url (...)
+byrle refresh: datadog/npm is not loaded, and its last load stays: fetching https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json: error sending request for url (...)
 advisories written                 228323
 aliases written                     37988
 affected rows written              233313

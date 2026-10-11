@@ -1,11 +1,11 @@
-# What `waharoa explain` prints
+# What `byrle explain` prints
 
 - **Status:** Implemented. `src/explain.rs`.
 - **Related:** [policy-tier-resolution](policy-tier-resolution.md)
 
 ## Decision
 
-`waharoa explain <purl>` prints every check in the decision vector with its own outcome, and
+`byrle explain <purl>` prints every check in the decision vector with its own outcome, and
 then the verdict. A refusal that named only the strongest reason would hide the other checks
 that fired and the ones that were never asked.
 

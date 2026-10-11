@@ -1,4 +1,4 @@
-//! pip and uv, as `waharoa doctor` checks them. Neither prints the index it uses, so each is
+//! pip and uv, as `byrle doctor` checks them. Neither prints the index it uses, so each is
 //! read: see docs/engineering_decisions/doctor-python-clients.md. `pip config list` prints
 //! credentials, so a URL is printed only through [`crate::origin::without_credentials`].
 

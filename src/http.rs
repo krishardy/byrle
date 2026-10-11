@@ -69,7 +69,7 @@ fn redacted(url: &str) -> String {
 /// There is no total timeout: see [`READ_TIMEOUT`].
 pub fn client_builder(read_timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
-        .user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("byrle/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(read_timeout)
 }
@@ -245,7 +245,7 @@ pub fn gzip(data: &[u8]) -> Vec<u8> {
 }
 
 /// Marker on an `ETag` for a body this proxy rewrote.
-const ETAG_PREFIX: &str = "waharoa.";
+const ETAG_PREFIX: &str = "byrle.";
 
 /// Label an upstream `ETag` as describing this proxy's version of the body.
 /// See docs/engineering_decisions/packument-tarball-url-rewriting.md.

@@ -1,12 +1,12 @@
 # Threat model
 
-What waharoa defends against, what it trusts, and what it does not cover. Written
+What byrle defends against, what it trusts, and what it does not cover. Written
 2026-09-28 from the code as it stands. Each control names where it is implemented or
 decided.
 
 ## What it protects
 
-A developer's or CI machine's installs from npm and PyPI. waharoa sits between the
+A developer's or CI machine's installs from npm and PyPI. byrle sits between the
 package manager and the registry, and serves an artifact only after deciding on it:
 
 - a version the policy refuses is removed from the metadata document, so the resolver
@@ -41,7 +41,7 @@ package manager and the registry, and serves an artifact only after deciding on 
 | Serving before anything was checked | nothing is served until its analysis has finished; no strong digest, or no metadata, is not served | [request-flow](request-flow.md) |
 | The intel store cannot answer | 503, not a serve | [uncovered-ecosystem-fails-closed](engineering_decisions/uncovered-ecosystem-fails-closed.md) |
 | An artifact built from other code than its repository holds | reported, not refused: each npm tarball, PyPI wheel and sdist is compared with GitHub's archive of the commit or tag it names, and what it adds is a signal in the log and the audit line. The publisher chooses the repository and the commit, so a publisher can name a repository that matches, which is why it is a signal | [source-diff](engineering_decisions/source-diff.md) |
-| A verdict that cannot be explained later | each pinned audit line records every input; `waharoa audit verify` decides it again | [reproducible-verdicts](engineering_decisions/reproducible-verdicts.md) |
+| A verdict that cannot be explained later | each pinned audit line records every input; `byrle audit verify` decides it again | [reproducible-verdicts](engineering_decisions/reproducible-verdicts.md) |
 
 ## Attacks on the proxy itself
 
@@ -49,21 +49,21 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 
 | Input | Bound | Where |
 |---|---|---|
-| A metadata document | 64 MiB, applied to the decoded size, so a compression bomb stops at the limit; one over it is forwarded unread and logged `UNINSPECTED` | `WAHAROA_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
+| A metadata document | 64 MiB, applied to the decoded size, so a compression bomb stops at the limit; one over it is forwarded unread and logged `UNINSPECTED` | `BYRLE_MAX_METADATA_BYTES`, `http::decode_for_parsing` |
 | An archive member read into memory | 4 MiB | `analysis::MAX_MEMBER_BYTES` |
-| An artifact spooled for analysis | 1 GiB; one over it is stored as unreadable, which `install_scripts: block` refuses | `WAHAROA_MAX_ARTIFACT_BYTES` |
+| An artifact spooled for analysis | 1 GiB; one over it is stored as unreadable, which `install_scripts: block` refuses | `BYRLE_MAX_ARTIFACT_BYTES` |
 | An analysis job | 600 s | `analysis::run::DEADLINE` |
-| Concurrent work | 8 metadata documents and 8 analyses at once | `WAHAROA_MAX_CONCURRENT_METADATA`, `WAHAROA_MAX_CONCURRENT_ANALYSES` |
+| Concurrent work | 8 metadata documents and 8 analyses at once | `BYRLE_MAX_CONCURRENT_METADATA`, `BYRLE_MAX_CONCURRENT_ANALYSES` |
 | An upstream that stops sending | 10 s to connect, 30 s between reads | `http::client_builder` |
-| A URL the metadata names | fetched only on an origin the proxy serves: the upstream, the default registry, or `WAHAROA_ARTIFACT_ORIGINS`; attestations too | [enforcement-tiers](engineering_decisions/enforcement-tiers.md) |
+| A URL the metadata names | fetched only on an origin the proxy serves: the upstream, the default registry, or `BYRLE_ARTIFACT_ORIGINS`; attestations too | [enforcement-tiers](engineering_decisions/enforcement-tiers.md) |
 | A package name and version a detector is run on | no shell; one argument each; a value starting with `-` is refused. The program gets `PATH`, `HOME`, `SOCKS` and the forward proxies, nothing else, a directory of its own, 300 s and 16 MiB of output | [detectors](engineering_decisions/detectors.md) |
-| A repository and reference the metadata names | fetched only from `WAHAROA_SOURCE_ARCHIVES`, `https://codeload.github.com` by default, as `/{owner}/{repo}/tar.gz/{ref}`; owner and repository are GitHub's name characters, `gitHead` 40 hex characters, and a tag has no `..`, `//` or characters outside `A-Z a-z 0-9 . _ - @ / +`. `off` fetches nothing | `analysis::source` |
-| A source archive | spooled under `WAHAROA_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less; each member is hashed as it streams | `analysis::source::MAX_SOURCE_BYTES` |
+| A repository and reference the metadata names | fetched only from `BYRLE_SOURCE_ARCHIVES`, `https://codeload.github.com` by default, as `/{owner}/{repo}/tar.gz/{ref}`; owner and repository are GitHub's name characters, `gitHead` 40 hex characters, and a tag has no `..`, `//` or characters outside `A-Z a-z 0-9 . _ - @ / +`. `off` fetches nothing | `analysis::source` |
+| A source archive | spooled under `BYRLE_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less; each member is hashed as it streams | `analysis::source::MAX_SOURCE_BYTES` |
 
 - **Credentials.** The client's `Authorization` header is never forwarded upstream.
-- **What the health endpoint shows.** `/-/waharoa/health` reports configuration and
+- **What the health endpoint shows.** `/-/byrle/health` reports configuration and
   counters. It holds no credentials.
-- **Default exposure.** The proxy listens on `127.0.0.1:8080` unless `WAHAROA_LISTEN`
+- **Default exposure.** The proxy listens on `127.0.0.1:8080` unless `BYRLE_LISTEN`
   says otherwise. Anyone who can reach the port can use it; it has no authentication.
 - **The audit log.** A local JSON Lines file. It is not signed, so whoever can write the
   file can change it.
@@ -75,16 +75,16 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 
 ## Bypasses
 
-Each of these is a way for a package to be installed without waharoa deciding on it.
+Each of these is a way for a package to be installed without byrle deciding on it.
 
 | Bypass | What happens | Mitigation |
 |---|---|---|
-| A client pointed back at the public registry | nothing reaches the proxy | `waharoa doctor` checks the client configuration; an npm or yarn lockfile records the proxy's address, so CI can check it |
-| A client's own cache | npm, bun and yarn 4 install from their caches without asking | `waharoa doctor` warns; clear the cache when onboarding |
+| A client pointed back at the public registry | nothing reaches the proxy | `byrle doctor` checks the client configuration; an npm or yarn lockfile records the proxy's address, so CI can check it |
+| A client's own cache | npm, bun and yarn 4 install from their caches without asking | `byrle doctor` warns; clear the cache when onboarding |
 | Installs outside a package manager: IDE extensions, browser extensions, MCP servers | never pass through a configured registry | out of scope; only egress control, tier 5, covers them |
-| An origin in `WAHAROA_ALLOW_DIRECT_ORIGINS` | the client fetches those artifacts directly, by the operator's choice | reported by `waharoa doctor` and in `/-/waharoa/health` |
-| `WAHAROA_REFUSE_UNSERVABLE=0` | versions on origins the proxy does not serve are forwarded | a startup warning and `waharoa doctor` |
-| `WAHAROA_MODE=observe` | what the policy refuses is served and logged | a startup warning and `waharoa doctor`; never serves what cannot be assessed |
+| An origin in `BYRLE_ALLOW_DIRECT_ORIGINS` | the client fetches those artifacts directly, by the operator's choice | reported by `byrle doctor` and in `/-/byrle/health` |
+| `BYRLE_REFUSE_UNSERVABLE=0` | versions on origins the proxy does not serve are forwarded | a startup warning and `byrle doctor` |
+| `BYRLE_MODE=observe` | what the policy refuses is served and logged | a startup warning and `byrle doctor`; never serves what cannot be assessed |
 | Break-glass installs | an install pointed at the registry while the proxy is down | [break-glass](break-glass.md); a lockfile the bypass changed must not be committed |
 | pnpm's lockfile | records no artifact URL, so it cannot evidence that the proxy was used | none in the lockfile |
 | A dependency named by URL, git or path | npm fetches it from where it points | logged `BYPASS` and counted: [bypass-self-detection](engineering_decisions/bypass-self-detection.md) |
@@ -93,7 +93,7 @@ Each of these is a way for a package to be installed without waharoa deciding on
 
 - An attacker who already controls the developer's or CI machine.
 - Malware nobody has reported, beyond what the cooldown, install-script, provenance and
-  analysis checks catch. waharoa does not claim to find novel malware before the research
+  analysis checks catch. byrle does not claim to find novel malware before the research
   community does.
 - Code that runs when a package is imported rather than installed. The install-script
   check does not see it: of the 2025 npm incidents measured, chalk/debug and xrpl.js ran

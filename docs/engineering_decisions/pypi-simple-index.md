@@ -154,7 +154,7 @@ gives each file's URL in full.
 
 Two consequences the extraction step has to answer, neither of them settled here:
 
-- `WAHAROA_UPSTREAM` became `WAHAROA_UPSTREAM_NPM` and `WAHAROA_UPSTREAM_PYPI`, one per
+- `BYRLE_UPSTREAM` became `BYRLE_UPSTREAM_NPM` and `BYRLE_UPSTREAM_PYPI`, one per
   ecosystem. See `environment-variables.md`.
 - The proxy already reads artifact origins from the packument, in `OriginPolicy` and
   `ReachableOrigins`, because npm packages can name a host other than the registry. PyPI's
@@ -172,7 +172,7 @@ configured upstreams, and each ecosystem names the origins it always reaches:
 | PyPI | `https://pypi.org/simple`, `https://files.pythonhosted.org` |
 
 Without that, `files.pythonhosted.org` is on no reachable origin, `OriginPolicy::disposition`
-returns `Refused`, and with `WAHAROA_REFUSE_UNSERVABLE` at its default the proxy answers
+returns `Refused`, and with `BYRLE_REFUSE_UNSERVABLE` at its default the proxy answers
 every PyPI artifact request with a refusal. Held by
 `a_pypi_file_is_served_rather_than_refused`.
 
@@ -198,7 +198,7 @@ digests. On npm the filename is the same fact said twice, except for the 38 meas
 tarballs whose filename spells the version differently from the packument.
 
 The names are `Metadata` and `Artifact` rather than `Packument` and `Tarball`, which are
-npm's words. `WAHAROA_DEFER_TEST`'s scope strings followed on 2026-09-19, to `metadata` and
+npm's words. `BYRLE_DEFER_TEST`'s scope strings followed on 2026-09-19, to `metadata` and
 `artifact`, when `make retry-matrix` added pip and uv.
 
 `proxy::handle` still calls `npm::classify_path` alone. Routing between the two is the next
@@ -226,7 +226,7 @@ two hosts:
 
 | Request | Upstream |
 |---|---|
-| `/simple/requests/` | `{WAHAROA_UPSTREAM_PYPI}/requests/` |
+| `/simple/requests/` | `{BYRLE_UPSTREAM_PYPI}/requests/` |
 | `/packages/f9/9b/335f/requests-2.32.3-py3-none-any.whl` | `pypi::FILES` with the path kept |
 
 The configured base already ends in `/simple`, so the proxy's own prefix comes off rather

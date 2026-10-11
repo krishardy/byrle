@@ -10,9 +10,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-registry_port="${WAHAROA_REGISTRY_PORT:-8751}"
-forward_port="${WAHAROA_FORWARD_PORT:-8752}"
-port="${WAHAROA_PORT:-8753}"
+registry_port="${BYRLE_REGISTRY_PORT:-8751}"
+forward_port="${BYRLE_FORWARD_PORT:-8752}"
+port="${BYRLE_PORT:-8753}"
 workdir="$(mktemp -d)"
 pids=()
 
@@ -32,19 +32,19 @@ pids+=("$!")
 python3 "$repo_root/scripts/make/lib/forward_proxy.py" "$forward_port" "$workdir/carried.log" &
 pids+=("$!")
 cargo build --quiet --manifest-path "$repo_root/Cargo.toml"
-binary="$repo_root/target/debug/waharoa"
+binary="$repo_root/target/debug/byrle"
 
 # Runs the proxy with the given variables, asks it for /widget, and sets `status`.
 # Every proxy variable is set, so none leaks in from the calling shell.
 ask() {
     local log="$workdir/proxy-$1.log"; shift
     env HTTPS_PROXY= https_proxy= HTTP_PROXY= http_proxy= NO_PROXY= no_proxy= "$@" \
-        WAHAROA_UPSTREAM_NPM="http://127.0.0.1:${registry_port}" \
-        WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" \
+        BYRLE_UPSTREAM_NPM="http://127.0.0.1:${registry_port}" \
+        BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
         "$binary" daemon >"$log" 2>&1 &
     local pid=$!
     for _ in $(seq 1 60); do
-        grep -q "waharoa listening" "$log" && break
+        grep -q "byrle listening" "$log" && break
         kill -0 "$pid" 2>/dev/null || fail "proxy exited during startup: $(cat "$log")"
         sleep 0.5
     done
@@ -64,7 +64,7 @@ ask through HTTP_PROXY="$forward"
 [[ "$status" == 200 ]] || fail "answered $status"
 [[ "$(carried)" == 1 ]] || fail "the forward proxy carried $(carried) requests, not 1"
 sed -E 's/\x1b\[[0-9;]*m//g' "$workdir/proxy-through.log" \
-    | grep -q "upstream traffic goes through a forward proxy waharoa.forward_proxy.https=\"none\" waharoa.forward_proxy.http=\"$forward/\"" \
+    | grep -q "upstream traffic goes through a forward proxy byrle.forward_proxy.https=\"none\" byrle.forward_proxy.http=\"$forward/\"" \
     || fail "startup did not name the forward proxy"
 echo "    ok (200, carried by the forward proxy, named at startup)"
 

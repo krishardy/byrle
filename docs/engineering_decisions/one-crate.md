@@ -7,7 +7,7 @@
 
 ## Decision
 
-`waharoa` stays one library crate with a thin binary. No workspace, no crate per ecosystem,
+`byrle` stays one library crate with a thin binary. No workspace, no crate per ecosystem,
 no crate per layer.
 
 ## Why the answer waited on the adapter interface

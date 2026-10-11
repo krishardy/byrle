@@ -16,13 +16,13 @@ It is replaced by a date per policy:
 | `--from-date <DATE>` | `<FROM>` | `YYYY-MM-DD` or `+<days>d` | today, UTC |
 | `--to-date <DATE>` | `<TO>` | `YYYY-MM-DD` or `+<days>d` | today, UTC |
 
-When the two dates differ, stderr says so: `waharoa policy diff: <FROM> as of 2026-09-14,
+When the two dates differ, stderr says so: `byrle policy diff: <FROM> as of 2026-09-14,
 <TO> as of 2026-10-14`.
 
 The scheduled job compares a policy with itself 30 days on:
 
 ```
-waharoa policy diff policy.yaml policy.yaml --to-date +30d --lockfile package-lock.json
+byrle policy diff policy.yaml policy.yaml --to-date +30d --lockfile package-lock.json
 ```
 
 The exit code is the OR of two bits, or 4 on its own:
@@ -88,7 +88,7 @@ and `cooldown_days` from `FAIL quarantine` to `pass`.
 
 ## Evidence
 
-Live, debug build, `WAHAROA_AUDIT_LOG` unset, over `tests/fixtures/lockfiles/npm/package-lock.json`
+Live, debug build, `BYRLE_AUDIT_LOG` unset, over `tests/fixtures/lockfiles/npm/package-lock.json`
 and the kept npm snapshot, on 2026-09-14. `@babel/helper-validator-identifier` 7.29.7 was
 published 2026-05-25, `@babel/highlight` 7.25.9 on 2024-10-22 and `picocolors` 1.1.1 on
 2024-10-16.
@@ -98,7 +98,7 @@ A policy with `cooldown_days: 200` and a `packages` entry setting `cooldown_days
 `--to-date +30d`:
 
 ```
-waharoa policy diff: <FROM> as of 2026-09-14, <TO> as of 2026-10-14
+byrle policy diff: <FROM> as of 2026-09-14, <TO> as of 2026-10-14
 15 packages evaluated
 1 moved
 
@@ -107,7 +107,7 @@ waharoa policy diff: <FROM> as of 2026-09-14, <TO> as of 2026-10-14
 pkg:npm/@babel/helper-validator-identifier@7.29.7  allow -> quarantine
     cooldown_days     excepted by packages[0] -> FAIL quarantine  (stricter)
 
-waharoa policy diff: 0 loosened, 0 incomparable, 1 tightened
+byrle policy diff: 0 loosened, 0 incomparable, 1 tightened
 ```
 
 Exit 2. The same entry with `cooldown_days: 700`:
@@ -126,7 +126,7 @@ pkg:npm/@babel/highlight@7.25.9  quarantine -> allow
 pkg:npm/picocolors@1.1.1  quarantine -> allow
     cooldown_days     FAIL quarantine -> pass  (LOOSER)
 
-waharoa policy diff: 2 loosened, 0 incomparable, 1 tightened
+byrle policy diff: 2 loosened, 0 incomparable, 1 tightened
 ```
 
 Exit 3.
@@ -139,7 +139,7 @@ Exit 3.
 | no audit log and no lockfile, a policy that does not exist | 4 |
 | `--as-of 2026-01-01` | 4, `unexpected argument '--as-of' found` |
 | `--to-date tomorrow` | 4, ``invalid value 'tomorrow' for '--to-date <DATE>': `tomorrow` is neither YYYY-MM-DD nor +<days>d`` |
-| `waharoa doctr` | 2 |
+| `byrle doctr` | 2 |
 | `policy diff --help` | 0 |
 
 Each mutation below was caught:
@@ -167,7 +167,7 @@ which no test runs. The runs above are their evidence.
 
 Before this, a packument that could not be read was skipped and not counted, and a publish-time
 read that failed made `cooldown_days` unenforced on both sides, so it did not move. With
-`WAHAROA_UPSTREAM` set to `nope`, `ftp://x` or `http://`, which it then accepted as text, every read
+`BYRLE_UPSTREAM` set to `nope`, `ftp://x` or `http://`, which it then accepted as text, every read
 failed and the run printed `0 packages evaluated` and `nothing moved`, exit 0.
 
 Now `npm::fetched` says which request failed and how, `Report::unread` counts it, and `Report::judged_none` is
@@ -181,9 +181,9 @@ comment at `publish_times_for` records.
 
 | Lockfile | Report | Exit |
 |---|---|---|
-| `lodash` 4.17.20, `waharoa-no-such-package-3b7f9e` 1.0.0, `minimist` 0.0.0-never-published | `1 packages evaluated`, `1 could not be read`, lodash LOOSER | 5 |
+| `lodash` 4.17.20, `byrle-no-such-package-3b7f9e` 1.0.0, `minimist` 0.0.0-never-published | `1 packages evaluated`, `1 could not be read`, lodash LOOSER | 5 |
 | only `minimist` 0.0.0-never-published | `0 packages evaluated`, `none of the 1 package versions listed was judged` | 4 |
-| the 15 fixture versions, `WAHAROA_UPSTREAM=nope` | `15 could not be read`, `none of the 15 package versions listed was judged` | 4 |
+| the 15 fixture versions, `BYRLE_UPSTREAM=nope` | `15 could not be read`, `none of the 15 package versions listed was judged` | 4 |
 | the 15 fixture versions | `2 loosened, 0 incomparable, 0 tightened, 0 could not be read` | 1 |
 
 The 404 reads `packument could not be fetched: registry answered 404 Not Found`, and `nope`
@@ -205,6 +205,6 @@ runs above are their evidence. Each mutation below was caught:
 | A failed request called an unreadable body | the same |
 | A read value refused | the same |
 
-`WAHAROA_UPSTREAM_NPM`, which this command reads and which was called `WAHAROA_UPSTREAM`
+`BYRLE_UPSTREAM_NPM`, which this command reads and which was called `BYRLE_UPSTREAM`
 when the run below was measured, is now refused unless it is an http or https URL with a host, so `nope`
 exits 4 before any read. See [environment-variables](environment-variables.md).

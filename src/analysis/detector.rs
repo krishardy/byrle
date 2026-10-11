@@ -223,7 +223,7 @@ impl Command {
     async fn run(&self, args: &[String]) -> Result<Output, String> {
         static RUNS: AtomicU64 = AtomicU64::new(0);
         let directory = self.scratch.join(format!(
-            "waharoa-detector-{}-{}",
+            "byrle-detector-{}-{}",
             std::process::id(),
             RUNS.fetch_add(1, Ordering::Relaxed)
         ));
@@ -522,7 +522,7 @@ esac
             .collect();
         assert_eq!(leaked, Vec::<String>::new(), "{env}");
         let cwd = said("cwd");
-        assert!(cwd.contains("waharoa-detector-"), "{cwd}");
+        assert!(cwd.contains("byrle-detector-"), "{cwd}");
         assert!(!std::path::Path::new(&cwd).exists(), "removed after: {cwd}");
     }
 
@@ -546,7 +546,7 @@ esac
         unwritable.scratch = PathBuf::from("/nonexistent/scratch");
         let error = unwritable.detect(&target("quiet")).await.unwrap_err();
         assert!(
-            error.starts_with("/nonexistent/scratch/waharoa-detector-"),
+            error.starts_with("/nonexistent/scratch/byrle-detector-"),
             "{error}"
         );
         let flood = detector.detect(&target("flood")).await.unwrap_err();

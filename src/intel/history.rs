@@ -1,5 +1,5 @@
 //! The ingestion history: every stream a refresh loaded or did not, as `intel_ingestion`
-//! records it and `waharoa intel history` prints it.
+//! records it and `byrle intel history` prints it.
 //!
 //! See docs/engineering_decisions/ingestion-history.md.
 
@@ -106,10 +106,10 @@ impl Ingestion {
     }
 }
 
-/// `entries` as `waharoa intel history` prints them, in the order given.
+/// `entries` as `byrle intel history` prints them, in the order given.
 pub fn render(entries: &[Ingestion]) -> String {
     if entries.is_empty() {
-        return "no ingestion recorded; run `waharoa refresh`\n".to_owned();
+        return "no ingestion recorded; run `byrle refresh`\n".to_owned();
     }
     let blocks: Vec<String> = entries.iter().map(block).collect();
     blocks.join("\n")
@@ -258,9 +258,6 @@ mod tests {
 
     #[test]
     fn no_entry_says_so() {
-        assert_eq!(
-            render(&[]),
-            "no ingestion recorded; run `waharoa refresh`\n"
-        );
+        assert_eq!(render(&[]), "no ingestion recorded; run `byrle refresh`\n");
     }
 }

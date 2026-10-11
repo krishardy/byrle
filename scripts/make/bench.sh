@@ -3,13 +3,13 @@
 #
 # One large npm set and one large PyPI set, each installed from a lockfile in five cases:
 # direct with an empty and a filled client cache, and through the proxy fresh (nothing
-# analysed), after `waharoa warm`, and with the client's cache filled. Each case runs
-# WAHAROA_BENCH_RUNS times (default 3) and the median is reported, in seconds.
+# analysed), after `byrle warm`, and with the client's cache filled. Each case runs
+# BYRLE_BENCH_RUNS times (default 3) and the median is reported, in seconds.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-port="${WAHAROA_PORT:-8761}"
-runs="${WAHAROA_BENCH_RUNS:-3}"
+port="${BYRLE_PORT:-8761}"
+runs="${BYRLE_BENCH_RUNS:-3}"
 npm_packages=(next react react-dom eslint typescript vite vitest)
 pypi_packages=(pandas scikit-learn matplotlib)
 workdir="$(mktemp -d)"
@@ -23,16 +23,16 @@ cleanup() {
 trap cleanup EXIT
 
 cargo build --release --quiet --manifest-path "$repo_root/Cargo.toml"
-binary="$repo_root/target/release/waharoa"
+binary="$repo_root/target/release/byrle"
 
 start_proxy() {
     stop_proxy
     rm -rf "$workdir/spool"
-    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" \
+    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
         "$binary" daemon >"$workdir/proxy.log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
-        grep -q "waharoa listening" "$workdir/proxy.log" && return 0
+        grep -q "byrle listening" "$workdir/proxy.log" && return 0
         sleep 0.5
     done
     echo "proxy did not start"; exit 1
@@ -97,7 +97,7 @@ pypi_count="$(grep -cE '^[a-z0-9]' "$workdir/pypi/requirements.txt")"
 
 echo "Median of $runs runs, in seconds. $(npm --version | sed 's/^/npm /'), $(uv --version)."
 echo
-echo "| Set | direct, cold | direct, warm cache | proxy, cold | waharoa warm | proxy, analysed | proxy, warm cache |"
+echo "| Set | direct, cold | direct, warm cache | proxy, cold | byrle warm | proxy, analysed | proxy, warm cache |"
 echo "|---|---|---|---|---|---|---|"
 row "npm: $npm_count packages" npm_ci https://registry.npmjs.org/ "$proxy/" \
     "$workdir/npm/package-lock.json"

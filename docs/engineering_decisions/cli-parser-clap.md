@@ -23,21 +23,21 @@ against `examples/policy.yaml` before the change:
 | `policy diff a b --bogus` | ignored, exit 0 | `unexpected argument '--bogus' found`, exit 2 |
 | `explain --policy extra` | `extra` ignored | `the argument '--policy' cannot be used with '[PURL]'`, exit 2 |
 | `explain --help` | `` `--help` is not a package reference ``, exit 2 | help, exit 0 |
-| `--version` | `unknown command`, exit 2 | `waharoa 0.1.0`, exit 0 |
+| `--version` | `unknown command`, exit 2 | `byrle 0.1.0`, exit 0 |
 | `doctr` | `unknown command`, exit 2 | `unrecognized subcommand 'doctr'`, exit 2 |
 
 Since 2026-09-14 `policy diff` has `--from-date` and `--to-date` in place of `--as-of`, and a
 refused `policy diff` command line exits 4, because 2 is its tightening bit. See
 [policy-diff-dates-and-exit-bits](policy-diff-dates-and-exit-bits.md).
 
-Since 2026-09-18 the proxy runs only under `waharoa daemon`. A command line with no command
+Since 2026-09-18 the proxy runs only under `byrle daemon`. A command line with no command
 prints the help and exits 2, where before it started the proxy.
 
 No test exercised the dispatch. `cli::tests` now covers each row.
 
 ## Candidates
 
-Crates each adds to waharoa's tree of 226, by `cargo tree -e normal,build` against the current
+Crates each adds to byrle's tree of 226, by `cargo tree -e normal,build` against the current
 `Cargo.lock`. `syn`, `quote`, `proc-macro2` and `anstyle` are already in it.
 
 | Candidate | Crates added | Last release | Downloads, 90 days |
@@ -76,8 +76,8 @@ than lexopt, all from the clap-rs project.
   with its own reason rather than clap's `unexpected argument`. It is listed now that
   [snapshot-identity](snapshot-identity.md) keeps snapshots it can read.
 - **Help is pinned by golden files.** `tests/fixtures/cli/help.txt`, `explain.txt` and
-  `policy-diff.txt`, rewritten with `WAHAROA_BLESS=1`. They are rendered by a debug build and show
-  `WAHAROA_DEFER_TEST`, which a release build omits.
+  `policy-diff.txt`, rewritten with `BYRLE_BLESS=1`. They are rendered by a debug build and show
+  `BYRLE_DEFER_TEST`, which a release build omits.
 - **Two `nosemgrep: rust.lang.security.args.args` suppressions are gone** from `main.rs`: clap
   reads argv, and nothing in `main.rs` calls `std::env::args` any more.
 - **Exit codes are unchanged:** 2 for a malformed command line, 0 for help and `--version`.

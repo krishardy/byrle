@@ -29,21 +29,21 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$repo_root/scripts/make/lib/node.sh"
 # shellcheck source=scripts/make/lib/python.sh
 . "$repo_root/scripts/make/lib/python.sh"
-waharoa_use_latest_node
+byrle_use_latest_node
 
-port="${WAHAROA_PORT:-8733}"
+port="${BYRLE_PORT:-8733}"
 registry="http://127.0.0.1:${port}/"
 index="http://127.0.0.1:${port}/simple/"
-package="${WAHAROA_RETRY_PACKAGE:-lodash}"
+package="${BYRLE_RETRY_PACKAGE:-lodash}"
 # One wheel and no dependencies, so every deferred request is the one being measured.
-pypi_package="${WAHAROA_RETRY_PYPI_PACKAGE:-idna}"
+pypi_package="${BYRLE_RETRY_PYPI_PACKAGE:-idna}"
 npm_clients=(npm pnpm yarn yarn-berry bun)
 pypi_clients=(pip uv)
 # How long a bounded deferral lasts. Long enough that a client which gives up straight
 # away is not credited with waiting, short enough to run five clients through it.
-bounded_seconds="${WAHAROA_RETRY_BOUNDED_SECONDS:-8}"
+bounded_seconds="${BYRLE_RETRY_BOUNDED_SECONDS:-8}"
 # A ceiling on one client's run, so a client that retries forever does not hang the target.
-budget_seconds="${WAHAROA_RETRY_BUDGET_SECONDS:-120}"
+budget_seconds="${BYRLE_RETRY_BUDGET_SECONDS:-120}"
 workdir="$(mktemp -d)"
 proxy_pid=""
 
@@ -54,18 +54,18 @@ cleanup() {
 trap cleanup EXIT
 
 if ss -ltn 2>/dev/null | grep -q ":${port} "; then
-    echo "port ${port} is already in use; set WAHAROA_PORT to something free"
+    echo "port ${port} is already in use; set BYRLE_PORT to something free"
     exit 1
 fi
 
-# Debug build: WAHAROA_DEFER_TEST is compiled out of a release binary on purpose.
+# Debug build: BYRLE_DEFER_TEST is compiled out of a release binary on purpose.
 start_proxy() {
     local log="$1" spec="$2"
-    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_DEFER_TEST="$spec" \
+    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" BYRLE_DEFER_TEST="$spec" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
-        grep -q "waharoa listening" "$log" && return 0
+        grep -q "byrle listening" "$log" && return 0
         kill -0 "$proxy_pid" 2>/dev/null || { echo "proxy exited during startup"; exit 1; }
         sleep 1
     done
@@ -90,7 +90,7 @@ prepare_yarn_berry() {
 
     mkdir -p "$workdir/shims"
     corepack enable --install-directory "$workdir/shims" >/dev/null 2>&1 || return 1
-    printf '{"name":"waharoa-retry","version":"1.0.0","private":true,"packageManager":"yarn@4.9.1"}\n' \
+    printf '{"name":"byrle-retry","version":"1.0.0","private":true,"packageManager":"yarn@4.9.1"}\n' \
         >"$dir/package.json"
     cat >"$dir/.yarnrc.yml" <<YML
 nodeLinker: node-modules
@@ -132,8 +132,8 @@ client_command() {
         yarn-berry) printf '%s\n' env "PATH=$workdir/shims:$PATH" \
             COREPACK_ENABLE_DOWNLOAD_PROMPT=0 "YARN_NPM_REGISTRY_SERVER=${registry%/}" \
             yarn add "$package" ;;
-        pip) waharoa_pip_command "$dir/venv" "$index" "$pypi_package" ;;
-        uv) waharoa_uv_command "$dir/venv" "$index" "$pypi_package" ;;
+        pip) byrle_pip_command "$dir/venv" "$index" "$pypi_package" ;;
+        uv) byrle_uv_command "$dir/venv" "$index" "$pypi_package" ;;
     esac
 }
 
@@ -156,7 +156,7 @@ run_cell() {
 
     local dir="$workdir/$client-$expect" log="$workdir/$client-$expect.log"
     mkdir -p "$dir/cache"
-    printf '{"name":"waharoa-retry","version":"1.0.0","private":true}\n' >"$dir/package.json"
+    printf '{"name":"byrle-retry","version":"1.0.0","private":true}\n' >"$dir/package.json"
     if [[ "$client" == "yarn-berry" ]] && ! prepare_yarn_berry "$dir"; then
         printf '  %-11s needs corepack and node 18 or later, skipped\n' "$client"
         return 0

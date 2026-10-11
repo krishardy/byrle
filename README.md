@@ -1,12 +1,12 @@
-# waharoa
+# byrle
 
 **A dependency firewall.** A self-hosted proxy that evaluates packages against a
 security policy *before* they are downloaded, extracted, or executed. Blocks known
 malware and policy violations across multiple package ecosystems from a single YAML
 configuration.
 
-> `waharoa` is a working name: te reo Māori for the carved gateway of a pā, literally
-> the *long entrance*. The gate you pass through before you are inside the walls.
+> `byrle` replaces the working name `waharoa`
+> ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md)).
 
 ## Stack
 
@@ -41,8 +41,8 @@ A tier is what the proxy does for the ecosystem today:
 | `observe-only` | checks run and are logged; nothing is refused |
 | `experimental` | some checks run; what is missing is listed |
 
-`WAHAROA_MODE=observe` runs an enforcing ecosystem in observe mode, for the whole proxy.
-`waharoa status` lists what the build does for each ecosystem and which intel streams
+`BYRLE_MODE=observe` runs an enforcing ecosystem in observe mode, for the whole proxy.
+`byrle status` lists what the build does for each ecosystem and which intel streams
 cover it.
 
 ## Problem
@@ -59,7 +59,7 @@ window.
 
 ## How it works
 
-waharoa sits in front of a package registry. The package manager is pointed at it, and
+byrle sits in front of a package registry. The package manager is pointed at it, and
 every resolution and fetch passes through four layers:
 
 ```
@@ -93,11 +93,11 @@ tools cannot see into.
 
 **Pluggable advisory streams.** OSV (which carries the OSSF malicious-packages records),
 GitHub advisories, Datadog's malicious-packages dataset and CISA KEV are all free and
-public. `waharoa refresh` loads them into a local Postgres store, and the proxy asks only
+public. `byrle refresh` loads them into a local Postgres store, and the proxy asks only
 that store, so a lookup never tells an upstream which packages you use. No commercial
 vendor will aggregate every free feed, because each is selling their own.
 
-**A policy engine you can read.** `waharoa explain` shows the policy in force, and for a
+**A policy engine you can read.** `byrle explain` shows the policy in force, and for a
 package, the verdict and each check that produced it. Policy engines nobody can inspect
 stay stuck in observe mode forever.
 
@@ -134,7 +134,7 @@ packages:
     permanent: true
 ```
 
-The proxy enforces by default. `WAHAROA_MODE=observe` serves what the policy would refuse
+The proxy enforces by default. `BYRLE_MODE=observe` serves what the policy would refuse
 and logs it, so adopters can move from observe to enforce on their own schedule.
 Exceptions are cheap to add and expire by default. Every key, its default and which way
 it loosens are in [docs/policy-reference.md](docs/policy-reference.md).
@@ -149,20 +149,20 @@ it loosens are in [docs/policy-reference.md](docs/policy-reference.md).
 ## Known bypass vectors
 
 A tool that intercepts every dependency install is itself a supply-chain risk, and it
-has honest limits. Each way a package can be installed without waharoa deciding on it is
+has honest limits. Each way a package can be installed without byrle deciding on it is
 listed, with its mitigation, in [docs/threat-model.md](docs/threat-model.md). The ones that
 matter most:
 
 * **Pointing at the proxy is advisory.** A developer who resets their registry URL, or a
-  client that installs from its own cache, never asks the proxy. `waharoa doctor` checks
+  client that installs from its own cache, never asks the proxy. `byrle doctor` checks
   both. An npm or yarn lockfile records the proxy's address, so CI can check it; pnpm's
   records none.
 * **Installs outside a package manager are invisible.** IDE extensions, browser
   extensions and MCP servers install packages without a configured registry. Only
   egress control reaches them.
-* **Operator settings can open gaps**: `WAHAROA_ALLOW_DIRECT_ORIGINS`,
-  `WAHAROA_REFUSE_UNSERVABLE=0` and `WAHAROA_MODE=observe`. Each is warned about at
-  startup and reported by `waharoa doctor`.
+* **Operator settings can open gaps**: `BYRLE_ALLOW_DIRECT_ORIGINS`,
+  `BYRLE_REFUSE_UNSERVABLE=0` and `BYRLE_MODE=observe`. Each is warned about at
+  startup and reported by `byrle doctor`.
 * **Code that runs on import, not install**, is not seen by the install-script check.
 
 We do not stop an attacker who already controls the developer's machine, and we do not
@@ -174,7 +174,7 @@ Every mode below a controlled network is advisory, so the question worth asking 
 whether the proxy is running but whether anything is using it.
 
 ```
-waharoa doctor
+byrle doctor
 ```
 
 reports whether the proxy is there, answering and ready to decide on packages, what each
@@ -182,11 +182,11 @@ installed package manager is configured to talk to, what the lockfiles in the cu
 directory record about where their artifacts came from, and what would silently skip the
 proxy. It exits non-zero when installs are not going through it.
 
-The proxy answers `GET /-/waharoa/health` for itself, which reports what it forwards to
+The proxy answers `GET /-/byrle/health` for itself, which reports what it forwards to
 and which settings are reducing what it examines. That is what `doctor` reads, and it is
 worth curling directly when a client says something unexpected.
 
-`GET /-/waharoa/ready` answers 200 when the proxy can decide on packages and 503 when it
+`GET /-/byrle/ready` answers 200 when the proxy can decide on packages and 503 when it
 cannot: a policy and an intel store are configured, and the store holds no snapshot or
 cannot be reached. Point an orchestrator's readiness probe at it. The body reports the loaded
 snapshot and each stream's digest.
@@ -210,7 +210,7 @@ address in lockfiles. npm's `resolved` and yarn's `resolved` both do; pnpm inste
 the URL and derives it from the configured registry, which makes its lockfiles more
 portable than before, not less.
 
-**Set `WAHAROA_PUBLIC_URL` to a stable name** everyone who consumes the lockfile can
+**Set `BYRLE_PUBLIC_URL` to a stable name** everyone who consumes the lockfile can
 reach, rather than letting it default to whatever `Host` a client happened to use. This is
 close to mandatory: measured, `npm ci` against a lockfile whose recorded address is no
 longer reachable fails outright, and does not fall back to the registry it was given on
@@ -238,11 +238,11 @@ adapter contributions are the scarce resource.
   TLS, with configurations `make smoke-tls-front` tests.
 * [docs/break-glass.md](docs/break-glass.md) says how to install when the proxy is down,
   and how to release a package it refuses without a restart.
-* [docs/threat-model.md](docs/threat-model.md) says what waharoa defends against, what it
+* [docs/threat-model.md](docs/threat-model.md) says what byrle defends against, what it
   trusts, and the known ways around it.
 * [docs/policy-reference.md](docs/policy-reference.md) lists every policy key, its default,
   and which way it loosens.
-* [CONTRIBUTING.md](CONTRIBUTING.md) asks for a DCO sign-off on every commit. waharoa is
+* [CONTRIBUTING.md](CONTRIBUTING.md) asks for a DCO sign-off on every commit. byrle is
   Apache-2.0: [LICENSE](LICENSE).
 * [docs/engineering_decisions/](docs/engineering_decisions/) holds one file per
   decision: what was chosen, what was rejected, and what it costs.

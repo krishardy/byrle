@@ -56,18 +56,18 @@ use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
 /// The path the proxy answers for itself, under `/-/`, where no package name can be.
-pub const HEALTH_PATH: &str = "/-/waharoa/health";
+pub const HEALTH_PATH: &str = "/-/byrle/health";
 
 /// Where the proxy says whether it can decide on packages now, for a readiness probe.
-pub const READY_PATH: &str = "/-/waharoa/ready";
+pub const READY_PATH: &str = "/-/byrle/ready";
 
 /// How many versions the policy took out of a metadata document. Absent when it took none.
 pub const FILTERED_VERSIONS: header::HeaderName =
-    header::HeaderName::from_static("x-waharoa-filtered-versions");
+    header::HeaderName::from_static("x-byrle-filtered-versions");
 
 /// Which checks took them out, comma separated, in name order.
 pub const FILTERED_CHECKS: header::HeaderName =
-    header::HeaderName::from_static("x-waharoa-filtered-checks");
+    header::HeaderName::from_static("x-byrle-filtered-checks");
 
 /// Whether the proxy can decide on a package now. Served at [`READY_PATH`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,7 +89,7 @@ pub enum IntelState {
     NotConsulted,
     /// The store answers and holds a snapshot.
     Loaded,
-    /// The store answers and holds no snapshot: `waharoa refresh` has not loaded one.
+    /// The store answers and holds no snapshot: `byrle refresh` has not loaded one.
     Empty,
     /// The store cannot answer. The cause is logged, not served.
     Unavailable,
@@ -98,7 +98,7 @@ pub enum IntelState {
 /// What the proxy is, and what it is configured to do, without secrets. Served at [`HEALTH_PATH`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Health {
-    /// Always "waharoa", so a response from something else is recognisable as such.
+    /// Always "byrle", so a response from something else is recognisable as such.
     pub service: String,
     pub version: String,
     /// Each ecosystem's upstream, by purl type.
@@ -367,7 +367,7 @@ impl Proxy {
             (store.len(), store.records())
         };
         Health {
-            service: "waharoa".to_owned(),
+            service: "byrle".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             upstreams: self
                 .config
@@ -409,8 +409,8 @@ impl Proxy {
         for (client, documents) in &quiet {
             info!(
                 user_agent.original = %client,
-                waharoa.traffic.documents = documents,
-                waharoa.traffic.window_s = TRAFFIC_WINDOW.as_secs(),
+                byrle.traffic.documents = documents,
+                byrle.traffic.window_s = TRAFFIC_WINDOW.as_secs(),
                 "client read metadata documents and fetched no artifact through this proxy: it \
                  installed nothing new, or takes artifacts from its own cache or another address"
             );
@@ -438,7 +438,7 @@ impl Proxy {
             Ok(Some(snapshot)) => (IntelState::Loaded, Some(snapshot)),
             Ok(None) => (IntelState::Empty, None),
             Err(e) => {
-                error!(waharoa.reason = %e, "intel store cannot answer; not ready");
+                error!(byrle.reason = %e, "intel store cannot answer; not ready");
                 (IntelState::Unavailable, None)
             }
         };
@@ -628,8 +628,8 @@ impl VerifyingStream {
                     .record(self.sri.clone());
                 info!(
                     url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
-                    waharoa.package.purl = %self.purl,
-                    waharoa.artifact.bytes = self.bytes,
+                    byrle.package.purl = %self.purl,
+                    byrle.artifact.bytes = self.bytes,
                     "artifact digest verified"
                 );
                 Poll::Ready(self.held.take().map(Ok))
@@ -637,10 +637,10 @@ impl VerifyingStream {
             Err(mismatch) => {
                 error!(
                     url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
-                    waharoa.package.purl = %self.purl,
-                    waharoa.artifact.digest_expected = %mismatch.expected,
-                    waharoa.artifact.digest_actual = %mismatch.actual,
-                    waharoa.artifact.bytes = mismatch.bytes,
+                    byrle.package.purl = %self.purl,
+                    byrle.artifact.digest_expected = %mismatch.expected,
+                    byrle.artifact.digest_actual = %mismatch.actual,
+                    byrle.artifact.bytes = mismatch.bytes,
                     "ARTIFACT DIGEST MISMATCH"
                 );
                 self.held = None;
@@ -776,17 +776,17 @@ async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
                 .insert(metadata);
             info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                waharoa.package.purl = %key,
-                waharoa.package.versions = versions,
-                waharoa.duration_ms = started.elapsed().as_millis() as u64,
+                byrle.package.purl = %key,
+                byrle.package.versions = versions,
+                byrle.duration_ms = started.elapsed().as_millis() as u64,
                 "fetched metadata on our own behalf, which the client never requested"
             );
         }
         Ok(Err(e)) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.package.purl = %key, error.message = %e, "metadata fetched but did not normalize")
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.package.purl = %key, error.message = %e, "metadata fetched but did not normalize")
         }
         Err(e) => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.package.purl = %key, error.message = %e, "could not fetch metadata")
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.package.purl = %key, error.message = %e, "could not fetch metadata")
         }
     }
 }
@@ -881,9 +881,9 @@ async fn revalidated(
         let held = proxy.store.lock().expect("record store lock").holds(key);
         info!(
             url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-            waharoa.package.purl = %key,
+            byrle.package.purl = %key,
             "http.response.header.etag" = headers.get(header::ETAG).and_then(|v| v.to_str().ok()).unwrap_or("-"),
-            waharoa.store.held = held,
+            byrle.store.held = held,
             "metadata not modified, nothing to normalize"
         );
         if !held {
@@ -917,7 +917,7 @@ async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphore
     if waited.as_millis() > 0 {
         debug!(
             url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-            waharoa.metadata.slot_wait_ms = waited.as_millis() as u64,
+            byrle.metadata.slot_wait_ms = waited.as_millis() as u64,
             "waited for a metadata slot"
         );
     }
@@ -1125,11 +1125,11 @@ fn report_uninspected(
                 .get(header::ACCEPT_ENCODING)
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("-"),
-            waharoa.reason = Uninspected::Unreadable.reason(),
+            byrle.reason = Uninspected::Unreadable.reason(),
             "UNINSPECTED"
         ),
         reason => {
-            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.reason = reason.reason(), "UNINSPECTED")
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.reason = reason.reason(), "UNINSPECTED")
         }
     }
 }
@@ -1354,7 +1354,7 @@ impl<'a> Deciding<'a> {
                 .map(|policy| policy.signal_weights.clone())
                 .unwrap_or_default();
             let score = crate::signal::score(&signals, &weights);
-            warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, waharoa.risk_score = score, "signals reported; they refuse nothing");
+            warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), byrle.package.purl = %self.purl, byrle.signals = ?found, byrle.risk_score = score, "signals reported; they refuse nothing");
         }
         signals
     }
@@ -1476,21 +1476,21 @@ impl<'a> Deciding<'a> {
         let record = found.narrowed_to(filename).unwrap_or_else(|| {
             warn!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                waharoa.package.claimed_purl = %self.purl,
-                waharoa.artifact.filename = %filename,
+                byrle.package.claimed_purl = %self.purl,
+                byrle.artifact.filename = %filename,
                 "the record names no file by this name; deciding on the version's first file"
             );
             *found
         });
         info!(
             url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-            waharoa.package.claimed_purl = %self.purl,
-            waharoa.artifact.integrity = record
+            byrle.package.claimed_purl = %self.purl,
+            byrle.artifact.integrity = record
                 .artifact()
                 .and_then(|a| a.integrity.as_deref())
                 .unwrap_or("-"),
-            waharoa.package.has_install_scripts = record.has_install_scripts,
-            waharoa.package.deprecated = record.deprecated.as_deref().unwrap_or("-"),
+            byrle.package.has_install_scripts = record.has_install_scripts,
+            byrle.package.deprecated = record.deprecated.as_deref().unwrap_or("-"),
             "artifact requested, digest known"
         );
         report_direct_dependencies(self.proxy, &record, path, client);
@@ -1546,9 +1546,9 @@ impl<'a> Deciding<'a> {
                     .lookup(&sri);
                 info!(
                     url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                    waharoa.package.claimed_purl = %self.purl,
-                    waharoa.artifact.digest = %sri,
-                    waharoa.artifact.cache = seen.as_str(),
+                    byrle.package.claimed_purl = %self.purl,
+                    byrle.artifact.digest = %sri,
+                    byrle.artifact.cache = seen.as_str(),
                     "artifact cache consulted"
                 );
                 Some(sri)
@@ -1556,7 +1556,7 @@ impl<'a> Deciding<'a> {
             Some(Err(e)) => {
                 warn!(
                     url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                    waharoa.package.claimed_purl = %self.purl,
+                    byrle.package.claimed_purl = %self.purl,
                     error.message = %e,
                     "metadata integrity string is unusable; not verifying"
                 );
@@ -1565,7 +1565,7 @@ impl<'a> Deciding<'a> {
             None => {
                 warn!(
                     url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                    waharoa.package.claimed_purl = %self.purl,
+                    byrle.package.claimed_purl = %self.purl,
                     "metadata publishes no strong digest; not verifying"
                 );
                 None
@@ -1678,9 +1678,9 @@ impl<'a> Deciding<'a> {
             http.request.method = %self.request.method,
             url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             http.response.status_code = status.as_u16(),
-            waharoa.package.claimed_purl = %self.purl,
-            waharoa.policy.action = refusal.action.as_str(),
-            waharoa.policy.reasons = ?refusal.reasons,
+            byrle.package.claimed_purl = %self.purl,
+            byrle.policy.action = refusal.action.as_str(),
+            byrle.policy.reasons = ?refusal.reasons,
             user_agent.original = %self.request.client,
             "refused by policy"
         );
@@ -1692,9 +1692,9 @@ impl<'a> Deciding<'a> {
         warn!(
             http.request.method = %self.request.method,
             url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
-            waharoa.package.claimed_purl = %self.purl,
-            waharoa.policy.action = refusal.action.as_str(),
-            waharoa.policy.reasons = ?refusal.reasons,
+            byrle.package.claimed_purl = %self.purl,
+            byrle.policy.action = refusal.action.as_str(),
+            byrle.policy.reasons = ?refusal.reasons,
             user_agent.original = %self.request.client,
             "observe: the policy refuses this artifact; not refused"
         );
@@ -1708,8 +1708,8 @@ impl<'a> Deciding<'a> {
             http.request.method = %self.request.method,
             url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             http.response.status_code = status.as_u16(),
-            waharoa.package.claimed_purl = %self.purl,
-            waharoa.artifact.origin = %origin,
+            byrle.package.claimed_purl = %self.purl,
+            byrle.artifact.origin = %origin,
             user_agent.original = %self.request.client,
             "refused: this artifact is published on an origin the proxy does not serve"
         );
@@ -1718,7 +1718,7 @@ impl<'a> Deciding<'a> {
             (
                 status,
                 format!(
-                    "waharoa: {purl} is published at {origin}, which this proxy does not \
+                    "byrle: {purl} is published at {origin}, which this proxy does not \
                      serve, so it cannot be examined\n"
                 ),
             )
@@ -1731,8 +1731,8 @@ impl<'a> Deciding<'a> {
         warn!(
             http.request.method = %self.request.method,
             url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
-            waharoa.package.claimed_purl = %self.purl,
-            waharoa.artifact.digest_mismatch = %mismatch,
+            byrle.package.claimed_purl = %self.purl,
+            byrle.artifact.digest_mismatch = %mismatch,
             "refused: the upstream serves bytes its metadata does not describe"
         );
         let purl = &self.purl;
@@ -1740,7 +1740,7 @@ impl<'a> Deciding<'a> {
             (
                 StatusCode::BAD_GATEWAY,
                 format!(
-                    "waharoa: the upstream served {purl} as bytes its metadata does not \
+                    "byrle: the upstream served {purl} as bytes its metadata does not \
                      describe: {mismatch}\n"
                 ),
             )
@@ -1766,9 +1766,9 @@ impl<'a> Deciding<'a> {
         info!(
             http.request.method = %self.request.method,
             url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
-            waharoa.package.claimed_purl = %self.purl,
-            waharoa.artifact.digest = %digest,
-            waharoa.deferral.count = deferrals,
+            byrle.package.claimed_purl = %self.purl,
+            byrle.artifact.digest = %digest,
+            byrle.deferral.count = deferrals,
             user_agent.original = %self.request.client,
             "deferred: the artifact has not been analysed"
         );
@@ -1787,17 +1787,13 @@ impl<'a> Deciding<'a> {
         warn!(
             url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             http.response.status_code = status.as_u16(),
-            waharoa.package.claimed_purl = %purl,
+            byrle.package.claimed_purl = %purl,
             user_agent.original = %self.request.client,
-            waharoa.reason = why,
+            byrle.reason = why,
             "not served"
         );
         ArtifactStep::Answer(
-            (
-                status,
-                format!("waharoa: {purl} cannot be assessed: {why}\n"),
-            )
-                .into_response(),
+            (status, format!("byrle: {purl} cannot be assessed: {why}\n")).into_response(),
         )
     }
 }
@@ -1888,8 +1884,8 @@ fn report_direct_dependencies(proxy: &Proxy, record: &PackageRecord, path: &str,
         .collect();
     warn!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-        waharoa.package.purl = %record.package,
-        waharoa.package.direct_dependencies = ?named,
+        byrle.package.purl = %record.package,
+        byrle.package.direct_dependencies = ?named,
         user_agent.original = %client,
         "BYPASS: this version depends on packages by URL, git or path, which the client \
          fetches directly and this proxy never examines"
@@ -1909,9 +1905,9 @@ fn returned(proxy: &Proxy, digest: &Sri, path: &str, client: &str) {
     };
     info!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-        waharoa.artifact.digest = %digest,
-        waharoa.deferral.count = deferral.count,
-        waharoa.deferral.after_ms = deferral.first.elapsed().as_millis() as u64,
+        byrle.artifact.digest = %digest,
+        byrle.deferral.count = deferral.count,
+        byrle.deferral.after_ms = deferral.first.elapsed().as_millis() as u64,
         user_agent.original = %client,
         "returned after a deferral"
     );
@@ -2134,14 +2130,14 @@ async fn result_of(
 /// claim is a warning whatever the policy says: the metadata hid a script.
 fn report_claim(record: &PackageRecord, scripts: &Scripts, path: &str) {
     let Scripts::Declared(found) = scripts else {
-        warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.artifact.scripts = ?scripts, "the artifact could not be read; it counts as running install scripts");
+        warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.artifact.scripts = ?scripts, "the artifact could not be read; it counts as running install scripts");
         return;
     };
     let claim = Claim::of(found, record.has_install_scripts, record.detail);
     if claim == Claim::Undeclared {
-        warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.artifact.scripts = ?found.names, waharoa.artifact.scripts_claimed = claim.as_str(), "the artifact runs install scripts its metadata does not declare");
+        warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.artifact.scripts = ?found.names, byrle.artifact.scripts_claimed = claim.as_str(), "the artifact runs install scripts its metadata does not declare");
     } else {
-        info!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.artifact.scripts = ?found.names, waharoa.artifact.scripts_claimed = claim.as_str(), "install scripts read from the artifact");
+        info!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.artifact.scripts = ?found.names, byrle.artifact.scripts_claimed = claim.as_str(), "install scripts read from the artifact");
     }
 }
 
@@ -2241,7 +2237,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     exchange.respond(upstream, artifact).await
 }
 
-/// `/-/waharoa/health` and `/-/waharoa/ready`, answered by the proxy. `None` for any other
+/// `/-/byrle/health` and `/-/byrle/ready`, answered by the proxy. `None` for any other
 /// `path`.
 async fn own_endpoint(proxy: &Proxy, path: &str) -> Option<Response> {
     match path.split('?').next() {
@@ -2359,7 +2355,7 @@ impl Exchange<'_> {
                 Box::new(
                     (
                         StatusCode::BAD_GATEWAY,
-                        format!("waharoa: upstream request failed: {e}\n"),
+                        format!("byrle: upstream request failed: {e}\n"),
                     )
                         .into_response(),
                 )
@@ -2426,7 +2422,7 @@ impl Exchange<'_> {
                 self.proxy.revalidated.fetch_add(1, Ordering::Relaxed);
                 info!(
                     url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
-                    waharoa.package.purl = %artifact.purl,
+                    byrle.package.purl = %artifact.purl,
                     user_agent.original = %self.client,
                     "artifact revalidated with a 304: the client installs its cached bytes, \
                      which this proxy did not hash on this request"
@@ -2463,7 +2459,7 @@ impl Exchange<'_> {
                 self.proxy.uninspected.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
-                    waharoa.metadata.limit = limit,
+                    byrle.metadata.limit = limit,
                     "UNINSPECTED: metadata document exceeds the size limit, forwarded without rewriting"
                 );
                 self.log_proxied(status, length.unwrap_or(0));
@@ -2474,7 +2470,7 @@ impl Exchange<'_> {
                 error!(http.request.method = %self.method, url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path), error.message = %e, "upstream body failed mid-stream");
                 return (
                     StatusCode::BAD_GATEWAY,
-                    format!("waharoa: upstream body failed: {e}\n"),
+                    format!("byrle: upstream body failed: {e}\n"),
                 )
                     .into_response();
             }
@@ -2516,7 +2512,7 @@ impl Exchange<'_> {
                 url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
                 http.response.status_code = status.as_u16(),
                 http.response.body.size = bytes,
-                waharoa.duration_ms = elapsed_ms,
+                byrle.duration_ms = elapsed_ms,
                 user_agent.original = %self.client,
                 "proxied"
             );
@@ -2526,7 +2522,7 @@ impl Exchange<'_> {
                 url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
                 http.response.status_code = status.as_u16(),
                 http.response.body.size = bytes,
-                waharoa.duration_ms = elapsed_ms,
+                byrle.duration_ms = elapsed_ms,
                 user_agent.original = %self.client,
                 "proxied"
             );
@@ -2617,14 +2613,14 @@ fn defer_response(
         http.response.status_code = status,
         "http.response.header.retry-after" = retry_after.map(|s| s.to_string()).unwrap_or_else(|| "-".to_owned()),
         user_agent.original = %client_ua,
-        waharoa.duration_ms = started.elapsed().as_millis() as u64,
-        waharoa.config.variable = %crate::env::DEFER_TEST,
+        byrle.duration_ms = started.elapsed().as_millis() as u64,
+        byrle.config.variable = %crate::env::DEFER_TEST,
         "deferred by the defer test"
     );
     (
         code,
         headers,
-        format!("waharoa: {path_and_query} is deferred, not refused\n"),
+        format!("byrle: {path_and_query} is deferred, not refused\n"),
     )
         .into_response()
 }
@@ -2638,17 +2634,17 @@ async fn full_document(proxy: &Proxy, key: &PackageKey) -> Option<FullDocument> 
         Ok(Some(full)) => full,
         Ok(None) => return None,
         Err(e) => {
-            warn!(waharoa.package.purl = %key, error.message = %e, "no full packument for this package");
+            warn!(byrle.package.purl = %key, error.message = %e, "no full packument for this package");
             return None;
         }
     };
     if let Err(e) = &full.metadata {
-        warn!(waharoa.package.purl = %key, error.message = %e, "the full packument's records did not normalize; the heuristics read the held document");
+        warn!(byrle.package.purl = %key, error.message = %e, "the full packument's records did not normalize; the heuristics read the held document");
     }
     info!(
-        waharoa.package.purl = %key,
-        waharoa.package.versions = full.times.len(),
-        waharoa.metadata.fetch_ms = started.elapsed().as_millis() as u64,
+        byrle.package.purl = %key,
+        byrle.package.versions = full.times.len(),
+        byrle.metadata.fetch_ms = started.elapsed().as_millis() as u64,
         "full packument read"
     );
     Some(full)
@@ -2678,8 +2674,8 @@ fn report_undated(proxy: &Proxy, read: &Read, path: &str) {
     }
     warn!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-        waharoa.package.undated_versions = undated,
-        waharoa.package.versions = metadata.records.len(),
+        byrle.package.undated_versions = undated,
+        byrle.package.versions = metadata.records.len(),
         "cooldown_days cannot be answered while filtering this document; a pinned fetch of \
          one of these versions is decided on the file's own date"
     );
@@ -2707,8 +2703,8 @@ async fn dated_by_host(
     let last_modified = head_last_modified(proxy, &artifact.url, path).await?;
     info!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-        waharoa.package.published = %last_modified,
-        waharoa.metadata.fetch_ms = started.elapsed().as_millis() as u64,
+        byrle.package.published = %last_modified,
+        byrle.metadata.fetch_ms = started.elapsed().as_millis() as u64,
         "publish time read from the file's Last-Modified"
     );
     Some(
@@ -2769,7 +2765,7 @@ impl Read {
 const RETRY_AFTER_SECONDS: &str = "1";
 
 /// The client name the watcher's requests are logged under.
-const WATCHER: &str = "waharoa-watch";
+const WATCHER: &str = "byrle-watch";
 
 /// What one pass of the watcher did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -2800,7 +2796,7 @@ impl Proxy {
             let metadata = match fetched {
                 Ok(metadata) => metadata,
                 Err(e) => {
-                    warn!(waharoa.package.purl = %key, error.message = %e, "watcher: could not read metadata");
+                    warn!(byrle.package.purl = %key, error.message = %e, "watcher: could not read metadata");
                     continue;
                 }
             };
@@ -2821,9 +2817,9 @@ impl Proxy {
             }
         }
         info!(
-            waharoa.watch.packages = watched.packages,
-            waharoa.watch.new_versions = watched.new_versions,
-            waharoa.watch.started = watched.started,
+            byrle.watch.packages = watched.packages,
+            byrle.watch.new_versions = watched.new_versions,
+            byrle.watch.started = watched.started,
             "watcher pass"
         );
         watched
@@ -2898,10 +2894,10 @@ impl Proxy {
 pub const TRAFFIC_WINDOW: std::time::Duration = std::time::Duration::from_secs(600);
 
 /// The header naming which not-ready case a 503 is, since the status does not.
-pub const NOT_READY: header::HeaderName = header::HeaderName::from_static("x-waharoa-not-ready");
+pub const NOT_READY: header::HeaderName = header::HeaderName::from_static("x-byrle-not-ready");
 
 /// The digest of the artifact a 503 is waiting on, as its log lines carry it.
-pub const DEFERRED_DIGEST: header::HeaderName = header::HeaderName::from_static("x-waharoa-digest");
+pub const DEFERRED_DIGEST: header::HeaderName = header::HeaderName::from_static("x-byrle-digest");
 
 /// Why a request is not decided on yet. [`NotReady::response`] is what the client is sent.
 enum NotReady {
@@ -2914,7 +2910,7 @@ enum NotReady {
 }
 
 impl NotReady {
-    /// What a log and the `x-waharoa-not-ready` header call this case.
+    /// What a log and the `x-byrle-not-ready` header call this case.
     fn reason(&self) -> &'static str {
         match self {
             Self::Unanswered => "intel-store",
@@ -2928,15 +2924,14 @@ impl NotReady {
     fn response(self) -> Response {
         let body = match &self {
             Self::Unanswered => {
-                "waharoa: the intel store cannot answer, so nothing is served unchecked\n"
-                    .to_owned()
+                "byrle: the intel store cannot answer, so nothing is served unchecked\n".to_owned()
             }
             Self::Uncovered(ecosystem) => format!(
-                "waharoa: the intel snapshot has no advisory stream for {ecosystem}, so no \
+                "byrle: the intel snapshot has no advisory stream for {ecosystem}, so no \
                  {ecosystem} package is served unchecked\n"
             ),
             Self::Analysing { purl, digest } => format!(
-                "waharoa: {purl}, {digest}, has not been analysed yet; the analysis has \
+                "byrle: {purl}, {digest}, has not been analysed yet; the analysis has \
                  started, ask again shortly\n"
             ),
         };
@@ -3009,7 +3004,7 @@ async fn intel_for(
                     return Ok(Some(found));
                 }
                 for gap in &gaps {
-                    error!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), waharoa.intel.snapshot = %snapshot.digest, waharoa.intel.gap = %gap, "the intel snapshot has a gap for this ecosystem; answering 503");
+                    error!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.intel.snapshot = %snapshot.digest, byrle.intel.gap = %gap, "the intel snapshot has a gap for this ecosystem; answering 503");
                 }
                 return Err(NotReady::Uncovered(ecosystem));
             }
@@ -3021,7 +3016,7 @@ async fn intel_for(
     };
     error!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-        waharoa.reason = %why,
+        byrle.reason = %why,
         "intel store cannot answer; answering 503 rather than serving unchecked"
     );
     Err(NotReady::Unanswered)
@@ -3100,8 +3095,8 @@ fn policy_refused_versions(
         if !refused.is_empty() {
             warn!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                waharoa.package.versions = refused.len(),
-                waharoa.policy.checks = ?checks,
+                byrle.package.versions = refused.len(),
+                byrle.policy.checks = ?checks,
                 "observe: the policy refuses these versions; left in the document"
             );
         }
@@ -3110,7 +3105,7 @@ fn policy_refused_versions(
     if refused.len() == metadata.records.len() && !refused.is_empty() {
         warn!(
             url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-            waharoa.package.versions = refused.len(),
+            byrle.package.versions = refused.len(),
             "policy refuses every version of this package, so nothing is left to resolve to"
         );
     }
@@ -3505,7 +3500,7 @@ mod tests {
         let first = client.get(format!("{base}/lodash")).send().await.unwrap();
         assert_eq!(first.status(), StatusCode::OK);
         let issued = first.headers()[header::ETAG].to_str().unwrap().to_owned();
-        assert!(issued.contains("waharoa."), "not marked: {issued}");
+        assert!(issued.contains("byrle."), "not marked: {issued}");
 
         let second = client
             .get(format!("{base}/lodash"))
@@ -4014,7 +4009,7 @@ mod tests {
             "{warned}"
         );
         assert!(
-            warned.contains("waharoa.package.undated_versions=1"),
+            warned.contains("byrle.package.undated_versions=1"),
             "{warned}"
         );
         assert!(
@@ -4968,7 +4963,7 @@ mod tests {
             .with_origin_policy([], ["https://cdn.example"])
             .unwrap()
             .health();
-        assert_eq!(health.service, "waharoa");
+        assert_eq!(health.service, "byrle");
         assert_eq!(
             health.public_base.as_deref(),
             Some("https://npm.corp.example")
@@ -6364,7 +6359,7 @@ mod tests {
         )
         .await;
 
-        for path in ["/-/v1/search?text=lodash", "/-/whoami", "/-/waharoa/other"] {
+        for path in ["/-/v1/search?text=lodash", "/-/whoami", "/-/byrle/other"] {
             let response = reqwest::get(format!("{base}{path}")).await.unwrap();
             assert_eq!(response.status(), 200, "{path}");
         }
@@ -6835,13 +6830,13 @@ mod tests {
             .collect();
         assert_eq!(returns.len(), 1, "{log}");
         assert!(
-            returns[0].contains("waharoa.deferral.count=2"),
+            returns[0].contains("byrle.deferral.count=2"),
             "{}",
             returns[0]
         );
         assert!(returns[0].contains(&digest), "{}", returns[0]);
         assert!(
-            returns[0].contains("waharoa.deferral.after_ms="),
+            returns[0].contains("byrle.deferral.after_ms="),
             "{}",
             returns[0]
         );
@@ -7602,7 +7597,7 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(
             body,
-            "waharoa: pkg:npm/widget@2.0.0 cannot be assessed: its metadata does not list this \
+            "byrle: pkg:npm/widget@2.0.0 cannot be assessed: its metadata does not list this \
              version\n"
         );
     }
@@ -7655,7 +7650,7 @@ mod tests {
         }
         let log = logged(|| proxy.report_traffic());
         assert!(
-            log.contains("user_agent.original=pnpm") && log.contains("waharoa.traffic.documents=3"),
+            log.contains("user_agent.original=pnpm") && log.contains("byrle.traffic.documents=3"),
             "{log}"
         );
         assert!(!log.contains("user_agent.original=npm"), "{log}");
@@ -8226,7 +8221,7 @@ mod tests {
             let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
             drop(guard);
             let log = crate::util::test_support::text(&buf);
-            assert!(log.contains("waharoa.risk_score=3"), "{detail:?}: {log}");
+            assert!(log.contains("byrle.risk_score=3"), "{detail:?}: {log}");
 
             assert_eq!(
                 analyser.sources_started(),
@@ -8547,7 +8542,7 @@ mod tests {
             (label.to_owned(), doc.to_string())
         };
         let served = "fetch digest=true";
-        let refused = "403 Forbidden waharoa: pkg:npm/widget@2.0.0 is blocked by policy\n  - \
+        let refused = "403 Forbidden byrle: pkg:npm/widget@2.0.0 is blocked by policy\n  - \
                        provenance: an attestation failed verification: it publishes no strong \
                        digest to verify against\n";
         let cases = [

@@ -63,18 +63,18 @@ pub fn read_index(
             };
             info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                waharoa.package.files = project.files.len(),
-                waharoa.package.versions = versions,
-                waharoa.package.artifacts = artifacts,
-                waharoa.package.skipped_versions = skipped,
-                waharoa.package.sdist_only_versions = sdist_only,
+                byrle.package.files = project.files.len(),
+                byrle.package.versions = versions,
+                byrle.package.artifacts = artifacts,
+                byrle.package.skipped_versions = skipped,
+                byrle.package.sdist_only_versions = sdist_only,
                 provenance_files_listed = project
                     .files
                     .iter()
                     .filter(|file| file.provenance.is_some())
                     .count(),
-                waharoa.store.packages = held_packages,
-                waharoa.store.records = held_records,
+                byrle.store.packages = held_packages,
+                byrle.store.records = held_records,
                 "simple index normalized"
             );
             Some(Box::new(metadata))

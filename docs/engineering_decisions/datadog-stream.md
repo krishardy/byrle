@@ -1,7 +1,7 @@
 # Datadog's npm manifest is a malware source of its own
 
 - **Status:** Implemented. `src/intel/providers/datadog.rs`, `range::stored`, `intel::capabilities_of`,
-  `waharoa refresh`.
+  `byrle refresh`.
 - **Related:** [advisory-stream-licences](advisory-stream-licences.md),
   [kev-stream](kev-stream.md),
   [nvd-role-and-stream-capabilities](nvd-role-and-stream-capabilities.md),
@@ -9,7 +9,7 @@
 
 ## Decision
 
-`waharoa refresh` fetches Datadog's npm manifest after the KEV catalogue and stores every
+`byrle refresh` fetches Datadog's npm manifest after the KEV catalogue and stores every
 entry as source `datadog`. Each package is one `advisory` row, `publisher_id`
 `DATADOG-npm-<name>`, `malware` true, with no score, summary or aliases:
 
@@ -29,7 +29,7 @@ The dataset is Apache-2.0. What it adds to OSV was measured before loading it, i
 
 | Question | Chosen |
 |---|---|
-| Datadog flags every version, OSV lists specific versions | both stored, and `waharoa refresh` prints each such package |
+| Datadog flags every version, OSV lists specific versions | both stored, and `byrle refresh` prints each such package |
 | Both flag the same versions | both stored |
 | Record id | `DATADOG-npm-<name>`, one record per package |
 
@@ -66,12 +66,12 @@ at every version and `osv/pypi` flags only at some.
 `datadog::disagreements` gives each package Datadog flags at every version that has OSV
 malware records, none of them at every version. A listed version and a range both count as
 some. A record that is not malware, such as a `GHSA-` vulnerability, is not compared: it says
-nothing about which versions are malicious. After the load, `waharoa refresh` prints one line
+nothing about which versions are malicious. After the load, `byrle refresh` prints one line
 per package, then the count. Nothing is printed when the manifest was not read.
 
 ## Evidence
 
-`waharoa refresh` into an empty Postgres 17, 2026-09-15, manifest sha256
+`byrle refresh` into an empty Postgres 17, 2026-09-15, manifest sha256
 `6e7101a3…bb5d` (commit `8fff54014596`):
 
 ```text
@@ -106,27 +106,27 @@ packages measured before loading:
 With `examples/policy.yaml`:
 
 ```text
-$ waharoa explain pkg:npm/vant@2.13.3
+$ byrle explain pkg:npm/vant@2.13.3
   known_malware    FAIL block        reported as malware; this has no exception
   install_scripts  FAIL block        declares an install script
   verdict: block
 
-$ waharoa explain pkg:npm/vant@2.13.2
+$ byrle explain pkg:npm/vant@2.13.2
   verdict: allow
 
-$ waharoa explain pkg:npm/%40lottiefiles/lottie-player@2.0.4
+$ byrle explain pkg:npm/%40lottiefiles/lottie-player@2.0.4
   known_malware    FAIL block        reported as malware; this has no exception
   verdict: block
 ```
 
 OSV has no record for vant 2.13.3, and lists lottie-player 2.0.5 to 2.0.7, not 2.0.4.
-`waharoa refresh` peaked at 612 MB resident, sampled from `/proc/<pid>/status` `VmHWM`.
+`byrle refresh` peaked at 612 MB resident, sampled from `/proc/<pid>/status` `VmHWM`.
 
 A second refresh with `HTTPS_PROXY` at a closed port and OSV's and CISA's hosts in
 `NO_PROXY`, so only the manifest fetch fails:
 
 ```text
-waharoa refresh: datadog/npm is not loaded, and its last load stays: fetching https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json: error sending request for url (...)
+byrle refresh: datadog/npm is not loaded, and its last load stays: fetching https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json: error sending request for url (...)
 advisories written                 228289
 exploited CVE ids written            1710
 snapshot sha256:7796cc91f979b1af1704f75e3889320de0c2bd2642cd0f1a24faf2398ba53cb4

@@ -9,7 +9,7 @@
 
 ## Decision
 
-With a policy and `WAHAROA_DATABASE_URL` both set, every decision the proxy makes consults
+With a policy and `BYRLE_DATABASE_URL` both set, every decision the proxy makes consults
 the intel store:
 
 | Store | Proxy answers | `known_malware`, `kev`, `max_cvss` |
@@ -22,9 +22,9 @@ the intel store:
 
 With no policy nothing is enforced and the store is not asked.
 
-`waharoa explain` exits 1 and `waharoa policy diff` exits 4 when a configured store cannot
+`byrle explain` exits 1 and `byrle policy diff` exits 4 when a configured store cannot
 answer, rather than print a verdict reached without it. The proxy refuses to start when
-`WAHAROA_DATABASE_URL` is set and the connection or migration fails.
+`BYRLE_DATABASE_URL` is set and the connection or migration fails.
 
 ## Fail closed, with 503
 
@@ -75,7 +75,7 @@ are two signals, so the key is the stream and the id.
 
 ## Evidence
 
-Live, 2026-09-13. Store loaded by `waharoa refresh`, proxy with `version: 1` and
+Live, 2026-09-13. Store loaded by `byrle refresh`, proxy with `version: 1` and
 `cooldown_days: 0`, upstream `registry.npmjs.org`:
 
 | Request | Result |
@@ -92,7 +92,7 @@ The audit log line for the pinned refusal:
 {"path":"pinned","ecosystem":"npm","name":"--hiljson","version":"0.0.1-security","action":"block","checks":["known_malware"],"intel_snapshot":"sha256:cf3822e6036d97297ed303a25fd3330eab20d13671495aea49b5c435f0c3392f"}
 ```
 
-`waharoa explain pkg:npm/--hiljson@0.0.1-security`:
+`byrle explain pkg:npm/--hiljson@0.0.1-security`:
 
 ```
   known_malware    FAIL block        reported as malware; this has no exception

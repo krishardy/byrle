@@ -21,7 +21,7 @@ version's publish date and the wait that applied, which is the package entry's
 `cooldown_days` where one set it:
 
 ```
-waharoa: pkg:npm/lodash@4.17.21 is held by policy
+byrle: pkg:npm/lodash@4.17.21 is held by policy
   - cooldown_days: published too recently, installable on 2026-10-12
 ```
 
@@ -38,14 +38,14 @@ The client resolves against a document this proxy changed, so the response carry
 what went:
 
 ```
-x-waharoa-filtered-versions: 1
-x-waharoa-filtered-checks: denials
+x-byrle-filtered-versions: 1
+x-byrle-filtered-checks: denials
 ```
 
 Both are absent when the policy removed nothing. An absent header is a document the policy
 left alone, not one nobody looked at: whether this proxy inspects at all is what
-`/-/waharoa/health` answers. The same removal is a `resolution` event in the audit log,
-with the versions by name, and `waharoa explain` gives the per-check reasons.
+`/-/byrle/health` answers. The same removal is a `resolution` event in the audit log,
+with the versions by name, and `byrle explain` gives the per-check reasons.
 
 ## See also
 

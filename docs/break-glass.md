@@ -30,7 +30,7 @@ Rewriting the lockfile, for yarn 1 and bun, with the proxy's address as the lock
 records it:
 
 ```
-sed -i 's#https://waharoa.example.com/#https://registry.npmjs.org/#g' yarn.lock
+sed -i 's#https://byrle.example.com/#https://registry.npmjs.org/#g' yarn.lock
 ```
 
 The lockfile's integrity hash still checks the bytes: yarn 1's `#sha1` fragment and bun's
@@ -48,23 +48,23 @@ in flight are not dropped.
 1. Add a `packages` entry for the package, with a `reason` and an `expires` date, or
    `permanent: true`. Its `set` names the check to release, such as
    `install_scripts: allow`. A `denials` entry is removed instead.
-2. Check the file: `waharoa policy check <file>`. It exits 1 if the proxy would refuse it.
+2. Check the file: `byrle policy check <file>`. It exits 1 if the proxy would refuse it.
 3. Send the proxy `SIGHUP`: `kill -HUP <pid>`.
 
 The proxy loads the file as it does at startup, and logs one of:
 
 ```
 INFO policy reloaded from=sha256:2dc2… to=sha256:a797…
-ERROR policy not reloaded keeping=sha256:a797… why=WAHAROA_POLICY: policy version 9 is not supported; this build understands version 1
+ERROR policy not reloaded keeping=sha256:a797… why=BYRLE_POLICY: policy version 9 is not supported; this build understands version 1
 ```
 
 A file that does not load leaves the policy in force as it was. A request already being
 decided finishes on the policy it started with.
 
 Each pinned audit line names the digest of the policy it was decided under. To replay a
-log that spans a reload, pass both files: `waharoa audit verify <log> --policy old.yaml
+log that spans a reload, pass both files: `byrle audit verify <log> --policy old.yaml
 --policy new.yaml`.
 
-`WAHAROA_MODE=observe` serves everything the policy refuses, for the whole proxy. It is
+`BYRLE_MODE=observe` serves everything the policy refuses, for the whole proxy. It is
 read at startup, so switching to it needs a restart. It never serves what the proxy cannot
 assess: see [request-flow](request-flow.md).
