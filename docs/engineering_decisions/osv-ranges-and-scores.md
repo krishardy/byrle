@@ -11,7 +11,7 @@
 
 ## Decision
 
-`waharoa refresh` loads OSV's npm `GHSA-` records beside its `MAL-` records. Version ranges are
+`byrle refresh` loads OSV's npm `GHSA-` records beside its `MAL-` records. Version ranges are
 stored as intervals and evaluated when a package is looked up. Each record is scored from its
 CVSS vector into `advisory.cvss`. With a store configured, `max_cvss` is enforced and `kev` is
 reported unenforced.
@@ -135,21 +135,21 @@ catalogue.
 
 The band is stored in `advisory.severity_band` (migration 0005) and carried to `explain`,
 which prints `GHSA-... 8.9 from band HIGH`. The rows encoding carries it as a seventh
-`advisory` column, so the format line is `waharoa intel rows 2`, and a kept rows file written
-as `rows 1` is refused. Nothing had been deployed. `waharoa refresh` counts band-scored records
+`advisory` column, so the format line is `byrle intel rows 2`, and a kept rows file written
+as `rows 1` is refused. Nothing had been deployed. `byrle refresh` counts band-scored records
 on a line of its own, `scored from a severity band`, already inside `scored`.
 
 Live, 2026-09-15, into an empty Postgres 17 with `examples/policy.yaml` (`max_cvss: 6.9`). Stored,
 by band: `LOW` 80 at 3.9, `MODERATE` 152 at 6.9, `HIGH` 338 at 8.9, `CRITICAL` 119 at 10. Then:
 
 ```text
-$ waharoa explain pkg:npm/faker@6.6.6
+$ byrle explain pkg:npm/faker@6.6.6
   max_cvss         FAIL block        over max_cvss 6.9: GHSA-5w9c-rv96-fr7g 8.9 from band HIGH
 
-$ waharoa explain pkg:npm/ws@1.1.0
+$ byrle explain pkg:npm/ws@1.1.0
   max_cvss         FAIL block        over max_cvss 6.9: GHSA-5v72-xg48-5rpm 7.5, GHSA-6663-c963-2gqg 8.9 from band HIGH, GHSA-96hv-2xvq-fx4p 7.5
 
-$ waharoa explain pkg:npm/ws@1.1.1
+$ byrle explain pkg:npm/ws@1.1.1
   max_cvss         FAIL block        over max_cvss 6.9: GHSA-5v72-xg48-5rpm 7.5, GHSA-96hv-2xvq-fx4p 7.5
 ```
 
@@ -197,7 +197,7 @@ advisory_scores:
 
 A `vuln_advisory_ids` exception excuses an unscored advisory as it excuses a scored one. `kev`
 reads an unscored advisory. Before this change an unscored advisory was left out of
-`advisories`, so `kev` never read it. `waharoa policy check` lists permanent entries under
+`advisories`, so `kev` never read it. `byrle policy check` lists permanent entries under
 `permanent`, and `explain --policy` lists every entry.
 
 An entry has no selector and sets no `Rule`, so `packages::findings` does not compare it and
@@ -207,7 +207,7 @@ Live, 2026-09-15: a refresh into an empty Postgres 17, then the stored score of
 `GHSA-5w9c-rv96-fr7g` cleared, so the one advisory against `faker@6.6.6` is unscored. The
 policy is `max_cvss: 6.9` and `cooldown_days: 0`.
 
-| `advisory_scores` | `max_cvss` line of `waharoa explain pkg:npm/faker@6.6.6` | verdict |
+| `advisory_scores` | `max_cvss` line of `byrle explain pkg:npm/faker@6.6.6` | verdict |
 |---|---|---|
 | none | `FAIL block over max_cvss 6.9 or unscored: GHSA-5w9c-rv96-fr7g unscored` | block |
 | cvss 5.0, expires 2026-10-01 | `pass` | allow |
@@ -328,7 +328,7 @@ Each mutation below was caught.
 | Range rows not copied (Postgres) | `a_version_published_into_a_range_after_the_list_was_written_is_found` |
 | Aliases not read back (Postgres) | `a_vulnerability_record_loads_with_its_score_and_aliases` |
 
-Live, 2026-09-13, debug build. `waharoa refresh` into Postgres 17 wrote 228,245 advisories,
+Live, 2026-09-13, debug build. `byrle refresh` into Postgres 17 wrote 228,245 advisories,
 37,951 aliases, 233,239 affected rows and 10,326 ranges in 46.9s. Policy `version: 1`,
 `cooldown_days: 0`, `max_cvss: 7.0`, upstream `registry.npmjs.org`:
 
@@ -338,7 +338,7 @@ Live, 2026-09-13, debug build. `waharoa refresh` into Postgres 17 wrote 228,245 
 | tarball `lodash/-/lodash-4.17.21.tgz` | 403, `max_cvss: block` |
 | tarball `--hiljson/-/--hiljson-0.0.1-security.tgz` | 403, `known_malware: reported as malware` |
 
-`waharoa explain pkg:npm/lodash@4.17.21`:
+`byrle explain pkg:npm/lodash@4.17.21`:
 
 ```
   kev              unenforced        no exploitation stream is loaded, so no advisory is marked exploited

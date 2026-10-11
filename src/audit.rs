@@ -77,7 +77,7 @@ pub struct Event {
     /// What the request was answered. Pinned events only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answered: Option<Answered>,
-    /// Everything the engine read, so `waharoa audit verify` can decide again. Pinned only.
+    /// Everything the engine read, so `byrle audit verify` can decide again. Pinned only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inputs: Option<Inputs>,
     /// The signals the detectors reported, which no verdict uses. Pinned events only.
@@ -466,7 +466,7 @@ pub const NOT_REPLAYABLE: u8 = 2;
 /// Exit code, on its own: a policy or the log does not read.
 pub const UNREAD: u8 = 4;
 
-/// What `waharoa audit verify` prints, and its exit code.
+/// What `byrle audit verify` prints, and its exit code.
 #[derive(Debug, PartialEq)]
 pub struct Verified {
     /// For stderr: why nothing was replayed.
@@ -476,7 +476,7 @@ pub struct Verified {
     pub code: u8,
 }
 
-/// `waharoa audit verify`: load `policies`, then [`replay`] the log at `log`.
+/// `byrle audit verify`: load `policies`, then [`replay`] the log at `log`.
 pub fn verify(log: &std::path::Path, policies: &[std::path::PathBuf]) -> Verified {
     let unread = |note: String| Verified {
         notes: vec![note],
@@ -674,7 +674,7 @@ impl AuditLog {
     fn warn_once(&self, message: &str) {
         if !self.warned.swap(true, Ordering::Relaxed) {
             warn!(
-                waharoa.reason = message,
+                byrle.reason = message,
                 "the audit log is incomplete from here on"
             );
         }

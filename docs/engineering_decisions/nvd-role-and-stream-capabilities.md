@@ -34,7 +34,7 @@ one rule nobody can override, which is a higher trust bar than reporting a vulne
   `max_cvss`. Accepted: enrichment would be decorative otherwise. It can only escalate
   within an existing finding, never originate one.
 - Coverage gaps become computable: an enabled ecosystem with no `match`-capable stream
-  is a firewall that cannot block anything. Startup warning plus a `waharoa doctor`
+  is a firewall that cannot block anything. Startup warning plus a `byrle doctor`
   check.
 - The capability is enforced by types. `intel::Finding` and `intel::Enrichment` are
   different types with no conversion, and `EnrichStream` is asked about an advisory, with
@@ -67,7 +67,7 @@ capabilities itself, keyed by the name a snapshot records the stream under
 `LoadedSnapshot::gaps` gives each served ecosystem (each row of `ecosystem::TABLE`: npm and
 PyPI) that no stream in
 the snapshot provides `match` for, then each that no stream provides `malware` for. The proxy
-warns once per gap at startup, for the snapshot loaded then, and `waharoa doctor` reports a gap
+warns once per gap at startup, for the snapshot loaded then, and `byrle doctor` reports a gap
 in the snapshot `/ready` returns as a warning.
 
 ### Asked of the user, 2026-09-15
@@ -79,5 +79,5 @@ in the snapshot `/ready` returns as a warning.
 `known_malware` is the one check with no exception, and it never fires without a `malware`
 stream. `osv/npm` provides both for npm, so neither gap is reported today.
 
-No refresh writes a snapshot with a gap today: `waharoa refresh` loads nothing when OSV does
+No refresh writes a snapshot with a gap today: `byrle refresh` loads nothing when OSV does
 not load. The check is for an ecosystem added without a stream, such as PyPI in Stage 3.

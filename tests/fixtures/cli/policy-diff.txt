@@ -1,6 +1,6 @@
 Compare two policies over the audit log's and lockfiles' packages. The exit code is the OR of 1 for a loosening, 2 for a tightening, and 4 on its own for an error
 
-Usage: waharoa policy diff [OPTIONS] <FROM> <TO>
+Usage: byrle policy diff [OPTIONS] <FROM> <TO>
 
 Arguments:
   <FROM>  The policy in force

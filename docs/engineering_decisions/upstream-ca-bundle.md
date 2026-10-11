@@ -9,13 +9,13 @@
 reqwest 0.13's default `rustls` feature pulls `rustls-platform-verifier`, so the upstream
 connection validates against the OS trust store with no configuration. That misses a
 private registry with an internal CA, and a corporate TLS-inspecting middlebox whose
-certificate the OS store may not carry. `WAHAROA_CA_BUNDLE` names a PEM bundle, trusted in
+certificate the OS store may not carry. `BYRLE_CA_BUNDLE` names a PEM bundle, trusted in
 one of two modes:
 
 | Mode | Trusted | Chosen by |
 |---|---|---|
 | Merge | the bundle and the platform's roots | the default |
-| Exclusive | only the bundle | `WAHAROA_CA_BUNDLE_EXCLUSIVE=1` |
+| Exclusive | only the bundle | `BYRLE_CA_BUNDLE_EXCLUSIVE=1` |
 
 Exclusive pins the upstream to a known CA, so a compromise of any public CA cannot be used to
 impersonate the registry. Verified with a self-signed CA against `registry.npmjs.org`:

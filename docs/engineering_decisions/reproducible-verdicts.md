@@ -1,8 +1,8 @@
-# A pinned verdict records its inputs, and `waharoa audit verify` decides it again
+# A pinned verdict records its inputs, and `byrle audit verify` decides it again
 
 - **Status:** Implemented 2026-09-27. `audit::Inputs`, `audit::RecordedFacts`,
   `audit::replay`, `enforce::unenforceable_of`, `Policy::digest`, and
-  `waharoa audit verify`.
+  `byrle audit verify`.
 - **Related:** [snapshot-identity](snapshot-identity.md),
   [intel-in-decisions](intel-in-decisions.md),
   [artifact-analysis-store](artifact-analysis-store.md),
@@ -12,17 +12,17 @@
 
 The Stage 5 item reads "same policy + same intel snapshot = same result". It is built as
 record and replay. Each pinned line of the audit log carries every input the engine read.
-`waharoa audit verify <LOG> --policy <PATH>...` decides each pinned line again from those
+`byrle audit verify <LOG> --policy <PATH>...` decides each pinned line again from those
 inputs and reports any line that decides differently.
 
 ```
-$ waharoa audit verify audit.jsonl --policy policy.yaml
+$ byrle audit verify audit.jsonl --policy policy.yaml
 line 1: not replayable: written before inputs were recorded
 line 7: differs: pkg:npm/widget@2.0.0: action allow now block
 5 reproduced, 1 differ, 1 not replayable
 ```
 
-The exit code uses the bits of `waharoa policy diff`:
+The exit code uses the bits of `byrle policy diff`:
 
 | Code | Meaning |
 |---|---|

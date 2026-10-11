@@ -1,10 +1,10 @@
 Why a package is allowed or refused
 
-Usage: waharoa explain <--policy|PURL>
+Usage: byrle explain <--policy|PURL>
 
 Arguments:
   [PURL]  One package version, for example pkg:npm/lodash@4.17.21
 
 Options:
-      --policy  The policy in WAHAROA_POLICY as loaded, and which checks can fire
+      --policy  The policy in BYRLE_POLICY as loaded, and which checks can fire
   -h, --help    Print help

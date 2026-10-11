@@ -1,4 +1,4 @@
-# `waharoa lockfile verify` checks a lockfile installs through the proxy
+# `byrle lockfile verify` checks a lockfile installs through the proxy
 
 - **Status:** Implemented 2026-10-01. `src/lockfile/verify.rs`, the `urls` reader of each
   `LOCKFILES` entry.
@@ -7,10 +7,10 @@
 
 ## Decision
 
-A CI job runs `waharoa lockfile verify --lockfile <path> --proxy <url>` to catch an install
+A CI job runs `byrle lockfile verify --lockfile <path> --proxy <url>` to catch an install
 that went around the proxy: a lockfile resolved against the public registry, committed, and
 installed from there on every machine that uses it. `--proxy` defaults to
-`WAHAROA_PUBLIC_URL`. A CI job has no listen address of its own to fall back on.
+`BYRLE_PUBLIC_URL`. A CI job has no listen address of its own to fall back on.
 
 Each artifact the lockfile locks is parsed out, not matched as text, as `doctor` does, so
 every entry is checked and not only the first origin.
@@ -54,13 +54,13 @@ The [source-diff](source-diff.md) lockfiles, resolved straight from the public r
 2026-09-30:
 
 ```
-$ waharoa lockfile verify --lockfile express-eslint/package-lock.json --proxy https://registry.npmjs.org
+$ byrle lockfile verify --lockfile express-eslint/package-lock.json --proxy https://registry.npmjs.org
 express-eslint/package-lock.json: 143 artifacts, 143 through the proxy
-$ waharoa lockfile verify --lockfile express-eslint/package-lock.json --proxy http://proxy.internal:8080
+$ byrle lockfile verify --lockfile express-eslint/package-lock.json --proxy http://proxy.internal:8080
 express-eslint/package-lock.json: 143 artifacts, 0 through the proxy, 143 from elsewhere
   @cacheable/memory@2.2.0	https://registry.npmjs.org
   ...
-$ waharoa lockfile verify --lockfile requests-flask-django/uv.lock --proxy https://pypi.org/simple
+$ byrle lockfile verify --lockfile requests-flask-django/uv.lock --proxy https://pypi.org/simple
 requests-flask-django/uv.lock: 208 artifacts, 0 through the proxy, 208 from elsewhere
   asgiref@3.12.1	https://files.pythonhosted.org
   ...
@@ -71,12 +71,12 @@ member, locked by npm 11.20.0, bun 1.4.2, pnpm 9.15.9, yarn 1.22 and uv 0.12.20 
 2026-10-01 (`tests/fixtures/lockfiles/unregistered/`):
 
 ```
-$ waharoa lockfile verify --lockfile unregistered/package-lock.json --proxy https://registry.npmjs.org
+$ byrle lockfile verify --lockfile unregistered/package-lock.json --proxy https://registry.npmjs.org
 unregistered/package-lock.json: 4 artifacts, 1 through the proxy, 3 from elsewhere
   is-number@7.0.0	git+ssh://git@github.com/jonschlinkert/is-number.git#98e8ff1da1a89f93d1397a24d7413ed15421c139
   localdir@1.0.0	../localdir
   tarpkg@2.0.0	file:../tarpkg-2.0.0.tgz
-$ waharoa lockfile verify --lockfile unregistered/uv.lock --proxy https://files.pythonhosted.org
+$ byrle lockfile verify --lockfile unregistered/uv.lock --proxy https://files.pythonhosted.org
 unregistered/uv.lock: 5 artifacts, 2 through the proxy, 3 from elsewhere
   localpy@1.0.0	../localpy
   six@1.16.0	git+https://github.com/benjaminp/six?rev=1.16.0#65486e4383f9f411da95937451205d3c7b61b9e1

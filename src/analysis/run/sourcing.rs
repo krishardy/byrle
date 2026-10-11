@@ -123,7 +123,7 @@ impl Analyser {
         match self.store.sourced(digest).await {
             Ok(sourced) => sourced,
             Err(e) => {
-                warn!(waharoa.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; comparing with the source again");
+                warn!(byrle.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; comparing with the source again");
                 None
             }
         }
@@ -310,14 +310,14 @@ impl Analyser {
                 comparison,
             } => info!(
                 url.full = %job.url,
-                waharoa.source.repository = %repository,
-                waharoa.source.reference = %reference,
-                waharoa.source.differing = comparison.differing.len(),
-                waharoa.source.only_in_package = comparison.only_in_package.len(),
+                byrle.source.repository = %repository,
+                byrle.source.reference = %reference,
+                byrle.source.differing = comparison.differing.len(),
+                byrle.source.only_in_package = comparison.only_in_package.len(),
                 "source compared"
             ),
             Sourced::NotCompared(why) => {
-                info!(url.full = %job.url, waharoa.source.not_compared = %why, "source not compared");
+                info!(url.full = %job.url, byrle.source.not_compared = %why, "source not compared");
             }
         }
     }

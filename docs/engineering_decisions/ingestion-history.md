@@ -1,16 +1,16 @@
 # Ingestion history: a row per stream per refresh, appended
 
 - **Status:** Implemented. `migrations/0004_ingestion.sql`, `src/intel/history.rs`,
-  `PgIntel::replace`, `PgIntel::record_not_loaded`, `PgIntel::history`, `waharoa refresh`,
-  `waharoa intel history`.
+  `PgIntel::replace`, `PgIntel::record_not_loaded`, `PgIntel::history`, `byrle refresh`,
+  `byrle intel history`.
 - **Related:** [snapshot-identity](snapshot-identity.md), [kev-stream](kev-stream.md),
   [datadog-stream](datadog-stream.md),
   [intel-schema-keys-and-types](intel-schema-keys-and-types.md)
 
 ## Decision
 
-Every `waharoa refresh` that fetches appends one `intel_ingestion` row per stream it loaded or
-did not. No row is updated or deleted, and nothing prunes the table. `waharoa intel history`
+Every `byrle refresh` that fetches appends one `intel_ingestion` row per stream it loaded or
+did not. No row is updated or deleted, and nothing prunes the table. `byrle intel history`
 prints the newest rows first, 20 unless `--limit` says otherwise.
 
 Before this, which feed was ingested when, and from which bundle, could not be read back:
@@ -19,14 +19,14 @@ Before this, which feed was ingested when, and from which bundle, could not be r
 |---|---|
 | `intel_source` | each source's latest rows digest and streams |
 | `intel_snapshot` | one row per distinct snapshot; loading the same rows again overwrites `taken_at` |
-| kept snapshot files | the newest `WAHAROA_SNAPSHOT_LIMIT` |
+| kept snapshot files | the newest `BYRLE_SNAPSHOT_LIMIT` |
 
 ## Asked of the user, 2026-09-15
 
 | Question | Chosen |
 |---|---|
 | Where the history is written | a Postgres table, beside the intel |
-| How it is read back | `waharoa intel history` |
+| How it is read back | `byrle intel history` |
 
 ## A row
 
@@ -53,14 +53,14 @@ and none has a bound.
 | KEV or Datadog is not fetched or read | the streams that loaded, and the one that did not with its error and the snapshot its last load stays in | the load's |
 | OSV is not fetched or read | OSV, with its error | its own |
 | a kept rows file is not written, or the load fails | every stream, with the error | its own |
-| `WAHAROA_DATABASE_URL` unset, Postgres unreachable, the snapshot directory or HTTP client fails | none | |
+| `BYRLE_DATABASE_URL` unset, Postgres unreachable, the snapshot directory or HTTP client fails | none | |
 
 A stream that loaded is recorded in the load's transaction, so a load that rolls back leaves no
 row saying it loaded. A refresh that loaded nothing records in a transaction of its own after
 the failure; when that fails too, refresh prints `the ingestion history is not written` and
 still exits 1.
 
-`waharoa refresh` now connects to Postgres and migrates before fetching. Before, it fetched and
+`byrle refresh` now connects to Postgres and migrates before fetching. Before, it fetched and
 read OSV's bundle first, so a refresh with Postgres down failed after downloading it.
 
 Rows of one refresh share `taken_at`, and `intel history` orders by `id`, so they print
@@ -75,7 +75,7 @@ failed.
 
 | Command | Exit | Snapshot |
 |---|---|---|
-| `intel history`, `WAHAROA_DATABASE_URL` unset | 2, `set WAHAROA_DATABASE_URL to the intel store's Postgres` | |
+| `intel history`, `BYRLE_DATABASE_URL` unset | 2, `set BYRLE_DATABASE_URL to the intel store's Postgres` | |
 | `intel history` | 0, `no ingestion recorded` | |
 | `refresh` | 0 | `sha256:83818356…c900` |
 | `refresh`, Datadog fails | 1 | `sha256:83818356…c900` |
@@ -114,7 +114,7 @@ failed.
 The first refresh's three rows follow, all `loaded` with the same snapshot. Datadog's has no
 `last-modified`: raw.githubusercontent.com sent none.
 
-Those refreshes ran with no `WAHAROA_SNAPSHOT_DIR`. `run_refresh` now writes kept rows files
+Those refreshes ran with no `BYRLE_SNAPSHOT_DIR`. `run_refresh` now writes kept rows files
 after connecting, from the loads it builds, so a refresh with the directory set was run too: it
 wrote the 3 rows files and `83818356…c900.snapshot`, the same set as before this change.
 
@@ -129,5 +129,5 @@ wrote the 3 rows files and `83818356…c900.snapshot`, the same set as before th
 which has no unit tests: `main`, `run_intel_history`, `run_refresh` and `nothing_loaded`
 returning a default exit code, and `optional` returning `None`. The runs above exit 0, 1 and 2.
 The other 3 are `record`, `record_not_loaded` and `history` in `postgres.rs`, which `make
-mutants` tests without a database. With `WAHAROA_TEST_DATABASE_URL` set, `cargo mutants --file
+mutants` tests without a database. With `BYRLE_TEST_DATABASE_URL` set, `cargo mutants --file
 src/intel/postgres.rs` over those three gave 4 mutants, 3 caught and 1 unviable.

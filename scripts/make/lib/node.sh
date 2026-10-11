@@ -16,7 +16,7 @@
 # Does nothing when nvm is not installed, which leaves the PATH as it was.
 
 # Locate nvm without requiring NVM_DIR to be exported into a non-interactive shell.
-waharoa_nvm_dir() {
+byrle_nvm_dir() {
     local candidate
     for candidate in "${NVM_DIR:-}" "$HOME/.nvm" "$HOME/.config/nvm"; do
         if [[ -n "$candidate" && -f "$candidate/nvm.sh" ]]; then
@@ -28,13 +28,13 @@ waharoa_nvm_dir() {
 }
 
 # Prepend the latest stable node's bin directory to PATH, and describe the choice in
-# WAHAROA_NODE. Leaves both untouched when there is no nvm.
+# BYRLE_NODE. Leaves both untouched when there is no nvm.
 #
 # It sets a variable rather than printing, because a caller capturing the output with
 # `$(...)` would run this in a subshell and the new PATH would die with it.
-waharoa_use_latest_node() {
+byrle_use_latest_node() {
     local dir version bin
-    dir="$(waharoa_nvm_dir)" || return 0
+    dir="$(byrle_nvm_dir)" || return 0
 
     # nvm.sh is written for interactive shells and reads unset variables, so `set -u` has
     # to come off while it loads. The subshell keeps that from leaking.
@@ -53,5 +53,5 @@ waharoa_use_latest_node() {
     export PATH
     # Exported because the callers that source this read it, and shellcheck cannot see
     # across the source boundary.
-    export WAHAROA_NODE="node $version, the latest stable nvm has installed"
+    export BYRLE_NODE="node $version, the latest stable nvm has installed"
 }

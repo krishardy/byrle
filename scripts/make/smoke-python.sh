@@ -22,7 +22,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/make/lib/python.sh
 . "$repo_root/scripts/make/lib/python.sh"
 
-port="${WAHAROA_PORT:-8734}"
+port="${BYRLE_PORT:-8734}"
 index="http://127.0.0.1:${port}/simple/"
 workdir="$(mktemp -d)"
 log="$workdir/proxy.log"
@@ -38,7 +38,7 @@ trap cleanup EXIT
 command -v python3 >/dev/null || { echo "python3 is required for this check"; exit 1; }
 
 if ss -ltn 2>/dev/null | grep -q ":${port} "; then
-    echo "port ${port} is already in use; set WAHAROA_PORT to something free"
+    echo "port ${port} is already in use; set BYRLE_PORT to something free"
     exit 1
 fi
 
@@ -48,13 +48,13 @@ fail() { echo "FAIL: $*"; echo "--- proxy log ---"; cat "$log"; exit 1; }
 # so without a public base the files are fetched from files.pythonhosted.org and nothing
 # about them is observed.
 start_proxy() {
-    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" \
-    WAHAROA_PUBLIC_URL="http://127.0.0.1:${port}" \
-    WAHAROA_POLICY="${1:-}" \
+    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
+    BYRLE_PUBLIC_URL="http://127.0.0.1:${port}" \
+    BYRLE_POLICY="${1:-}" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
-        grep -q "waharoa listening" "$log" && return 0
+        grep -q "byrle listening" "$log" && return 0
         kill -0 "$proxy_pid" 2>/dev/null || fail "proxy exited during startup"
         sleep 1
     done
@@ -74,7 +74,7 @@ count() { grep -c "$1" "$clean_log" || true; }
 pip_install() {
     local dir="$1"; shift
     local cmd
-    mapfile -t cmd < <(waharoa_pip_command "$dir/venv" "$index" --quiet "$@")
+    mapfile -t cmd < <(byrle_pip_command "$dir/venv" "$index" --quiet "$@")
     "${cmd[@]}"
 }
 
@@ -124,7 +124,7 @@ echo "    ok ($(echo "$on_disk" | wc -l) projects, all intercepted)"
 echo "==> 3/8  every installed distribution was normalized to a PURL at the version on disk"
 expected_purls="$(installed_purls "$workdir/basic" | sort -u)"
 [[ -n "$expected_purls" ]] || fail "could not read any installed versions"
-observed_purls="$(grep -oE 'waharoa.package.claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u || true)"
+observed_purls="$(grep -oE 'byrle.package.claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u || true)"
 unnormalized="$(comm -23 <(echo "$expected_purls") <(echo "$observed_purls") || true)"
 [[ -z "$unnormalized" ]] \
     || fail "installed but never normalized to a purl: $(echo "$unnormalized" | tr '\n' ' ')"
@@ -164,9 +164,9 @@ if grep -q 'not served' "$clean_log"; then
 $(grep 'not served' "$clean_log")"
 fi
 # A rewritten index is what makes the above possible. Nothing may be left pointing away.
-if grep -qE 'simple index rewritten.*waharoa.package.left_alone_files=[1-9]' "$clean_log"; then
+if grep -qE 'simple index rewritten.*byrle.package.left_alone_files=[1-9]' "$clean_log"; then
     fail "an index kept files on an origin the proxy does not front:
-$(grep -E 'simple index rewritten.*waharoa.package.left_alone_files=[1-9]' "$clean_log")"
+$(grep -E 'simple index rewritten.*byrle.package.left_alone_files=[1-9]' "$clean_log")"
 fi
 echo "    ok ($files files, all with a known digest, all verified, none left offsite, $deferred deferred for analysis)"
 stop_proxy
@@ -221,7 +221,7 @@ else
     start_proxy ""
     mkdir -p "$workdir/uv"
     uv venv -q "$workdir/uv/venv" >/dev/null 2>&1 || fail "uv could not create a venv"
-    mapfile -t uv_cmd < <(waharoa_uv_command "$workdir/uv/venv" "$index" --quiet requests)
+    mapfile -t uv_cmd < <(byrle_uv_command "$workdir/uv/venv" "$index" --quiet requests)
     "${uv_cmd[@]}" || fail "uv pip install requests failed"
 
     clean

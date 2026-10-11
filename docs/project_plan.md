@@ -1,10 +1,9 @@
 # byrle: Open Source Dependency Firewall
 
 > **Name: `byrle`.** Decided 2026-10-01, replacing the working name `waharoa`
-> ([project-name-byrle](engineering_decisions/project-name-byrle.md)). The code, the
-> environment variables, the headers and the commands in this plan still use `waharoa`
-> until the rename item in Stage 4.5 of `TODO.md` is done. An informal cultural consultation
-> on `waharoa`, in September 2026, was not in favour of it; the result is in
+> ([project-name-byrle](engineering_decisions/project-name-byrle.md)). The code was
+> renamed 2026-10-11. An informal cultural consultation on `waharoa`, in September 2026,
+> was not in favour of it; the result is in
 > [project-name-waharoa](engineering_decisions/project-name-waharoa.md#consultation-result).
 >
 > Registry check, 2026-10-11, by exact-name lookup: crates.io, the npm registry and PyPI
@@ -184,8 +183,8 @@ Promotion is harder than demotion, especially into `malware`.
 enabled stream provides `match`, and at least one provides `malware`. An ecosystem adapter
 running with no `match`-capable stream is a firewall that structurally cannot block anything,
 and one with no `malware`-capable stream never fires `known_malware`, the check with no
-exception. Each is a startup warning plus a `waharoa doctor` check. This composes with the §4 adapter maturity tiers: adapter maturity
-and intel coverage are separate axes and both belong in `waharoa status`.
+exception. Each is a startup warning plus a `byrle doctor` check. This composes with the §4 adapter maturity tiers: adapter maturity
+and intel coverage are separate axes and both belong in `byrle status`.
 
 **Accepted consequence:** an `enrich`-capable stream returning a higher CVSS than the
 matching stream *can* change a verdict via `max_cvss`. Enrichment would be decorative
@@ -239,7 +238,7 @@ one transaction. See [osv-malware-load](engineering_decisions/osv-malware-load.m
 **Multi-instance**, which is a bigger change than the storage layer:
 
 - **Refresh coordination.** N replicas rebuilding simultaneously is wasteful and racy.
-  Needs advisory-lock leader election, or a separate `waharoa refresh` command run as a
+  Needs advisory-lock leader election, or a separate `byrle refresh` command run as a
   cron/Job with the proxies read-only.
 - **`intel_snapshot_id` must be read from the database, not computed locally**, or
   replicas silently disagree and the reproducibility guarantee breaks.
@@ -247,7 +246,7 @@ one transaction. See [osv-malware-load](engineering_decisions/osv-malware-load.m
 **Snapshot identity** is a hash over every source's stored rows, so two stores with the same
 id contain the same rows, whichever bundles they were read from. Refresh writes it to
 `intel_snapshot` and every proxy reads it from there. Postgres keeps the latest load only.
-`waharoa refresh` also keeps each snapshot as files of the rows the id hashes, which
+`byrle refresh` also keeps each snapshot as files of the rows the id hashes, which
 `policy diff --snapshot` reads and air-gapped export will read. See [snapshot-identity](engineering_decisions/snapshot-identity.md).
 
 **Cold start fails closed, with 503 — never 403.** A 403 during warming looks like a
@@ -363,7 +362,7 @@ adds protocol work rather than detection work, and malware volume in both is low
 
 **The failure mode to avoid:** five half-working proxies, none trusted enough to run
 in blocking mode. Every ecosystem carries a published maturity tier
-(`enforcing` / `observe-only` / `experimental`) in the README and in `waharoa status`.
+(`enforcing` / `observe-only` / `experimental`) in the README and in `byrle status`.
 
 ## 5. Policy configuration
 
@@ -588,11 +587,11 @@ Written as VERS in every ecosystem and ordered by each ecosystem's own version r
 
 ### Policy impact analysis
 
-`waharoa policy diff` evaluates a policy change against real packages rather than the
+`byrle policy diff` evaluates a policy change against real packages rather than the
 config in isolation.
 
 ```
-waharoa policy diff policy.yaml policy-new.yaml \
+byrle policy diff policy.yaml policy-new.yaml \
                   --lockfile package-lock.json --snapshot <intel_id>
 ```
 
@@ -631,7 +630,7 @@ byte.
 | Case | Behaviour |
 |---|---|
 | Analysed before | Decide on the analysis, then stream through, verifying the digest |
-| Not analysed, and the answer depends on it | 503 at once, with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis`; the analysis runs in the background and the retry is decided on it |
+| Not analysed, and the answer depends on it | 503 at once, with `Retry-After: 1` and `x-byrle-not-ready: artifact-analysis`; the analysis runs in the background and the retry is decided on it |
 | Not analysed, and the answer does not depend on it | Decide on the metadata and stream through; the analysis runs in the background |
 | Read by no detector (a PyPI wheel) | Stream through, decided on the metadata |
 
@@ -643,7 +642,7 @@ is verified; a mismatch is answered 502.
 | Code | Meaning |
 |---|---|
 | 502 | The upstream is unreachable, malformed, gives no metadata for the package, or serves bytes its metadata does not describe |
-| 503 | The proxy is not ready: the intel store cannot answer, or this artifact is under analysis. `x-waharoa-not-ready` names which |
+| 503 | The proxy is not ready: the intel store cannot answer, or this artifact is under analysis. `x-byrle-not-ready` names which |
 
 [request-flow](request-flow.md) charts where each of these is returned.
 
@@ -685,14 +684,14 @@ observe mode first and move to enforce on their own schedule. See
 mandatory fields. This is what stops the allowlist from quietly becoming a permanent
 bypass.
 
-**`waharoa explain` is a first-class command.** Shows the effective merged policy for an
+**`byrle explain` is a first-class command.** Shows the effective merged policy for an
 ecosystem, and the resolved verdict for a given package with the rule that fired.
 Policy engines nobody can inspect stay stuck in observe mode forever. It doubles as the
 regression test surface.
 
 **A policy repository's CI can require sign-off on weakening changes.** Schema v1 refuses
 a loosening entry with neither `expires` nor `permanent: true`, so none is unacknowledged.
-`waharoa policy diff old.yaml new.yaml` sets exit bit 1 on any loosening. `policy check
+`byrle policy diff old.yaml new.yaml` sets exit bit 1 on any loosening. `policy check
 --strict` exits 1 on an entry that changes nothing or never wins
 ([policy-check](engineering_decisions/policy-check.md)).
 
@@ -724,7 +723,7 @@ interception.
 **Known bypass vectors, stated honestly in the README:**
 
 - **Reverse proxy mode is advisory, not mandatory.** A developer who resets their
-  registry URL defeats it entirely. The mitigation is `waharoa doctor`, which verifies
+  registry URL defeats it entirely. The mitigation is `byrle doctor`, which verifies
   effective client config.
   - ⚠ **Lockfile verification now works for npm and yarn, and does not for pnpm.
     Corrected Sept 2026.** This previously read that npm normalizes `resolved` back to
@@ -746,7 +745,7 @@ interception.
   Endpoint-level coverage is out of scope for us.
 - **npm cache bypass.** npm serves from its local cache without consulting the registry,
   so a pre-existing cache silently skips enforcement. pkggate documents
-  `npm cache clean --force` as a required onboarding step; `waharoa doctor` should detect
+  `npm cache clean --force` as a required onboarding step; `byrle doctor` should detect
   and warn about this.
 
 **Explicitly out of scope:** we do not stop a determined attacker who already controls
@@ -805,23 +804,24 @@ reasoning, alternatives and consequences live in the files, not here.
 | 12 | [HTTP stack](engineering_decisions/http-stack-axum-reqwest.md) | axum + reqwest; no fetch trait in Stage 1 |
 | 14 | [Storage](engineering_decisions/storage-sqlx-postgres.md) | sqlx over Postgres, no ORM; compile-time checked SQL with a checked-in `.sqlx/` cache |
 | n/a | [sqlx version and `rsa` advisory](engineering_decisions/sqlx-0-8-and-rsa-advisory.md) | sqlx held at 0.8 until kani bundles rustc 1.94; RUSTSEC-2023-0071 ignored only while `rsa` is not compiled |
-| n/a | [OSV malware load](engineering_decisions/osv-malware-load.md) | npm `MAL-` records via `waharoa refresh`; `all.zip` read in memory; delete by source and `COPY` in one transaction |
+| n/a | [OSV malware load](engineering_decisions/osv-malware-load.md) | npm `MAL-` records via `byrle refresh`; `all.zip` read in memory; delete by source and `COPY` in one transaction |
 | n/a | [Intel in decisions](engineering_decisions/intel-in-decisions.md) | One store query per package; a store that cannot answer is a 503 |
 | n/a | [Alias matching](engineering_decisions/alias-matching.md) | an enrichment or exception naming any alias applies; records sharing aliases are not merged |
 | n/a | [KEV stream](engineering_decisions/kev-stream.md) | CISA's CVE ids are source `cisa/kev` in `exploited_cve`, joined at lookup; a failed fetch keeps the last load and exits 1 |
 | n/a | [Datadog stream](engineering_decisions/datadog-stream.md) | every npm manifest entry is one `DATADOG-npm-<name>` malware record, source `datadog`, beside OSV's; refresh prints each package Datadog flags at every version and OSV only at some |
-| n/a | [Ingestion history](engineering_decisions/ingestion-history.md) | `intel_ingestion` appends a row per stream per refresh, loaded or not, never pruned; `waharoa intel history` prints it |
+| n/a | [Ingestion history](engineering_decisions/ingestion-history.md) | `intel_ingestion` appends a row per stream per refresh, loaded or not, never pruned; `byrle intel history` prints it |
 | n/a | [OSV ranges and scores](engineering_decisions/osv-ranges-and-scores.md) | `GHSA-` records loaded; ranges stored as intervals and compared as SemVer 2.0 at lookup; v4 base score over v3; `vuln_advisory_ids` matches aliases |
 | n/a | [Environment variables](engineering_decisions/environment-variables.md) | Every name, default, help line and parser in `src/env.rs`; a value that does not parse refuses to start |
 | n/a | [Command line parser](engineering_decisions/cli-parser-clap.md) | clap 4 with default features off, 4 crates; parsing in `src/cli.rs`, help pinned by golden files |
 | n/a | [Intel schema keys and types](engineering_decisions/intel-schema-keys-and-types.md) | Every table keyed by a `BIGINT` identity; publisher ids and digests are sized unique columns; `TIMESTAMPTZ`; `TEXT` only for `summary`. An over-long value fails the refresh |
 | n/a | [Policy schema v1 frozen](engineering_decisions/policy-schema-v1-frozen.md) | `version: 1` is closed: no key added, removed, renamed or retyped, and no default changed. Anything new is `version: 2` |
-| n/a | [Readiness endpoint](engineering_decisions/readiness-endpoint.md) | `GET /-/waharoa/ready`: 503 when a policy and an intel store are set and the store holds no snapshot or cannot answer; reports each stream's loaded digest, no percentage |
-| n/a | [Snapshot identity](engineering_decisions/snapshot-identity.md) | The snapshot id is a hash over every source's stored rows, not the bundles. Postgres keeps the latest load; `waharoa refresh` also keeps each snapshot as files of the same encoding |
+| n/a | [Readiness endpoint](engineering_decisions/readiness-endpoint.md) | `GET /-/byrle/ready`: 503 when a policy and an intel store are set and the store holds no snapshot or cannot answer; reports each stream's loaded digest, no percentage |
+| n/a | [Snapshot identity](engineering_decisions/snapshot-identity.md) | The snapshot id is a hash over every source's stored rows, not the bundles. Postgres keeps the latest load; `byrle refresh` also keeps each snapshot as files of the same encoding |
 | n/a | [`policy check`](engineering_decisions/policy-check.md) | Loads as the proxy does; lists entries that change nothing, never win, or are `permanent: true`; `--strict` exits 1 on the first two |
 | n/a | [`policy diff`: a date per policy, and exit bits](engineering_decisions/policy-diff-dates-and-exit-bits.md) | `--from-date` and `--to-date` replace `--as-of`; exit is the OR of 1 loosening and 2 tightening, or 4 alone for an error |
 | n/a | [`policy diff` reads lockfiles](engineering_decisions/policy-diff-lockfiles.md) | `--lockfile <path>`, repeatable, adds the registry versions of `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` v1, `pnpm-lock.yaml` 9 or `bun.lock` to the audit log's |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
+| 13 | [Name](engineering_decisions/project-name-byrle.md) | `byrle`, replacing `waharoa`, renamed 2026-10-11; GitHub home `github.com/krishardy/byrle` |
 | n/a | [Ecosystems in every build](engineering_decisions/no-ecosystem-features.md) | No Cargo feature per ecosystem; every build serves every ecosystem |
 | 10 | [Fetch path](engineering_decisions/fetch-path-branching.md) | Branch decided before fetching; npm and pnpm retry a deferred tarball, yarn 1 and bun fail the first install ([deferral-status-codes](engineering_decisions/deferral-status-codes.md)) |
 
@@ -830,7 +830,6 @@ reasoning, alternatives and consequences live in the files, not here.
 | # | Decision | Remaining gate |
 |---|---|---|
 | 9 | [Stage structure](engineering_decisions/stage-structure.md) | M1 transport, M2 policy. Spike dissolved |
-| 13 | [Name](engineering_decisions/project-name-byrle.md) | `byrle`, replacing `waharoa`; the code is not yet renamed; GitHub home `github.com/krishardy/byrle` |
 
 ### Open questions
 

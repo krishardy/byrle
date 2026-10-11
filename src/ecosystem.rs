@@ -173,7 +173,7 @@ pub struct Registry {
     /// Which metadata document a response body is, read from its `Content-Type`.
     pub read_media_type: fn(Option<&str>) -> Option<DocumentKind>,
 
-    /// The media types [`Registry::read_media_type`] reads, for `waharoa status` to report.
+    /// The media types [`Registry::read_media_type`] reads, for `byrle status` to report.
     pub documents: &'static [&'static str],
 
     /// Whether a request that is neither metadata nor an artifact is a probe, logged at DEBUG.
@@ -191,7 +191,7 @@ pub struct Registry {
     /// File names a client writes that no reader takes, and what to write instead.
     pub unread_lockfiles: &'static [Unread],
 
-    /// The package managers `waharoa doctor` checks for this ecosystem.
+    /// The package managers `byrle doctor` checks for this ecosystem.
     pub clients: &'static [Client],
 
     /// What the startup log tells an operator to run.

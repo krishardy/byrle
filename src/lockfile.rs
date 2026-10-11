@@ -1,4 +1,4 @@
-//! Package versions from a lockfile, for `waharoa policy diff`. The file name chooses the
+//! Package versions from a lockfile, for `byrle policy diff`. The file name chooses the
 //! reader from [`crate::ecosystem::TABLE`], and a name no row lists is refused. See
 //! docs/engineering_decisions/policy-diff-lockfiles.md.
 
@@ -36,7 +36,7 @@ pub type Reader = fn(&str) -> Result<BTreeSet<Locked>, String>;
 /// Every registry artifact a lockfile's text locks, with its path and platforms, or why not.
 pub type ArtifactReader = fn(&str) -> Result<Vec<LockedArtifact>, String>;
 
-/// One artifact a lockfile locks, for `waharoa warm`.
+/// One artifact a lockfile locks, for `byrle warm`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockedArtifact {
     pub locked: Locked,
@@ -49,7 +49,7 @@ pub struct LockedArtifact {
 
 impl LockedArtifact {
     /// A package installed from `spec`, a git or local path spec that is not a registry's, for
-    /// `waharoa lockfile verify`. It has no registry path.
+    /// `byrle lockfile verify`. It has no registry path.
     pub fn unregistered(locked: Locked, spec: &str) -> Self {
         Self {
             locked,
@@ -179,9 +179,9 @@ pub struct Lockfile {
     pub read: Reader,
     /// Each locked artifact's path and platforms, for a format that records them.
     pub artifacts: Option<ArtifactReader>,
-    /// Each locked artifact with the URL the file records, for `waharoa lockfile verify`.
+    /// Each locked artifact with the URL the file records, for `byrle lockfile verify`.
     pub urls: Option<ArtifactReader>,
-    /// How the file records artifact URLs, for a file `waharoa doctor` checks.
+    /// How the file records artifact URLs, for a file `byrle doctor` checks.
     pub pins: Option<Pins>,
 }
 

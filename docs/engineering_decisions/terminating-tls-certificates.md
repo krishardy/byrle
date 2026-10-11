@@ -70,7 +70,7 @@ which names the proxy can answer for.
 - **No artifact URL rewriting.** `dist.tarball` already names a host the proxy answers
   for, so lockfiles keep the origin registry's URLs and stay portable. The failure
   measured earlier, where `npm ci` fetches the proxy address recorded in a lockfile and
-  fails once that address stops answering, does not arise. `WAHAROA_REWRITE_ARTIFACTS=0`
+  fails once that address stops answering, does not arise. `BYRLE_REWRITE_ARTIFACTS=0`
   becomes correct in this mode, and the two modes compose rather than competing.
 - **Clients that ignore the registry configuration are covered**, provided DNS or egress
   routes them, which is the gap tiers 1 to 3 cannot reach at all.
@@ -108,7 +108,7 @@ So a terminating deployment gets the same three states, decided from the certifi
 
 - **Served**, the proxy sees the connection and examines the artifact.
 - **Allowed direct**, the proxy does not see it and the operator has said that is
-  acceptable (`WAHAROA_ALLOW_DIRECT_ORIGINS`).
+  acceptable (`BYRLE_ALLOW_DIRECT_ORIGINS`).
 - **Refused**, neither, so the version is removed from the packument.
 
 **Only `dist.tarball` needs this, for npm.** pacote resolves `dist.attestations.url`

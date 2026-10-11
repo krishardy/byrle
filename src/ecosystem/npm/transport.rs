@@ -327,7 +327,7 @@ mod tests {
         let client = Client::new(reqwest::Client::new(), DEFAULT_REGISTRY);
         let key = PackageKey::from_registry_name(
             Ecosystem::Npm,
-            "waharoa-package-that-should-never-exist-9f3a",
+            "byrle-package-that-should-never-exist-9f3a",
         )
         .unwrap();
 

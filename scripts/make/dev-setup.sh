@@ -10,7 +10,7 @@ need() { command -v "$1" >/dev/null 2>&1; }
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/make/lib/node.sh
 . "$repo_root/scripts/make/lib/node.sh"
-waharoa_use_latest_node
+byrle_use_latest_node
 
 echo "==> rustup components"
 rustup component add clippy rustfmt 2>&1 | sed 's/^/    /'
@@ -43,7 +43,7 @@ fi
 
 # shellcheck source=scripts/make/lib/sqlx-cli.sh
 . "$repo_root/scripts/make/lib/sqlx-cli.sh"
-waharoa_install_sqlx_cli
+byrle_install_sqlx_cli
 
 echo "==> cargo-llvm-cov (unit test coverage, used by 'make coverage')"
 if cargo llvm-cov --version >/dev/null 2>&1; then
@@ -57,7 +57,7 @@ fi
 
 # shellcheck source=scripts/make/lib/coverage-toolchain.sh
 . "$repo_root/scripts/make/lib/coverage-toolchain.sh"
-waharoa_install_coverage_toolchain
+byrle_install_coverage_toolchain
 
 echo "==> cargo-mutants (mutation testing, used by 'make mutants')"
 if cargo mutants --version >/dev/null 2>&1; then
@@ -165,8 +165,8 @@ else
 fi
 
 echo "==> node"
-if [[ -n "${WAHAROA_NODE:-}" ]]; then
-    echo "    $WAHAROA_NODE"
+if [[ -n "${BYRLE_NODE:-}" ]]; then
+    echo "    $BYRLE_NODE"
     echo "    Every target that runs a package manager uses it, so they all test against"
     echo "    the same one."
 elif need node; then

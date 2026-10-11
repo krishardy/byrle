@@ -1,4 +1,4 @@
-//! `waharoa policy diff`: what changes if this policy replaces that one, compared per check.
+//! `byrle policy diff`: what changes if this policy replaces that one, compared per check.
 //!
 //! See docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
 
@@ -260,7 +260,7 @@ fn strictness(s: Strictness) -> &'static str {
     }
 }
 
-/// What a `waharoa policy diff` run prints and exits with; `notes` and `summary` go to stderr.
+/// What a `byrle policy diff` run prints and exits with; `notes` and `summary` go to stderr.
 #[derive(Debug, Default)]
 pub struct Run {
     pub notes: Vec<String>,

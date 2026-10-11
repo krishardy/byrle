@@ -16,11 +16,11 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/make/lib/node.sh
 . "$repo_root/scripts/make/lib/node.sh"
-waharoa_use_latest_node
+byrle_use_latest_node
 
-port="${WAHAROA_PORT:-8732}"
+port="${BYRLE_PORT:-8732}"
 registry="http://127.0.0.1:${port}/"
-package="${WAHAROA_SMOKE_PACKAGE:-lodash}"
+package="${BYRLE_SMOKE_PACKAGE:-lodash}"
 workdir="$(mktemp -d)"
 proxy_pid=""
 
@@ -31,17 +31,17 @@ cleanup() {
 trap cleanup EXIT
 
 if ss -ltn 2>/dev/null | grep -q ":${port} "; then
-    echo "port ${port} is already in use; set WAHAROA_PORT to something free"
+    echo "port ${port} is already in use; set BYRLE_PORT to something free"
     exit 1
 fi
 
 start_proxy() {
     local log="$1"
-    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" \
+    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
-        grep -q "waharoa listening" "$log" && return 0
+        grep -q "byrle listening" "$log" && return 0
         kill -0 "$proxy_pid" 2>/dev/null || { echo "proxy exited during startup"; exit 1; }
         sleep 1
     done
@@ -72,7 +72,7 @@ prepare_yarn_berry() {
 
     mkdir -p "$workdir/shims"
     corepack enable --install-directory "$workdir/shims" >/dev/null 2>&1 || return 1
-    printf '{"name":"waharoa-smoke","version":"1.0.0","private":true,"packageManager":"yarn@4.9.1"}\n' \
+    printf '{"name":"byrle-smoke","version":"1.0.0","private":true,"packageManager":"yarn@4.9.1"}\n' \
         >"$dir/package.json"
     # globalFolder and enableMirror, not just enableGlobalCache. Measured: with only
     # enableGlobalCache off, berry copied the package out of its global mirror and the
@@ -101,7 +101,7 @@ measure() {
 
     local dir="$workdir/$client" log="$workdir/$client.log"
     mkdir -p "$dir/cache"
-    printf '{"name":"waharoa-smoke","version":"1.0.0","private":true}\n' >"$dir/package.json"
+    printf '{"name":"byrle-smoke","version":"1.0.0","private":true}\n' >"$dir/package.json"
 
     if [[ "$client" == "yarn-berry" ]]; then
         if ! prepare_yarn_berry "$dir"; then

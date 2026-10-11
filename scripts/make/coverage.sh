@@ -20,13 +20,13 @@ floor="${COVERAGE_FLOOR:-100}"
 
 # shellcheck source=scripts/make/lib/coverage-toolchain.sh
 . "$repo_root/scripts/make/lib/coverage-toolchain.sh"
-nightly="+$waharoa_coverage_toolchain"
+nightly="+$byrle_coverage_toolchain"
 # A target directory per toolchain. cargo-llvm-cov read objects a stable run had left in the
 # shared one and reported 23% on 2026-09-29, against 92.5% with the directory removed.
-export CARGO_LLVM_COV_TARGET_DIR="$repo_root/target/llvm-cov-$waharoa_coverage_toolchain"
+export CARGO_LLVM_COV_TARGET_DIR="$repo_root/target/llvm-cov-$byrle_coverage_toolchain"
 
 if ! cargo "$nightly" llvm-cov --version >/dev/null 2>&1; then
-    echo "cargo-llvm-cov or $waharoa_coverage_toolchain is not installed. Run 'make dev-setup'."
+    echo "cargo-llvm-cov or $byrle_coverage_toolchain is not installed. Run 'make dev-setup'."
     exit 1
 fi
 

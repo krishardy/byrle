@@ -33,7 +33,7 @@ impl Refusal {
     /// The body the client reads. npm shows it on a failed install.
     pub fn message(&self) -> String {
         let mut out = format!(
-            "waharoa: {} is {} by policy\n",
+            "byrle: {} is {} by policy\n",
             self.purl,
             if self.action == Action::Block {
                 "blocked"
@@ -76,7 +76,7 @@ pub fn unenforceable(
     unenforceable_given(policy, cooldown, intel, provenance)
 }
 
-/// [`unenforceable`] from facts alone, as `waharoa audit verify` has them. The same checks:
+/// [`unenforceable`] from facts alone, as `byrle audit verify` has them. The same checks:
 /// a record only changes why a cooldown has no date, not whether it has one.
 pub fn unenforceable_of(policy: &Policy, facts: &Facts) -> Vec<Unenforceable> {
     let cooldown = facts
@@ -277,7 +277,7 @@ mod tests {
         )
     }
 
-    /// `waharoa audit verify` has the facts and not the record. Every way a record can have
+    /// `byrle audit verify` has the facts and not the record. Every way a record can have
     /// or lack a publish date gives the same checks from either.
     #[test]
     fn the_facts_alone_give_the_same_unenforced_checks_as_the_record() {
@@ -474,7 +474,7 @@ mod tests {
         assert_eq!(refusal.reasons, ["denials: this exact version is denied"]);
         assert_eq!(
             refusal.message(),
-            "waharoa: pkg:npm/lodash@4.17.21 is blocked by policy\n  \
+            "byrle: pkg:npm/lodash@4.17.21 is blocked by policy\n  \
              - denials: this exact version is denied\n"
         );
     }
@@ -558,7 +558,7 @@ mod tests {
         assert!(
             refusal
                 .message()
-                .starts_with("waharoa: pkg:npm/lodash@4.17.21 is held by policy"),
+                .starts_with("byrle: pkg:npm/lodash@4.17.21 is held by policy"),
             "held, not blocked: {}",
             refusal.message()
         );

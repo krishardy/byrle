@@ -26,7 +26,7 @@ With a policy and a store, a package whose ecosystem has a gap in the snapshot i
 | a stream its row lists is not in the snapshot, and its latest refresh did not record it as unconfigured | 503, body names the ecosystem |
 | replaced by a refresh between reading the records and reading the streams | 503, as a store that cannot answer |
 
-A gap is what `LoadedSnapshot::gaps` already reports at startup and in `waharoa doctor`,
+A gap is what `LoadedSnapshot::gaps` already reports at startup and in `byrle doctor`,
 for one ecosystem: `LoadedSnapshot::uncovered`. `malware` is required as well as `match`
 because `known_malware` is the one check with no exception, and a snapshot with only
 `github/npm` has a `match` stream and no `malware` stream.
@@ -48,7 +48,7 @@ So each stream an ecosystem's row lists is required as well:
 | Listed stream | Gap |
 |---|---|
 | in the snapshot, including an older load its latest refresh did not replace | no |
-| absent, and its latest refresh recorded it as not configured, such as GitHub's with no `WAHAROA_GITHUB_TOKEN` | no |
+| absent, and its latest refresh recorded it as not configured, such as GitHub's with no `BYRLE_GITHUB_TOKEN` | no |
 | absent otherwise | yes: `` `npm` lists `osv/npm`, and the intel snapshot does not hold it `` |
 
 Decided with the user: a stream not configured is excused, a missing stream answers 503
@@ -74,16 +74,16 @@ Readiness is unchanged: `ready` is false when the store holds no snapshot or can
 answer. A gap in one ecosystem leaves the others decidable, and marking the proxy not ready
 would take npm out of a load balancer with it. `doctor` reports the gap as a warning.
 
-Measured 2026-09-17 against Postgres after `waharoa refresh` loaded `osv/npm`,
+Measured 2026-09-17 against Postgres after `byrle refresh` loaded `osv/npm`,
 `datadog/npm` and `cisa/kev`, with `cooldown_days: 0`:
 
 | Request | Result |
 |---|---|
-| `GET /-/waharoa/ready` | 200, `"ready":true` |
+| `GET /-/byrle/ready` | 200, `"ready":true` |
 | `GET /lodash` | 200 |
 | `pip install idna` through the proxy | exit 1; each file request logged the two gaps and was answered 503 |
-| `waharoa explain pkg:npm/lodash@4.17.21` | exit 0 |
-| `waharoa explain pkg:pypi/idna@3.10` | exit 1, printing both gaps |
+| `byrle explain pkg:npm/lodash@4.17.21` | exit 0 |
+| `byrle explain pkg:pypi/idna@3.10` | exit 1, printing both gaps |
 
 ## Reading coverage once per snapshot
 
@@ -97,7 +97,7 @@ That lookup is answered 503.
 
 ## The commands
 
-`waharoa explain` exits 1 for a package with a gap and prints the gap. `waharoa policy
+`byrle explain` exits 1 for a package with a gap and prints the gap. `byrle policy
 diff` prints it, counts the package as unread, and compares the rest.
 
 A kept snapshot records no streams, so `policy diff --snapshot` does not check coverage.

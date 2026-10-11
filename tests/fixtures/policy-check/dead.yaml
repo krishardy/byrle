@@ -1,4 +1,4 @@
-# Package entries that load and do nothing, for `waharoa policy check`.
+# Package entries that load and do nothing, for `byrle policy check`.
 version: 1
 cooldown_days: 7
 packages:

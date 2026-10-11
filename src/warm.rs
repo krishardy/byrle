@@ -1,4 +1,4 @@
-//! `waharoa warm`: ask a running proxy for every artifact a lockfile locks, so each is
+//! `byrle warm`: ask a running proxy for every artifact a lockfile locks, so each is
 //! analysed before a client asks for it.
 //!
 //! See `docs/engineering_decisions/warm.md`.
@@ -35,14 +35,14 @@ pub enum Outcome {
     Refused(u16),
     /// The proxy's metadata does not list the version: refused, or on an origin it does not serve.
     NotListed,
-    /// Answered 503 for the reason `x-waharoa-not-ready` names, which waiting does not clear.
+    /// Answered 503 for the reason `x-byrle-not-ready` names, which waiting does not clear.
     NotReady(String),
     /// Still 503 for its analysis at the deadline.
     StillDeferred,
     Failed(String),
 }
 
-/// What `waharoa warm` prints, and its exit code.
+/// What `byrle warm` prints, and its exit code.
 #[derive(Debug, PartialEq)]
 pub struct Warmed {
     /// For stderr: why nothing was asked.
@@ -52,7 +52,7 @@ pub struct Warmed {
     pub code: u8,
 }
 
-/// `waharoa warm`: read `lockfiles` and ask the proxy at `proxy`, or the environment's, for
+/// `byrle warm`: read `lockfiles` and ask the proxy at `proxy`, or the environment's, for
 /// each artifact they lock that installs on one of `targets`, or on any platform when
 /// `targets` is `None`, waiting up to `deadline` for each analysis.
 pub async fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
@@ -529,7 +529,7 @@ mod tests {
         let base = format!("http://{}", listener.local_addr().unwrap());
         let index = format!(
             r#"{{"meta":{{"api-version":"1.0"}},"name":"x","files":[{{"filename":"x-1.0.tar.gz",
-                "url":"https://waharoa.example/packages/x-1.0.tar.gz",
+                "url":"https://byrle.example/packages/x-1.0.tar.gz",
                 "hashes":{{"sha256":"{}"}}}}]}}"#,
             "a".repeat(64)
         );
@@ -642,8 +642,8 @@ mod tests {
     fn the_proxy_is_its_public_url_or_where_it_listens() {
         use crate::env::{LISTEN, PUBLIC_URL};
         assert_eq!(
-            proxy_base(&with(&[(PUBLIC_URL, "https://waharoa.example")])).unwrap(),
-            "https://waharoa.example"
+            proxy_base(&with(&[(PUBLIC_URL, "https://byrle.example")])).unwrap(),
+            "https://byrle.example"
         );
         assert_eq!(
             proxy_base(&with(&[(LISTEN, "127.0.0.1:9000")])).unwrap(),
@@ -657,11 +657,11 @@ mod tests {
     fn an_artifact_is_asked_of_the_proxy_warm_was_given() {
         let base = "http://10.0.0.5:8080";
         assert_eq!(
-            on_proxy(base, "https://waharoa.example/widget/-/widget-1.0.0.tgz"),
+            on_proxy(base, "https://byrle.example/widget/-/widget-1.0.0.tgz"),
             "http://10.0.0.5:8080/widget/-/widget-1.0.0.tgz"
         );
         assert_eq!(
-            on_proxy(base, "https://waharoa.example/packages/a/x-1.0.tar.gz?h=1"),
+            on_proxy(base, "https://byrle.example/packages/a/x-1.0.tar.gz?h=1"),
             "http://10.0.0.5:8080/packages/a/x-1.0.tar.gz?h=1"
         );
         assert_eq!(on_proxy(base, "not a url"), "not a url");

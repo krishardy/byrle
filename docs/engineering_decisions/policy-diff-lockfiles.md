@@ -8,12 +8,12 @@
 
 ## Decision
 
-`waharoa policy diff <from> <to> --lockfile <path>`, repeatable. The package set is every
+`byrle policy diff <from> <to> --lockfile <path>`, repeatable. The package set is every
 registry version each lockfile locks, plus every version the audit log lists when
-`WAHAROA_AUDIT_LOG` is set. Each version is compared once. With neither, the command exits 4:
+`BYRLE_AUDIT_LOG` is set. Each version is compared once. With neither, the command exits 4:
 
 ```
-waharoa policy diff: set WAHAROA_AUDIT_LOG or pass --lockfile, for the packages to compare over
+byrle policy diff: set BYRLE_AUDIT_LOG or pass --lockfile, for the packages to compare over
 ```
 
 | Rejected | Why |
@@ -110,7 +110,7 @@ package versions
 The Python shapes were measured 2026-09-21 against uv 0.12.5 and poetry 2.2.1, with the
 files in the same directory.
 
-`policy diff` from `max_cvss: 7.0` to `max_cvss: 9.0`, `WAHAROA_AUDIT_LOG` unset, over the
+`policy diff` from `max_cvss: 7.0` to `max_cvss: 9.0`, `BYRLE_AUDIT_LOG` unset, over the
 kept npm snapshot, debug build. Each of the four lockfiles alone gives this report, and all
 four together give the same 15 packages:
 
@@ -125,16 +125,16 @@ pkg:npm/lodash@4.17.20  block -> allow
 pkg:npm/lodash@4.17.21  block -> allow
     max_cvss          FAIL block -> pass  (LOOSER)
 
-waharoa policy diff: 2 loosened, 0 incomparable
+byrle policy diff: 2 loosened, 0 incomparable
 ```
 
 Refused, each exit 2 when run, and 4 since
 [policy-diff-dates-and-exit-bits](policy-diff-dates-and-exit-bits.md):
 
 ```
-waharoa policy diff: set WAHAROA_AUDIT_LOG or pass --lockfile, for the packages to compare over
-waharoa policy diff: tests/fixtures/lockfiles/package.json: a lockfile is read only under one of these names: package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock
-waharoa policy diff: .../nowhere/yarn.lock: No such file or directory (os error 2)
+byrle policy diff: set BYRLE_AUDIT_LOG or pass --lockfile, for the packages to compare over
+byrle policy diff: tests/fixtures/lockfiles/package.json: a lockfile is read only under one of these names: package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock
+byrle policy diff: .../nowhere/yarn.lock: No such file or directory (os error 2)
 ```
 
 A larger project, `express`, `react`, `react-dom` and `@aws-sdk/client-s3` with `typescript`,

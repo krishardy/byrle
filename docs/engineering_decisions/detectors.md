@@ -48,7 +48,7 @@ for a command. The source comparison's text changed with the move:
 
 ## The command adapter
 
-`WAHAROA_DETECTORS` names each detector as `name=program argument...`, separated by `;`.
+`BYRLE_DETECTORS` names each detector as `name=program argument...`, separated by `;`.
 `{ecosystem}`, `{name}` and `{version}` in the arguments are replaced. GuardDog's:
 
 ```
@@ -63,7 +63,7 @@ The command prints a JSON object whose `results` maps each rule to what it found
 | `program --version` runs at startup, and its last line is the detector's version | a new version reruns every version; one that prints none refuses the start |
 | no shell; the arguments are split on whitespace when configured | a package name reaches the program as one argument |
 | a name or version starting with `-` is refused | it cannot be read as an option. `--version={version}` is one argument either way |
-| the environment is cleared, then `PATH`, `HOME`, `SOCKS` and the forward proxies are passed | `WAHAROA_GITHUB_TOKEN` and `DATABASE_URL` do not reach a program run on untrusted names |
+| the environment is cleared, then `PATH`, `HOME`, `SOCKS` and the forward proxies are passed | `BYRLE_GITHUB_TOKEN` and `DATABASE_URL` do not reach a program run on untrusted names |
 | each run has a directory of its own, removed after | nothing a run writes is read by the next |
 | killed after 300 s, or past 16 MiB on either stream | `detector::TIMEOUT`, `detector::MAX_OUTPUT_BYTES` |
 

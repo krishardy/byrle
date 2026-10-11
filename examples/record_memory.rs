@@ -12,8 +12,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
 
-use waharoa::ecosystem::{npm, pypi};
-use waharoa::record::{DocumentDetail, PackageMetadata};
+use byrle::ecosystem::{npm, pypi};
+use byrle::record::{DocumentDetail, PackageMetadata};
 
 struct Counting;
 

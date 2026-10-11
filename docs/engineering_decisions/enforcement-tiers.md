@@ -63,7 +63,7 @@ document would break an install that filtering leaves working.
 What it needs that does not exist yet:
 
 - ~~An operator-configured list of origins the proxy fronts.~~ Done:
-  `WAHAROA_ARTIFACT_ORIGINS`. The upstream and the default registry are always included,
+  `BYRLE_ARTIFACT_ORIGINS`. The upstream and the default registry are always included,
   and only origins the operator adds are fetched from directly, so a private mirror
   publishing registry.npmjs.org URLs still routes to the mirror. Every row of
   `ecosystem::TABLE` adds the origins it always reaches, such as `files.pythonhosted.org`,
@@ -77,7 +77,7 @@ What it needs that does not exist yet:
   [terminating-tls-certificates](terminating-tls-certificates.md) the served set is the
   domains the proxy holds certificates for; the three dispositions below are the same.
 - ~~A decision on the default.~~ Refusing is on, and the status is configurable by
-  (ecosystem, client) with 403 as the default: `WAHAROA_REFUSAL_STATUS`. Clients bucket
+  (ecosystem, client) with 403 as the default: `BYRLE_REFUSAL_STATUS`. Clients bucket
   status codes rather than reading them, so an operator who finds one mishandling 403 can
   say so without waiting for a release. A 5xx is accepted and warned about, because §5
   reserves those for the proxy not being ready.
@@ -93,8 +93,8 @@ document is parsed only when there is something to remove; otherwise the byte re
 | Artifact origin | Version |
 |---|---|
 | fronted by the proxy | kept, URL pointed at the proxy |
-| in `WAHAROA_ALLOW_DIRECT_ORIGINS` | kept exactly as published, so the client fetches it there |
-| anything else, or a URL that does not parse | removed, unless `WAHAROA_REFUSE_UNSERVABLE=0` keeps it as published |
+| in `BYRLE_ALLOW_DIRECT_ORIGINS` | kept exactly as published, so the client fetches it there |
+| anything else, or a URL that does not parse | removed, unless `BYRLE_REFUSE_UNSERVABLE=0` keeps it as published |
 
 Before the allow list, the only way to exempt one origin was to turn refusing off for all.
 A `dist-tags` entry naming a removed version is dropped, so the resolver falls back to a
@@ -128,7 +128,7 @@ hold.
   deliberate circumvention, which is consistent with a threat model of malicious packages
   rather than malicious developers.
 - **Organisation CI.** Tier 5, a container whose only egress route is the proxy. This is
-  the one that closes the off-origin case completely. Here `WAHAROA_REWRITE_ARTIFACTS=0`
+  the one that closes the off-origin case completely. Here `BYRLE_REWRITE_ARTIFACTS=0`
   earns its place: lockfiles are committed and shared, and egress control already
   guarantees what rewriting was buying.
 - **Managed fleet.** Tier 4 with the CA pushed by MDM. Rewriting off, portable lockfiles.

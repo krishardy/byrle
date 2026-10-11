@@ -17,6 +17,6 @@ To regenerate:
 
 ```sh
 openssl req -x509 -newkey rsa:2048 -keyout /tmp/k.pem -out test-ca.pem -days 7300 -nodes \
-    -subj "/CN=waharoa test CA (fixture, not trusted anywhere)" \
+    -subj "/CN=byrle test CA (fixture, not trusted anywhere)" \
     -addext "basicConstraints=critical,CA:TRUE"
 ```

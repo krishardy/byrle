@@ -1,6 +1,6 @@
-# Fronting waharoa with TLS
+# Fronting byrle with TLS
 
-waharoa serves plain HTTP. A proxy reached by name goes behind a TLS front: Caddy or nginx,
+byrle serves plain HTTP. A proxy reached by name goes behind a TLS front: Caddy or nginx,
 below. `make smoke-tls-front` runs both against the proxy with a local CA and checks that
 the front passes everything through. It ran on 2026-09-29 with Caddy 2.10.2 and nginx
 1.28.0, built from source; the configurations here are the ones it runs, with the name and
@@ -9,25 +9,25 @@ certificate paths changed.
 ## The proxy
 
 ```
-WAHAROA_LISTEN=127.0.0.1:8080
-WAHAROA_PUBLIC_URL=https://waharoa.example.com
+BYRLE_LISTEN=127.0.0.1:8080
+BYRLE_PUBLIC_URL=https://byrle.example.com
 ```
 
-`WAHAROA_PUBLIC_URL` is the front's address. It is what the proxy writes into artifact
-URLs, so it is what lockfiles record. `WAHAROA_LISTEN` on loopback keeps the plain HTTP
+`BYRLE_PUBLIC_URL` is the front's address. It is what the proxy writes into artifact
+URLs, so it is what lockfiles record. `BYRLE_LISTEN` on loopback keeps the plain HTTP
 port off the network.
 
 ## Caddy
 
 ```
-waharoa.example.com {
+byrle.example.com {
 	reverse_proxy 127.0.0.1:8080 {
 		flush_interval -1
 	}
 }
 ```
 
-- Caddy obtains and renews the certificate for `waharoa.example.com` from Let's Encrypt
+- Caddy obtains and renews the certificate for `byrle.example.com` from Let's Encrypt
   on its own, given a public DNS name and ports 80 and 443 reachable. That is Caddy's
   documented default. The smoke test uses a local certificate with `tls <cert> <key>`
   instead, so the ACME path is not what it ran.
@@ -40,9 +40,9 @@ waharoa.example.com {
 ```
 server {
     listen 443 ssl;
-    server_name waharoa.example.com;
-    ssl_certificate /etc/letsencrypt/live/waharoa.example.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/waharoa.example.com/privkey.pem;
+    server_name byrle.example.com;
+    ssl_certificate /etc/letsencrypt/live/byrle.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/byrle.example.com/privkey.pem;
 
     location / {
         proxy_pass http://127.0.0.1:8080;
@@ -60,7 +60,7 @@ server {
 |---|---|
 | `proxy_buffering off` | streams an artifact through as the proxy verifies it, rather than nginx holding the whole response |
 | `proxy_read_timeout 300s` | the proxy reads, filters and rewrites a metadata document before its first byte, and a large one takes longer than nginx's default 60 s. `next`'s 4.4 MB packument took 21 s in [latency-benchmarks](engineering_decisions/latency-benchmarks.md) |
-| `proxy_set_header Host $http_host` | passes the name the client used. The proxy writes `WAHAROA_PUBLIC_URL` into documents when it is set, and the `Host` otherwise |
+| `proxy_set_header Host $http_host` | passes the name the client used. The proxy writes `BYRLE_PUBLIC_URL` into documents when it is set, and the `Host` otherwise |
 | `proxy_http_version 1.1` | keeps upstream connections open between requests |
 
 The certificate paths are certbot's. The smoke test uses a local certificate.
@@ -71,13 +71,13 @@ For each front, through TLS:
 
 | Check | Caddy | nginx |
 |---|---|---|
-| `/-/waharoa/health` | 200 | 200 |
-| an artifact nothing has analysed | 503 with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis` | the same |
+| `/-/byrle/health` | 200 | 200 |
+| an artifact nothing has analysed | 503 with `Retry-After: 1` and `x-byrle-not-ready: artifact-analysis` | the same |
 | `npm install debug@4.4.1` | installs; the lockfile records the front's `https://` address | the same |
 | `pip install six==1.17.0` | installs | installs |
 
-With `proxy_hide_header x-waharoa-not-ready` added to the nginx configuration, the test
-failed: `x-waharoa-not-ready did not pass through`.
+With `proxy_hide_header x-byrle-not-ready` added to the nginx configuration, the test
+failed: `x-byrle-not-ready did not pass through`.
 
 ## Clients and a private CA
 

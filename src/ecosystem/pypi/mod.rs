@@ -22,7 +22,7 @@ pub use paths::{classify_path, document_from_content_type, index_url, normalise,
 pub use transport::{Client, FetchError};
 pub use wire::{File, Kind, Project, parse};
 
-/// What `waharoa` sends to ask for JSON rather than HTML. PEP 691.
+/// What `byrle` sends to ask for JSON rather than HTML. PEP 691.
 pub const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 
 /// PEP 691's name for the HTML form, read as `text/html` is.

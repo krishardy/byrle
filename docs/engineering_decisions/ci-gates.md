@@ -21,7 +21,7 @@ The logic stays in `scripts/make/`, per CLAUDE.md.
 so the workflow has no `services:` block. The runner has Docker, and the script a contributor
 runs is the one that runs here.
 
-`sqlx-cli` is installed by `waharoa_install_sqlx_cli` in `scripts/make/lib/sqlx-cli.sh`, which
+`sqlx-cli` is installed by `byrle_install_sqlx_cli` in `scripts/make/lib/sqlx-cli.sh`, which
 `scripts/make/dev-setup.sh` also calls. The pin was in `dev-setup.sh` alone; CI needed it too,
 and a second copy could drift from the first. It has to track the `sqlx` version in
 `Cargo.toml`: `make sqlx-prepare` writes the offline cache the build reads, and a CLI of
@@ -61,6 +61,6 @@ workflow was written:
 
 A workflow file is exercised by pushing. `make lint` covers rust, shell and python, not YAML,
 and `act` is not installed. What was checked locally: the YAML parses and declares the three
-jobs above, `waharoa_install_sqlx_cli` reports the pinned CLI already installed, and
+jobs above, `byrle_install_sqlx_cli` reports the pinned CLI already installed, and
 `make lint`, `make test` and `make sqlx-prepare ARGS=--check` each pass. Whether the jobs run
 on the runner is unproven until the first push.

@@ -57,7 +57,7 @@ jobs:
       - name: Install sqlx-cli
         run: |
           . scripts/make/lib/sqlx-cli.sh
-          waharoa_install_sqlx_cli
+          byrle_install_sqlx_cli
       # Starts its own Postgres container, so no `services:` block: the same script a
       # contributor runs is the one that runs here.
       - run: make sqlx-prepare ARGS=--check

@@ -130,7 +130,7 @@ impl Analyser {
             Ok(Some(analysis)) => Known::Analysed(analysis),
             Ok(None) => Known::Unknown,
             Err(e) => {
-                warn!(waharoa.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; analysing again");
+                warn!(byrle.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; analysing again");
                 Known::Unknown
             }
         }
@@ -147,7 +147,7 @@ impl Analyser {
         match self.store.attested(digest).await {
             Ok(attested) => attested,
             Err(e) => {
-                warn!(waharoa.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; verifying again");
+                warn!(byrle.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; verifying again");
                 None
             }
         }
@@ -213,21 +213,21 @@ impl Analyser {
         timings.attestations = job.attestations.len();
         timings.total_ms = ms(running);
         if !timings.completed {
-            warn!(url.full = %job.url, waharoa.analysis.deadline_s = self.deadline.as_secs(), "artifact analysis: past its deadline, nothing stored");
+            warn!(url.full = %job.url, byrle.analysis.deadline_s = self.deadline.as_secs(), "artifact analysis: past its deadline, nothing stored");
         }
         info!(
             url.full = %job.url,
-            waharoa.artifact.digest = %job.digest,
-            waharoa.analysis.completed = timings.completed,
-            waharoa.analysis.queued_ms = timings.queued_ms,
-            waharoa.analysis.fetch_ms = timings.fetch_ms,
-            waharoa.analysis.download_ms = timings.download_ms,
-            waharoa.analysis.bytes = timings.bytes,
-            waharoa.analysis.read_ms = timings.read_ms,
-            waharoa.analysis.store_ms = timings.store_ms,
-            waharoa.analysis.attestations = timings.attestations,
-            waharoa.analysis.attest_ms = timings.attest_ms,
-            waharoa.analysis.total_ms = timings.total_ms,
+            byrle.artifact.digest = %job.digest,
+            byrle.analysis.completed = timings.completed,
+            byrle.analysis.queued_ms = timings.queued_ms,
+            byrle.analysis.fetch_ms = timings.fetch_ms,
+            byrle.analysis.download_ms = timings.download_ms,
+            byrle.analysis.bytes = timings.bytes,
+            byrle.analysis.read_ms = timings.read_ms,
+            byrle.analysis.store_ms = timings.store_ms,
+            byrle.analysis.attestations = timings.attestations,
+            byrle.analysis.attest_ms = timings.attest_ms,
+            byrle.analysis.total_ms = timings.total_ms,
             "analysis job timed"
         );
         timings
@@ -379,7 +379,7 @@ impl Analyser {
             Ok(spooled) => match verifier.finish(spooled.len()) {
                 Ok(()) => Some(Ok(spooled)),
                 Err(mismatch) => {
-                    warn!(url.full = %url, waharoa.artifact.digest_mismatch = %mismatch, "artifact analysis: digest mismatch");
+                    warn!(url.full = %url, byrle.artifact.digest_mismatch = %mismatch, "artifact analysis: digest mismatch");
                     self.mismatched
                         .lock()
                         .expect("mismatch lock")
@@ -412,8 +412,8 @@ impl Analyser {
         }
         info!(
             url.full = %job.url,
-            waharoa.artifact.digest = %job.digest,
-            waharoa.artifact.scripts = ?analysis.scripts.names(),
+            byrle.artifact.digest = %job.digest,
+            byrle.artifact.scripts = ?analysis.scripts.names(),
             "artifact analysed"
         );
     }
@@ -424,10 +424,10 @@ fn log_attested(attestation: &Attestation, attested: &Attested, fetch_ms: u64, v
     let (url, digest) = (&attestation.url, &attestation.digest);
     match attested {
         Attested::Verified { identity } => {
-            info!(url.full = %url, waharoa.artifact.digest = %digest, waharoa.attestation.identity = %identity, waharoa.attestation.fetch_ms = fetch_ms, waharoa.attestation.verify_ms = verify_ms, "attestation verified");
+            info!(url.full = %url, byrle.artifact.digest = %digest, byrle.attestation.identity = %identity, byrle.attestation.fetch_ms = fetch_ms, byrle.attestation.verify_ms = verify_ms, "attestation verified");
         }
         Attested::Failed { why } => {
-            warn!(url.full = %url, waharoa.artifact.digest = %digest, waharoa.reason = %why, waharoa.attestation.fetch_ms = fetch_ms, waharoa.attestation.verify_ms = verify_ms, "attestation did not verify");
+            warn!(url.full = %url, byrle.artifact.digest = %digest, byrle.reason = %why, byrle.attestation.fetch_ms = fetch_ms, byrle.attestation.verify_ms = verify_ms, "attestation did not verify");
         }
     }
 }

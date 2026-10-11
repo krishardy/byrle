@@ -13,7 +13,7 @@ Each package below was read before being listed: its metadata and every file it 
 | npm | `clinstestpackage@0.0.1-security` | `known_malware`: MAL-2022-1929 covers every version (`introduced: 0`) | npm replaced the package with its security placeholder: no scripts, no dependencies, no code |
 | npm | `kottestpackage`, `testpackagehere`, both `0.0.1-security` | the same, as MAL-2022-4217 and MAL-2022-6528 | the same |
 | npm | `core-js@3.39.0` | `install_scripts`: `postinstall` runs `postinstall.js` | the script prints a funding banner, skipped in CI or with `ADBLOCK` set, and writes a list of banners shown to `core-js-banners` in the OS temp directory. No dependencies |
-| npm | `eicar@1.0.0` | an antivirus scanner on the path. No waharoa check refuses it | two files; `README.md` holds the EICAR string. Published 2018 by Adam Baldwin |
+| npm | `eicar@1.0.0` | an antivirus scanner on the path. No byrle check refuses it | two files; `README.md` holds the EICAR string. Published 2018 by Adam Baldwin |
 | PyPI | `docopt==0.6.2` | `install_scripts`: the version offers only an sdist, so installing runs `setup.py` | `setup.py` is a plain `setup()` call that imports only `docopt.__version__` |
 | PyPI | `test-eicar==0.1.0` | an antivirus scanner on the path | one wheel: `test_eicar.txt` holds the EICAR string, `main.py` prints `Hello World!`. A wheel runs no code on install. Uploaded 2025-09-03, no author given |
 

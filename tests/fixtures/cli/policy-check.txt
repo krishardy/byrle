@@ -1,6 +1,6 @@
 Load a policy as the proxy does, and list the package entries that do nothing. Exits 1 if it is refused
 
-Usage: waharoa policy check [OPTIONS] <PATH>
+Usage: byrle policy check [OPTIONS] <PATH>
 
 Arguments:
   <PATH>  The policy file

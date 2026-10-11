@@ -10,7 +10,7 @@
 Package identity is PURL throughout the core, using the `purl` crate from phylum-dev, with
 its default features off. Its `smartstring` feature only changes how strings are stored,
 and pulled `smartstring` 1.0.1, which RUSTSEC-2026-0249 flags as unmaintained; the
-`package-type` feature is for typed purls, which waharoa does not use. With both off,
+`package-type` feature is for typed purls, which byrle does not use. With both off,
 `cargo audit --deny warnings` is clean.
 Two types: `PackageKey` (versionless, the advisory lookup key) and `PackageRef` (key
 plus concrete version). npm names are not lowercased. Lookups key on parsed components,

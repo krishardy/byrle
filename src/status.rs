@@ -1,4 +1,4 @@
-//! `waharoa status`: what this build does for each ecosystem, and which advisory streams
+//! `byrle status`: what this build does for each ecosystem, and which advisory streams
 //! cover it. The two fail separately, so both are shown, each read from
 //! [`crate::ecosystem::TABLE`] or the loaded snapshot.
 
@@ -9,12 +9,12 @@ use crate::intel::store::LoadedSnapshot;
 use crate::intel::{Capability, capabilities_of};
 use crate::policy::merge::{Rule, applies};
 
-/// The report, as `waharoa status` prints it.
+/// The report, as `byrle status` prints it.
 ///
 /// `snapshot` is what the intel store last loaded, `None` when there is no store or it
 /// holds nothing.
 pub fn report(upstreams: &Upstreams, snapshot: Option<&LoadedSnapshot>) -> String {
-    let mut out = String::from("waharoa status\n");
+    let mut out = String::from("byrle status\n");
     let _ = writeln!(
         out,
         "  intel snapshot   {}",

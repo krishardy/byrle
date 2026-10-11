@@ -19,7 +19,7 @@ through the machine's forward proxy, `HTTPS_PROXY`.
 
 ## Results
 
-| Set | direct, cold | direct, warm cache | proxy, cold | `waharoa warm` | proxy, analysed | proxy, warm cache |
+| Set | direct, cold | direct, warm cache | proxy, cold | `byrle warm` | proxy, analysed | proxy, warm cache |
 |---|---|---|---|---|---|---|
 | npm: 207 packages | 9.4 | 2.7 | 20.1 | 100.8 | 9.7 | 2.7 |
 | pypi: 18 packages | 9.0 | 0.1 | 13.9 | 52.8 | 11.6 | 0.1 |
@@ -29,8 +29,8 @@ through the machine's forward proxy, `HTTPS_PROXY`.
 | direct, cold | empty | none |
 | direct, warm cache | filled by the run before | none |
 | proxy, cold | empty | started fresh: nothing analysed |
-| `waharoa warm` | | started fresh, warmed from the lockfile |
-| proxy, analysed | empty | after `waharoa warm` |
+| `byrle warm` | | started fresh, warmed from the lockfile |
+| proxy, analysed | empty | after `byrle warm` |
 | proxy, warm cache | filled by the run before | analysed |
 
 ## What the numbers say
@@ -42,12 +42,12 @@ through the machine's forward proxy, `HTTPS_PROXY`.
 - **Warm client cache:** the same as direct. The client revalidates and the proxy
   forwards the 304.
 
-## `waharoa warm` takes longer than a cold install
+## `byrle warm` takes longer than a cold install
 
-`waharoa warm` took 100.8 s for the npm set, against 20.1 s for `npm ci` against a cold
+`byrle warm` took 100.8 s for the npm set, against 20.1 s for `npm ci` against a cold
 proxy, measured in one run each from the proxy's log:
 
-| | `npm ci`, cold proxy | `waharoa warm` |
+| | `npm ci`, cold proxy | `byrle warm` |
 |---|---|---|
 | artifacts asked for | 131: npm skips optional packages for other platforms | 207: every lockfile entry, every platform's binaries included |
 | metadata | 128 documents fetched by the proxy on its own behalf, all within 2.2 s | 207 documents served to warm as a client's, over 40 s. `next`'s, 4.4 MB, took 21 s |

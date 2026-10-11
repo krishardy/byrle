@@ -47,7 +47,7 @@ pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
     let Some(base) = r.base else {
         warn!(
             url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
-            waharoa.package.files = kept.len(),
+            byrle.package.files = kept.len(),
             "UNINSPECTED: the simple index is forwarded as written, so its files are \
              fetched from the index's own host rather than through the proxy"
         );
@@ -63,9 +63,9 @@ fn filtered(r: &Rewrite<'_>, kept: usize) -> Option<Vec<u8>> {
         Ok(body) => {
             warn!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
-                waharoa.package.removed_files = r.project.files.len() - kept,
-                waharoa.package.kept_files = kept,
-                waharoa.package.removed_by_policy = r.refused_by_policy.len(),
+                byrle.package.removed_files = r.project.files.len() - kept,
+                byrle.package.kept_files = kept,
+                byrle.package.removed_by_policy = r.refused_by_policy.len(),
                 "REFUSED versions removed from the document so the resolver picks \
                  another"
             );
@@ -92,9 +92,9 @@ fn repointed(
         Ok(out) => {
             info!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
-                waharoa.package.files = files,
-                waharoa.package.rewritten_files = out.rewritten,
-                waharoa.package.left_alone_files = out.left_alone,
+                byrle.package.files = files,
+                byrle.package.rewritten_files = out.rewritten,
+                byrle.package.left_alone_files = out.left_alone,
                 "simple index rewritten"
             );
             if out.rewritten > 0 {

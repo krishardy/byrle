@@ -144,8 +144,8 @@ fn warn_allowed_direct(path: &str, allowed_direct: &BTreeMap<String, usize>) {
     }
     warn!(
         url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-        waharoa.package.versions = allowed_direct.values().sum::<usize>(),
-        waharoa.package.origins = ?allowed_direct.keys().collect::<Vec<_>>(),
+        byrle.package.versions = allowed_direct.values().sum::<usize>(),
+        byrle.package.origins = ?allowed_direct.keys().collect::<Vec<_>>(),
         "UNINSPECTED: artifacts fetched directly by the client, allowed by configuration"
     );
 }
@@ -172,11 +172,11 @@ fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Option<Vec<u8
         Ok(filtered) => {
             warn!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
-                waharoa.package.removed = filtered.removed.len(),
-                waharoa.package.removed_by_policy = r.refused_by_policy.len(),
-                waharoa.package.kept = filtered.rewritten,
-                waharoa.package.allowed_direct = filtered.allowed,
-                waharoa.package.origins = ?origins,
+                byrle.package.removed = filtered.removed.len(),
+                byrle.package.removed_by_policy = r.refused_by_policy.len(),
+                byrle.package.kept = filtered.rewritten,
+                byrle.package.allowed_direct = filtered.allowed,
+                byrle.package.origins = ?origins,
                 "REFUSED versions removed from the document so the resolver picks \
                  another"
             );
@@ -200,16 +200,16 @@ fn warn_unserved(path: &str, refused: &BTreeMap<String, usize>, records: usize) 
     if versions == records {
         warn!(
             url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-            waharoa.package.versions = versions,
-            waharoa.package.origins = ?origins,
+            byrle.package.versions = versions,
+            byrle.package.origins = ?origins,
             "UNINSPECTED: every artifact in this packument is on an origin the proxy \
              does not front"
         );
     } else {
         warn!(
             url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-            waharoa.package.versions = versions,
-            waharoa.package.origins = ?origins,
+            byrle.package.versions = versions,
+            byrle.package.origins = ?origins,
             "UNINSPECTED: some artifacts left on an origin the proxy does not front"
         );
     }

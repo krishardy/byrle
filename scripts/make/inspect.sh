@@ -13,7 +13,7 @@
 # Usage:
 #   make inspect                      lodash, through a proxy this starts
 #   make inspect PACKAGE=@babel/core  a scoped package
-#   WAHAROA_PROXY=http://host:8080 make inspect      an already running proxy
+#   BYRLE_PROXY=http://host:8080 make inspect      an already running proxy
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -21,11 +21,11 @@ cd "$repo_root"
 
 # shellcheck source=scripts/make/lib/node.sh
 . "$repo_root/scripts/make/lib/node.sh"
-waharoa_use_latest_node
+byrle_use_latest_node
 
 package="${PACKAGE:-lodash}"
-upstream="${WAHAROA_UPSTREAM_NPM:-https://registry.npmjs.org}"
-port="${WAHAROA_PORT:-8733}"
+upstream="${BYRLE_UPSTREAM_NPM:-https://registry.npmjs.org}"
+port="${BYRLE_PORT:-8733}"
 workdir="$(mktemp -d)"
 proxy_pid=""
 
@@ -45,21 +45,21 @@ encoded="${package/\//%2f}"
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 field() { printf '    %-20s %s\n' "$1" "$2"; }
 
-if [[ -n "${WAHAROA_PROXY:-}" ]]; then
-    proxy="${WAHAROA_PROXY%/}"
+if [[ -n "${BYRLE_PROXY:-}" ]]; then
+    proxy="${BYRLE_PROXY%/}"
     echo "using the proxy already running at $proxy"
 else
     proxy="http://127.0.0.1:${port}"
     if ss -ltn 2>/dev/null | grep -q ":${port} "; then
-        echo "port ${port} is already in use; set WAHAROA_PORT, or WAHAROA_PROXY to use it"
+        echo "port ${port} is already in use; set BYRLE_PORT, or BYRLE_PROXY to use it"
         exit 1
     fi
     log="$workdir/proxy.log"
-    WAHAROA_SPOOL_DIR="$workdir/spool" WAHAROA_LISTEN="127.0.0.1:${port}" WAHAROA_PUBLIC_URL="$proxy" WAHAROA_UPSTREAM_NPM="$upstream" \
+    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" BYRLE_PUBLIC_URL="$proxy" BYRLE_UPSTREAM_NPM="$upstream" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
-        grep -q "waharoa listening" "$log" && break
+        grep -q "byrle listening" "$log" && break
         kill -0 "$proxy_pid" 2>/dev/null || { echo "proxy exited during startup"; cat "$log"; exit 1; }
         sleep 1
     done
@@ -208,7 +208,7 @@ What to look for:
   it makes upstream so it has one decompressor rather than three, and still answers with
   something the client asked for. pnpm is the client that offers br.
 
-  etag marked with a waharoa prefix, because the body is no longer the registry's and a
+  etag marked with a byrle prefix, because the body is no longer the registry's and a
   304 on the registry's own tag would hand the client a document this proxy never saw.
 
   the document each client gets. npm and pnpm ask for the abbreviated packument; yarn 1

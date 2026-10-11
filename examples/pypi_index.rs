@@ -12,10 +12,10 @@ async fn main() {
         names
     };
     let http = reqwest::Client::builder()
-        .user_agent(concat!("waharoa/", env!("CARGO_PKG_VERSION")))
+        .user_agent(concat!("byrle/", env!("CARGO_PKG_VERSION")))
         .build()
         .expect("a client");
-    let client = waharoa::ecosystem::pypi::Client::new(http, waharoa::ecosystem::pypi::INDEX);
+    let client = byrle::ecosystem::pypi::Client::new(http, byrle::ecosystem::pypi::INDEX);
 
     println!(
         "{:22} {:>6} {:>7} {:>7} {:>7} {:>8} {:>9}",
@@ -24,8 +24,7 @@ async fn main() {
     for name in names {
         match client.project(&name).await {
             Ok(project) => {
-                let records = match waharoa::ecosystem::pypi::normalize(&project).map(|m| m.records)
-                {
+                let records = match byrle::ecosystem::pypi::normalize(&project).map(|m| m.records) {
                     Ok(records) => records,
                     Err(e) => {
                         eprintln!("{name}: {e}");
@@ -35,7 +34,7 @@ async fn main() {
                 let wheels = project
                     .files
                     .iter()
-                    .filter(|f| f.kind == waharoa::ecosystem::pypi::Kind::Wheel)
+                    .filter(|f| f.kind == byrle::ecosystem::pypi::Kind::Wheel)
                     .count();
                 println!(
                     "{:22} {:>6} {:>7} {:>7} {:>7} {:>8} {:>9}",

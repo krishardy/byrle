@@ -1,4 +1,4 @@
-//! Lockfiles uv, poetry, pip and pipenv write, read for `waharoa policy diff`.
+//! Lockfiles uv, poetry, pip and pipenv write, read for `byrle policy diff`.
 //!
 //! See docs/engineering_decisions/policy-diff-lockfiles.md.
 
@@ -113,7 +113,7 @@ fn uv_source(package: &TomlPackage) -> Option<&toml::Table> {
     package.source.as_ref()?.as_table()
 }
 
-/// For `waharoa lockfile verify`: each file uv's lockfile records for a registry package, its
+/// For `byrle lockfile verify`: each file uv's lockfile records for a registry package, its
 /// sdist and every wheel, with its URL; a file with no `url` records none. Each package from
 /// elsewhere is named by its source, unless that is a path inside the project.
 fn uv_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {

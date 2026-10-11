@@ -1,4 +1,4 @@
-//! GuardDog, Datadog's open-source scanner: the version waharoa runs, and every rule it
+//! GuardDog, Datadog's open-source scanner: the version byrle runs, and every rule it
 //! reports, so a policy weighting a rule it does not have is refused at load.
 //! See docs/engineering_decisions/detectors.md.
 

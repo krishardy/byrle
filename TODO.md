@@ -1,4 +1,4 @@
-# waharoa — Staged TODO
+# byrle — Staged TODO
 
 Stages are sequential. Each has an exit criterion; do not start the next stage until it
 is met. Within a stage, `[!]` marks items that block the exit criterion.
@@ -151,8 +151,8 @@ Items that I've added that are not stage-bound.
     - Done 2026-09-13: the gate was never meant for `audit`. `95c52b0` put it on
       `pub mod defer`; `d648995` inserted `pub mod audit;` between the attribute and
       `defer`, so `audit` was gated and `defer` was compiled into every build. The gate is
-      back on `defer`. The release binary has no `waharoa::defer` symbols (the debug one has
-      44) and does not list `WAHAROA_DEFER_TEST` in `--help`. `make lint` now also runs
+      back on `defer`. The release binary has no `byrle::defer` symbols (the debug one has
+      44) and does not list `BYRLE_DEFER_TEST` in `--help`. `make lint` now also runs
       clippy with `--release`.
 12. [x] In make semgrep, also report on any semgrep exceptions (file, line # and line text)
     - Done 2026-09-13: after the scan, `==> exceptions` lists each finding a `nosemgrep`
@@ -214,7 +214,7 @@ Items that I've added that are not stage-bound.
     the proxy and serves its own file URLs: with the operator's own pip.conf in place, an
     install through the proxy fetched every file from the other index and the proxy saw no
     `/packages/` request at all. `UV_NO_CONFIG=1` for uv, for the same reason.
-    Two controls, both failing the way they should: with `WAHAROA_REWRITE_ARTIFACTS=0`, pip
+    Two controls, both failing the way they should: with `BYRLE_REWRITE_ARTIFACTS=0`, pip
     takes every file from files.pythonhosted.org and step 3 reports all five distributions
     installed but never normalized. With `install_scripts: allow`, step 5 reports the sdist
     installed although install scripts are blocked.
@@ -304,7 +304,7 @@ Items that I've added that are not stage-bound.
 
 25. [x] Make every log line structured. Raised 2026-09-28, done the same day
     ([structured-logs](docs/engineering_decisions/structured-logs.md)).
-    - `WAHAROA_LOG_FORMAT=json` writes JSON Lines, every field a key.
+    - `BYRLE_LOG_FORMAT=json` writes JSON Lines, every field a key.
     - Every message is a fixed string. 19 of 114 log calls with a message had put a value
       into it, 11 of them in `startup.rs`; none do now. The first count, 13 of 93, missed
       messages split across lines.
@@ -323,7 +323,7 @@ Items that I've added that are not stage-bound.
     captured through `log` so every log call's `log` branch runs, and a generic function
     with branches has one non-generic core.
 
-27. [x] Decide whether `waharoa doctor` checks `bun.lock` for the proxy's address. Raised
+27. [x] Decide whether `byrle doctor` checks `bun.lock` for the proxy's address. Raised
     2026-09-29. Done 2026-09-29: bun 1.4.2 writes the artifact URL for every registry but
     registry.npmjs.org, where it writes `""`. `doctor` now reads `bun.lock`, and warns when
     it records no URL, since that means it was resolved from npmjs.org. See
@@ -336,11 +336,11 @@ Items that I've added that are not stage-bound.
     See [policy-diff-lockfiles](docs/engineering_decisions/policy-diff-lockfiles.md).
 
 29. [x] Say when a stream an ecosystem lists did not load. Raised 2026-09-29. With
-    `MAL-2026-16369` past the 1 MiB record ceiling, `waharoa refresh` did not load `osv/npm`
-    and exited 1, and `/-/waharoa/ready` answered 200, because `datadog/npm` alone counts as
+    `MAL-2026-16369` past the 1 MiB record ceiling, `byrle refresh` did not load `osv/npm`
+    and exited 1, and `/-/byrle/ready` answered 200, because `datadog/npm` alone counts as
     covering npm for `match` and `malware`. A fresh store then held no OSV npm advisories,
     and `known_malware` let `clinstestpackage` through. Only the refresh's own output said
-    so. Readiness, `waharoa status` and `waharoa doctor` could report a listed stream missing
+    so. Readiness, `byrle status` and `byrle doctor` could report a listed stream missing
     from the snapshot, or one whose last load is older than the others.
     Done 2026-09-29: a listed stream the snapshot does not hold is a gap, unless its latest
     refresh recorded it as not configured. A gap answers the ecosystem's packages 503 and
@@ -362,7 +362,7 @@ disturbed: `record`, `policy`, `route`, `origin` and `lockfile` are all ecosyste
 reads npm formats only but says so and refuses:
 
 ```text
-waharoa policy diff: requirements.txt: a lockfile is read only under one of these
+byrle policy diff: requirements.txt: a lockfile is read only under one of these
 names: package-lock.json, npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock
 ```
 
@@ -444,8 +444,8 @@ That is the failure mode every item below should be brought to.
       reports `published 2024-09-15`, PyPI's upload time.
 
       ```text
-      $ waharoa explain 'pkg:pypi/requests@2.34.2'
-      waharoa explain: the registry does not publish pkg:pypi/requests@2.34.2
+      $ byrle explain 'pkg:pypi/requests@2.34.2'
+      byrle explain: the registry does not publish pkg:pypi/requests@2.34.2
       ```
 
       `main.rs:451` builds an `npm::Client` unconditionally. That package exists; npm was
@@ -473,7 +473,7 @@ That is the failure mode every item below should be brought to.
       Fixed 2026-09-19: sixteen public and two private documentation warnings, and `make
       lint` now runs `cargo doc --document-private-items` with warnings as errors.
 
-- [x] **`waharoa refresh` had no timeout, so a stalled download blocked it indefinitely.**
+- [x] **`byrle refresh` had no timeout, so a stalled download blocked it indefinitely.**
       On 2026-09-17 a refresh sat for 12 minutes with its TLS connection established,
       nothing queued and `rchar` unchanged over 10 s, while `curl` fetched the same
       215,141,389-byte `npm/all.zip` in 9 s. The attempt after it failed with
@@ -522,7 +522,7 @@ That is the failure mode every item below should be brought to.
 
       Done 2026-09-19. Each stream is its own source, and a stream that does not load keeps
       its last load while the others load: `stream-descriptor-table.md`. A live
-      `waharoa refresh` against Postgres with no `WAHAROA_GITHUB_TOKEN`:
+      `byrle refresh` against Postgres with no `BYRLE_GITHUB_TOKEN`:
 
       | Stream | Result |
       |---|---|
@@ -531,11 +531,11 @@ That is the failure mode every item below should be brought to.
       | `datadog/npm`, `datadog/pypi`, `cisa/kev` | loaded |
       | `github/npm`, `github/pypi` | not loaded, token unset; the rest loaded |
 
-      A second refresh with `~/.config/waharoa/env` sourced loaded all seven streams in
+      A second refresh with `~/.config/byrle/env` sourced loaded all seven streams in
       279 s: `github/npm` 7,078 advisories over 101 pages, `github/pypi` 6,078 over 114, and
       every `github/pypi` name in PEP 503 form (`GitPython` stored as `gitpython`).
 
-      `waharoa explain 'pkg:pypi/requests@2.19.0'` blocks on `GHSA-x84v-xcm2-53pg` 7.5, and
+      `byrle explain 'pkg:pypi/requests@2.19.0'` blocks on `GHSA-x84v-xcm2-53pg` 7.5, and
       `pip install requests==2.19.0` through the proxy finds no matching distribution: the
       index lists 2.31.0 and later.
 
@@ -558,7 +558,7 @@ That is the failure mode every item below should be brought to.
       | `proxy.rs` | `handle`'s `match document`, each arm one call into the ecosystem module | each picks a reader per document kind |
       | `intel/providers/` | npm-only stream bindings | the directory is per **provider**, and step 4 makes each provider read more than npm rather than moving the file |
       | `doctor.rs` | finding text naming `npm ci` and "every client except npm" | measured npm behaviour, reported as such |
-      | `env.rs` | `WAHAROA_UPSTREAM_NPM`, `WAHAROA_MAX_METADATA_BYTES` and the other variable names | configuration an operator sets |
+      | `env.rs` | `BYRLE_UPSTREAM_NPM`, `BYRLE_MAX_METADATA_BYTES` and the other variable names | configuration an operator sets |
       | `identity.rs`, `route.rs` | `Ecosystem::Npm`, `Ecosystem::PyPI`, `DocumentKind::Packument`, `DocumentKind::SimpleIndex` | the enums that name each ecosystem and its document |
 
 - [x] **npm and PyPI code outside `src/ecosystem/`, found 2026-09-18 at `6b43f92`.**
@@ -572,9 +572,9 @@ That is the failure mode every item below should be brought to.
       | selectors and denials compared names and versions as strings | read the ecosystem's way, and take a VERS range ([policy-version-ranges](docs/engineering_decisions/policy-version-ranges.md)) |
       | a policy purl no package can have loaded and matched nothing | refused at load, by `identity::key_from_purl` |
       | intel rows stored names as each source wrote them | stored as the ecosystem compares names, by `Affected::new` and `Ranged::new` |
-      | npm and PyPI upstreams passed around as a pair | `Upstreams`, one base per row, and `upstreams` in `/-/waharoa/health` |
+      | npm and PyPI upstreams passed around as a pair | `Upstreams`, one base per row, and `upstreams` in `/-/byrle/health` |
       | the cooldown cost warning described npm for every policy | names each ecosystem `PublishTimeSource::cost` gives a cost for |
-      | `WAHAROA_DEFER_TEST` scopes `packument` and `tarball`; `make retry-matrix` npm-only | `metadata` and `artifact`; pip and uv measured too |
+      | `BYRLE_DEFER_TEST` scopes `packument` and `tarball`; `make retry-matrix` npm-only | `metadata` and `artifact`; pip and uv measured too |
       | setup lines, npm's `undefined`, duplicate `"npm"` constants | `Registry::setup`, `RegistryQuery::unset`, `Ecosystem::Npm.as_str()` |
       | OSV's `PYSEC-` records would be skipped | moved into step 4 above |
 
@@ -715,11 +715,11 @@ implementations.
       reqwest 0.13's default `rustls` feature pulls `rustls-platform-verifier` 0.7, so the
       upstream leg validates against the OS trust store. Inbound stays plain HTTP on
       loopback, per decision #3.
-      - [x] `WAHAROA_CA_BUNDLE` points at a PEM bundle, for a private registry with an
+      - [x] `BYRLE_CA_BUNDLE` points at a PEM bundle, for a private registry with an
             internal CA or a corporate TLS-inspecting middlebox. `src/tls.rs`.
             `add_root_certificate` is deprecated in reqwest 0.13.5; the replacements are
             `tls_certs_merge` and `tls_certs_only`.
-      - [x] `WAHAROA_CA_BUNDLE_EXCLUSIVE=1` trusts **only** the bundle, dropping every
+      - [x] `BYRLE_CA_BUNDLE_EXCLUSIVE=1` trusts **only** the bundle, dropping every
             public root. Worth having on its own terms: it pins the upstream, so a
             compromise of any of the hundreds of public CAs cannot be used to impersonate
             the registry. Verified with a self-signed CA against registry.npmjs.org:
@@ -740,7 +740,7 @@ implementations.
             network fault. `TrustError::Empty` refuses both.
 - [x] Serve `npm install lodash` successfully through the proxy. Covered by `make smoke-npm`.
 - [x] Block one hardcoded package name with HTTP 403, proving interception. Throwaway, and
-      kept deliberately awkward: it was env-only (`WAHAROA_BLOCK`), with no config file
+      kept deliberately awkward: it was env-only (`BYRLE_BLOCK`), with no config file
       behind it, so it could not quietly become a feature. **Removed in Stage 2**, which
       replaced it with the policy engine. `make smoke-npm` 6/6 now proves interception
       against a real denial instead.
@@ -844,8 +844,8 @@ implementations.
             versions carry it, all `true`; absence means no install script. The
             abbreviated and full documents agreed on `has_install_scripts` across all
             24,852 pairs, which raises the earlier 860-pair check by 29x.
-      - [x] Corpus check in the tests, gated behind `WAHAROA_NPM_CORPUS` /
-            `WAHAROA_NPM_CORPUS_FULL`, plus two `#[ignore]`d live tests against
+      - [x] Corpus check in the tests, gated behind `BYRLE_NPM_CORPUS` /
+            `BYRLE_NPM_CORPUS_FULL`, plus two `#[ignore]`d live tests against
             registry.npmjs.org covering the scoped-name URL round trip and the 404 path.
       - [x] Wired into the proxy. `src/proxy.rs` buffers packument responses, decodes a
             scratch copy, normalizes it, and forwards the **original encoded bytes**
@@ -867,7 +867,7 @@ implementations.
                   Accept headers): exactly the two media types, no `charset` parameter.
                   A response with any other type is forwarded unread, so a mirror that
                   labels packuments differently would be observed by nothing.
-            - [x] Decompression is capped (`WAHAROA_MAX_METADATA_BYTES`, default 64 MiB)
+            - [x] Decompression is capped (`BYRLE_MAX_METADATA_BYTES`, default 64 MiB)
                   against a zip bomb. Over the cap the body is forwarded whole and not
                   parsed: an install must not fail on what the proxy could not inspect.
             - [x] Measured parse cost: 2 ms for lodash (117 versions), 7 ms for
@@ -885,7 +885,7 @@ implementations.
             `PackageRef`. Resolving it needs the packument record, which is the
             `dist.integrity`-before-fetch item below.
       - [x] Make the packument tarball URL rewriting a feature flag. Global, not per
-            client: `WAHAROA_REWRITE_ARTIFACTS=0` turns it off for every client at once,
+            client: `BYRLE_REWRITE_ARTIFACTS=0` turns it off for every client at once,
             which keeps one behaviour for the ecosystem rather than a user-agent table to
             maintain. The proxy warns at startup when it is off, because pnpm, yarn and
             bun then fetch artifacts without it seeing them, and `make smoke-clients`
@@ -947,7 +947,7 @@ implementations.
             address, `--prefer-online`. The registry answered 304, the proxy logged
             `held=false` and fetched the document itself in 21 ms, 117 versions, and the
             install completed.
-- [x] Memory under concurrency, measured. `WAHAROA_MAX_CONCURRENT_METADATA` (default 8)
+- [x] Memory under concurrency, measured. `BYRLE_MAX_CONCURRENT_METADATA` (default 8)
       bounds how many packuments are decoded and rewritten at once.
       - [x] Realistic load is fine. A six-package install pulling typescript, eslint,
             webpack, react, @angular/core and @types/node: 165 packuments, peak 127 MB,
@@ -1076,7 +1076,7 @@ implementations.
             read and does not name this version), `Unknown` (no packument observed).
             `NoSuchVersion` is reachable from a real `npm install express@3.0.0-rc1`,
             whose tarball is served at `express-3.0.0rc1.tgz`.
-      - [x] Bounded by total record count (`WAHAROA_MAX_RECORDS`, default 50,000),
+      - [x] Bounded by total record count (`BYRLE_MAX_RECORDS`, default 50,000),
             evicting least recently used. A four-package install touches 167 packuments
             and 9,690 records; the largest single packument is typescript at 3,822. A
             packument bigger than the whole budget is still kept, because the tarball
@@ -1096,9 +1096,9 @@ implementations.
       - [x] A digest is recorded only when bytes have been hashed against it. A mismatch
             records nothing: that would be recording the attack, and the next request for
             the same digest would read as already seen.
-      - [x] Bounded by count, least recently used first, `WAHAROA_MAX_VERIFIED`, default
+      - [x] Bounded by count, least recently used first, `BYRLE_MAX_VERIFIED`, default
             50,000. An entry is an algorithm and a digest, so the budget is a few MB.
-      - [x] `artifacts_verified` is reported at `/-/waharoa/health`. Verified against the
+      - [x] `artifacts_verified` is reported at `/-/byrle/health`. Verified against the
             real registry: two requests for lodash 4.17.21, `cache="miss"` then
             `cache="hit"` on the same sha512, one entry held.
 - [x] Stream the body through a hashing wrapper, and verify what arrives against the
@@ -1146,10 +1146,10 @@ implementations.
       - [x] No false positives: silent across 67 packuments in a real install and all
             24,852 artifact URLs in the corpus test, and it fires on a controlled
             registry publishing to another origin.
-      - [x] Three states, not two. `WAHAROA_ALLOW_DIRECT_ORIGINS` names origins the
+      - [x] Three states, not two. `BYRLE_ALLOW_DIRECT_ORIGINS` names origins the
             proxy does not serve and permits anyway, so the client fetches those
             artifacts directly. Before it, the only escape from a refusal was
-            `WAHAROA_REFUSE_UNSERVABLE=0`, which trades one origin's exemption for every
+            `BYRLE_REFUSE_UNSERVABLE=0`, which trades one origin's exemption for every
             origin's. An allowed origin is reported on every packument that uses it: an
             accepted gap that stops being reported outlives the reason it was added.
       - [x] **Only `dist.tarball` needs the policy, for npm.** pacote resolves
@@ -1180,7 +1180,7 @@ implementations.
       not ready (mirror warming, all requests) · **429** we are ready but this one
       artifact is under analysis. The split is decided and each code now has a home.
       - [x] 502 is implemented and tested, for every request kind. The
-            `WAHAROA_CA_BUNDLE_EXCLUSIVE` handshake failure exercises it against a real
+            `BYRLE_CA_BUNDLE_EXCLUSIVE` handshake failure exercises it against a real
             registry as well.
       - [x] 503 landed in Stage 2, on the intel store: a store with no snapshot, or one
             that errors, answers 503 on both paths with nothing fetched.
@@ -1196,7 +1196,7 @@ implementations.
             That is why there is no configuration surface for a not-ready state to acquire
             a 4xx through.
 - [x] `[!]` Test real client retry behavior early. Done: `make retry-matrix`, five
-      clients against a deferral the proxy is told to produce (`WAHAROA_DEFER_TEST`, debug
+      clients against a deferral the proxy is told to produce (`BYRLE_DEFER_TEST`, debug
       builds only). Full tables in
       `docs/engineering_decisions/deferral-status-codes.md`.
       - [x] **429 is terminal for yarn 1 and bun; 503 is not.** Both stop after one 429
@@ -1255,19 +1255,19 @@ implementations.
                   client with a warm cache first meets a rewriting proxy.
             - [x] Lockfiles, measured: npm and yarn record the proxy address; pnpm omits
                   the URL and derives it from the configured registry, so its lockfiles
-                  become registry-independent. `WAHAROA_PUBLIC_URL` pins the address.
+                  become registry-independent. `BYRLE_PUBLIC_URL` pins the address.
             - [x] **The recorded address is load-bearing.** A lockfile written through a
                   proxy on one port, then `npm ci` against a proxy on another, fails
                   outright: npm goes to the address in `resolved` and does not fall back
                   to the registry given on the command line. The proxy warns at startup
-                  when `WAHAROA_PUBLIC_URL` is unset, and the README says so.
+                  when `BYRLE_PUBLIC_URL` is unset, and the README says so.
             - [x] `make smoke-clients` asserts every client fetches and verifies
-                  artifacts. Checked that it bites with `WAHAROA_REWRITE_ARTIFACTS=0`.
+                  artifacts. Checked that it bites with `BYRLE_REWRITE_ARTIFACTS=0`.
 - [x] **Refuse artifacts whose origin is not in the proxy configuration.** Tier 3 in
       `docs/engineering_decisions/enforcement-tiers.md`, built before any network-level
       interception: it closes the gap those tiers are wanted for and needs no CA, no root,
       no trust-store changes and nothing per machine. On by default;
-      `WAHAROA_REFUSE_UNSERVABLE=0` forwards them instead.
+      `BYRLE_REFUSE_UNSERVABLE=0` forwards them instead.
       - [x] Filter, do not block the document, per decision #4
             (`quarantine-filter-metadata.md`). A package can have one old version on
             another origin and every current version on the registry; refusing the
@@ -1285,7 +1285,7 @@ implementations.
             to win.** Returning "nothing to rewrite" forwarded the original, putting every
             refused version straight back into the document. An empty `versions` map is
             the right answer.
-      - [x] Operator-configured origins. `WAHAROA_ARTIFACT_ORIGINS` is a comma-separated
+      - [x] Operator-configured origins. `BYRLE_ARTIFACT_ORIGINS` is a comma-separated
             list of additional origins the proxy fronts, for a registry that publishes
             artifacts somewhere else, a CDN in front of a private registry being the case
             to expect. The upstream and the default registry are always included. Zero of
@@ -1308,7 +1308,7 @@ implementations.
                   plan §5 asks for anyway: the digest is known before the artifact is
                   fetched, not after its headers arrive.
       - [x] The refusal status is configurable by (ecosystem, client), defaulting to 403.
-            `WAHAROA_REFUSAL_STATUS="default=403,npm/pnpm=451"`. Clients bucket status
+            `BYRLE_REFUSAL_STATUS="default=403,npm/pnpm=451"`. Clients bucket status
             codes rather than reading them, so an operator who finds one mishandling 403
             can say so without waiting for a release.
             - [x] The client is the **first token** of the user-agent, never a substring.
@@ -1346,7 +1346,7 @@ implementations.
       on node 16.
       - [x] "Latest stable" is `nvm version node`, nvm's own answer, rather than the
             highest directory name.
-      - [x] The helper sets `WAHAROA_NODE` rather than printing. A caller capturing its
+      - [x] The helper sets `BYRLE_NODE` rather than printing. A caller capturing its
             output with `$(...)` runs it in a subshell and the new PATH dies with it,
             which is what happened first time: npm stayed at 9.9.4.
       - [x] **corepack is no longer bundled.** Node shipped it from 16.9 until it was
@@ -1409,7 +1409,7 @@ implementations.
       | yarn 1, yarn 4 | the packument did, the artifact did not |
       So the artifact bypass is universal and, for three of the five, so is the metadata
       one. §7 records it as a bypass vector; this is the evidence.
-      - [x] `waharoa doctor` checks all four caches it can locate, not just npm's, and
+      - [x] `byrle doctor` checks all four caches it can locate, not just npm's, and
             describes the two behaviours separately because they are different exposures.
       - [x] Each client gets the command that actually clears its cache.
             `npm cache clean --force` is not it for bun or pnpm.
@@ -1421,7 +1421,7 @@ implementations.
             answers with a store on the project's own filesystem, so it is
             `/tmp/.pnpm-store` in a directory under `/tmp` and the user's store elsewhere.
             Doctor already says which directory it checked from.
-- [x] `waharoa doctor`. `src/doctor.rs` holds the checks as pure functions; the binary
+- [x] `byrle doctor`. `src/doctor.rs` holds the checks as pure functions; the binary
       reads the files and asks each package manager for its own resolved configuration,
       since the effective registry comes from a project `.npmrc`, then the user's, then
       the global one, and only the client knows which won.
@@ -1441,10 +1441,10 @@ implementations.
       - [x] npm cache entry count, since a warm cache is served without consulting the
             registry at all (§7).
       - [x] An unknown subcommand exits 2 rather than falling through to the proxy, and
-            `waharoa help` lists every environment variable.
-      - [x] Whether the proxy is reachable and answering. `GET /-/waharoa/health` is
+            `byrle help` lists every environment variable.
+      - [x] Whether the proxy is reachable and answering. `GET /-/byrle/health` is
             answered by the proxy itself rather than forwarded, so a client can tell a
-            waharoa from any other registry.
+            byrle from any other registry.
             - [x] Under `/-/`, the registry's own namespace, where a package name can
                   never live. Everything else under it still goes upstream.
             - [x] It reports the settings that decide what gets examined: the public
@@ -1551,7 +1551,7 @@ the record of why it went survives the deletion.
       `tests/fixtures/explain/decisions.txt`, 22 cases covering every state each check can
       reach, the narrowest entry winning, a lapsed entry, and an exception that shortens a
       wait and not enough. `tests/fixtures/explain/policy.txt` pins `explain --policy`,
-      `examples/policy.yaml` included. `WAHAROA_BLESS=1` rewrites both.
+      `examples/policy.yaml` included. `BYRLE_BLESS=1` rewrites both.
 
 #### Built, then removed by the redesign
 
@@ -1647,7 +1647,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             lodash 3.6x, express 2.4x, eslint 1.7x, debug 2.6x, ms 3.1x, @babel/traverse
             1.9x, react 2.4x, typescript 1.8x (8.7 MB to 15.7 MB). The 32 MB packument
             ceiling already allows for that.
-      - [x] **Policy filtering was coupled to `WAHAROA_REWRITE_ARTIFACTS`.** Filtering a
+      - [x] **Policy filtering was coupled to `BYRLE_REWRITE_ARTIFACTS`.** Filtering a
             refused version is a policy question and repointing artifact URLs is a
             transport one. `enforcement-tiers.md` says rewriting is correctly turned off
             once the proxy terminates TLS, which silently stopped the filtering with it.
@@ -1745,13 +1745,13 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] Shipped config template that loads and passes its own rules. `examples/policy.yaml`,
       checked from both sides: it parses, and it satisfies the package-tier rules.
 
-### `waharoa policy diff`
+### `byrle policy diff`
 
 - [x] `[!]` Evaluate two policies against a real package set. `src/policy/diff.rs`,
-      `waharoa policy diff <from> <to>`.
+      `byrle policy diff <from> <to>`.
 - [x] `[!]` Pin `--snapshot` so policy changes are not conflated with intel changes.
-      `waharoa refresh` keeps each snapshot in `WAHAROA_SNAPSHOT_DIR`
-      (`src/intel/snapshot_dir.rs`, `WAHAROA_SNAPSHOT_LIMIT` 30 by default), and
+      `byrle refresh` keeps each snapshot in `BYRLE_SNAPSHOT_DIR`
+      (`src/intel/snapshot_dir.rs`, `BYRLE_SNAPSHOT_LIMIT` 30 by default), and
       `policy diff --snapshot <id>` reads one through `SnapshotIntel`
       (`src/intel/snapshot_intel.rs`) instead of Postgres. See
       `docs/engineering_decisions/snapshot-identity.md`.
@@ -1786,11 +1786,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       2026-09-30 tightened `@babel/helper-validator-identifier`, exit 2.
 - [x] A packument that could not be read was skipped with a message and not counted, so a
       run where every read failed printed `0 packages evaluated`, `nothing moved`, and exited
-      0. Seen with `WAHAROA_UPSTREAM` set to `nope`, `ftp://x` and `http://`. Now a failed
+      0. Seen with `BYRLE_UPSTREAM` set to `nope`, `ftp://x` and `http://`. Now a failed
       read, a 404 included, is counted and ORs 4 into the exit, and so does a run that judged
       none of the versions listed: exit 4 for `nope`. Publish times that cannot be read count
       the same, and `explain` exits 1 for them.
-- [x] `WAHAROA_UPSTREAM` was read as text. `policy diff` and `explain` sent every request
+- [x] `BYRLE_UPSTREAM` was read as text. `policy diff` and `explain` sent every request
       to `nope`, and the proxy panicked on it, exit 101. `env::Env::upstream` now refuses a
       value that is not an http or https URL with a host: exit 2, and 4 for `policy diff`.
 
@@ -1853,9 +1853,9 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       declares one `Stream` per stream in `ALL`, holding source, stream name, URL, byte
       ceiling, `Requirement`, `Grant`s and a `parse` shim returning `Parsed { payload, tally }`.
       `Payload::Advisories` encodes through `load::encode` and `Payload::Exploited` through
-      `load::encode_exploited`. `waharoa refresh` loops over `ALL`, and `intel::capabilities_of`
+      `load::encode_exploited`. `byrle refresh` loops over `ALL`, and `intel::capabilities_of`
       reads the grants rather than matching on stream names, so neither holds a per-stream
-      branch. Fetching stays in `waharoa refresh`: a fetch is network I/O, and everything a
+      branch. Fetching stays in `byrle refresh`: a fetch is network I/O, and everything a
       descriptor holds is decidable from the bytes.
       Mirroring is not part of this item; it is tracked under "Local mirrors for all streams"
       below.
@@ -1903,7 +1903,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` OSV.dev stream, lookup by PURL. npm `MAL-` and `GHSA-` records parse
       (`src/intel/osv.rs`) and load (`PgIntel::replace_source`): all 221,217 non-withdrawn
       `MAL-` and all 7,052 `GHSA-`, with 10,357 range rows evaluated at lookup
-      (`src/intel/range.rs`). `waharoa refresh` fetches and loads them.
+      (`src/intel/range.rs`). `byrle refresh` fetches and loads them.
       `docs/engineering_decisions/osv-malware-load.md`,
       `docs/engineering_decisions/osv-ranges-and-scores.md`.
       - [x] 24 `GHSA-` records stored nothing and 4 stored part: their ranges held versions
@@ -1915,7 +1915,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Choose the OSV fetch: `npm/all.zip`, read from memory with `zip` (`deflate-flate2`
       only). 228,951 single-record GETs was the alternative. `npm/modified_id.csv`, which
       lists every record's modified time, is left for an incremental refresh.
-- [x] `[!]` `waharoa refresh`: fetch, parse, `replace_source`, snapshot id from the bundle.
+- [x] `[!]` `byrle refresh`: fetch, parse, `replace_source`, snapshot id from the bundle.
       Live against Postgres 17: 220,684 advisories and 232,677 affected rows in 46.6s on a
       debug build. A second run upserts the same snapshot id.
 - [x] `[!]` Wire the intel store into `Facts` (`known_malware`, `Intel::Consulted`) in the
@@ -2007,20 +2007,20 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] Datadog malicious-packages (licence-cleared: Apache-2.0). Not ingested by OSSF: no
       `MAL-` record lists it as an origin. Every npm manifest entry is loaded as one
       `DATADOG-npm-<name>` malware record, source `datadog`, stream `datadog/npm` (`match`,
-      `malware` for npm), beside OSV's records. `waharoa refresh` prints each package Datadog
+      `malware` for npm), beside OSV's records. `byrle refresh` prints each package Datadog
       flags at every version and OSV's malware records only at some. A failed fetch keeps the
       last Datadog load and exits 1. [datadog-stream](docs/engineering_decisions/datadog-stream.md),
       [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
 - [x] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed). `enrich`-only, joined on
-      exact CVE ID or an alias. Source `cisa/kev` in `exploited_cve`, loaded by `waharoa
+      exact CVE ID or an alias. Source `cisa/kev` in `exploited_cve`, loaded by `byrle
       refresh` in the same transaction as OSV; a failed fetch keeps the last KEV load and
-      exits 1; kept snapshot files carry the rows as `waharoa intel exploited 1`. Loaded
+      exits 1; kept snapshot files carry the rows as `byrle intel exploited 1`. Loaded
       2026-09-15: 1,710 CVE ids mark 13 stored npm `GHSA-` records exploited, all 13 scored.
       [kev-stream](docs/engineering_decisions/kev-stream.md).
       - [x] `explain --policy` reads whether `cisa/kev` is loaded from the newest snapshot's
             streams, and `PgIntel::package` from `intel_source`. A refresh records a stream
             for every source it loads, so both agree today. Read one of them for both.
-            Sources: `LoadedSnapshot` carries them (`/-/waharoa/ready` too) and
+            Sources: `LoadedSnapshot` carries them (`/-/byrle/ready` too) and
             `exploitation_loaded` reads them for `explain --policy` and `SnapshotIntel`. A
             kept snapshot records no streams. [kev-stream](docs/engineering_decisions/kev-stream.md).
 - [x] Withdrawal propagation. A full load replaces every row a source held, so a withdrawn
@@ -2085,7 +2085,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       figure beside `main.rs`, so it is visible rather than excluded quietly. The floor reads
       98.30% lines without it.
 - [x] `[!]` Tests that do not need a database must not require the container. Without
-      `WAHAROA_TEST_DATABASE_URL`, `tests/postgres.rs` returns early from every test.
+      `BYRLE_TEST_DATABASE_URL`, `tests/postgres.rs` returns early from every test.
 - [x] `[!]` Bulk refresh via `COPY FROM STDIN` (`PgCopyIn`). CSV rather than binary; see
       `docs/engineering_decisions/osv-malware-load.md`.
 - [x] `[!]` Atomic refresh. One source's rows are deleted and copied in one transaction
@@ -2093,7 +2093,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       mutation-tested.
 - [x] `[!]` Cold start fails closed with **503, never 403** + readiness endpoint with %.
       503 is built: a store with no snapshot, or one that errors, answers 503 on both paths.
-      `GET /-/waharoa/ready` answers 503 in exactly those cases and reports the snapshot and
+      `GET /-/byrle/ready` answers 503 in exactly those cases and reports the snapshot and
       each stream's digest. No percentage: a refresh is one transaction, so there is no
       partial load to measure. See
       [readiness-endpoint](docs/engineering_decisions/readiness-endpoint.md).
@@ -2154,9 +2154,9 @@ defers.
       gets one row per stream per refresh, never updated or pruned: source, stream, bundle
       sha256, etag and `last-modified`, rows digest, snapshot, when, and the error for a
       stream that did not load. Loaded streams are written in the load's transaction; a
-      refresh that loaded nothing writes its streams in their own. `waharoa intel history
+      refresh that loaded nothing writes its streams in their own. `byrle intel history
       [--limit N]` prints them newest first. [ingestion-history](docs/engineering_decisions/ingestion-history.md).
-- [x] `[!]` JSON Lines audit log: `src/audit.rs`, `WAHAROA_AUDIT_LOG`. A separate sink,
+- [x] `[!]` JSON Lines audit log: `src/audit.rs`, `BYRLE_AUDIT_LOG`. A separate sink,
       not a tracing layer: tracing output is diagnostic and free to change shape, this is
       what `policy diff` parses.
       - [x] **The unit is a request, not a version.** A packument request evaluates every
@@ -2174,10 +2174,10 @@ defers.
       - [x] A write failure warns once and never fails an install. Refusing to open at
             startup is different: an operator who asked for a log and silently did not get
             one would believe decisions were being recorded.
-- [x] `[!]` `waharoa explain --policy`. Settings as loaded, plus which checks can fire.
+- [x] `[!]` `byrle explain --policy`. Settings as loaded, plus which checks can fire.
       A check that is off and a check with no fact source are different states, and
       reading the file cannot tell them apart.
-- [x] `[!]` `waharoa explain <purl>`. The whole decision vector, not the verdict alone:
+- [x] `[!]` `byrle explain <purl>`. The whole decision vector, not the verdict alone:
       a refusal naming only the strongest reason hides that two others fired and that a
       third was never asked. Five states, none collapsed into another: `pass`, `FAIL`,
       `excepted`, `n/a`, `unenforced`.
@@ -2220,7 +2220,7 @@ from. The four the stage decided rather than built are the two `UNINSPECTED` not
 
 | Moved to | What |
 |---|---|
-| Stage 3 | `waharoa status`, range resolution and the install-script count that waits on it, not-applicable reaching a proxy path |
+| Stage 3 | `byrle status`, range resolution and the install-script count that waits on it, not-applicable reaching a proxy path |
 | Stage 4 | 429 and everything that shapes one: per-client code, bounded wait, machine-readable reason, deferral logging |
 | Stage 5 | local mirrors, query-on-clean, sqlx 0.9, CI lockfile verification, persisting the publish-time store |
 | Stage 7 | stream authoring guide |
@@ -2286,7 +2286,7 @@ changes to the core, that is the finding — make it now, not after five adapter
             an index whose pages carry no dates is filtered by every other check and holds
             a too-new version at the artifact request.
       - [x] Startup and `policy check` reported `cooldown_days` as enforced whatever the
-            index serves. `waharoa doctor` now asks the configured index with a `HEAD` and
+            index serves. `byrle doctor` now asks the configured index with a `HEAD` and
             reports its form, and the proxy says so once per document it reads with no
             dates in it. Measured against the real indexes: pypi.org reads `ok ... serves
             PEP 691 JSON`, www.piwheels.org reads `WARN ... cooldown_days is answered on
@@ -2323,7 +2323,7 @@ changes to the core, that is the finding — make it now, not after five adapter
             `NormalizedPackument` was the same problem and is now
             `record::PackageMetadata`.
       - [x] `Ecosystem::PyPI` exists. `Ecosystem::ALL` held npm alone as the served set
-            `doctor` and `/-/waharoa/ready` report on, until the architecture refactor
+            `doctor` and `/-/byrle/ready` report on, until the architecture refactor
             replaced it with `ecosystem::TABLE`.
 - [x] `[!]` sdist vs. wheel distinction for install-script semantics. `Kind` and
       `Project::only_sdist` give the version-level answer: a version offering a wheel is not
@@ -2343,12 +2343,12 @@ changes to the core, that is the finding — make it now, not after five adapter
       its own state in the decision vector, and `explain` prints it with its reason:
 
       ```
-      $ waharoa explain pkg:npm/lodash@4.17.21
+      $ byrle explain pkg:npm/lodash@4.17.21
         install_scripts  pass
         yanked           n/a               no meaning for npm
         deprecated       pass
 
-      $ waharoa explain pkg:pypi/requests@2.32.3
+      $ byrle explain pkg:pypi/requests@2.32.3
         yanked           pass
         deprecated       n/a               no meaning for pypi
       ```
@@ -2356,7 +2356,7 @@ changes to the core, that is the finding — make it now, not after five adapter
       `n/a`, `pass` and `unenforced` are three states, not two. The audit log records a
       decision rather than the per-check table, so a not-applicable check is absent from
       it: `explain` is where per-check states are read.
-- [x] `waharoa status`: adapter maturity and intel coverage as separate axes, per
+- [x] `byrle status`: adapter maturity and intel coverage as separate axes, per
       ecosystem. `src/status.rs`, every line read from `ecosystem::TABLE` or the loaded
       snapshot, so a row added to the table reports itself. The adapter axis is the
       upstream, the media types read, where publish times come from, the version order,
@@ -2373,7 +2373,7 @@ changes to the core, that is the finding — make it now, not after five adapter
       `[package.source]` counts only `type = "legacy"`, another index. A
       `requirements.txt` with lines and no `==` pin is refused rather than read as a
       project with no dependencies.
-      `waharoa policy diff --lockfile uv.lock` now answers for a Python project: measured,
+      `byrle policy diff --lockfile uv.lock` now answers for a Python project: measured,
       6 packages evaluated and `pkg:pypi/idna@3.10 allow -> block` under a denial.
 
 - [x] `Pipfile.lock` is read, against what pipenv 2024.4.1 wrote on 2026-09-21. Its
@@ -2381,7 +2381,7 @@ changes to the core, that is the finding — make it now, not after five adapter
       `git` and `ref` and no version. `policy diff --lockfile Pipfile.lock` evaluates 5
       packages for the fixture project. No Python lockfile is listed as unread now.
 - [x] **Range resolution, and the install-script count that waits on it.** Decided
-      2026-09-20: nothing in waharoa resolves a range or a tag
+      2026-09-20: nothing in byrle resolves a range or a tag
       ([no-range-resolution](docs/engineering_decisions/no-range-resolution.md)).
       - [x] Range resolution lives in the normalizer, never in the engine. It lives in
             neither: every caller is given a version already. A resolver in the proxy is
@@ -2421,11 +2421,11 @@ positives measured over 311 versions. Every item closed or moved.
       `cooldown_days: published too recently, installable on 2026-10-12`, from the publish
       date and the wait that applied.
 - [x] `[!]` Surface filtering in response header, audit log, and `explain`.
-      `x-waharoa-filtered-versions` and `x-waharoa-filtered-checks` on the response, a
+      `x-byrle-filtered-versions` and `x-byrle-filtered-checks` on the response, a
       `resolution` event in the audit log, and `explain`'s per-check reasons
       ([quarantine-filter-metadata](docs/engineering_decisions/quarantine-filter-metadata.md)).
 - [x] `policy check` flags cooldown waivers whose underlying cooldown already elapsed.
-      `waharoa policy check --fetch` dates each waiver's version at its registry and lists
+      `byrle policy check --fetch` dates each waiver's version at its registry and lists
       the ones the global wait now admits anyway. Offline without the flag
       ([policy-check](docs/engineering_decisions/policy-check.md)).
 - [x] `[!]` **Lifecycle script policy** — npm pre/postinstall, Python sdist `setup.py`
@@ -2437,8 +2437,8 @@ positives measured over 311 versions. Every item closed or moved.
             Verified against the published `bufferutil` 4.1.0, `node-gyp-build` 4.8.4 and
             `six` 1.17.0.
       - [x] The spool: `src/spool.rs` writes an artifact to a file deleted when the
-            request ends, bounded by `WAHAROA_MAX_ARTIFACT_BYTES`. The proxy locks
-            `WAHAROA_SPOOL_DIR` at startup and removes the spool files left in it
+            request ends, bounded by `BYRLE_MAX_ARTIFACT_BYTES`. The proxy locks
+            `BYRLE_SPOOL_DIR` at startup and removes the spool files left in it
             ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
       - [x] Wire it into the artifact path. An npm tarball or PyPI sdist with no stored
             analysis is analysed in the background (`src/analysis/run.rs`), and answered
@@ -2471,10 +2471,10 @@ positives measured over 311 versions. Every item closed or moved.
       none does since every detector runs in the background. The short circuit in front
       of expensive analysis moves to source diffing, the first expensive detector.
   - [x] The not-ready half is decided and implemented: 503 always, with `Retry-After: 1`
-        and `x-waharoa-not-ready` naming the case
+        and `x-byrle-not-ready` naming the case
         ([deferral-status-codes](docs/engineering_decisions/deferral-status-codes.md)).
         Of seven clients measured, all seven retry a 503 and two stop on a 429.
-  - [x] An artifact under analysis is 503 too, `x-waharoa-not-ready: artifact-analysis`,
+  - [x] An artifact under analysis is 503 too, `x-byrle-not-ready: artifact-analysis`,
         decided 2026-09-26. Since 2026-09-27 under any policy: nothing is served until
         its analysis has finished. An artifact with no strong digest, or whose metadata
         does not list its version, is refused; one whose metadata the registry did not
@@ -2487,7 +2487,7 @@ positives measured over 311 versions. Every item closed or moved.
         Done 2026-09-29: `answered` names each: `unservable`, `no-strong-digest`,
         `not-listed`, `no-metadata`. The last two have no `action`, and `audit verify` and
         `policy diff` skip them ([audit-log](docs/engineering_decisions/audit-log.md)).
-  - [x] `waharoa warm --lockfile` asks a running proxy for every artifact a lockfile
+  - [x] `byrle warm --lockfile` asks a running proxy for every artifact a lockfile
         locks, so bun and yarn 1 install them on the first try. Done 2026-09-28
         ([warm](docs/engineering_decisions/warm.md)).
   - [x] A separate process watches each upstream registry for newly published versions
@@ -2496,7 +2496,7 @@ positives measured over 311 versions. Every item closed or moved.
         deferred until it finishes. Raised 2026-09-27. Done 2026-09-29, in the daemon
         rather than a separate process, for the packages it has served
         ([watcher](docs/engineering_decisions/watcher.md)).
-  - [x] The artifact digest in the deferral's header and body: `x-waharoa-digest`.
+  - [x] The artifact digest in the deferral's header and body: `x-byrle-digest`.
   - [x] Log every deferral, with a count per digest, and `returned after a deferral` with
         `after_ms` when a request finds the analysis stored, which turns the compatibility
         table into evidence. A digest that never returns is a client that gave up.
@@ -2516,7 +2516,7 @@ positives measured over 311 versions. Every item closed or moved.
         lifecycle scripts and dependencies added, 0 of 207 and 0 of 473; lifecycle files,
         2 of the 5 that name one; differing files, 6 of 207 and 3 of 473.
   - [x] Decide which findings become checks: a weak signal, in the analysis tier. npm
-        done; `WAHAROA_SOURCE_ARCHIVES` names the archive host or turns it off.
+        done; `BYRLE_SOURCE_ARCHIVES` names the archive host or turns it off.
   - [x] PyPI: wheels and sdists, the repository from their own metadata. 33 of 34 of
         each compared; differing files 9 of 33 sdists, 1 of 33 wheels.
 - [x] Metadata heuristics, report only
@@ -2534,7 +2534,7 @@ positives measured over 311 versions. Every item closed or moved.
       `risk_score`, printed by `explain`.
 - [x] Pluggable detector interface for third-party/commercial feeds
       ([detectors](docs/engineering_decisions/detectors.md)): a `Detector` trait, report
-      only, and a command adapter configured by `WAHAROA_DETECTORS`.
+      only, and a command adapter configured by `BYRLE_DETECTORS`.
   - [x] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector:
         by name, every rule a signal of weight 1. On 694 npm versions a rule fired on 400,
         a `threat-*` rule on 28.
@@ -2561,18 +2561,20 @@ positives measured over 311 versions. Every item closed or moved.
 Measured 2026-09-26 over 311 versions in five dependency sets
 ([tier-1-false-positives](docs/engineering_decisions/tier-1-false-positives.md)):
 `cooldown_days: 7` refused 35 (11%), `install_scripts: block` 1, `provenance: block` 1.
-`vite`'s 38.9 MB full packument exceeds `WAHAROA_MAX_METADATA_BYTES`, so its cooldown and
+`vite`'s 38.9 MB full packument exceeds `BYRLE_MAX_METADATA_BYTES`, so its cooldown and
 dropped-provenance checks were unenforceable until the default was raised to 64 MiB.
 
 ---
 
 ## Stage 4.5: Rename and optional ecosystems
 
-- [ ] Rename the project from `waharoa` to `byrle`. Decided by the user 2026-10-01. Moved
+- [x] Rename the project from `waharoa` to `byrle`. Decided by the user 2026-10-01. Moved
       from Stage 7 on 2026-10-11. It makes the Stage 7 cultural consultation moot. The name
       is in the crate and binary, the `WAHAROA_*` environment variables, the `x-waharoa-*`
       headers, the `waharoa.*` log fields, `/-/waharoa/` paths, the `waharoa-detector-`
       scratch directories, the docs and `docs/engineering_decisions/project-name-waharoa.md`.
+      Done 2026-10-11. Migrations and the record of the old name keep `waharoa`
+      ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md#rename)).
   - [x] Registry check on `byrle`, 2026-10-11: crates.io, npm and PyPI return 404. The
         GitHub handle is a user account created 2021-11-11 with no public repositories
         ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md)).
@@ -2628,7 +2630,7 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
             and not the artifact host reproduces the pnpm failure already measured, seeing
             the package and never the bytes.
       - [ ] In this mode artifact URL rewriting is unnecessary and
-            `WAHAROA_REWRITE_ARTIFACTS=0` is correct: `dist.tarball` already names a host
+            `BYRLE_REWRITE_ARTIFACTS=0` is correct: `dist.tarball` already names a host
             the proxy answers for, so lockfiles keep the origin registry's URLs and the
             `npm ci` failure measured earlier does not arise.
       - [ ] Onramp (Stage 2): mint certificates on the fly from an **unconstrained** CA
@@ -2653,7 +2655,7 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       is the signature of the pnpm behaviour, and would have caught it without anyone
       looking. Noisy, since a client may already hold the artifact or resolve a version it
       does not install, so a heuristic rather than a check. Counted per client over
-      10-minute windows, logged at INFO and kept in `/-/waharoa/health`, beside the
+      10-minute windows, logged at INFO and kept in `/-/byrle/health`, beside the
       certain signals ([bypass-self-detection](docs/engineering_decisions/bypass-self-detection.md)).
       - [x] A tarball answered 304 is never hashed, because `VerifyingStream` runs over
             a body and a 304 has none. Safe when the client cached those bytes through
@@ -2712,13 +2714,13 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 - [x] The publish-time store is per-process too. Removed 2026-09-19: a cooldown policy asks
       npm for the full packument on each metadata request, and nothing is kept
       ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
-- [x] `waharoa doctor` should check that the configured public URL resolves
+- [x] `byrle doctor` should check that the configured public URL resolves
       and matches what lockfiles in the project record. This is the failure
       an operator will actually hit. The lockfile comparison was already
       `check_lockfile`. A proxy that does not answer now reports whether its host
       resolves on this machine, and to what, with the error's causes.
 - [x] CI lockfile verification: every resolved URL in a project's lockfile points at the
-      proxy. `waharoa lockfile verify`
+      proxy. `byrle lockfile verify`
       ([lockfile-verify](docs/engineering_decisions/lockfile-verify.md)): npm, yarn, pnpm,
       bun and uv lockfiles; exit 1 for an artifact from elsewhere, 2 for one with no URL.
   - [x] Git and file dependencies, which bypass the proxy and the readers leave out. Done
@@ -2749,16 +2751,16 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       and nothing else.
       Done 2026-09-27. `artifact_analysis` carries the install scripts and
       `artifact_attestation` the verified identity, both by digest, in Postgres with
-      `WAHAROA_DATABASE_URL` and shared between proxies; without it, in process. Each row
+      `BYRLE_DATABASE_URL` and shared between proxies; without it, in process. Each row
       is read back only by the reader or verifier that wrote it, so "permanently valid"
       holds per reader ([artifact-analysis-store](docs/engineering_decisions/artifact-analysis-store.md)).
       Source diff and capability analysis will be stored the same way when they exist.
 - [x] `[!]` Reproducible verdicts: same policy + same intel snapshot = same result
       Done 2026-09-27. Each pinned audit line records the date, the policy digest, the
-      build, the reader, the verifier and every fact the engine read. `waharoa audit verify`
+      build, the reader, the verifier and every fact the engine read. `byrle audit verify`
       decides each line again and exits 1 when one differs. Resolution lines are not
       replayed ([reproducible-verdicts](docs/engineering_decisions/reproducible-verdicts.md)).
-- [x] `[!]` `waharoa policy check --strict`: nonzero exit on unacknowledged loosening
+- [x] `[!]` `byrle policy check --strict`: nonzero exit on unacknowledged loosening
       Closed 2026-09-27 without new code. Schema v1 refuses a loosening entry with neither
       `expires` nor `permanent: true`, so none is unacknowledged. `policy diff` sets exit
       bit 1 on a loosening, which is the CI gate for a weakening change. `--strict` exits 1
@@ -2766,7 +2768,7 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 - [x] `[!]` Observe mode: one environment variable switches the whole proxy between enforce
       and observe. Enforce is the default. Decided 2026-09-27, replacing "warn mode as the
       shipped default" ([observe-mode](docs/engineering_decisions/observe-mode.md)).
-      Done 2026-09-28: `WAHAROA_MODE=observe` serves what the policy refuses, logs it at
+      Done 2026-09-28: `BYRLE_MODE=observe` serves what the policy refuses, logs it at
       WARN, and audits it with `answered: served`.
 - [ ] Latency budget and benchmarks on a large lockfile (cold and warm cache)
   - [x] Benchmarks: `make bench`. Measured 2026-09-28: through an analysed proxy, npm
@@ -2776,7 +2778,7 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
         same install direct, for an analysed proxy and for a cold one, and whether
         `make bench` fails over it. Not set on 2026-09-28. Measured then: analysed, npm
         +0.3 s and PyPI +2.6 s; cold, npm +10.7 s and PyPI +4.9 s.
-  - [x] `waharoa warm` took 100.8 s where a cold `npm ci` took 20.1 s: it warmed every
+  - [x] `byrle warm` took 100.8 s where a cold `npm ci` took 20.1 s: it warmed every
         platform's optional packages, and fetched every metadata document through the
         client path. Done 2026-09-28: npm artifacts are asked for by the lockfile's path,
         for this machine's platform by default, in 16.9 s
@@ -2785,7 +2787,7 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
   - [x] Fronting with Caddy and nginx: `docs/fronting-tls.md`, both run against the proxy
         by `make smoke-tls-front`, 2026-09-29.
   - [ ] ACME: Caddy's automatic certificates are documented, not run: the test has no
-        public name. Nothing in waharoa itself speaks ACME.
+        public name. Nothing in byrle itself speaks ACME.
 - [x] Honor `HTTPS_PROXY` for upstream traffic
       Done 2026-09-28. reqwest already read it, and `HTTP_PROXY` and `NO_PROXY`. Added:
       the variables in `--help`, the proxy in effect in the startup log, and `make
@@ -2911,7 +2913,7 @@ Decided 2026-09-19:
       Moved from Ad-hoc item 10 on 2026-09-29. Four of five npm-ecosystem clients ignore
       `Retry-After`, and two treat 429 as terminal: see
       `docs/engineering_decisions/deferral-status-codes.md`. A proxy rate-limiting is a
-      real scenario on its own, so the patch stands without waharoa.
+      real scenario on its own, so the patch stands without byrle.
 
 **Exit:** a user who installed a package through the proxy is emailed within one refresh of
 a malware or critical/high advisory for the version they installed.
@@ -2922,7 +2924,7 @@ a malware or critical/high advisory for the version they installed.
 
 - [ ] `[!]` Offline / air-gapped mode with pinnable intel snapshots. Moved from Stage 5 on
       2026-09-27. A pinned verdict already records every advisory it read, so
-      `waharoa audit verify` does not need a kept snapshot
+      `byrle audit verify` does not need a kept snapshot
       ([reproducible-verdicts](docs/engineering_decisions/reproducible-verdicts.md)).
 
 - [ ] **Everything that needs a policy surface beyond schema v1.** Five Stage 2 items with
@@ -2930,7 +2932,7 @@ a malware or critical/high advisory for the version they installed.
       none of them can be configured without a v2.
       [policy-schema-v1-frozen](docs/engineering_decisions/policy-schema-v1-frozen.md).
   - [ ] Per-stream enable/disable.
-  - [ ] Per-stream refresh scheduling, rate limits and API key config. `waharoa refresh`
+  - [ ] Per-stream refresh scheduling, rate limits and API key config. `byrle refresh`
         loads every stream in `intel::stream::ALL` on each run and reads one token from the
         environment.
   - [ ] Plugin-declared capabilities, operator-overridable, promotion harder than demotion.

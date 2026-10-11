@@ -1,4 +1,4 @@
-//! Lockfiles npm, yarn 1, pnpm and bun write, read for `waharoa policy diff`.
+//! Lockfiles npm, yarn 1, pnpm and bun write, read for `byrle policy diff`.
 //!
 //! See docs/engineering_decisions/policy-diff-lockfiles.md.
 

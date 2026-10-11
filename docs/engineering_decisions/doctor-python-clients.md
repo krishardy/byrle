@@ -8,7 +8,7 @@
 
 ## Decision
 
-PyPI's registry row lists pip and uv, and `waharoa doctor` checks each for three things: the
+PyPI's registry row lists pip and uv, and `byrle doctor` checks each for three things: the
 index it installs from, any other index it also asks, and its cache.
 
 | | pip 26.1.1 | uv 0.12.5 |

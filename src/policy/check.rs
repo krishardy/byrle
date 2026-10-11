@@ -1,4 +1,4 @@
-//! `waharoa policy check`: whether a policy loads, and which of its package entries do
+//! `byrle policy check`: whether a policy loads, and which of its package entries do
 //! nothing.
 //!
 //! See docs/engineering_decisions/policy-check.md.

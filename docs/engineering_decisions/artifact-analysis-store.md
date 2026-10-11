@@ -39,7 +39,7 @@ the same way ([provenance-check](provenance-check.md)).
 `READER` is set by hand, so a test holds it to the readers' behaviour.
 `tests/fixtures/analysis/readers.txt` records `READER` and what each reader finds on 15
 archives built in the test. When the answers change and `READER` does not, the test fails,
-with `WAHAROA_BLESS` set too: blessing rewrites the file only once `READER` has changed.
+with `BYRLE_BLESS` set too: blessing rewrites the file only once `READER` has changed.
 
 ## Two stores, one key
 

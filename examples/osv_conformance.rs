@@ -8,7 +8,7 @@
 //!   # for entries whose ecosystem is npm
 //!
 //! Run: cargo run --example osv_conformance -- /path/to/osv_pairs.tsv
-use waharoa::identity::{Ecosystem, PackageKey};
+use byrle::identity::{Ecosystem, PackageKey};
 
 fn main() {
     // The rule below guards against trusting argv for security decisions, such as

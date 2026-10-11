@@ -134,7 +134,7 @@ impl PackageIntel {
     }
 }
 
-/// The load the answers come from, as `waharoa refresh` recorded it.
+/// The load the answers come from, as `byrle refresh` recorded it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LoadedSnapshot {
     /// The snapshot id, over every source's rows. See `load::snapshot_id`.
@@ -244,7 +244,7 @@ impl std::fmt::Display for NoIntel {
     }
 }
 
-/// What `store` knows about one package, for `waharoa explain` and `waharoa policy diff`.
+/// What `store` knows about one package, for `byrle explain` and `byrle policy diff`.
 ///
 /// `Ok(None)` is no store configured. A store that errors or holds no snapshot is an error,
 /// so a command cannot print a verdict reached without intel it was told to use.
@@ -264,7 +264,7 @@ pub async fn for_command(
         Ok(Some(found)) => found,
         Ok(None) => {
             return Err(NoIntel::Failed(
-                "the intel store holds no snapshot; run `waharoa refresh`".to_owned(),
+                "the intel store holds no snapshot; run `byrle refresh`".to_owned(),
             ));
         }
         Err(e) => return Err(NoIntel::Failed(e.to_string())),
@@ -790,7 +790,7 @@ mod tests {
         assert_eq!(
             for_command(Some(&empty), "npm", "x", true).await,
             Err(NoIntel::Failed(
-                "the intel store holds no snapshot; run `waharoa refresh`".to_owned()
+                "the intel store holds no snapshot; run `byrle refresh`".to_owned()
             ))
         );
         let down = fixed(Err(()));

@@ -4,7 +4,7 @@
   `metadata` detector since 2026-10-01 ([detectors](detectors.md)),
   `Deciding::dated` and `negotiate` in `src/proxy.rs`,
   `RecordStore::metadata` in `src/store.rs`, logged and audited by `decide_artifact` in
-  `src/proxy.rs`, printed by `waharoa explain`.
+  `src/proxy.rs`, printed by `byrle explain`.
 - **Related:** [audit-log](audit-log.md), [explain-output](explain-output.md),
   [watcher](watcher.md)
 
@@ -30,7 +30,7 @@ it next to the package it imitates.
 
 | Place | Form |
 |---|---|
-| log | one WARN line per decision with any signal: `waharoa.signals`, the purl and the path |
+| log | one WARN line per decision with any signal: `byrle.signals`, the purl and the path |
 | audit | `signals` on the pinned line, omitted when empty. `audit verify` and `policy diff` do not read it |
 | `explain` | a `signals` block under the verdict, or `signals: none`. `explain` holds no served names, so it never reports `near name` |
 

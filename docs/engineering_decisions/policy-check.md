@@ -1,4 +1,4 @@
-# `waharoa policy check`
+# `byrle policy check`
 
 - **Status:** Implemented. `src/policy/check.rs`; the command in `src/main.rs`, and
   `startup::report_policy` for the proxy.
@@ -7,7 +7,7 @@
 
 ## Decision
 
-`waharoa policy check <path> [--as-of YYYY-MM-DD] [--strict] [--fetch]` loads a policy the
+`byrle policy check <path> [--as-of YYYY-MM-DD] [--strict] [--fetch]` loads a policy the
 way the proxy does at startup: `Policy::load`, then `packages::check` with the expiry ceiling
 from the environment and the date, UTC today by default. It prints five lists, each only when
 it has an entry:
@@ -26,7 +26,7 @@ it has an entry:
 | 1 | load or the `packages` rules refuse it, or `--strict` and an entry changes nothing, never wins, or has outlived its cooldown |
 | 2 | the file cannot be read, or the command line is malformed |
 
-The proxy at startup and `waharoa doctor` read the same `check::Report`. Startup warns for
+The proxy at startup and `byrle doctor` read the same `check::Report`. Startup warns for
 each entry that changes nothing or never wins. `doctor` reports each as `WARN`, and a
 refused policy as `PROBLEM`.
 
@@ -39,7 +39,7 @@ anything takes the version's publish date, which only the registry has, so the c
 for it under a flag and is offline without one.
 
 ```
-$ waharoa policy check policy.yaml --fetch
+$ byrle policy check policy.yaml --fetch
 2 package entries, as of 2026-09-20
 
 cooldown waivers no longer needed

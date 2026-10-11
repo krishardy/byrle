@@ -1,4 +1,4 @@
-# `waharoa warm` asks a running proxy for what a lockfile locks
+# `byrle warm` asks a running proxy for what a lockfile locks
 
 - **Status:** Implemented 2026-09-28. `src/warm.rs`, `lockfile::references`,
   `Clients::record`.
@@ -16,11 +16,11 @@ and a fresh proxy:
 | | bun 1.4.2, first `bun install` |
 |---|---|
 | without warm | exit 1 |
-| after `waharoa warm --lockfile package-lock.json` | exit 0 |
+| after `byrle warm --lockfile package-lock.json` | exit 0 |
 
 ## Decision
 
-`waharoa warm --lockfile <PATH>... [--proxy <URL>] [--platform <PLATFORM>...]
+`byrle warm --lockfile <PATH>... [--proxy <URL>] [--platform <PLATFORM>...]
 [--all-platforms] [--deadline <SECONDS>]` reads each lockfile `policy diff` reads, and asks
 the proxy for each locked artifact.
 
@@ -34,7 +34,7 @@ the proxy for each locked artifact.
 An npm artifact is asked for only when it installs on a target, by npm's rules: a listed
 value is required, `!` excludes, and `libc` is read on Linux only. The target is the
 machine warm runs on, or each `--platform`, such as `linux-x64` or `linux-x64-musl`, or
-every platform with `--all-platforms`. The report counts what was skipped. A 503 with `x-waharoa-not-ready: artifact-analysis` is asked
+every platform with `--all-platforms`. The report counts what was skipped. A 503 with `x-byrle-not-ready: artifact-analysis` is asked
 again each second, until the answer changes or `--deadline`, 900 s by default, passes
 from the first 503.
 
@@ -62,8 +62,8 @@ the proxy does not serve.
 - The body is never read. Warm drops each response at its status line. The proxy logged
   no error for it.
 - An artifact URL is asked of `--proxy` with the path and query the proxy wrote. The proxy
-  writes `WAHAROA_PUBLIC_URL` into its documents, which the machine running warm may not
-  reach. Measured with `WAHAROA_PUBLIC_URL=http://waharoa.invalid`: 8 of 8 warmed.
+  writes `BYRLE_PUBLIC_URL` into its documents, which the machine running warm may not
+  reach. Measured with `BYRLE_PUBLIC_URL=http://byrle.invalid`: 8 of 8 warmed.
 - Sixteen artifacts are asked for at once. Every artifact is asked for once before any
   is asked again, so every analysis starts at once.
 - Measured on the 207-package npm set of [latency-benchmarks](latency-benchmarks.md),
@@ -81,7 +81,7 @@ the proxy does not serve.
   its only full download.
 - Warm's requests are decisions like any other: their pinned audit lines say `deferred`,
   then `served`. The audit line records no client. The proxy's log names it,
-  `waharoa/<version>`.
+  `byrle/<version>`.
 
 ## Rejected
 

@@ -18,10 +18,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/make/lib/node.sh
 . "$repo_root/scripts/make/lib/node.sh"
-waharoa_use_latest_node
+byrle_use_latest_node
 
-registry_port="${WAHAROA_OFFSITE_REGISTRY_PORT:-8734}"
-recorder_port="${WAHAROA_OFFSITE_RECORDER_PORT:-8735}"
+registry_port="${BYRLE_OFFSITE_REGISTRY_PORT:-8734}"
+recorder_port="${BYRLE_OFFSITE_RECORDER_PORT:-8735}"
 registry="http://127.0.0.1:${registry_port}/"
 workdir="$(mktemp -d)"
 servers_pid=""
@@ -36,8 +36,8 @@ trap cleanup EXIT
 
 for port in "$registry_port" "$recorder_port"; do
     if ss -ltn 2>/dev/null | grep -q ":${port} "; then
-        echo "port ${port} is already in use; set WAHAROA_OFFSITE_REGISTRY_PORT or"
-        echo "WAHAROA_OFFSITE_RECORDER_PORT to something free"
+        echo "port ${port} is already in use; set BYRLE_OFFSITE_REGISTRY_PORT or"
+        echo "BYRLE_OFFSITE_RECORDER_PORT to something free"
         exit 1
     fi
 done
@@ -62,7 +62,7 @@ prepare_yarn_berry() {
 
     mkdir -p "$workdir/shims"
     corepack enable --install-directory "$workdir/shims" >/dev/null 2>&1 || return 1
-    printf '{"name":"waharoa-offsite","version":"1.0.0","private":true,"packageManager":"yarn@4.9.1"}\n' \
+    printf '{"name":"byrle-offsite","version":"1.0.0","private":true,"packageManager":"yarn@4.9.1"}\n' \
         >"$dir/package.json"
     cat >"$dir/.yarnrc.yml" <<YML
 nodeLinker: node-modules
@@ -113,7 +113,7 @@ for client in npm pnpm yarn yarn-berry bun; do
 
     dir="$workdir/$client"
     mkdir -p "$dir/cache"
-    printf '{"name":"waharoa-offsite","version":"1.0.0","private":true}\n' >"$dir/package.json"
+    printf '{"name":"byrle-offsite","version":"1.0.0","private":true}\n' >"$dir/package.json"
     if [[ "$client" == "yarn-berry" ]] && ! prepare_yarn_berry "$dir"; then
         printf '  %-11s needs corepack and node 18 or later, skipped\n' "$client"
         continue

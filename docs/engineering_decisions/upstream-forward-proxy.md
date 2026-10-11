@@ -12,13 +12,13 @@ reqwest reads `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY`, and their lowercase fo
 client is built, with default features off. Every client the proxy builds uses
 `http::client_builder` and never calls `.no_proxy()`, so the forwarded request, the
 analysis job and the intel refresh all go through the forward proxy. No proxy
-configuration of waharoa's own was added.
+configuration of byrle's own was added.
 
 What was added is visibility:
 
 | Where | What |
 |---|---|
-| `waharoa --help` | the three variables, with a note that the lowercase names are read too |
+| `byrle --help` | the three variables, with a note that the lowercase names are read too |
 | startup log | `upstream traffic goes through a forward proxy`, with fields `https`, `http` and `direct`, any user and password in a URL replaced by `***` |
 | `make smoke-proxy` | the binary against a local registry and a local recording forward proxy |
 
@@ -48,5 +48,5 @@ With `.no_proxy()` added to `http::client_builder`, step 1 fails.
 
 | Option | Why |
 |---|---|
-| waharoa's own proxy variable | a second name for what every tool on the machine already reads |
+| byrle's own proxy variable | a second name for what every tool on the machine already reads |
 | parsing the variables and calling `.proxy()` | would restate reqwest's rules for lowercase names, `ALL_PROXY` and `NO_PROXY` matching, and could drift from them |

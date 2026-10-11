@@ -1,4 +1,4 @@
-//! `waharoa doctor`: whether this machine is actually installing through the proxy, from
+//! `byrle doctor`: whether this machine is actually installing through the proxy, from
 //! the client side. The checks are pure; [`probe`] runs the package managers.
 //!
 //! See docs/engineering_decisions/enforcement-tiers.md.
@@ -537,7 +537,7 @@ pub fn check_proxy(health: Result<&crate::proxy::Health, &Unreached>, proxy: &st
 const READINESS_TITLE: &str = "proxy readiness";
 
 /// The fix for a snapshot that is missing or cannot match a served ecosystem.
-const REFRESH_FIX: &str = "run `waharoa refresh` on the proxy's database";
+const REFRESH_FIX: &str = "run `byrle refresh` on the proxy's database";
 
 /// A loaded snapshot's finding: ready with no gaps, else not ready, listing each gap.
 /// `snapshot` names the snapshot, and the proxy answers 503 for an ecosystem with `gaps`.
@@ -708,7 +708,7 @@ pub fn worst(findings: &[Finding]) -> Severity {
 /// The title of every finding about the policy file.
 const POLICY_TITLE: &str = "policy";
 
-/// What `waharoa policy check --strict` fails on, for the policy the proxy is configured with.
+/// What `byrle policy check --strict` fails on, for the policy the proxy is configured with.
 ///
 /// `loaded` is the report from [`crate::policy::check::load`], or its refusal as text. A
 /// refused policy is a problem, because the proxy does not start with it. An entry that
@@ -789,7 +789,7 @@ fn join(origins: &[&String]) -> String {
         .join(", ")
 }
 
-/// What `waharoa doctor` prints and exits with.
+/// What `byrle doctor` prints and exits with.
 #[derive(Debug)]
 pub struct Checked {
     pub report: String,
@@ -810,7 +810,7 @@ pub async fn run(machine: &Machine<'_>) -> Result<Checked, env::EnvError> {
     let public = environment.public_url()?;
     let proxy = expected_proxy_url(public.as_deref(), &listen);
 
-    let _ = writeln!(report, "waharoa doctor");
+    let _ = writeln!(report, "byrle doctor");
     let _ = writeln!(report, "  proxy expected at {proxy}");
     let _ = writeln!(report, "  checking from {}", machine.dir.display());
     report.push('\n');
@@ -1176,7 +1176,7 @@ pub mod probe {
         async fn the_proxy_is_asked_about_itself() {
             use crate::util::test_support::{Answer, closing_server, scripted};
             let ask = |addr: std::net::SocketAddr| async move {
-                own::<serde_json::Value>(&format!("http://{addr}"), "/-/waharoa/ready").await
+                own::<serde_json::Value>(&format!("http://{addr}"), "/-/byrle/ready").await
             };
 
             let serving = scripted(vec![Answer::body(r#"{"ready":true}"#)]).await;
@@ -1184,8 +1184,8 @@ pub mod probe {
             let not_json = ask(scripted(vec![Answer::body("not json")]).await).await;
             assert_eq!(
                 not_json,
-                Err("it answered 200 OK, which is not the proxy's /-/waharoa/ready".to_owned()),
-                "anything that is not a waharoa"
+                Err("it answered 200 OK, which is not the proxy's /-/byrle/ready".to_owned()),
+                "anything that is not a byrle"
             );
             let short = ask(scripted(vec![Answer::cut_short()]).await)
                 .await
@@ -1210,7 +1210,7 @@ pub mod probe {
             assert_eq!(machine.ask("echo", &[""]), None, "printed nothing");
             assert_eq!(machine.ask("false", &[]), None, "failed");
             assert_eq!(
-                machine.ask("waharoa-no-such-program", &[]),
+                machine.ask("byrle-no-such-program", &[]),
                 None,
                 "not installed"
             );
@@ -1272,7 +1272,7 @@ pub mod probe {
                 Some(dir.clone())
             );
             let absent = echoing(CacheLocation::Asked {
-                args: &["/nonexistent/waharoa-cache"],
+                args: &["/nonexistent/byrle-cache"],
                 under: None,
             });
             assert_eq!(warm_cache(&here(&testing::empty()), &absent).unwrap(), None);
@@ -1758,7 +1758,7 @@ mod tests {
 
     fn health() -> crate::proxy::Health {
         crate::proxy::Health {
-            service: "waharoa".into(),
+            service: "byrle".into(),
             version: "0.1.0".into(),
             upstreams: [
                 ("npm".to_owned(), "https://registry.npmjs.org".to_owned()),
@@ -1837,7 +1837,7 @@ mod tests {
         assert_eq!(findings[0].severity, Severity::Problem);
         assert_eq!(
             findings[0].detail,
-            format!("nothing answered at {PROXY}/-/waharoa/health: refused")
+            format!("nothing answered at {PROXY}/-/byrle/health: refused")
         );
         assert_eq!(
             findings[0].fix.as_deref(),
@@ -1977,7 +1977,7 @@ mod tests {
     fn a_healthy_proxy_reports_what_it_forwards_to() {
         let findings = check_proxy(Ok(&health()), PROXY);
         assert_eq!(worst(&findings), Severity::Ok);
-        assert!(findings[0].detail.contains("waharoa 0.1.0"));
+        assert!(findings[0].detail.contains("byrle 0.1.0"));
         assert!(
             findings[0].detail.contains(
                 "forwarding to npm=https://registry.npmjs.org pypi=https://pypi.org/simple"
@@ -2284,7 +2284,7 @@ mod tests {
         assert_eq!(checked.code, 0, "{}", checked.report);
         assert!(
             checked.report.starts_with(&format!(
-                "waharoa doctor\n  proxy expected at {url}\n  checking from {}\n\n",
+                "byrle doctor\n  proxy expected at {url}\n  checking from {}\n\n",
                 dir.display()
             )),
             "{}",

@@ -7,7 +7,7 @@
 ## What a warm cache skips
 
 Measured by installing the same package twice through the proxy with one cache and counting
-what the proxy saw the second time. `waharoa doctor` reports each client's `CacheBypass`.
+what the proxy saw the second time. `byrle doctor` reports each client's `CacheBypass`.
 
 | Client | Second install | `CacheBypass` |
 |---|---|---|

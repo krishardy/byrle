@@ -1,6 +1,6 @@
 # Refusal status
 
-**Status:** Implemented, `src/refusal.rs`, set with `WAHAROA_REFUSAL_STATUS`.
+**Status:** Implemented, `src/refusal.rs`, set with `BYRLE_REFUSAL_STATUS`.
 
 ## Decision
 

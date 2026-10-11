@@ -34,7 +34,7 @@ artifact cache consulted  digest=sha512-v2kDEe57...  cache="hit"
 ```
 
 Measured against registry.npmjs.org: two requests for lodash 4.17.21, miss then hit on the
-same sha512, one entry held, `artifacts_verified: 1` at `/-/waharoa/health`.
+same sha512, one entry held, `artifacts_verified: 1` at `/-/byrle/health`.
 
 Building it here rather than with the analysis is deliberate. The branch has to be decided
 before the fetch, which is a constraint on the whole request path, and getting that wrong
@@ -50,7 +50,7 @@ already seen.
 ## Bounds
 
 One entry per artifact version fetched, evicted by count, least recently used first, like
-the record store. `WAHAROA_MAX_VERIFIED`, default 50,000. An entry is an algorithm and a
+the record store. `BYRLE_MAX_VERIFIED`, default 50,000. An entry is an algorithm and a
 digest, on the order of 64 bytes, so the budget is a few megabytes.
 
 Per-process, and it dies with the proxy. Stage 5 is where it acquires the analysis it

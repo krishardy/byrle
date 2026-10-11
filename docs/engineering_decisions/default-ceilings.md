@@ -10,18 +10,18 @@
 
 | Default | Value | Why |
 |---|---|---|
-| `WAHAROA_MAX_METADATA_BYTES` | 64 MiB | the largest packument measured is vite's full document, 38,950,704 bytes on 2026-09-26, so this is 1.7x headroom. It was 32 MiB, twice typescript's 15.7 MB, until vite outgrew it and a cooldown and the provenance check could not read its publish times. It bounds both the bytes buffered and the bytes decompression produces |
-| `WAHAROA_MAX_RECORDS` | 50,000 | about five installs of the size measured in `store`; 45 to 70 MB at 0.9 to 1.4 KB per record |
-| `WAHAROA_MAX_VERIFIED` | 50,000 | an entry is an algorithm and a digest, about 64 bytes. An artifact reaches `verified` only after a packument named it, so more than the record budget would be unused |
-| `WAHAROA_MAX_CONCURRENT_METADATA` | 8 | see below |
-| `WAHAROA_MAX_CONCURRENT_ANALYSES` | 8 | as for metadata. At the default artifact ceiling the spool holds at most 8 GiB |
-| `WAHAROA_MAX_TRAFFIC_CLIENTS` | 256 | a new client name past it is counted as `other`, so a user-agent made up per request cannot grow the map. A team's proxy sees a handful: npm, pnpm, yarn, bun, pip and uv |
-| `WAHAROA_MAX_ARTIFACT_BYTES` | 1 GiB | an order of magnitude above the largest artifact a detector reads, `opencv-python` 5.0.0.93 at 81,802,749 bytes, so it refuses an artifact whose length is a lie rather than one anybody publishes |
-| `WAHAROA_WATCH_INTERVAL` | 900 seconds | one metadata request per served package per pass, about one every 2 seconds for 500 packages. 0 turns the watcher off ([watcher](watcher.md)) |
-| `WAHAROA_SOURCE_ARCHIVES` | `https://codeload.github.com` | the host of GitHub's archives, which each artifact is compared with. 2 comparisons run at once, apart from the analyses, and the last 8 archives read are kept so one repository's packages fetch it once. `off` turns it off ([source-diff](source-diff.md)) |
-| `WAHAROA_DETECTORS` | none | a detector runs a program per version: 1.2 s median for GuardDog, 40 s the slowest measured. 2 run at once, each killed after 300 s or 16 MiB of output ([detectors](detectors.md)) |
-| `WAHAROA_EXPIRY_CEILING_DAYS` | 90 | long enough for a review cycle, and an entry nobody looks at again lapses within a quarter |
-| `WAHAROA_SNAPSHOT_LIMIT` | 30 | a month of daily refreshes. npm's rows were 5,577,231 bytes gzipped on 2026-09-13, and a source whose rows did not change is not written again |
+| `BYRLE_MAX_METADATA_BYTES` | 64 MiB | the largest packument measured is vite's full document, 38,950,704 bytes on 2026-09-26, so this is 1.7x headroom. It was 32 MiB, twice typescript's 15.7 MB, until vite outgrew it and a cooldown and the provenance check could not read its publish times. It bounds both the bytes buffered and the bytes decompression produces |
+| `BYRLE_MAX_RECORDS` | 50,000 | about five installs of the size measured in `store`; 45 to 70 MB at 0.9 to 1.4 KB per record |
+| `BYRLE_MAX_VERIFIED` | 50,000 | an entry is an algorithm and a digest, about 64 bytes. An artifact reaches `verified` only after a packument named it, so more than the record budget would be unused |
+| `BYRLE_MAX_CONCURRENT_METADATA` | 8 | see below |
+| `BYRLE_MAX_CONCURRENT_ANALYSES` | 8 | as for metadata. At the default artifact ceiling the spool holds at most 8 GiB |
+| `BYRLE_MAX_TRAFFIC_CLIENTS` | 256 | a new client name past it is counted as `other`, so a user-agent made up per request cannot grow the map. A team's proxy sees a handful: npm, pnpm, yarn, bun, pip and uv |
+| `BYRLE_MAX_ARTIFACT_BYTES` | 1 GiB | an order of magnitude above the largest artifact a detector reads, `opencv-python` 5.0.0.93 at 81,802,749 bytes, so it refuses an artifact whose length is a lie rather than one anybody publishes |
+| `BYRLE_WATCH_INTERVAL` | 900 seconds | one metadata request per served package per pass, about one every 2 seconds for 500 packages. 0 turns the watcher off ([watcher](watcher.md)) |
+| `BYRLE_SOURCE_ARCHIVES` | `https://codeload.github.com` | the host of GitHub's archives, which each artifact is compared with. 2 comparisons run at once, apart from the analyses, and the last 8 archives read are kept so one repository's packages fetch it once. `off` turns it off ([source-diff](source-diff.md)) |
+| `BYRLE_DETECTORS` | none | a detector runs a program per version: 1.2 s median for GuardDog, 40 s the slowest measured. 2 run at once, each killed after 300 s or 16 MiB of output ([detectors](detectors.md)) |
+| `BYRLE_EXPIRY_CEILING_DAYS` | 90 | long enough for a review cycle, and an entry nobody looks at again lapses within a quarter |
+| `BYRLE_SNAPSHOT_LIMIT` | 30 | a month of daily refreshes. npm's rows were 5,577,231 bytes gzipped on 2026-09-13, and a source whose rows did not change is not written again |
 
 Over the metadata ceiling the proxy forwards the response without normalising it: an
 install does not fail because the proxy could not inspect the document.

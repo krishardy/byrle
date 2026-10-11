@@ -215,10 +215,10 @@ mod tests {
         });
         tracing::subscriber::with_default(subscriber, || {
             tracing::warn!(
-                waharoa.package.versions = ?["1.0.0"],
-                waharoa.analysis.completed = true,
-                waharoa.duration_ms = -1_i64,
-                waharoa.ratio = 0.5,
+                byrle.package.versions = ?["1.0.0"],
+                byrle.analysis.completed = true,
+                byrle.duration_ms = -1_i64,
+                byrle.ratio = 0.5,
                 "every kind"
             );
         });
@@ -228,10 +228,10 @@ mod tests {
         assert_eq!(
             record["attributes"],
             serde_json::json!({
-                "waharoa.package.versions": "[\"1.0.0\"]",
-                "waharoa.analysis.completed": true,
-                "waharoa.duration_ms": -1,
-                "waharoa.ratio": 0.5,
+                "byrle.package.versions": "[\"1.0.0\"]",
+                "byrle.analysis.completed": true,
+                "byrle.duration_ms": -1,
+                "byrle.ratio": 0.5,
             })
         );
     }

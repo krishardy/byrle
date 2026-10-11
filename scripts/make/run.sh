@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Run the waharoa proxy in the foreground.
+# Run the byrle proxy in the foreground.
 #
 # Override the defaults with the environment:
-#   WAHAROA_LISTEN=127.0.0.1:8080
-#   WAHAROA_UPSTREAM_NPM=https://registry.npmjs.org
-#   WAHAROA_UPSTREAM_PYPI=https://pypi.org/simple
-#   RUST_LOG=waharoa=debug
+#   BYRLE_LISTEN=127.0.0.1:8080
+#   BYRLE_UPSTREAM_NPM=https://registry.npmjs.org
+#   BYRLE_UPSTREAM_PYPI=https://pypi.org/simple
+#   RUST_LOG=byrle=debug
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

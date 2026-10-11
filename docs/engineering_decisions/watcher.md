@@ -2,7 +2,7 @@
 
 - **Status:** Implemented 2026-09-29. `Proxy::watch` in `src/proxy.rs`,
   `RecordStore::packages` and `RecordStore::refresh` in `src/store.rs`, started by
-  `waharoa daemon` every `WAHAROA_WATCH_INTERVAL` seconds.
+  `byrle daemon` every `BYRLE_WATCH_INTERVAL` seconds.
 - **Related:** [artifact-spool](artifact-spool.md), [default-ceilings](default-ceilings.md),
   [warm](warm.md)
 
@@ -25,7 +25,7 @@ which are thousands of versions an hour, most never installed here.
 
 A version starts nothing when its file is on an origin the proxy does not serve, when it
 publishes no strong digest, or when its bytes are already analysed. The watcher is off when
-there is no analyser, and when `WAHAROA_WATCH_INTERVAL` is 0.
+there is no analyser, and when `BYRLE_WATCH_INTERVAL` is 0.
 
 ## Cost
 

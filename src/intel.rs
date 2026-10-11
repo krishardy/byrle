@@ -1,6 +1,6 @@
 //! What an advisory stream may say. An [`Enrichment`] never becomes a [`Finding`]:
 //! ```compile_fail
-//! let f: waharoa::intel::Finding = waharoa::intel::Enrichment::new("CVE-2024-1234").into();
+//! let f: byrle::intel::Finding = byrle::intel::Enrichment::new("CVE-2024-1234").into();
 //! ```
 
 pub mod fetch;
@@ -335,7 +335,7 @@ impl std::fmt::Display for Gap {
             Missing::Stream(stream) => write!(
                 f,
                 "`{}` lists `{stream}`, and the intel snapshot does not hold it, so a policy \
-                 answers 503 for its packages. `waharoa intel history` says why it did not load",
+                 answers 503 for its packages. `byrle intel history` says why it did not load",
                 self.ecosystem
             ),
         }

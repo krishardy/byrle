@@ -18,7 +18,7 @@ This is that test. `make retry-matrix` produces it, and
 ## What was measured
 
 The proxy can be told to answer a matching request with a deferral instead of fetching
-(`WAHAROA_DEFER_TEST`, debug builds only; see `src/defer.rs`). A variable that makes a
+(`BYRLE_DEFER_TEST`, debug builds only; see `src/defer.rs`). A variable that makes a
 proxy refuse traffic is a denial-of-service switch, so `src/defer.rs` is not compiled into a
 release binary, and the startup log says when it is on. The status is limited to 400 to 599,
 because a 2xx or a redirect is not being turned away. Two runs per cell, because they answer
@@ -106,7 +106,7 @@ and gives up on a 503 tarball after one. No other client varies by target.
 ## PyPI clients, measured 2026-09-19
 
 `make retry-matrix` added pip and uv, installing `idna` from a PyPI index through the proxy.
-Metadata is the simple index and an artifact is a file. The scopes `WAHAROA_DEFER_TEST`
+Metadata is the simple index and an artifact is a file. The scopes `BYRLE_DEFER_TEST`
 takes were renamed `metadata` and `artifact` at the same time. The npm rows of the same
 run match the tables above, apart from elapsed times within 1.5s.
 
@@ -162,12 +162,12 @@ The response carries two things it did not before:
 | Header | Value |
 |---|---|
 | `Retry-After` | `1`. Only yarn 4 and pip read it; the other five run their own backoff. One second is inside both of their budgets, 3.2s and 5.5s |
-| `x-waharoa-not-ready` | `intel-store` when the store cannot answer, `no-stream-for-ecosystem` when the snapshot covers the ecosystem with nothing, `artifact-analysis` when the artifact has not been analysed. Neither status code tells those apart |
+| `x-byrle-not-ready` | `intel-store` when the store cannot answer, `no-stream-for-ecosystem` when the snapshot covers the ecosystem with nothing, `artifact-analysis` when the artifact has not been analysed. Neither status code tells those apart |
 
 ## Decided 2026-09-26: an artifact under analysis is 503 too
 
 An artifact no analysis is stored for is analysed in the background. The request answers
-503 at once, with `Retry-After: 1` and `x-waharoa-not-ready: artifact-analysis`, under any
+503 at once, with `Retry-After: 1` and `x-byrle-not-ready: artifact-analysis`, under any
 policy and with none, unless what is known already refuses it. There is no bounded
 internal wait and no per-client code.
 
@@ -183,14 +183,14 @@ one:
 | yarn 1 | fails: it gives up on a 503 tarball after one retry |
 | bun | fails: six retries at 0s, 0.2s in all |
 
-A second install of the same versions is served from the stored analysis. `waharoa warm
+A second install of the same versions is served from the stored analysis. `byrle warm
 --lockfile` asks for a lockfile's artifacts ahead of the first install
 ([warm](warm.md)). 429 is not used:
 two clients of seven stop on the first one.
 
-The 503 carries `x-waharoa-digest` with the artifact's digest, and the body names the purl
+The 503 carries `x-byrle-digest` with the artifact's digest, and the body names the purl
 and the digest. The proxy logs each deferral with the digest and how many times that digest
 has been deferred, and logs `returned after a deferral` on the first request that finds the
-analysis stored, with the deferral count, `waharoa.deferral.count`, and `waharoa.deferral.after_ms` since the first one. A digest with
+analysis stored, with the deferral count, `byrle.deferral.count`, and `byrle.deferral.after_ms` since the first one. A digest with
 deferral lines and no return line is a client that gave up. Those lines are what the table
 above can be checked against in a real install.

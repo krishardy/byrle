@@ -1,6 +1,6 @@
 # Contributing
 
-waharoa is licensed under Apache-2.0: see [LICENSE](LICENSE). A contribution is accepted
+byrle is licensed under Apache-2.0: see [LICENSE](LICENSE). A contribution is accepted
 under the same licence.
 
 ## Sign-off

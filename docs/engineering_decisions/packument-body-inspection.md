@@ -22,7 +22,7 @@ npm asks for both packument kinds in one `Accept` header, and an index may answe
 where PEP 691 JSON was asked for.
 
 Decompression is capped, default 64 MiB since 2026-09-26 (32 MiB before, which vite's
-38.9 MB full packument exceeded), settable with `WAHAROA_MAX_METADATA_BYTES`.
+38.9 MB full packument exceeded), settable with `BYRLE_MAX_METADATA_BYTES`.
 Past the cap the body is forwarded whole and not parsed.
 
 ## Rationale

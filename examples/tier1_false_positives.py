@@ -1,12 +1,12 @@
 """How often each Tier 1 control refuses a package nobody reported as malicious.
 
 Builds a lockfile for each dependency set, with npm and uv resolving against the public
-registries, then runs `waharoa policy diff` from a policy that allows everything to one
+registries, then runs `byrle policy diff` from a policy that allows everything to one
 with a single control turned on. Every version that moves is a refusal of a package in
 wide use, which is what a false positive is here. Cooldown results change daily: they
 count the versions published in the last seven days.
 
-Usage: tier1_false_positives.py <waharoa binary> <work dir>
+Usage: tier1_false_positives.py <byrle binary> <work dir>
 """
 import os
 import re
@@ -49,7 +49,7 @@ def lockfile(work, ecosystem, packages):
     return os.path.join(directory, "uv.lock")
 
 
-def diff(waharoa, work, control, lock):
+def diff(byrle, work, control, lock):
     before, after = CONTROLS[control]
     allow = os.path.join(work, "allow.yaml")
     with open(allow, "w") as f:
@@ -57,18 +57,18 @@ def diff(waharoa, work, control, lock):
     turned_on = os.path.join(work, "control.yaml")
     with open(turned_on, "w") as f:
         f.write(ALLOW.replace(before, after))
-    run = subprocess.run([waharoa, "policy", "diff", allow, turned_on, "--lockfile", lock],
+    run = subprocess.run([byrle, "policy", "diff", allow, turned_on, "--lockfile", lock],
                          capture_output=True, text=True)
     out = run.stdout + run.stderr
     evaluated = int(re.search(r"(\d+) packages evaluated", out).group(1))
     unread = re.search(r"(\d+) could not be read", out)
     moved = re.findall(r"^(pkg:\S+)\s+allow -> \w+", out, re.M)
-    notes = re.findall(r"^waharoa policy diff: (pkg:.*)$", out, re.M)
+    notes = re.findall(r"^byrle policy diff: (pkg:.*)$", out, re.M)
     return evaluated, int(unread.group(1)) if unread else 0, moved, notes
 
 
 def main():
-    waharoa, work = sys.argv[1], sys.argv[2]
+    byrle, work = sys.argv[1], sys.argv[2]
     os.makedirs(work, exist_ok=True)
     locks = [(f"npm: {s}", lockfile(work, "npm", s)) for s in NPM_SETS]
     locks += [(f"pypi: {s}", lockfile(work, "pypi", s)) for s in PYPI_SETS]
@@ -76,7 +76,7 @@ def main():
     print("|---|---|---|---|---|")
     for name, lock in locks:
         for control in CONTROLS:
-            evaluated, unread, moved, notes = diff(waharoa, work, control, lock)
+            evaluated, unread, moved, notes = diff(byrle, work, control, lock)
             print(f"| {name} | `{control}` | {evaluated} | {len(moved)} | {unread} |")
             for purl in moved:
                 print(f"|  | | | {purl} | |")

@@ -88,7 +88,7 @@ reached writes nothing, so a missing row means not yet verified.
 |---|---|---|
 | Resolution, a packument filtered | the document only | dropped provenance, which needs nothing verified |
 | Pinned fetch | the document, and verification results by digest | all three |
-| `waharoa explain`, `waharoa policy diff` | the document only | dropped provenance |
+| `byrle explain`, `byrle policy diff` | the document only | dropped provenance |
 
 A pinned fetch whose attestations, or whose predecessor's, nothing has verified starts the
 analysis job and, under `provenance: block`, answers 503 until the retry finds the result

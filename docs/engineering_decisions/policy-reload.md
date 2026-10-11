@@ -7,9 +7,9 @@
 
 ## Decision
 
-`SIGHUP` loads `WAHAROA_POLICY` again through the same `report_policy` startup uses: the
+`SIGHUP` loads `BYRLE_POLICY` again through the same `report_policy` startup uses: the
 expiry ceiling, the package checks, and the same log lines. A file that loads replaces the
-policy in force. One that does not, or an unset `WAHAROA_POLICY`, leaves it in force, and
+policy in force. One that does not, or an unset `BYRLE_POLICY`, leaves it in force, and
 the log says which digest is kept and why.
 
 `Proxy` holds the configuration it was built with and, after a reload, a replacement behind
@@ -17,7 +17,7 @@ a lock. `handle` takes one snapshot at the start of each request. The decision, 
 line and the metadata filtering of one request therefore read one policy. The audit line's
 policy digest names the policy the decision used.
 
-Only the policy is reloaded. `WAHAROA_MODE` and every other variable are read at startup.
+Only the policy is reloaded. `BYRLE_MODE` and every other variable are read at startup.
 
 ## Rejected
 

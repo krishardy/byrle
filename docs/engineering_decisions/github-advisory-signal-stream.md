@@ -25,8 +25,8 @@ behind it and how much has one.
 
 ## Fetching
 
-`waharoa refresh` POSTs the GraphQL query with `Authorization: bearer` and the token from
-`WAHAROA_GITHUB_TOKEN`, paging by cursor until GitHub reports no next page. The pages are
+`byrle refresh` POSTs the GraphQL query with `Authorization: bearer` and the token from
+`BYRLE_GITHUB_TOKEN`, paging by cursor until GitHub reports no next page. The pages are
 joined into one JSON array, which the stream's parse reads as one buffer and its ceiling
 bounds. Without a token the stream does not load, and the other streams still do.
 
@@ -114,10 +114,10 @@ count is a floor.
 
 ## Live, 2026-09-16
 
-`waharoa refresh` into an empty Postgres 17, all four streams:
+`byrle refresh` into an empty Postgres 17, all four streams:
 
 ```text
-waharoa refresh: 100 pages from https://api.github.com/graphql
+byrle refresh: 100 pages from https://api.github.com/graphql
 advisories written                 283702
 aliases written                     43741
 affected rows written              285265

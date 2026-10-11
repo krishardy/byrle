@@ -1,4 +1,4 @@
-//! `waharoa lockfile verify`: whether every artifact a lockfile locks is fetched through the
+//! `byrle lockfile verify`: whether every artifact a lockfile locks is fetched through the
 //! proxy, for a CI job to catch an install that went around it.
 //! See docs/engineering_decisions/lockfile-verify.md.
 
@@ -25,7 +25,7 @@ pub enum Route {
     Unrecorded,
 }
 
-/// What `waharoa lockfile verify` prints, and its exit code.
+/// What `byrle lockfile verify` prints, and its exit code.
 #[derive(Debug, PartialEq)]
 pub struct Verified {
     /// For stderr: why nothing was verified.
@@ -35,7 +35,7 @@ pub struct Verified {
     pub code: u8,
 }
 
-/// `waharoa lockfile verify`: each artifact `lockfiles` lock, against the proxy at `proxy`,
+/// `byrle lockfile verify`: each artifact `lockfiles` lock, against the proxy at `proxy`,
 /// or the environment's public URL.
 pub fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
     lockfiles: &[PathBuf],

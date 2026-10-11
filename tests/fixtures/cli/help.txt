@@ -1,6 +1,6 @@
 Dependency firewall
 
-Usage: waharoa <COMMAND>
+Usage: byrle <COMMAND>
 
 Commands:
   daemon    Run the proxy in the foreground
@@ -12,7 +12,7 @@ Commands:
   policy    Work with policy files
   lockfile  Work with lockfiles
   warm      Ask a running proxy for every artifact a lockfile locks, so each is analysed before a client asks for it. The exit code is the OR of 1 for a failure and 2 for an artifact still being analysed, and 4 on its own for an error
-  refresh   Load OSV, GitHub, CISA KEV and Datadog intel into the Postgres at WAHAROA_DATABASE_URL
+  refresh   Load OSV, GitHub, CISA KEV and Datadog intel into the Postgres at BYRLE_DATABASE_URL
   help      Print this message or the help of the given subcommand(s)
 
 Options:
@@ -21,65 +21,65 @@ Options:
 
 Proxy configuration, all through the environment:
 
-  WAHAROA_LISTEN                    address to listen on (default 127.0.0.1:8080)
-  WAHAROA_UPSTREAM_NPM              npm registry to forward to (default https://registry.npmjs.org)
-  WAHAROA_UPSTREAM_PYPI             PyPI simple index to forward to (default https://pypi.org/simple)
-  WAHAROA_PUBLIC_URL                address written into artifact URLs, and therefore
+  BYRLE_LISTEN                      address to listen on (default 127.0.0.1:8080)
+  BYRLE_UPSTREAM_NPM                npm registry to forward to (default https://registry.npmjs.org)
+  BYRLE_UPSTREAM_PYPI               PyPI simple index to forward to (default https://pypi.org/simple)
+  BYRLE_PUBLIC_URL                  address written into artifact URLs, and therefore
                                     into lockfiles. Defaults to each request's own Host,
                                     which is rarely what you want.
-  WAHAROA_ARTIFACT_ORIGINS          comma-separated origins this proxy also serves
-  WAHAROA_ALLOW_DIRECT_ORIGINS      comma-separated origins the proxy does not serve and
+  BYRLE_ARTIFACT_ORIGINS            comma-separated origins this proxy also serves
+  BYRLE_ALLOW_DIRECT_ORIGINS        comma-separated origins the proxy does not serve and
                                     permits anyway, fetched directly and unexamined
-  WAHAROA_REWRITE_ARTIFACTS=0       do not point artifact URLs at the proxy. pnpm and
+  BYRLE_REWRITE_ARTIFACTS=0         do not point artifact URLs at the proxy. pnpm and
                                     yarn then fetch artifacts without the proxy seeing
                                     them.
-  WAHAROA_CA_BUNDLE                 PEM bundle for the upstream connection
-  WAHAROA_CA_BUNDLE_EXCLUSIVE=1     trust only that bundle, not the public roots
-  WAHAROA_MAX_METADATA_BYTES        ceiling on a metadata document (default 64 MiB)
-  WAHAROA_MAX_RECORDS               package records held in memory (default 50000)
-  WAHAROA_MAX_VERIFIED              verified artifact digests remembered (default 50000)
-  WAHAROA_DATABASE_URL              Postgres holding intel from `waharoa refresh`. With a
+  BYRLE_CA_BUNDLE                   PEM bundle for the upstream connection
+  BYRLE_CA_BUNDLE_EXCLUSIVE=1       trust only that bundle, not the public roots
+  BYRLE_MAX_METADATA_BYTES          ceiling on a metadata document (default 64 MiB)
+  BYRLE_MAX_RECORDS                 package records held in memory (default 50000)
+  BYRLE_MAX_VERIFIED                verified artifact digests remembered (default 50000)
+  BYRLE_DATABASE_URL                Postgres holding intel from `byrle refresh`. With a
                                     policy, known_malware is enforced from it, and a
                                     store that cannot answer is a 503
-  WAHAROA_GITHUB_TOKEN              token `waharoa refresh` reads GitHub's Advisory
+  BYRLE_GITHUB_TOKEN                token `byrle refresh` reads GitHub's Advisory
                                     Database with. Unset, that one stream does not load
                                     and the others still do
-  WAHAROA_SNAPSHOT_DIR              directory `waharoa refresh` keeps each snapshot in,
+  BYRLE_SNAPSHOT_DIR                directory `byrle refresh` keeps each snapshot in,
                                     for `policy diff --snapshot`. Unset, none is kept
-  WAHAROA_SNAPSHOT_LIMIT            most snapshots kept there; a refresh removes older ones (default 30)
-  WAHAROA_POLICY                    path to a policy file. Loaded, validated and
+  BYRLE_SNAPSHOT_LIMIT              most snapshots kept there; a refresh removes older ones (default 30)
+  BYRLE_POLICY                      path to a policy file. Loaded, validated and
                                     enforced. Startup reports which checks can fire
-  WAHAROA_AUDIT_LOG                 path for one JSON line per policy decision,
+  BYRLE_AUDIT_LOG                   path for one JSON line per policy decision,
                                     appended. Refuses to start if it cannot be opened
-  WAHAROA_EXPIRY_CEILING_DAYS       how many days ahead a `packages` entry may be dated (default 90)
-  WAHAROA_MAX_CONCURRENT_METADATA   metadata documents decoded at once (default 8)
-  WAHAROA_SPOOL_DIR                 directory an artifact is written to while it is
+  BYRLE_EXPIRY_CEILING_DAYS         how many days ahead a `packages` entry may be dated (default 90)
+  BYRLE_MAX_CONCURRENT_METADATA     metadata documents decoded at once (default 8)
+  BYRLE_SPOOL_DIR                   directory an artifact is written to while it is
                                     analysed. Locked; spool files left in it are removed
-                                    at startup (default waharoa-spool in the OS temp dir)
-  WAHAROA_MAX_ARTIFACT_BYTES        ceiling on an artifact written to the spool (default 1024 MiB)
-  WAHAROA_MAX_CONCURRENT_ANALYSES   artifacts analysed at once (default 8)
-  WAHAROA_MAX_TRAFFIC_CLIENTS       client names counted apart in a traffic window (default 256)
-  WAHAROA_WATCH_INTERVAL            seconds between checks of served packages for new versions to analyse
+                                    at startup (default byrle-spool in the OS temp dir)
+  BYRLE_MAX_ARTIFACT_BYTES          ceiling on an artifact written to the spool (default 1024 MiB)
+  BYRLE_MAX_CONCURRENT_ANALYSES     artifacts analysed at once (default 8)
+  BYRLE_MAX_TRAFFIC_CLIENTS         client names counted apart in a traffic window (default 256)
+  BYRLE_WATCH_INTERVAL              seconds between checks of served packages for new versions to analyse
                                     before a client asks for them; 0 turns it off (default 900)
-  WAHAROA_SOURCE_ARCHIVES           host of the GitHub archives each artifact is compared with, the source
+  BYRLE_SOURCE_ARCHIVES             host of the GitHub archives each artifact is compared with, the source
                                     its metadata names; off turns the comparison off (default https://codeload.github.com)
-  WAHAROA_DETECTORS                 detectors run on each version served, `name=command argument...`, separated by `;`;
+  BYRLE_DETECTORS                   detectors run on each version served, `name=command argument...`, separated by `;`;
                                     {ecosystem}, {name} and {version} in the arguments are replaced. A detector is given
                                     PATH, HOME, SOCKS and the forward proxies, and nothing else
-  WAHAROA_REFUSAL_STATUS            status a refusal answers with, per client, e.g.
+  BYRLE_REFUSAL_STATUS              status a refusal answers with, per client, e.g.
                                     "default=403,npm/pnpm=451" (default 403)
-  WAHAROA_REFUSE_UNSERVABLE=0       forward versions whose artifacts this proxy cannot
+  BYRLE_REFUSE_UNSERVABLE=0         forward versions whose artifacts this proxy cannot
                                     see, instead of removing them from the metadata
-  WAHAROA_MODE                      "observe" serves what the policy refuses and logs it (default enforce)
+  BYRLE_MODE                        "observe" serves what the policy refuses and logs it (default enforce)
   HTTPS_PROXY                       forward proxy for upstream https; the lowercase name
                                     is read too
   HTTP_PROXY                        forward proxy for upstream http; the lowercase name
                                     is read too
   NO_PROXY                          hosts fetched without the forward proxy, comma-separated;
                                     the lowercase name is read too
-  WAHAROA_LOG_FORMAT                "json" writes one OpenTelemetry log record per line (default text)
-  RUST_LOG                          log filter, in tracing's syntax (default waharoa=info)
-  WAHAROA_DEFER_TEST                DEBUG BUILDS ONLY: answer every matching request with
+  BYRLE_LOG_FORMAT                  "json" writes one OpenTelemetry log record per line (default text)
+  RUST_LOG                          log filter, in tracing's syntax (default byrle=info)
+  BYRLE_DEFER_TEST                  DEBUG BUILDS ONLY: answer every matching request with
                                     a deferral instead of fetching, so client retry
                                     behaviour can be measured. `<status>:<seconds|none>:
                                     <metadata|artifact|all>[:<seconds>]`, e.g.
