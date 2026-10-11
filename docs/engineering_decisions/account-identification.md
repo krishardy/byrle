@@ -1,10 +1,10 @@
 # How a request through the proxy is tied to an account
 
-- **Status:** Decided 2026-09-19: a token per account. Not yet implemented. TODO Stage 8.
+- **Status:** Decided 2026-09-19: a token per account. Not yet implemented. TODO Stage 4.9.
 - **Related:** [doctor-python-clients](doctor-python-clients.md)
 
-Stage 8 needs every request, metadata and artifact alike, to name the account that made it,
-without a secret landing in a file that gets committed.
+Stage 4.9 and Stage 8 need every request, metadata and artifact alike, to name the account
+that made it, without a secret landing in a file that gets committed.
 
 ## Decision
 
@@ -64,3 +64,19 @@ credential has none until the proxy's configuration gives it one: TODO Stage 8.
 
 Whichever is chosen, `Authorization` stops at the proxy, and a private upstream gets a
 credential of its own from the proxy's configuration.
+
+## Required by default
+
+Decided by the user 2026-10-11, for Stage 4.9. Every proxy request carries a token, and
+each user has their own. The proxy accepts it in the forms JFrog Artifactory accepts:
+
+| Form | Sent by |
+|---|---|
+| `Authorization: Bearer <token>` | npm, pnpm, yarn 1, bun |
+| `Authorization: Basic`, the token as the password | pip, uv. The username has to be the token's account |
+| `X-Byrle-Token: <token>` | a client that sets a custom header, such as Maven's `httpHeaders` |
+
+A request with none of them, or a token naming no active account, is answered 401.
+`/-/byrle/health` and `/-/byrle/ready` need no token. `BYRLE_REQUIRE_TOKEN=0` turns the
+requirement off, and a request without a token is recorded as anonymous. See
+[admin-plan](../admin-plan.md) §4.1.

@@ -2603,6 +2603,72 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 
 ---
 
+## Stage 4.9: Admin, monitoring and configuration APIs and web interface
+
+**Goal:** an admin logs in and sees what the proxy retrieved, refused and failed, who asked
+for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
+
+### Decisions (do these first)
+
+- [x] Q1: the proxy requires a token by default, one per user, in Artifactory's forms.
+      Decided 2026-10-11 ([account-identification](docs/engineering_decisions/account-identification.md#required-by-default)).
+- [x] Q2: a second listener in `byrle daemon`, `BYRLE_CONSOLE_LISTEN`. Decided 2026-10-11
+      ([console-listener](docs/engineering_decisions/console-listener.md)).
+- [x] Q3: Rust, HTML from `maud`, for now. Decided 2026-10-11
+      ([console-web-interface](docs/engineering_decisions/console-web-interface.md)).
+- [x] Q4: `argon2` 0.6.0, and `jsonwebtoken` 11.1.0 on `aws_lc_rs` with the OIDC flow
+      written here. Decided 2026-10-11
+      ([console-login-crates](docs/engineering_decisions/console-login-crates.md)).
+- [x] Q5: logs are files, rotated daily, gzip, 365 days. Decided 2026-10-11
+      ([log-rotation](docs/engineering_decisions/log-rotation.md)).
+
+### Build
+
+- [ ] `[!]` 401 without a token, `BYRLE_REQUIRE_TOKEN=0` to turn it off (plan §4.1).
+      `byrle doctor`, the smoke scripts and `docs/quickstart.md` send a token
+- [ ] `[!]` Measure npm's `_auth` (Basic) on metadata and artifact requests
+- [ ] `[!]` The audit log gains `account`, and the five failure cases nothing records today:
+      503 `intel-store`, 503 `no-stream-for-ecosystem`, upstream unreachable, upstream
+      non-2xx, and a body cut short on a digest mismatch (plan §3)
+- [ ] `[!]` Rotation at UTC midnight, gzip, `BYRLE_LOG_RETENTION_DAYS`; `policy diff` and
+      `audit verify` read the compressed files
+- [ ] `[!]` Migrations for the plan §4.3 tables
+- [ ] `[!]` The proxy writes `served_version` and `failure_count` through a bounded queue
+      that never fails or delays an install, and counts the rows it drops
+- [ ] `[!]` Accounts, roles and permissions; every API handler declares a permission, and
+      a test fails on one that does not
+- [ ] `[!]` Password login (Argon2id), sessions, CSRF, a login rate limit
+- [ ] `[!]` The account event log (plan §4.5)
+- [ ] `[!]` `byrle account create --role admin`, for the first admin
+- [ ] `[!]` Accounts identified on requests by proxy token, per
+      [account-identification](docs/engineering_decisions/account-identification.md).
+      Moved from Stage 8 on 2026-10-11
+- [ ] `[!]` API: dependencies retrieved (R3)
+- [ ] `[!]` API: alerts for versions served before a malware advisory was loaded (R4)
+- [ ] `[!]` API: requests refused as malicious, and versions removed from metadata as
+      malicious (R5)
+- [ ] `[!]` API: failure counts by case and interval (R6)
+- [ ] `[!]` API: configuration, with secrets removed (R7)
+- [ ] `[!]` API: account event log (R8)
+- [ ] `[!]` API: request log with accounts (R9)
+- [ ] `[!]` API and page: status of the proxy listener, its readiness, the database and the
+      index queue, and `GET health` without credentials (R10, plan §4.9)
+- [ ] `[!]` Web interface over each endpoint: `maud` pages, forms, SVG charts
+- [ ] `[!]` OIDC login: discovery, `state`, `nonce`, PKCE, code exchange, key refetch, and
+      `iss`, `aud`, `exp`, `nonce` and a configured algorithm list checked
+- [ ] `[!]` `docs/threat-model.md` console section (plan §5)
+- [ ] Docs: the console in `docs/quickstart.md`, and an endpoint reference
+
+**Exit:** an admin logs in by password and, separately, through an OIDC provider. After a
+real `npm install` and `pip install` through the proxy, each with its own user's token,
+each of R3 to R9 shows those requests with the account that made them. A request without a
+token is answered 401. A package given a test `MAL-` advisory after it was installed
+appears as an alert. The status page shows the proxy `down` while its listener is closed,
+and `degraded` while the intel store holds no snapshot. An account without the `admin`
+role gets 403 from every endpoint except `GET health`.
+
+---
+
 ## Stage 5 — Hardening
 
 **Goal:** make it something a real team will run in blocking mode.
@@ -2878,15 +2944,14 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 **Goal:** a user with an account can see what they have installed through the proxy, and is
 told by email when something they installed turns out to be malicious or vulnerable.
 
-- [ ] Accounts: a user signs up and is identified on the requests they make through the
-      proxy. Today a request carries a user-agent and nothing that names a person, so the
-      audit log records packages, not who installed them.
+- Accounts, and requests naming them: moved to Stage 4.9 on 2026-10-11
+  ([admin-plan](docs/admin-plan.md) §6).
 - [ ] A list of every dependency the user has installed: purl, version, first and last
-      install, and the verdict at the time. Built from the audit log once requests carry
-      the account.
+      install, and the verdict at the time. Built from Stage 4.9's `request_log`.
 - [ ] Email when a dependency the user installed gets a new malware advisory: a `MAL-`
       record or a Datadog entry that a refresh loaded and the previous snapshot did not
-      hold, matched against the user's installed versions.
+      hold, matched against the user's installed versions. The matching is built in
+      Stage 4.9 as console alerts.
 - [ ] Email when a dependency the user installed gets a new critical or high vulnerability:
       a new advisory scored 7.0 or above, or banded `HIGH` or `CRITICAL`, matched the same
       way.

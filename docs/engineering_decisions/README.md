@@ -40,6 +40,10 @@ code, and the file names where.
 | [A yanked file is refused, and the policy can allow it](yanked-files.md) | Implemented |
 | [One library crate and one binary, not a workspace](one-crate.md) | Decided |
 | [Every build carries every ecosystem](no-ecosystem-features.md) | Decided |
+| [Console listener](console-listener.md) | Decided |
+| [Log rotation](log-rotation.md) | Decided |
+| [Console web interface: Rust and maud](console-web-interface.md) | Decided |
+| [Console login crates: argon2 and jsonwebtoken](console-login-crates.md) | Decided |
 | [byrle resolves no version ranges](no-range-resolution.md) | Decided |
 | [The PEP 503 HTML index is read, not forwarded](pep-503-html-index.md) | Implemented |
 | [PyPI provenance: the index says where the bundle is](pypi-provenance.md) | Implemented, verified by the provenance check |
