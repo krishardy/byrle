@@ -39,6 +39,7 @@ code, and the file names where.
 | [Metadata is fetched from upstream on every request](no-metadata-cache.md) | Implemented |
 | [A yanked file is refused, and the policy can allow it](yanked-files.md) | Implemented |
 | [One library crate and one binary, not a workspace](one-crate.md) | Decided |
+| [Every build carries every ecosystem](no-ecosystem-features.md) | Decided |
 | [waharoa resolves no version ranges](no-range-resolution.md) | Decided |
 | [The PEP 503 HTML index is read, not forwarded](pep-503-html-index.md) | Implemented |
 | [PyPI provenance: the index says where the bundle is](pypi-provenance.md) | Implemented, verified by the provenance check |
@@ -102,7 +103,7 @@ code, and the file names where.
 | [Stage structure](stage-structure.md) | Staging |
 | [Fetch path branching](fetch-path-branching.md) | Decided |
 | [Project name: waharoa](project-name-waharoa.md) | Superseded by [project-name-byrle](project-name-byrle.md) |
-| [Project name: byrle](project-name-byrle.md) | Staging, the rename (Stage 7) |
+| [Project name: byrle](project-name-byrle.md) | Staging, the rename (Stage 4.5) |
 
 ## Adding one
 

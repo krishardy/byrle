@@ -2582,8 +2582,8 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       `Cargo.toml`, so a build carries only the ecosystems it serves. Raised 2026-09-26 while
       `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
       well as its metadata formats. Moved from Ad-hoc #21 on 2026-10-11.
-      Closed 2026-10-11 without doing it: the user decided every build keeps every
-      ecosystem.
+      Closed 2026-10-11 without doing it: every build keeps every ecosystem
+      ([no-ecosystem-features](docs/engineering_decisions/no-ecosystem-features.md)).
 
 **Exit:** every item in this stage is done.
 

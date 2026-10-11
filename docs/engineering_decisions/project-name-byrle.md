@@ -1,6 +1,6 @@
 # Project name: byrle
 
-- **Status:** Staging. The code still uses `waharoa`; the rename is in Stage 7 of `TODO.md`.
+- **Status:** Staging. The code still uses `waharoa`; the rename is in Stage 4.5 of `TODO.md`.
 - **Plan reference:** decision #13, and the plan header.
 - **Supersedes:** [project-name-waharoa](project-name-waharoa.md).
 
