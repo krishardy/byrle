@@ -251,10 +251,7 @@ Items that I've added that are not stage-bound.
 20. [x] main.rs is still NPM focused, especially in the comments. Generalize the comments and code.
     Done 2026-09-29: the code already served each row of `ecosystem::TABLE`; the module
     documentation said Stage 1, npm and no policy engine, and now says what the binary does.
-21. [ ] Consider making each ecosystem an optional module, pluggable through Cargo features in
-    `Cargo.toml`, so a build carries only the ecosystems it serves. Raised 2026-09-26 while
-    `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
-    well as its metadata formats.
+21. Optional ecosystem modules through Cargo features: moved to Stage 4.5 on 2026-10-11.
 22. [x] Log-capture tests failed now and then: `a_document_with_every_version_refused_is_reported`
     about once in 50 runs, and two new timing tests on 4 of 8 full-suite runs. Each test
     set a per-thread default subscriber, and tracing caches a callsite's interest for the
@@ -2569,6 +2566,27 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 
 ---
 
+## Stage 4.5: Rename and optional ecosystems
+
+- [ ] Rename the project from `waharoa` to `byrle`. Decided by the user 2026-10-01. Moved
+      from Stage 7 on 2026-10-11. It makes the Stage 7 cultural consultation moot. The name
+      is in the crate and binary, the `WAHAROA_*` environment variables, the `x-waharoa-*`
+      headers, the `waharoa.*` log fields, `/-/waharoa/` paths, the `waharoa-detector-`
+      scratch directories, the docs and `docs/engineering_decisions/project-name-waharoa.md`.
+  - [x] Registry check on `byrle`, 2026-10-11: crates.io, npm and PyPI return 404. The
+        GitHub handle is a user account created 2021-11-11 with no public repositories
+        ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md)).
+  - [x] Choose the GitHub home, since the `byrle` handle is taken. Decided by the user
+        2026-10-11: `github.com/krishardy/byrle`.
+- [ ] Make each ecosystem an optional module, pluggable through Cargo features in
+      `Cargo.toml`, so a build carries only the ecosystems it serves. Raised 2026-09-26 while
+      `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
+      well as its metadata formats. Moved from Ad-hoc #21 on 2026-10-11.
+
+**Exit:** every item in this stage is done.
+
+---
+
 ## Stage 5 — Hardening
 
 **Goal:** make it something a real team will run in blocking mode.
@@ -2819,7 +2837,7 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       project has no Māori developers, and suggested something akin to Kaitiaki, which is
       heavily overloaded. A te reo Māori name would have to be asked for; that may be
       revisited if the project gains support and local Māori engineers become involved.
-      The project is renamed to `byrle`, the item below
+      The project is renamed to `byrle`, the rename item in Stage 4.5
       ([project-name-waharoa](docs/engineering_decisions/project-name-waharoa.md#consultation-result)).
       Original item: a human conversation, not a
       lookup, and the remaining gate on the name. Moved here from Stage 1 because it
@@ -2828,15 +2846,6 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       find-and-replace plus the registry check above run again on the new name, so do this
       early enough in the stage that a rename is not competing with the announcement.
       See the plan header.
-- [ ] Rename the project from `waharoa` to `byrle`. Decided by the user 2026-10-01. It
-      makes the cultural consultation above moot. The name is in the crate and binary, the
-      `WAHAROA_*` environment variables, the `x-waharoa-*` headers, the `waharoa.*` log
-      fields, `/-/waharoa/` paths, the `waharoa-detector-` scratch directories, the docs and
-      `docs/engineering_decisions/project-name-waharoa.md`.
-  - [x] Registry check on `byrle`, 2026-10-11: crates.io, npm and PyPI return 404. The
-        GitHub handle is a user account created 2021-11-11 with no public repositories
-        ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md)).
-  - [ ] Choose the GitHub home, since the `byrle` handle is taken.
 - [ ] Migration guide from Socket Firewall Free / pkggate
 - [ ] CONTRIBUTING.md, adapter authoring guide, detector authoring guide, and a stream
       authoring guide for third-party advisory sources. The last moved from Stage 2: it

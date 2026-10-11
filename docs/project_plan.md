@@ -3,14 +3,14 @@
 > **Name: `byrle`.** Decided 2026-10-01, replacing the working name `waharoa`
 > ([project-name-byrle](engineering_decisions/project-name-byrle.md)). The code, the
 > environment variables, the headers and the commands in this plan still use `waharoa`
-> until the rename item in Stage 7 of `TODO.md` is done. An informal cultural consultation
+> until the rename item in Stage 4.5 of `TODO.md` is done. An informal cultural consultation
 > on `waharoa`, in September 2026, was not in favour of it; the result is in
 > [project-name-waharoa](engineering_decisions/project-name-waharoa.md#consultation-result).
 >
 > Registry check, 2026-10-11, by exact-name lookup: crates.io, the npm registry and PyPI
 > return 404 for `byrle`. The GitHub handle `byrle` is a user account created 2021-11-11
 > with no public repositories. `serde`, `lodash`, `requests` and `rust-lang` returned 200
-> in the same run.
+> in the same run. The GitHub home is `github.com/krishardy/byrle`.
 
 A self-hosted proxy that evaluates packages against a security policy **before** they
 are downloaded, extracted, or executed. Blocks known malware and policy violations
@@ -829,7 +829,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | # | Decision | Remaining gate |
 |---|---|---|
 | 9 | [Stage structure](engineering_decisions/stage-structure.md) | M1 transport, M2 policy. Spike dissolved |
-| 13 | [Name](engineering_decisions/project-name-byrle.md) | `byrle`, replacing `waharoa`; the code is not yet renamed and the GitHub handle is taken |
+| 13 | [Name](engineering_decisions/project-name-byrle.md) | `byrle`, replacing `waharoa`; the code is not yet renamed; GitHub home `github.com/krishardy/byrle` |
 
 ### Open questions
 

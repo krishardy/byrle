@@ -29,5 +29,9 @@ repositories, no name and no followers.
 
 The rename itself. `waharoa` is in the crate and binary, the `WAHAROA_*` environment
 variables, the `x-waharoa-*` headers, the `waharoa.*` log fields, the `/-/waharoa/` paths,
-the `waharoa-detector-` scratch directories and the docs. The project's GitHub home needs
-a handle other than `byrle`, or that account.
+the `waharoa-detector-` scratch directories and the docs.
+
+## GitHub home
+
+`github.com/krishardy/byrle`, decided by the user 2026-10-11, since the `byrle` handle is
+taken.
