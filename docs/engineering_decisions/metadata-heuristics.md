@@ -1,8 +1,9 @@
 # Metadata heuristics report signals and refuse nothing
 
-- **Status:** Implemented 2026-09-29, report only. `src/heuristics.rs`,
+- **Status:** Implemented 2026-09-29, report only. `src/analysis/detector/metadata.rs`, the
+  `metadata` detector since 2026-10-01 ([detectors](detectors.md)),
   `Deciding::dated` and `negotiate` in `src/proxy.rs`,
-  `RecordStore::signals` in `src/store.rs`, logged and audited by `decide_artifact` in
+  `RecordStore::metadata` in `src/store.rs`, logged and audited by `decide_artifact` in
   `src/proxy.rs`, printed by `waharoa explain`.
 - **Related:** [audit-log](audit-log.md), [explain-output](explain-output.md),
   [watcher](watcher.md)
@@ -97,7 +98,7 @@ each pair. They stay signals.
 
 ## Tests
 
-`src/heuristics.rs` covers each signal firing and each case that suppresses it: 30 days old,
+`src/analysis/detector/metadata.rs` covers each signal firing and each case that suppresses it: 30 days old,
 no earlier publisher, a version with no publish time, an abbreviated document, a PyPI
 record, a name compared with itself, and names under 4 characters. A case-only difference
 is near.

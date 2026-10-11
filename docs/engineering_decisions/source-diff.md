@@ -2,7 +2,8 @@
 
 - **Status:** Implemented 2026-09-30 in the analysis tier for npm and PyPI, report only.
   `src/analysis/source.rs`, run by `src/analysis/run/sourcing.rs`, reported by
-  `heuristics::of_source`, measured by `examples/source_diff.rs`.
+  the `source` detector in `src/analysis/detector/source.rs` since 2026-10-01
+  ([detectors](detectors.md)), measured by `examples/source_diff.rs`.
 - **Related:** [tier-1-false-positives](tier-1-false-positives.md),
   [install-scripts-from-the-artifact](install-scripts-from-the-artifact.md),
   [metadata-heuristics](metadata-heuristics.md),

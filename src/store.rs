@@ -3,7 +3,8 @@
 //! metadata request: see docs/engineering_decisions/no-metadata-cache.md.
 
 use crate::analysis::attestation::{Previous, previous};
-use crate::heuristics::{Signal, signals};
+use crate::analysis::detector::metadata::{Listing, Metadata};
+use crate::analysis::detector::{Detection, built_in};
 use crate::identity::PackageKey;
 use crate::policy::facts::PublishTimes;
 use crate::record::{PackageMetadata, PackageRecord};
@@ -147,16 +148,16 @@ impl RecordStore {
         })
     }
 
-    /// What the metadata heuristics report for `record`, against `full`, the full document,
+    /// What the metadata heuristics find about `record`, against `full`, the full document,
     /// when it lists the version, else the document held, and the names of the other
     /// packages held in its ecosystem. `now` is when they are asked for.
     /// Does not count as a use.
-    pub fn signals(
+    pub fn metadata(
         &self,
         record: &PackageRecord,
         full: Option<&PackageMetadata>,
         now: jiff::Timestamp,
-    ) -> Vec<Signal> {
+    ) -> (String, Detection) {
         let key = record.package.key();
         let records = self
             .entries
@@ -170,13 +171,14 @@ impl RecordStore {
             .filter(|held| held.ecosystem() == key.ecosystem())
             .map(PackageKey::registry_name)
             .collect();
-        signals(
+        let listing = Listing {
             records,
             record,
             full,
-            served.iter().map(String::as_str),
+            served: served.iter().map(String::as_str).collect(),
             now,
-        )
+        };
+        built_in(&Metadata, &listing)
     }
 
     /// Drop least recently used packages until the budget is met, keeping the most recent,
@@ -414,7 +416,13 @@ mod tests {
     /// package is not held is judged on itself.
     #[test]
     fn signals_compare_names_held_in_the_same_ecosystem() {
-        use crate::heuristics::Signal;
+        let fired = |(_, detection): (String, Detection)| -> Vec<String> {
+            detection
+                .findings
+                .into_iter()
+                .map(|finding| format!("{}: {}", finding.rule, finding.detail))
+                .collect()
+        };
         let mut store = RecordStore::new(100);
         store.insert(packument("express", &["1.0.0"]));
         store.insert(packument("expres", &["1.0.0"]));
@@ -428,13 +436,14 @@ mod tests {
         let now = jiff::Timestamp::now();
         let expres = packument("expres", &["1.0.0"]).records.remove(0);
         assert_eq!(
-            store.signals(&expres, None, now),
-            [Signal::NearName {
-                served: "express".to_owned()
-            }]
+            fired(store.metadata(&expres, None, now)),
+            ["near_name: one edit from `express`, served here"]
         );
         let unheld = packument("lodash", &["1.0.0"]).records.remove(0);
-        assert_eq!(store.signals(&unheld, None, now), []);
+        assert_eq!(
+            fired(store.metadata(&unheld, None, now)),
+            Vec::<String>::new()
+        );
 
         let mut taken = packument("taken", &["1.0.0", "1.0.1"]);
         for (record, (days, publisher)) in taken.records.iter_mut().zip([(400, "ana"), (1, "eve")])
@@ -445,10 +454,8 @@ mod tests {
         let latest = taken.records[1].clone();
         store.insert(taken);
         assert_eq!(
-            store.signals(&latest, None, now),
-            [Signal::NewPublisher {
-                publisher: "eve".to_owned()
-            }],
+            fired(store.metadata(&latest, None, now)),
+            ["new_publisher: eve published no earlier version"],
             "the held document names the earlier publisher"
         );
     }

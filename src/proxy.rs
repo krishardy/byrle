@@ -18,7 +18,6 @@ use crate::env::{
     DEFAULT_MAX_CONCURRENT_METADATA, DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_TRAFFIC_CLIENTS, DEFAULT_MAX_VERIFIED,
 };
-use crate::heuristics::Signal;
 use crate::http::{
     RequestedEncoding, decode_for_parsing, encoding_to_request, gzip, is_conditional,
     is_hop_by_hop, mark_etag, unmark_if_none_match,
@@ -32,6 +31,7 @@ use crate::policy::{Policy, enforce, facts};
 use crate::record::{PackageMetadata, PackageRecord};
 use crate::refusal::{Mode, RefusalStatus};
 use crate::route::{DocumentKind, RequestTarget};
+use crate::signal::Signal;
 use crate::spool::Spool;
 use crate::store::{Lookup, RecordStore};
 use crate::util::lru::Lru;
@@ -1318,10 +1318,11 @@ impl<'a> Deciding<'a> {
         }
     }
 
-    /// What the metadata heuristics report for `record`, logged when there is any.
-    /// See docs/engineering_decisions/metadata-heuristics.md.
+    /// The signals each detector reports for `record`, logged when there is any: the
+    /// metadata heuristics, the source comparison when `sourced`, then `detected`, what each
+    /// other detector found about the version, by detector name.
+    /// See docs/engineering_decisions/detectors.md.
     /// `full` is the full document, when one was fetched for this request.
-    /// `detected` is what each detector found about the version, by detector name.
     fn signals(
         &self,
         record: &PackageRecord,
@@ -1329,17 +1330,20 @@ impl<'a> Deciding<'a> {
         sourced: Option<&Sourced>,
         detected: &[(String, crate::analysis::detector::Detection)],
     ) -> Vec<Signal> {
-        let mut signals = self.proxy.store.lock().expect("record store lock").signals(
-            record,
-            full,
-            jiff::Timestamp::now(),
-        );
-        signals.extend(
-            sourced
-                .map(crate::heuristics::of_source)
-                .unwrap_or_default(),
-        );
-        signals.extend(crate::heuristics::of_detections(detected));
+        let metadata = self
+            .proxy
+            .store
+            .lock()
+            .expect("record store lock")
+            .metadata(record, full, jiff::Timestamp::now());
+        let source = sourced.map(|sourced| {
+            crate::analysis::detector::built_in(&crate::analysis::detector::source::Source, sourced)
+        });
+        let detections: Vec<_> = std::iter::once(metadata)
+            .chain(source)
+            .chain(detected.iter().cloned())
+            .collect();
+        let signals = crate::signal::of_detections(&detections);
         if !signals.is_empty() {
             let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
             let weights = self
@@ -1349,7 +1353,7 @@ impl<'a> Deciding<'a> {
                 .as_deref()
                 .map(|policy| policy.signal_weights.clone())
                 .unwrap_or_default();
-            let score = crate::heuristics::score(&signals, &weights);
+            let score = crate::signal::score(&signals, &weights);
             warn!(url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path), waharoa.package.purl = %self.purl, waharoa.signals = ?found, waharoa.risk_score = score, "signals reported; they refuse nothing");
         }
         signals
@@ -8234,7 +8238,7 @@ mod tests {
                 .lines()
                 .map(|l| serde_json::from_str(l).unwrap())
                 .collect();
-            let at = format!("source o/r@{SOURCE_HEAD}");
+            let at = format!("o/r@{SOURCE_HEAD}");
             let sourced: Vec<&String> = lines[1]
                 .signals
                 .iter()
@@ -8252,9 +8256,9 @@ mod tests {
             assert_eq!(
                 sourced,
                 [
-                    &format!("{at}: install scripts it lacks or has otherwise: postinstall"),
-                    &format!("{at}: install files it lacks or has otherwise: x.js"),
-                    &format!("{at}: 1 file differs from it: `x.js`"),
+                    &format!("source install scripts: {at} lacks or has otherwise: postinstall"),
+                    &format!("source install files: {at} lacks or has otherwise: x.js"),
+                    &format!("source differing: 1 file differs from {at}: `x.js`"),
                 ],
                 "{detail:?}"
             );
@@ -8473,7 +8477,7 @@ mod tests {
         for event in lines(&path) {
             assert_eq!(
                 event.signals,
-                [crate::heuristics::Signal::NoRepository.to_string()],
+                ["no repository: the metadata names none"],
                 "widget's document names no repository"
             );
         }

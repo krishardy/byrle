@@ -2233,10 +2233,9 @@ from. The four the stage decided rather than built are the two `UNINSPECTED` not
 
 ## Stage 3 — Second ecosystem (PyPI)
 
-**Status: open, started 2026-09-16.** Every item closed except the deferrals and the
-PEP 691 transport row's own sub-items; exit met: PyPI enforcing, the adapter interface
+**Status: closed 2026-10-01.** Exit met: PyPI enforcing, the adapter interface
 extracted from two working implementations and documented, and npm passing every Stage 1
-and Stage 2 test.
+and Stage 2 test. Every item closed or moved.
 
 **Goal:** **extract** the adapter interface, using npm and PyPI as the two shapes to
 design against. The interface is an output of this stage, not an input. If PyPI forces
@@ -2256,7 +2255,7 @@ changes to the core, that is the finding — make it now, not after five adapter
       ([pypi-provenance](docs/engineering_decisions/pypi-provenance.md)).
       Fetching the bundle is Stage 4's provenance item: the publisher identity and the
       predicate type are inside it, and it needs sigstore to mean anything.
-- [~] `[!]` PEP 503 simple-index transport, written concretely first. `src/ecosystem/pypi/` reads
+- [x] `[!]` PEP 503 simple-index transport, written concretely first. `src/ecosystem/pypi/` reads
       PEP 691 JSON: name normalisation, the index URL, and one project's files with version,
       kind, hash, upload time and yank state. Standalone on purpose, sharing nothing with
       `src/ecosystem/npm/`: the interface is an output of this stage.
@@ -2411,6 +2410,9 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
 
 ## Stage 4 — Differentiators
 
+**Status: closed 2026-10-01.** Exit met 2026-09-26: all Tier 1 controls shipped, with false
+positives measured over 311 versions. Every item closed or moved.
+
 **Goal:** the intel-independent controls. This is the launch story, not stages 1–3.
 
 - [x] `[!]` **Cooldown / quarantine** — hold versions published within N days.
@@ -2539,11 +2541,14 @@ and documented; npm still passes every Stage 1 and Stage 2 test after the refact
   - [x] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector:
         by name, every rule a signal of weight 1. On 694 npm versions a rule fired on 400,
         a `threat-*` rule on 28.
-  - [ ] Measure GuardDog's two email-domain rules once the sandbox has a SOCKS5 proxy
-        allowing WHOIS, TCP port 43.
-  - [ ] Put the metadata heuristics and the source comparison behind the `Detector` trait,
-        or record why they stay apart: one reads metadata synchronously, the other is keyed
-        by digest.
+  - [x] Moved to Stage 5: measure GuardDog's two email-domain rules.
+  - [x] Put the metadata heuristics and the source comparison behind the `Detector` trait.
+        Done 2026-10-01: `Detector<S>` reads a subject, and each caller decides when it
+        runs and what it stores. `metadata` reads the held document on each decision and
+        stores nothing; `source` reads the comparison the analyser stored by artifact
+        digest. Every signal is a detector's rule, and `signal_weights` is one map keyed by
+        rule, with the built-in rules named alone as before
+        ([detectors](docs/engineering_decisions/detectors.md#the-detectors-built-in)).
 - [x] Benchmark each control against known 2025–26 incidents (shai-hulud, tinycolor,
       chalk, nx, eslint-config-prettier) and publish the results
       ([incident-benchmark](docs/engineering_decisions/incident-benchmark.md)). A 7-day
@@ -2764,6 +2769,10 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
   - [x] `SECURITY.md`, 2026-09-28. Reports go to GitHub private vulnerability reporting
         or vltbcnsec@gmail.com. No fixed response time, disclosure when a fix ships,
         latest release only.
+- [ ] Measure GuardDog's two email-domain rules, `potentially_compromised_email_domain` and
+      `unclaimed_maintainer_email_domain`, once the sandbox has a SOCKS5 proxy allowing
+      WHOIS, TCP port 43. Moved from Stage 4 on 2026-10-01. Checked that day: the only
+      egress is `egress-proxy:3128`, and `whois.verisign-grs.com` does not resolve.
 - [ ] Get one external team running it in blocking mode; fix what they hit
 
 **Exit:** an external team runs it enforcing for two weeks without disabling it.

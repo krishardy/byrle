@@ -2,7 +2,9 @@
 
 - **Status:** Implemented 2026-09-30, report only. `src/analysis/detector.rs` (the trait and
   the command adapter), `src/analysis/run/detecting.rs` (running them), `version_detection`
-  (migration 0014), measured by `examples/detector_rates.rs`.
+  (migration 0014), measured by `examples/detector_rates.rs`. The metadata heuristics and
+  the source comparison moved behind the trait 2026-10-01: `src/analysis/detector/metadata.rs`
+  and `src/analysis/detector/source.rs`, turned into signals by `src/signal.rs`.
 - **Related:** [metadata-heuristics](metadata-heuristics.md), [source-diff](source-diff.md),
   [policy-reference](../policy-reference.md#signal_weights), [threat-model](../threat-model.md)
 
@@ -16,11 +18,33 @@ Decided with the user 2026-09-30.
 | role | report only. A detector's rules are signals in the risk score and refuse nothing. The install-script reader and attestation verification decide verdicts and defer the client; they are not detectors |
 | running | in the background, never deferring a request: 2 slots of their own, one run per version and detector at a time. A decision reads the stored results, and starts the detectors that have none unless the policy blocks the version. The watcher does the same for a new version |
 | result | kept by detector, ecosystem, registry name and version, and read back only for the detector version that wrote it. A run that could not be made stores nothing, and runs again on the next decision |
-| weight | each rule fired is a signal `detector.rule`, weighing 1 unless `signal_weights` says otherwise. A key naming a rule the detector does not have is refused at load |
+| weight | each rule fired is a signal, weighing 1 unless `signal_weights` says otherwise under `detector.rule`, or the rule alone for a detector built in. A key naming a rule the detector does not have is refused at load |
 
-The metadata heuristics and the source comparison are signals too, but are not behind the
-trait: the heuristics read the metadata synchronously, and the source comparison is keyed
-by the artifact's digest.
+## The detectors built in
+
+`Detector<S>` reads a subject `S`. Each caller decides when a detector runs and whether its
+result is stored.
+
+| Detector | Subject | Runs | Stored | Version |
+|---|---|---|---|---|
+| `metadata` | `Listing`: the held records, the full document, the names served, the time | on each decision, before the verdict | nothing: its answer changes with the clock and the packages served | `metadata 1` |
+| `source` | `Sourced`: the comparison of one artifact with its source | on each decision with a stored comparison. The comparison runs in the analyser, per artifact digest, with its own slots and deadline | the comparison, by digest and `COMPARER` | `source 1`, `COMPARER` |
+| a command | `Target`: ecosystem, name and version | in the background, on 2 slots | its detection, by detector version | what `program --version` prints last |
+
+Both built in answer on the first poll of `detect`. `at_once` reads them, so the record
+store's lock is not held across a wait.
+
+Their rules keep the keys they had before 2026-10-01: `new_package`, not
+`metadata.new_package`. A policy written before then loads unchanged. A command named
+`metadata` or `source` is refused at startup.
+
+A signal prints as `rule in words: detail` for a detector built in, and `detector: rule`
+for a command. The source comparison's text changed with the move:
+
+| Before | After |
+|---|---|
+| `source o/r@v1: install scripts it lacks or has otherwise: postinstall` | `source install scripts: o/r@v1 lacks or has otherwise: postinstall` |
+| ``source o/r@v1: 1 file differs from it: `x.js` `` | ``source differing: 1 file differs from o/r@v1: `x.js` `` |
 
 ## The command adapter
 

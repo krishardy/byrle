@@ -6,11 +6,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use futures_util::StreamExt as _;
+use waharoa::analysis::detector::built_in;
+use waharoa::analysis::detector::metadata::{Listing, Metadata, RULES};
 use waharoa::ecosystem::npm::transport::Client;
 use waharoa::ecosystem::pypi::transport::Client as PypiClient;
-use waharoa::heuristics::{Signal, signals};
 use waharoa::identity::{Ecosystem, PackageKey};
 use waharoa::record::DocumentDetail;
+use waharoa::signal::{Signal, of_detections};
 
 #[tokio::main]
 async fn main() {
@@ -85,7 +87,14 @@ async fn measure<'a>(
             .ok()?
     };
     let record = metadata.version(version)?;
-    Some(signals(&metadata.records, record, None, served, now))
+    let listing = Listing {
+        records: &metadata.records,
+        record,
+        full: None,
+        served: served.collect(),
+        now,
+    };
+    Some(of_detections(&[built_in(&Metadata, &listing)]))
 }
 
 /// One line per version with a signal, then per ecosystem the count of versions each fired on.
@@ -116,7 +125,7 @@ fn report(mut found: Vec<(String, String, String, Option<Vec<Signal>>)>, now: ji
     }
     for (ecosystem, (versions, unread)) in &totals {
         println!("\n== {ecosystem}\nversions\t{versions}\nnot read\t{unread}");
-        for kind in ["new_package", "new_publisher", "no_repository", "near_name"] {
+        for kind in RULES {
             let n = counts
                 .get(&(ecosystem.clone(), kind.to_owned()))
                 .copied()
