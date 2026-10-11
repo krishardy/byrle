@@ -15,18 +15,30 @@ waharoa_use_latest_node
 echo "==> rustup components"
 rustup component add clippy rustfmt 2>&1 | sed 's/^/    /'
 
+echo "==> cargo-binstall (installs the cargo tools below)"
+if cargo binstall -V >/dev/null 2>&1; then
+    echo "    found $(cargo binstall -V)"
+else
+    # Built from source. Upstream's other route is `curl ... | bash`, which this file does
+    # not run, for the reason the trufflehog entry below gives.
+    cargo install cargo-binstall --locked
+fi
+
+# Fetches a prebuilt binary where one is published, and builds from source where not.
+binstall() { cargo binstall --no-confirm --locked --disable-telemetry "$@"; }
+
 echo "==> cargo-audit (dependency advisories; used when re-running the config spike)"
 if cargo audit --version >/dev/null 2>&1; then
     echo "    already installed"
 else
-    cargo install cargo-audit --locked
+    binstall cargo-audit
 fi
 
 echo "==> cargo-outdated (dependency freshness, used by 'make check-deps')"
 if cargo outdated --version >/dev/null 2>&1; then
     echo "    already installed"
 else
-    cargo install cargo-outdated --locked
+    binstall cargo-outdated
 fi
 
 # shellcheck source=scripts/make/lib/sqlx-cli.sh
@@ -40,7 +52,7 @@ else
     # It reads the instrumentation rustc emits, so the matching llvm-tools component
     # has to be there as well.
     rustup component add llvm-tools-preview 2>&1 | sed 's/^/    /'
-    cargo install cargo-llvm-cov --locked
+    binstall cargo-llvm-cov
 fi
 
 # shellcheck source=scripts/make/lib/coverage-toolchain.sh
@@ -51,7 +63,7 @@ echo "==> cargo-mutants (mutation testing, used by 'make mutants')"
 if cargo mutants --version >/dev/null 2>&1; then
     echo "    already installed"
 else
-    cargo install cargo-mutants --locked
+    binstall cargo-mutants
 fi
 
 echo "==> trufflehog (credential scanning, used by 'make sast')"
@@ -144,10 +156,10 @@ fi
 # See docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md.
 kani_version="0.67.0"
 echo "==> kani $kani_version (formal verification, used by 'make verify')"
-if [[ "$(cargo kani --version 2>/dev/null)" == *"Kani Rust Verifier $kani_version "* ]]; then
+if [[ "$(cargo kani --version 2>/dev/null)" == "cargo-kani $kani_version" ]]; then
     echo "    already installed"
 else
-    cargo install --locked kani-verifier --version "$kani_version"
+    binstall kani-verifier --version "$kani_version"
     # kani needs a second step to fetch its solver backend.
     cargo kani setup
 fi
