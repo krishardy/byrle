@@ -822,7 +822,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [`policy diff` reads lockfiles](engineering_decisions/policy-diff-lockfiles.md) | `--lockfile <path>`, repeatable, adds the registry versions of `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock` v1, `pnpm-lock.yaml` 9 or `bun.lock` to the audit log's |
 | n/a | [PURL identity rules](engineering_decisions/purl-identity-rules.md) | Do not lowercase npm names; key on parsed components |
 | 13 | [Name](engineering_decisions/project-name-byrle.md) | `byrle`, replacing `waharoa`, renamed 2026-10-11; GitHub home `github.com/krishardy/byrle` |
-| n/a | [Console listener](engineering_decisions/console-listener.md) | A second listener in `byrle daemon`, `BYRLE_CONSOLE_LISTEN`, unset by default |
+| n/a | [Console listener](engineering_decisions/console-listener.md) | `BYRLE_PROXY_URL` and `BYRLE_CONSOLE_URL` give each part's path; one listener or two; never the same path |
 | n/a | [Console web interface](engineering_decisions/console-web-interface.md) | Rust, HTML from `maud`, for now: 3 crates, against 214 npm packages for React and Vite |
 | n/a | [Console login crates](engineering_decisions/console-login-crates.md) | `argon2` 0.6.0; `jsonwebtoken` 11.1.0 on `aws_lc_rs`, OIDC flow written here; no `rsa` built |
 | n/a | [Log rotation](engineering_decisions/log-rotation.md) | Logs are files, rotated at UTC midnight, gzip, 365 days by default |

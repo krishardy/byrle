@@ -62,8 +62,8 @@ the proxy does not serve.
 - The body is never read. Warm drops each response at its status line. The proxy logged
   no error for it.
 - An artifact URL is asked of `--proxy` with the path and query the proxy wrote. The proxy
-  writes `BYRLE_PUBLIC_URL` into its documents, which the machine running warm may not
-  reach. Measured with `BYRLE_PUBLIC_URL=http://byrle.invalid`: 8 of 8 warmed.
+  writes `BYRLE_PROXY_URL` into its documents, which the machine running warm may not
+  reach. Measured with `BYRLE_PROXY_URL=http://byrle.invalid`: 8 of 8 warmed.
 - Sixteen artifacts are asked for at once. Every artifact is asked for once before any
   is asked again, so every analysis starts at once.
 - Measured on the 207-package npm set of [latency-benchmarks](latency-benchmarks.md),

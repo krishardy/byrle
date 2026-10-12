@@ -1,0 +1,40 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT\n                    account.name AS account,\n                    proxy_token.name,\n                    to_char(proxy_token.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"created!\",\n                    to_char(proxy_token.revoked_at AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS revoked\n                FROM proxy_token\n                JOIN account ON account.id = proxy_token.account_id\n                WHERE $1::text IS NULL OR account.name = $1\n                ORDER BY account.name, proxy_token.name\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "created!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "revoked",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "3e409339fbee3ca0cad904e09e6cf7145560ddc9b141311dcdbef24e03830291"
+}

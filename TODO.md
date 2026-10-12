@@ -1255,12 +1255,12 @@ implementations.
                   client with a warm cache first meets a rewriting proxy.
             - [x] Lockfiles, measured: npm and yarn record the proxy address; pnpm omits
                   the URL and derives it from the configured registry, so its lockfiles
-                  become registry-independent. `BYRLE_PUBLIC_URL` pins the address.
+                  become registry-independent. `BYRLE_PROXY_URL` pins the address.
             - [x] **The recorded address is load-bearing.** A lockfile written through a
                   proxy on one port, then `npm ci` against a proxy on another, fails
                   outright: npm goes to the address in `resolved` and does not fall back
                   to the registry given on the command line. The proxy warns at startup
-                  when `BYRLE_PUBLIC_URL` is unset, and the README says so.
+                  when `BYRLE_PROXY_URL` is unset, and the README says so.
             - [x] `make smoke-clients` asserts every client fetches and verifies
                   artifacts. Checked that it bites with `BYRLE_REWRITE_ARTIFACTS=0`.
 - [x] **Refuse artifacts whose origin is not in the proxy configuration.** Tier 3 in
@@ -2612,7 +2612,8 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
 
 - [x] Q1: the proxy requires a token by default, one per user, in Artifactory's forms.
       Decided 2026-10-11 ([account-identification](docs/engineering_decisions/account-identification.md#required-by-default)).
-- [x] Q2: a second listener in `byrle daemon`, `BYRLE_CONSOLE_LISTEN`. Decided 2026-10-11
+- [x] Q2: at `BYRLE_CONSOLE_URL`'s path, on the proxy's listener or `BYRLE_CONSOLE_LISTEN`.
+      Decided 2026-10-11, revised the same day
       ([console-listener](docs/engineering_decisions/console-listener.md)).
 - [x] Q3: Rust, HTML from `maud`, for now. Decided 2026-10-11
       ([console-web-interface](docs/engineering_decisions/console-web-interface.md)).
@@ -2624,9 +2625,27 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
 
 ### Build
 
-- [ ] `[!]` 401 without a token, `BYRLE_REQUIRE_TOKEN=0` to turn it off (plan §4.1).
-      `byrle doctor`, the smoke scripts and `docs/quickstart.md` send a token
-- [ ] `[!]` Measure npm's `_auth` (Basic) on metadata and artifact requests
+- [x] `[!]` `BYRLE_PROXY_URL` and `BYRLE_CONSOLE_URL`, each giving where its part answers;
+      `BYRLE_CONSOLE_LISTEN` optional. Asked for by the user 2026-10-11: the two may share a
+      host and port, and are never at the same path. `BYRLE_PUBLIC_URL` renamed
+      `BYRLE_PROXY_URL`. Done 2026-10-11: `src/mount.rs`, `src/console.rs`; the console
+      answers `api/v1/health` so far
+      ([console-listener](docs/engineering_decisions/console-listener.md)).
+- [x] `[!]` Accounts and proxy tokens: migration `0015_accounts.sql`; `byrle account
+      create|disable|list` and `byrle token create|revoke|list`. A token is `byrle_` and 32
+      random bytes, base64url, printed once; the store keeps its SHA-256. Done 2026-10-11:
+      `src/account.rs`, `src/account/postgres.rs`, tested against Postgres in
+      `tests/postgres.rs`
+- [x] `[!]` 401 without a token, `BYRLE_REQUIRE_TOKEN=0` to turn it off (plan §4.1).
+      `byrle doctor`, the smoke scripts and `docs/quickstart.md` send a token. Done
+      2026-10-11: `src/account/gate.rs`; 503 `account-store` when the store cannot answer;
+      `byrle warm` sends `BYRLE_TOKEN`; doctor warns when tokens are off, and needs none
+      itself since it asks only health and ready. `make smoke-npm` step 10 and `make
+      smoke-python` step 9 install with a token. The other scripts run with
+      `BYRLE_REQUIRE_TOKEN=0`
+- [x] `[!]` Measure npm's `_auth` (Basic) on metadata and artifact requests. Done
+      2026-10-11, under a path, with bun, pip and uv beside it: every request carried the
+      token ([account-identification](docs/engineering_decisions/account-identification.md#through-the-proxy-under-a-path-measured))
 - [ ] `[!]` The audit log gains `account`, and the five failure cases nothing records today:
       503 `intel-store`, 503 `no-stream-for-ecosystem`, upstream unreachable, upstream
       non-2xx, and a body cut short on a digest mismatch (plan §3)

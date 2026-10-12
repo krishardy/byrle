@@ -55,7 +55,7 @@ else
         exit 1
     fi
     log="$workdir/proxy.log"
-    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" BYRLE_PUBLIC_URL="$proxy" BYRLE_UPSTREAM_NPM="$upstream" \
+    BYRLE_REQUIRE_TOKEN=0 BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" BYRLE_PROXY_URL="$proxy" BYRLE_UPSTREAM_NPM="$upstream" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do

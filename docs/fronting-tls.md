@@ -10,12 +10,23 @@ certificate paths changed.
 
 ```
 BYRLE_LISTEN=127.0.0.1:8080
-BYRLE_PUBLIC_URL=https://byrle.example.com
+BYRLE_PROXY_URL=https://byrle.example.com
 ```
 
-`BYRLE_PUBLIC_URL` is the front's address. It is what the proxy writes into artifact
+`BYRLE_PROXY_URL` is the front's address. It is what the proxy writes into artifact
 URLs, so it is what lockfiles record. `BYRLE_LISTEN` on loopback keeps the plain HTTP
 port off the network.
+
+The path of `BYRLE_PROXY_URL` is where the proxy answers, and a request outside it is
+answered 404. With `https://byrle.example.com/registry/`, the front passes `/registry/...`
+through unchanged: Caddy's `handle /registry/*`, not `handle_path`, which strips it; nginx's
+`location /registry/` with `proxy_pass http://127.0.0.1:8080;`, with no path after the
+port. The configurations below use the root, `/`, which needs neither.
+
+The admin console, when `BYRLE_CONSOLE_URL` is set, answers under that URL's path. On the
+proxy's listener the two paths may not contain each other, so the proxy at `/` and a
+console beside it need `BYRLE_CONSOLE_LISTEN`
+([console-listener](engineering_decisions/console-listener.md)).
 
 ## Caddy
 
@@ -60,7 +71,7 @@ server {
 |---|---|
 | `proxy_buffering off` | streams an artifact through as the proxy verifies it, rather than nginx holding the whole response |
 | `proxy_read_timeout 300s` | the proxy reads, filters and rewrites a metadata document before its first byte, and a large one takes longer than nginx's default 60 s. `next`'s 4.4 MB packument took 21 s in [latency-benchmarks](engineering_decisions/latency-benchmarks.md) |
-| `proxy_set_header Host $http_host` | passes the name the client used. The proxy writes `BYRLE_PUBLIC_URL` into documents when it is set, and the `Host` otherwise |
+| `proxy_set_header Host $http_host` | passes the name the client used. The proxy writes `BYRLE_PROXY_URL` into documents when it is set, and the `Host` otherwise |
 | `proxy_http_version 1.1` | keeps upstream connections open between requests |
 
 The certificate paths are certbot's. The smoke test uses a local certificate.

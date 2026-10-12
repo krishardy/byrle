@@ -40,7 +40,7 @@ code, and the file names where.
 | [A yanked file is refused, and the policy can allow it](yanked-files.md) | Implemented |
 | [One library crate and one binary, not a workspace](one-crate.md) | Decided |
 | [Every build carries every ecosystem](no-ecosystem-features.md) | Decided |
-| [Console listener](console-listener.md) | Decided |
+| [Console listener](console-listener.md) | Implemented |
 | [Log rotation](log-rotation.md) | Decided |
 | [Console web interface: Rust and maud](console-web-interface.md) | Decided |
 | [Console login crates: argon2 and jsonwebtoken](console-login-crates.md) | Decided |

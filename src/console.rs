@@ -1,0 +1,261 @@
+//! The admin console: where it answers, and its routes. Stage 4.9 builds it up from here;
+//! today it answers its health check. See docs/admin-plan.md.
+
+use axum::Router;
+use axum::http::{StatusCode, header};
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+
+use crate::env::{self, EnvError};
+use crate::mount::{self, Mount};
+
+/// Under the console's path, answered with no session or token, for an outside monitor.
+pub const HEALTH_PATH: &str = "/api/v1/health";
+
+/// Where the console answers, read from [`env::CONSOLE_URL`] and [`env::CONSOLE_LISTEN`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Console {
+    pub url: String,
+    pub mount: Mount,
+    /// The console's own listener. `None` when it shares the proxy's.
+    pub listen: Option<String>,
+}
+
+impl Console {
+    /// The console the environment asks for, or `None`. Refused when its path is the
+    /// proxy's, when the two share a listener and either path contains the other, or when
+    /// [`env::CONSOLE_LISTEN`] is set without [`env::CONSOLE_URL`].
+    pub fn from_env<L: Fn(&str) -> Option<std::ffi::OsString>>(
+        environment: &env::Env<L>,
+        proxy_listen: &str,
+    ) -> Result<Option<Console>, EnvError> {
+        let configured = environment.console_listen()?;
+        let Some((url, mount)) = environment.console_url()? else {
+            return match configured {
+                Some(value) => Err(EnvError {
+                    var: env::CONSOLE_LISTEN.name,
+                    value,
+                    reason: format!(
+                        "is set, and {} is not: there is no console",
+                        env::CONSOLE_URL
+                    ),
+                }),
+                None => Ok(None),
+            };
+        };
+        let listen = configured.filter(|listen| listen != proxy_listen);
+        let proxy = environment.proxy_mount()?;
+        if let Some(reason) = mount::conflict(&proxy, &mount, listen.is_none()) {
+            return Err(EnvError {
+                var: env::CONSOLE_URL.name,
+                value: url,
+                reason: format!("{reason} ({} is {})", env::PROXY_URL, proxy),
+            });
+        }
+        Ok(Some(Console { url, mount, listen }))
+    }
+
+    /// The console's routes, each under its path. Any other request goes to `rest`.
+    fn router(&self, rest: Router) -> Router {
+        let under = self.mount.to_string();
+        let under = under.trim_end_matches('/');
+        Router::new()
+            .route(&format!("{under}{HEALTH_PATH}"), get(health))
+            .fallback_service(rest)
+    }
+}
+
+/// Each address to listen on and what it serves. The proxy's `listen` serves `proxy`, with
+/// the console's routes in front of it when the two share it; the proxy answers 404
+/// outside its own path. A console with a listener of its own is served there alone.
+pub fn listeners(proxy: Router, listen: &str, console: Option<&Console>) -> Vec<(String, Router)> {
+    match console {
+        None => vec![(listen.to_owned(), proxy)],
+        Some(console) => match &console.listen {
+            None => vec![(listen.to_owned(), console.router(proxy))],
+            Some(own) => vec![
+                (listen.to_owned(), proxy),
+                (
+                    own.clone(),
+                    console.router(Router::new().fallback(|| async { StatusCode::NOT_FOUND })),
+                ),
+            ],
+        },
+    }
+}
+
+/// The console answers. Its components are checked once there are any: docs/admin-plan.md
+/// §4.9.
+async fn health() -> Response {
+    (
+        StatusCode::OK,
+        [(header::CACHE_CONTROL, "no-store")],
+        axum::Json(serde_json::json!({ "status": "up" })),
+    )
+        .into_response()
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+    use crate::env::testing::with;
+    use crate::proxy::testing::serve;
+
+    const LISTEN: &str = "127.0.0.1:8080";
+
+    fn console(vars: &[(env::Var, &str)]) -> Result<Option<Console>, EnvError> {
+        Console::from_env(&with(vars), LISTEN)
+    }
+
+    #[test]
+    fn no_console_url_is_no_console() {
+        assert_eq!(console(&[]), Ok(None));
+        assert_eq!(
+            console(&[(env::PROXY_URL, "https://h/registry/")]),
+            Ok(None)
+        );
+    }
+
+    #[test]
+    fn an_unreadable_console_listener_is_refused_by_name() {
+        let unread = crate::env::testing::with_unreadable(
+            &[(env::CONSOLE_URL, "https://h/admin/")],
+            env::CONSOLE_LISTEN,
+        );
+        let refused = Console::from_env(&unread, LISTEN).unwrap_err();
+        assert_eq!(refused.var, env::CONSOLE_LISTEN.name);
+    }
+
+    #[test]
+    fn a_console_listener_without_a_console_url_is_refused() {
+        let refused = console(&[(env::CONSOLE_LISTEN, "127.0.0.1:9090")]).unwrap_err();
+        assert_eq!(refused.var, env::CONSOLE_LISTEN.name);
+        assert!(refused.reason.contains(env::CONSOLE_URL.name), "{refused}");
+    }
+
+    /// On the proxy's listener, the console needs a path the proxy's does not contain; the
+    /// default, `/`, contains all. Naming the proxy's own listener is sharing it.
+    #[test]
+    fn a_console_on_the_proxys_listener_needs_a_path_the_proxy_does_not_contain() {
+        let shared = console(&[
+            (env::PROXY_URL, "https://h/registry/"),
+            (env::CONSOLE_URL, "https://h/admin/"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(shared.listen, None);
+        assert_eq!(shared.mount.to_string(), "/admin/");
+
+        let refused = console(&[(env::CONSOLE_URL, "https://h/admin/")]).unwrap_err();
+        assert_eq!(refused.var, env::CONSOLE_URL.name);
+        let named_proxy = format!("{} is /", env::PROXY_URL);
+        assert!(refused.reason.contains(&named_proxy), "{refused}");
+
+        let named = console(&[
+            (env::CONSOLE_URL, "https://h/admin/"),
+            (env::CONSOLE_LISTEN, LISTEN),
+        ]);
+        assert!(named.is_err());
+    }
+
+    /// On its own listener the console may be under the proxy's path, not at it. The proxy
+    /// is at `/` by default, so a console at `/` is refused.
+    #[test]
+    fn a_console_on_a_listener_of_its_own_needs_only_a_different_path() {
+        let alone = console(&[
+            (env::CONSOLE_URL, "https://admin.h:8443/admin/"),
+            (env::CONSOLE_LISTEN, "127.0.0.1:9090"),
+        ])
+        .unwrap()
+        .unwrap();
+        assert_eq!(alone.listen.as_deref(), Some("127.0.0.1:9090"));
+
+        let same = console(&[
+            (env::CONSOLE_URL, "https://admin.h:8443/"),
+            (env::CONSOLE_LISTEN, "127.0.0.1:9090"),
+        ]);
+        assert!(
+            same.unwrap_err()
+                .reason
+                .starts_with("is the proxy's path too")
+        );
+    }
+
+    #[test]
+    fn a_console_url_that_names_no_path_is_refused_as_the_proxy_url_is() {
+        let refused = console(&[(env::CONSOLE_URL, "ftp://h/admin/")]).unwrap_err();
+        assert_eq!(refused.var, env::CONSOLE_URL.name);
+        let proxy = console(&[
+            (env::PROXY_URL, "https://h/?x"),
+            (env::CONSOLE_URL, "https://h/admin/"),
+        ]);
+        assert_eq!(proxy.unwrap_err().var, env::PROXY_URL.name);
+    }
+
+    fn teapot() -> Router {
+        Router::new().fallback(|| async { (StatusCode::IM_A_TEAPOT, "proxy") })
+    }
+
+    async fn status(base: &str, path: &str) -> StatusCode {
+        reqwest::get(format!("{base}{path}"))
+            .await
+            .unwrap()
+            .status()
+    }
+
+    /// Sharing the proxy's listener, the console answers under its path and the proxy
+    /// answers the rest.
+    #[tokio::test]
+    async fn a_shared_listener_serves_the_console_under_its_path_and_the_proxy_elsewhere() {
+        let shared = Console {
+            url: "https://h/admin/".into(),
+            mount: Mount::from_url("https://h/admin/").unwrap(),
+            listen: None,
+        };
+        let served = listeners(teapot(), LISTEN, Some(&shared));
+        assert_eq!(served.len(), 1);
+        let (at, router) = served.into_iter().next().unwrap();
+        assert_eq!(at, LISTEN);
+        let base = serve(router).await;
+
+        let health = reqwest::get(format!("{base}/admin{HEALTH_PATH}"))
+            .await
+            .unwrap();
+        assert_eq!(health.status(), 200);
+        assert_eq!(health.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(health.text().await.unwrap(), r#"{"status":"up"}"#);
+        assert_eq!(status(&base, "/lodash").await, StatusCode::IM_A_TEAPOT);
+        assert_eq!(status(&base, HEALTH_PATH).await, StatusCode::IM_A_TEAPOT);
+    }
+
+    /// With a listener of its own, the console answers there, at the root if its path is
+    /// the root, and 404 to anything else. The proxy's listener serves the proxy alone.
+    #[tokio::test]
+    async fn a_console_listener_of_its_own_serves_the_console_alone() {
+        let alone = Console {
+            url: "https://admin.h/".into(),
+            mount: Mount::ROOT,
+            listen: Some("127.0.0.1:9090".into()),
+        };
+        let served = listeners(teapot(), LISTEN, Some(&alone));
+        let addresses: Vec<&str> = served.iter().map(|(at, _)| at.as_str()).collect();
+        assert_eq!(addresses, [LISTEN, "127.0.0.1:9090"]);
+        let mut routers = served.into_iter().map(|(_, router)| router);
+        let proxy = serve(routers.next().unwrap()).await;
+        let console = serve(routers.next().unwrap()).await;
+
+        assert_eq!(status(&proxy, HEALTH_PATH).await, StatusCode::IM_A_TEAPOT);
+        assert_eq!(status(&console, HEALTH_PATH).await, StatusCode::OK);
+        assert_eq!(status(&console, "/lodash").await, StatusCode::NOT_FOUND);
+    }
+
+    /// Without a console, the proxy's listener serves the proxy.
+    #[tokio::test]
+    async fn no_console_is_the_proxy_alone() {
+        let served = listeners(teapot(), LISTEN, None);
+        assert_eq!(served.len(), 1);
+        let base = serve(served.into_iter().next().unwrap().1).await;
+        assert_eq!(status(&base, HEALTH_PATH).await, StatusCode::IM_A_TEAPOT);
+    }
+}

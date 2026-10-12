@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT EXISTS (SELECT 1 FROM account WHERE name = $1) AS \"known!\"",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "known!",
+        "type_info": "Bool"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "5df886d060fd628d36c5dc964a90b878c1e1293547b664c92bc39ec1035efbfc"
+}

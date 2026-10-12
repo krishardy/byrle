@@ -5,6 +5,7 @@
 
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
+use crate::mount::Mount;
 use crate::refusal::RefusalStatus;
 use std::ffi::OsString;
 use std::fmt;
@@ -98,14 +99,45 @@ pub const UPSTREAM_PYPI: Var = runtime(
     &["PyPI simple index to forward to"],
 )
 .with_default(Default::Text(crate::ecosystem::pypi::INDEX));
-pub const PUBLIC_URL: Var = runtime(
-    "BYRLE_PUBLIC_URL",
+pub const PROXY_URL: Var = runtime(
+    "BYRLE_PROXY_URL",
     "",
     &[
-        "address written into artifact URLs, and therefore",
-        "into lockfiles. Defaults to each request's own Host,",
-        "which is rarely what you want.",
+        "URL package managers use for the proxy. Its path is",
+        "where the proxy answers, and it is written into artifact",
+        "URLs, and therefore into lockfiles. Defaults to each",
+        "request's own Host at /, which is rarely what you want.",
     ],
+);
+pub const CONSOLE_URL: Var = runtime(
+    "BYRLE_CONSOLE_URL",
+    "",
+    &[
+        "URL of the admin console. Its path is where the console",
+        "answers, and is never the proxy's. Unset, there is no console",
+    ],
+);
+pub const CONSOLE_LISTEN: Var = runtime(
+    "BYRLE_CONSOLE_LISTEN",
+    "",
+    &[
+        "address the console listens on. Unset, it shares",
+        "BYRLE_LISTEN, and neither path may contain the other",
+    ],
+);
+pub const REQUIRE_TOKEN: Var = runtime(
+    "BYRLE_REQUIRE_TOKEN",
+    "=0",
+    &[
+        "answer requests that carry no proxy token. Unset, each",
+        "request needs one, and BYRLE_DATABASE_URL is required,",
+        "since accounts and tokens are kept there",
+    ],
+);
+pub const TOKEN: Var = runtime(
+    "BYRLE_TOKEN",
+    "",
+    &["proxy token `byrle warm` sends, from `byrle token create`"],
 );
 pub const ARTIFACT_ORIGINS: Var = runtime(
     "BYRLE_ARTIFACT_ORIGINS",
@@ -412,11 +444,15 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 53] = [
+pub const ALL: [Var; 57] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
-    PUBLIC_URL,
+    PROXY_URL,
+    CONSOLE_URL,
+    CONSOLE_LISTEN,
+    REQUIRE_TOKEN,
+    TOKEN,
     ARTIFACT_ORIGINS,
     ALLOW_DIRECT_ORIGINS,
     REWRITE_ARTIFACTS,
@@ -658,8 +694,45 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         Ok(upstreams)
     }
 
-    pub fn public_url(&self) -> Result<Option<String>, EnvError> {
-        self.text(PUBLIC_URL)
+    /// [`PROXY_URL`], checked as [`Mount::from_url`] checks it.
+    pub fn proxy_url(&self) -> Result<Option<String>, EnvError> {
+        Ok(self.url_and_mount(PROXY_URL)?.map(|(url, _)| url))
+    }
+
+    /// Where a client on this machine reaches the proxy: [`PROXY_URL`] without its trailing
+    /// `/`, or `http://` and [`LISTEN`].
+    pub fn proxy_base(&self) -> Result<String, EnvError> {
+        match self.proxy_url()? {
+            Some(url) => Ok(url.trim_end_matches('/').to_owned()),
+            None => Ok(format!("http://{}", self.listen()?)),
+        }
+    }
+
+    /// The path the proxy answers at: [`PROXY_URL`]'s, or the root when it is unset.
+    pub fn proxy_mount(&self) -> Result<Mount, EnvError> {
+        Ok(self
+            .url_and_mount(PROXY_URL)?
+            .map_or(Mount::ROOT, |(_, mount)| mount))
+    }
+
+    /// [`CONSOLE_URL`] and its path. `None` when there is no console.
+    pub fn console_url(&self) -> Result<Option<(String, Mount)>, EnvError> {
+        self.url_and_mount(CONSOLE_URL)
+    }
+
+    /// [`CONSOLE_LISTEN`]. `None` when the console shares [`LISTEN`].
+    pub fn console_listen(&self) -> Result<Option<String>, EnvError> {
+        self.text(CONSOLE_LISTEN)
+    }
+
+    fn url_and_mount(&self, var: Var) -> Result<Option<(String, Mount)>, EnvError> {
+        let Some(url) = self.text(var)? else {
+            return Ok(None);
+        };
+        match Mount::from_url(&url) {
+            Ok(mount) => Ok(Some((url, mount))),
+            Err(reason) => Err(EnvError::new(var, url, reason)),
+        }
     }
 
     pub fn artifact_origins(&self) -> Result<Vec<String>, EnvError> {
@@ -781,6 +854,16 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
             |v| v.parse().ok().filter(|limit| *limit > 0),
             "is not a whole number above 0",
         )
+    }
+
+    /// Whether a proxy request needs a token. On unless [`REQUIRE_TOKEN`] is `0`.
+    pub fn require_token(&self) -> Result<bool, EnvError> {
+        self.flag(REQUIRE_TOKEN, true)
+    }
+
+    /// The token `byrle warm` sends the proxy.
+    pub fn token(&self) -> Result<Option<String>, EnvError> {
+        self.text(TOKEN)
     }
 
     pub fn database_url(&self) -> Result<Option<String>, EnvError> {
@@ -992,6 +1075,44 @@ mod tests {
 
     use super::testing::with;
 
+    /// The proxy's and the console's URLs give their paths, and one that cannot name a
+    /// path is refused under its own name.
+    #[test]
+    fn each_url_gives_its_path_and_a_bad_one_is_refused_by_name() {
+        let env = with(&[
+            (PROXY_URL, "https://h/registry/"),
+            (CONSOLE_URL, "https://h/admin"),
+            (CONSOLE_LISTEN, "127.0.0.1:9090"),
+        ]);
+        assert_eq!(
+            env.proxy_url().unwrap().as_deref(),
+            Some("https://h/registry/")
+        );
+        assert_eq!(env.proxy_base().unwrap(), "https://h/registry");
+        assert_eq!(env.proxy_mount().unwrap().to_string(), "/registry/");
+        let (url, mount) = env.console_url().unwrap().unwrap();
+        assert_eq!(
+            (url.as_str(), mount.to_string().as_str()),
+            ("https://h/admin", "/admin/")
+        );
+        assert_eq!(
+            env.console_listen().unwrap().as_deref(),
+            Some("127.0.0.1:9090")
+        );
+
+        let bad = with(&[(PROXY_URL, "https://user:pw@h/")]);
+        for refused in [
+            bad.proxy_url().unwrap_err(),
+            bad.proxy_mount().unwrap_err(),
+            bad.proxy_base().unwrap_err(),
+        ] {
+            assert_eq!(refused.var, PROXY_URL.name);
+            assert_eq!(refused.reason, "carries credentials");
+        }
+        let unread = super::testing::with_unreadable(&[], LISTEN);
+        assert_eq!(unread.proxy_base().unwrap_err().var, LISTEN.name);
+    }
+
     #[test]
     fn unset_is_the_default() {
         let env = with(&[]);
@@ -1004,10 +1125,12 @@ mod tests {
             env.upstreams().unwrap().get(Ecosystem::PyPI),
             crate::ecosystem::pypi::INDEX
         );
-        assert_eq!(env.public_url().unwrap(), None);
+        assert_eq!(env.proxy_url().unwrap(), None);
         assert!(env.artifact_origins().unwrap().is_empty());
         assert!(env.allow_direct_origins().unwrap().is_empty());
         assert!(env.rewrite_artifacts().unwrap());
+        assert!(env.require_token().unwrap());
+        assert_eq!(env.token().unwrap(), None);
         assert_eq!(env.ca_bundle().unwrap(), None);
         assert!(!env.ca_bundle_exclusive().unwrap());
         assert_eq!(
@@ -1044,6 +1167,13 @@ mod tests {
             DEFAULT_MAX_ARTIFACT_BYTES
         );
         assert_eq!(env.database_url().unwrap(), None);
+        assert_eq!(env.proxy_mount().unwrap(), Mount::ROOT);
+        assert_eq!(
+            env.proxy_base().unwrap(),
+            format!("http://{DEFAULT_LISTEN}")
+        );
+        assert_eq!(env.console_url().unwrap(), None);
+        assert_eq!(env.console_listen().unwrap(), None);
         assert_eq!(env.snapshot_dir().unwrap(), None);
         assert_eq!(env.snapshot_limit().unwrap(), DEFAULT_SNAPSHOT_LIMIT);
         assert_eq!(env.policy().unwrap(), None);
@@ -1086,10 +1216,12 @@ mod tests {
             (LISTEN, "0.0.0.0:9000"),
             (UPSTREAM_NPM, "https://registry.example"),
             (UPSTREAM_PYPI, "https://mirror.example/simple"),
-            (PUBLIC_URL, "https://proxy.example"),
+            (PROXY_URL, "https://proxy.example"),
             (ARTIFACT_ORIGINS, " https://a.example, ,https://b.example "),
             (ALLOW_DIRECT_ORIGINS, "https://c.example"),
             (REWRITE_ARTIFACTS, "0"),
+            (REQUIRE_TOKEN, "0"),
+            (TOKEN, "byrle_t"),
             (CA_BUNDLE, "/etc/ca.pem"),
             (CA_BUNDLE_EXCLUSIVE, "1"),
             (MAX_METADATA_BYTES, "1024"),
@@ -1128,7 +1260,7 @@ mod tests {
             "https://mirror.example/simple"
         );
         assert_eq!(
-            env.public_url().unwrap().as_deref(),
+            env.proxy_url().unwrap().as_deref(),
             Some("https://proxy.example")
         );
         assert_eq!(
@@ -1137,6 +1269,8 @@ mod tests {
         );
         assert_eq!(env.allow_direct_origins().unwrap(), ["https://c.example"]);
         assert!(!env.rewrite_artifacts().unwrap());
+        assert!(!env.require_token().unwrap());
+        assert_eq!(env.token().unwrap().as_deref(), Some("byrle_t"));
         assert_eq!(env.ca_bundle().unwrap(), Some(PathBuf::from("/etc/ca.pem")));
         assert!(env.ca_bundle_exclusive().unwrap());
         assert_eq!(env.max_metadata_bytes().unwrap(), 1024);
@@ -1480,7 +1614,7 @@ mod tests {
         );
         assert_eq!(MAX_RECORDS.default_shown().as_deref(), Some("50000"));
         assert_eq!(REFUSAL_STATUS.default_shown().as_deref(), Some("403"));
-        assert_eq!(PUBLIC_URL.default_shown(), None);
+        assert_eq!(PROXY_URL.default_shown(), None);
     }
 
     #[test]

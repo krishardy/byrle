@@ -55,7 +55,8 @@ From [request-flow](request-flow.md). R6 needs each one counted.
 | upstream unreachable, or stalled | 502 | no |
 | upstream answered 404 ("not found") or another non-2xx | forwarded | no |
 | artifact streamed with 200, body cut short on a digest mismatch | 200, truncated | no |
-| no token, or a token that names no active account | 401 | new in 4.9 |
+| no token, or one unknown, revoked or of a disabled account | 401 | no, logged at INFO |
+| account store cannot answer | 503 `account-store` | no |
 
 Each unrecorded case gets an `answered` value in the audit log. Every field already has a
 default, so an older reader skips a value it does not know.
@@ -74,15 +75,19 @@ ecosystem's clients send at least one of them:
 | `Authorization: Basic`, username and the token as the password | pip and uv with `user:token@` in the index URL. The username has to be the token's account |
 | `X-Byrle-Token: <token>` | a client that sets a custom header, such as Maven's `httpHeaders` |
 
-A request with none of these, or with a token that names no active account, is answered
-401 with `WWW-Authenticate: Basic realm="byrle"`. `/-/byrle/health` and `/-/byrle/ready`
+A request with none of these, or with a token that is unknown, revoked or of a disabled
+account, is answered 401 with `WWW-Authenticate: Basic realm="byrle"`. `/-/byrle/health` and `/-/byrle/ready`
 need no token. `BYRLE_REQUIRE_TOKEN=0` turns the requirement off, and a request without a
 token is then recorded as anonymous.
 
+Implemented 2026-10-11 in `src/account/gate.rs`. The proxy does not start with the
+requirement on and no `BYRLE_DATABASE_URL`. Which form is read first, and the 503 when the
+store cannot answer, are in [request-flow](request-flow.md#tokens).
+
 [account-identification](engineering_decisions/account-identification.md) measured which
-form each client sends on metadata and artifact requests. npm's `_auth` (Basic, the form
-Artifactory documents for npm) was not measured; it is measured before the docs recommend
-it.
+form each client sends on metadata and artifact requests, and on 2026-10-11 npm's `_auth`
+(Basic, the form Artifactory documents for npm) through the proxy under a path: it sent
+the token on every metadata and artifact request.
 
 A console login and a proxy token belong to the same account, so the audit log names the
 person behind each install:
@@ -182,7 +187,8 @@ address. A failed login names the username tried, not the password.
 
 ### 4.6 API
 
-JSON over HTTP, under `/-/byrle/api/v1/`. Every endpoint needs a session cookie or a token,
+JSON over HTTP, under `api/v1/` below the console's path: `https://h/admin/api/v1/` for
+`BYRLE_CONSOLE_URL=https://h/admin/`. Every endpoint needs a session cookie or a token,
 and a permission from §4.2. Lists are paged by cursor and filtered by time range,
 ecosystem, purl, account and `answered`.
 
@@ -213,9 +219,12 @@ need a CSRF token. The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`
 
 ### 4.8 Where it listens
 
-Decided 2026-10-11 (Q2): a second listener in `byrle daemon`, at `BYRLE_CONSOLE_LISTEN`,
-unset by default. One process keeps the counters in `proxy::Health` visible to the console,
-and a second address keeps the console off the port package managers use.
+Decided 2026-10-11 (Q2), revised the same day:
+[console-listener](engineering_decisions/console-listener.md). `BYRLE_CONSOLE_URL` turns
+the console on, and its path is where the console answers. `BYRLE_PROXY_URL`'s path is
+where the proxy answers. The two may share a host and port, and are never at the same path.
+`BYRLE_CONSOLE_LISTEN` gives the console a listener of its own; unset, it shares the
+proxy's, and neither path may contain the other.
 
 ### 4.9 Status (R10)
 
@@ -224,8 +233,8 @@ the reason, and when it was checked:
 
 | Component | Checked by | `degraded` or `down` when |
 |---|---|---|
-| proxy listener | an HTTP request from the console to `/-/byrle/health` at `BYRLE_LISTEN`, on loopback when it listens on every address | `down`: no answer within 2 s |
-| proxy readiness | `/-/byrle/ready` at the same address: `proxy::Readiness` | `degraded`: `ready` false, with `intel` (`empty`, `unavailable`) and `gaps` as the reason |
+| proxy listener | an HTTP request from the console to `-/byrle/health` under the proxy's path at `BYRLE_LISTEN`, on loopback when it listens on every address | `down`: no answer within 2 s |
+| proxy readiness | `-/byrle/ready` under the same path: `proxy::Readiness` | `degraded`: `ready` false, with `intel` (`empty`, `unavailable`) and `gaps` as the reason |
 | management API | the console answering the request at all | not reported: a console that cannot answer cannot report it |
 | database | a `SELECT 1` on `BYRLE_DATABASE_URL` | `down`: an error or no answer within 2 s |
 | index writes | the queue's dropped-row count (§4.3) | `degraded`: rows dropped since the last check |
@@ -237,7 +246,9 @@ both down.
 
 `GET health` needs no session or token, and returns `200` with `{"status":"up"}`, or `503`
 with the components that are not `up`, by name only. It is for a monitor outside the
-process, which is the only way to report the process itself down.
+process, which is the only way to report the process itself down. Since 2026-10-11 it
+answers `{"status":"up"}` whenever the console answers; the component checks come with
+`GET status`.
 
 ## 5. Threat model changes
 
@@ -282,7 +293,7 @@ process, which is the only way to report the process itself down.
 | # | Question | Decided |
 |---|---|---|
 | Q1 | Does the proxy require a token? | Yes, by default; one per user; Artifactory's forms (§4.1) |
-| Q2 | Where does the console listen? | A second listener in `byrle daemon`, `BYRLE_CONSOLE_LISTEN`, unset by default |
+| Q2 | Where does the console listen? | At `BYRLE_CONSOLE_URL`'s path, on the proxy's listener or `BYRLE_CONSOLE_LISTEN`; revised 2026-10-11 (§4.8) |
 | Q3 | Is the web interface Rust or TypeScript? | Rust, HTML from `maud`, for now ([console-web-interface](engineering_decisions/console-web-interface.md)) |
 | Q4 | Which crates for passwords and OIDC? | `argon2` 0.6.0; `jsonwebtoken` 11.1.0 on `aws_lc_rs`, with the OIDC flow written here ([console-login-crates](engineering_decisions/console-login-crates.md)) |
 | Q5 | How long are logs kept? | Files on disk, rotated daily, gzip, 365 days by default |

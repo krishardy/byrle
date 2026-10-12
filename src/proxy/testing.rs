@@ -15,10 +15,16 @@ use crate::refusal::Mode;
 use crate::spool::Spool;
 
 pub(crate) async fn serve(router: Router) -> String {
+    serve_at(|_| router).await
+}
+
+/// Serve the router `build` makes from the address it will be reached at, for a router
+/// that has to know its own address.
+pub(crate) async fn serve_at(build: impl FnOnce(&str) -> Router) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(axum::serve(listener, router).into_future());
-    format!("http://{addr}")
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(axum::serve(listener, build(&base)).into_future());
+    base
 }
 
 pub(crate) fn policy(yaml: &str) -> std::sync::Arc<Policy> {

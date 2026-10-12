@@ -95,14 +95,14 @@ portable than before, not less. They record the URL only when it is off-registry
 is the case the refusal removes anyway.
 
 For npm, yarn 1 and bun the address is recorded, so it has to be a stable name that
-everyone consuming the lockfile can reach. `BYRLE_PUBLIC_URL` pins it; otherwise the request's
+everyone consuming the lockfile can reach. `BYRLE_PROXY_URL` pins it; otherwise the request's
 own `Host` is used, with `X-Forwarded-Proto` for TLS terminated in front, which on a developer
 machine is whatever they typed. With neither, the document is forwarded unrewritten.
 
 That address becomes load-bearing. Measured: a lockfile written through a proxy on one
 port, then `npm ci` against a proxy on another, fails outright. npm goes to the address in
 `resolved` and does not fall back to the registry given on the command line. So the proxy
-warns at startup when `BYRLE_PUBLIC_URL` is unset.
+warns at startup when `BYRLE_PROXY_URL` is unset.
 
 Two consequences, the same fact seen from two sides: a lockfile committed from behind the
 proxy cannot be installed without the proxy, which means CI cannot silently skip

@@ -3,7 +3,7 @@
 # docs/fronting-tls.md, checked with curl, npm and pip.
 #
 # A local CA signs a certificate for localhost. For each front on PATH, `caddy` and
-# `nginx`, the proxy runs with BYRLE_PUBLIC_URL set to the front's address. Asserts, per
+# `nginx`, the proxy runs with BYRLE_PROXY_URL set to the front's address. Asserts, per
 # front:
 #   1. /-/byrle/health answers 200 through it
 #   2. an artifact nothing has analysed is a 503 with Retry-After and x-byrle-not-ready
@@ -73,7 +73,7 @@ check() {
     fi
     checked=$((checked + 1))
     mkdir -p "$dir/app"
-    BYRLE_PUBLIC_URL="$front" BYRLE_LISTEN="127.0.0.1:$proxy_port" \
+    BYRLE_REQUIRE_TOKEN=0 BYRLE_PROXY_URL="$front" BYRLE_LISTEN="127.0.0.1:$proxy_port" \
         BYRLE_SPOOL_DIR="$dir/spool" "$binary" daemon >"$dir/proxy.log" 2>&1 &
     local proxy=$!
     pids+=("$proxy")

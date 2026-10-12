@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 use futures_util::StreamExt;
 
 use crate::ecosystem::{Clients, Upstreams};
-use crate::env::{Env, EnvError};
+use crate::env::Env;
 use crate::identity::Ecosystem;
 use crate::lockfile::{Locked, LockfileError, Target};
 
@@ -69,16 +69,24 @@ pub async fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
     };
     let base = match proxy
         .map(str::to_owned)
-        .map_or_else(|| proxy_base(environment), Ok)
+        .map_or_else(|| environment.proxy_base(), Ok)
     {
         Ok(base) => base.trim_end_matches('/').to_owned(),
         Err(e) => return unread(e.to_string()),
+    };
+    let http = match environment
+        .token()
+        .map_err(|e| e.to_string())
+        .and_then(client)
+    {
+        Ok(http) => http,
+        Err(e) => return unread(e),
     };
     let plan = match plan(lockfiles, targets) {
         Ok(plan) => plan,
         Err(e) => return unread(e.to_string()),
     };
-    let outcomes = warm(&base, &plan, deadline).await;
+    let outcomes = warm(&http, &base, &plan, deadline).await;
     Warmed {
         notes: Vec::new(),
         report: render(&outcomes, plan.skipped),
@@ -126,23 +134,33 @@ fn plan(lockfiles: &[PathBuf], targets: Option<&[Target]>) -> Result<Plan, Lockf
     Ok(plan)
 }
 
-/// The proxy's own address: [`crate::env::PUBLIC_URL`] when set, otherwise where it
-/// listens.
-fn proxy_base<L: Fn(&str) -> Option<std::ffi::OsString>>(
-    environment: &Env<L>,
-) -> Result<String, EnvError> {
-    match environment.public_url()? {
-        Some(url) => Ok(url),
-        None => Ok(format!("http://{}", environment.listen()?)),
+/// The client warm asks the proxy with, sending `token` on every request when there is one.
+fn client(token: Option<String>) -> Result<reqwest::Client, String> {
+    let mut headers = reqwest::header::HeaderMap::new();
+    if let Some(token) = token {
+        let mut value = reqwest::header::HeaderValue::from_str(&token).map_err(|_| {
+            format!(
+                "{} is not a value an HTTP header can carry",
+                crate::env::TOKEN
+            )
+        })?;
+        value.set_sensitive(true);
+        headers.insert(crate::account::gate::TOKEN_HEADER, value);
     }
+    Ok(crate::http::client_builder(crate::http::READ_TIMEOUT)
+        .default_headers(headers)
+        .build()
+        .expect("a client with no TLS settings of its own builds"))
 }
 
 /// `plan`'s artifacts asked of the proxy at `base`, labelled. Every artifact is asked for
 /// once, which starts each analysis, before any is asked for again.
-async fn warm(base: &str, plan: &Plan, deadline: Duration) -> Vec<(String, Outcome)> {
-    let http = crate::http::client_builder(crate::http::READ_TIMEOUT)
-        .build()
-        .expect("a client with no TLS settings of its own builds");
+async fn warm(
+    http: &reqwest::Client,
+    base: &str,
+    plan: &Plan,
+    deadline: Duration,
+) -> Vec<(String, Outcome)> {
     let upstreams = Upstreams::defaults().with(Ecosystem::Npm, base).with(
         Ecosystem::PyPI,
         &format!(
@@ -228,14 +246,20 @@ enum Ask {
 }
 
 /// `url`'s path and query on `base`. The proxy writes artifact URLs with its public
-/// address, which the machine running warm may not reach.
+/// address, which the machine running warm may not reach. A path under `base`'s own path
+/// is taken from below it, so `/registry/widget` on `http://h/registry` is not doubled.
 fn on_proxy(base: &str, url: &str) -> String {
-    match reqwest::Url::parse(url) {
-        Ok(parsed) => match parsed.query() {
-            Some(query) => format!("{base}{}?{query}", parsed.path()),
-            None => format!("{base}{}", parsed.path()),
-        },
-        Err(_) => url.to_owned(),
+    let Ok(parsed) = reqwest::Url::parse(url) else {
+        return url.to_owned();
+    };
+    let below = crate::mount::Mount::from_url(base)
+        .ok()
+        .and_then(|mount| mount.strip(parsed.path()))
+        .unwrap_or_else(|| parsed.path().to_owned());
+    let base = base.trim_end_matches('/');
+    match parsed.query() {
+        Some(query) => format!("{base}{below}?{query}"),
+        None => format!("{base}{below}"),
     }
 }
 
@@ -262,6 +286,10 @@ async fn ask_once(http: &reqwest::Client, url: &str) -> Answer {
         (200..=299 | 304, _) => Outcome::Warmed,
         (503, Some("artifact-analysis")) => return Answer::Deferred(Instant::now()),
         (503, reason) => Outcome::NotReady(reason.unwrap_or("503").to_owned()),
+        (401, _) => Outcome::Failed(format!(
+            "answered 401: set {} to a token from `byrle token create`",
+            crate::env::TOKEN
+        )),
         (400..=499, _) => Outcome::Refused(status),
         _ => Outcome::Failed(format!("answered {status}")),
     })
@@ -493,7 +521,8 @@ mod tests {
                     "/broken",
                     get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
                 )
-                .route("/cached", get(|| async { StatusCode::NOT_MODIFIED })),
+                .route("/cached", get(|| async { StatusCode::NOT_MODIFIED }))
+                .route("/no-token", get(|| async { StatusCode::UNAUTHORIZED })),
         )
         .await;
         let http = reqwest::Client::new();
@@ -518,11 +547,27 @@ mod tests {
             Outcome::Failed("answered 500".to_owned())
         );
         assert_eq!(ask("/cached").await, Outcome::Warmed);
+        let Outcome::Failed(why) = ask("/no-token").await else {
+            panic!("a 401 is a failure");
+        };
+        assert!(why.contains(crate::env::TOKEN.name), "{why}");
         assert_eq!(ask("/missing").await, Outcome::Refused(404));
     }
 
-    /// A lockfile with no artifact reader is warmed through the proxy's metadata: a
-    /// listed version's files are asked for, and an unlisted version is reported.
+    /// 401 unless the request carries the token `byrle_t`.
+    async fn needs_token(
+        request: axum::extract::Request,
+        next: axum::middleware::Next,
+    ) -> axum::response::Response {
+        use axum::response::IntoResponse as _;
+        match request.headers().get(crate::account::gate::TOKEN_HEADER) {
+            Some(token) if token == "byrle_t" => next.run(request).await,
+            _ => StatusCode::UNAUTHORIZED.into_response(),
+        }
+    }
+
+    /// A lockfile with no artifact reader is warmed through the proxy's metadata, sending
+    /// [`crate::env::TOKEN`]: a listed version's files are asked for, an unlisted one reported.
     #[tokio::test]
     async fn a_lockfile_without_artifact_paths_is_warmed_through_the_metadata() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -549,12 +594,14 @@ mod tests {
                     }
                 }),
             )
-            .route("/packages/x-1.0.tar.gz", get(|| async { "bytes" }));
+            .route("/packages/x-1.0.tar.gz", get(|| async { "bytes" }))
+            .layer(axum::middleware::from_fn(needs_token));
         tokio::spawn(axum::serve(listener, router).into_future());
         let path = crate::util::test_support::tempdir("warm-pypi").join("requirements.txt");
         std::fs::write(&path, "x==1.0\nx==2.0\n").unwrap();
 
-        let warmed = run(&[path], Some(&base), None, SHORT, &with(&[])).await;
+        let environment = with(&[(crate::env::TOKEN, "byrle_t")]);
+        let warmed = run(&[path], Some(&base), None, SHORT, &environment).await;
 
         assert_eq!(
             warmed.report,
@@ -638,20 +685,6 @@ mod tests {
         assert!(warmed.report.is_empty());
     }
 
-    #[test]
-    fn the_proxy_is_its_public_url_or_where_it_listens() {
-        use crate::env::{LISTEN, PUBLIC_URL};
-        assert_eq!(
-            proxy_base(&with(&[(PUBLIC_URL, "https://byrle.example")])).unwrap(),
-            "https://byrle.example"
-        );
-        assert_eq!(
-            proxy_base(&with(&[(LISTEN, "127.0.0.1:9000")])).unwrap(),
-            "http://127.0.0.1:9000"
-        );
-        assert!(proxy_base(&with(&[(LISTEN, "")])).is_ok());
-    }
-
     /// An artifact URL keeps its path and query and takes warm's address for the proxy.
     #[test]
     fn an_artifact_is_asked_of_the_proxy_warm_was_given() {
@@ -665,18 +698,33 @@ mod tests {
             "http://10.0.0.5:8080/packages/a/x-1.0.tar.gz?h=1"
         );
         assert_eq!(on_proxy(base, "not a url"), "not a url");
+
+        let under = "http://10.0.0.5:8080/registry/";
+        assert_eq!(
+            on_proxy(
+                under,
+                "https://byrle.example/registry/widget/-/widget-1.0.0.tgz"
+            ),
+            "http://10.0.0.5:8080/registry/widget/-/widget-1.0.0.tgz"
+        );
+        assert_eq!(
+            on_proxy(under, "https://byrle.example/widget/-/widget-1.0.0.tgz"),
+            "http://10.0.0.5:8080/registry/widget/-/widget-1.0.0.tgz"
+        );
     }
 
-    /// With no proxy given, warm asks the environment for one, and a variable it cannot read
-    /// stops it before anything is asked.
+    /// With no proxy given, warm asks the environment for one, and a variable it cannot read,
+    /// or a token no header can carry, stops it before anything is asked.
     #[tokio::test]
     async fn the_proxy_comes_from_the_environment_or_warm_stops() {
         use crate::env::testing::with_unreadable;
-        use crate::env::{LISTEN, PUBLIC_URL};
+        use crate::env::{LISTEN, PROXY_URL};
 
         for environment in [
-            with_unreadable(&[], PUBLIC_URL),
+            with_unreadable(&[], PROXY_URL),
             with_unreadable(&[], LISTEN),
+            with_unreadable(&[], crate::env::TOKEN),
+            with(&[(crate::env::TOKEN, "two\nlines")]),
         ] {
             let warmed = run(&[], None, None, SHORT, &environment).await;
             assert_eq!(warmed.code, UNREAD);

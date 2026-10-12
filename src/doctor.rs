@@ -11,8 +11,11 @@ use crate::proxy::{IntelState, READY_PATH, Readiness};
 use std::collections::BTreeSet;
 use std::fmt;
 
-/// What follows from a proxy with no public URL, said by `doctor` and by the proxy at startup.
-pub const WITHOUT_PUBLIC_URL: &str =
+/// The title of the findings about the address the running proxy writes into artifact URLs.
+const PROXY_URL_IN_USE: &str = "proxy URL in use";
+
+/// What follows from a proxy with no proxy URL, said by `doctor` and by the proxy at startup.
+pub const WITHOUT_PROXY_URL: &str =
     "artifact URLs use whatever Host each client used, and that address is what lockfiles record";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -311,17 +314,17 @@ pub fn check_lockfile(lockfile: &Lockfile, pins: &Pins, contents: &str, proxy: &
 
 /// Whether the address written into artifact URLs is pinned, so it is not whatever `Host`
 /// each client used. `recorded` are the origins the lockfiles hold.
-pub fn check_public_url(configured: Option<&str>, recorded: &BTreeSet<String>) -> Finding {
-    let title = "public URL".to_owned();
+pub fn check_proxy_url(configured: Option<&str>, recorded: &BTreeSet<String>) -> Finding {
+    let title = "proxy URL".to_owned();
     let Some(configured) = configured.map(str::trim).filter(|s| !s.is_empty()) else {
         return Finding::new(
             Severity::Warn,
             title,
-            format!("{} is not set, so {WITHOUT_PUBLIC_URL}", env::PUBLIC_URL),
+            format!("{} is not set, so {WITHOUT_PROXY_URL}", env::PROXY_URL),
         )
         .with_fix(format!(
             "set {} to a stable name everyone who uses the lockfile can reach",
-            env::PUBLIC_URL
+            env::PROXY_URL
         ));
     };
 
@@ -464,7 +467,7 @@ pub fn check_proxy(health: Result<&crate::proxy::Health, &Unreached>, proxy: &st
         Some(base) => findings.push(
             Finding::new(
                 Severity::Warn,
-                "proxy public URL",
+                PROXY_URL_IN_USE,
                 format!(
                     "the proxy writes {base} into artifact URLs, but this check reached it at \
                      {proxy}. Lockfiles will record {base}"
@@ -472,21 +475,21 @@ pub fn check_proxy(health: Result<&crate::proxy::Health, &Unreached>, proxy: &st
             )
             .with_fix(format!(
                 "check which address clients use, and set {} to it",
-                env::PUBLIC_URL
+                env::PROXY_URL
             )),
         ),
         None => findings.push(
             Finding::new(
                 Severity::Warn,
-                "proxy public URL",
+                PROXY_URL_IN_USE,
                 format!(
-                    "the proxy has no {}, so {WITHOUT_PUBLIC_URL}",
-                    env::PUBLIC_URL
+                    "the proxy has no {}, so {WITHOUT_PROXY_URL}",
+                    env::PROXY_URL
                 ),
             )
             .with_fix(format!(
                 "set {} on the proxy to a stable name",
-                env::PUBLIC_URL
+                env::PROXY_URL
             )),
         ),
     }
@@ -520,6 +523,7 @@ pub fn check_proxy(health: Result<&crate::proxy::Health, &Unreached>, proxy: &st
             .with_fix(format!("unset {} on the proxy", env::MODE)),
         );
     }
+    findings.push(tokens_finding(health.tokens_required));
     if !health.allowed_direct_origins.is_empty() {
         findings.push(Finding::new(
             Severity::Warn,
@@ -532,6 +536,32 @@ pub fn check_proxy(health: Result<&crate::proxy::Health, &Unreached>, proxy: &st
     }
     findings
 }
+
+/// Whether the proxy asks each request for a token, and where a client's is configured.
+fn tokens_finding(required: bool) -> Finding {
+    if required {
+        return Finding::new(
+            Severity::Ok,
+            PROXY_TOKENS,
+            format!(
+                "required: a client without one is answered 401. {TOKEN_GUIDE} lists where each \
+                 client puts its token"
+            ),
+        );
+    }
+    Finding::new(
+        Severity::Warn,
+        PROXY_TOKENS,
+        "not required, so a request is answered without being tied to an account",
+    )
+    .with_fix(format!("unset {} on the proxy", env::REQUIRE_TOKEN))
+}
+
+/// The title of each finding about proxy tokens.
+const PROXY_TOKENS: &str = "proxy tokens";
+
+/// Where each client's token configuration is listed.
+pub const TOKEN_GUIDE: &str = "docs/quickstart.md §6";
 
 /// The title of every finding about readiness.
 const READINESS_TITLE: &str = "proxy readiness";
@@ -628,7 +658,7 @@ fn unanswered(title: String, unreached: &Unreached, proxy: &str) -> Finding {
         )
         .with_fix(format!(
             "check the host in {}, and the DNS this machine uses",
-            env::PUBLIC_URL
+            env::PROXY_URL
         )),
         Unreached::Unanswered(why) => Finding::new(
             Severity::Problem,
@@ -668,7 +698,7 @@ pub async fn unreached(proxy: &str, why: String) -> Unreached {
     }
 }
 
-/// Where the proxy is expected to be reachable: `public`, [`env::PUBLIC_URL`], which
+/// Where the proxy is expected to be reachable: `public`, [`env::PROXY_URL`], which
 /// lockfiles record, or else the `listen` address, which may be `0.0.0.0`.
 pub fn expected_proxy_url(public: Option<&str>, listen: &str) -> String {
     match public.map(str::trim).filter(|s| !s.is_empty()) {
@@ -807,7 +837,7 @@ pub async fn run(machine: &Machine<'_>) -> Result<Checked, env::EnvError> {
     let environment = machine.environment;
     let mut report = String::new();
     let listen = environment.listen()?;
-    let public = environment.public_url()?;
+    let public = environment.proxy_url()?;
     let proxy = expected_proxy_url(public.as_deref(), &listen);
 
     let _ = writeln!(report, "byrle doctor");
@@ -945,7 +975,7 @@ fn lockfile_findings(dir: &std::path::Path, public: Option<&str>, proxy: &str) -
         recorded.extend(recorded_origins(pins.key, &contents));
         findings.push(check_lockfile(lockfile, pins, &contents, proxy));
     }
-    findings.push(check_public_url(public, &recorded));
+    findings.push(check_proxy_url(public, &recorded));
     findings
 }
 
@@ -1578,7 +1608,7 @@ mod tests {
              through the proxy"
         );
 
-        let public = check_public_url(Some("proxy.internal"), &BTreeSet::new());
+        let public = check_proxy_url(Some("proxy.internal"), &BTreeSet::new());
         assert_eq!(public.severity, Severity::Ok);
         assert_eq!(public.detail, "proxy.internal");
 
@@ -1607,7 +1637,7 @@ mod tests {
     /// an address that stops answering fails the build.
     #[test]
     fn a_lockfile_pinned_to_another_proxy_address_is_a_problem() {
-        let finding = check_public_url(
+        let finding = check_proxy_url(
             Some("http://npm.corp.example"),
             &origins(&["http://127.0.0.1:8080"]),
         );
@@ -1619,7 +1649,7 @@ mod tests {
     /// Calling it a stale proxy address here would be noise.
     #[test]
     fn the_public_registry_is_not_reported_as_a_stale_address() {
-        let finding = check_public_url(
+        let finding = check_proxy_url(
             Some("http://npm.corp.example"),
             &origins(&["https://registry.npmjs.org", "http://npm.corp.example"]),
         );
@@ -1627,8 +1657,8 @@ mod tests {
     }
 
     #[test]
-    fn an_unpinned_public_url_is_a_warning_with_the_reason() {
-        let finding = check_public_url(None, &BTreeSet::new());
+    fn an_unpinned_proxy_url_is_a_warning_with_the_reason() {
+        let finding = check_proxy_url(None, &BTreeSet::new());
         assert_eq!(finding.severity, Severity::Warn);
         assert!(finding.detail.contains("whatever Host"));
         assert!(finding.fix.is_some());
@@ -1769,6 +1799,7 @@ mod tests {
             rewrite_artifacts: true,
             refuse_unservable: true,
             mode: "enforce".into(),
+            tokens_required: true,
             served_origins: vec!["https://registry.npmjs.org".into()],
             allowed_direct_origins: vec![],
             packages_held: 0,
@@ -1782,7 +1813,7 @@ mod tests {
         }
     }
 
-    /// A host that does not resolve is said to, with a fix naming the public URL; an address
+    /// A host that does not resolve is said to, with a fix naming the proxy URL; an address
     /// and a URL with no host give the probe's own reason.
     #[tokio::test]
     async fn an_unanswered_proxy_says_whether_its_host_resolves() {
@@ -1797,7 +1828,7 @@ mod tests {
             finding
                 .fix
                 .as_deref()
-                .is_some_and(|fix| fix.contains(env::PUBLIC_URL.name)),
+                .is_some_and(|fix| fix.contains(env::PROXY_URL.name)),
             "{finding:?}"
         );
         assert_eq!(
@@ -2016,6 +2047,7 @@ mod tests {
         h.rewrite_artifacts = false;
         h.refuse_unservable = false;
         h.mode = "observe".into();
+        h.tokens_required = false;
         h.allowed_direct_origins = vec!["https://cdn.example".into()];
 
         let findings = check_proxy(Ok(&h), PROXY);
@@ -2024,6 +2056,12 @@ mod tests {
         assert!(text.contains("every client except npm"), "{text}");
         assert!(text.contains("rather than removed"), "{text}");
         assert!(text.contains("served and logged"), "{text}");
+        assert!(text.contains("tied to an account"), "{text}");
+        assert!(
+            check_proxy(Ok(&health()), PROXY)
+                .iter()
+                .any(|f| f.detail.contains(TOKEN_GUIDE))
+        );
         assert!(text.contains("cdn.example"), "{text}");
     }
 
@@ -2274,7 +2312,7 @@ mod tests {
             _ => None,
         };
         let environment = crate::env::testing::with(&[
-            (env::PUBLIC_URL, &url),
+            (env::PROXY_URL, &url),
             (env::UV_DEFAULT, &index),
             (env::UV_NO_FILES, "1"),
         ]);
@@ -2301,7 +2339,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Nothing installed, a proxy with no public URL and no intel store, and a cooldown
+    /// Nothing installed, a proxy with no proxy URL and no intel store, and a cooldown
     /// against an index serving PEP 503 are each a warning, so the exit is still 0.
     #[tokio::test]
     async fn warnings_alone_exit_0() {
@@ -2317,7 +2355,7 @@ mod tests {
         )
         .expect("writes");
         let environment = crate::env::testing::with(&[
-            (env::PUBLIC_URL, &url),
+            (env::PROXY_URL, &url),
             (env::POLICY, &policy.display().to_string()),
             (env::UPSTREAM_PYPI, &format!("{url}/simple/")),
         ]);
@@ -2330,8 +2368,8 @@ mod tests {
             "npm registry: not installed, or its configuration could not be read",
             "pip registry: not installed, or its configuration could not be read",
             &format!(
-                "proxy public URL: the proxy has no {}",
-                env::PUBLIC_URL.name
+                "{PROXY_URL_IN_USE}: the proxy has no {}",
+                env::PROXY_URL.name
             ),
             "proxy readiness: ready, but uses no intel store",
             &format!("{}", policy.display()),
@@ -2382,7 +2420,7 @@ mod tests {
         };
         let missing = dir.join("missing.yaml").display().to_string();
         let environment = crate::env::testing::with(&[
-            (env::PUBLIC_URL, &proxy),
+            (env::PROXY_URL, &proxy),
             (env::POLICY, &missing),
             (env::UV_DEFAULT, "https://pypi.org/simple/"),
             (env::UV_NO_FILES, "1"),
@@ -2398,7 +2436,7 @@ mod tests {
             "pip registry: points at https://pypi.org/simple/",
             "pip extra indexes",
             "uv registry: points at https://pypi.org/simple/",
-            "public URL",
+            "proxy URL",
             "http://old.example:8080",
             "npm cache",
             &format!("PROBLEM  policy: {missing}: "),
@@ -2437,14 +2475,14 @@ mod tests {
             ("uv" | "bun", ["--version"]) => Some("1.0".to_owned()),
             _ => None,
         };
-        let base: &[(Var, &str)] = &[(env::PUBLIC_URL, &proxy)];
+        let base: &[(Var, &str)] = &[(env::PROXY_URL, &proxy)];
         let cases: Vec<(env::Process, Var)> = vec![
             (with_unreadable(&[], env::LISTEN), env::LISTEN),
-            (with_unreadable(&[], env::PUBLIC_URL), env::PUBLIC_URL),
+            (with_unreadable(&[], env::PROXY_URL), env::PROXY_URL),
             (with_unreadable(base, env::POLICY), env::POLICY),
             (
                 with(&[
-                    (env::PUBLIC_URL, &proxy),
+                    (env::PROXY_URL, &proxy),
                     (env::POLICY, &cooldown),
                     (env::UPSTREAM_PYPI, "ftp://pypi.example/simple/"),
                 ]),
@@ -2452,7 +2490,7 @@ mod tests {
             ),
             (
                 with(&[
-                    (env::PUBLIC_URL, &proxy),
+                    (env::PROXY_URL, &proxy),
                     (env::POLICY, &cooldown),
                     (env::EXPIRY_CEILING_DAYS, "soon"),
                 ]),
@@ -2462,7 +2500,7 @@ mod tests {
             (with_unreadable(base, env::BUN_CACHE), env::BUN_CACHE),
             (
                 with_unreadable(
-                    &[(env::PUBLIC_URL, &proxy), (env::UV_NO_FILES, "1")],
+                    &[(env::PROXY_URL, &proxy), (env::UV_NO_FILES, "1")],
                     env::HOME_DIR,
                 ),
                 env::HOME_DIR,

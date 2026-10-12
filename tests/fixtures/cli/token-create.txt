@@ -1,0 +1,10 @@
+Create a token and print it on stdout. It is shown once
+
+Usage: byrle token create <ACCOUNT> <NAME>
+
+Arguments:
+  <ACCOUNT>  The account the token belongs to
+  <NAME>     The token's name, unique within the account, such as the machine it is for
+
+Options:
+  -h, --help  Print help

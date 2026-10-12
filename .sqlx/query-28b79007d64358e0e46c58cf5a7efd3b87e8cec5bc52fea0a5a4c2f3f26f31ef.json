@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO proxy_token (account_id, name, digest)\n                SELECT id, $2, $3 FROM account WHERE name = $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Varchar",
+        "Bpchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "28b79007d64358e0e46c58cf5a7efd3b87e8cec5bc52fea0a5a4c2f3f26f31ef"
+}

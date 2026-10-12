@@ -48,14 +48,14 @@ pub fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
         code: UNREAD,
     };
     let base = match proxy.map(str::to_owned).map_or_else(
-        || environment.public_url().map_err(|e| e.to_string()),
+        || environment.proxy_url().map_err(|e| e.to_string()),
         |proxy| Ok(Some(proxy)),
     ) {
         Ok(Some(base)) => base,
         Ok(None) => {
             return unread(format!(
                 "no proxy to verify against: pass --proxy, or set {}",
-                crate::env::PUBLIC_URL
+                crate::env::PROXY_URL
             ));
         }
         Err(e) => return unread(e),
@@ -416,13 +416,13 @@ mod tests {
         let from_env = run(
             std::slice::from_ref(&npm),
             None,
-            &with(&[(crate::env::PUBLIC_URL, "http://proxy.test")]),
+            &with(&[(crate::env::PROXY_URL, "http://proxy.test")]),
         );
         assert_eq!(from_env.code, 0, "{from_env:?}");
         let poetry = written("verify-poetry", "poetry.lock", "");
         let broken = written("verify-broken", "package-lock.json", "{");
         let broken_uv = written("verify-broken-uv", "uv.lock", "[[package");
-        let unreadable_env = crate::env::testing::with_unreadable(&[], crate::env::PUBLIC_URL);
+        let unreadable_env = crate::env::testing::with_unreadable(&[], crate::env::PROXY_URL);
         for (label, verified) in [
             (
                 "no proxy",

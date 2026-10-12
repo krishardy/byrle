@@ -3,9 +3,11 @@
 
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+pub mod account;
 pub mod analysis;
 pub mod audit;
 pub mod cli;
+pub mod console;
 /// Debug builds only: see the module docs.
 #[cfg(debug_assertions)]
 pub mod defer;
@@ -22,6 +24,7 @@ pub mod integrity;
 pub mod intel;
 pub mod lockfile;
 pub mod logging;
+pub mod mount;
 pub mod origin;
 pub mod policy;
 pub mod proxy;

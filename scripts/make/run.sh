@@ -5,6 +5,7 @@
 #   BYRLE_LISTEN=127.0.0.1:8080
 #   BYRLE_UPSTREAM_NPM=https://registry.npmjs.org
 #   BYRLE_UPSTREAM_PYPI=https://pypi.org/simple
+#   BYRLE_DATABASE_URL=postgres://...   accounts and tokens; or BYRLE_REQUIRE_TOKEN=0
 #   RUST_LOG=byrle=debug
 set -euo pipefail
 

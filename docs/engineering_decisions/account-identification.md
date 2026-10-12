@@ -1,6 +1,9 @@
 # How a request through the proxy is tied to an account
 
-- **Status:** Decided 2026-09-19: a token per account. Not yet implemented. TODO Stage 4.9.
+- **Status:** Decided 2026-09-19: a token per account. Accounts and tokens implemented
+  2026-10-11 (`src/account.rs`, `byrle account`, `byrle token`), and required on each
+  proxy request (`src/account/gate.rs`). The audit log does not record the account yet.
+  TODO Stage 4.9.
 - **Related:** [doctor-python-clients](doctor-python-clients.md)
 
 Stage 4.9 and Stage 8 need every request, metadata and artifact alike, to name the account
@@ -45,6 +48,25 @@ prefix. Each client installed the package once per way of configuring a credenti
 pnpm ignored `_authToken` given as the `npm_config_//host/:_authToken` variable and read it
 from `.npmrc`. yarn 4 was not measured.
 
+## Through the proxy, under a path, measured
+
+On 2026-10-11 a proxy at `http://127.0.0.1:8741/registry/` required a token, from a
+Postgres account store. Each client installed one package from registry.npmjs.org or
+pypi.org through it. The proxy logged, per request, whether it accepted the token or
+answered 401. npm 11.21.0, bun 1.4.3, pip 25.1.1, uv 0.13.0. pnpm and yarn were not
+installed.
+
+| Client, configured with | Metadata requests with the token | Artifact requests with the token | 401s | Token in the lockfile |
+|---|---|---|---|---|
+| npm, `//127.0.0.1:8741/registry/:_auth=<base64 of account:token>` | 2 | 2 | 0 | no |
+| npm, `//127.0.0.1:8741/registry/:_authToken=<token>` | 2 | 1 | 0 | no |
+| bun, `token` in `[install.registry]` | 1 | 7 | 0 | not checked |
+| pip, `http://<account>:<token>@127.0.0.1:8741/registry/simple/` | 1 | 2 | 0 | no lockfile |
+| uv, the same index URL | 1 | 2 | 0 | not checked |
+
+The artifact counts include the retries after a 503 `artifact-analysis`. With `_auth`, npm
+sent the token on artifact requests, where `user:pass@` in the registry URL sent nothing.
+
 ## The proxy forwarded `Authorization` upstream
 
 `is_hop_by_hop` does not list `Authorization`, so `proxy::handle` copied it onto the upstream
@@ -76,7 +98,8 @@ each user has their own. The proxy accepts it in the forms JFrog Artifactory acc
 | `Authorization: Basic`, the token as the password | pip, uv. The username has to be the token's account |
 | `X-Byrle-Token: <token>` | a client that sets a custom header, such as Maven's `httpHeaders` |
 
-A request with none of them, or a token naming no active account, is answered 401.
+A request with none of them, or a token that is unknown, revoked or of a disabled account,
+is answered 401.
 `/-/byrle/health` and `/-/byrle/ready` need no token. `BYRLE_REQUIRE_TOKEN=0` turns the
 requirement off, and a request without a token is recorded as anonymous. See
 [admin-plan](../admin-plan.md) §4.1.

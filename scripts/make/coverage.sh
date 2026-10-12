@@ -30,19 +30,19 @@ if ! cargo "$nightly" llvm-cov --version >/dev/null 2>&1; then
     exit 1
 fi
 
-# Three files need a real database and nothing else can reach them. Their tests are
+# Four files need a real database and nothing else can reach them. Their tests are
 # `tests/postgres.rs`, which `make test-integration` runs against a container and
-# which return early without one, so this pass compiles them out and all three read 0%.
+# which return early without one, so this pass compiles them out and all four read 0%.
 # CLAUDE.md excludes live tests from the floor, and a file only those tests reach is the
 # same case. Decided 2026-09-16; their figures are printed below rather than excluded
 # quietly.
 #
-# `src/intel/postgres.rs` is the advisory queries and `src/analysis/postgres.rs` is the
-# artifact-analysis ones. `src/intel/refresh/run.rs` is the refresh that sends the first
+# `src/intel/postgres.rs` is the advisory queries, `src/analysis/postgres.rs` the
+# artifact-analysis ones and `src/account/postgres.rs` the account ones. `src/intel/refresh/run.rs` is the refresh that sends the first
 # set: connect, fetch, write, replace. Everything a refresh decides without a database is
 # elsewhere in `src/intel/`, inside the floor, and the analysis store's own logic is in
 # `src/analysis/store.rs`.
-live_only='src/(intel/(postgres|refresh/run)|analysis/postgres)\.rs'
+live_only='src/(intel/(postgres|refresh/run)|analysis/postgres|account/postgres)\.rs'
 
 printf '\n\033[1m==> library coverage (floor %s%%, lines and functions and regions)\033[0m\n' "$floor"
 cargo "$nightly" llvm-cov --lib \
@@ -54,8 +54,8 @@ cargo "$nightly" llvm-cov --lib \
 
 printf '\n\033[1m==> not part of the floor\033[0m\n'
 cargo "$nightly" llvm-cov --summary-only 2>/dev/null | awk '/^Filename/ || /^main\.rs/'
-cargo "$nightly" llvm-cov --lib --summary-only 2>/dev/null | awk '/^(intel|analysis)\/postgres\.rs/'
+cargo "$nightly" llvm-cov --lib --summary-only 2>/dev/null | awk '/^(intel|analysis|account)\/postgres\.rs/'
 echo "    main.rs is startup wiring. 'make smoke-npm' and 'make smoke-clients' run real"
 echo "    clients through the binary."
-echo "    intel/postgres.rs, intel/refresh/run.rs and analysis/postgres.rs need a real
+echo "    intel/postgres.rs, intel/refresh/run.rs, analysis/postgres.rs and account/postgres.rs need a real
     database. 'make test-integration' runs their tests."
