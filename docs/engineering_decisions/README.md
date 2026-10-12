@@ -13,6 +13,7 @@ code, and the file names where.
 | [Language: Rust](language-rust.md) | Decided |
 | [Policy engine: hand-rolled](policy-engine-hand-rolled.md) | Decided |
 | [TLS: reverse proxy first](tls-reverse-proxy-first.md) | Decided |
+| [TLS front: nginx, not Caddy](tls-front-nginx.md) | Implemented |
 | [Quarantine: filter metadata](quarantine-filter-metadata.md) | Decided |
 | [Cooldown waivers: manual only](cooldown-waivers-manual-only.md) | Decided |
 | [License: Apache-2.0](license-apache-2.md) | Decided |

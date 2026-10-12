@@ -7,7 +7,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * README.md - Top-level description of the project
 * docs/project_plan.md - Deeper project plan
 * docs/quickstart.md - From a checkout to enforcing installs, npm and PyPI
-* docs/fronting-tls.md - Caddy and nginx in front of the proxy, tested by make smoke-tls-front
+* docs/fronting-tls.md - nginx in front of the proxy, tested by make smoke-tls-front
 * docs/request-flow.md - How the proxy answers a request, and each status code
 * docs/break-glass.md - Installing when the proxy is down, and releasing a refused package
 * docs/threat-model.md - What byrle defends against, what it trusts, and its bypasses
