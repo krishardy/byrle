@@ -1,14 +1,17 @@
+#!/usr/bin/env bash
 # Proxy tokens for the smoke scripts. See docs/admin-plan.md §4.1.
 #
-# Sourced, not executed. Needs `repo_root` and `fail` from the caller.
+# Sourced, not executed. Needs `fail` from the caller.
+
+token_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 
 # Create account $2 in the store at $1, and print a new token for it. Called in `$(...)`,
 # so a failure is reported on stderr.
 issue_token() {
     local url="$1" account="$2"
-    BYRLE_DATABASE_URL="$url" cargo run --quiet --manifest-path "$repo_root/Cargo.toml" \
+    BYRLE_DATABASE_URL="$url" cargo run --quiet --manifest-path "$token_repo_root/Cargo.toml" \
         -- account create "$account" >/dev/null || { fail "byrle account create $account failed"; } >&2
-    BYRLE_DATABASE_URL="$url" cargo run --quiet --manifest-path "$repo_root/Cargo.toml" \
+    BYRLE_DATABASE_URL="$url" cargo run --quiet --manifest-path "$token_repo_root/Cargo.toml" \
         -- token create "$account" smoke 2>/dev/null || { fail "byrle token create failed"; } >&2
 }
 

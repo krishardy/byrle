@@ -49,7 +49,10 @@ caddyfile() {
 nginx_conf() {
     local dir="$2"
     printf 'pid %s/nginx.pid;\nerror_log %s/nginx-error.log;\nevents {}\nhttp {\n' "$dir" "$dir"
+    # Every temp path, not just the two the proxy uses: nginx creates each at startup, and
+    # the packaged defaults under /var/lib/nginx are not writable without root.
     printf '    access_log off;\n    client_body_temp_path %s/body;\n    proxy_temp_path %s/proxy;\n' "$dir" "$dir"
+    printf '    fastcgi_temp_path %s/fastcgi;\n    uwsgi_temp_path %s/uwsgi;\n    scgi_temp_path %s/scgi;\n' "$dir" "$dir" "$dir"
     printf '    server {\n        listen %s ssl;\n        server_name localhost;\n' "$1"
     printf '        ssl_certificate %s;\n        ssl_certificate_key %s;\n' "$workdir/cert.pem" "$workdir/key.pem"
     printf '        location / {\n            proxy_pass http://127.0.0.1:%s;\n' "$proxy_port"
