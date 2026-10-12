@@ -42,6 +42,16 @@ pub enum Answered {
     Deferred,
     /// 502: the upstream's last bytes for it did not match their digest.
     UpstreamMismatch,
+    /// 503: the intel store errored or holds no snapshot. Nothing decided.
+    IntelStore,
+    /// 503: no stream in the snapshot covers the ecosystem. Nothing decided.
+    NoStreamForEcosystem,
+    /// 502: the upstream sent no answer, or its metadata body stopped part way.
+    UpstreamUnreachable,
+    /// The upstream's status other than 2xx or 304, forwarded. `upstream_status` holds it.
+    UpstreamStatus,
+    /// A served artifact's body ended early, on a digest mismatch or an upstream failure.
+    CutShort,
 }
 
 /// One decision, as written. A field an older build did not write reads as its default.
@@ -86,6 +96,12 @@ pub struct Event {
     /// The signals' risk score under the policy's `signal_weights`. Absent with no signal.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub risk_score: Option<u32>,
+    /// The account whose token the request carried. Absent when tokens are not required.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
+    /// The status the upstream answered, with [`Answered::UpstreamStatus`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream_status: Option<u16>,
 }
 
 /// What a pinned verdict was decided on.
@@ -293,6 +309,8 @@ impl Default for Event {
             inputs: None,
             signals: Vec::new(),
             risk_score: None,
+            account: None,
+            upstream_status: None,
         }
     }
 }
@@ -326,30 +344,62 @@ impl Event {
             inputs: None,
             signals: Vec::new(),
             risk_score: None,
+            account: None,
+            upstream_status: None,
         }
     }
 
-    /// A pinned request answered before anything was decided: `answered` is
-    /// [`Answered::NotListed`] or [`Answered::NoMetadata`]. `ecosystem`, `name` and
-    /// `version` are the package the request named.
-    pub fn undecided(ecosystem: &str, name: &str, version: &str, answered: Answered) -> Self {
+    /// A request answered before anything was decided, for the package it named: pinned
+    /// when it named a `version`, a metadata request otherwise.
+    pub fn undecided(
+        ecosystem: &str,
+        name: &str,
+        version: Option<&str>,
+        answered: Answered,
+    ) -> Self {
         Self {
             at: now(),
-            path: DecisionPath::Pinned,
+            path: match version {
+                Some(_) => DecisionPath::Pinned,
+                None => DecisionPath::Resolution,
+            },
             ecosystem: ecosystem.to_owned(),
             name: name.to_owned(),
-            version: Some(version.to_owned()),
+            version: version.map(str::to_owned),
             answered: Some(answered),
             ..Self::default()
         }
     }
 
     /// Whether a policy decision is behind this line, which a replay and `policy diff` read.
+    /// An upstream failure is decided on an artifact, whose decision came first, and not on
+    /// a metadata request, which has no action.
     pub fn decided(&self) -> bool {
-        !matches!(
-            self.answered,
-            Some(Answered::NotListed | Answered::NoMetadata)
-        )
+        match self.answered {
+            Some(
+                Answered::NotListed
+                | Answered::NoMetadata
+                | Answered::IntelStore
+                | Answered::NoStreamForEcosystem
+                | Answered::CutShort,
+            ) => false,
+            Some(Answered::UpstreamUnreachable | Answered::UpstreamStatus) => {
+                !self.action.is_empty()
+            }
+            _ => true,
+        }
+    }
+
+    /// Name the account the request came from, when there is one.
+    pub fn with_account(mut self, account: Option<&str>) -> Self {
+        self.account = account.map(str::to_owned);
+        self
+    }
+
+    /// Record the status the upstream answered.
+    pub fn with_upstream_status(mut self, status: u16) -> Self {
+        self.upstream_status = Some(status);
+        self
     }
 
     /// Record what the verdict was decided on.
@@ -409,6 +459,8 @@ impl Event {
             inputs: None,
             signals: Vec::new(),
             risk_score: None,
+            account: None,
+            upstream_status: None,
         }
     }
 }
@@ -1124,30 +1176,81 @@ not json
         assert_eq!(replay(&log, &[loose, strict]).reproduced, 2);
     }
 
-    /// A request answered before anything was decided is written with no action, and
-    /// neither a replay nor `policy diff` reads it.
+    /// A request answered before anything was decided is written with no action, pinned or
+    /// for a metadata request, and neither a replay nor `policy diff` reads it.
     #[test]
     fn an_undecided_line_is_recorded_and_read_by_neither_replay_nor_policy_diff() {
-        let line = serde_json::to_string(&Event::undecided(
+        for (answered, written) in [
+            (Answered::NotListed, "not-listed"),
+            (Answered::NoMetadata, "no-metadata"),
+            (Answered::IntelStore, "intel-store"),
+            (Answered::NoStreamForEcosystem, "no-stream-for-ecosystem"),
+            (Answered::UpstreamUnreachable, "upstream-unreachable"),
+            (Answered::UpstreamStatus, "upstream-status"),
+            (Answered::CutShort, "cut-short"),
+        ] {
+            for version in [Some("2.0.0"), None] {
+                let event = Event::undecided("npm", "widget", version, answered);
+                assert_eq!(event.path == DecisionPath::Pinned, version.is_some());
+                assert!(event.at.parse::<jiff::Timestamp>().is_ok(), "{}", event.at);
+                let line = serde_json::to_string(&event).expect("serialises");
+                assert!(
+                    line.contains(&format!(r#""answered":"{written}""#)),
+                    "{line}"
+                );
+                assert!(!line.contains("\"action\""), "nothing was decided: {line}");
+                let policy = policy("version: 1\ncooldown_days: 0\n");
+                let replayed = replay(&format!("{line}\n"), &[policy]);
+                assert_eq!(
+                    (
+                        replayed.reproduced,
+                        replayed.not_replayable.len(),
+                        replayed.code()
+                    ),
+                    (0, 0, 0),
+                    "skipped, not counted as unreplayable: {line}"
+                );
+                assert!(
+                    packages(&line).is_empty(),
+                    "not a package policy diff judges: {line}"
+                );
+            }
+        }
+    }
+
+    /// A decision to serve that the upstream then failed is still a decision: it replays,
+    /// and `policy diff` reads its version.
+    #[test]
+    fn a_decision_the_upstream_failed_is_still_replayed() {
+        let policy = policy(REPLAYED);
+        for answered in [Answered::UpstreamUnreachable, Answered::UpstreamStatus] {
+            let event: Event = serde_json::from_str(&recorded(&policy, &facts())).unwrap();
+            let line = serde_json::to_string(&event.answered(answered).with_upstream_status(404))
+                .expect("serialises");
+            let replayed = replay(&line, std::slice::from_ref(&policy));
+            assert_eq!((replayed.reproduced, replayed.code()), (1, 0), "{line}");
+            assert_eq!(packages(&line).len(), 1, "{line}");
+        }
+    }
+
+    /// The account and the upstream's status are written when there is one, and left out
+    /// otherwise.
+    #[test]
+    fn the_account_and_upstream_status_are_written_only_when_known() {
+        let bare = line(&Event::undecided(
             "npm",
-            "widget",
-            "2.0.0",
-            Answered::NotListed,
-        ))
-        .expect("serialises");
-        assert!(line.contains(r#""answered":"not-listed""#), "{line}");
-        assert!(!line.contains("\"action\""), "nothing was decided: {line}");
-        let policy = policy("version: 1\ncooldown_days: 0\n");
-        let replayed = replay(&format!("{line}\n"), &[policy]);
-        assert_eq!(
-            (replayed.reproduced, replayed.not_replayable.len()),
-            (0, 0),
-            "skipped, not counted as unreplayable"
+            "a",
+            None,
+            Answered::UpstreamUnreachable,
+        ));
+        assert!(bare.get("account").is_none() && bare.get("upstream_status").is_none());
+        let full = line(
+            &Event::undecided("npm", "a", None, Answered::UpstreamStatus)
+                .with_account(Some("ci"))
+                .with_upstream_status(500),
         );
-        assert!(
-            packages(&line).is_empty(),
-            "not a package policy diff judges"
-        );
+        assert_eq!(field(&full, "account"), "ci");
+        assert_eq!(field(&full, "upstream_status"), 500);
     }
 
     #[test]

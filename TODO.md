@@ -2666,9 +2666,12 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
 - [x] `[!]` Measure npm's `_auth` (Basic) on metadata and artifact requests. Done
       2026-10-11, under a path, with bun, pip and uv beside it: every request carried the
       token ([account-identification](docs/engineering_decisions/account-identification.md#through-the-proxy-under-a-path-measured))
-- [ ] `[!]` The audit log gains `account`, and the five failure cases nothing records today:
+- [x] `[!]` The audit log gains `account`, and the five failure cases nothing records today:
       503 `intel-store`, 503 `no-stream-for-ecosystem`, upstream unreachable, upstream
-      non-2xx, and a body cut short on a digest mismatch (plan §3)
+      non-2xx, and a body cut short on a digest mismatch (plan §3). Done 2026-10-12:
+      `intel-store`, `no-stream-for-ecosystem`, `upstream-unreachable`, `upstream-status`
+      with `upstream_status`, and `cut-short`. A decision to serve is written once the
+      upstream answers ([audit-log](docs/engineering_decisions/audit-log.md))
 - [ ] `[!]` Rotation at UTC midnight, gzip, `BYRLE_LOG_RETENTION_DAYS`; `policy diff` and
       `audit verify` read the compressed files
 - [ ] `[!]` Migrations for the plan §4.3 tables
