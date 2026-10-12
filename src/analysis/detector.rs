@@ -10,10 +10,10 @@ pub mod source;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::future::Future;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
@@ -190,6 +190,7 @@ impl Command {
             args: words.map(str::to_owned).collect(),
             environment,
             timeout: TIMEOUT,
+            // nosemgrep: rust.lang.security.temp-dir.temp-dir
             scratch: std::env::temp_dir(),
         };
         let printed = detector.run(&["--version".to_owned()]).await?;
@@ -217,17 +218,19 @@ impl Command {
         self
     }
 
-    /// Run the program with `args` in a new directory, which is removed after.
-    /// Errors when it cannot start, prints too much, or outlasts the timeout, all of which
-    /// kill it.
+    /// Run the program with `args` in a new directory, randomly named, 0700, and refused if it
+    /// exists; removed after. Errors when it cannot start, prints too much, or outlasts the
+    /// timeout, all of which kill it.
     async fn run(&self, args: &[String]) -> Result<Output, String> {
-        static RUNS: AtomicU64 = AtomicU64::new(0);
-        let directory = self.scratch.join(format!(
-            "byrle-detector-{}-{}",
-            std::process::id(),
-            RUNS.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&directory).map_err(|e| format!("{}: {e}", directory.display()))?;
+        let mut random = [0u8; 16];
+        getrandom::fill(&mut random).expect("the operating system supplies random bytes");
+        let directory = self
+            .scratch
+            .join(format!("byrle-detector-{}", crate::util::hex(&random)));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&directory)
+            .map_err(|e| format!("{}: {e}", directory.display()))?;
         let mut command = tokio::process::Command::new(&self.program);
         command
             .args(args)

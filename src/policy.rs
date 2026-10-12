@@ -48,11 +48,10 @@ fn default_max_cvss() -> f64 {
 /// `sha256:` and the hex digest of a policy file's bytes. See [`Policy::digest`].
 pub fn digest_of(source: &str) -> String {
     use sha2::{Digest, Sha256};
-    let hex: String = Sha256::digest(source.as_bytes())
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    format!("sha256:{hex}")
+    format!(
+        "sha256:{}",
+        crate::util::hex(&Sha256::digest(source.as_bytes()))
+    )
 }
 
 /// A window of `days`, which the proxy uses under no policy with

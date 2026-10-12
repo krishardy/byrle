@@ -153,6 +153,26 @@ OS temporary directory itself and removed every file in it, which on a default s
 have emptied `/tmp`. A directory entry that cannot be read is left in place, and the spool
 still opens.
 
+### Another user's directory
+
+`/tmp/byrle-spool` is a fixed name in a directory every local user can write to. Before
+2026-10-12, `Spool::open` accepted it whoever owned it, and so did a `BYRLE_SPOOL_DIR`
+another user had created: another local user who made it first could rename or replace a
+spool file while it was analysed. Before it writes `.lock`, `Spool::open` now refuses:
+
+| The directory | Error |
+|---|---|
+| is a symbolic link, which its owner can point elsewhere after the check | `... is a symbolic link; name the directory` |
+| is owned by another uid | `... is owned by uid N, not by the user byrle runs as` |
+| is writable by every user | `... is writable by every user (mode 777)` |
+
+Group-writable is allowed: a directory made under umask `002`, and a Kubernetes `fsGroup`
+volume, are group-writable. byrle's own uid is read from a file it creates in the directory
+with `O_EXCL`, which does not follow a link planted at the name, and removes; std has no
+safe call for it. Tested 2026-10-12 with a directory `podman unshare chown 1:1` made, mode
+`777`: the build before this opened it and logged `spool open`; this one refuses with
+`is owned by uid 100000`.
+
 ## The ceiling, and what it is for
 
 `Content-Length` is a claim. The write is bounded by `BYRLE_MAX_ARTIFACT_BYTES`,

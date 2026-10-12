@@ -7868,10 +7868,7 @@ mod tests {
 
     fn x_hex(file: &str) -> String {
         use sha2::{Digest, Sha256};
-        Sha256::digest(file.as_bytes())
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect()
+        crate::util::hex(&Sha256::digest(file.as_bytes()))
     }
 
     fn x_digest(file: &str) -> Sri {

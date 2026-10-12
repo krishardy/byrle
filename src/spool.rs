@@ -5,7 +5,7 @@
 
 use std::fs::{self, File, TryLockError};
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -22,6 +22,7 @@ const PREFIX: &str = "artifact-";
 /// The directory the spool uses when none is configured: `byrle-spool` in the OS
 /// temporary directory. A directory of its own, because the sweep empties it.
 pub fn default_dir() -> PathBuf {
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
     std::env::temp_dir().join("byrle-spool")
 }
 
@@ -37,11 +38,24 @@ pub struct Spool {
     _lock: File,
 }
 
+/// Why a spool directory is refused: another user could rename or replace its files.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unsafe {
+    /// A symbolic link, which its owner can point elsewhere after it is checked.
+    Symlink,
+    /// Owned by another user, whose uid this is.
+    Owner(u32),
+    /// Writable by every user, with these permission bits.
+    WorldWritable(u32),
+}
+
 /// Why a spool directory could not be used.
 #[derive(Debug)]
 pub enum OpenError {
     /// Another process holds the directory's lock.
     Locked(PathBuf),
+    /// Another user could change the directory's files.
+    Unsafe { path: PathBuf, why: Unsafe },
     /// The directory, its lock or a leftover file could not be created, read or removed.
     Io { path: PathBuf, error: io::Error },
 }
@@ -55,6 +69,19 @@ impl std::fmt::Display for OpenError {
                 path.display()
             ),
             Self::Io { path, error } => write!(f, "{}: {error}", path.display()),
+            Self::Unsafe { path, why } => {
+                let path = path.display();
+                match why {
+                    Unsafe::Symlink => write!(f, "{path} is a symbolic link; name the directory"),
+                    Unsafe::Owner(uid) => write!(
+                        f,
+                        "{path} is owned by uid {uid}, not by the user byrle runs as"
+                    ),
+                    Unsafe::WorldWritable(mode) => {
+                        write!(f, "{path} is writable by every user (mode {mode:o})")
+                    }
+                }
+            }
         }
     }
 }
@@ -100,15 +127,37 @@ impl std::fmt::Display for WriteError {
 impl std::error::Error for WriteError {}
 
 impl Spool {
-    /// Open `dir`, creating it with mode `0700` if it does not exist, lock it, and remove
-    /// the spool files a previous process left. Returns the spool and how many files were
-    /// removed.
+    /// Open `dir`, creating it with mode `0700` if it does not exist, refuse it if another user
+    /// could change its files, lock it, and remove the spool files a previous process left.
+    /// Returns the spool and how many files were removed.
     pub fn open(dir: &Path, ceiling: u64) -> Result<(Self, usize), OpenError> {
-        fs::DirBuilder::new()
+        let found = fs::DirBuilder::new()
             .recursive(true)
             .mode(0o700)
             .create(dir)
+            .and_then(|()| fs::symlink_metadata(dir))
             .map_err(at(dir))?;
+        let ours = match found.file_type().is_symlink() {
+            true => None,
+            false => Some(owner_of_new_file(dir)?),
+        };
+        Self::open_as(dir, ceiling, &found, ours)
+    }
+
+    /// [`Spool::open`] once `found`, the directory's own metadata, and `ours`, this process's
+    /// uid or `None` for a symbolic link, are known.
+    fn open_as(
+        dir: &Path,
+        ceiling: u64,
+        found: &fs::Metadata,
+        ours: Option<u32>,
+    ) -> Result<(Self, usize), OpenError> {
+        if let Some(why) = judged(ours, found.uid(), found.mode()) {
+            return Err(OpenError::Unsafe {
+                path: dir.to_owned(),
+                why,
+            });
+        }
         let lock_path = dir.join(LOCK);
         let lock = File::options()
             .create(true)
@@ -267,6 +316,33 @@ fn sweep(dir: &Path) -> io::Result<usize> {
         }
     }
     Ok(swept)
+}
+
+/// Whether a directory owned by `owner`, with permission bits `mode`, is unsafe for a process
+/// running as `ours`, `None` for a symbolic link. Group-writable is allowed.
+fn judged(ours: Option<u32>, owner: u32, mode: u32) -> Option<Unsafe> {
+    match ours {
+        None => Some(Unsafe::Symlink),
+        Some(ours) if owner != ours => Some(Unsafe::Owner(owner)),
+        Some(_) if mode & 0o002 != 0 => Some(Unsafe::WorldWritable(mode & 0o7777)),
+        Some(_) => None,
+    }
+}
+
+/// The uid this process creates files as, read from a file it creates in `dir` and removes.
+/// `create_new` does not follow a symbolic link planted at the name.
+fn owner_of_new_file(dir: &Path) -> Result<u32, OpenError> {
+    let mut random = [0u8; 16];
+    getrandom::fill(&mut random).expect("the operating system supplies random bytes");
+    let path = dir.join(format!(".owner-{}", crate::util::hex(&random)));
+    File::options()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&path)
+        .and_then(|file| file.metadata())
+        .and_then(|made| fs::remove_file(&path).map(|()| made.uid()))
+        .map_err(at(&path))
 }
 
 fn at(path: &Path) -> impl FnOnce(io::Error) -> OpenError + '_ {
@@ -532,14 +608,84 @@ mod tests {
         let dir = tempdir("spool-stuck");
         fs::write(dir.join(LOCK), b"").expect("writes");
         fs::write(dir.join("artifact-1-0"), b"left").expect("writes");
+        let found = fs::symlink_metadata(&dir).expect("exists");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).expect("chmods");
-        let e = Spool::open(&dir, 1024).expect_err("the directory is read-only");
+        let e = Spool::open_as(&dir, 1024, &found, Some(found.uid()))
+            .expect_err("the directory is read-only");
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).expect("chmods");
         assert!(
             matches!(&e, OpenError::Io { path, .. } if path == &dir),
             "{e}"
         );
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A directory another user could change is refused before anything is written in it.
+    #[test]
+    fn a_link_another_owner_or_a_world_writable_directory_is_refused() {
+        use crate::util::test_support::Restricted;
+        assert_eq!(judged(None, 1000, 0o40700), Some(Unsafe::Symlink));
+        assert_eq!(judged(Some(1000), 1001, 0o40700), Some(Unsafe::Owner(1001)));
+        assert_eq!(
+            judged(Some(1000), 1000, 0o40777),
+            Some(Unsafe::WorldWritable(0o777))
+        );
+        assert_eq!(
+            judged(Some(1000), 1000, 0o40775),
+            None,
+            "group-writable is allowed"
+        );
+
+        let parent = tempdir("spool-unsafe");
+        let real = parent.join("real");
+        fs::create_dir(&real).expect("creates");
+        let link = parent.join("link");
+        std::os::unix::fs::symlink(&real, &link).expect("links");
+        let e = Spool::open(&link, 1024).expect_err("a symbolic link");
+        assert!(
+            matches!(
+                &e,
+                OpenError::Unsafe {
+                    why: Unsafe::Symlink,
+                    ..
+                }
+            ),
+            "{e}"
+        );
+        assert_eq!(
+            e.to_string(),
+            format!("{} is a symbolic link; name the directory", link.display())
+        );
+
+        let open = Restricted::new(&real, 0o777);
+        let e = Spool::open(&real, 1024).expect_err("writable by every user");
+        drop(open);
+        assert_eq!(
+            e.to_string(),
+            format!("{} is writable by every user (mode 777)", real.display())
+        );
+        assert_eq!(
+            fs::read_dir(&real).expect("lists").count(),
+            0,
+            "nothing is left in a refused directory"
+        );
+
+        let shared = Restricted::new(&real, 0o775);
+        assert!(Spool::open(&real, 1024).is_ok(), "group-writable opens");
+        drop(shared);
+
+        let e = OpenError::Unsafe {
+            path: real.clone(),
+            why: Unsafe::Owner(1001),
+        };
+        assert_eq!(
+            e.to_string(),
+            format!(
+                "{} is owned by uid 1001, not by the user byrle runs as",
+                real.display()
+            )
+        );
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]

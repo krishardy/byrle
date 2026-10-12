@@ -65,12 +65,7 @@ pub struct TokenDigest(String);
 
 impl TokenDigest {
     pub fn of(token: &str) -> TokenDigest {
-        TokenDigest(
-            Sha256::digest(token.as_bytes())
-                .iter()
-                .map(|byte| format!("{byte:02x}"))
-                .collect(),
-        )
+        TokenDigest(crate::util::hex(&Sha256::digest(token.as_bytes())))
     }
 
     pub fn as_str(&self) -> &str {

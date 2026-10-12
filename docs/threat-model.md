@@ -26,6 +26,7 @@ package manager and the registry, and serves an artifact only after deciding on 
 | sigstore and the npm and PyPI attestation endpoints | an attestation that verifies against the pinned trust root | an attestation that does not verify, which counts as none |
 | The client machine | nothing beyond pointing at the proxy | its configuration: see Bypasses |
 | Whoever can reach the proxy's port | using it as a registry | nothing else; there is no account or credential yet |
+| Other users on the host | nothing | the spool: `Spool::open` refuses a spool directory that is a link, owned by another user, or writable by every user ([artifact-spool](engineering_decisions/artifact-spool.md#another-users-directory)); a detector runs in a new, randomly named `0700` directory |
 
 ## Threats and controls
 
