@@ -1144,6 +1144,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "advisory_range",
         "artifact_analysis",
         "artifact_attestation",
+        "artifact_decision",
         "artifact_install_script",
         "artifact_source",
         "artifact_virustotal",
@@ -1978,6 +1979,129 @@ async fn what_virustotal_said_is_kept_under_its_digest() {
         .await
         .expect("counts");
     assert_eq!(held, 2, "the request three days old was deleted");
+}
+
+/// A decision as the proxy records it: `name`@1.0.0 with `digest`, decided at `at`.
+fn decision(name: &str, digest: Option<&str>, at: &str) -> byrle::analysis::decision::Decided {
+    let json = serde_json::json!({
+        "at": at,
+        "digest": digest,
+        "ecosystem": "npm",
+        "name": name,
+        "version": "1.0.0",
+        "account": "alice",
+        "features": {
+            "facts": {
+                "published": "2026-10-01", "known_malware": false, "advisories": [],
+                "intel": "not-consulted", "has_install_scripts": true, "yanked": null,
+                "deprecated": null, "provenance": {"state": "consistent"}
+            },
+            "detectors": [{"detector": "guarddog", "findings": [
+                {"rule": "threat-process-hooks", "detail": ""}], "errors": []}],
+            "virustotal": {"state": "known", "malicious": 3, "suspicious": 0, "engines": 63}
+        },
+        "disposition": {
+            "action": "allow", "answered": "served", "mode": "enforce", "checks": [],
+            "unenforceable": [], "exceptions_used": [], "risk_score": 1,
+            "upstream_status": null, "policy_digest": "sha256:p", "intel_snapshot": null,
+            "as_of": "2026-10-12", "build": "0.1.0", "reader": "r", "verifier": "v"
+        }
+    });
+    byrle::analysis::decision::Decided::from_json(&json.to_string()).expect("a decision")
+}
+
+/// Decisions are kept in order with their columns read from the JSON; the view answers
+/// the latest on each artifact; and a page is bounded by id and by day, in UTC.
+#[tokio::test]
+async fn each_decision_is_kept_and_the_latest_on_each_artifact_is_its_disposition() {
+    use byrle::analysis::decision::{Artifact, Page};
+    let intel = skip_without_database!("t_decisions");
+    let store = analyses(&intel);
+    let mut refused = decision("a", Some("sha512-1"), "2026-10-10T23:59:59Z");
+    refused.disposition.action = "block".to_owned();
+    refused.disposition.answered = byrle::audit::Answered::Refused;
+    let rows = [
+        refused,
+        decision("a", Some("sha512-2"), "2026-10-11T00:00:00Z"),
+        decision("a", None, "2026-10-11T12:00:00Z"),
+        decision("a", Some("sha512-1"), "2026-10-12T00:00:00+13:00"),
+    ];
+    store.put_decisions(&rows[..1]).await.expect("writes");
+    store.put_decisions(&rows[1..]).await.expect("writes");
+
+    type Columns = (Option<String>, String, Option<String>, String, String);
+    let columns: Vec<Columns> = sqlx::query_as(
+        "SELECT digest, name, account, action, answered FROM artifact_decision ORDER BY id",
+    )
+    .fetch_all(intel.pool())
+    .await
+    .expect("reads");
+    assert_eq!(
+        columns[0],
+        (
+            Some("sha512-1".to_owned()),
+            "a".to_owned(),
+            Some("alice".to_owned()),
+            "block".to_owned(),
+            "refused".to_owned()
+        )
+    );
+    assert_eq!(columns[2].0, None);
+
+    let version = Artifact::Version {
+        ecosystem: "npm".to_owned(),
+        name: "a".to_owned(),
+        version: "1.0.0".to_owned(),
+    };
+    let latest = store.dispositions(&version).await.expect("answers");
+    assert_eq!(latest, [rows[1].clone(), rows[3].clone()]);
+    let one = Artifact::Digest("sha512-1".to_owned());
+    assert_eq!(
+        store.dispositions(&one).await.expect("answers"),
+        [rows[3].clone()]
+    );
+    let other = Artifact::Digest("sha512-9".to_owned());
+    assert!(
+        store
+            .dispositions(&other)
+            .await
+            .expect("answers")
+            .is_empty()
+    );
+
+    let page = |after, since: Option<&str>, until: Option<&str>, limit| Page {
+        after,
+        since: since.map(str::to_owned),
+        until: until.map(str::to_owned),
+        limit,
+    };
+    let all = store
+        .decisions(&page(0, None, None, 10))
+        .await
+        .expect("answers");
+    assert_eq!(
+        all.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>(),
+        rows.to_vec()
+    );
+    let first = all[0].0;
+    let next = store
+        .decisions(&page(first, None, None, 2))
+        .await
+        .expect("answers");
+    assert_eq!(next, all[1..3]);
+    let day = store
+        .decisions(&page(0, Some("2026-10-11"), Some("2026-10-11"), 10))
+        .await
+        .expect("answers");
+    assert_eq!(
+        day.iter().map(|(_, d)| d.at.as_str()).collect::<Vec<_>>(),
+        [
+            "2026-10-11T00:00:00Z",
+            "2026-10-11T12:00:00Z",
+            "2026-10-12T00:00:00+13:00"
+        ],
+        "the last was decided at 11:00 UTC on the 11th"
+    );
 }
 
 /// An analysis another reader wrote, or one written before readers were recorded, is not

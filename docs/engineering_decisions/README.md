@@ -51,6 +51,7 @@ code, and the file names where.
 | [Install scripts are read from the artifact](install-scripts-from-the-artifact.md) | Implemented, the reader |
 | [An artifact's analysis is kept under the digest of its bytes](artifact-analysis-store.md) | Implemented, the store |
 | [An artifact is analysed in the background, spooled to disk](artifact-spool.md) | Implemented |
+| [Each artifact decision is stored with its features and disposition](artifact-decisions.md) | Implemented |
 | [Attestations are verified with `sigstore-verify`](sigstore-verifier.md) | Implemented |
 | [The provenance check refuses a version its attestations contradict](provenance-check.md) | Implemented, npm and PyPI |
 | [Tier 1 false-positive rates](tier-1-false-positives.md) | Measured |

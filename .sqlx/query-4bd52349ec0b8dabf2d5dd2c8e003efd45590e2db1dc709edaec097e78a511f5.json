@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT decision::text AS \"decision!\" FROM artifact_disposition WHERE digest = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "decision!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "4bd52349ec0b8dabf2d5dd2c8e003efd45590e2db1dc709edaec097e78a511f5"
+}

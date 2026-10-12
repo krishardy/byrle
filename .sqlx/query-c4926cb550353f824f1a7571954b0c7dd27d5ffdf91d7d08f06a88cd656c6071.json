@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_decision\n                (decided_at, digest, ecosystem, name, version, account, action, answered, decision)\n            SELECT (d->>'at')::timestamptz, d->>'digest', d->>'ecosystem', d->>'name',\n                   d->>'version', d->>'account', d->'disposition'->>'action',\n                   d->'disposition'->>'answered', d\n            FROM (SELECT j::jsonb AS d FROM UNNEST($1::text[]) WITH ORDINALITY AS u (j, n)\n                  ORDER BY n) AS rows\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "c4926cb550353f824f1a7571954b0c7dd27d5ffdf91d7d08f06a88cd656c6071"
+}

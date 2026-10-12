@@ -57,6 +57,40 @@ pub enum Command {
     /// Create, list and revoke the proxy tokens that identify an account on each request
     #[command(subcommand)]
     Token(TokenCommand),
+    /// Print what each artifact was decided on, and what was decided
+    #[command(subcommand)]
+    Artifact(ArtifactCommand),
+}
+
+#[derive(Debug, PartialEq, Subcommand)]
+pub enum ArtifactCommand {
+    #[command(
+        about = "The latest decision on each artifact named, as JSON Lines: its features and \
+                       its disposition. Exits 1 when none is recorded"
+    )]
+    Show(ShowArtifact),
+    /// Every decision recorded, oldest first, as JSON Lines
+    Export(ExportDecisions),
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct ShowArtifact {
+    #[arg(
+        help = "A digest, such as sha512-..., or one version's purl, such as pkg:npm/ms@2.1.3. \
+                A PyPI version has one artifact per file",
+        value_parser = crate::analysis::decision::Artifact::parse
+    )]
+    pub artifact: crate::analysis::decision::Artifact,
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct ExportDecisions {
+    /// The first day, YYYY-MM-DD, UTC
+    #[arg(long, value_parser = crate::analysis::decision::day)]
+    pub since: Option<String>,
+    /// The last day, YYYY-MM-DD, UTC, included
+    #[arg(long, value_parser = crate::analysis::decision::day)]
+    pub until: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Subcommand)]
@@ -365,6 +399,16 @@ mod tests {
         );
         let refused = stops(&["account", "create", "Alice"], ErrorKind::ValueValidation);
         assert!(refused.to_string().contains("is not a name"), "{refused}");
+        let refused = stops(&["artifact", "show", "ms"], ErrorKind::ValueValidation);
+        assert!(
+            refused.to_string().contains("neither a digest"),
+            "{refused}"
+        );
+        let refused = stops(
+            &["artifact", "export", "--until", "yesterday"],
+            ErrorKind::ValueValidation,
+        );
+        assert!(refused.to_string().contains("is not a day"), "{refused}");
     }
 
     /// Assert `args` ends parsing early with `kind`, and hand back the error.
@@ -406,6 +450,27 @@ mod tests {
                 .expect("parses")
                 .command,
             Command::Intel(IntelCommand::History(History { limit: 1 }))
+        );
+        assert_eq!(
+            parse(&["artifact", "show", "pkg:npm/ms@2.1.3"])
+                .expect("parses")
+                .command,
+            Command::Artifact(ArtifactCommand::Show(ShowArtifact {
+                artifact: crate::analysis::decision::Artifact::Version {
+                    ecosystem: "npm".into(),
+                    name: "ms".into(),
+                    version: "2.1.3".into(),
+                }
+            }))
+        );
+        assert_eq!(
+            parse(&["artifact", "export", "--since", "2026-10-01"])
+                .expect("parses")
+                .command,
+            Command::Artifact(ArtifactCommand::Export(ExportDecisions {
+                since: Some("2026-10-01".into()),
+                until: None,
+            }))
         );
         assert_eq!(
             parse(&["explain", "--policy"]).expect("parses").command,
@@ -680,6 +745,9 @@ mod tests {
             (&["account", "--help"], "account.txt"),
             (&["token", "--help"], "token.txt"),
             (&["token", "create", "--help"], "token-create.txt"),
+            (&["artifact", "--help"], "artifact.txt"),
+            (&["artifact", "show", "--help"], "artifact-show.txt"),
+            (&["artifact", "export", "--help"], "artifact-export.txt"),
         ] {
             let help = stops(args, ErrorKind::DisplayHelp);
             crate::golden::assert_matches("cli", name, &help.render().to_string());

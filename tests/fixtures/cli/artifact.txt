@@ -1,0 +1,11 @@
+Print what each artifact was decided on, and what was decided
+
+Usage: byrle artifact <COMMAND>
+
+Commands:
+  show    The latest decision on each artifact named, as JSON Lines: its features and its disposition. Exits 1 when none is recorded
+  export  Every decision recorded, oldest first, as JSON Lines
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help

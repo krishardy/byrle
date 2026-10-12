@@ -1810,6 +1810,7 @@ mod tests {
             artifacts_with_direct_dependencies: 0,
             documents_uninspected: 0,
             clients_without_artifacts: Default::default(),
+            decisions_unrecorded: 0,
         }
     }
 

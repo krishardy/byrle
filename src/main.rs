@@ -184,6 +184,27 @@ fn finish(outcome: byrle::account::command::Outcome) -> std::process::ExitCode {
     std::process::ExitCode::from(outcome.code)
 }
 
+/// `byrle artifact show|export`, against the analysis store at [`env::DATABASE_URL`].
+async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
+    use byrle::analysis::decision::command;
+    let store = match postgres::required(&env::process()).await {
+        Ok(intel) => byrle::analysis::postgres::PgAnalyses::new(intel.pool().clone()),
+        Err(refused) => {
+            eprintln!("byrle artifact: {refused}");
+            return std::process::ExitCode::from(refused.code);
+        }
+    };
+    let (mut out, mut err) = (std::io::stdout().lock(), std::io::stderr());
+    std::process::ExitCode::from(match command {
+        cli::ArtifactCommand::Show(args) => {
+            command::show(&store, &args.artifact, &mut out, &mut err).await
+        }
+        cli::ArtifactCommand::Export(args) => {
+            command::export(&store, args.since, args.until, &mut out, &mut err).await
+        }
+    })
+}
+
 /// `byrle account create|disable|list`.
 async fn run_account(command: cli::AccountCommand) -> std::process::ExitCode {
     use byrle::account::command;
@@ -388,6 +409,7 @@ async fn main() -> std::process::ExitCode {
         cli::Command::Intel(cli::IntelCommand::History(args)) => run_intel_history(args).await,
         cli::Command::Account(command) => run_account(command).await,
         cli::Command::Token(command) => run_token(command).await,
+        cli::Command::Artifact(command) => run_artifact(command).await,
         cli::Command::Refresh => run_refresh().await,
         cli::Command::Warm(args) => run_warm(args).await,
         cli::Command::Lockfile(cli::LockfileCommand::Verify(args)) => run_lockfile_verify(args),

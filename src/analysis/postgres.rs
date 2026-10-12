@@ -4,6 +4,7 @@
 
 use crate::analysis::InstallScripts;
 use crate::analysis::attestation::{Attested, verifier_id};
+use crate::analysis::decision::{Artifact, Decided, Page};
 use crate::analysis::detector::Detection;
 use crate::analysis::source::{COMPARER, Sourced};
 use crate::analysis::store::DetectionKey;
@@ -354,6 +355,18 @@ impl Analyses for PgAnalyses {
     fn put_virustotal_asked(&self, at: i64) -> Stored<'_, ()> {
         Box::pin(self.write_virustotal_asked(at))
     }
+
+    fn put_decisions<'a>(&'a self, decided: &'a [Decided]) -> Stored<'a, ()> {
+        Box::pin(self.write_decisions(decided))
+    }
+
+    fn dispositions<'a>(&'a self, artifact: &'a Artifact) -> Stored<'a, Vec<Decided>> {
+        Box::pin(self.read_dispositions(artifact))
+    }
+
+    fn decisions<'a>(&'a self, page: &'a Page) -> Stored<'a, Vec<(i64, Decided)>> {
+        Box::pin(self.read_decisions(page))
+    }
 }
 
 impl PgAnalyses {
@@ -457,5 +470,84 @@ impl PgAnalyses {
         .await
         .map(drop)
         .map_err(AnalysisError::Backend)
+    }
+
+    /// Write every decision in one statement, each column read from its JSON.
+    async fn write_decisions(&self, decided: &[Decided]) -> Result<(), AnalysisError> {
+        let json: Vec<String> = decided.iter().map(Decided::to_json).collect();
+        sqlx::query!(
+            r#"
+            INSERT INTO artifact_decision
+                (decided_at, digest, ecosystem, name, version, account, action, answered, decision)
+            SELECT (d->>'at')::timestamptz, d->>'digest', d->>'ecosystem', d->>'name',
+                   d->>'version', d->>'account', d->'disposition'->>'action',
+                   d->'disposition'->>'answered', d
+            FROM (SELECT j::jsonb AS d FROM UNNEST($1::text[]) WITH ORDINALITY AS u (j, n)
+                  ORDER BY n) AS rows
+            "#,
+            &json,
+        )
+        .execute(&self.pool)
+        .await
+        .map(drop)
+        .map_err(AnalysisError::Backend)
+    }
+
+    async fn read_dispositions(&self, artifact: &Artifact) -> Result<Vec<Decided>, AnalysisError> {
+        let rows = match artifact {
+            Artifact::Digest(digest) => {
+                sqlx::query_scalar!(
+                    r#"SELECT decision::text AS "decision!" FROM artifact_disposition WHERE digest = $1"#,
+                    digest,
+                )
+                .fetch_all(&self.pool)
+                .await
+            }
+            Artifact::Version {
+                ecosystem,
+                name,
+                version,
+            } => {
+                sqlx::query_scalar!(
+                    r#"
+                    SELECT decision::text AS "decision!" FROM artifact_disposition
+                    WHERE ecosystem = $1 AND name = $2 AND version = $3 ORDER BY id
+                    "#,
+                    ecosystem,
+                    name,
+                    version,
+                )
+                .fetch_all(&self.pool)
+                .await
+            }
+        }
+        .map_err(AnalysisError::Backend)?;
+        Ok(rows
+            .iter()
+            .filter_map(|row| Decided::from_json(row))
+            .collect())
+    }
+
+    async fn read_decisions(&self, page: &Page) -> Result<Vec<(i64, Decided)>, AnalysisError> {
+        let rows = sqlx::query!(
+            r#"
+            SELECT id, decision::text AS "decision!" FROM artifact_decision
+            WHERE id > $1
+              AND ($2::text IS NULL OR decided_at >= ($2::text)::date::timestamp AT TIME ZONE 'UTC')
+              AND ($3::text IS NULL OR decided_at < (($3::text)::date + 1)::timestamp AT TIME ZONE 'UTC')
+            ORDER BY id LIMIT $4
+            "#,
+            page.after,
+            page.since,
+            page.until,
+            i64::try_from(page.limit).unwrap_or(i64::MAX),
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| Some((row.id, Decided::from_json(&row.decision)?)))
+            .collect())
     }
 }

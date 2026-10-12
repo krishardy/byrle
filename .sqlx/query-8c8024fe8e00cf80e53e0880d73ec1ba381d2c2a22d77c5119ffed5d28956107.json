@@ -1,0 +1,24 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                    SELECT decision::text AS \"decision!\" FROM artifact_disposition\n                    WHERE ecosystem = $1 AND name = $2 AND version = $3 ORDER BY id\n                    ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "decision!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "8c8024fe8e00cf80e53e0880d73ec1ba381d2c2a22d77c5119ffed5d28956107"
+}
