@@ -25,6 +25,10 @@
 #
 # Exclusions live in .trufflehog-exclude in the repository rather than a temp file, so
 # a containerised run can still see them.
+#
+# Findings whose raw value .trufflehog-allow lists verbatim do not fail the run; see
+# scripts/make/lib/trufflehog_allowed.py. Test URLs such as the ones in src/doctor.rs are
+# in git history, which no change to the working tree removes.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -38,10 +42,12 @@ if ! command -v trufflehog >/dev/null 2>&1; then
 fi
 
 failed=0
+found="$(mktemp -d)"
+trap 'rm -rf "$found"' EXIT
 
-# trufflehog --fail exits 183 when it finds something. Capture it rather than letting
-# `set -e` end the run before the second pass gets to report.
-th=(trufflehog --no-update --no-color --fail --fail-on-scan-errors "$@")
+# A non-zero exit is a scan error: findings go to JSON and are judged below. Captured
+# rather than letting `set -e` end the run before the second pass gets to report.
+th=(trufflehog --no-update --no-color --json --fail-on-scan-errors "$@")
 [[ "${TRUFFLEHOG_NO_VERIFY:-0}" == "1" ]] && th+=(--no-verification)
 
 echo "--- working tree"
@@ -49,7 +55,7 @@ echo "--- working tree"
 # directory is the image's own /usr/bin, so `trufflehog filesystem .` silently scans
 # the scanner's binaries and reports the repository clean no matter what is in it.
 rc=0
-"${th[@]}" filesystem "$repo_uri" -x "$repo_uri/.trufflehog-exclude" || rc=$?
+"${th[@]}" filesystem "$repo_uri" -x "$repo_uri/.trufflehog-exclude" >"$found/tree.json" || rc=$?
 if [[ "$rc" -ne 0 ]]; then
     echo "    working-tree scan exited $rc"
     failed=1
@@ -60,20 +66,24 @@ if [[ "${TRUFFLEHOG_SKIP_HISTORY:-0}" == "1" ]]; then
 else
     echo "--- git history"
     rc=0
-    "${th[@]}" git "file://$repo_uri" || rc=$?
+    "${th[@]}" git "file://$repo_uri" >"$found/history.json" || rc=$?
     if [[ "$rc" -ne 0 ]]; then
-        if [[ "$rc" != "183" ]]; then
-            echo "    trufflehog could not scan history (exit $rc) at file://$repo_uri"
-            echo "    If it cannot find the repository there, set TRUFFLEHOG_REPO_ROOT"
-            echo "    to the path trufflehog itself sees. TRUFFLEHOG_SKIP_HISTORY=1"
-            echo "    skips this pass."
-        fi
+        echo "    trufflehog could not scan history (exit $rc) at file://$repo_uri"
+        echo "    If it cannot find the repository there, set TRUFFLEHOG_REPO_ROOT"
+        echo "    to the path trufflehog itself sees. TRUFFLEHOG_SKIP_HISTORY=1"
+        echo "    skips this pass."
         failed=1
     fi
+fi
+
+echo "--- findings"
+if ! python3 "$repo_root/scripts/make/lib/trufflehog_allowed.py" \
+    "$repo_root/.trufflehog-allow" "$found"/*.json; then
+    failed=1
 fi
 
 if [[ "$failed" -ne 0 ]]; then
     echo "FAIL: see above."
     exit 1
 fi
-echo "OK: no credentials found."
+echo "OK: no finding outside .trufflehog-allow."
