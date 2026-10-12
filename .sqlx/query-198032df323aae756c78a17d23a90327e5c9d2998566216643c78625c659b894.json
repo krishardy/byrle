@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                UPDATE proxy_token SET revoked_at = COALESCE(revoked_at, now())\n                FROM account\n                WHERE proxy_token.account_id = account.id\n                  AND account.name = $1\n                  AND proxy_token.name = $2\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "198032df323aae756c78a17d23a90327e5c9d2998566216643c78625c659b894"
+}

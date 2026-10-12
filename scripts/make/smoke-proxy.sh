@@ -40,7 +40,7 @@ ask() {
     local log="$workdir/proxy-$1.log"; shift
     env HTTPS_PROXY= https_proxy= HTTP_PROXY= http_proxy= NO_PROXY= no_proxy= "$@" \
         BYRLE_UPSTREAM_NPM="http://127.0.0.1:${registry_port}" \
-        BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
+        BYRLE_REQUIRE_TOKEN=0 BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
         "$binary" daemon >"$log" 2>&1 &
     local pid=$!
     for _ in $(seq 1 60); do

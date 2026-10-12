@@ -150,9 +150,9 @@ pub struct Setup {
 }
 
 impl Setup {
-    /// The command line for a proxy listening on `listen`.
-    pub fn command_line(&self, listen: &str) -> String {
-        format!("{} http://{listen}{}", self.command, self.path)
+    /// The command line for a proxy reached at `base`, a URL without a trailing `/`.
+    pub fn command_line(&self, base: &str) -> String {
+        format!("{} {base}{}", self.command, self.path)
     }
 }
 
@@ -494,7 +494,7 @@ mod table {
     fn each_setup_line_points_its_client_at_the_proxy() {
         let lines: Vec<String> = TABLE
             .iter()
-            .map(|registry| registry.setup.command_line("127.0.0.1:8080"))
+            .map(|registry| registry.setup.command_line("http://127.0.0.1:8080"))
             .collect();
         assert_eq!(
             lines,
@@ -502,6 +502,10 @@ mod table {
                 "npm config set registry http://127.0.0.1:8080/",
                 "pip config set global.index-url http://127.0.0.1:8080/simple/",
             ]
+        );
+        assert_eq!(
+            TABLE[0].setup.command_line("https://h/registry"),
+            "npm config set registry https://h/registry/"
         );
     }
 

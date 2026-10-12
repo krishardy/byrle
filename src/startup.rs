@@ -25,6 +25,8 @@ use crate::tls::{self, TrustMode};
 pub struct Started {
     pub proxy: Proxy,
     pub listen: String,
+    /// The admin console, when [`env::CONSOLE_URL`] asks for one.
+    pub console: Option<crate::console::Console>,
     /// How long the watcher waits between passes. `None` when it is off.
     pub watch: Option<std::time::Duration>,
 }
@@ -60,6 +62,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
 ) -> Result<Started, StartupError> {
     let listen = environment.listen()?;
+    let console = crate::console::Console::from_env(environment, &listen)?;
     let upstreams = environment.upstreams()?;
     let client = upstream_client(environment)?;
     let max_metadata_bytes = environment.max_metadata_bytes()?;
@@ -75,12 +78,11 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     #[cfg(debug_assertions)]
     let defer_test = defer_test(environment)?;
     let (policy, audit) = policy_and_audit(environment)?;
-    let (intel, analyses) = crate::analysis::postgres::stores(
-        postgres::from_env(environment)
-            .await
-            .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DATABASE_URL)))?,
-        max_verified,
-    );
+    let store = postgres::from_env(environment)
+        .await
+        .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DATABASE_URL)))?;
+    let gate = gate(environment, crate::account::postgres::store(store.as_ref()))?;
+    let (intel, analyses) = crate::analysis::postgres::stores(store, max_verified);
     if policy.is_some() {
         warn_enforcement(intel.as_deref()).await;
     }
@@ -117,7 +119,8 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_max_records(max_records)
         .with_max_verified(max_verified)
         .with_artifact_rewriting(rewrite_artifacts)
-        .with_public_base(public_base);
+        .with_public_base(public_base)
+        .with_gate(gate);
     #[cfg(debug_assertions)]
     let proxy = proxy.with_defer_test(defer_test);
 
@@ -133,8 +136,39 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     Ok(Started {
         proxy,
         listen,
+        console,
         watch,
     })
+}
+
+/// What checks each request's token: `accounts`, unless [`env::REQUIRE_TOKEN`] is `0`.
+/// Errors when a token is required and there is no store to check it in.
+fn gate<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+    accounts: Option<Arc<dyn crate::account::Accounts>>,
+) -> Result<Option<crate::account::gate::Gate>, StartupError> {
+    if !environment.require_token()? {
+        warn!(
+            byrle.config.variable = %env::REQUIRE_TOKEN,
+            "proxy tokens NOT required: every request is answered, and none is tied to an account"
+        );
+        return Ok(None);
+    }
+    let Some(accounts) = accounts else {
+        return Err(StartupError::Unusable(format!(
+            "{} is not set, and the accounts and tokens a request is checked in are kept there. \
+             Set it, or set {}=0 to answer requests without a token",
+            env::DATABASE_URL,
+            env::REQUIRE_TOKEN
+        )));
+    };
+    info!(
+        byrle.config.variable = %env::REQUIRE_TOKEN,
+        byrle.config.guide = doctor::TOKEN_GUIDE,
+        "proxy tokens required: a request without one is answered 401. The guide lists \
+         where each client puts its token"
+    );
+    Ok(Some(crate::account::gate::Gate::new(accounts)))
 }
 
 /// The client every upstream request goes through, trusting [`env::CA_BUNDLE`]'s roots
@@ -168,12 +202,12 @@ fn upstream_client<L: Fn(&str) -> Option<OsString>>(
         .map_err(|e| StartupError::Unusable(e.to_string()))
 }
 
-/// [`env::PUBLIC_URL`] and whether artifact URLs are rewritten, warning when rewriting is
+/// [`env::PROXY_URL`] and whether artifact URLs are rewritten, warning when rewriting is
 /// off or the address lockfiles record is left to each request's `Host`.
 fn artifact_urls<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
 ) -> Result<(Option<String>, bool), StartupError> {
-    let public_base = environment.public_url()?;
+    let public_base = environment.proxy_url()?;
     let rewrite_artifacts = environment.rewrite_artifacts()?;
     if !rewrite_artifacts {
         warn!(
@@ -182,8 +216,8 @@ fn artifact_urls<L: Fn(&str) -> Option<OsString>>(
         );
     } else if public_base.is_none() {
         warn!(
-            byrle.config.variable = %env::PUBLIC_URL,
-            byrle.config.consequence = doctor::WITHOUT_PUBLIC_URL,
+            byrle.config.variable = %env::PROXY_URL,
+            byrle.config.consequence = doctor::WITHOUT_PROXY_URL,
             "not set: `npm ci` fails if the address lockfiles record later becomes \
              unreachable. Set it to a stable name"
         );
@@ -488,6 +522,9 @@ mod tests {
         let mut pairs = pairs.to_vec();
         let spool = dir.join("spool").display().to_string();
         pairs.push((env::SPOOL_DIR, &spool));
+        if !pairs.iter().any(|(var, _)| *var == env::REQUIRE_TOKEN) {
+            pairs.push((env::REQUIRE_TOKEN, "0"));
+        }
         (dir, with(&pairs))
     }
 
@@ -498,6 +535,50 @@ mod tests {
             Err(e) => e,
             Ok(_) => panic!("{pairs:?} should not start a proxy"),
         }
+    }
+
+    /// Tokens are required by default, and without a database there is nowhere to check
+    /// them, so the proxy is not started. With the requirement off it starts, and says so.
+    #[tokio::test]
+    async fn a_required_token_needs_the_database_and_turning_it_off_is_logged() {
+        let StartupError::Unusable(why) = refused(&[]).await else {
+            panic!("no database is unusable, not a parse error");
+        };
+        assert!(why.starts_with(env::DATABASE_URL.name), "{why}");
+        assert!(why.contains(&format!("{}=0", env::REQUIRE_TOKEN)), "{why}");
+
+        let (started, logs) = logged("startup-no-token", &[]).await;
+        assert!(started);
+        assert!(logs.contains("proxy tokens NOT required"), "{logs}");
+    }
+
+    /// With a store, a required token gives a gate.
+    #[test]
+    fn a_required_token_with_a_store_is_a_gate() {
+        let accounts = std::sync::Arc::new(crate::account::InMemory::new("2026-10-11T00:00:00Z"));
+        assert!(gate(&with(&[]), Some(accounts)).unwrap().is_some());
+    }
+
+    /// A console whose path the proxy's contains on their shared listener is not started,
+    /// and one with a path of its own is.
+    #[tokio::test]
+    async fn the_console_starts_only_at_a_path_of_its_own() {
+        let StartupError::Env(e) = refused(&[(env::CONSOLE_URL, "https://h/admin/")]).await else {
+            panic!("a console inside the proxy's path is an environment error");
+        };
+        assert_eq!(e.var, env::CONSOLE_URL.name);
+
+        let (dir, environment) = spooled(
+            "startup-console",
+            &[
+                (env::PROXY_URL, "https://h/registry/"),
+                (env::CONSOLE_URL, "https://h/admin/"),
+            ],
+        );
+        let started = proxy(&environment).await.expect("separate paths start");
+        let console = started.console.expect("a console");
+        assert_eq!(console.mount.to_string(), "/admin/");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// What `proxy` logs at INFO and above for `pairs`, with whether it started.
@@ -555,7 +636,7 @@ mod tests {
     /// With rewriting on and no public URL, the lockfile address is warned about; a
     /// forward proxy is named.
     #[tokio::test]
-    async fn an_unset_public_url_is_warned_about_and_a_forward_proxy_named() {
+    async fn an_unset_proxy_url_is_warned_about_and_a_forward_proxy_named() {
         let (started, log) = logged(
             "startup-public",
             &[(env::FORWARD_HTTPS, "http://egress.example:3128")],
@@ -703,6 +784,7 @@ mod tests {
         let (dir, environment) = spooled("startup-empty", &[]);
         let started = proxy(&environment).await.expect("the defaults are usable");
         assert_eq!(started.listen, env::DEFAULT_LISTEN);
+        assert_eq!(started.console, None);
         assert_eq!(
             started.watch,
             Some(std::time::Duration::from_secs(
@@ -848,7 +930,7 @@ mod tests {
                 (env::LISTEN, "127.0.0.1:9999"),
                 (env::UPSTREAM_NPM, "https://npm.mirror.example/"),
                 (env::UPSTREAM_PYPI, "https://pypi.mirror.example/simple"),
-                (env::PUBLIC_URL, "http://byrle.corp.example"),
+                (env::PROXY_URL, "http://byrle.corp.example"),
                 (env::ARTIFACT_ORIGINS, "https://cdn.example"),
                 (env::ALLOW_DIRECT_ORIGINS, "https://direct.example"),
                 (env::REWRITE_ARTIFACTS, "0"),
@@ -937,7 +1019,7 @@ mod tests {
             (vec![], env::MAX_METADATA_BYTES),
             (vec![], env::MAX_RECORDS),
             (vec![], env::MAX_VERIFIED),
-            (vec![], env::PUBLIC_URL),
+            (vec![], env::PROXY_URL),
             (vec![], env::REWRITE_ARTIFACTS),
             (vec![], env::MAX_CONCURRENT_METADATA),
             (vec![], env::ARTIFACT_ORIGINS),
@@ -964,7 +1046,11 @@ mod tests {
             "/tests/fixtures/policy-check/dead.yaml"
         );
         cases.push((vec![(env::POLICY, policy)], env::EXPIRY_CEILING_DAYS));
-        for (pairs, var) in cases {
+        cases.push((vec![], env::REQUIRE_TOKEN));
+        for (mut pairs, var) in cases {
+            if var != env::REQUIRE_TOKEN {
+                pairs.push((env::REQUIRE_TOKEN, "0"));
+            }
             let Err(StartupError::Env(e)) = proxy(&with_unreadable(&pairs, var)).await.map(drop)
             else {
                 panic!("{} refuses the start", var.name);
@@ -1044,9 +1130,9 @@ mod tests {
 
     /// With rewriting on and a public URL set, there is nothing to warn about.
     #[test]
-    fn a_public_url_with_rewriting_on_is_not_warned_about() {
+    fn a_proxy_url_with_rewriting_on_is_not_warned_about() {
         let (base, rewriting) =
-            artifact_urls(&with(&[(env::PUBLIC_URL, "http://proxy.internal")])).expect("reads");
+            artifact_urls(&with(&[(env::PROXY_URL, "http://proxy.internal")])).expect("reads");
         assert_eq!(base.as_deref(), Some("http://proxy.internal"));
         assert!(rewriting);
     }

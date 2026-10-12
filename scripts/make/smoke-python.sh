@@ -14,6 +14,9 @@
 #   6. uv, which has its own resolver, installs and verifies the same way
 #   7. `install_scripts: block` refuses docopt 0.6.2, sdist only, and `allow` installs it
 #   8. test-eicar 0.1.0, which holds the EICAR test string, is served and verified
+#   9. with tokens required, a request without one is 401, and pip and uv install with
+#      `account:token@` in the index URL, when Postgres is available
+# Steps 1 to 8 run with no Postgres, and so with BYRLE_REQUIRE_TOKEN=0.
 # The packages in 7 and 8 are in docs/engineering_decisions/live-test-packages.md. No PyPI
 # project still exists that a MAL record covers, so `known_malware` is not run here.
 set -euo pipefail
@@ -21,6 +24,10 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # shellcheck source=scripts/make/lib/python.sh
 . "$repo_root/scripts/make/lib/python.sh"
+# shellcheck source=scripts/make/lib/postgres.sh
+. "$repo_root/scripts/make/lib/postgres.sh"
+# shellcheck source=scripts/make/lib/token.sh
+. "$repo_root/scripts/make/lib/token.sh"
 
 port="${BYRLE_PORT:-8734}"
 index="http://127.0.0.1:${port}/simple/"
@@ -28,6 +35,8 @@ workdir="$(mktemp -d)"
 log="$workdir/proxy.log"
 clean_log="$workdir/clean.log"
 proxy_pid=""
+database_url=""
+require_token=0
 
 cleanup() {
     [[ -n "$proxy_pid" ]] && kill "$proxy_pid" 2>/dev/null || true
@@ -49,8 +58,9 @@ fail() { echo "FAIL: $*"; echo "--- proxy log ---"; cat "$log"; exit 1; }
 # about them is observed.
 start_proxy() {
     BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
-    BYRLE_PUBLIC_URL="http://127.0.0.1:${port}" \
+    BYRLE_PROXY_URL="http://127.0.0.1:${port}" \
     BYRLE_POLICY="${1:-}" \
+    BYRLE_DATABASE_URL="$database_url" BYRLE_REQUIRE_TOKEN="$require_token" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
@@ -101,7 +111,7 @@ for dist in md.distributions():
 PY
 }
 
-echo "==> 1/8  install completes through the proxy"
+echo "==> 1/9  install completes through the proxy"
 start_proxy ""
 make_venv "$workdir/basic"
 pip_install "$workdir/basic" requests || fail "pip install requests failed"
@@ -109,7 +119,7 @@ installed_purls "$workdir/basic" | grep -q '^pkg:pypi/requests@' \
     || fail "requests was not installed"
 echo "    ok"
 
-echo "==> 2/8  every distribution, transitive included, came through the proxy"
+echo "==> 2/9  every distribution, transitive included, came through the proxy"
 clean
 on_disk="$(installed_purls "$workdir/basic" | sed 's|^pkg:pypi/||; s|@.*||' | sort -u)"
 # The index page the resolver read, which is the normalised project name in the path.
@@ -121,7 +131,7 @@ missed="$(comm -23 <(echo "$on_disk") <(echo "$indexed") || true)"
 [[ -z "$missed" ]] || fail "these projects never had an index read: $(echo "$missed" | tr '\n' ' ')"
 echo "    ok ($(echo "$on_disk" | wc -l) projects, all intercepted)"
 
-echo "==> 3/8  every installed distribution was normalized to a PURL at the version on disk"
+echo "==> 3/9  every installed distribution was normalized to a PURL at the version on disk"
 expected_purls="$(installed_purls "$workdir/basic" | sort -u)"
 [[ -n "$expected_purls" ]] || fail "could not read any installed versions"
 observed_purls="$(grep -oE 'byrle.package.claimed_purl=[^ ]+' "$clean_log" | cut -d= -f2- | sort -u || true)"
@@ -145,7 +155,7 @@ served() {
     echo "$(( $(count 'artifact requested') - $(count "$DEFERRED") ))"
 }
 
-echo "==> 4/8  every file digest was known before the fetch and verified"
+echo "==> 4/9  every file digest was known before the fetch and verified"
 deferred="$(count "$DEFERRED")"
 known="$(( $(count 'digest known') - deferred ))"
 verified="$(count 'artifact digest verified')"
@@ -171,7 +181,7 @@ fi
 echo "    ok ($files files, all with a known digest, all verified, none left offsite, $deferred deferred for analysis)"
 stop_proxy
 
-echo "==> 5/8  one version's wheel and sdist get different answers"
+echo "==> 5/9  one version's wheel and sdist get different answers"
 # A PyPI version is several files. `idna` 3.20 ships a wheel and an sdist; installing the
 # wheel runs nothing and installing the sdist runs setup.py, so a policy that blocks
 # install scripts has to answer them differently. The version-level record says false,
@@ -214,7 +224,7 @@ fi
 echo "    ok (sdist refused 403, wheel of the same version served, sdist never fetched)"
 stop_proxy
 
-echo "==> 6/8  uv, with its own resolver, installs and verifies the same way"
+echo "==> 6/9  uv, with its own resolver, installs and verifies the same way"
 if ! command -v uv >/dev/null; then
     echo "    skipped (uv is not installed)"
 else
@@ -235,7 +245,7 @@ else
     stop_proxy
 fi
 
-echo "==> 7/8  install_scripts refuses a version offering only an sdist, and allow installs it"
+echo "==> 7/9  install_scripts refuses a version offering only an sdist, and allow installs it"
 docopt_file="/packages/a2/55/8f8cab2afd404cf578136ef2cc5dfb50baa1761b68c9da1fb1e4eed343c9/docopt-0.6.2.tar.gz"
 printf 'version: 1\ncooldown_days: 0\ninstall_scripts: %s\n' block >"$workdir/block.yaml"
 printf 'version: 1\ncooldown_days: 0\ninstall_scripts: %s\n' allow >"$workdir/allow.yaml"
@@ -262,7 +272,7 @@ installed_purls "$workdir/docopt" | grep -q '^pkg:pypi/docopt@0.6.2$' || fail "d
 echo "    ok (block: filtered and 403; allow: built and installed)"
 stop_proxy
 
-echo "==> 8/8  a package holding the EICAR test string is served and verified"
+echo "==> 8/9  a package holding the EICAR test string is served and verified"
 start_proxy ""
 make_venv "$workdir/eicar"
 pip_install "$workdir/eicar" "test-eicar==0.1.0" || fail "pip install test-eicar failed"
@@ -273,6 +283,40 @@ grep -q 'artifact digest verified.*pkg:pypi/test-eicar@0.1.0' "$clean_log" \
     || fail "the test-eicar wheel was not verified"
 echo "    ok (installed, digest verified)"
 stop_proxy
+
+echo "==> 9/9  a token is required, and pip and uv send it from the index URL"
+if ! choose_postgres >/dev/null; then
+    echo "    skipped (neither docker nor initdb and pg_ctl are available)"
+else
+    pg_port="${BYRLE_PG_PORT:-55436}"
+    start_postgres "byrle-smoke-python-pg-$$" "$pg_port" || fail "postgres did not start"
+    trap 'stop_postgres; cleanup' EXIT
+    database_url="$(postgres_url "$pg_port")"
+    proxy_token="$(issue_token "$database_url" smoke-python)"
+    require_token=1
+    start_proxy ""
+    assert_unauthorized "${index}six/"
+    with_token="http://smoke-python:${proxy_token}@127.0.0.1:${port}/simple/"
+    make_venv "$workdir/token"
+    mapfile -t cmd < <(byrle_pip_command "$workdir/token/venv" "$with_token" --quiet "six==1.17.0")
+    "${cmd[@]}" || fail "pip install with a token failed"
+    installed_purls "$workdir/token" | grep -q '^pkg:pypi/six@1.17.0$' || fail "six was not installed"
+    clean
+    grep -q 'artifact digest verified.*pkg:pypi/six@1.17.0' "$clean_log" \
+        || fail "the six file was not fetched through the proxy"
+    make_venv "$workdir/no-token"
+    if pip_install "$workdir/no-token" "six==1.17.0" >/dev/null 2>&1; then
+        fail "pip installed without a token"
+    fi
+    if command -v uv >/dev/null; then
+        mkdir -p "$workdir/uv-token"
+        uv venv -q "$workdir/uv-token/venv" >/dev/null 2>&1 || fail "uv could not create a venv"
+        mapfile -t uv_cmd < <(byrle_uv_command "$workdir/uv-token/venv" "$with_token" --quiet "six==1.17.0")
+        "${uv_cmd[@]}" || fail "uv pip install with a token failed"
+    fi
+    echo "    ok (401 without a token; pip$(command -v uv >/dev/null && echo ' and uv') installed with one)"
+    stop_proxy
+fi
 
 echo
 echo "PASS: the proxy serves PyPI as Stage 3 requires."

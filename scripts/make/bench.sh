@@ -28,7 +28,7 @@ binary="$repo_root/target/release/byrle"
 start_proxy() {
     stop_proxy
     rm -rf "$workdir/spool"
-    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
+    BYRLE_REQUIRE_TOKEN=0 BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
         "$binary" daemon >"$workdir/proxy.log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do

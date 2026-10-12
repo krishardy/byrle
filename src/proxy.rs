@@ -3,6 +3,7 @@
 //!
 //! See docs/request-flow.md.
 
+use crate::account::gate::{self, Gate, TOKEN_HEADER};
 use crate::analysis::Claim;
 use crate::analysis::attestation;
 use crate::analysis::run::{Analyser, Attestation, Job, Known, SourceJob};
@@ -25,6 +26,7 @@ use crate::http::{
 use crate::identity::{Ecosystem, PackageKey};
 use crate::integrity::{Sri, Verifier};
 use crate::intel::store::{Intel, LoadedSnapshot, PackageIntel};
+use crate::mount::Mount;
 use crate::origin::{Disposition, OriginPolicy, ReachableOrigins};
 use crate::policy::decide::Provenance;
 use crate::policy::{Policy, enforce, facts};
@@ -112,6 +114,9 @@ pub struct Health {
     /// `enforce` or `observe`.
     #[serde(default)]
     pub mode: String,
+    /// Whether a request needs a proxy token. See [`crate::account::gate`].
+    #[serde(default)]
+    pub tokens_required: bool,
     /// Origins whose artifacts this proxy serves.
     pub served_origins: Vec<String>,
     /// Origins it does not serve and permits a client to fetch directly.
@@ -199,6 +204,10 @@ struct Config {
     rewrite_artifacts: bool,
     /// The address to write into artifact URLs, when it must not be the request's `Host`.
     public_base: Option<String>,
+    /// The path the proxy answers under: `public_base`'s path, or the root without one.
+    mount: Mount,
+    /// Checks each request's token. `None` answers every request, as anonymous.
+    gate: Option<Gate>,
     /// Debug builds only: answer with a deferral instead of fetching. See [`crate::defer`].
     #[cfg(debug_assertions)]
     defer_test: Option<(DeferTest, Instant)>,
@@ -232,6 +241,8 @@ impl Proxy {
                 max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
                 rewrite_artifacts: true,
                 public_base: None,
+                mount: Mount::ROOT,
+                gate: None,
                 refusal: RefusalStatus::default(),
                 refuse_unservable: true,
                 mode: Mode::Enforce,
@@ -379,6 +390,7 @@ impl Proxy {
             rewrite_artifacts: self.config.rewrite_artifacts,
             refuse_unservable: self.config.refuse_unservable,
             mode: self.config.mode.as_str().to_owned(),
+            tokens_required: self.config.gate.is_some(),
             served_origins: self.config.origins.reachable().as_slice().to_vec(),
             allowed_direct_origins: self.config.origins.allowed_direct().to_vec(),
             packages_held,
@@ -459,10 +471,23 @@ impl Proxy {
         self
     }
 
-    /// Override the address written into artifact URLs. Without it the request's `Host`
-    /// is used, which is what the client already reached the proxy on.
+    /// Override the address written into artifact URLs; without it, the request's `Host`.
+    /// Its path is where the proxy answers: under `https://h/registry`, `/registry/lodash`
+    /// is npm's `lodash` and `/lodash` is 404. A base startup would refuse answers at `/`.
     pub fn with_public_base(mut self, base: Option<String>) -> Self {
-        self.config_mut().public_base = base.map(|b| b.trim_end_matches('/').to_owned());
+        let config = self.config_mut();
+        config.mount = base
+            .as_deref()
+            .and_then(|b| Mount::from_url(b).ok())
+            .unwrap_or(Mount::ROOT);
+        config.public_base = base.map(|b| b.trim_end_matches('/').to_owned());
+        self
+    }
+
+    /// Require a token on every request but [`HEALTH_PATH`] and [`READY_PATH`], checked by
+    /// `gate`. `None` answers every request.
+    pub fn with_gate(mut self, gate: Option<Gate>) -> Self {
+        self.config_mut().gate = gate;
         self
     }
 
@@ -1139,7 +1164,11 @@ fn report_uninspected(
 fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -> HeaderMap {
     let mut outbound = HeaderMap::new();
     for (name, value) in client {
-        if is_hop_by_hop(name.as_str()) || name == header::HOST || name == header::AUTHORIZATION {
+        if is_hop_by_hop(name.as_str())
+            || name == header::HOST
+            || name == header::AUTHORIZATION
+            || name == TOKEN_HEADER
+        {
             continue;
         }
         if negotiation.read_metadata && name == header::ACCEPT_ENCODING {
@@ -2192,12 +2221,14 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let proxy = proxy.current();
     let started = Instant::now();
     let method = req.method().clone();
-    let path = req
+    let requested = req
         .uri()
         .path_and_query()
         .map(|p| p.as_str())
-        .unwrap_or("/")
-        .to_string();
+        .unwrap_or("/");
+    let Some(path) = proxy.config.mount.strip(requested) else {
+        return outside_mount(&proxy.config.mount, requested);
+    };
     let client = req
         .headers()
         .get(header::USER_AGENT)
@@ -2206,6 +2237,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         .to_string();
     if let Some(response) = own_endpoint(&proxy, &path).await {
         return response;
+    }
+    if let Some(refused) = admit(&proxy, req.headers(), &path, &client).await {
+        return refused;
     }
     let (ecosystem, target) = crate::route::classify(&path);
     #[cfg(debug_assertions)]
@@ -2235,6 +2269,49 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         Err(response) => return *response,
     };
     exchange.respond(upstream, artifact).await
+}
+
+/// A request for a path outside the one the proxy answers under: 404, naming that path.
+fn outside_mount(mount: &Mount, requested: &str) -> Response {
+    info!(
+        url.path = %crate::http::url_path(requested),
+        byrle.proxy.path = %mount,
+        "outside the proxy's path: 404"
+    );
+    (
+        StatusCode::NOT_FOUND,
+        format!(
+            "byrle: {} is outside the proxy's path, {mount}\n",
+            crate::http::url_path(requested)
+        ),
+    )
+        .into_response()
+}
+
+/// The answer for a request whose token is missing, not held, or not checked because the
+/// store did not answer. `None` lets it through, as it does every request with no gate.
+async fn admit(proxy: &Proxy, headers: &HeaderMap, path: &str, client: &str) -> Option<Response> {
+    let gate = proxy.config.gate.as_ref()?;
+    match gate.admit(headers).await {
+        Ok(holder) => {
+            debug!(
+                url.path = %crate::http::url_path(path),
+                byrle.account = %holder.account,
+                byrle.token = %holder.token,
+                "token accepted"
+            );
+            None
+        }
+        Err(gate::Refused::Unauthorized) => {
+            info!(
+                url.path = %crate::http::url_path(path),
+                user_agent.original = %client,
+                "no valid token: 401"
+            );
+            Some(gate::unauthorized())
+        }
+        Err(gate::Refused::Unanswered) => Some(NotReady::AccountStore.response()),
+    }
 }
 
 /// `/-/byrle/health` and `/-/byrle/ready`, answered by the proxy. `None` for any other
@@ -2903,6 +2980,8 @@ pub const DEFERRED_DIGEST: header::HeaderName = header::HeaderName::from_static(
 enum NotReady {
     /// The store errored, or holds no snapshot.
     Unanswered,
+    /// The account store did not answer, so the request's token is not checked.
+    AccountStore,
     /// The snapshot has no stream that can report a finding or malware for this ecosystem.
     Uncovered(Ecosystem),
     /// The artifact's analysis has started, and the client's retry is decided on it.
@@ -2914,6 +2993,7 @@ impl NotReady {
     fn reason(&self) -> &'static str {
         match self {
             Self::Unanswered => "intel-store",
+            Self::AccountStore => "account-store",
             Self::Uncovered(_) => "no-stream-for-ecosystem",
             Self::Analysing { .. } => "artifact-analysis",
         }
@@ -2925,6 +3005,9 @@ impl NotReady {
         let body = match &self {
             Self::Unanswered => {
                 "byrle: the intel store cannot answer, so nothing is served unchecked\n".to_owned()
+            }
+            Self::AccountStore => {
+                "byrle: the account store cannot answer, so no token is checked\n".to_owned()
             }
             Self::Uncovered(ecosystem) => format!(
                 "byrle: the intel snapshot has no advisory stream for {ecosystem}, so no \
@@ -3786,7 +3869,7 @@ mod tests {
             header::HeaderName,
             Option<&'a str>,
         );
-        let cases: [Case; 13] = [
+        let cases: [Case; 14] = [
             (
                 "br narrowed away",
                 None,
@@ -3841,6 +3924,14 @@ mod tests {
                 TARBALL,
                 &[(header::AUTHORIZATION, "Bearer account-token")],
                 header::AUTHORIZATION,
+                None,
+            ),
+            (
+                "a token for this proxy",
+                None,
+                TARBALL,
+                &[(TOKEN_HEADER, "byrle_token")],
+                TOKEN_HEADER,
                 None,
             ),
             ("the proxy's Host", None, TARBALL, &[], header::HOST, None),
@@ -5840,13 +5931,24 @@ mod tests {
     /// packument publishes the digest, the tarball request finds it, the body is checked
     /// on the way past.
     async fn registry_with(integrity: &str, tarball: Vec<u8>) -> String {
+        let upstream = serve(widget_registry(integrity, tarball)).await;
+        serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, upstream)
+                .router(),
+        )
+        .await
+    }
+
+    /// An npm registry holding `widget` 1.0.0, whose packument publishes `integrity`.
+    fn widget_registry(integrity: &str, tarball: Vec<u8>) -> Router {
         let packument = format!(
             r#"{{"name":"widget","dist-tags":{{"latest":"1.0.0"}},"versions":{{
                 "1.0.0":{{"version":"1.0.0","dist":{{
                     "tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz",
                     "integrity":"{integrity}"}}}}}}}}"#
         );
-        let router = Router::new()
+        Router::new()
             .route(
                 "/widget",
                 get(move || {
@@ -5870,13 +5972,161 @@ mod tests {
                         )
                     }
                 }),
-            );
-        serve(
-            Proxy::new(reqwest::Client::new())
-                .with_upstream(Ecosystem::Npm, serve(router).await)
-                .router(),
+            )
+    }
+
+    /// A proxy for `widget` that requires a token, checked in `accounts`, and a token of
+    /// account `ci` there.
+    async fn token_proxy(
+        accounts: Arc<dyn crate::account::Accounts>,
+        mode: Mode,
+    ) -> (String, String) {
+        let tarball: Vec<u8> = (0..5_000u32).map(|i| (i % 251) as u8).collect();
+        let upstream = serve(widget_registry(&sri_of(&tarball), tarball)).await;
+        let (ci, runner) = (
+            crate::account::Name::parse("ci").unwrap(),
+            crate::account::Name::parse("runner").unwrap(),
+        );
+        let issued = crate::account::issue();
+        if accounts.create_account(&ci).await.is_ok() {
+            accounts
+                .create_token(&ci, &runner, &crate::account::TokenDigest::of(&issued))
+                .await
+                .unwrap();
+        }
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, upstream)
+            .with_mode(mode)
+            .with_gate(Some(Gate::new(accounts)));
+        proxy.replace_policy(Some(policy(ALLOW_ALL)));
+        (serve(proxy.router()).await, issued)
+    }
+
+    fn held() -> Arc<dyn crate::account::Accounts> {
+        Arc::new(crate::account::InMemory::new("2026-10-11T00:00:00Z"))
+    }
+
+    async fn get_with(url: &str, headers: &[(header::HeaderName, String)]) -> reqwest::Response {
+        let mut request = reqwest::Client::new().get(url);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        request.send().await.unwrap()
+    }
+
+    /// With a gate, after a policy reload, a request without a token is 401 asking for Basic
+    /// credentials. A token in each form is served, and the proxy's own endpoints need none.
+    #[tokio::test]
+    async fn a_request_without_a_token_is_401_and_one_with_a_token_is_served() {
+        let (base, issued) = token_proxy(held(), Mode::Enforce).await;
+        for path in ["/widget", "/widget/-/widget-1.0.0.tgz"] {
+            let refused = reqwest::get(format!("{base}{path}")).await.unwrap();
+            assert_eq!(refused.status(), 401, "{path}");
+            assert_eq!(refused.headers()[header::WWW_AUTHENTICATE], gate::CHALLENGE);
+        }
+        let wrong = get_with(
+            &format!("{base}/widget"),
+            &[(header::AUTHORIZATION, "Bearer byrle_wrong".into())],
         )
-        .await
+        .await;
+        assert_eq!(wrong.status(), 401);
+
+        use base64::Engine as _;
+        let basic = base64::engine::general_purpose::STANDARD.encode(format!("ci:{issued}"));
+        for sent in [
+            (header::AUTHORIZATION, format!("Bearer {issued}")),
+            (header::AUTHORIZATION, format!("Basic {basic}")),
+            (TOKEN_HEADER, issued.clone()),
+        ] {
+            for path in ["/widget", "/widget/-/widget-1.0.0.tgz"] {
+                let served = get_with(&format!("{base}{path}"), std::slice::from_ref(&sent)).await;
+                assert_eq!(served.status(), 200, "{path} {sent:?}");
+            }
+        }
+        let health = reqwest::get(format!("{base}{HEALTH_PATH}")).await.unwrap();
+        assert_eq!(health.status(), 200);
+        let health: Health = serde_json::from_str(&health.text().await.unwrap()).unwrap();
+        assert!(health.tokens_required);
+        let ready = reqwest::get(format!("{base}{READY_PATH}")).await.unwrap();
+        assert_ne!(ready.status(), 401);
+    }
+
+    /// Observe mode records refusals it does not make. A missing token is not one of them.
+    #[tokio::test]
+    async fn observe_mode_still_answers_401_without_a_token() {
+        let (base, _) = token_proxy(held(), Mode::Observe).await;
+        let refused = reqwest::get(format!("{base}/widget")).await.unwrap();
+        assert_eq!(refused.status(), 401);
+    }
+
+    /// A store that cannot answer is not-ready, 503, never a 401 that reads as a bad token.
+    #[tokio::test]
+    async fn an_account_store_that_cannot_answer_is_503_not_401() {
+        let (base, _) = token_proxy(Arc::new(crate::account::testing::Down), Mode::Enforce).await;
+        let response = get_with(
+            &format!("{base}/widget"),
+            &[(TOKEN_HEADER, "byrle_x".into())],
+        )
+        .await;
+        assert_eq!(response.status(), 503);
+        assert_eq!(response.headers()[NOT_READY], "account-store");
+        assert!(response.headers().contains_key(header::RETRY_AFTER));
+    }
+
+    /// Without a gate, health says no token is required.
+    #[test]
+    fn a_proxy_without_a_gate_requires_no_token() {
+        assert!(!Proxy::new(reqwest::Client::new()).health().tokens_required);
+    }
+
+    /// Under [`crate::env::PROXY_URL`]'s path, the artifact URL a packument is given serves the
+    /// artifact. Outside that path is 404, the proxy's own endpoints included.
+    #[tokio::test]
+    async fn a_proxy_under_a_path_serves_the_artifact_urls_it_writes() {
+        let tarball: Vec<u8> = (0..5_000u32).map(|i| (i % 251) as u8).collect();
+        let upstream = serve(widget_registry(&sri_of(&tarball), tarball.clone())).await;
+        let base = serve_at(|base| {
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, upstream)
+                .with_public_base(Some(format!("{base}/registry/")))
+                .router()
+        })
+        .await;
+
+        let body = reqwest::get(format!("{base}/registry/widget"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        let packument: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let written = packument["versions"]["1.0.0"]["dist"]["tarball"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            written,
+            format!("{base}/registry/widget/-/widget-1.0.0.tgz")
+        );
+
+        let artifact = reqwest::get(&written).await.unwrap();
+        assert_eq!(artifact.status(), 200);
+        assert_eq!(artifact.bytes().await.unwrap().as_ref(), tarball.as_slice());
+
+        let health = reqwest::get(format!("{base}/registry{HEALTH_PATH}"))
+            .await
+            .unwrap();
+        assert_eq!(health.status(), 200);
+
+        for outside in ["/widget", "/registryx/widget", HEALTH_PATH] {
+            let response = reqwest::get(format!("{base}{outside}")).await.unwrap();
+            assert_eq!(response.status(), 404, "{outside}");
+            let body = response.text().await.unwrap();
+            assert_eq!(
+                body,
+                format!("byrle: {outside} is outside the proxy's path, /registry/\n"),
+            );
+        }
     }
 
     /// The whole point: the digest comes from a packument seen earlier, and the tarball

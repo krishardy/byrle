@@ -162,6 +162,60 @@ async fn run_status() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
+/// The account store at [`env::DATABASE_URL`], or the exit `byrle <command>` takes without it.
+async fn accounts(
+    command: &str,
+) -> Result<byrle::account::postgres::PgAccounts, std::process::ExitCode> {
+    match postgres::required(&env::process()).await {
+        Ok(intel) => Ok(byrle::account::postgres::PgAccounts::new(
+            intel.pool().clone(),
+        )),
+        Err(refused) => {
+            eprintln!("byrle {command}: {refused}");
+            Err(std::process::ExitCode::from(refused.code))
+        }
+    }
+}
+
+/// Print what an account or token command printed, and exit with its code.
+fn finish(outcome: byrle::account::command::Outcome) -> std::process::ExitCode {
+    print!("{}", outcome.stdout);
+    eprint!("{}", outcome.stderr);
+    std::process::ExitCode::from(outcome.code)
+}
+
+/// `byrle account create|disable|list`.
+async fn run_account(command: cli::AccountCommand) -> std::process::ExitCode {
+    use byrle::account::command;
+    let store = match accounts("account").await {
+        Ok(store) => store,
+        Err(code) => return code,
+    };
+    finish(match command {
+        cli::AccountCommand::Create(args) => command::create_account(&store, &args.name).await,
+        cli::AccountCommand::Disable(args) => command::disable_account(&store, &args.name).await,
+        cli::AccountCommand::List => command::list_accounts(&store).await,
+    })
+}
+
+/// `byrle token create|revoke|list`.
+async fn run_token(command: cli::TokenCommand) -> std::process::ExitCode {
+    use byrle::account::command;
+    let store = match accounts("token").await {
+        Ok(store) => store,
+        Err(code) => return code,
+    };
+    finish(match command {
+        cli::TokenCommand::Create(args) => {
+            command::create_token(&store, &args.account, &args.name).await
+        }
+        cli::TokenCommand::Revoke(args) => {
+            command::revoke_token(&store, &args.account, &args.name).await
+        }
+        cli::TokenCommand::List(args) => command::list_tokens(&store, args.account.as_ref()).await,
+    })
+}
+
 /// `byrle intel history`: the newest entries of the ingestion history.
 async fn run_intel_history(args: cli::History) -> std::process::ExitCode {
     let intel = match postgres::required(&env::process()).await {
@@ -217,29 +271,19 @@ async fn run_daemon() -> std::process::ExitCode {
         }
         Err(startup::StartupError::Unusable(why)) => panic!("{why}"),
     };
-    let (proxy, listen, watch) = (started.proxy, started.listen, started.watch);
-
-    let listener = tokio::net::TcpListener::bind(&listen)
-        .await
-        .unwrap_or_else(|e| panic!("cannot bind {listen}: {e}"));
-
-    let (address, port) = listen.rsplit_once(':').unwrap_or((listen.as_str(), ""));
-    info!(
-        server.address = address,
-        server.port = port.parse::<u16>().unwrap_or_default(),
-        byrle.upstreams = %proxy.upstreams(),
-        byrle.artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
-        byrle.allowed_direct_origins = ?proxy.origin_policy().allowed_direct(),
-        "byrle listening"
+    let (proxy, listen, console, watch) = (
+        started.proxy,
+        started.listen,
+        started.console,
+        started.watch,
     );
-    for registry in byrle::ecosystem::TABLE {
-        let setup = &registry.setup;
-        info!(
-            byrle.client.name = setup.client,
-            byrle.client.command = %setup.command_line(&listen),
-            "point a client at the proxy"
-        );
-    }
+
+    report_listening(
+        &proxy,
+        &listen,
+        console.as_ref(),
+        &or_exit(environment.proxy_base()),
+    );
 
     #[cfg(unix)]
     tokio::spawn(startup::reload_on_hangup(proxy.clone(), env::process()));
@@ -264,10 +308,62 @@ async fn run_daemon() -> std::process::ExitCode {
             }
         });
     }
-    axum::serve(listener, proxy.router())
+    serve_each(byrle::console::listeners(
+        proxy.router(),
+        &listen,
+        console.as_ref(),
+    ))
+    .await;
+    std::process::ExitCode::SUCCESS
+}
+
+/// Where the proxy and the console listen, and the line that points each client at the
+/// proxy reached at `base`.
+fn report_listening(
+    proxy: &byrle::proxy::Proxy,
+    listen: &str,
+    console: Option<&byrle::console::Console>,
+    base: &str,
+) {
+    let (address, port) = listen.rsplit_once(':').unwrap_or((listen, ""));
+    info!(
+        server.address = address,
+        server.port = port.parse::<u16>().unwrap_or_default(),
+        byrle.upstreams = %proxy.upstreams(),
+        byrle.artifact_origins = ?proxy.origin_policy().reachable().as_slice(),
+        byrle.allowed_direct_origins = ?proxy.origin_policy().allowed_direct(),
+        "byrle listening"
+    );
+    if let Some(console) = console {
+        info!(
+            byrle.console.url = %console.url,
+            byrle.console.path = %console.mount,
+            byrle.console.listen = console.listen.as_deref().unwrap_or(listen),
+            "console listening"
+        );
+    }
+    for registry in byrle::ecosystem::TABLE {
+        let setup = &registry.setup;
+        info!(
+            byrle.client.name = setup.client,
+            byrle.client.command = %setup.command_line(base),
+            "point a client at the proxy"
+        );
+    }
+}
+
+/// Bind each address and serve its router until one of them stops.
+async fn serve_each(servers: Vec<(String, axum::Router)>) {
+    let mut serving = Vec::new();
+    for (at, router) in servers {
+        let listener = tokio::net::TcpListener::bind(&at)
+            .await
+            .unwrap_or_else(|e| panic!("cannot bind {at}: {e}"));
+        serving.push(axum::serve(listener, router).into_future());
+    }
+    futures_util::future::try_join_all(serving)
         .await
         .expect("server failed");
-    std::process::ExitCode::SUCCESS
 }
 
 #[tokio::main]
@@ -290,6 +386,8 @@ async fn main() -> std::process::ExitCode {
         cli::Command::Policy(cli::PolicyCommand::Check(args)) => run_policy_check(args).await,
         cli::Command::Policy(cli::PolicyCommand::Diff(args)) => run_policy_diff(args).await,
         cli::Command::Intel(cli::IntelCommand::History(args)) => run_intel_history(args).await,
+        cli::Command::Account(command) => run_account(command).await,
+        cli::Command::Token(command) => run_token(command).await,
         cli::Command::Refresh => run_refresh().await,
         cli::Command::Warm(args) => run_warm(args).await,
         cli::Command::Lockfile(cli::LockfileCommand::Verify(args)) => run_lockfile_verify(args),

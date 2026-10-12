@@ -37,7 +37,7 @@ fi
 
 start_proxy() {
     local log="$1"
-    BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
+    BYRLE_REQUIRE_TOKEN=0 BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
         cargo run --quiet --manifest-path "$repo_root/Cargo.toml" -- daemon >"$log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do

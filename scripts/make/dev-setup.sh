@@ -24,6 +24,24 @@ else
     cargo install cargo-binstall --locked
 fi
 
+# A distribution package: report it when $1 is on PATH, install it with brew, or print the
+# pacman or apt-get command, since this file does not run sudo. $2 is the package name,
+# $3 what is lost without it.
+system_package() {
+    local tool="$1" package="$2" without="$3"
+    if need "$tool"; then
+        echo "    found $(command -v "$tool")"
+    elif need brew; then
+        brew install "$package"
+    elif need pacman; then
+        echo "    install with: sudo pacman -S $package"
+    elif need apt-get; then
+        echo "    install with: sudo apt-get install $package"
+    else
+        echo "    NOT INSTALLED and no package manager found. $without"
+    fi
+}
+
 # Fetches a prebuilt binary where one is published, and builds from source where not.
 binstall() { cargo binstall --no-confirm --locked --disable-telemetry "$@"; }
 
@@ -186,11 +204,25 @@ fi
 # whichever are present and skip the rest. They are worth having: every one of them
 # except npm fetches dist.tarball from the host the packument names, which is the whole
 # reason the proxy rewrites artifact URLs.
+# Installed with npm, as bun is below when no other package manager has it.
+npm_global() {
+    local tool="$1" package="$2"
+    if need "$tool"; then
+        echo "    found $("$tool" --version)"
+    elif ! need npm; then
+        echo "    NOT INSTALLED, and no npm to install it with."
+    elif npm install -g "$package" >/dev/null 2>&1; then
+        echo "    installed $("$tool" --version 2>/dev/null)"
+    else
+        echo "    npm install -g $package failed. 'make smoke-clients' skips $tool."
+    fi
+}
+
 echo "==> pnpm (optional, used by 'make smoke-clients')"
-if need pnpm; then echo "    found $(pnpm --version)"; else echo "    not installed"; fi
+npm_global pnpm pnpm
 
 echo "==> yarn 1 (optional, used by 'make smoke-clients')"
-if need yarn; then echo "    found $(yarn --version)"; else echo "    not installed"; fi
+npm_global yarn yarn
 
 echo "==> yarn 2+ (optional, used by 'make smoke-clients')"
 if ! need corepack; then
@@ -274,6 +306,33 @@ else
     # bun entry above gives.
     echo "    NOT INSTALLED and no package manager found. Install from your distribution,"
     echo "    or review https://docs.astral.sh/uv/getting-started/installation/ first."
+fi
+
+echo "==> ss (the smoke scripts check whether their port is already in use with it)"
+system_package ss iproute2 "The smoke scripts' port check finds nothing in use."
+
+echo "==> caddy (optional, used by 'make smoke-tls-front')"
+system_package caddy caddy "'make smoke-tls-front' skips Caddy."
+
+echo "==> nginx (optional, used by 'make smoke-tls-front')"
+system_package nginx nginx "'make smoke-tls-front' skips nginx."
+
+# Not installed here: scripts/make/lib/postgres.sh runs a local cluster from initdb and
+# pg_ctl when docker does not answer, so either one is enough.
+echo "==> Postgres (used by 'make test-integration', 'make sqlx-prepare' and the smoke scripts)"
+# shellcheck source=scripts/make/lib/postgres.sh
+. "$repo_root/scripts/make/lib/postgres.sh"
+if docker info >/dev/null 2>&1; then
+    echo "    docker answers: a container per run"
+elif [[ -n "$(find_postgres_bin)" ]]; then
+    echo "    initdb found in $(find_postgres_bin): a local cluster per run"
+else
+    system_package initdb postgresql "'make test-integration' cannot run, and the smoke \
+scripts skip their database steps."
+    if need apt-get; then
+        echo "    then put /usr/lib/postgresql/<version>/bin on PATH, where Debian and Ubuntu"
+        echo "    install initdb and pg_ctl"
+    fi
 fi
 
 echo

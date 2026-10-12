@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT account.name AS account, proxy_token.name\n                FROM proxy_token\n                JOIN account ON account.id = proxy_token.account_id\n                WHERE proxy_token.digest = $1\n                  AND proxy_token.revoked_at IS NULL\n                  AND account.disabled_at IS NULL\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "account",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bpchar"
+      ]
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "d566fc6befe13677da2529e806413cc209e45e90bafd25ca9d4c76e34335c3f9"
+}

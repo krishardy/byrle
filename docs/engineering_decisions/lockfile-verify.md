@@ -10,7 +10,7 @@
 A CI job runs `byrle lockfile verify --lockfile <path> --proxy <url>` to catch an install
 that went around the proxy: a lockfile resolved against the public registry, committed, and
 installed from there on every machine that uses it. `--proxy` defaults to
-`BYRLE_PUBLIC_URL`. A CI job has no listen address of its own to fall back on.
+`BYRLE_PROXY_URL`. A CI job has no listen address of its own to fall back on.
 
 Each artifact the lockfile locks is parsed out, not matched as text, as `doctor` does, so
 every entry is checked and not only the first origin.

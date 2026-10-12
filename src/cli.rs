@@ -51,6 +51,56 @@ pub enum Command {
         crate::env::DATABASE_URL
     ))]
     Refresh,
+    /// Create, list and disable accounts
+    #[command(subcommand)]
+    Account(AccountCommand),
+    /// Create, list and revoke the proxy tokens that identify an account on each request
+    #[command(subcommand)]
+    Token(TokenCommand),
+}
+
+#[derive(Debug, PartialEq, Subcommand)]
+pub enum AccountCommand {
+    /// Create an account
+    Create(AccountName),
+    /// Disable an account. Its tokens stop working
+    Disable(AccountName),
+    /// List every account
+    List,
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct AccountName {
+    /// 1 to 64 of a-z, 0-9, `.`, `_` and `-`
+    #[arg(value_parser = crate::account::Name::parse)]
+    pub name: crate::account::Name,
+}
+
+#[derive(Debug, PartialEq, Subcommand)]
+pub enum TokenCommand {
+    /// Create a token and print it on stdout. It is shown once
+    Create(TokenName),
+    /// Revoke a token
+    Revoke(TokenName),
+    /// List tokens, without the tokens themselves
+    List(TokenList),
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct TokenName {
+    /// The account the token belongs to
+    #[arg(value_parser = crate::account::Name::parse)]
+    pub account: crate::account::Name,
+    /// The token's name, unique within the account, such as the machine it is for
+    #[arg(value_parser = crate::account::Name::parse)]
+    pub name: crate::account::Name,
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct TokenList {
+    /// Only this account's tokens
+    #[arg(value_parser = crate::account::Name::parse)]
+    pub account: Option<crate::account::Name>,
 }
 
 #[derive(Debug, PartialEq, Subcommand)]
@@ -77,7 +127,7 @@ pub struct Warm {
     /// A lockfile whose artifacts to ask for. Repeatable
     #[arg(long, value_name = "PATH", required = true)]
     pub lockfile: Vec<PathBuf>,
-    /// The proxy to ask [default: the public URL, or the listen address]
+    /// The proxy to ask [default: the proxy URL, or the listen address]
     #[arg(long, value_name = "URL")]
     pub proxy: Option<String>,
     #[arg(
@@ -138,7 +188,7 @@ pub struct VerifyLockfile {
     /// A lockfile to verify. Repeatable
     #[arg(long, value_name = "PATH", required = true)]
     pub lockfile: Vec<PathBuf>,
-    /// The proxy's address, as lockfiles record it [default: the public URL]
+    /// The proxy's address, as lockfiles record it [default: the proxy URL]
     #[arg(long, value_name = "URL")]
     pub proxy: Option<String>,
 }
@@ -268,6 +318,53 @@ mod tests {
             Command::Policy(PolicyCommand::Diff(diff)) => Ok(diff),
             other => panic!("{args:?} parsed as {other:?}"),
         }
+    }
+
+    /// `account` and `token` take names, and refuse one that is not a name before
+    /// anything reaches a store.
+    #[test]
+    fn account_and_token_commands_parse_their_names() {
+        let name = |s: &str| crate::account::Name::parse(s).unwrap();
+        assert_eq!(
+            parse(&["account", "create", "ci"]).unwrap().command,
+            Command::Account(AccountCommand::Create(AccountName { name: name("ci") }))
+        );
+        assert_eq!(
+            parse(&["account", "disable", "ci"]).unwrap().command,
+            Command::Account(AccountCommand::Disable(AccountName { name: name("ci") }))
+        );
+        assert_eq!(
+            parse(&["account", "list"]).unwrap().command,
+            Command::Account(AccountCommand::List)
+        );
+        let token = TokenName {
+            account: name("ci"),
+            name: name("runner-1"),
+        };
+        assert_eq!(
+            parse(&["token", "create", "ci", "runner-1"])
+                .unwrap()
+                .command,
+            Command::Token(TokenCommand::Create(token))
+        );
+        assert!(matches!(
+            parse(&["token", "revoke", "ci", "runner-1"])
+                .unwrap()
+                .command,
+            Command::Token(TokenCommand::Revoke(_))
+        ));
+        assert_eq!(
+            parse(&["token", "list"]).unwrap().command,
+            Command::Token(TokenCommand::List(TokenList { account: None }))
+        );
+        assert_eq!(
+            parse(&["token", "list", "ci"]).unwrap().command,
+            Command::Token(TokenCommand::List(TokenList {
+                account: Some(name("ci"))
+            }))
+        );
+        let refused = stops(&["account", "create", "Alice"], ErrorKind::ValueValidation);
+        assert!(refused.to_string().contains("is not a name"), "{refused}");
     }
 
     /// Assert `args` ends parsing early with `kind`, and hand back the error.
@@ -580,6 +677,9 @@ mod tests {
             (&["policy", "check", "--help"], "policy-check.txt"),
             (&["policy", "diff", "--help"], "policy-diff.txt"),
             (&["warm", "--help"], "warm.txt"),
+            (&["account", "--help"], "account.txt"),
+            (&["token", "--help"], "token.txt"),
+            (&["token", "create", "--help"], "token-create.txt"),
         ] {
             let help = stops(args, ErrorKind::DisplayHelp);
             crate::golden::assert_matches("cli", name, &help.render().to_string());

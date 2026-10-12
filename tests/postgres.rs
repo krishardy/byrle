@@ -1137,6 +1137,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .map(|c| (named(c), c.2.clone(), c.3.clone()))
         .collect();
     let tables = [
+        "account",
         "advisory",
         "advisory_affected",
         "advisory_alias",
@@ -1149,6 +1150,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "intel_ingestion",
         "intel_snapshot",
         "intel_source",
+        "proxy_token",
         "version_detection",
     ];
     for table in tables {
@@ -2024,4 +2026,89 @@ async fn two_digests_of_one_package_are_two_analyses() {
 
     assert_eq!(store.get(&sri(1)).await.expect("it answers"), Some(runs));
     assert_eq!(store.get(&sri(2)).await.expect("it answers"), Some(nothing));
+}
+
+fn name(s: &str) -> byrle::account::Name {
+    byrle::account::Name::parse(s).expect("a valid name")
+}
+
+/// A token names its holder until it is revoked or its account disabled, as the in-memory
+/// store does, and the store keeps the digest, never the token.
+#[tokio::test]
+async fn accounts_and_tokens_round_trip_through_postgres() {
+    use byrle::account::{AccountError, Accounts, TokenDigest, postgres::PgAccounts};
+    let intel = skip_without_database!("t_accounts");
+    let store = PgAccounts::new(intel.pool().clone());
+    let (ci, alice, laptop, nobody) = (name("ci"), name("alice"), name("laptop"), name("nobody"));
+
+    store.create_account(&ci).await.unwrap();
+    store.create_account(&alice).await.unwrap();
+    assert_eq!(
+        store.create_account(&ci).await,
+        Err(AccountError::Exists("account ci".into()))
+    );
+
+    let token = byrle::account::issue();
+    let digest = TokenDigest::of(&token);
+    store.create_token(&ci, &laptop, &digest).await.unwrap();
+    store
+        .create_token(&alice, &laptop, &TokenDigest::of("other"))
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .create_token(&ci, &laptop, &TokenDigest::of("again"))
+            .await,
+        Err(AccountError::Exists(_))
+    ));
+    assert!(matches!(
+        store
+            .create_token(&nobody, &laptop, &TokenDigest::of("x"))
+            .await,
+        Err(AccountError::NotFound(_))
+    ));
+
+    let stored: Vec<String> = sqlx::query_scalar("SELECT digest FROM proxy_token")
+        .fetch_all(intel.pool())
+        .await
+        .unwrap();
+    assert!(stored.contains(&digest.as_str().to_owned()));
+    assert!(!stored.contains(&token));
+
+    let holder = store.holder(&digest).await.unwrap().expect("held");
+    assert_eq!((holder.account, holder.token), (ci.clone(), laptop.clone()));
+    assert_eq!(store.holder(&TokenDigest::of("none")).await.unwrap(), None);
+
+    let accounts = store.accounts().await.unwrap();
+    assert_eq!(accounts.len(), 2);
+    assert_eq!(accounts[0].name, alice);
+    assert!(
+        accounts[0].created.ends_with('Z'),
+        "{}",
+        accounts[0].created
+    );
+    assert_eq!(store.tokens(None).await.unwrap().len(), 2);
+    assert_eq!(store.tokens(Some(&ci)).await.unwrap().len(), 1);
+    assert!(matches!(
+        store.tokens(Some(&nobody)).await,
+        Err(AccountError::NotFound(_))
+    ));
+
+    store.revoke_token(&ci, &laptop).await.unwrap();
+    store.revoke_token(&ci, &laptop).await.unwrap();
+    assert_eq!(store.holder(&digest).await.unwrap(), None);
+    assert!(store.tokens(Some(&ci)).await.unwrap()[0].revoked.is_some());
+    assert!(matches!(
+        store.revoke_token(&ci, &nobody).await,
+        Err(AccountError::NotFound(_))
+    ));
+
+    store.disable_account(&alice).await.unwrap();
+    store.disable_account(&alice).await.unwrap();
+    assert_eq!(store.holder(&TokenDigest::of("other")).await.unwrap(), None);
+    assert!(store.accounts().await.unwrap()[0].disabled.is_some());
+    assert!(matches!(
+        store.disable_account(&nobody).await,
+        Err(AccountError::NotFound(_))
+    ));
 }
