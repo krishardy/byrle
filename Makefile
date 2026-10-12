@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front bench retry-matrix offsite-urls inspect spike-config duplicates unsigned
+.PHONY: help dev-setup build lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front bench retry-matrix offsite-urls inspect spike-config duplicates unsigned start-dev-db stop-dev-db rm-dev-db run-dev
 
 help:
 	@echo "byrle targets:"
@@ -17,6 +17,10 @@ help:
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
 	@echo "  run            run the proxy in the foreground"
+	@echo "  run-dev        run the proxy in the foreground against the development database"
+	@echo "  start-dev-db   start the development database in podman, creating it if needed"
+	@echo "  stop-dev-db    stop the development database, keeping its data"
+	@echo "  rm-dev-db      delete the development database and its data"
 	@echo "  smoke-npm      what the proxy does, checked with npm"
 	@echo "  smoke-python   what the proxy does for PyPI, checked with pip and uv"
 	@echo "  smoke-clients  whether npm's other four clients route artifacts through it"
@@ -82,6 +86,18 @@ update-deps:
 
 run:
 	@scripts/make/run.sh
+
+run-dev:
+	@scripts/make/run-dev.sh
+
+start-dev-db:
+	@scripts/make/start-dev-db.sh
+
+stop-dev-db:
+	@scripts/make/stop-dev-db.sh
+
+rm-dev-db:
+	@scripts/make/rm-dev-db.sh
 
 smoke-npm:
 	@scripts/make/smoke-npm.sh
