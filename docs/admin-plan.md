@@ -50,16 +50,18 @@ From [request-flow](request-flow.md). R6 needs each one counted.
 | registry gave no metadata for the package | 502 | yes, `no-metadata` |
 | upstream bytes did not match their digest | 502 | yes, `upstream-mismatch` |
 | artifact under analysis | 503 `artifact-analysis` | yes, `deferred` |
-| intel store cannot answer | 503 `intel-store` | no |
-| no stream covers the ecosystem | 503 `no-stream-for-ecosystem` | no |
-| upstream unreachable, or stalled | 502 | no |
-| upstream answered 404 ("not found") or another non-2xx | forwarded | no |
-| artifact streamed with 200, body cut short on a digest mismatch | 200, truncated | no |
+| intel store cannot answer | 503 `intel-store` | yes, `intel-store` |
+| no stream covers the ecosystem | 503 `no-stream-for-ecosystem` | yes, `no-stream-for-ecosystem` |
+| upstream unreachable, or stalled | 502 | yes, `upstream-unreachable` |
+| upstream answered 404 ("not found") or another non-2xx | forwarded | yes, `upstream-status`, with the status |
+| artifact streamed with 200, body cut short on a digest mismatch | 200, truncated | yes, `cut-short`, after its `served` line |
 | no token, or one unknown, revoked or of a disabled account | 401 | no, logged at INFO |
 | account store cannot answer | 503 `account-store` | no |
 
-Each unrecorded case gets an `answered` value in the audit log. Every field already has a
-default, so an older reader skips a value it does not know.
+Recorded 2026-10-12, with the account on each line
+([audit-log](engineering_decisions/audit-log.md)). An older build cannot read a line with an
+`answered` value it does not know, and `audit verify` on it reports that line as not
+replayable.
 
 ## 4. Design
 

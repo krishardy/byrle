@@ -618,6 +618,8 @@ struct VerifyingStream {
     /// The claim being proved, recorded as verified once the bytes match.
     sri: Sri,
     verified: Arc<Mutex<VerifiedArtifacts>>,
+    /// The audit log and the line that served the artifact, for a `cut-short` line.
+    served: Option<(Arc<AuditLog>, audit::Event)>,
 }
 
 impl VerifyingStream {
@@ -638,6 +640,28 @@ impl VerifyingStream {
             purl,
             sri: sri.clone(),
             verified,
+            served: None,
+        }
+    }
+
+    /// Audit a body that ends early in `log`, after `line`, the line that served it.
+    fn audited(mut self, served: Option<(Arc<AuditLog>, audit::Event)>) -> Self {
+        self.served = served;
+        self
+    }
+
+    /// Write the `cut-short` line, once.
+    fn cut_short(&mut self) {
+        if let Some((log, line)) = self.served.take() {
+            log.write(
+                &audit::Event::undecided(
+                    &line.ecosystem,
+                    &line.name,
+                    line.version.as_deref(),
+                    audit::Answered::CutShort,
+                )
+                .with_account(line.account.as_deref()),
+            );
         }
     }
 
@@ -668,6 +692,7 @@ impl VerifyingStream {
                     byrle.artifact.bytes = mismatch.bytes,
                     "ARTIFACT DIGEST MISMATCH"
                 );
+                self.cut_short();
                 self.held = None;
                 Poll::Ready(Some(Err(Box::new(mismatch) as BoxError)))
             }
@@ -701,6 +726,7 @@ impl futures_util::Stream for VerifyingStream {
                 }
                 Poll::Ready(Some(Err(e))) => {
                     this.finished = true;
+                    this.cut_short();
                     return Poll::Ready(Some(Err(Box::new(e) as BoxError)));
                 }
                 Poll::Ready(None) => return this.finish(),
@@ -977,6 +1003,7 @@ async fn filtered_document(
     content_encoding: Option<&str>,
     negotiation: &Negotiation,
     path: &str,
+    account: Option<&str>,
 ) -> DocumentStep {
     let parse_started = Instant::now();
     let decoded = match decode_for_parsing(body, content_encoding, proxy.config.max_metadata_bytes)
@@ -1030,7 +1057,10 @@ async fn filtered_document(
                 );
                 None
             }
-            Err(unavailable) => return DocumentStep::Answer(unavailable.response()),
+            Err(unavailable) => {
+                audit_not_ready(proxy, &metadata.key, None, &unavailable, account);
+                return DocumentStep::Answer(unavailable.response());
+            }
         },
         None => None,
     };
@@ -1041,7 +1071,7 @@ async fn filtered_document(
             proxy.config.policy.as_deref(),
             intel.as_ref(),
             path,
-            proxy.config.audit.as_deref(),
+            proxy.config.audit.as_deref().map(|log| (log, account)),
             proxy.config.mode,
         ),
         None => Refused::default(),
@@ -1218,6 +1248,7 @@ struct ArtifactRequest<'a> {
     filename: &'a str,
     path: &'a str,
     client: &'a str,
+    account: Option<&'a str>,
 }
 
 /// What the proxy does with an artifact GET, decided before a byte is fetched.
@@ -1237,6 +1268,8 @@ struct ArtifactFetch {
     digest: Option<Sri>,
     /// An origin the operator added, when the metadata published the artifact there.
     origin: Option<String>,
+    /// The audit line of a decision to serve, written once the upstream answers.
+    audit: Option<Box<audit::Event>>,
 }
 
 /// Look up the record for an artifact GET, decide on it before a byte is fetched, and
@@ -1267,14 +1300,19 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         .await
     {
         Ok(decided) => decided,
-        Err(unavailable) => return ArtifactStep::Answer(unavailable.response()),
+        Err(unavailable) => {
+            let request = &deciding.request;
+            let version = Some(request.claimed_version);
+            audit_not_ready(proxy, request.key, version, &unavailable, request.account);
+            return ArtifactStep::Answer(unavailable.response());
+        }
     };
     if sourced.is_none() {
         deciding.compare_source(&described, &fetch, refusal.as_ref());
     }
     deciding.detect(&record, &detected, refusal.as_ref());
     let (answered, step) = deciding.answer(refusal.as_ref(), unservable, fetch, state);
-    audit_pinned(
+    let line = pinned_line(
         proxy,
         &Pinned {
             record: &record,
@@ -1282,11 +1320,23 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             intel: intel.as_ref(),
             provenance: &provenance,
             today,
+            account: deciding.request.account,
         },
         answered,
         &signals,
     );
-    step
+    match step {
+        ArtifactStep::Fetch(fetch) => ArtifactStep::Fetch(ArtifactFetch {
+            audit: line.map(Box::new),
+            ..fetch
+        }),
+        ArtifactStep::Answer(response) => {
+            if let Some(line) = &line {
+                write_audit(proxy, line);
+            }
+            ArtifactStep::Answer(response)
+        }
+    }
 }
 
 /// What [`Deciding::dated`] found for a record whose document carried no publish time.
@@ -1529,16 +1579,15 @@ impl<'a> Deciding<'a> {
     /// Write a pinned line for a request answered before anything was decided, when there
     /// is a log and a policy. `answered` is what the request got.
     fn audit_undecided(&self, answered: audit::Answered) {
-        let (Some(log), Some(_)) = (&self.proxy.config.audit, &self.proxy.config.policy) else {
-            return;
-        };
-        let key = self.request.key;
-        log.write(&audit::Event::undecided(
-            key.ecosystem().as_str(),
-            &key.registry_name(),
-            self.request.claimed_version,
+        if let Some(line) = undecided_line(
+            self.proxy,
+            self.request.key,
+            Some(self.request.claimed_version),
             answered,
-        ));
+            self.request.account,
+        ) {
+            write_audit(self.proxy, &line);
+        }
     }
 
     /// Where to fetch the artifact and the digest to verify it against.
@@ -1557,6 +1606,7 @@ impl<'a> Deciding<'a> {
             digest: self.digest(artifact.and_then(|a| a.integrity.as_deref())),
             origin: crate::origin::origin_of_url(url)
                 .filter(|origin| origins.reachable().routes_directly(origin)),
+            audit: None,
         };
         (fetch, unservable)
     }
@@ -2175,24 +2225,31 @@ fn report_claim(record: &PackageRecord, scripts: &Scripts, path: &str) {
 /// Allowed decisions are written too. A log holding only refusals cannot answer "was this
 /// ever evaluated", which is what `policy diff` needs a package set for.
 /// `pinned` is what the verdict was reached on, and `signals` what the heuristics reported.
-fn audit_pinned(proxy: &Proxy, pinned: &Pinned<'_>, answered: audit::Answered, signals: &[Signal]) {
+/// Returns the line, for the caller to write, or `None` when there is no audit log.
+fn pinned_line(
+    proxy: &Proxy,
+    pinned: &Pinned<'_>,
+    answered: audit::Answered,
+    signals: &[Signal],
+) -> Option<audit::Event> {
     let Pinned {
         record,
         times,
         intel,
         provenance,
         today,
+        account,
     } = *pinned;
-    let (Some(audit), Some(policy)) = (&proxy.config.audit, proxy.config.policy.as_deref()) else {
-        return;
+    let (Some(_), Some(policy)) = (&proxy.config.audit, proxy.config.policy.as_deref()) else {
+        return None;
     };
     let mut facts = crate::policy::decide::Facts::from_record_and_times(record, times)
         .with_provenance(provenance.clone());
     if let Some(intel) = intel {
         facts = facts.with_intel(intel);
     }
-    audit.write(
-        &audit::Event::pinned(
+    Some(
+        audit::Event::pinned(
             &facts.ecosystem,
             &facts.name,
             &facts.version,
@@ -2202,17 +2259,64 @@ fn audit_pinned(proxy: &Proxy, pinned: &Pinned<'_>, answered: audit::Answered, s
         .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
         .answered(answered)
         .with_inputs(audit::Inputs::of(policy, &facts, today))
-        .with_signals(signals, &policy.signal_weights),
-    );
+        .with_signals(signals, &policy.signal_weights)
+        .with_account(account),
+    )
 }
 
-/// What a pinned verdict was reached on, as [`audit_pinned`] writes it.
+/// Audit a request about `key` answered `unavailable`, for a case the log records.
+fn audit_not_ready(
+    proxy: &Proxy,
+    key: &PackageKey,
+    version: Option<&str>,
+    unavailable: &NotReady,
+    account: Option<&str>,
+) {
+    if let Some(line) = unavailable
+        .answered()
+        .and_then(|answered| undecided_line(proxy, key, version, answered, account))
+    {
+        write_audit(proxy, &line);
+    }
+}
+
+/// Write `line` to the audit log, when there is one.
+fn write_audit(proxy: &Proxy, line: &audit::Event) {
+    if let Some(log) = &proxy.config.audit {
+        log.write(line);
+    }
+}
+
+/// The line for a request about `key` answered before anything was decided: pinned when
+/// it named a `version`, a metadata request otherwise. `None` without a policy, which
+/// every audit line needs; [`write_audit`] needs the log.
+fn undecided_line(
+    proxy: &Proxy,
+    key: &PackageKey,
+    version: Option<&str>,
+    answered: audit::Answered,
+    account: Option<&str>,
+) -> Option<audit::Event> {
+    proxy.config.policy.as_ref()?;
+    Some(
+        audit::Event::undecided(
+            key.ecosystem().as_str(),
+            &key.registry_name(),
+            version,
+            answered,
+        )
+        .with_account(account),
+    )
+}
+
+/// What a pinned verdict was reached on, as [`pinned_line`] writes it.
 struct Pinned<'a> {
     record: &'a PackageRecord,
     times: Option<&'a facts::PublishTimes>,
     intel: Option<&'a PackageIntel>,
     provenance: &'a Provenance,
     today: jiff::civil::Date,
+    account: Option<&'a str>,
 }
 
 /// Answer one request: the proxy's own endpoints, or the upstream's answer once an
@@ -2238,9 +2342,10 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     if let Some(response) = own_endpoint(&proxy, &path).await {
         return response;
     }
-    if let Some(refused) = admit(&proxy, req.headers(), &path, &client).await {
-        return refused;
-    }
+    let account = match admit(&proxy, req.headers(), &path, &client).await {
+        Ok(account) => account,
+        Err(refused) => return *refused,
+    };
     let (ecosystem, target) = crate::route::classify(&path);
     #[cfg(debug_assertions)]
     if let Some((deferral, since)) = &proxy.config.defer_test
@@ -2254,20 +2359,28 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         method,
         path,
         client,
+        account,
         started,
         ecosystem,
         target,
         negotiation,
     };
     exchange.observe(req.headers());
-    let artifact = match exchange.artifact_fetch().await {
+    let mut artifact = match exchange.artifact_fetch().await {
         ArtifactStep::Answer(response) => return response,
         ArtifactStep::Fetch(fetch) => fetch,
     };
+    let held = artifact.audit.take().map(|line| *line);
     let upstream = match exchange.send(req.headers(), &artifact).await {
         Ok(upstream) => upstream,
-        Err(response) => return *response,
+        Err(response) => {
+            exchange.audit_upstream(held, None);
+            return *response;
+        }
     };
+    artifact.audit = exchange
+        .audit_upstream(held, Some(upstream.status))
+        .map(Box::new);
     exchange.respond(upstream, artifact).await
 }
 
@@ -2288,10 +2401,18 @@ fn outside_mount(mount: &Mount, requested: &str) -> Response {
         .into_response()
 }
 
-/// The answer for a request whose token is missing, not held, or not checked because the
-/// store did not answer. `None` lets it through, as it does every request with no gate.
-async fn admit(proxy: &Proxy, headers: &HeaderMap, path: &str, client: &str) -> Option<Response> {
-    let gate = proxy.config.gate.as_ref()?;
+/// The account a request's token is held by, `None` when no token is required. Errors
+/// with the answer for a token missing, not held, or not checked because the store did not
+/// answer.
+async fn admit(
+    proxy: &Proxy,
+    headers: &HeaderMap,
+    path: &str,
+    client: &str,
+) -> Result<Option<String>, Box<Response>> {
+    let Some(gate) = proxy.config.gate.as_ref() else {
+        return Ok(None);
+    };
     match gate.admit(headers).await {
         Ok(holder) => {
             debug!(
@@ -2300,7 +2421,7 @@ async fn admit(proxy: &Proxy, headers: &HeaderMap, path: &str, client: &str) -> 
                 byrle.token = %holder.token,
                 "token accepted"
             );
-            None
+            Ok(Some(holder.account.to_string()))
         }
         Err(gate::Refused::Unauthorized) => {
             info!(
@@ -2308,9 +2429,9 @@ async fn admit(proxy: &Proxy, headers: &HeaderMap, path: &str, client: &str) -> 
                 user_agent.original = %client,
                 "no valid token: 401"
             );
-            Some(gate::unauthorized())
+            Err(Box::new(gate::unauthorized()))
         }
-        Err(gate::Refused::Unanswered) => Some(NotReady::AccountStore.response()),
+        Err(gate::Refused::Unanswered) => Err(Box::new(NotReady::AccountStore.response())),
     }
 }
 
@@ -2340,6 +2461,8 @@ struct Exchange<'a> {
     path: String,
     /// The client's user agent, `-` when it sent none.
     client: String,
+    /// The account whose token the request carried, `None` when no token is required.
+    account: Option<String>,
     started: Instant,
     ecosystem: Ecosystem,
     target: RequestTarget,
@@ -2402,6 +2525,7 @@ impl Exchange<'_> {
             filename,
             path: &self.path,
             client: &self.client,
+            account: self.account.as_deref(),
         };
         decide_artifact(self.proxy, request).await
     }
@@ -2513,6 +2637,13 @@ impl Exchange<'_> {
             self.path.clone(),
             artifact.purl,
             self.proxy.verified.clone(),
+        )
+        .audited(
+            self.proxy
+                .config
+                .audit
+                .clone()
+                .zip(artifact.audit.map(|line| *line)),
         );
         (forward_status, headers, Body::from_stream(verified)).into_response()
     }
@@ -2545,6 +2676,7 @@ impl Exchange<'_> {
             }
             Buffered::Failed(e) => {
                 error!(http.request.method = %self.method, url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path), error.message = %e, "upstream body failed mid-stream");
+                self.audit_upstream(None, None);
                 return (
                     StatusCode::BAD_GATEWAY,
                     format!("byrle: upstream body failed: {e}\n"),
@@ -2560,6 +2692,7 @@ impl Exchange<'_> {
             content_encoding.as_deref(),
             &self.negotiation,
             &self.path,
+            self.account.as_deref(),
         )
         .await
         {
@@ -2578,6 +2711,46 @@ impl Exchange<'_> {
             self.negotiation.rewrite_base.as_deref(),
             &|bytes| self.log_proxied(status, bytes),
         )
+    }
+
+    /// Write what the upstream's answer made of this request: `status`, or `None` when no
+    /// answer came. `held` is the line of a decision to serve, which [`decide_artifact`]
+    /// held back. A metadata request gets a line only when the upstream failed it.
+    /// Returns the line of an artifact served, for [`VerifyingStream`].
+    fn audit_upstream(
+        &self,
+        held: Option<audit::Event>,
+        status: Option<reqwest::StatusCode>,
+    ) -> Option<audit::Event> {
+        let failed = match status {
+            None => Some(audit::Answered::UpstreamUnreachable),
+            Some(status) if status.is_success() || status == reqwest::StatusCode::NOT_MODIFIED => {
+                None
+            }
+            Some(_) => Some(audit::Answered::UpstreamStatus),
+        };
+        let line = match (held, failed) {
+            (Some(line), None) => {
+                write_audit(self.proxy, &line);
+                return Some(line);
+            }
+            (Some(line), Some(answered)) => line.answered(answered),
+            (None, Some(answered)) => match &self.target {
+                RequestTarget::Metadata(key) => {
+                    undecided_line(self.proxy, key, None, answered, self.account.as_deref())?
+                }
+                _ => return None,
+            },
+            (None, None) => return None,
+        };
+        let line = match (failed, status) {
+            (Some(audit::Answered::UpstreamStatus), Some(status)) => {
+                line.with_upstream_status(status.as_u16())
+            }
+            _ => line,
+        };
+        write_audit(self.proxy, &line);
+        None
     }
 
     /// Log the answer sent, at debug for a resolver's probe and at info otherwise.
@@ -2929,6 +3102,7 @@ impl Proxy {
                 filename: &artifact.filename,
                 path: &path,
                 client: WATCHER,
+                account: None,
             },
         );
         let (fetch, _) = deciding.fetch_plan(record);
@@ -2989,6 +3163,16 @@ enum NotReady {
 }
 
 impl NotReady {
+    /// What the audit log records a request answered with this case as. `None` for a
+    /// deferral, which its decision line records, and for the account store.
+    fn answered(&self) -> Option<audit::Answered> {
+        match self {
+            Self::Unanswered => Some(audit::Answered::IntelStore),
+            Self::Uncovered(_) => Some(audit::Answered::NoStreamForEcosystem),
+            Self::AccountStore | Self::Analysing { .. } => None,
+        }
+    }
+
     /// What a log and the `x-byrle-not-ready` header call this case.
     fn reason(&self) -> &'static str {
         match self {
@@ -3112,7 +3296,7 @@ fn policy_refused_versions(
     policy: Option<&Policy>,
     intel: Option<&PackageIntel>,
     path: &str,
-    audit: Option<&AuditLog>,
+    audit: Option<(&AuditLog, Option<&str>)>,
     mode: Mode,
 ) -> Refused {
     let Some(policy) = policy else {
@@ -3143,7 +3327,7 @@ fn policy_refused_versions(
         refused.insert(record.package.version().to_owned());
     }
 
-    if let Some(audit) = audit
+    if let Some((audit, account)) = audit
         && !order.is_empty()
     {
         let unenforceable = metadata
@@ -3167,7 +3351,8 @@ fn policy_refused_versions(
             checks.iter().cloned().collect(),
             &unenforceable,
         )
-        .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()));
+        .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
+        .with_account(account);
         audit.write(&match mode {
             Mode::Enforce => event,
             Mode::Observe => event.answered(audit::Answered::Served),
@@ -4303,7 +4488,8 @@ mod tests {
         proxy.store.lock().unwrap().insert(metadata);
     }
 
-    /// The proxy's decision on a GET of the artifact at `path`.
+    /// The proxy's decision on a GET of the artifact at `path`. A decision to serve writes
+    /// its audit line as the upstream's 200 would.
     async fn pinned(proxy: &Proxy, path: &str) -> ArtifactStep {
         pinned_by(proxy, path, "-").await
     }
@@ -4329,8 +4515,15 @@ mod tests {
             filename: &filename,
             path,
             client,
+            account: None,
         };
-        decide_artifact(proxy, request).await
+        let step = decide_artifact(proxy, request).await;
+        if let ArtifactStep::Fetch(fetch) = &step
+            && let Some(line) = &fetch.audit
+        {
+            write_audit(proxy, line);
+        }
+        step
     }
 
     /// The status and body of a response the proxy gives in place of asking upstream.
@@ -4364,7 +4557,7 @@ mod tests {
         let headers = client_headers("gzip");
         let negotiation = negotiate(proxy, ecosystem, &target, &Method::GET, &headers);
         let body = Bytes::copy_from_slice(body);
-        filtered_document(proxy, document, &body, None, &negotiation, path).await
+        filtered_document(proxy, document, &body, None, &negotiation, path, None).await
     }
 
     async fn resolve_npm(proxy: &Proxy, name: &str, packument: &str) -> DocumentStep {
@@ -4833,7 +5026,7 @@ mod tests {
                                        denials:\n  - purl: pkg:npm/pkg@1.0.0\n    reason: test\n";
 
     /// The resolution event carries the strongest action of the versions removed: 1.0.0 is
-    /// blocked by a denial and 2.0.0 quarantined by the cooldown.
+    /// blocked by a denial and 2.0.0 quarantined by the cooldown. It names the account.
     #[test]
     fn a_resolution_is_recorded_with_its_strongest_action() {
         let path = crate::util::test_support::tempdir("proxy-strongest").join("audit.jsonl");
@@ -4844,7 +5037,7 @@ mod tests {
             Some(&policy),
             None,
             "/pkg",
-            Some(&log),
+            Some((&log, Some("ci"))),
             Mode::Enforce,
         );
         assert_eq!(refused.versions.len(), 2);
@@ -4856,6 +5049,7 @@ mod tests {
             event["checks"],
             serde_json::json!(["cooldown_days", "denials"])
         );
+        assert_eq!(event["account"], "ci");
     }
 
     /// A document with every version removed reads as a broken registry to the client, so
@@ -4996,6 +5190,7 @@ mod tests {
             Some("br"),
             &negotiation,
             "/lodash",
+            None,
         )
         .await;
         assert!(matches!(brotli, DocumentStep::Forward { body: None, .. }));
@@ -5980,6 +6175,7 @@ mod tests {
     async fn token_proxy(
         accounts: Arc<dyn crate::account::Accounts>,
         mode: Mode,
+        audit: Option<Arc<AuditLog>>,
     ) -> (String, String) {
         let tarball: Vec<u8> = (0..5_000u32).map(|i| (i % 251) as u8).collect();
         let upstream = serve(widget_registry(&sri_of(&tarball), tarball)).await;
@@ -5997,6 +6193,7 @@ mod tests {
         let proxy = Proxy::new(reqwest::Client::new())
             .with_upstream(Ecosystem::Npm, upstream)
             .with_mode(mode)
+            .with_audit_log(audit)
             .with_gate(Some(Gate::new(accounts)));
         proxy.replace_policy(Some(policy(ALLOW_ALL)));
         (serve(proxy.router()).await, issued)
@@ -6018,7 +6215,7 @@ mod tests {
     /// credentials. A token in each form is served, and the proxy's own endpoints need none.
     #[tokio::test]
     async fn a_request_without_a_token_is_401_and_one_with_a_token_is_served() {
-        let (base, issued) = token_proxy(held(), Mode::Enforce).await;
+        let (base, issued) = token_proxy(held(), Mode::Enforce, None).await;
         for path in ["/widget", "/widget/-/widget-1.0.0.tgz"] {
             let refused = reqwest::get(format!("{base}{path}")).await.unwrap();
             assert_eq!(refused.status(), 401, "{path}");
@@ -6051,10 +6248,39 @@ mod tests {
         assert_ne!(ready.status(), 401);
     }
 
+    /// Each audit line names the account whose token the request carried: a decision to
+    /// serve, and a metadata request the upstream failed. With no gate there is none.
+    #[tokio::test]
+    async fn an_audit_line_names_the_account_the_request_came_from() {
+        let (dir, path, log) = audit_log("audit-account");
+        let (base, issued) = token_proxy(held(), Mode::Enforce, Some(log.clone())).await;
+        let bearer = [(header::AUTHORIZATION, format!("Bearer {issued}"))];
+        let served = get_with(&format!("{base}/widget/-/widget-1.0.0.tgz"), &bearer).await;
+        assert_eq!(served.status(), 200);
+        served.bytes().await.unwrap();
+        assert_eq!(
+            get_with(&format!("{base}/gadget"), &bearer).await.status(),
+            404
+        );
+
+        let lines = audited(&path);
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(
+            lines.iter().all(|l| l.account.as_deref() == Some("ci")),
+            "{lines:?}"
+        );
+
+        let proxy = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log));
+        let (status, _) = refused(pinned(&proxy, "/gadget/-/gadget-1.0.0.tgz").await).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(audited(&path)[2].account, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Observe mode records refusals it does not make. A missing token is not one of them.
     #[tokio::test]
     async fn observe_mode_still_answers_401_without_a_token() {
-        let (base, _) = token_proxy(held(), Mode::Observe).await;
+        let (base, _) = token_proxy(held(), Mode::Observe, None).await;
         let refused = reqwest::get(format!("{base}/widget")).await.unwrap();
         assert_eq!(refused.status(), 401);
     }
@@ -6062,7 +6288,8 @@ mod tests {
     /// A store that cannot answer is not-ready, 503, never a 401 that reads as a bad token.
     #[tokio::test]
     async fn an_account_store_that_cannot_answer_is_503_not_401() {
-        let (base, _) = token_proxy(Arc::new(crate::account::testing::Down), Mode::Enforce).await;
+        let (base, _) =
+            token_proxy(Arc::new(crate::account::testing::Down), Mode::Enforce, None).await;
         let response = get_with(
             &format!("{base}/widget"),
             &[(TOKEN_HEADER, "byrle_x".into())],
@@ -8150,9 +8377,7 @@ mod tests {
     /// Each answer `decide_artifact` reaches writes one audit line saying what it was.
     #[tokio::test]
     async fn every_pinned_answer_after_the_lookup_is_audited_once() {
-        let dir = crate::util::test_support::tempdir("audit-every-answer");
-        let path = dir.join("audit.jsonl");
-        let log = Arc::new(AuditLog::open(&path).expect("opens"));
+        let (dir, path, log) = audit_log("audit-every-answer");
 
         let unservable = offline(None, Some(ALLOW_ALL))
             .with_refuse_unservable(true)
@@ -8214,6 +8439,338 @@ mod tests {
                 Some(audit::Answered::UpstreamMismatch),
             ]
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An audit log in a new directory for `label`: the directory, the log's path, the log.
+    fn audit_log(label: &str) -> (std::path::PathBuf, std::path::PathBuf, Arc<AuditLog>) {
+        let dir = crate::util::test_support::tempdir(label);
+        let path = dir.join("audit.jsonl");
+        let log = Arc::new(AuditLog::open(&path).expect("opens"));
+        (dir, path, log)
+    }
+
+    /// The audit lines written to `path`, in order.
+    fn audited(path: &std::path::Path) -> Vec<audit::Event> {
+        std::fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    /// Each line's path, version, action and answer.
+    fn answers(
+        lines: &[audit::Event],
+    ) -> Vec<(
+        audit::DecisionPath,
+        Option<&str>,
+        &str,
+        Option<audit::Answered>,
+    )> {
+        lines
+            .iter()
+            .map(|l| (l.path, l.version.as_deref(), l.action.as_str(), l.answered))
+            .collect()
+    }
+
+    /// A store that cannot answer, and a snapshot with no stream for npm, are each audited
+    /// on a metadata request and on an artifact request, with nothing decided.
+    #[tokio::test]
+    async fn a_request_the_intel_cannot_decide_is_audited_on_both_paths() {
+        use audit::{Answered, DecisionPath};
+        let (dir, path, log) = audit_log("audit-not-ready");
+        let down: Arc<dyn Intel> = Arc::new(crate::intel::store::testing::FixedIntel(Err(())));
+        for intel in [down, Arc::new(NoStreams)] {
+            let proxy = offline(Some(intel), Some(ALLOW_ALL)).with_audit_log(Some(log.clone()));
+            let (status, _) = answered(resolve_npm(&proxy, "lodash", LODASH).await).await;
+            assert_eq!(status, 503);
+            hold(&proxy, LODASH);
+            let (status, _) = refused(pinned(&proxy, "/lodash/-/lodash-4.17.21.tgz").await).await;
+            assert_eq!(status, 503);
+        }
+
+        let lines = audited(&path);
+        assert_eq!(
+            answers(&lines),
+            [
+                (
+                    DecisionPath::Resolution,
+                    None,
+                    "",
+                    Some(Answered::IntelStore)
+                ),
+                (
+                    DecisionPath::Pinned,
+                    Some("4.17.21"),
+                    "",
+                    Some(Answered::IntelStore)
+                ),
+                (
+                    DecisionPath::Resolution,
+                    None,
+                    "",
+                    Some(Answered::NoStreamForEcosystem)
+                ),
+                (
+                    DecisionPath::Pinned,
+                    Some("4.17.21"),
+                    "",
+                    Some(Answered::NoStreamForEcosystem)
+                ),
+            ]
+        );
+        assert!(lines.iter().all(|l| l.name == "lodash" && !l.decided()));
+
+        let proxy = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log));
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
+        audit_not_ready(&proxy, &key, None, &NotReady::AccountStore, None);
+        assert_eq!(audited(&path).len(), 4, "a case the log does not record");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The two not-ready cases a request is audited with are named in the log as the
+    /// `x-byrle-not-ready` header names them.
+    #[test]
+    fn a_not_ready_case_is_audited_by_the_name_its_header_gives() {
+        for case in [NotReady::Unanswered, NotReady::Uncovered(Ecosystem::Npm)] {
+            let answered = serde_json::to_value(case.answered().unwrap()).unwrap();
+            assert_eq!(answered, case.reason());
+        }
+        assert_eq!(NotReady::AccountStore.answered(), None);
+        let analysing = NotReady::Analysing {
+            purl: "pkg:npm/widget@1.0.0".to_owned(),
+            digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+        };
+        assert_eq!(analysing.answered(), None, "its decision line records it");
+    }
+
+    /// An artifact 404 makes the decision to serve an `upstream-status` line, still
+    /// decided. A metadata 404 is one with nothing decided; a 304 and a 200 are neither.
+    #[tokio::test]
+    async fn an_upstream_status_is_audited_on_the_decision_it_followed() {
+        use audit::{Answered, DecisionPath};
+        let (dir, path, log) = audit_log("audit-upstream-status");
+        let tarball = vec![7u8; 100];
+        let packument = format!(
+            r#"{{"name":"widget","versions":{{"1.0.0":{{"version":"1.0.0","dist":{{
+                "tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz",
+                "integrity":"{}"}}}}}}}}"#,
+            sri_of(&tarball)
+        );
+        let upstream = serve(
+            Router::new()
+                .route(
+                    "/widget",
+                    get(move || {
+                        let packument = packument.clone();
+                        async move {
+                            (
+                                [(header::CONTENT_TYPE, "application/vnd.npm.install-v1+json")],
+                                packument,
+                            )
+                        }
+                    }),
+                )
+                .route(
+                    "/widget/-/widget-1.0.0.tgz",
+                    get(|| async { StatusCode::NOT_FOUND }),
+                )
+                .route("/fresh", get(|| async { StatusCode::NOT_MODIFIED })),
+        )
+        .await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, upstream)
+                .with_policy(Some(policy(ALLOW_ALL)))
+                .with_audit_log(Some(log))
+                .router(),
+        )
+        .await;
+
+        assert_eq!(
+            reqwest::get(format!("{base}/widget"))
+                .await
+                .unwrap()
+                .status(),
+            200
+        );
+        let tarball = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(tarball.status(), 404);
+        assert_eq!(
+            reqwest::get(format!("{base}/gadget"))
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+        assert_eq!(
+            reqwest::get(format!("{base}/fresh"))
+                .await
+                .unwrap()
+                .status(),
+            304
+        );
+
+        let lines = audited(&path);
+        assert_eq!(
+            answers(&lines),
+            [
+                (
+                    DecisionPath::Pinned,
+                    Some("1.0.0"),
+                    "allow",
+                    Some(Answered::UpstreamStatus)
+                ),
+                (
+                    DecisionPath::Resolution,
+                    None,
+                    "",
+                    Some(Answered::UpstreamStatus)
+                ),
+            ]
+        );
+        assert_eq!(lines[0].upstream_status, Some(404));
+        assert_eq!(lines[1].upstream_status, Some(404));
+        assert_eq!(lines[1].name, "gadget");
+        assert!(lines[0].decided() && lines[0].inputs.is_some());
+        assert!(!lines[1].decided());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// No answer from upstream is audited on an artifact's decision to serve, and as a line
+    /// of its own for a metadata request, as is a metadata body that stops part way.
+    #[tokio::test]
+    async fn an_unreachable_upstream_is_audited() {
+        use crate::util::test_support::{Answer, scripted};
+        use audit::{Answered, DecisionPath};
+        let (dir, path, log) = audit_log("audit-unreachable");
+        let proxy = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log.clone()));
+        hold(&proxy, LODASH);
+        let base = serve(proxy.router()).await;
+        let artifact = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(artifact.status(), 502);
+        assert_eq!(
+            reqwest::get(format!("{base}/lodash"))
+                .await
+                .unwrap()
+                .status(),
+            502
+        );
+
+        let short = scripted(vec![Answer::cut_short()]).await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, format!("http://{short}"))
+                .with_policy(Some(policy(ALLOW_ALL)))
+                .with_audit_log(Some(log))
+                .router(),
+        )
+        .await;
+        assert_eq!(
+            reqwest::get(format!("{base}/widget"))
+                .await
+                .unwrap()
+                .status(),
+            502
+        );
+
+        let lines = audited(&path);
+        assert_eq!(
+            answers(&lines),
+            [
+                (
+                    DecisionPath::Pinned,
+                    Some("4.17.21"),
+                    "allow",
+                    Some(Answered::UpstreamUnreachable)
+                ),
+                (
+                    DecisionPath::Resolution,
+                    None,
+                    "",
+                    Some(Answered::UpstreamUnreachable)
+                ),
+                (
+                    DecisionPath::Resolution,
+                    None,
+                    "",
+                    Some(Answered::UpstreamUnreachable)
+                ),
+            ]
+        );
+        assert_eq!(lines[2].name, "widget");
+        assert!(lines.iter().all(|l| l.upstream_status.is_none()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A served artifact whose body fails its digest, or stops part way, is followed by a
+    /// `cut-short` line, with nothing decided on it.
+    #[tokio::test]
+    async fn a_served_body_cut_short_is_audited_after_the_line_that_served_it() {
+        use crate::util::test_support::{Answer, scripted};
+        use audit::{Answered, DecisionPath};
+        let (dir, path, log) = audit_log("audit-cut-short");
+        let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let mut tampered = honest.clone();
+        tampered[25_000] ^= 0xFF;
+        let upstream = serve(widget_registry(&sri_of(&honest), tampered)).await;
+        let base = serve(
+            Proxy::new(reqwest::Client::new())
+                .with_upstream(Ecosystem::Npm, upstream)
+                .with_policy(Some(policy(ALLOW_ALL)))
+                .with_audit_log(Some(log.clone()))
+                .router(),
+        )
+        .await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+
+        let short = scripted(vec![Answer::cut_short()]).await;
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, format!("http://{short}"))
+            .with_refuse_unservable(false)
+            .with_policy(Some(policy(ALLOW_ALL)))
+            .with_audit_log(Some(log));
+        hold(&proxy, LODASH);
+        let base = serve(proxy.router()).await;
+        assert_no_complete_body(&format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
+
+        let lines = audited(&path);
+        assert_eq!(
+            answers(&lines),
+            [
+                (
+                    DecisionPath::Pinned,
+                    Some("1.0.0"),
+                    "allow",
+                    Some(Answered::Served)
+                ),
+                (
+                    DecisionPath::Pinned,
+                    Some("1.0.0"),
+                    "",
+                    Some(Answered::CutShort)
+                ),
+                (
+                    DecisionPath::Pinned,
+                    Some("4.17.21"),
+                    "allow",
+                    Some(Answered::Served)
+                ),
+                (
+                    DecisionPath::Pinned,
+                    Some("4.17.21"),
+                    "",
+                    Some(Answered::CutShort)
+                ),
+            ]
+        );
+        assert!(!lines[1].decided() && !lines[3].decided());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -8669,16 +9226,7 @@ mod tests {
     /// request deferred for its analysis is not recorded as served.
     #[tokio::test]
     async fn the_audit_line_records_what_the_request_was_answered() {
-        let dir = crate::util::test_support::tempdir("audit-answered");
-        let path = dir.join("audit.jsonl");
-        let log = Arc::new(AuditLog::open(&path).expect("opens"));
-        let lines = |path: &std::path::Path| -> Vec<audit::Event> {
-            std::fs::read_to_string(path)
-                .unwrap()
-                .lines()
-                .map(|l| serde_json::from_str(l).unwrap())
-                .collect()
-        };
+        let (dir, path, log) = audit_log("audit-answered");
 
         let (proxy, _) =
             provenance_proxy("audit-deferred", PROVENANCE, &["1.0.0", "2.0.0"], &[]).await;
@@ -8707,7 +9255,7 @@ mod tests {
         let proxy = proxy.with_audit_log(Some(log));
         assert!(fetched(&pinned(&proxy, WIDGET_2).await));
 
-        let answered: Vec<_> = lines(&path)
+        let answered: Vec<_> = audited(&path)
             .iter()
             .map(|e| (e.action.clone(), e.answered))
             .collect();
@@ -8719,7 +9267,7 @@ mod tests {
                 ("allow".to_owned(), Some(audit::Answered::Served)),
             ]
         );
-        for event in lines(&path) {
+        for event in audited(&path) {
             assert_eq!(
                 event.signals,
                 ["no repository: the metadata names none"],
@@ -8928,6 +9476,7 @@ mod tests {
                 filename: "lodash-.tgz",
                 path: "/lodash/-/lodash-.tgz",
                 client: "-",
+                account: None,
             },
         );
         assert_eq!(deciding.purl, "pkg:npm/lodash@ ");
