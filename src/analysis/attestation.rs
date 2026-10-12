@@ -67,7 +67,7 @@ pub fn verifier_id() -> &'static str {
     ID.get_or_init(|| {
         use sha2::{Digest, Sha256};
         let root = Sha256::digest(SIGSTORE_PRODUCTION_TRUSTED_ROOT.as_bytes());
-        let prefix: String = root.iter().take(8).map(|b| format!("{b:02x}")).collect();
+        let prefix = crate::util::hex(&root[..8]);
         format!("sigstore-verify {SIGSTORE_VERIFY}; root sha256:{prefix}")
     })
 }
