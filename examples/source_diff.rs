@@ -54,6 +54,8 @@ async fn main() {
     let http = reqwest::Client::new();
     let registry = Client::new(http.clone(), "https://registry.npmjs.org");
     let index = PypiClient::new(http.clone(), byrle::ecosystem::pypi::INDEX);
+    // A developer tool on the developer's own machine; Spool::open creates it 0700.
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
     let spool_dir = std::env::temp_dir().join(format!("source-diff-{}", std::process::id()));
     let (spool, _) = byrle::spool::Spool::open(&spool_dir, 1 << 30).expect("a spool");
     let analyser = Analyser::new(

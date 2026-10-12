@@ -986,7 +986,7 @@ mod tests {
     /// A policy that loads is in force, and its exceptions are reported.
     #[tokio::test]
     async fn a_policy_that_loads_is_carried_into_the_proxy() {
-        let path = std::env::temp_dir().join(format!("byrle-policy-{}.yaml", std::process::id()));
+        let path = crate::util::test_support::tempdir("startup-policy-file").join("policy.yaml");
         std::fs::write(&path, "version: 1\ncooldown_days: 7\n").expect("writes");
         let (dir, environment) = spooled(
             "startup-policy",

@@ -57,7 +57,7 @@ else
 fi
 echo
 echo "Rewriting from ${oldest:0:12}. To undo: git reset --hard $head_before"
-git rebase --force-rebase --rebase-merges --gpg-sign${key:+=$key} "${onto[@]}"
+git rebase --force-rebase --rebase-merges "--gpg-sign${key:+=$key}" "${onto[@]}"
 
 left="$(unsigned)"
 if [[ -n "$left" ]]; then

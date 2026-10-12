@@ -24,10 +24,12 @@ static LIVE: AtomicIsize = AtomicIsize::new(0);
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         LIVE.fetch_add(layout.size() as isize, Ordering::Relaxed);
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { System.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         LIVE.fetch_sub(layout.size() as isize, Ordering::Relaxed);
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { System.dealloc(ptr, layout) }
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
@@ -35,6 +37,7 @@ unsafe impl GlobalAlloc for Counting {
             new_size as isize - layout.size() as isize,
             Ordering::Relaxed,
         );
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 }

@@ -98,10 +98,13 @@ elif need go; then
     src="$(mktemp -d)"
     trap 'rm -rf "$src"' EXIT
     version=""
-    if ! { version="$(go list -m -f '{{.Version}}' github.com/trufflesecurity/trufflehog/v3@latest)" \
+    built=0
+    if version="$(go list -m -f '{{.Version}}' github.com/trufflesecurity/trufflehog/v3@latest)" \
         && git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$version" \
-            https://github.com/trufflesecurity/trufflehog.git "$src" \
-        && (cd "$src" && go install .); }; then
+            https://github.com/trufflesecurity/trufflehog.git "$src"; then
+        (cd "$src" && go install .) && built=1
+    fi
+    if [[ "$built" -ne 1 ]]; then
         echo "    NOT INSTALLED: building trufflehog ${version:-@latest} failed. 'make sast' cannot scan."
     fi
     rm -rf "$src"
