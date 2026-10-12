@@ -272,6 +272,7 @@ mod tests {
                 cvss_source: None,
                 exploited: false,
                 malware: true,
+                cached: None,
             },
             false,
         )
@@ -340,6 +341,7 @@ mod tests {
                     cvss_source: None,
                     exploited: exploitation_loaded,
                     malware: false,
+                    cached: None,
                 },
                 exploitation_loaded,
             )

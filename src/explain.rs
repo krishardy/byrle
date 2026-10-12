@@ -9,7 +9,7 @@ use crate::analysis::detector::metadata::{Listing, Metadata};
 use crate::ecosystem::Clients;
 use crate::env::Env;
 use crate::identity::PackageRef;
-use crate::intel::store::Intel as IntelStore;
+use crate::intel::store::{Intel as IntelStore, Record};
 use crate::policy::decide::{self, Advisory, Check, Decision, Facts, Intel, Outcome};
 use crate::policy::enforce::Unenforceable;
 use crate::policy::{Action, AdvisoryScore, Policy};
@@ -392,6 +392,11 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         ),
         as_of,
     );
+    if let Some(intel) = intel.as_ref() {
+        answer.push_str(&advisories(
+            &intel.for_version(&facts.ecosystem, &facts.version),
+        ));
+    }
     let listing = Listing {
         records: &metadata.records,
         record: package,
@@ -404,6 +409,32 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         &policy.signal_weights,
     ));
     Ok(answer)
+}
+
+/// Each advisory the store holds against the version, one line per stream that reported it,
+/// with when byrle first stored it. Not every stream gives a `modified`, so `cached` is the
+/// age of a record that has none. `-` for a record with no `cached`, which only a store other
+/// than Postgres gives.
+fn advisories(records: &[&Record]) -> String {
+    if records.is_empty() {
+        return "  advisories: none\n".to_owned();
+    }
+    let mut lines: Vec<(&str, &str, &str)> = records
+        .iter()
+        .map(|r| {
+            (
+                r.advisory_id.as_str(),
+                r.source.as_str(),
+                r.cached.as_deref().unwrap_or("-"),
+            )
+        })
+        .collect();
+    lines.sort_unstable();
+    let mut out = "  advisories:\n".to_owned();
+    for (id, source, cached) in lines {
+        out.push_str(&format!("    {id}  {source}  cached {cached}\n"));
+    }
+    out
 }
 
 /// The metadata heuristics' signals, which refuse nothing, under the verdict, read from the full
@@ -703,6 +734,7 @@ mod run_tests {
                     band: None,
                     exploited: false,
                     malware: true,
+                    cached: None,
                 },
             )],
             ranges: Vec::new(),
@@ -737,6 +769,10 @@ mod run_tests {
             .expect("answers");
         assert!(judged.contains("verdict: block"), "{judged}");
         assert!(judged.contains("reported as malware"), "{judged}");
+        assert!(
+            judged.contains("  advisories:\n    MAL-1  osv  cached -\n"),
+            "{judged}"
+        );
         let failed = answer_using(&lodash, &registry, &policy, Some(&down))
             .await
             .expect_err("a store that errors");
@@ -953,6 +989,37 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("verdict: block"), "{out}");
+    }
+
+    /// One line per stream that reported an advisory, sorted, with when it was first stored.
+    #[test]
+    fn each_advisory_is_listed_with_when_it_was_cached() {
+        use crate::intel::store::Record;
+
+        let record = |id: &str, source: &str, cached: Option<&str>| Record {
+            advisory_id: id.to_owned(),
+            aliases: Vec::new(),
+            source: source.to_owned(),
+            cvss: None,
+            cvss_source: None,
+            band: None,
+            exploited: false,
+            malware: false,
+            cached: cached.map(str::to_owned),
+        };
+        assert_eq!(advisories(&[]), "  advisories: none\n");
+        let (b, a_osv, a_ghsa) = (
+            record("GHSA-b", "osv/npm", None),
+            record("GHSA-a", "osv/npm", Some("2026-10-12T09:10:03Z")),
+            record("GHSA-a", "github/npm", Some("2026-10-01T00:00:00Z")),
+        );
+        assert_eq!(
+            advisories(&[&b, &a_osv, &a_ghsa]),
+            "  advisories:\n\
+             \x20   GHSA-a  github/npm  cached 2026-10-01T00:00:00Z\n\
+             \x20   GHSA-a  osv/npm  cached 2026-10-12T09:10:03Z\n\
+             \x20   GHSA-b  osv/npm  cached -\n"
+        );
     }
 
     #[test]

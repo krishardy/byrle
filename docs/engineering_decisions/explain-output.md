@@ -26,7 +26,11 @@ The verdict is the strongest answer among the checks, not a separate judgement. 
 For `cooldown_days`, an `excepted` line names the global wait the package failed. A `FAIL`
 line names the wait that applied, which a `packages` entry may have shortened.
 
-Under the verdict, the signals, which refuse nothing: each with its weight from the policy's
+Under the verdict, with a store, each advisory the store holds against the version: one
+line per stream that reported it, with `cached`, when byrle first stored it. See
+[advisory-cached](advisory-cached.md).
+
+Then the signals, which refuse nothing: each with its weight from the policy's
 `signal_weights`, and the risk score they sum to. `explain` holds no served names, so it
 reports no near name, and it compares no source. The policy view lists every weight.
 

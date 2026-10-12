@@ -255,7 +255,7 @@ struct Written {
 }
 
 /// Delete the rows `replacement`'s source supplied before, copy its new rows, and store its
-/// digest and streams in `intel_source`.
+/// digest and streams in `intel_source`. Keeps each advisory's `cached`: see advisory-cached.md.
 async fn write_source(
     conn: &mut PgConnection,
     replacement: &Replacement<'_>,
@@ -263,6 +263,14 @@ async fn write_source(
 ) -> Result<(), IntelError> {
     let encoded = replacement.encoded;
     let source = encoded.source.as_str();
+    sqlx::query(
+        "CREATE TEMP TABLE prior_cached ON COMMIT DROP AS \
+         SELECT publisher_id, cached FROM advisory WHERE source = $1",
+    )
+    .bind(source)
+    .execute(&mut *conn)
+    .await
+    .map_err(IntelError::Backend)?;
     sqlx::query!("DELETE FROM advisory WHERE source = $1", source)
         .execute(&mut *conn)
         .await
@@ -277,6 +285,18 @@ async fn write_source(
         }
         Kind::Advisories => write_advisories(conn, replacement, written).await?,
     }
+    sqlx::query(
+        "UPDATE advisory a SET cached = p.cached FROM prior_cached p \
+         WHERE a.source = $1 AND a.publisher_id = p.publisher_id",
+    )
+    .bind(source)
+    .execute(&mut *conn)
+    .await
+    .map_err(IntelError::Backend)?;
+    sqlx::query("DROP TABLE prior_cached")
+        .execute(&mut *conn)
+        .await
+        .map_err(IntelError::Backend)?;
 
     sqlx::query!(
         "INSERT INTO intel_source (source, digest, streams) \
@@ -536,6 +556,7 @@ impl Intel for PgIntel {
                            )
                     ))              AS "exploited?",
                     a.malware       AS "malware?",
+                    to_char(a.cached AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "cached?",
                     ARRAY(
                         SELECT al.alias FROM advisory_alias al
                         WHERE al.advisory_id = a.id ORDER BY al.alias
@@ -587,6 +608,7 @@ impl Intel for PgIntel {
                     band: row.severity_band,
                     exploited,
                     malware,
+                    cached: row.cached,
                 };
                 if row.is_range == Some(true) {
                     let interval = VersionOrder::of(ecosystem)

@@ -55,6 +55,7 @@ impl SnapshotIntel {
                         band: rows.band,
                         exploited: false,
                         malware: rows.malware,
+                        cached: None,
                     }),
                     Row::Alias(i, alias) => records[i].aliases.push(alias),
                     Row::Affected(i, affected) => {
@@ -415,6 +416,7 @@ mod tests {
                         cvss_source: None,
                         exploited: false,
                         malware: true,
+                        cached: None,
                     }
                 )],
                 ranges: Vec::new(),
