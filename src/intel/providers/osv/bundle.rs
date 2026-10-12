@@ -151,7 +151,7 @@ pub fn read_bundle(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Bundle, BundleE
         if entry.is_dir() {
             continue;
         }
-        let name = entry.name().to_owned();
+        let name = crate::util::zip_name(&entry);
         let mut record = Vec::new();
         if let Err(error) = entry.take(MAX_RECORD_BYTES + 1).read_to_end(&mut record) {
             return Err(BundleError::Entry { name, error });
