@@ -256,7 +256,7 @@ pub fn wheel_tree<R: Read + std::io::Seek>(archive: R, limit: usize) -> Result<T
         if !entry.is_file() {
             continue;
         }
-        let path = entry.name().to_owned();
+        let path = crate::util::zip_name(&entry);
         let metadata = path
             .split_once('/')
             .is_some_and(|(top, rest)| top.ends_with(".dist-info") && rest == "METADATA");
