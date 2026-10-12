@@ -479,9 +479,9 @@ fn listed<L: Fn(&str) -> Option<OsString>>(
     }
     let mut listed = Vec::new();
     if let Some(log_path) = log_path {
-        let log = std::fs::read_to_string(&log_path)
-            .map_err(|e| format!("{}: {e}", log_path.display()))?;
-        listed.extend(crate::audit::packages(&log));
+        crate::rotation::each(&log_path, &mut |_, log| {
+            listed.extend(crate::audit::packages(log));
+        })?;
     }
     for path in &args.lockfile {
         listed.extend(crate::lockfile::read(path).map_err(|e| e.to_string())?);
@@ -814,6 +814,20 @@ mod run_tests {
                 "0 loosened, 0 incomparable, 0 tightened, 0 could not be read",
                 "none of the 1 package versions listed was judged"
             ]
+        );
+
+        std::fs::rename(&gone, dir.join("audit.log.2026-10-01")).unwrap();
+        let live = logged(&dir, "4.17.21");
+        let environment = with(&[
+            (crate::env::AUDIT_LOG, &live),
+            (crate::env::UPSTREAM_NPM, &registry),
+        ]);
+        let both = run(&args, &environment).await;
+        assert_eq!(both.notes, unjudged.notes);
+        assert!(
+            both.report.starts_with("1 packages evaluated"),
+            "{}",
+            both.report
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

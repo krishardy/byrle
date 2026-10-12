@@ -149,7 +149,7 @@ pub enum AuditCommand {
 
 #[derive(Debug, PartialEq, Args)]
 pub struct Verify {
-    /// The audit log
+    /// The audit log. The files rotated from it are read too, oldest first
     pub log: PathBuf,
     /// A policy file a line may have been decided under, matched by digest
     #[arg(long, required = true)]

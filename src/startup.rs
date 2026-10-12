@@ -328,7 +328,7 @@ fn policy_and_audit<L: Fn(&str) -> Option<OsString>>(
     };
     let audit = match environment.audit_log()? {
         Some(path) => {
-            let log = AuditLog::open(&path).map_err(|e| {
+            let log = AuditLog::open(&path, environment.log_retention_days()?).map_err(|e| {
                 StartupError::Unusable(format!("{} {}: {e}", env::AUDIT_LOG, path.display()))
             })?;
             info!(byrle.audit.path = %path.display(), "audit log open");
@@ -1094,6 +1094,10 @@ mod tests {
             "/tests/fixtures/policy-check/dead.yaml"
         );
         cases.push((vec![(env::POLICY, policy)], env::EXPIRY_CEILING_DAYS));
+        cases.push((
+            vec![(env::AUDIT_LOG, "audit.jsonl")],
+            env::LOG_RETENTION_DAYS,
+        ));
         cases.push((vec![], env::REQUIRE_TOKEN));
         for (mut pairs, var) in cases {
             if var != env::REQUIRE_TOKEN {

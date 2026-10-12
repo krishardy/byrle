@@ -4969,7 +4969,9 @@ mod tests {
     #[tokio::test]
     async fn every_decision_reaches_the_audit_log() {
         let path = crate::util::test_support::tempdir("proxy-audit").join("audit.jsonl");
-        let log = Arc::new(AuditLog::open(&path).expect("should open"));
+        let log = Arc::new(
+            AuditLog::open(&path, crate::env::DEFAULT_LOG_RETENTION_DAYS).expect("should open"),
+        );
         let proxy = offline(None, Some(DENY_LODASH)).with_audit_log(Some(log));
 
         resolved(&proxy, "lodash", LODASH).await;
@@ -5030,7 +5032,9 @@ mod tests {
     #[tokio::test]
     async fn observe_mode_serves_what_the_policy_refuses_and_records_it() {
         let path = crate::util::test_support::tempdir("proxy-observe").join("audit.jsonl");
-        let log = Arc::new(AuditLog::open(&path).expect("should open"));
+        let log = Arc::new(
+            AuditLog::open(&path, crate::env::DEFAULT_LOG_RETENTION_DAYS).expect("should open"),
+        );
         let proxy = offline(None, Some(DENY_LODASH))
             .with_mode(Mode::Observe)
             .with_audit_log(Some(log));
@@ -5171,7 +5175,8 @@ mod tests {
     #[test]
     fn a_resolution_is_recorded_with_its_strongest_action() {
         let path = crate::util::test_support::tempdir("proxy-strongest").join("audit.jsonl");
-        let log = AuditLog::open(&path).expect("should open");
+        let log =
+            AuditLog::open(&path, crate::env::DEFAULT_LOG_RETENTION_DAYS).expect("should open");
         let policy = policy(COOLDOWN_AND_DENIAL);
         let refused = policy_refused_versions(
             &two_versions(),
@@ -8584,7 +8589,8 @@ mod tests {
     fn audit_log(label: &str) -> (std::path::PathBuf, std::path::PathBuf, Arc<AuditLog>) {
         let dir = crate::util::test_support::tempdir(label);
         let path = dir.join("audit.jsonl");
-        let log = Arc::new(AuditLog::open(&path).expect("opens"));
+        let log =
+            Arc::new(AuditLog::open(&path, crate::env::DEFAULT_LOG_RETENTION_DAYS).expect("opens"));
         (dir, path, log)
     }
 
@@ -9347,7 +9353,9 @@ mod tests {
             .with_upstream(Ecosystem::Npm, upstream)
             .with_analyser(Some(analyser.clone()))
             .with_policy(Some(policy(yaml)))
-            .with_audit_log(Some(Arc::new(AuditLog::open(&path).expect("opens"))));
+            .with_audit_log(Some(Arc::new(
+                AuditLog::open(&path, crate::env::DEFAULT_LOG_RETENTION_DAYS).expect("opens"),
+            )));
         (proxy, analyser, path, packument)
     }
 
@@ -9636,7 +9644,9 @@ mod tests {
             let proxy = Proxy::new(reqwest::Client::new())
                 .with_upstream(Ecosystem::Npm, serve(router).await)
                 .with_policy(Some(policy(yaml)))
-                .with_audit_log(Some(Arc::new(AuditLog::open(&path).expect("opens"))));
+                .with_audit_log(Some(Arc::new(
+                    AuditLog::open(&path, crate::env::DEFAULT_LOG_RETENTION_DAYS).expect("opens"),
+                )));
             hold_document(&proxy, held.to_string().as_bytes(), detail);
             let _ = pinned(&proxy, "/pkg/-/pkg-1.0.0.tgz").await;
 
@@ -9703,6 +9713,7 @@ mod tests {
             );
         }
         let replayed = audit::replay(
+            "audit.jsonl",
             &std::fs::read_to_string(&path).unwrap(),
             &[Policy::parse(PROVENANCE).unwrap()],
         );
@@ -9819,7 +9830,9 @@ mod tests {
     #[tokio::test]
     async fn an_audit_line_names_the_snapshot() {
         let path = crate::util::test_support::tempdir("proxy-audit-snapshot").join("audit.jsonl");
-        let log = Arc::new(AuditLog::open(&path).expect("should open"));
+        let log = Arc::new(
+            AuditLog::open(&path, crate::env::DEFAULT_LOG_RETENTION_DAYS).expect("should open"),
+        );
         let proxy = offline(
             Some(Arc::new(crate::intel::store::testing::knowing_nothing())),
             Some(DENY_LODASH),

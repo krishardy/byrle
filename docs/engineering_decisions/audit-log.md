@@ -69,3 +69,7 @@ replayable.
 Writing never fails an install. A full disk or an unwritable path is warned about once, not
 per line, because it is one problem. Reading skips a line that does not parse: a torn last
 write is the ordinary case after a crash.
+
+The file is renamed with its day at UTC midnight, and files 3 days old and older are
+compressed with bzip2 ([log-rotation](log-rotation.md)). `audit verify` and `policy diff`
+read every file rotated from `BYRLE_AUDIT_LOG`, oldest first, then the file itself.

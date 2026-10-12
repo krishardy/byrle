@@ -3,7 +3,7 @@ Decide each pinned line again from the inputs it recorded. The exit code is the 
 Usage: byrle audit verify --policy <POLICY> <LOG>
 
 Arguments:
-  <LOG>  The audit log
+  <LOG>  The audit log. The files rotated from it are read too, oldest first
 
 Options:
       --policy <POLICY>  A policy file a line may have been decided under, matched by digest

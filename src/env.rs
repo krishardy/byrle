@@ -80,6 +80,9 @@ pub const DEFAULT_MAX_ARTIFACT_BYTES: u64 = 1 << 30;
 /// §5.5's ceiling on how far ahead a package entry may be dated.
 pub const DEFAULT_EXPIRY_CEILING_DAYS: i64 = 90;
 
+/// The default number of days an audit log file is kept.
+pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 365;
+
 /// The default number of snapshot manifests kept: a month of daily refreshes.
 pub const DEFAULT_SNAPSHOT_LIMIT: usize = 30;
 
@@ -230,9 +233,17 @@ pub const AUDIT_LOG: Var = runtime(
     "",
     &[
         "path for one JSON line per policy decision,",
-        "appended. Refuses to start if it cannot be opened",
+        "appended. Renamed with its date at UTC midnight;",
+        "files 3 days old and older are compressed with",
+        "bzip2. Refuses to start if it cannot be opened",
     ],
 );
+pub const LOG_RETENTION_DAYS: Var = runtime(
+    "BYRLE_LOG_RETENTION_DAYS",
+    "",
+    &["days a rotated audit log file is kept"],
+)
+.with_default(Default::Number(DEFAULT_LOG_RETENTION_DAYS as u64));
 pub const EXPIRY_CEILING_DAYS: Var = runtime(
     "BYRLE_EXPIRY_CEILING_DAYS",
     "",
@@ -479,7 +490,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 62] = [
+pub const ALL: [Var; 63] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -502,6 +513,7 @@ pub const ALL: [Var; 62] = [
     SNAPSHOT_LIMIT,
     POLICY,
     AUDIT_LOG,
+    LOG_RETENTION_DAYS,
     EXPIRY_CEILING_DAYS,
     MAX_CONCURRENT_METADATA,
     SPOOL_DIR,
@@ -962,6 +974,15 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.path(AUDIT_LOG)
     }
 
+    pub fn log_retention_days(&self) -> Result<u32, EnvError> {
+        self.parsed(
+            LOG_RETENTION_DAYS,
+            DEFAULT_LOG_RETENTION_DAYS,
+            |v| v.parse().ok().filter(|days| *days > 0),
+            "is not a whole number of days above 0",
+        )
+    }
+
     pub fn expiry_ceiling_days(&self) -> Result<i64, EnvError> {
         self.parsed(
             EXPIRY_CEILING_DAYS,
@@ -1244,6 +1265,10 @@ mod tests {
         assert_eq!(env.policy().unwrap(), None);
         assert_eq!(env.audit_log().unwrap(), None);
         assert_eq!(
+            env.log_retention_days().unwrap(),
+            DEFAULT_LOG_RETENTION_DAYS
+        );
+        assert_eq!(
             env.expiry_ceiling_days().unwrap(),
             DEFAULT_EXPIRY_CEILING_DAYS
         );
@@ -1302,6 +1327,7 @@ mod tests {
             (SNAPSHOT_LIMIT, "7"),
             (POLICY, "policy.yaml"),
             (AUDIT_LOG, "audit.jsonl"),
+            (LOG_RETENTION_DAYS, "30"),
             (EXPIRY_CEILING_DAYS, "30"),
             (REFUSAL_STATUS, "default=451"),
             (REFUSE_UNSERVABLE, "0"),
@@ -1358,6 +1384,7 @@ mod tests {
         assert_eq!(env.policy().unwrap(), Some(PathBuf::from("policy.yaml")));
         assert_eq!(env.audit_log().unwrap(), Some(PathBuf::from("audit.jsonl")));
         assert_eq!(env.expiry_ceiling_days().unwrap(), 30);
+        assert_eq!(env.log_retention_days().unwrap(), 30);
         assert_eq!(env.refusal_status().unwrap().default_status(), 451);
         assert!(!env.refuse_unservable().unwrap());
         assert_eq!(env.mode().unwrap(), crate::refusal::Mode::Observe);
@@ -1409,6 +1436,7 @@ mod tests {
             (MAX_VERIFIED, "1e6"),
             (MAX_CONCURRENT_METADATA, "eight"),
             (EXPIRY_CEILING_DAYS, "-5"),
+            (LOG_RETENTION_DAYS, "0"),
             (CA_BUNDLE_EXCLUSIVE, "yes"),
             (REWRITE_ARTIFACTS, "false"),
             (REFUSE_UNSERVABLE, "no"),
@@ -1418,7 +1446,7 @@ mod tests {
             (MAX_ARTIFACT_BYTES, "0"),
             (MAX_TRAFFIC_CLIENTS, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 13] = [
+        let cases: [(Result<(), EnvError>, &str); 14] = [
             (
                 env.max_records().map(drop),
                 "BYRLE_MAX_RECORDS: `5O000` is not a whole number",
@@ -1470,6 +1498,10 @@ mod tests {
             (
                 env.max_traffic_clients().map(drop),
                 "BYRLE_MAX_TRAFFIC_CLIENTS: `0` is not a whole number above 0",
+            ),
+            (
+                env.log_retention_days().map(drop),
+                "BYRLE_LOG_RETENTION_DAYS: `0` is not a whole number of days above 0",
             ),
         ];
         for (result, expected) in cases {
@@ -1822,8 +1854,9 @@ mod tests {
         use testing::with_unreadable;
 
         type Read = fn(&Process) -> Option<EnvError>;
-        let cases: [(Var, Read); 17] = [
+        let cases: [(Var, Read); 18] = [
             (EXPIRY_CEILING_DAYS, |e| e.expiry_ceiling_days().err()),
+            (LOG_RETENTION_DAYS, |e| e.log_retention_days().err()),
             (ARTIFACT_ORIGINS, |e| e.artifact_origins().err()),
             (UPSTREAM_NPM, |e| e.upstreams().err()),
             (SPOOL_DIR, |e| e.spool_dir().err()),

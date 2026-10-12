@@ -2647,8 +2647,9 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
 - [x] Q4: `argon2` 0.6.0, and `jsonwebtoken` 11.1.0 on `aws_lc_rs` with the OIDC flow
       written here. Decided 2026-10-11
       ([console-login-crates](docs/engineering_decisions/console-login-crates.md)).
-- [x] Q5: logs are files, rotated daily, gzip, 365 days. Decided 2026-10-11
-      ([log-rotation](docs/engineering_decisions/log-rotation.md)).
+- [x] Q5: logs are files, rotated daily, bzip2 from 3 days old, 365 days. Decided
+      2026-10-11, revised by the user 2026-10-12: bzip2 rather than gzip, and the 3 newest
+      days uncompressed ([log-rotation](docs/engineering_decisions/log-rotation.md)).
 
 ### Build
 
@@ -2679,8 +2680,10 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       `intel-store`, `no-stream-for-ecosystem`, `upstream-unreachable`, `upstream-status`
       with `upstream_status`, and `cut-short`. A decision to serve is written once the
       upstream answers ([audit-log](docs/engineering_decisions/audit-log.md))
-- [ ] `[!]` Rotation at UTC midnight, gzip, `BYRLE_LOG_RETENTION_DAYS`; `policy diff` and
-      `audit verify` read the compressed files
+- [x] `[!]` Rotation at UTC midnight, bzip2 from 3 days old, `BYRLE_LOG_RETENTION_DAYS`;
+      `policy diff` and `audit verify` read the compressed files. Done 2026-10-12:
+      `src/rotation.rs`, for the audit log. `audit verify` names each line `<file>:<line>`
+      ([log-rotation](docs/engineering_decisions/log-rotation.md))
 - [ ] `[!]` Migrations for the plan §4.3 tables
 - [ ] `[!]` The proxy writes `served_version` and `failure_count` through a bounded queue
       that never fails or delays an install, and counts the rows it drops

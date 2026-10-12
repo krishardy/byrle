@@ -133,11 +133,12 @@ default.
 | audit log, gaining `account` and the §3 cases | `BYRLE_AUDIT_LOG` | the proxy, as today |
 | account event log | `BYRLE_ACCOUNT_EVENT_LOG` | the console |
 
-byrle rotates each log itself, at UTC midnight: the day's file is renamed with its date,
-compressed with gzip, and files older than `BYRLE_LOG_RETENTION_DAYS` (365) are deleted.
-No `logrotate` configuration is needed, and a rotation never loses a line written during
-it. `policy diff`, `audit verify` and the console read the current file and the
-compressed ones.
+byrle rotates each log itself, at UTC midnight: the day's file is renamed with its date.
+Files 3 days old and older are compressed with bzip2, and files older than
+`BYRLE_LOG_RETENTION_DAYS` (365) are deleted
+([log-rotation](engineering_decisions/log-rotation.md)). No `logrotate` configuration is
+needed, and a rotation never loses a line written during it. `policy diff`, `audit
+verify` and the console read the current file and the rotated ones.
 
 Postgres, the database `BYRLE_DATABASE_URL` names, holds what is looked up rather than
 scanned. The console requires it: with no database set, the console does not start.
@@ -303,7 +304,7 @@ answers `{"status":"up"}` whenever the console answers; the component checks com
 | Q2 | Where does the console listen? | At `BYRLE_CONSOLE_URL`'s path, on the proxy's listener or `BYRLE_CONSOLE_LISTEN`; revised 2026-10-11 (§4.8) |
 | Q3 | Is the web interface Rust or TypeScript? | Rust, HTML from `maud`, for now ([console-web-interface](engineering_decisions/console-web-interface.md)) |
 | Q4 | Which crates for passwords and OIDC? | `argon2` 0.6.0; `jsonwebtoken` 11.1.0 on `aws_lc_rs`, with the OIDC flow written here ([console-login-crates](engineering_decisions/console-login-crates.md)) |
-| Q5 | How long are logs kept? | Files on disk, rotated daily, gzip, 365 days by default |
+| Q5 | How long are logs kept? | Files on disk, rotated daily, bzip2 from 3 days old, 365 days by default |
 
 ### Q3: Rust or TypeScript
 
