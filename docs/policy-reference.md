@@ -174,15 +174,18 @@ and tightens nothing.
 | `source_dependencies` | dependencies the source lacks | 1 |
 | `source_install_files` | install files the source lacks or has otherwise | 1 |
 | `source_differing` | files that differ from the source | 1 |
+| `virustotal_detected` | a VirusTotal engine called the artifact malicious or suspicious | 1 |
 
-The keys above are the rules of the two detectors built in, `metadata` and `source`, which
+The keys above are the rules of the three detectors built in, `metadata`, `source` and
+`virustotal`, which
 are named without the detector. Another detector's rule is weighed as `detector.rule`, such
 as `guarddog.threat-process-hooks: 3`, 1 unless set. A rule the detector does not have is refused, as an unknown key is. The rules
 are in [detectors](engineering_decisions/detectors.md).
 
 Each weight is a whole number, 0 or more. The signals are in
-[metadata-heuristics](engineering_decisions/metadata-heuristics.md) and
-[source-diff](engineering_decisions/source-diff.md).
+[metadata-heuristics](engineering_decisions/metadata-heuristics.md),
+[source-diff](engineering_decisions/source-diff.md) and
+[virustotal](engineering_decisions/virustotal.md).
 
 ## Actions
 

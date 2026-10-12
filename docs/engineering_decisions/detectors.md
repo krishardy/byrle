@@ -29,6 +29,7 @@ result is stored.
 |---|---|---|---|---|
 | `metadata` | `Listing`: the held records, the full document, the names served, the time | on each decision, before the verdict | nothing: its answer changes with the clock and the packages served | `metadata 1` |
 | `source` | `Sourced`: the comparison of one artifact with its source | on each decision with a stored comparison. The comparison runs in the analyser, per artifact digest, with its own slots and deadline | the comparison, by digest and `COMPARER` | `source 1`, `COMPARER` |
+| `virustotal` | `Scanned`: VirusTotal's answer about one artifact | on each decision with a stored answer. The lookup runs in the analyser, per artifact digest, one at a time behind a rate limiter: [virustotal](virustotal.md) | the answer, by digest | `virustotal 1` |
 | a command | `Target`: ecosystem, name and version | in the background, on 2 slots | its detection, by detector version | what `program --version` prints last |
 
 Both built in answer on the first poll of `detect`. `at_once` reads them, so the record

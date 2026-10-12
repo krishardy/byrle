@@ -21,6 +21,9 @@ use crate::util::lru::Lru;
 
 pub(crate) mod detecting;
 mod sourcing;
+mod virustotal;
+
+pub use virustotal::ScanJob;
 
 pub use detecting::DETECTOR_SLOTS;
 pub use sourcing::{SOURCE_SLOTS, SOURCE_TREES, SourceJob};
@@ -86,6 +89,8 @@ pub struct Analyser {
     sources: Option<sourcing::Sources>,
     /// The detectors, when any is set.
     detectors: Option<detecting::Detectors>,
+    /// VirusTotal, when it is on.
+    scans: Option<virustotal::Scans>,
 }
 
 impl Analyser {
@@ -107,6 +112,7 @@ impl Analyser {
             deadline: DEADLINE,
             sources: None,
             detectors: None,
+            scans: None,
         }
     }
 
@@ -324,7 +330,7 @@ impl Analyser {
     ) -> Option<Scripts> {
         let phase = Instant::now();
         let spooled = self
-            .spool_verified(&job.url, &job.digest, response)
+            .spool_verified(&job.url, &job.digest, response, |_| {})
             .await
             .map(|spooled| spooled.map_err(|too_large| Scripts::Unreadable(too_large.to_string())));
         timings.download_ms = ms(phase);
@@ -358,7 +364,7 @@ impl Analyser {
     }
 
     /// The artifact at `url` written to the spool and checked against `digest`, or the
-    /// error for one over the spool's ceiling.
+    /// error for one over the spool's ceiling. `observe` is passed each chunk as it is written.
     /// Returns `None` when nothing should be stored: a mismatch, remembered, or a spool
     /// that failed.
     async fn spool_verified(
@@ -366,13 +372,15 @@ impl Analyser {
         url: &str,
         digest: &Sri,
         response: reqwest::Response,
+        mut observe: impl FnMut(&[u8]) + Send,
     ) -> Option<Result<Spooled, WriteError>> {
         let claimed = response.content_length();
         let mut verifier = digest.verifier();
         let written = self
             .spool
             .write(response.bytes_stream(), claimed, |chunk| {
-                verifier.update(chunk)
+                verifier.update(chunk);
+                observe(chunk);
             })
             .await;
         match written {
@@ -526,6 +534,35 @@ pub(crate) mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(axum::serve(listener, router).into_future());
         format!("http://{addr}/widget/-/widget-1.0.0.tgz")
+    }
+
+    /// A server answering each path in `routes` with its status and body, and 404 for any
+    /// other. Returns its address and the paths it was asked for.
+    pub(crate) async fn server(
+        routes: Vec<(String, u16, Vec<u8>)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let seen = asked.clone();
+        let routes: Arc<std::collections::HashMap<String, (u16, Vec<u8>)>> = Arc::new(
+            routes
+                .into_iter()
+                .map(|(path, status, body)| (path, (status, body)))
+                .collect(),
+        );
+        let router =
+            axum::Router::new().fallback(move |uri: axum::http::Uri, _body: bytes::Bytes| {
+                let (routes, seen) = (routes.clone(), seen.clone());
+                async move {
+                    seen.lock().unwrap().push(uri.path().to_owned());
+                    let (status, body) =
+                        routes.get(uri.path()).cloned().unwrap_or((404, Vec::new()));
+                    (axum::http::StatusCode::from_u16(status).unwrap(), body)
+                }
+            });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(axum::serve(listener, router).into_future());
+        (format!("http://{addr}"), asked)
     }
 
     pub(crate) fn analyser(label: &str, ceiling: u64, store: Arc<dyn Analyses>) -> Analyser {

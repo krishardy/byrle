@@ -6,6 +6,7 @@
 pub mod guarddog;
 pub mod metadata;
 pub mod source;
+pub mod virustotal;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -23,17 +24,21 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::identity::Ecosystem;
 
 /// The detectors whose rules a policy may weight, and those rules.
-pub const KNOWN: [(&str, &[&str]); 3] = [
+pub const KNOWN: [(&str, &[&str]); 4] = [
     (metadata::NAME, &metadata::RULES),
     (source::NAME, &source::RULES),
+    (virustotal::NAME, &virustotal::RULES),
     ("guarddog", &guarddog::RULES),
 ];
 
 /// The detectors built in, whose rules a policy names without the detector's name.
-pub const BUILT_IN: [&str; 2] = [metadata::NAME, source::NAME];
+pub const BUILT_IN: [&str; 3] = [metadata::NAME, source::NAME, virustotal::NAME];
 
 /// The rules of the detectors built in, as a policy names them.
-pub const BUILT_IN_RULES: [&str; 8] = joined(&metadata::RULES, &source::RULES);
+pub const BUILT_IN_RULES: [&str; 9] = joined(
+    &joined::<8>(&metadata::RULES, &source::RULES),
+    &virustotal::RULES,
+);
 
 /// `a` then `b`, in an array of their length together.
 const fn joined<const N: usize>(a: &[&'static str], b: &[&'static str]) -> [&'static str; N] {
@@ -450,7 +455,9 @@ esac
         assert_eq!(key("source", "source_differing"), "source_differing");
         assert_eq!(key("guarddog", "bundled_binary"), "guarddog.bundled_binary");
         assert_eq!(BUILT_IN_RULES[..4], metadata::RULES);
-        assert_eq!(BUILT_IN_RULES[4..], source::RULES);
+        assert_eq!(BUILT_IN_RULES[4..8], source::RULES);
+        assert_eq!(BUILT_IN_RULES[8..], virustotal::RULES);
+        assert!(knows("virustotal_detected"));
         assert_eq!(joined::<3>(&["a"], &["b", "c"]), ["a", "b", "c"]);
     }
 

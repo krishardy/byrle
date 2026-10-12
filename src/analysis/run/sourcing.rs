@@ -191,7 +191,10 @@ impl Analyser {
     /// fetched, bytes that do not match the digest, or no reference found yet.
     async fn compared(&self, job: &SourceJob, sources: &Sources) -> Option<Sourced> {
         let response = self.fetch(&job.url).await?;
-        let package = match self.spool_verified(&job.url, &job.digest, response).await {
+        let package = match self
+            .spool_verified(&job.url, &job.digest, response, |_| {})
+            .await
+        {
             Some(Ok(spooled)) => tree_of(spooled, job.layout).await,
             Some(Err(too_large)) => Some(Err(format!("the artifact: {too_large}"))),
             None => None,
@@ -349,38 +352,12 @@ async fn tree_of(spooled: Spooled, layout: Layout) -> Option<Result<Tree, String
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::analysis::run::tests::{analyser, sri_of};
+    use crate::analysis::run::tests::{analyser, server, sri_of};
     use crate::analysis::store::InProcess;
     use crate::util::test_support::tarball;
-    use std::collections::HashMap;
     use std::time::Duration;
 
     const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
-
-    /// A server answering each path in `routes` with its status and body, and 404 for any
-    /// other. Returns its address and the paths it was asked for.
-    async fn server(routes: Vec<(String, u16, Vec<u8>)>) -> (String, Arc<Mutex<Vec<String>>>) {
-        let asked = Arc::new(Mutex::new(Vec::new()));
-        let seen = asked.clone();
-        let routes: Arc<HashMap<String, (u16, Vec<u8>)>> = Arc::new(
-            routes
-                .into_iter()
-                .map(|(path, status, body)| (path, (status, body)))
-                .collect(),
-        );
-        let router = axum::Router::new().fallback(move |uri: axum::http::Uri| {
-            let (routes, seen) = (routes.clone(), seen.clone());
-            async move {
-                seen.lock().unwrap().push(uri.path().to_owned());
-                let (status, body) = routes.get(uri.path()).cloned().unwrap_or((404, Vec::new()));
-                (axum::http::StatusCode::from_u16(status).unwrap(), body)
-            }
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(axum::serve(listener, router).into_future());
-        (format!("http://{addr}"), asked)
-    }
 
     fn package() -> Vec<u8> {
         tarball(&[

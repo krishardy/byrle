@@ -1,0 +1,58 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT sha256, state, analysis, malicious, suspicious, engines,\n                   EXTRACT(EPOCH FROM asked_at)::bigint AS \"asked!\"\n            FROM artifact_virustotal WHERE digest = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "sha256",
+        "type_info": "Bpchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "state",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "analysis",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "malicious",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "suspicious",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 5,
+        "name": "engines",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 6,
+        "name": "asked!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "b154326b2f2013a0e9803844e54242200de0b1104e612eed834ab7ccd37d77b3"
+}

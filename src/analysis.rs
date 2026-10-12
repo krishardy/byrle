@@ -9,6 +9,7 @@ pub mod postgres;
 pub mod run;
 pub mod source;
 pub mod store;
+pub mod virustotal;
 
 use std::io::Read;
 
