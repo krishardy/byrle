@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "DELETE FROM virustotal_request WHERE asked_at < to_timestamp($1) - interval '2 days'",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "138d6683e371191cb29f190bed9664525a085dd2141a66bf68e5b341446cc7e8"
+}

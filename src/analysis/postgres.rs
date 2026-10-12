@@ -8,6 +8,7 @@ use crate::analysis::detector::Detection;
 use crate::analysis::source::{COMPARER, Sourced};
 use crate::analysis::store::DetectionKey;
 use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored};
+use crate::analysis::virustotal::{Counts, Scanned, Verdict};
 use crate::integrity::Sri;
 use sqlx::PgPool;
 
@@ -336,5 +337,125 @@ impl Analyses for PgAnalyses {
         detection: &'a Detection,
     ) -> Stored<'a, ()> {
         Box::pin(self.write_detected(key, detection))
+    }
+
+    fn scanned<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Scanned>> {
+        Box::pin(self.read_scanned(digest))
+    }
+
+    fn put_scanned<'a>(&'a self, digest: &'a Sri, scanned: &'a Scanned) -> Stored<'a, ()> {
+        Box::pin(self.write_scanned(digest, scanned))
+    }
+
+    fn virustotal_asked(&self, since: i64) -> Stored<'_, Vec<i64>> {
+        Box::pin(self.read_virustotal_asked(since))
+    }
+
+    fn put_virustotal_asked(&self, at: i64) -> Stored<'_, ()> {
+        Box::pin(self.write_virustotal_asked(at))
+    }
+}
+
+impl PgAnalyses {
+    async fn write_scanned(&self, digest: &Sri, scanned: &Scanned) -> Result<(), AnalysisError> {
+        let (state, analysis, counts) = match &scanned.verdict {
+            Verdict::Known(counts) => ("known", None, Some(counts)),
+            Verdict::Unknown => ("unknown", None, None),
+            Verdict::Queued(id) => ("queued", Some(id.as_str()), None),
+        };
+        let count =
+            |of: fn(&Counts) -> u32| counts.map(|c| i32::try_from(of(c)).unwrap_or(i32::MAX));
+        sqlx::query!(
+            r#"
+            INSERT INTO artifact_virustotal
+                (digest, sha256, state, analysis, malicious, suspicious, engines, asked_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8))
+            ON CONFLICT (digest) DO UPDATE SET
+                sha256     = EXCLUDED.sha256,
+                state      = EXCLUDED.state,
+                analysis   = EXCLUDED.analysis,
+                malicious  = EXCLUDED.malicious,
+                suspicious = EXCLUDED.suspicious,
+                engines    = EXCLUDED.engines,
+                asked_at   = EXCLUDED.asked_at
+            "#,
+            digest.to_string(),
+            scanned.sha256,
+            state,
+            analysis,
+            count(|c| c.malicious),
+            count(|c| c.suspicious),
+            count(|c| c.engines),
+            scanned.asked as f64,
+        )
+        .execute(&self.pool)
+        .await
+        .map(drop)
+        .map_err(AnalysisError::Backend)
+    }
+
+    /// The row for `digest`. One whose state does not read is not asked yet.
+    async fn read_scanned(&self, digest: &Sri) -> Result<Option<Scanned>, AnalysisError> {
+        let row = sqlx::query!(
+            r#"
+            SELECT sha256, state, analysis, malicious, suspicious, engines,
+                   EXTRACT(EPOCH FROM asked_at)::bigint AS "asked!"
+            FROM artifact_virustotal WHERE digest = $1
+            "#,
+            digest.to_string(),
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        Ok(row.and_then(|row| {
+            let unsigned = |n: Option<i32>| n.and_then(|n| u32::try_from(n).ok());
+            let verdict = match (row.state.as_str(), row.analysis) {
+                ("known", _) => Verdict::Known(Counts {
+                    malicious: unsigned(row.malicious)?,
+                    suspicious: unsigned(row.suspicious)?,
+                    engines: unsigned(row.engines)?,
+                }),
+                ("unknown", _) => Verdict::Unknown,
+                ("queued", Some(id)) => Verdict::Queued(id),
+                _ => return None,
+            };
+            Some(Scanned {
+                sha256: row.sha256,
+                verdict,
+                asked: row.asked,
+            })
+        }))
+    }
+
+    async fn read_virustotal_asked(&self, since: i64) -> Result<Vec<i64>, AnalysisError> {
+        sqlx::query_scalar!(
+            r#"
+            SELECT EXTRACT(EPOCH FROM asked_at)::bigint AS "asked!"
+            FROM virustotal_request WHERE asked_at > to_timestamp($1) ORDER BY asked_at
+            "#,
+            since as f64,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)
+    }
+
+    /// Record a request, and delete those older than two days, which no limit counts.
+    async fn write_virustotal_asked(&self, at: i64) -> Result<(), AnalysisError> {
+        sqlx::query!(
+            "INSERT INTO virustotal_request (asked_at) VALUES (to_timestamp($1))",
+            at as f64,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        sqlx::query!(
+            "DELETE FROM virustotal_request WHERE asked_at < to_timestamp($1) - interval '2 days'",
+            at as f64,
+        )
+        .execute(&self.pool)
+        .await
+        .map(drop)
+        .map_err(AnalysisError::Backend)
     }
 }

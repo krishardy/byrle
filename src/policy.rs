@@ -946,6 +946,7 @@ mod tests {
                     "source_dependencies",
                     "source_install_files",
                     "source_differing",
+                    "virustotal_detected",
                 ],
             ),
         ];

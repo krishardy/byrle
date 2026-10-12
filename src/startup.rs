@@ -101,7 +101,8 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
                 max_verified,
             )
             .with_sources(environment.source_archives()?)
-            .with_detectors(detectors(environment).await?),
+            .with_detectors(detectors(environment).await?)
+            .with_virustotal(virustotal(environment)?.as_ref()),
         )))
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
@@ -139,6 +140,25 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         console,
         watch,
     })
+}
+
+/// How VirusTotal is asked, reported at startup. `None` when no key is set.
+/// Errors when a setting does not parse.
+fn virustotal<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+) -> Result<Option<crate::analysis::virustotal::Settings>, StartupError> {
+    let settings = environment.virustotal()?;
+    match &settings {
+        Some(settings) => info!(
+            byrle.config.variable = %env::VIRUSTOTAL_MODE,
+            byrle.virustotal.mode = settings.mode.as_str(),
+            byrle.virustotal.per_minute = settings.per_minute,
+            byrle.virustotal.per_day = settings.per_day,
+            "virustotal on: each artifact's SHA-256 is looked up, a signal that refuses nothing"
+        ),
+        None => info!(byrle.config.variable = %env::VIRUSTOTAL_API_KEY, "virustotal off"),
+    }
+    Ok(settings)
 }
 
 /// What checks each request's token: `accounts`, unless [`env::REQUIRE_TOKEN`] is `0`.
@@ -749,6 +769,34 @@ mod tests {
         let (started, log) = logged("startup-watch-off", &[(env::WATCH_INTERVAL, "0")]).await;
         assert!(started, "{log}");
         assert!(log.contains("watcher off"), "{log}");
+    }
+
+    /// VirusTotal is said to be off without a key, and on with its mode and limits with one;
+    /// a setting that does not parse refuses the start. The key is never logged.
+    #[tokio::test]
+    async fn virustotal_is_reported_on_or_off_at_startup() {
+        let (started, log) = logged("startup-vt-off", &[]).await;
+        assert!(started && log.contains("virustotal off"), "{log}");
+        let (started, log) = logged(
+            "startup-vt-on",
+            &[
+                (env::VIRUSTOTAL_API_KEY, "not-a-real-key"),
+                (env::VIRUSTOTAL_MODE, "upload"),
+            ],
+        )
+        .await;
+        assert!(started && log.contains("virustotal on"), "{log}");
+        assert!(log.contains("byrle.virustotal.mode=\"upload\""), "{log}");
+        assert!(!log.contains("not-a-real-key"), "{log}");
+        let (started, log) = logged(
+            "startup-vt-bad",
+            &[
+                (env::VIRUSTOTAL_API_KEY, "k"),
+                (env::VIRUSTOTAL_PER_DAY, "0"),
+            ],
+        )
+        .await;
+        assert!(!started, "{log}");
     }
 
     /// An audit log is opened and said to be, and one that cannot be opened refuses the

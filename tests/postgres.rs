@@ -1146,12 +1146,14 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "artifact_attestation",
         "artifact_install_script",
         "artifact_source",
+        "artifact_virustotal",
         "exploited_cve",
         "intel_ingestion",
         "intel_snapshot",
         "intel_source",
         "proxy_token",
         "version_detection",
+        "virustotal_request",
     ];
     for table in tables {
         assert!(
@@ -1923,6 +1925,59 @@ async fn a_source_comparison_is_kept_under_its_digest() {
             "{column}"
         );
     }
+}
+
+/// What VirusTotal said is kept under the artifact's digest, each state round-trips, and a
+/// request older than two days is deleted as a new one is recorded.
+#[tokio::test]
+async fn what_virustotal_said_is_kept_under_its_digest() {
+    use byrle::analysis::virustotal::{Counts, Scanned, Verdict};
+    let intel = skip_without_database!("t_virustotal");
+    let store = analyses(&intel);
+    let scanned = |verdict, asked| Scanned {
+        sha256: "a".repeat(64),
+        verdict,
+        asked,
+    };
+    let known = scanned(
+        Verdict::Known(Counts {
+            malicious: 3,
+            suspicious: 1,
+            engines: 70,
+        }),
+        1_760_000_000,
+    );
+    assert_eq!(store.scanned(&sri(1)).await.expect("answers"), None);
+    store.put_scanned(&sri(1), &known).await.expect("writes");
+    assert_eq!(store.scanned(&sri(1)).await.expect("answers"), Some(known));
+    for verdict in [Verdict::Unknown, Verdict::Queued("an-1".to_owned())] {
+        let replaced = scanned(verdict, 1_760_000_100);
+        store
+            .put_scanned(&sri(1), &replaced)
+            .await
+            .expect("replaces");
+        assert_eq!(
+            store.scanned(&sri(1)).await.expect("answers"),
+            Some(replaced)
+        );
+    }
+
+    let now = 1_760_000_000_i64;
+    store
+        .put_virustotal_asked(now - 3 * 86_400)
+        .await
+        .expect("writes");
+    store.put_virustotal_asked(now - 30).await.expect("writes");
+    store.put_virustotal_asked(now).await.expect("writes");
+    assert_eq!(
+        store.virustotal_asked(now - 86_400).await.expect("answers"),
+        [now - 30, now]
+    );
+    let held: i64 = sqlx::query_scalar("SELECT count(*) FROM virustotal_request")
+        .fetch_one(intel.pool())
+        .await
+        .expect("counts");
+    assert_eq!(held, 2, "the request three days old was deleted");
 }
 
 /// An analysis another reader wrote, or one written before readers were recorded, is not

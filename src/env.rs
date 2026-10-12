@@ -354,6 +354,41 @@ pub const DETECTOR_SOCKS: Var = other(
     "SOCKS",
     &["a SOCKS5 proxy, host:port, passed to detectors"],
 );
+pub const VIRUSTOTAL_API_KEY: Var = runtime(
+    "BYRLE_VIRUSTOTAL_API_KEY",
+    "",
+    &[
+        "key each artifact's SHA-256 is looked up on VirusTotal with, a report-only",
+        "signal. Unset, VirusTotal is not asked",
+    ],
+);
+pub const VIRUSTOTAL_MODE: Var = runtime(
+    "BYRLE_VIRUSTOTAL_MODE",
+    "",
+    &[
+        "\"upload\" also sends VirusTotal an artifact it does not know, when it came from",
+        "a public registry",
+    ],
+)
+.with_default(Default::Text("hash"));
+pub const VIRUSTOTAL_URL: Var = runtime("BYRLE_VIRUSTOTAL_URL", "", &["VirusTotal's API"])
+    .with_default(Default::Text(crate::analysis::virustotal::API));
+pub const VIRUSTOTAL_PER_MINUTE: Var = runtime(
+    "BYRLE_VIRUSTOTAL_PER_MINUTE",
+    "",
+    &["requests to VirusTotal a minute; the public API allows 4"],
+)
+.with_default(Default::Number(
+    crate::analysis::virustotal::PUBLIC_PER_MINUTE as u64,
+));
+pub const VIRUSTOTAL_PER_DAY: Var = runtime(
+    "BYRLE_VIRUSTOTAL_PER_DAY",
+    "",
+    &["requests to VirusTotal a day; the public API allows 500"],
+)
+.with_default(Default::Number(
+    crate::analysis::virustotal::PUBLIC_PER_DAY as u64,
+));
 pub const LOG_FORMAT: Var = runtime(
     "BYRLE_LOG_FORMAT",
     "",
@@ -444,7 +479,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 57] = [
+pub const ALL: [Var; 62] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -477,6 +512,11 @@ pub const ALL: [Var; 57] = [
     SOURCE_ARCHIVES,
     DETECTORS,
     DETECTOR_SOCKS,
+    VIRUSTOTAL_API_KEY,
+    VIRUSTOTAL_MODE,
+    VIRUSTOTAL_URL,
+    VIRUSTOTAL_PER_MINUTE,
+    VIRUSTOTAL_PER_DAY,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     MODE,
@@ -873,6 +913,31 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     /// The GitHub Advisory stream's token. `None` leaves that stream unloaded.
     pub fn github_token(&self) -> Result<Option<String>, EnvError> {
         self.text(GITHUB_TOKEN)
+    }
+
+    /// How VirusTotal is asked. `None` when no key is set, which leaves it off.
+    pub fn virustotal(&self) -> Result<Option<crate::analysis::virustotal::Settings>, EnvError> {
+        use crate::analysis::virustotal::{
+            API, Mode, PUBLIC_ORIGINS, PUBLIC_PER_DAY, PUBLIC_PER_MINUTE, Settings,
+        };
+        let Some(key) = self.text(VIRUSTOTAL_API_KEY)? else {
+            return Ok(None);
+        };
+        let positive = |v: &str| v.parse::<u32>().ok().filter(|n| *n > 0);
+        let above_0 = "is not a whole number above 0";
+        Ok(Some(Settings {
+            key,
+            mode: self.parsed(
+                VIRUSTOTAL_MODE,
+                Mode::Hash,
+                Mode::parse,
+                "is not `hash` or `upload`",
+            )?,
+            base: self.text_or(VIRUSTOTAL_URL, API)?,
+            per_minute: self.parsed(VIRUSTOTAL_PER_MINUTE, PUBLIC_PER_MINUTE, positive, above_0)?,
+            per_day: self.parsed(VIRUSTOTAL_PER_DAY, PUBLIC_PER_DAY, positive, above_0)?,
+            uploads_from: PUBLIC_ORIGINS.map(str::to_owned).to_vec(),
+        }))
     }
 
     pub fn snapshot_dir(&self) -> Result<Option<PathBuf>, EnvError> {
@@ -1535,6 +1600,64 @@ mod tests {
             interval("15m").unwrap_err().to_string(),
             "BYRLE_WATCH_INTERVAL: `15m` is not a whole number of seconds"
         );
+    }
+
+    /// No key leaves VirusTotal off; with one, each setting has the public API's default
+    /// and refuses what does not parse.
+    #[test]
+    fn virustotal_is_off_without_a_key_and_its_settings_parse() {
+        use crate::analysis::virustotal::{API, Mode, PUBLIC_ORIGINS};
+        assert_eq!(testing::with(&[]).virustotal().unwrap(), None);
+        let on = testing::with(&[(VIRUSTOTAL_API_KEY, "k")])
+            .virustotal()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (on.key.as_str(), on.mode, on.base.as_str()),
+            ("k", Mode::Hash, API)
+        );
+        assert_eq!((on.per_minute, on.per_day), (4, 500));
+        assert_eq!(on.uploads_from, PUBLIC_ORIGINS.map(str::to_owned).to_vec());
+        let set = testing::with(&[
+            (VIRUSTOTAL_API_KEY, "k"),
+            (VIRUSTOTAL_MODE, "upload"),
+            (VIRUSTOTAL_URL, "http://vt.test"),
+            (VIRUSTOTAL_PER_MINUTE, "1000"),
+            (VIRUSTOTAL_PER_DAY, "300000"),
+        ])
+        .virustotal()
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            (set.mode, set.base.as_str()),
+            (Mode::Upload, "http://vt.test")
+        );
+        assert_eq!((set.per_minute, set.per_day), (1000, 300_000));
+        let refused = |var, value| {
+            testing::with(&[(VIRUSTOTAL_API_KEY, "k"), (var, value)])
+                .virustotal()
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            refused(VIRUSTOTAL_MODE, "all"),
+            "BYRLE_VIRUSTOTAL_MODE: `all` is not `hash` or `upload`"
+        );
+        assert_eq!(
+            refused(VIRUSTOTAL_PER_MINUTE, "0"),
+            "BYRLE_VIRUSTOTAL_PER_MINUTE: `0` is not a whole number above 0"
+        );
+        assert_eq!(
+            refused(VIRUSTOTAL_PER_DAY, "-1"),
+            "BYRLE_VIRUSTOTAL_PER_DAY: `-1` is not a whole number above 0"
+        );
+        assert!(
+            testing::with_unreadable(&[], VIRUSTOTAL_API_KEY)
+                .virustotal()
+                .is_err()
+        );
+        let url = testing::with_unreadable(&[(VIRUSTOTAL_API_KEY, "k")], VIRUSTOTAL_URL);
+        assert!(url.virustotal().is_err());
     }
 
     /// Detectors are split on `;`, blanks dropped, and a detector is given PATH, HOME, SOCKS

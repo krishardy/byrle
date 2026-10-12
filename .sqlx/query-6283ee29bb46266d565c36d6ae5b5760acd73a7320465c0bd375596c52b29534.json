@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO virustotal_request (asked_at) VALUES (to_timestamp($1))",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "6283ee29bb46266d565c36d6ae5b5760acd73a7320465c0bd375596c52b29534"
+}

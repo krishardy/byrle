@@ -356,12 +356,11 @@ Items that I've added that are not stage-bound.
     it is not confirmed. The Stage 4.9 audit item for upstream unreachable and non-2xx
     would record it.
 
-31. [ ] Add a VirusTotal check on artifacts. Raised 2026-10-12. Three modes:
-    - Hash-only, the default: ask VirusTotal whether the artifact's hash has any
-      detections. If it has, set a flag in the artifact's analysis.
-    - Full-file: as hash-only, and when VirusTotal does not know the hash, upload the
-      artifact and wait for the result.
-    - Disabled: no VirusTotal request is made.
+31. [x] Add a VirusTotal check on artifacts. Raised 2026-10-12. Done 2026-10-13: the
+    built-in `virustotal` detector's rule `virustotal_detected`, a report-only signal rather
+    than a flag, decided with the user. `hash` by default, `upload` from public registries
+    only, off without `BYRLE_VIRUSTOTAL_API_KEY`
+    ([virustotal](docs/engineering_decisions/virustotal.md)).
 32. [ ] Artifact analysis: store the analysis feature vector and the disposition. Raised
     2026-10-12.
 

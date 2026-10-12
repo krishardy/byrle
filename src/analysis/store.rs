@@ -5,6 +5,7 @@
 use crate::analysis::attestation::Attested;
 use crate::analysis::detector::Detection;
 use crate::analysis::source::Sourced;
+use crate::analysis::virustotal::Scanned;
 use crate::analysis::{InstallScripts, ReadError};
 use crate::integrity::Sri;
 use crate::util::lru::Lru;
@@ -116,6 +117,18 @@ pub trait Analyses: Send + Sync {
         key: &'a DetectionKey,
         detection: &'a Detection,
     ) -> Stored<'a, ()>;
+
+    /// What VirusTotal said about the artifact with this digest. `Ok(None)` is not asked yet.
+    fn scanned<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Scanned>>;
+
+    /// Record what it said, replacing what was held under the same digest.
+    fn put_scanned<'a>(&'a self, digest: &'a Sri, scanned: &'a Scanned) -> Stored<'a, ()>;
+
+    /// When each request to VirusTotal after `since` was made, in Unix seconds.
+    fn virustotal_asked(&self, since: i64) -> Stored<'_, Vec<i64>>;
+
+    /// Record a request made at `at`, Unix seconds.
+    fn put_virustotal_asked(&self, at: i64) -> Stored<'_, ()>;
 }
 
 /// The analyses this process has made, least recently used evicted first.
@@ -124,16 +137,21 @@ pub struct InProcess(
     Mutex<Lru<Sri, Attested>>,
     Mutex<Lru<Sri, Sourced>>,
     Mutex<Lru<DetectionKey, Detection>>,
+    Mutex<Lru<Sri, Scanned>>,
+    Mutex<Vec<i64>>,
 );
 
 impl InProcess {
-    /// `max_entries` analyses, and as many attestation, source and detector results.
+    /// `max_entries` analyses, and as many attestation, source, detector and VirusTotal
+    /// results.
     pub fn new(max_entries: usize) -> Self {
         Self(
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
+            Mutex::new(Lru::new(max_entries)),
+            Mutex::default(),
         )
     }
 
@@ -228,6 +246,43 @@ impl Analyses for InProcess {
             Ok(())
         })
     }
+
+    fn scanned<'a>(&'a self, digest: &'a Sri) -> Stored<'a, Option<Scanned>> {
+        Box::pin(async move {
+            Ok(self
+                .4
+                .lock()
+                .expect("virustotal store lock")
+                .get(digest)
+                .cloned())
+        })
+    }
+
+    fn put_scanned<'a>(&'a self, digest: &'a Sri, scanned: &'a Scanned) -> Stored<'a, ()> {
+        Box::pin(async move {
+            self.4
+                .lock()
+                .expect("virustotal store lock")
+                .insert(digest.clone(), scanned.clone());
+            Ok(())
+        })
+    }
+
+    fn virustotal_asked(&self, since: i64) -> Stored<'_, Vec<i64>> {
+        Box::pin(async move {
+            let asked = self.5.lock().expect("virustotal request lock");
+            Ok(asked.iter().copied().filter(|at| *at > since).collect())
+        })
+    }
+
+    fn put_virustotal_asked(&self, at: i64) -> Stored<'_, ()> {
+        Box::pin(async move {
+            let mut asked = self.5.lock().expect("virustotal request lock");
+            asked.retain(|held| at - held < 2 * 86_400);
+            asked.push(at);
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -256,6 +311,18 @@ pub(crate) mod tests {
             broken()
         }
         fn sourced<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Sourced>> {
+            broken()
+        }
+        fn scanned<'a>(&'a self, _: &'a Sri) -> Stored<'a, Option<Scanned>> {
+            broken()
+        }
+        fn put_scanned<'a>(&'a self, _: &'a Sri, _: &'a Scanned) -> Stored<'a, ()> {
+            broken()
+        }
+        fn virustotal_asked(&self, _: i64) -> Stored<'_, Vec<i64>> {
+            broken()
+        }
+        fn put_virustotal_asked(&self, _: i64) -> Stored<'_, ()> {
             broken()
         }
         fn put_sourced<'a>(&'a self, _: &'a Sri, _: &'a Sourced) -> Stored<'a, ()> {

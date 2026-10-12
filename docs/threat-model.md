@@ -23,6 +23,7 @@ package manager and the registry, and serves an artifact only after deciding on 
 | The registry (npm, PyPI, or a mirror) | serving the metadata a publisher uploaded | the bytes: each artifact is checked against the digest the metadata published |
 | A package's publisher | nothing | everything: this is who the policy and the analysis are about |
 | The intel streams (OSV, GitHub advisories, CISA KEV, Datadog) | what they report | completeness: a package no stream reports is not known to be clean |
+| VirusTotal, when `BYRLE_VIRUSTOTAL_API_KEY` is set | its engines' counts, a signal that refuses nothing | anything else. It learns the SHA-256 of each artifact asked about, and with `BYRLE_VIRUSTOTAL_MODE=upload` it receives the bytes of an artifact it does not know from npm's or PyPI's public registry, which joins its dataset ([virustotal](engineering_decisions/virustotal.md)) |
 | sigstore and the npm and PyPI attestation endpoints | an attestation that verifies against the pinned trust root | an attestation that does not verify, which counts as none |
 | The client machine | nothing beyond pointing at the proxy | its configuration: see Bypasses |
 | Whoever can reach the proxy's port | using it as a registry | nothing else; there is no account or credential yet |

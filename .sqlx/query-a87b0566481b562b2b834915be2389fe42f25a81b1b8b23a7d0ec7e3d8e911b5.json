@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_virustotal\n                (digest, sha256, state, analysis, malicious, suspicious, engines, asked_at)\n            VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8))\n            ON CONFLICT (digest) DO UPDATE SET\n                sha256     = EXCLUDED.sha256,\n                state      = EXCLUDED.state,\n                analysis   = EXCLUDED.analysis,\n                malicious  = EXCLUDED.malicious,\n                suspicious = EXCLUDED.suspicious,\n                engines    = EXCLUDED.engines,\n                asked_at   = EXCLUDED.asked_at\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Bpchar",
+        "Varchar",
+        "Varchar",
+        "Int4",
+        "Int4",
+        "Int4",
+        "Float8"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "a87b0566481b562b2b834915be2389fe42f25a81b1b8b23a7d0ec7e3d8e911b5"
+}

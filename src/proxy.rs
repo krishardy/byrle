@@ -6,9 +6,10 @@
 use crate::account::gate::{self, Gate, TOKEN_HEADER};
 use crate::analysis::Claim;
 use crate::analysis::attestation;
-use crate::analysis::run::{Analyser, Attestation, Job, Known, SourceJob};
+use crate::analysis::run::{Analyser, Attestation, Job, Known, ScanJob, SourceJob};
 use crate::analysis::source::Sourced;
 use crate::analysis::store::Scripts;
+use crate::analysis::virustotal::Scanned;
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
@@ -1285,8 +1286,17 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     let (fetch, unservable) = deciding.fetch_plan(&record);
     let dated = deciding.dated(&record).await;
     let sourced = deciding.sourced(&fetch).await;
+    let scanned = deciding.scanned(&fetch).await;
     let detected = deciding.detected(&record).await;
-    let signals = deciding.signals(&record, dated.full.as_ref(), sourced.as_ref(), &detected);
+    let signals = deciding.signals(
+        &record,
+        dated.full.as_ref(),
+        &Beside {
+            sourced: sourced.as_ref(),
+            scanned: scanned.as_ref(),
+            detected: &detected,
+        },
+    );
     let described = dated.describing(&record).clone();
     let times = dated.times;
     let Analysed {
@@ -1310,6 +1320,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     if sourced.is_none() {
         deciding.compare_source(&described, &fetch, refusal.as_ref());
     }
+    deciding.scan(&fetch, scanned, refusal.as_ref());
     deciding.detect(&record, &detected, refusal.as_ref());
     let (answered, step) = deciding.answer(refusal.as_ref(), unservable, fetch, state);
     let line = pinned_line(
@@ -1406,8 +1417,7 @@ impl<'a> Deciding<'a> {
         &self,
         record: &PackageRecord,
         full: Option<&PackageMetadata>,
-        sourced: Option<&Sourced>,
-        detected: &[(String, crate::analysis::detector::Detection)],
+        beside: &Beside<'_>,
     ) -> Vec<Signal> {
         let metadata = self
             .proxy
@@ -1415,12 +1425,19 @@ impl<'a> Deciding<'a> {
             .lock()
             .expect("record store lock")
             .metadata(record, full, jiff::Timestamp::now());
-        let source = sourced.map(|sourced| {
+        let source = beside.sourced.map(|sourced| {
             crate::analysis::detector::built_in(&crate::analysis::detector::source::Source, sourced)
+        });
+        let virustotal = beside.scanned.map(|scanned| {
+            crate::analysis::detector::built_in(
+                &crate::analysis::detector::virustotal::VirusTotal,
+                scanned,
+            )
         });
         let detections: Vec<_> = std::iter::once(metadata)
             .chain(source)
-            .chain(detected.iter().cloned())
+            .chain(virustotal)
+            .chain(beside.detected.iter().cloned())
             .collect();
         let signals = crate::signal::of_detections(&detections);
         if !signals.is_empty() {
@@ -1461,6 +1478,45 @@ impl<'a> Deciding<'a> {
         if let (false, Some(analyser)) = (blocks(refusal), self.proxy.config.analyser.as_deref()) {
             analyser.start_detecting(&target(record), detected);
         }
+    }
+
+    /// What VirusTotal said about the artifact, when it was asked before.
+    /// See docs/engineering_decisions/virustotal.md.
+    async fn scanned(&self, fetch: &ArtifactFetch) -> Option<Scanned> {
+        let analyser = self.proxy.config.analyser.as_deref()?;
+        analyser.scanned(fetch.digest.as_ref()?).await
+    }
+
+    /// Ask VirusTotal about the artifact when `prior` is missing or due, unless `refusal`
+    /// blocks it, which does not lapse.
+    fn scan(
+        &self,
+        fetch: &ArtifactFetch,
+        prior: Option<Scanned>,
+        refusal: Option<&enforce::Refusal>,
+    ) {
+        if blocks(refusal) {
+            return;
+        }
+        let (Some(analyser), Some(digest)) =
+            (self.proxy.config.analyser.as_deref(), fetch.digest.as_ref())
+        else {
+            return;
+        };
+        let url = upstream_url(
+            self.proxy,
+            self.request.ecosystem,
+            self.request.path,
+            fetch.origin.as_deref(),
+        );
+        analyser.start_scan(
+            ScanJob {
+                digest: digest.clone(),
+                url,
+            },
+            prior,
+            jiff::Timestamp::now().as_second(),
+        );
     }
 
     /// What comparing the artifact with its source found, when it was compared before.
@@ -3111,13 +3167,20 @@ impl Proxy {
             .analysed(record, &fetch, dated.times.as_ref())
             .await;
         let sourced = deciding.sourced(&fetch).await;
+        let scanned = deciding.scanned(&fetch).await;
         let detected = deciding.detected(record).await;
         let undetected = self
             .config
             .analyser
             .as_deref()
             .is_some_and(|analyser| detected.len() < analyser.detector_count());
-        if sourced.is_none() || undetected {
+        let unscanned = self.config.analyser.as_deref().is_some_and(|analyser| {
+            analyser.scanning()
+                && scanned
+                    .as_ref()
+                    .is_none_or(|scanned| scanned.due(jiff::Timestamp::now().as_second()))
+        });
+        if sourced.is_none() || undetected || unscanned {
             let refusal = deciding
                 .refusal(
                     &analysed.record,
@@ -3131,6 +3194,7 @@ impl Proxy {
             if sourced.is_none() {
                 deciding.compare_source(dated.describing(record), &fetch, refusal.as_ref());
             }
+            deciding.scan(&fetch, scanned, refusal.as_ref());
             deciding.detect(record, &detected, refusal.as_ref());
         }
         let (AnalysisState::Pending(job), Some(analyser)) = (analysed.state, &self.config.analyser)
@@ -3139,6 +3203,13 @@ impl Proxy {
         };
         analyser.start(job).is_some()
     }
+}
+
+/// What the analyser found beside the artifact's own analysis, weighed as signals.
+struct Beside<'a> {
+    sourced: Option<&'a Sourced>,
+    scanned: Option<&'a Scanned>,
+    detected: &'a [(String, crate::analysis::detector::Detection)],
 }
 
 /// How often [`Proxy::report_traffic`] closes the window.
@@ -8921,6 +8992,16 @@ mod tests {
         yaml: &str,
         detectors: Vec<Arc<dyn crate::analysis::detector::Detector>>,
     ) -> (Proxy, Arc<Analyser>, std::path::PathBuf, serde_json::Value) {
+        sourcing_with(label, yaml, detectors, None).await
+    }
+
+    /// [`sourcing`], asking VirusTotal as `virustotal` says too.
+    async fn sourcing_with(
+        label: &str,
+        yaml: &str,
+        detectors: Vec<Arc<dyn crate::analysis::detector::Detector>>,
+        virustotal: Option<&crate::analysis::virustotal::Settings>,
+    ) -> (Proxy, Arc<Analyser>, std::path::PathBuf, serde_json::Value) {
         let artifact = crate::util::test_support::tarball(&[
             (
                 "package/package.json",
@@ -8984,7 +9065,8 @@ mod tests {
                 8,
             )
             .with_sources(Some(upstream.clone()))
-            .with_detectors(detectors),
+            .with_detectors(detectors)
+            .with_virustotal(virustotal),
         );
         let path =
             crate::util::test_support::tempdir(&format!("{label}-audit")).join("audit.jsonl");
@@ -8994,6 +9076,80 @@ mod tests {
             .with_policy(Some(policy(yaml)))
             .with_audit_log(Some(Arc::new(AuditLog::open(&path).expect("opens"))));
         (proxy, analyser, path, packument)
+    }
+
+    /// A decision asks VirusTotal without waiting for it, and a later one reports what it
+    /// said. A blocked version is not asked about, and the watcher asks about a new one.
+    #[tokio::test]
+    async fn virustotal_is_reported_on_a_later_request() {
+        use crate::analysis::virustotal::tests::{file, settings};
+        let api =
+            crate::util::test_support::scripted(vec![crate::util::test_support::Answer::body(
+                file(3, 0, 60),
+            )])
+            .await;
+        let settings = settings(format!("http://{api}"));
+        let blocked =
+            format!("{SOURCE_POLICY}denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: r\n");
+        for (label, yaml, started) in [
+            ("served", SOURCE_POLICY, 1),
+            ("blocked", blocked.as_str(), 0),
+        ] {
+            let (proxy, analyser, path, packument) =
+                sourcing_with(&format!("vt-{label}"), yaml, Vec::new(), Some(&settings)).await;
+            hold_document(
+                &proxy,
+                packument.to_string().as_bytes(),
+                crate::record::DocumentDetail::Full,
+            );
+            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            assert_eq!(analyser.scans_started(), started, "{label}");
+            if started == 0 {
+                continue;
+            }
+            tokio::time::timeout(std::time::Duration::from_secs(10), analyser.scans_ended(1))
+                .await
+                .expect("the lookup ends");
+            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            assert_eq!(analyser.scans_started(), 1, "read back, not asked again");
+            let lines: Vec<audit::Event> = std::fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            assert!(!lines[0].signals.iter().any(|s| s.starts_with("virustotal")));
+            assert!(
+                lines[1].signals.contains(
+                    &"virustotal detected: 3 malicious, 0 suspicious of 63 engines".to_owned()
+                ),
+                "{:?}",
+                lines[1].signals
+            );
+        }
+
+        let (proxy, analyser, _, _) =
+            sourcing_with("vt-watched", SOURCE_POLICY, Vec::new(), Some(&settings)).await;
+        hold_document(
+            &proxy,
+            br#"{"name":"widget","versions":{}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        proxy.watch().await;
+        assert_eq!(analyser.scans_started(), 1, "the watcher starts it");
+        tokio::time::timeout(std::time::Duration::from_secs(10), analyser.scans_ended(1))
+            .await
+            .expect("the lookup ends");
+        hold_document(
+            &proxy,
+            br#"{"name":"widget","versions":{}}"#,
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        proxy.watch().await;
+        assert_eq!(
+            analyser.scans_started(),
+            1,
+            "an answer not due is not asked again"
+        );
     }
 
     /// A decision starts the comparison without waiting for it, and a later one reports it,

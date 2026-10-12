@@ -77,6 +77,13 @@ Proxy configuration, all through the environment:
   BYRLE_DETECTORS                   detectors run on each version served, `name=command argument...`, separated by `;`;
                                     {ecosystem}, {name} and {version} in the arguments are replaced. A detector is given
                                     PATH, HOME, SOCKS and the forward proxies, and nothing else
+  BYRLE_VIRUSTOTAL_API_KEY          key each artifact's SHA-256 is looked up on VirusTotal with, a report-only
+                                    signal. Unset, VirusTotal is not asked
+  BYRLE_VIRUSTOTAL_MODE             "upload" also sends VirusTotal an artifact it does not know, when it came from
+                                    a public registry (default hash)
+  BYRLE_VIRUSTOTAL_URL              VirusTotal's API (default https://www.virustotal.com/api/v3)
+  BYRLE_VIRUSTOTAL_PER_MINUTE       requests to VirusTotal a minute; the public API allows 4 (default 4)
+  BYRLE_VIRUSTOTAL_PER_DAY          requests to VirusTotal a day; the public API allows 500 (default 500)
   BYRLE_REFUSAL_STATUS              status a refusal answers with, per client, e.g.
                                     "default=403,npm/pnpm=451" (default 403)
   BYRLE_REFUSE_UNSERVABLE=0         forward versions whose artifacts this proxy cannot

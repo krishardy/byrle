@@ -1,0 +1,22 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT EXTRACT(EPOCH FROM asked_at)::bigint AS \"asked!\"\n            FROM virustotal_request WHERE asked_at > to_timestamp($1) ORDER BY asked_at\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "asked!",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Float8"
+      ]
+    },
+    "nullable": [
+      null
+    ]
+  },
+  "hash": "022afd508015e9a8026d1967655b83622b501bbba9b8873d18501d1d14ce9216"
+}

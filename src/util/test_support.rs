@@ -151,7 +151,15 @@ impl Answer {
 /// A server that answers requests with `answers` in order, repeating the last one once
 /// they run out. `answers` must not be empty.
 pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    recorded(answers).await.0
+}
+
+/// Each request a [`recorded`] server received, whole, in the order they arrived.
+pub type Requests = std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>;
+
+/// A [`scripted`] server that also keeps each request it reads.
+pub async fn recorded(answers: Vec<Answer>) -> (std::net::SocketAddr, Requests) {
+    use tokio::io::AsyncWriteExt;
 
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -159,14 +167,17 @@ pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
     let addr = listener
         .local_addr()
         .expect("a bound listener has an address");
+    let requests = Requests::default();
+    let kept = requests.clone();
     tokio::spawn(async move {
         let mut request = 0_usize;
         while let Ok((mut stream, _)) = listener.accept().await {
             let answer = answers[request.min(answers.len() - 1)].clone();
             request += 1;
+            let kept = kept.clone();
             tokio::spawn(async move {
-                let mut buffer = [0_u8; 4096];
-                let _ = stream.read(&mut buffer).await;
+                let read = read_request(&mut stream).await;
+                kept.lock().expect("request lock").push(read);
                 let response = match answer {
                     Answer::Close => return,
                     Answer::Status(code) => format!(
@@ -201,7 +212,35 @@ pub async fn scripted(answers: Vec<Answer>) -> std::net::SocketAddr {
             });
         }
     });
-    addr
+    (addr, requests)
+}
+
+/// One request from `stream`: its head, and as many body bytes as its `Content-Length` says.
+async fn read_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
+    use tokio::io::AsyncReadExt;
+    let mut read = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let wanted = std::str::from_utf8(&read).ok().and_then(|text| {
+            let head = text.find("\r\n\r\n")? + 4;
+            let length = text[..head]
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())?
+                })
+                .unwrap_or(0);
+            Some(head + length)
+        });
+        if wanted.is_some_and(|wanted| read.len() >= wanted) {
+            return read;
+        }
+        match stream.read(&mut buffer).await {
+            Ok(0) | Err(_) => return read,
+            Ok(n) => read.extend_from_slice(&buffer[..n]),
+        }
+    }
 }
 
 /// A gzipped tar holding `files`, as an npm tarball or an sdist is.
