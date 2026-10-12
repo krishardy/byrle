@@ -4,6 +4,7 @@
 //! docs/engineering_decisions/artifact-spool.md.
 
 pub mod attestation;
+pub mod decision;
 pub mod detector;
 pub mod postgres;
 pub mod run;

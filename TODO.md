@@ -361,8 +361,14 @@ Items that I've added that are not stage-bound.
     than a flag, decided with the user. `hash` by default, `upload` from public registries
     only, off without `BYRLE_VIRUSTOTAL_API_KEY`
     ([virustotal](docs/engineering_decisions/virustotal.md)).
-32. [ ] Artifact analysis: store the analysis feature vector and the disposition. Raised
-    2026-10-12.
+32. [x] Artifact analysis: store the analysis feature vector and the disposition. Raised
+    2026-10-12. Done 2026-10-13: `artifact_decision`, a row per pinned artifact decision
+    with its features and disposition, and the view `artifact_disposition`, the latest per
+    digest. Read by `byrle artifact show` and `byrle artifact export`. Decided with the
+    user ([artifact-decisions](docs/engineering_decisions/artifact-decisions.md)).
+33. [ ] Delete `artifact_decision` rows older than a retention period. Raised 2026-10-13.
+    The table grows by one row per artifact request, about 1 KB each, and nothing deletes
+    rows. `BYRLE_LOG_RETENTION_DAYS` (Stage 4.9) is the period the log files are kept.
 
 ## Architecture Refactor
 

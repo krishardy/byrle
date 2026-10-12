@@ -1,0 +1,8 @@
+Every decision recorded, oldest first, as JSON Lines
+
+Usage: byrle artifact export [OPTIONS]
+
+Options:
+      --since <SINCE>  The first day, YYYY-MM-DD, UTC
+      --until <UNTIL>  The last day, YYYY-MM-DD, UTC, included
+  -h, --help           Print help

@@ -1,0 +1,31 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            SELECT id, decision::text AS \"decision!\" FROM artifact_decision\n            WHERE id > $1\n              AND ($2::text IS NULL OR decided_at >= ($2::text)::date::timestamp AT TIME ZONE 'UTC')\n              AND ($3::text IS NULL OR decided_at < (($3::text)::date + 1)::timestamp AT TIME ZONE 'UTC')\n            ORDER BY id LIMIT $4\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "decision!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "bbfd6babb870886c5a317831d8fde5c2f0f90669656064e1788fb4139b8210c2"
+}

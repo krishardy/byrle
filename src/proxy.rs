@@ -6,6 +6,7 @@
 use crate::account::gate::{self, Gate, TOKEN_HEADER};
 use crate::analysis::Claim;
 use crate::analysis::attestation;
+use crate::analysis::decision;
 use crate::analysis::run::{Analyser, Attestation, Job, Known, ScanJob, SourceJob};
 use crate::analysis::source::Sourced;
 use crate::analysis::store::Scripts;
@@ -141,6 +142,9 @@ pub struct Health {
     /// The clients the last window found reading documents and fetching no artifact.
     #[serde(default)]
     pub clients_without_artifacts: BTreeMap<String, u64>,
+    /// Artifact decisions dropped on a full queue or a failed write since the proxy started.
+    #[serde(default)]
+    pub decisions_unrecorded: u64,
 }
 
 #[derive(Clone)]
@@ -368,6 +372,14 @@ impl Proxy {
         }
     }
 
+    /// Where this proxy writes its decisions.
+    fn sinks(&self) -> Sinks {
+        Sinks {
+            audit: self.config.audit.clone(),
+            analyser: self.config.analyser.clone(),
+        }
+    }
+
     pub fn origin_policy(&self) -> &OriginPolicy {
         &self.config.origins
     }
@@ -412,6 +424,11 @@ impl Proxy {
                 .iter()
                 .cloned()
                 .collect(),
+            decisions_unrecorded: self
+                .config
+                .analyser
+                .as_ref()
+                .map_or(0, |analyser| analyser.decisions_unrecorded()),
         }
     }
 
@@ -619,8 +636,8 @@ struct VerifyingStream {
     /// The claim being proved, recorded as verified once the bytes match.
     sri: Sri,
     verified: Arc<Mutex<VerifiedArtifacts>>,
-    /// The audit log and the line that served the artifact, for a `cut-short` line.
-    served: Option<(Arc<AuditLog>, audit::Event)>,
+    /// Where the line that served the artifact went, and the line, for a `cut-short` one.
+    served: Option<(Sinks, Written)>,
 }
 
 impl VerifyingStream {
@@ -645,15 +662,19 @@ impl VerifyingStream {
         }
     }
 
-    /// Audit a body that ends early in `log`, after `line`, the line that served it.
-    fn audited(mut self, served: Option<(Arc<AuditLog>, audit::Event)>) -> Self {
+    /// Audit a body that ends early in `sinks`, after the line that served it.
+    fn audited(mut self, served: Option<(Sinks, Written)>) -> Self {
         self.served = served;
         self
     }
 
-    /// Write the `cut-short` line, once.
+    /// Write the `cut-short` line and decision, once.
     fn cut_short(&mut self) {
-        if let Some((log, line)) = self.served.take() {
+        let Some((sinks, served)) = self.served.take() else {
+            return;
+        };
+        let line = &served.line;
+        if let Some(log) = &sinks.audit {
             log.write(
                 &audit::Event::undecided(
                     &line.ecosystem,
@@ -664,6 +685,10 @@ impl VerifyingStream {
                 .with_account(line.account.as_deref()),
             );
         }
+        sinks.record(&Written {
+            line: served.line.answered(audit::Answered::CutShort),
+            basis: served.basis,
+        });
     }
 
     /// Compare, and decide what the body ends with.
@@ -1270,7 +1295,7 @@ struct ArtifactFetch {
     /// An origin the operator added, when the metadata published the artifact there.
     origin: Option<String>,
     /// The audit line of a decision to serve, written once the upstream answers.
-    audit: Option<Box<audit::Event>>,
+    audit: Option<Box<Written>>,
 }
 
 /// Look up the record for an artifact GET, decide on it before a byte is fetched, and
@@ -1288,7 +1313,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     let sourced = deciding.sourced(&fetch).await;
     let scanned = deciding.scanned(&fetch).await;
     let detected = deciding.detected(&record).await;
-    let signals = deciding.signals(
+    let detections = deciding.detections(
         &record,
         dated.full.as_ref(),
         &Beside {
@@ -1296,6 +1321,13 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             scanned: scanned.as_ref(),
             detected: &detected,
         },
+    );
+    let signals = deciding.signals(&detections);
+    let basis = decision::Basis::of(
+        fetch.digest.as_ref().map(ToString::to_string),
+        proxy.config.mode,
+        &detections,
+        scanned.as_ref(),
     );
     let described = dated.describing(&record).clone();
     let times = dated.times;
@@ -1323,7 +1355,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     deciding.scan(&fetch, scanned, refusal.as_ref());
     deciding.detect(&record, &detected, refusal.as_ref());
     let (answered, step) = deciding.answer(refusal.as_ref(), unservable, fetch, state);
-    let line = pinned_line(
+    let written = pinned_line(
         proxy,
         &Pinned {
             record: &record,
@@ -1335,15 +1367,16 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         },
         answered,
         &signals,
-    );
+    )
+    .map(|line| Written { line, basis });
     match step {
         ArtifactStep::Fetch(fetch) => ArtifactStep::Fetch(ArtifactFetch {
-            audit: line.map(Box::new),
+            audit: written.map(Box::new),
             ..fetch
         }),
         ArtifactStep::Answer(response) => {
-            if let Some(line) = &line {
-                write_audit(proxy, line);
+            if let Some(written) = &written {
+                write_pinned(proxy, written);
             }
             ArtifactStep::Answer(response)
         }
@@ -1408,17 +1441,17 @@ impl<'a> Deciding<'a> {
         }
     }
 
-    /// The signals each detector reports for `record`, logged when there is any: the
-    /// metadata heuristics, the source comparison when `sourced`, then `detected`, what each
-    /// other detector found about the version, by detector name.
+    /// What each detector found about `record`, by detector name: the metadata heuristics,
+    /// the source comparison when `sourced`, VirusTotal when `scanned`, then `detected`,
+    /// what each other detector found about the version.
     /// See docs/engineering_decisions/detectors.md.
     /// `full` is the full document, when one was fetched for this request.
-    fn signals(
+    fn detections(
         &self,
         record: &PackageRecord,
         full: Option<&PackageMetadata>,
         beside: &Beside<'_>,
-    ) -> Vec<Signal> {
+    ) -> Vec<(String, crate::analysis::detector::Detection)> {
         let metadata = self
             .proxy
             .store
@@ -1434,12 +1467,19 @@ impl<'a> Deciding<'a> {
                 scanned,
             )
         });
-        let detections: Vec<_> = std::iter::once(metadata)
+        std::iter::once(metadata)
             .chain(source)
             .chain(virustotal)
             .chain(beside.detected.iter().cloned())
-            .collect();
-        let signals = crate::signal::of_detections(&detections);
+            .collect()
+    }
+
+    /// The signals `detections` report, logged when there is any.
+    fn signals(
+        &self,
+        detections: &[(String, crate::analysis::detector::Detection)],
+    ) -> Vec<Signal> {
+        let signals = crate::signal::of_detections(detections);
         if !signals.is_empty() {
             let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
             let weights = self
@@ -2296,9 +2336,10 @@ fn pinned_line(
         today,
         account,
     } = *pinned;
-    let (Some(_), Some(policy)) = (&proxy.config.audit, proxy.config.policy.as_deref()) else {
+    let policy = proxy.config.policy.as_deref()?;
+    if proxy.config.audit.is_none() && proxy.config.analyser.is_none() {
         return None;
-    };
+    }
     let mut facts = crate::policy::decide::Facts::from_record_and_times(record, times)
         .with_provenance(provenance.clone());
     if let Some(intel) = intel {
@@ -2340,6 +2381,36 @@ fn audit_not_ready(
 fn write_audit(proxy: &Proxy, line: &audit::Event) {
     if let Some(log) = &proxy.config.audit {
         log.write(line);
+    }
+}
+
+/// Write `written` to the audit log, and queue its decision for the analysis store.
+fn write_pinned(proxy: &Proxy, written: &Written) {
+    write_audit(proxy, &written.line);
+    proxy.sinks().record(written);
+}
+
+/// A pinned line about an artifact, and what its decision row adds to it.
+struct Written {
+    line: audit::Event,
+    basis: decision::Basis,
+}
+
+/// Where a decision is written: the audit log, and the analyser's store.
+struct Sinks {
+    audit: Option<Arc<AuditLog>>,
+    analyser: Option<Arc<Analyser>>,
+}
+
+impl Sinks {
+    /// Queue the decision `written` records, when it decided something.
+    fn record(&self, written: &Written) {
+        if let (Some(analyser), Some(decided)) = (
+            &self.analyser,
+            decision::Decided::of(&written.line, &written.basis),
+        ) {
+            analyser.record(decided);
+        }
     }
 }
 
@@ -2426,7 +2497,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         ArtifactStep::Answer(response) => return response,
         ArtifactStep::Fetch(fetch) => fetch,
     };
-    let held = artifact.audit.take().map(|line| *line);
+    let held = artifact.audit.take().map(|written| *written);
     let upstream = match exchange.send(req.headers(), &artifact).await {
         Ok(upstream) => upstream,
         Err(response) => {
@@ -2694,13 +2765,7 @@ impl Exchange<'_> {
             artifact.purl,
             self.proxy.verified.clone(),
         )
-        .audited(
-            self.proxy
-                .config
-                .audit
-                .clone()
-                .zip(artifact.audit.map(|line| *line)),
-        );
+        .audited(artifact.audit.map(|written| (self.proxy.sinks(), *written)));
         (forward_status, headers, Body::from_stream(verified)).into_response()
     }
 
@@ -2775,37 +2840,40 @@ impl Exchange<'_> {
     /// Returns the line of an artifact served, for [`VerifyingStream`].
     fn audit_upstream(
         &self,
-        held: Option<audit::Event>,
+        held: Option<Written>,
         status: Option<reqwest::StatusCode>,
-    ) -> Option<audit::Event> {
+    ) -> Option<Written> {
         let failed = match status {
-            None => Some(audit::Answered::UpstreamUnreachable),
+            None => audit::Answered::UpstreamUnreachable,
             Some(status) if status.is_success() || status == reqwest::StatusCode::NOT_MODIFIED => {
-                None
-            }
-            Some(_) => Some(audit::Answered::UpstreamStatus),
-        };
-        let line = match (held, failed) {
-            (Some(line), None) => {
-                write_audit(self.proxy, &line);
-                return Some(line);
-            }
-            (Some(line), Some(answered)) => line.answered(answered),
-            (None, Some(answered)) => match &self.target {
-                RequestTarget::Metadata(key) => {
-                    undecided_line(self.proxy, key, None, answered, self.account.as_deref())?
+                if let Some(written) = &held {
+                    write_pinned(self.proxy, written);
                 }
-                _ => return None,
-            },
-            (None, None) => return None,
-        };
-        let line = match (failed, status) {
-            (Some(audit::Answered::UpstreamStatus), Some(status)) => {
-                line.with_upstream_status(status.as_u16())
+                return held;
             }
-            _ => line,
+            Some(_) => audit::Answered::UpstreamStatus,
         };
-        write_audit(self.proxy, &line);
+        let failure = |line: audit::Event| match status {
+            Some(status) => line.answered(failed).with_upstream_status(status.as_u16()),
+            None => line.answered(failed),
+        };
+        match (held, &self.target) {
+            (Some(written), _) => write_pinned(
+                self.proxy,
+                &Written {
+                    line: failure(written.line),
+                    basis: written.basis,
+                },
+            ),
+            (None, RequestTarget::Metadata(key)) => {
+                if let Some(line) =
+                    undecided_line(self.proxy, key, None, failed, self.account.as_deref())
+                {
+                    write_audit(self.proxy, &failure(line));
+                }
+            }
+            (None, _) => {}
+        }
         None
     }
 
@@ -4591,9 +4659,9 @@ mod tests {
         };
         let step = decide_artifact(proxy, request).await;
         if let ArtifactStep::Fetch(fetch) = &step
-            && let Some(line) = &fetch.audit
+            && let Some(written) = &fetch.audit
         {
-            write_audit(proxy, line);
+            write_pinned(proxy, written);
         }
         step
     }
@@ -8842,6 +8910,211 @@ mod tests {
         );
         assert!(!lines[1].decided() && !lines[3].decided());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A proxy with no audit log, recording decisions in an analyser whose store already
+    /// holds an analysis of the artifact with `digest`, so a request for it is decided at once.
+    fn recording(label: &str, upstream: String, digest: &str) -> (Proxy, Arc<Analyser>) {
+        let store = Arc::new(crate::analysis::store::InProcess::new(8));
+        let analysis = crate::analysis::store::Analysis {
+            ecosystem: "npm".to_owned(),
+            name: "widget".to_owned(),
+            version: "1.0.0".to_owned(),
+            scripts: Scripts::Declared(crate::analysis::InstallScripts::default()),
+        };
+        let digest = Sri::parse(digest).unwrap();
+        futures_util::FutureExt::now_or_never(crate::analysis::store::Analyses::put(
+            store.as_ref(),
+            &digest,
+            &analysis,
+        ))
+        .unwrap()
+        .unwrap();
+        let analyser = Arc::new(crate::analysis::run::tests::analyser(label, 1 << 20, store));
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, upstream)
+            .with_analyser(Some(analyser.clone()))
+            .with_policy(Some(policy(ALLOW_ALL)));
+        (proxy, analyser)
+    }
+
+    /// Every decision the analyser recorded, oldest first.
+    async fn recorded(analyser: &Analyser) -> Vec<decision::Decided> {
+        let page = decision::Page {
+            after: 0,
+            since: None,
+            until: None,
+            limit: 100,
+        };
+        let rows = analyser.decisions(&page).await.unwrap();
+        rows.into_iter().map(|(_, decided)| decided).collect()
+    }
+
+    /// With no audit log, a decision to serve is recorded once the upstream answers: as
+    /// `upstream-status` for a 404, and `served` then `cut-short` for a bad digest.
+    #[tokio::test]
+    async fn a_decision_is_recorded_with_what_the_upstream_made_of_it() {
+        use audit::Answered;
+        let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let digest = sri_of(&honest);
+        let packument = format!(
+            r#"{{"name":"widget","versions":{{"1.0.0":{{"version":"1.0.0","dist":{{
+                "tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz",
+                "integrity":"{digest}"}}}}}}}}"#
+        );
+        let missing = Router::new()
+            .route(
+                "/widget",
+                get(move || std::future::ready(packument.clone())),
+            )
+            .route(
+                "/widget/-/widget-1.0.0.tgz",
+                get(|| async { StatusCode::NOT_FOUND }),
+            );
+        let (proxy, analyser) = recording("record-404", serve(missing).await, &digest);
+        let base = serve(proxy.router()).await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        let tarball = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .await
+            .unwrap();
+        assert_eq!(tarball.status(), 404);
+        analyser.decisions_written(1).await;
+        let rows = recorded(&analyser).await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].digest.as_deref(), Some(digest.as_str()));
+        assert_eq!(rows[0].disposition.action, "allow");
+        assert_eq!(rows[0].disposition.answered, Answered::UpstreamStatus);
+        assert_eq!(rows[0].disposition.upstream_status, Some(404));
+        assert_eq!(rows[0].disposition.mode, "enforce");
+
+        let mut tampered = honest.clone();
+        tampered[25_000] ^= 0xFF;
+        let upstream = serve(widget_registry(&digest, tampered)).await;
+        let (proxy, analyser) = recording("record-cut-short", upstream, &digest);
+        let base = serve(proxy.router()).await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+        analyser.decisions_written(2).await;
+        let answered: Vec<Answered> = recorded(&analyser)
+            .await
+            .iter()
+            .map(|row| row.disposition.answered)
+            .collect();
+        assert_eq!(answered, [Answered::Served, Answered::CutShort]);
+        let latest = analyser
+            .dispositions(&decision::Artifact::Digest(digest.clone()))
+            .await
+            .unwrap();
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].disposition.answered, Answered::CutShort);
+        assert_eq!(latest[0].disposition.action, "allow", "the served line's");
+    }
+
+    /// The features are what the decision read: the detectors and VirusTotal results held
+    /// when it was made. The first request holds neither; a later one holds both.
+    #[tokio::test]
+    async fn a_decision_records_the_detector_and_virustotal_results_it_read() {
+        use crate::analysis::run::detecting::tests::Fake;
+        use crate::analysis::virustotal::tests::{file, settings};
+        let api =
+            crate::util::test_support::scripted(vec![crate::util::test_support::Answer::body(
+                file(3, 0, 60),
+            )])
+            .await;
+        let settings = settings(format!("http://{api}"));
+        let (proxy, analyser, _, packument) = sourcing_with(
+            "record-features",
+            SOURCE_POLICY,
+            vec![Fake::firing(&["threat-process-hooks"])],
+            Some(&settings),
+        )
+        .await;
+        let proxy = proxy.with_audit_log(None).with_mode(Mode::Observe);
+        hold_document(
+            &proxy,
+            packument.to_string().as_bytes(),
+            crate::record::DocumentDetail::Full,
+        );
+        let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+        let within = std::time::Duration::from_secs(10);
+        tokio::time::timeout(within, analyser.scans_ended(1))
+            .await
+            .expect("the lookup ends");
+        tokio::time::timeout(within, analyser.detections_ended(1))
+            .await
+            .expect("the detector ends");
+        let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+        tokio::time::timeout(within, analyser.decisions_written(2))
+            .await
+            .expect("both are written");
+
+        let rows = recorded(&analyser).await;
+        let detectors = |row: &decision::Decided| -> Vec<String> {
+            let runs = &row.features.detectors;
+            runs.iter().map(|run| run.detector.clone()).collect()
+        };
+        assert_eq!(rows[0].features.virustotal, None);
+        assert!(!detectors(&rows[0]).contains(&"guarddog".to_owned()));
+        assert_eq!(
+            rows[1].features.virustotal,
+            Some(decision::Scan {
+                state: "known".into(),
+                malicious: Some(3),
+                suspicious: Some(0),
+                engines: Some(63),
+            })
+        );
+        let guarddog = rows[1]
+            .features
+            .detectors
+            .iter()
+            .find(|run| run.detector == "guarddog")
+            .expect("the detector's result is held");
+        assert_eq!(guarddog.detection.findings[0].rule, "threat-process-hooks");
+        assert!(detectors(&rows[1]).contains(&"virustotal".to_owned()));
+        assert!(rows[1].features.facts.has_install_scripts);
+        assert_eq!(rows[1].disposition.mode, "observe");
+        assert!(rows[1].disposition.risk_score.is_some());
+        assert_eq!(rows[1].account, None);
+        assert_eq!(
+            rows[1].digest,
+            packument["versions"]["1.0.0"]["dist"]["integrity"]
+                .as_str()
+                .map(str::to_owned)
+        );
+    }
+
+    /// No analyser and no audit log: nothing records the decision, so none is built.
+    #[tokio::test]
+    async fn a_proxy_with_neither_sink_builds_no_decision_line() {
+        let proxy = offline(None, Some(ALLOW_ALL));
+        hold(&proxy, LODASH);
+        let ArtifactStep::Fetch(fetch) = pinned(&proxy, "/lodash/-/lodash-4.17.21.tgz").await
+        else {
+            panic!("an allowed version is fetched");
+        };
+        assert!(fetch.audit.is_none());
+    }
+
+    /// A decision the store fails to write is counted on the health endpoint.
+    #[tokio::test]
+    async fn a_decision_not_recorded_is_counted_in_health() {
+        let broken = Arc::new(crate::analysis::store::tests::Broken);
+        let analyser = Arc::new(crate::analysis::run::tests::analyser(
+            "record-health",
+            1 << 20,
+            broken,
+        ));
+        let proxy = offline(None, Some(ALLOW_ALL)).with_analyser(Some(analyser.clone()));
+        assert_eq!(proxy.health().decisions_unrecorded, 0);
+        analyser.record(decision::tests::decided("a", "sha512-x"));
+        for _ in 0..200 {
+            if proxy.health().decisions_unrecorded == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        assert_eq!(proxy.health().decisions_unrecorded, 1);
     }
 
     const SOURCE_HEAD: &str = "0123456789abcdef0123456789abcdef01234567";

@@ -1,0 +1,9 @@
+The latest decision on each artifact named, as JSON Lines: its features and its disposition. Exits 1 when none is recorded
+
+Usage: byrle artifact show <ARTIFACT>
+
+Arguments:
+  <ARTIFACT>  A digest, such as sha512-..., or one version's purl, such as pkg:npm/ms@2.1.3. A PyPI version has one artifact per file
+
+Options:
+  -h, --help  Print help

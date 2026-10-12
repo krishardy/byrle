@@ -153,6 +153,11 @@ scanned. The console requires it: with no database set, the console does not sta
 | `served_version` | account, purl and version served: first and last time. Answers R3 and R4 |
 | `failure_count` | hour, ecosystem and `answered` case: a count. Answers R6 |
 
+`artifact_decision` (Ad-hoc #32, [artifact-decisions](engineering_decisions/artifact-decisions.md))
+already holds a row per pinned artifact decision, with its account, purl, version, features
+and disposition, written through a bounded queue. `served_version` can be read from it
+rather than written beside it.
+
 The two index tables are written by the proxy beside each audit line. The write never fails
 or delays an install: rows go through a bounded queue and are written in batches, and a
 full queue counts what it drops. The console shows the count.

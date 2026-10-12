@@ -20,12 +20,14 @@ use crate::spool::{Spool, Spooled, WriteError};
 use crate::util::lru::Lru;
 
 pub(crate) mod detecting;
+mod recording;
 mod sourcing;
 mod virustotal;
 
 pub use virustotal::ScanJob;
 
 pub use detecting::DETECTOR_SLOTS;
+pub use recording::{BATCH, QUEUE};
 pub use sourcing::{SOURCE_SLOTS, SOURCE_TREES, SourceJob};
 
 /// How long one job may take, from its fetch starting to its analysis being stored.
@@ -91,6 +93,8 @@ pub struct Analyser {
     detectors: Option<detecting::Detectors>,
     /// VirusTotal, when it is on.
     scans: Option<virustotal::Scans>,
+    /// Where each decision is queued to be written.
+    recorder: recording::Recorder,
 }
 
 impl Analyser {
@@ -113,6 +117,7 @@ impl Analyser {
             sources: None,
             detectors: None,
             scans: None,
+            recorder: recording::Recorder::default(),
         }
     }
 

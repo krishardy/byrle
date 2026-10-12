@@ -3,6 +3,7 @@
 //! See `docs/engineering_decisions/artifact-analysis-store.md`.
 
 use crate::analysis::attestation::Attested;
+use crate::analysis::decision::{Artifact, Decided, Page};
 use crate::analysis::detector::Detection;
 use crate::analysis::source::Sourced;
 use crate::analysis::virustotal::Scanned;
@@ -129,6 +130,24 @@ pub trait Analyses: Send + Sync {
 
     /// Record a request made at `at`, Unix seconds.
     fn put_virustotal_asked(&self, at: i64) -> Stored<'_, ()>;
+
+    /// Record each decision, in order.
+    fn put_decisions<'a>(&'a self, decided: &'a [Decided]) -> Stored<'a, ()>;
+
+    /// The latest decision on each artifact `artifact` names, oldest first.
+    fn dispositions<'a>(&'a self, artifact: &'a Artifact) -> Stored<'a, Vec<Decided>>;
+
+    /// The decisions `page` asks for, oldest first, each with the row id the next page
+    /// starts after.
+    fn decisions<'a>(&'a self, page: &'a Page) -> Stored<'a, Vec<(i64, Decided)>>;
+}
+
+/// The decisions this process has recorded, the oldest dropped past its budget.
+struct Decisions {
+    /// The id the last decision recorded was given.
+    last: i64,
+    held: std::collections::VecDeque<(i64, Decided)>,
+    max_entries: usize,
 }
 
 /// The analyses this process has made, least recently used evicted first.
@@ -139,11 +158,12 @@ pub struct InProcess(
     Mutex<Lru<DetectionKey, Detection>>,
     Mutex<Lru<Sri, Scanned>>,
     Mutex<Vec<i64>>,
+    Mutex<Decisions>,
 );
 
 impl InProcess {
     /// `max_entries` analyses, and as many attestation, source, detector and VirusTotal
-    /// results.
+    /// results and decisions.
     pub fn new(max_entries: usize) -> Self {
         Self(
             Mutex::new(Lru::new(max_entries)),
@@ -152,7 +172,16 @@ impl InProcess {
             Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
             Mutex::default(),
+            Mutex::new(Decisions {
+                last: 0,
+                held: std::collections::VecDeque::new(),
+                max_entries,
+            }),
         )
+    }
+
+    fn decisions_held(&self) -> std::sync::MutexGuard<'_, Decisions> {
+        self.6.lock().expect("decision store lock")
     }
 
     pub fn len(&self) -> usize {
@@ -283,6 +312,46 @@ impl Analyses for InProcess {
             Ok(())
         })
     }
+
+    fn put_decisions<'a>(&'a self, decided: &'a [Decided]) -> Stored<'a, ()> {
+        Box::pin(async move {
+            let mut held = self.decisions_held();
+            for one in decided {
+                held.last += 1;
+                let id = held.last;
+                held.held.push_back((id, one.clone()));
+                if held.held.len() > held.max_entries {
+                    held.held.pop_front();
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn dispositions<'a>(&'a self, artifact: &'a Artifact) -> Stored<'a, Vec<Decided>> {
+        Box::pin(async move {
+            let held = self.decisions_held();
+            let mut latest: Vec<&Decided> = Vec::new();
+            for (_, decided) in held.held.iter().filter(|(_, d)| artifact.matches(d)) {
+                latest.retain(|kept| kept.digest != decided.digest);
+                latest.push(decided);
+            }
+            Ok(latest.into_iter().cloned().collect())
+        })
+    }
+
+    fn decisions<'a>(&'a self, page: &'a Page) -> Stored<'a, Vec<(i64, Decided)>> {
+        Box::pin(async move {
+            Ok(self
+                .decisions_held()
+                .held
+                .iter()
+                .filter(|(id, decided)| *id > page.after && page.includes(decided))
+                .take(page.limit)
+                .cloned()
+                .collect())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +401,15 @@ pub(crate) mod tests {
             broken()
         }
         fn put_detected<'a>(&'a self, _: &'a DetectionKey, _: &'a Detection) -> Stored<'a, ()> {
+            broken()
+        }
+        fn put_decisions<'a>(&'a self, _: &'a [Decided]) -> Stored<'a, ()> {
+            broken()
+        }
+        fn dispositions<'a>(&'a self, _: &'a Artifact) -> Stored<'a, Vec<Decided>> {
+            broken()
+        }
+        fn decisions<'a>(&'a self, _: &'a Page) -> Stored<'a, Vec<(i64, Decided)>> {
             broken()
         }
     }
@@ -466,6 +544,73 @@ pub(crate) mod tests {
             bodies: vec![("postinstall".to_owned(), "node install.js".to_owned())],
         }));
         assert_eq!(scripts.names(), Some(&["postinstall".to_owned()][..]));
+    }
+
+    #[tokio::test]
+    async fn the_latest_decision_on_each_artifact_is_its_disposition() {
+        use crate::analysis::decision::tests::decided;
+        let store = InProcess::new(8);
+        let mut older = decided("a", "sha512-1");
+        older.disposition.action = "block".into();
+        let rows = [
+            older,
+            decided("a", "sha512-2"),
+            decided("b", "sha512-3"),
+            decided("a", "sha512-1"),
+        ];
+        store.put_decisions(&rows).await.expect("writes");
+        let version = Artifact::Version {
+            ecosystem: "npm".into(),
+            name: "a".into(),
+            version: "1.0.0".into(),
+        };
+        let latest = store.dispositions(&version).await.expect("answers");
+        assert_eq!(latest, [rows[1].clone(), rows[3].clone()]);
+        let one = Artifact::Digest("sha512-3".into());
+        assert_eq!(
+            store.dispositions(&one).await.expect("answers"),
+            [rows[2].clone()]
+        );
+        let none = Artifact::Digest("sha512-9".into());
+        assert!(store.dispositions(&none).await.expect("answers").is_empty());
+    }
+
+    #[tokio::test]
+    async fn decisions_are_paged_by_id_and_day_and_the_oldest_dropped_past_the_budget() {
+        use crate::analysis::decision::tests::decided;
+        let store = InProcess::new(3);
+        let mut rows: Vec<Decided> = (1..=4)
+            .map(|n| decided(&format!("p{n}"), &format!("sha512-{n}")))
+            .collect();
+        for (row, day) in rows.iter_mut().zip(["10", "11", "12", "13"]) {
+            row.at = format!("2026-10-{day}T00:00:00Z");
+        }
+        store.put_decisions(&rows[..2]).await.expect("writes");
+        store.put_decisions(&rows[2..]).await.expect("writes");
+        let page = |after, since: Option<&str>, until: Option<&str>, limit| Page {
+            after,
+            since: since.map(str::to_owned),
+            until: until.map(str::to_owned),
+            limit,
+        };
+        let ids = |found: Vec<(i64, Decided)>| found.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        assert_eq!(
+            ids(store.decisions(&page(0, None, None, 10)).await.unwrap()),
+            [2, 3, 4]
+        );
+        assert_eq!(
+            ids(store.decisions(&page(0, None, None, 2)).await.unwrap()),
+            [2, 3]
+        );
+        assert_eq!(
+            ids(store.decisions(&page(3, None, None, 10)).await.unwrap()),
+            [4]
+        );
+        let days = store
+            .decisions(&page(0, Some("2026-10-12"), Some("2026-10-12"), 10))
+            .await
+            .unwrap();
+        assert_eq!(days, [(3, rows[2].clone())]);
     }
 
     #[test]
