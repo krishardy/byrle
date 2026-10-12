@@ -1,0 +1,24 @@
+# The policy the development environment enforces. compose.yaml mounts it read-only at
+# /etc/byrle/policy.yaml and sets BYRLE_POLICY to that path.
+#
+# Edit it, then reload it without a restart:
+#   podman kill -s HUP byrle-dev
+#
+# Every key is in docs/policy-reference.md, with comments in examples/policy.yaml.
+
+version: 1
+
+cooldown_days: 7
+max_cvss: 6.9
+install_scripts: block
+kev: block
+deprecated: allow
+yanked: block
+provenance: block
+provenance_window_days: 7
+
+denials:
+  - purl: "pkg:npm/chalk@5.6.1"
+    reason: "compromised release, Sept 2025"
+
+packages: []
