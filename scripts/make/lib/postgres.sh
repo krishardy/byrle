@@ -23,9 +23,11 @@ postgres_bin=""
 postgres_kind=""
 postgres_where=""
 
-# The URL for the server on port $1. `sslmode=disable`: it serves no TLS.
+# The URL for the server on port $1, as role $2, password $3, database $4, each `byrle`
+# when not given. `sslmode=disable`: it serves no TLS.
 postgres_url() {
-    printf 'postgres://byrle:byrle@127.0.0.1:%s/byrle?sslmode=disable' "$1"
+    printf 'postgres://%s:%s@127.0.0.1:%s/%s?sslmode=disable' \
+        "${2:-byrle}" "${3:-byrle}" "$1" "${4:-byrle}"
 }
 
 # The directory holding `initdb`, `pg_ctl` and `createdb`: the PATH first, then Alpine's

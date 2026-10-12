@@ -1,12 +1,17 @@
 #!/usr/bin/env bash
 # Run byrle in the foreground against the development database, from `make start-dev-db`.
-# Arguments and the environment pass through to `make run`'s script; a
-# BYRLE_DATABASE_URL already set is kept.
+#
+# Usage: run-dev.sh USER PASSWORD DATABASE [ARGS...]
+#
+# ARGS and the environment pass through to `make run`'s script; a BYRLE_DATABASE_URL
+# already set is kept.
 set -euo pipefail
 
 script_dir="$(dirname "${BASH_SOURCE[0]}")"
 # shellcheck source=scripts/make/lib/dev-db.sh
 source "$script_dir/lib/dev-db.sh"
+read_dev_db_args "$@"
+shift 3
 require_podman
 
 if ! dev_db_running; then
