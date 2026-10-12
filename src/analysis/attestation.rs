@@ -52,12 +52,12 @@ fn verified_identity(bundle: &Bundle, digest: &Sri) -> Result<String, String> {
         .map_err(|e| e.to_string())?;
     result
         .identity()
-        .map(identity)
+        .map(|san| identity(san.as_str()))
         .ok_or("the certificate names no identity".to_owned())
 }
 
 /// The `sigstore-verify` version `Cargo.toml` pins. Checked against it by a test.
-const SIGSTORE_VERIFY: &str = "0.13.0";
+const SIGSTORE_VERIFY: &str = "0.14.0";
 
 /// What verified a stored result: the crate version and a digest of the root it embeds.
 /// A result is read back only by the verifier that wrote it, so an upgrade that fixes a
@@ -380,10 +380,10 @@ mod tests {
         );
         let id = verifier_id();
         assert!(
-            id.starts_with("sigstore-verify 0.13.0; root sha256:"),
+            id.starts_with("sigstore-verify 0.14.0; root sha256:"),
             "{id}"
         );
-        assert_eq!(id.len(), "sigstore-verify 0.13.0; root sha256:".len() + 16);
+        assert_eq!(id.len(), "sigstore-verify 0.14.0; root sha256:".len() + 16);
     }
 
     #[test]
