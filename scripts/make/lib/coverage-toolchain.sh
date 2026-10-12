@@ -9,6 +9,15 @@
 # Pinned, so a nightly that stops building this crate is chosen by editing this line rather
 # than met on the next run. Builds, tests, lint and release stay on stable.
 byrle_coverage_toolchain="nightly-2026-09-28"
+# The cargo-llvm-cov that reads this nightly's target directory. Its cargo keeps a test
+# binary under `debug/build/<package>/<hash>/out`, and 0.8.4 looked only in `debug/deps`:
+# "failed to collect object files" on 2026-10-12. 0.9.1 reads it.
+byrle_llvm_cov_version="0.9.1"
+
+# Whether the installed cargo-llvm-cov is $byrle_llvm_cov_version.
+byrle_llvm_cov_pinned() {
+    [[ "$(cargo llvm-cov --version 2>/dev/null)" == "cargo-llvm-cov $byrle_llvm_cov_version" ]]
+}
 
 byrle_install_coverage_toolchain() {
     echo "==> $byrle_coverage_toolchain (the toolchain 'make coverage' runs on)"

@@ -29,6 +29,11 @@ if ! cargo "$nightly" llvm-cov --version >/dev/null 2>&1; then
     echo "cargo-llvm-cov or $byrle_coverage_toolchain is not installed. Run 'make dev-setup'."
     exit 1
 fi
+if ! byrle_llvm_cov_pinned; then
+    echo "$(cargo llvm-cov --version) is installed; make coverage needs" \
+        "cargo-llvm-cov $byrle_llvm_cov_version. Run 'make dev-setup'."
+    exit 1
+fi
 
 # Four files need a real database and nothing else can reach them. Their tests are
 # `tests/postgres.rs`, which `make test-integration` runs against a container and
