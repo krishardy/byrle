@@ -1,8 +1,11 @@
 # Attestations are verified with `sigstore-verify`, not `sigstore`
 
-- **Status:** Decided 2026-09-26. `sigstore-verify = "=0.13.0"` with default features off:
-  `src/analysis/attestation.rs` verifies, `src/ecosystem/npm/attestation.rs` reads npm's
-  document.
+- **Status:** Decided 2026-09-26 at 0.13.0. Upgraded 2026-10-13 to `sigstore-verify =
+  "=0.14.0"` with default features off: `src/analysis/attestation.rs` verifies,
+  `src/ecosystem/npm/attestation.rs` reads npm's document. 0.14.0 returns the identity as
+  a `SubjectAltName`, read with `as_str()`. `VerificationPolicy::any_identity()` still
+  checks the certificate chain, its SCT and the transparency log. The verifier id changes
+  with the version, so stored attestation results are verified again.
 - **Related:** [pypi-provenance](pypi-provenance.md),
   [sqlx-0-8-and-rsa-advisory](sqlx-0-8-and-rsa-advisory.md),
   [artifact-spool](artifact-spool.md)
