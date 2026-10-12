@@ -362,6 +362,8 @@ Items that I've added that are not stage-bound.
     - Full-file: as hash-only, and when VirusTotal does not know the hash, upload the
       artifact and wait for the result.
     - Disabled: no VirusTotal request is made.
+32. [ ] Artifact analysis: store the analysis feature vector and the disposition. Raised
+    2026-10-12.
 
 ## Architecture Refactor
 
