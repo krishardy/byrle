@@ -42,7 +42,7 @@ code, and the file names where.
 | [One library crate and one binary, not a workspace](one-crate.md) | Decided |
 | [Every build carries every ecosystem](no-ecosystem-features.md) | Decided |
 | [Console listener](console-listener.md) | Implemented |
-| [Log rotation](log-rotation.md) | Decided |
+| [Log rotation](log-rotation.md) | Implemented for the audit log |
 | [Console web interface: Rust and maud](console-web-interface.md) | Decided |
 | [Console login crates: argon2 and jsonwebtoken](console-login-crates.md) | Decided |
 | [byrle resolves no version ranges](no-range-resolution.md) | Decided |

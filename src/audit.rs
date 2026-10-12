@@ -4,11 +4,9 @@
 
 use crate::policy::decide::{Advisory, Decision, Facts, Intel, Outcome, Provenance};
 use crate::policy::enforce::Unenforceable;
+use crate::rotation::Rotating;
 use serde::{Deserialize, Serialize};
-use std::fs::{File, OpenOptions};
-use std::io::Write;
 use std::path::Path;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::warn;
 
@@ -470,10 +468,10 @@ impl Event {
 pub struct Replay {
     /// Pinned lines decided again to the same action, checks, exceptions and unenforced checks.
     pub reproduced: usize,
-    /// Line number, and what differs.
-    pub differ: Vec<(usize, String)>,
-    /// Line number, and why it could not be decided again.
-    pub not_replayable: Vec<(usize, String)>,
+    /// `<file>:<line>`, and what differs.
+    pub differ: Vec<(String, String)>,
+    /// `<file>:<line>`, and why it could not be decided again.
+    pub not_replayable: Vec<(String, String)>,
     /// Reproduced or not, lines another build wrote.
     pub other_build: usize,
 }
@@ -485,13 +483,21 @@ impl Replay {
         bit(!self.differ.is_empty(), DIFFERS) | bit(!self.not_replayable.is_empty(), NOT_REPLAYABLE)
     }
 
+    /// Add what replaying another file found.
+    pub fn add(&mut self, other: Replay) {
+        self.reproduced += other.reproduced;
+        self.differ.extend(other.differ);
+        self.not_replayable.extend(other.not_replayable);
+        self.other_build += other.other_build;
+    }
+
     pub fn render(&self) -> String {
         let mut out = String::new();
         for (line, what) in &self.differ {
-            out.push_str(&format!("line {line}: differs: {what}\n"));
+            out.push_str(&format!("{line}: differs: {what}\n"));
         }
         for (line, why) in &self.not_replayable {
-            out.push_str(&format!("line {line}: not replayable: {why}\n"));
+            out.push_str(&format!("{line}: not replayable: {why}\n"));
         }
         out.push_str(&format!(
             "{} reproduced, {} differ, {} not replayable",
@@ -528,7 +534,8 @@ pub struct Verified {
     pub code: u8,
 }
 
-/// `byrle audit verify`: load `policies`, then [`replay`] the log at `log`.
+/// `byrle audit verify`: load `policies`, then [`replay`] the log at `log` and each file
+/// rotated from it, oldest first.
 pub fn verify(log: &std::path::Path, policies: &[std::path::PathBuf]) -> Verified {
     let unread = |note: String| Verified {
         notes: vec![note],
@@ -542,11 +549,13 @@ pub fn verify(log: &std::path::Path, policies: &[std::path::PathBuf]) -> Verifie
             Err(e) => return unread(e.to_string()),
         }
     }
-    let source = match std::fs::read_to_string(log) {
-        Ok(source) => source,
-        Err(e) => return unread(format!("{}: {e}", log.display())),
-    };
-    let replayed = replay(&source, &loaded);
+    let mut replayed = Replay::default();
+    let read = crate::rotation::each(log, &mut |file, source| {
+        replayed.add(replay(file, source, &loaded));
+    });
+    if let Err(e) = read {
+        return unread(e);
+    }
     Verified {
         notes: Vec::new(),
         report: replayed.render(),
@@ -554,17 +563,17 @@ pub fn verify(log: &std::path::Path, policies: &[std::path::PathBuf]) -> Verifie
     }
 }
 
-/// Decide every pinned line of `log` again from what it recorded, under whichever of
-/// `policies` has the digest it names, as of the date it names.
-pub fn replay(log: &str, policies: &[crate::policy::Policy]) -> Replay {
+/// Decide every pinned line of `log`, the text of `file`, again from what it recorded, under
+/// whichever of `policies` has the digest it names, as of the date it names.
+pub fn replay(file: &str, log: &str, policies: &[crate::policy::Policy]) -> Replay {
     let mut out = Replay::default();
     for (i, line) in log
         .lines()
         .enumerate()
         .filter(|(_, l)| !l.trim().is_empty())
     {
-        let number = i + 1;
-        let mut not = |why: String| out.not_replayable.push((number, why));
+        let number = format!("{file}:{}", i + 1);
+        let mut not = |why: String| out.not_replayable.push((number.clone(), why));
         let Ok(event) = serde_json::from_str::<Event>(line) else {
             not("not an audit line".to_owned());
             continue;
@@ -695,30 +704,31 @@ pub fn packages(log: &str) -> Vec<(String, String, String)> {
 /// The audit log, when one is configured.
 #[derive(Debug)]
 pub struct AuditLog {
-    file: Mutex<File>,
+    file: Rotating,
     /// So an unwritable log warns once rather than once per package.
     warned: AtomicBool,
 }
 
 impl AuditLog {
-    /// Open for appending, creating it if it is not there.
-    pub fn open(path: &Path) -> std::io::Result<Self> {
+    /// Open for appending, creating it if it is not there. Rotated files older than
+    /// `retention_days` are deleted.
+    pub fn open(path: &Path, retention_days: u32) -> std::io::Result<Self> {
         Ok(Self {
-            file: Mutex::new(OpenOptions::new().create(true).append(true).open(path)?),
+            file: Rotating::open(path, retention_days, crate::rotation::today())?,
             warned: AtomicBool::new(false),
         })
     }
 
     /// Append one event. Failure is warned about once and otherwise ignored.
     pub fn write(&self, event: &Event) {
+        self.write_on(event, crate::rotation::today());
+    }
+
+    /// Append one event on `today`, a UTC day.
+    fn write_on(&self, event: &Event, today: jiff::civil::Date) {
         let mut line = serde_json::to_vec(event).expect("an event serialises");
         line.push(b'\n');
-
-        let mut file = match self.file.lock() {
-            Ok(file) => file,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if file.write_all(&line).is_err() {
+        if self.file.append(&line, today).is_err() {
             self.warn_once("audit log could not be written");
         }
     }
@@ -997,7 +1007,7 @@ not json
     fn every_line_is_one_json_object_and_ends_with_a_newline() {
         let dir = tempdir("audit-lines");
         let path = dir.join("audit.jsonl");
-        let log = AuditLog::open(&path).expect("should open");
+        let log = AuditLog::open(&path, RETAINED).expect("should open");
 
         log.write(&Event::pinned(
             "npm",
@@ -1029,7 +1039,7 @@ not json
         let path = dir.join("audit.jsonl");
         std::fs::write(&path, "{\"kept\":true}\n").expect("should write");
 
-        AuditLog::open(&path)
+        AuditLog::open(&path, RETAINED)
             .expect("should open")
             .write(&Event::pinned(
                 "npm",
@@ -1047,8 +1057,10 @@ not json
     #[test]
     fn a_path_that_cannot_be_opened_is_an_error_rather_than_a_panic() {
         let dir = tempdir("audit-unopenable");
-        assert!(AuditLog::open(&dir.join("no-such-dir").join("audit.jsonl")).is_err());
+        assert!(AuditLog::open(&dir.join("no-such-dir").join("audit.jsonl"), RETAINED).is_err());
     }
+
+    const RETAINED: u32 = crate::env::DEFAULT_LOG_RETENTION_DAYS;
 
     const REPLAYED: &str = "version: 1\ncooldown_days: 0\nmax_cvss: 7.0\n";
 
@@ -1098,7 +1110,7 @@ not json
 
         assert!(log.contains("\"action\":\"block\""), "{log}");
         assert_eq!(
-            replay(&log, &[policy]),
+            replay("audit.jsonl", &log, &[policy]),
             Replay {
                 reproduced: 1,
                 ..Replay::default()
@@ -1112,13 +1124,13 @@ not json
         let log = recorded(&policy, &refused_facts())
             .replace("\"action\":\"block\"", "\"action\":\"allow\"");
 
-        let replay = replay(&log, &[policy]);
+        let replay = replay("audit.jsonl", &log, &[policy]);
 
         assert_eq!(replay.reproduced, 0);
         assert_eq!(
             replay.differ,
             [(
-                1,
+                "audit.jsonl:1".to_owned(),
                 "pkg:npm/lodash@4.17.21: action allow now block".to_owned()
             )]
         );
@@ -1150,12 +1162,12 @@ not json
                 "\"action\":\"allow\",\"checks\":[\"kev\"]",
             );
 
-        let replay = replay(&tampered, &[policy]);
+        let replay = replay("audit.jsonl", &tampered, &[policy]);
 
         assert_eq!(
             replay.differ,
             [(
-                1,
+                "audit.jsonl:1".to_owned(),
                 "pkg:npm/lodash@4.17.21: checks [\"kev\"] now []; exceptions_used [1] now [0]; \
                  unenforceable [] now [\"cooldown_days\"]"
                     .to_owned()
@@ -1173,7 +1185,7 @@ not json
             recorded(&loose, &refused_facts())
         );
 
-        assert_eq!(replay(&log, &[loose, strict]).reproduced, 2);
+        assert_eq!(replay("audit.jsonl", &log, &[loose, strict]).reproduced, 2);
     }
 
     /// A request answered before anything was decided is written with no action, pinned or
@@ -1200,7 +1212,7 @@ not json
                 );
                 assert!(!line.contains("\"action\""), "nothing was decided: {line}");
                 let policy = policy("version: 1\ncooldown_days: 0\n");
-                let replayed = replay(&format!("{line}\n"), &[policy]);
+                let replayed = replay("audit.jsonl", &format!("{line}\n"), &[policy]);
                 assert_eq!(
                     (
                         replayed.reproduced,
@@ -1227,7 +1239,7 @@ not json
             let event: Event = serde_json::from_str(&recorded(&policy, &facts())).unwrap();
             let line = serde_json::to_string(&event.answered(answered).with_upstream_status(404))
                 .expect("serialises");
-            let replayed = replay(&line, std::slice::from_ref(&policy));
+            let replayed = replay("audit.jsonl", &line, std::slice::from_ref(&policy));
             assert_eq!((replayed.reproduced, replayed.code()), (1, 0), "{line}");
             assert_eq!(packages(&line).len(), 1, "{line}");
         }
@@ -1269,25 +1281,28 @@ not json
         ]
         .join("\n");
 
-        let replay = replay(&log, &[policy]);
+        let replay = replay("audit.jsonl", &log, &[policy]);
 
         let unreadable = "its recorded inputs do not read".to_owned();
         assert_eq!(
             replay,
             Replay {
                 not_replayable: vec![
-                    (1, "written before inputs were recorded".to_owned()),
                     (
-                        2,
+                        "audit.jsonl:1".to_owned(),
+                        "written before inputs were recorded".to_owned()
+                    ),
+                    (
+                        "audit.jsonl:2".to_owned(),
                         format!(
                             "no policy given has digest {}",
                             crate::policy::digest_of("version: 1\n")
                         )
                     ),
-                    (3, unreadable.clone()),
-                    (4, unreadable.clone()),
-                    (5, unreadable),
-                    (6, "not an audit line".to_owned()),
+                    ("audit.jsonl:3".to_owned(), unreadable.clone()),
+                    ("audit.jsonl:4".to_owned(), unreadable.clone()),
+                    ("audit.jsonl:5".to_owned(), unreadable),
+                    ("audit.jsonl:6".to_owned(), "not an audit line".to_owned()),
                 ],
                 ..Replay::default()
             }
@@ -1302,7 +1317,7 @@ not json
             "\"build\":\"0.0.0\"",
         );
 
-        let replay = replay(&log, &[policy]);
+        let replay = replay("audit.jsonl", &log, &[policy]);
 
         assert_eq!((replay.reproduced, replay.other_build), (1, 1));
         assert_eq!(
@@ -1315,18 +1330,46 @@ not json
     }
 
     #[test]
+    fn what_two_files_found_is_added_together() {
+        let place = |n: usize| (format!("audit.jsonl:{n}"), "why".to_owned());
+        let one = || Replay {
+            reproduced: 1,
+            differ: vec![place(1)],
+            not_replayable: vec![place(2)],
+            other_build: 2,
+        };
+        let mut both = one();
+        both.add(Replay {
+            other_build: 3,
+            ..one()
+        });
+        assert_eq!(
+            both,
+            Replay {
+                reproduced: 2,
+                differ: vec![place(1), place(1)],
+                not_replayable: vec![place(2), place(2)],
+                other_build: 5,
+            }
+        );
+    }
+
+    #[test]
     fn the_report_lists_each_line_then_the_counts() {
         let replay = Replay {
             reproduced: 3,
-            differ: vec![(2, "pkg:npm/a@1: action allow now block".to_owned())],
-            not_replayable: vec![(5, "not an audit line".to_owned())],
+            differ: vec![(
+                "audit.jsonl:2".to_owned(),
+                "pkg:npm/a@1: action allow now block".to_owned(),
+            )],
+            not_replayable: vec![("audit.jsonl:5".to_owned(), "not an audit line".to_owned())],
             other_build: 0,
         };
 
         assert_eq!(
             replay.render(),
-            "line 2: differs: pkg:npm/a@1: action allow now block\n\
-             line 5: not replayable: not an audit line\n\
+            "audit.jsonl:2: differs: pkg:npm/a@1: action allow now block\n\
+             audit.jsonl:5: not replayable: not an audit line\n\
              3 reproduced, 1 differ, 1 not replayable\n"
         );
     }
@@ -1457,9 +1500,38 @@ not json
         assert_eq!(run(&both).code, DIFFERS | NOT_REPLAYABLE);
         assert_eq!(run("").code, 0, "an empty log has nothing unverified");
         assert!(
-            differs.report.starts_with("line 1: differs: "),
+            differs.report.starts_with("audit.jsonl:1: differs: "),
             "{}",
             differs.report
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A line written after midnight goes to a new file, and verify reads both, naming each.
+    #[test]
+    fn verify_reads_the_files_rotated_from_the_log() {
+        let dir = tempdir("audit-verify-rotated");
+        let (policy_path, log_path) = (dir.join("p.yaml"), dir.join("audit.jsonl"));
+        std::fs::write(&policy_path, REPLAYED).unwrap();
+        let day = jiff::civil::date(2026, 10, 12);
+        let log = AuditLog {
+            file: Rotating::open(&log_path, RETAINED, day).unwrap(),
+            warned: AtomicBool::new(false),
+        };
+        let line: Event =
+            serde_json::from_str(&recorded(&policy(REPLAYED), &refused_facts())).unwrap();
+        let allowed = Event {
+            action: "allow".to_owned(),
+            ..line.clone()
+        };
+        log.write_on(&allowed, day);
+        log.write_on(&line, day.tomorrow().unwrap());
+
+        let verified = verify(&log_path, std::slice::from_ref(&policy_path));
+        assert_eq!(
+            verified.report,
+            "audit.jsonl.2026-10-12:1: differs: pkg:npm/lodash@4.17.21: action allow now block\n\
+             1 reproduced, 1 differ, 0 not replayable\n"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1489,7 +1561,7 @@ not json
     fn a_log_that_cannot_be_written_warns_once() {
         use crate::util::test_support::{capture, text};
 
-        let log = AuditLog::open(Path::new("/dev/full")).expect("opens");
+        let log = AuditLog::open(Path::new("/dev/full"), RETAINED).expect("opens");
         let event = Event::pinned("npm", "lodash", "4.17.21", &decision("version: 1"), &[]);
         let (_guard, buf) = capture(tracing::Level::WARN);
         log.write(&event);
@@ -1506,28 +1578,6 @@ not json
             logged.contains("audit log could not be written"),
             "{logged}"
         );
-    }
-
-    /// A writer that panicked holding the lock does not stop the next event.
-    #[test]
-    fn a_lock_a_writer_panicked_holding_is_still_used() {
-        let path = crate::util::test_support::tempdir("audit-poisoned").join("audit.log");
-        let log = std::sync::Arc::new(AuditLog::open(&path).expect("opens"));
-        let held = log.clone();
-        let _ = std::thread::spawn(move || {
-            let _file = held.file.lock().unwrap();
-            panic!("poisons the lock");
-        })
-        .join();
-        assert!(log.file.is_poisoned());
-        log.write(&Event::pinned(
-            "npm",
-            "lodash",
-            "4.17.21",
-            &decision("version: 1"),
-            &[],
-        ));
-        assert_eq!(packages(&std::fs::read_to_string(&path).unwrap()).len(), 1);
     }
 
     /// A line with signals carries their score, and one without carries none.
