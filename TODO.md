@@ -347,6 +347,15 @@ Items that I've added that are not stage-bound.
     makes readiness 503 with the gaps listed; `doctor` reports it as a problem. See
     [uncovered-ecosystem-fails-closed](docs/engineering_decisions/uncovered-ecosystem-fails-closed.md).
 
+30. [ ] Find why `make smoke-npm` step 4 failed once. Raised 2026-10-12: `FAIL: 69 tarballs
+    fetched but only 70 had a digest from their packument`, so one tarball request logged
+    `artifact requested, digest known` and was neither deferred nor proxied. 1 failure in 7
+    runs; the 6 passing runs logged no `upstream request failed` or `upstream body failed
+    mid-stream`. The failed run's log was lost. `upstream request failed`
+    (`src/proxy.rs:2431`) logs no `proxied` line, so a transient registry error fits, but
+    it is not confirmed. The Stage 4.9 audit item for upstream unreachable and non-2xx
+    would record it.
+
 ## Architecture Refactor
 
 Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here
@@ -2595,7 +2604,11 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 
 1. [ ] Sign all commits. Re-signing rewrites every commit hash, so it is done before the
        first push.
-2. [ ] Smoke test the proxy against live workloads.
+2. [x] Smoke test the proxy against live workloads. Done 2026-10-12: `smoke-proxy`,
+       `smoke-npm`, `smoke-python`, `smoke-clients` and `smoke-tls-front` pass. Fixed on
+       the way: nginx temp paths when not root, and `lib/token.sh` under shellcheck.
+       Caddy removed ([tls-front-nginx](docs/engineering_decisions/tls-front-nginx.md)).
+       `smoke-npm` failed once in 7 runs (Ad-hoc #30).
 3. [ ] Git push. The remote is not set up yet; the GitHub home is
        `github.com/krishardy/byrle`.
 
