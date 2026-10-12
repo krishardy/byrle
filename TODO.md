@@ -356,6 +356,13 @@ Items that I've added that are not stage-bound.
     it is not confirmed. The Stage 4.9 audit item for upstream unreachable and non-2xx
     would record it.
 
+31. [ ] Add a VirusTotal check on artifacts. Raised 2026-10-12. Three modes:
+    - Hash-only, the default: ask VirusTotal whether the artifact's hash has any
+      detections. If it has, set a flag in the artifact's analysis.
+    - Full-file: as hash-only, and when VirusTotal does not know the hash, upload the
+      artifact and wait for the result.
+    - Disabled: no VirusTotal request is made.
+
 ## Architecture Refactor
 
 Not stage-bound. From a review of the source on 2026-09-17, at `4753bb2`. Every item here
