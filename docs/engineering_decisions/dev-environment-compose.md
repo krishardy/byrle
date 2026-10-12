@@ -20,7 +20,15 @@ in the Makefile. `run-dev.sh` takes them as arguments and exports them for `comp
 migrations at startup.
 
 `podman exec -it byrle-dev sh` opens a shell next to the daemon, where `byrle account`,
-`byrle refresh` and the other commands use the same `BYRLE_DATABASE_URL`.
+`byrle refresh` and the other commands use the same `BYRLE_DATABASE_URL`. Until `byrle
+refresh` has run once, every artifact answers 503 `intel-store`. It took 92 s on
+2026-10-12.
+
+`BYRLE_POLICY` is `/etc/byrle/policy.yaml`, from `dev/policy.yaml`. `compose.yaml`
+mounts the `dev/` directory read-only, not the file: an editor that saves by writing a new
+file and renaming it leaves a single-file mount on the old inode. `podman kill -s HUP
+byrle-dev` reloads it. Tested 2026-10-12: a denial of `left-pad@1.3.0` added with `sed -i`
+turned 200 into 403 after the SIGHUP, and back to 200 once removed.
 
 ## Why podman-compose and not `podman compose`
 

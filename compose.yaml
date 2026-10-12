@@ -45,6 +45,12 @@ services:
       BYRLE_LISTEN: 0.0.0.0:8080
       # The address package managers on the host use. It is written into lockfiles.
       BYRLE_PROXY_URL: http://127.0.0.1:8080
+      BYRLE_POLICY: /etc/byrle/policy.yaml
+    # dev/ rather than dev/policy.yaml: an editor that saves by writing a new file and
+    # renaming it leaves a single-file mount on the old one. Read-only: byrle reads the
+    # policy at startup and on SIGHUP, and never writes it.
+    volumes:
+      - ./dev:/etc/byrle:ro
     ports:
       - "127.0.0.1:8080:8080"
     # The daemon applies migrations at startup, so it waits for Postgres to answer.

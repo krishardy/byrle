@@ -35,4 +35,7 @@ From $repo_root:
   logs:    podman-compose logs -f byrle
   stop:    podman-compose down
   delete:  podman-compose down -v    (the database too)
+
+  intel:   podman exec byrle-dev byrle refresh    (until it runs, artifacts answer 503)
+  policy:  dev/policy.yaml; after editing it, podman kill -s HUP byrle-dev
 EOF
