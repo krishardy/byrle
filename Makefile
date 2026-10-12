@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build lint semgrep trufflehog sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front bench retry-matrix offsite-urls inspect spike-config duplicates unsigned start-dev-db stop-dev-db rm-dev-db run-dev
+.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front bench retry-matrix offsite-urls inspect spike-config duplicates unsigned run-dev
 
 help:
 	@echo "byrle targets:"
@@ -7,7 +7,8 @@ help:
 	@echo "  lint           rustfmt, clippy and shellcheck, warnings as errors"
 	@echo "  semgrep        pattern-based static analysis"
 	@echo "  trufflehog     credential scanning (working tree and git history)"
-	@echo "  sast           semgrep + trufflehog"
+	@echo "  trivy          Containerfile misconfigurations and dev image vulnerabilities"
+	@echo "  sast           semgrep + trufflehog + trivy"
 	@echo "  test           unit tests"
 	@echo "  test-integration  tests needing a real Postgres, in a container or local cluster"
 	@echo "  sqlx-prepare   regenerate .sqlx/, the offline query cache"
@@ -17,10 +18,7 @@ help:
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
 	@echo "  run            run the proxy in the foreground"
-	@echo "  run-dev        run the proxy in the foreground against the development database"
-	@echo "  start-dev-db   start the development database in podman, creating it if needed"
-	@echo "  stop-dev-db    stop the development database, keeping its data"
-	@echo "  rm-dev-db      delete the development database and its data"
+	@echo "  run-dev        build byrle and start it with Postgres in podman-compose"
 	@echo "  smoke-npm      what the proxy does, checked with npm"
 	@echo "  smoke-python   what the proxy does for PyPI, checked with pip and uv"
 	@echo "  smoke-clients  whether npm's other four clients route artifacts through it"
@@ -40,9 +38,8 @@ help:
 #   make trufflehog TRUFFLEHOG_REPO_ROOT=/pwd
 TRUFFLEHOG_REPO_ROOT ?= $(CURDIR)
 
-# The development database's role, password and database, for start-dev-db and run-dev.
-# Postgres reads them only when start-dev-db creates the volume; to change them after
-# that, run make rm-dev-db first.
+# The development database's role, password and database, for run-dev. Postgres reads
+# them only when it creates its volume; see compose.yaml.
 DEV_DB_USER ?= byrle
 DEV_DB_PASSWORD ?= byrle
 DEV_DB_NAME ?= byrle
@@ -66,7 +63,10 @@ trufflehog:
 
 # Prerequisites, so each scanner is runnable on its own. Make stops at the first
 # failing prerequisite; use `make -k sast` to run both regardless.
-sast: semgrep trufflehog
+trivy:
+	@scripts/make/trivy.sh
+
+sast: semgrep trufflehog trivy
 
 test:
 	@cargo test
@@ -97,15 +97,6 @@ run:
 
 run-dev:
 	@scripts/make/run-dev.sh $(DEV_DB_ARGS)
-
-start-dev-db:
-	@scripts/make/start-dev-db.sh $(DEV_DB_ARGS)
-
-stop-dev-db:
-	@scripts/make/stop-dev-db.sh
-
-rm-dev-db:
-	@scripts/make/rm-dev-db.sh
 
 smoke-npm:
 	@scripts/make/smoke-npm.sh

@@ -1,0 +1,56 @@
+# The development environment: byrle and its Postgres. Started by `make run-dev`, which
+# sets DEV_DB_USER, DEV_DB_PASSWORD and DEV_DB_NAME from the Makefile.
+#
+# Postgres reads them only when it creates the volume. To change them after that, delete
+# the volume: podman-compose down -v
+#
+# They are not marked required with `:?`, because podman-compose reads the whole file for
+# every command, and `logs` and `down` would then fail in a shell without them.
+
+name: byrle-dev
+
+services:
+  db:
+    image: docker.io/library/postgres:18-alpine
+    environment:
+      POSTGRES_USER: ${DEV_DB_USER}
+      POSTGRES_PASSWORD: ${DEV_DB_PASSWORD}
+      POSTGRES_DB: ${DEV_DB_NAME}
+    # Postgres 18 keeps its data in /var/lib/postgresql/18/docker, and its entrypoint
+    # refuses to start with a mount at /var/lib/postgresql/data.
+    volumes:
+      - db:/var/lib/postgresql
+    # For host tools such as psql and `make sqlx-prepare` against this database.
+    ports:
+      - "127.0.0.1:5433:5432"
+    # Over TCP rather than the socket: see scripts/make/lib/postgres.sh.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 1s
+      timeout: 5s
+      retries: 60
+
+  byrle:
+    build:
+      context: .
+      dockerfile: Containerfile
+    # For `podman exec -it byrle-dev sh`. `podman-compose exec` sets the environment
+    # below again from the current shell, where DEV_DB_* are usually unset.
+    container_name: byrle-dev
+    # byrle handles SIGHUP only. As PID 1 the kernel ignores a SIGTERM with no handler, so
+    # `down` waited 10 s and killed it. Under podman's init, SIGTERM ends it.
+    init: true
+    environment:
+      BYRLE_DATABASE_URL: postgres://${DEV_DB_USER}:${DEV_DB_PASSWORD}@db:5432/${DEV_DB_NAME}?sslmode=disable
+      BYRLE_LISTEN: 0.0.0.0:8080
+      # The address package managers on the host use. It is written into lockfiles.
+      BYRLE_PROXY_URL: http://127.0.0.1:8080
+    ports:
+      - "127.0.0.1:8080:8080"
+    # The daemon applies migrations at startup, so it waits for Postgres to answer.
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  db:

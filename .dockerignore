@@ -1,0 +1,5 @@
+# The build context for Containerfile. Podman reads this file when there is no
+# .containerignore. target/ is the host's build output, tens of gigabytes.
+target
+.git
+**/__pycache__
