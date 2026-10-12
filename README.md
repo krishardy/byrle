@@ -5,8 +5,9 @@ security policy *before* they are downloaded, extracted, or executed. Blocks kno
 malware and policy violations across multiple package ecosystems from a single YAML
 configuration.
 
-> `byrle` replaces the working name `waharoa`
-> ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md)).
+`byrle` (also `byrele`) is Old English for cupbearer, the servant who poured for the
+household and checked what was in the cup before it was drunk. byrle does that for
+packages: it checks what a registry serves before it is installed.
 
 ## Stack
 

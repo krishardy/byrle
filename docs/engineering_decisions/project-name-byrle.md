@@ -11,6 +11,12 @@ informal cultural consultation on that name, in September 2026, was not in favou
 ([project-name-waharoa](project-name-waharoa.md#consultation-result)). A te reo Māori name
 may be revisited if the project gains support and local Māori engineers become involved.
 
+## Why the name
+
+`byrle` (also `byrele`) is Old English for cupbearer, the servant who poured for the
+household and checked what was in the cup before it was drunk. byrle checks what a
+registry serves before it is installed.
+
 ## Registry check
 
 Run 2026-10-11 by exact-name lookup, the same probe as for `waharoa`:
