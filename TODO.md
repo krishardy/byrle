@@ -2602,15 +2602,15 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 
 ## Stage 4.8: Sign, smoke test and push
 
-1. [ ] Sign all commits. Re-signing rewrites every commit hash, so it is done before the
-       first push.
+1. [x] Sign all commits. Re-signing rewrites every commit hash, so it is done before the
+       first push. Done 2026-10-12 with key `14CE930D240263F7`. `make unsigned` lists
+       unsigned commits, and `SIGN=1` signs them.
 2. [x] Smoke test the proxy against live workloads. Done 2026-10-12: `smoke-proxy`,
        `smoke-npm`, `smoke-python`, `smoke-clients` and `smoke-tls-front` pass. Fixed on
        the way: nginx temp paths when not root, and `lib/token.sh` under shellcheck.
        Caddy removed ([tls-front-nginx](docs/engineering_decisions/tls-front-nginx.md)).
        `smoke-npm` failed once in 7 runs (Ad-hoc #30).
-3. [ ] Git push. The remote is not set up yet; the GitHub home is
-       `github.com/krishardy/byrle`.
+3. [x] Git push. Done 2026-10-12: `main` at `9c79f0c` on `github.com/krishardy/byrle`.
 
 **Exit:** every item in this stage is done.
 
