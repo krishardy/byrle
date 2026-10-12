@@ -1,0 +1,11 @@
+# Exact values trufflehog may report without failing `make trufflehog`, one per line.
+# A finding is dropped only when its raw value equals a line here, whole. Every other
+# finding, from any detector, in the working tree or in git history, still fails.
+# Lines starting with # are comments; each entry gives its reason on the line above.
+
+# Test URLs for credential redaction and proxy configuration; the hosts do not resolve.
+https://user:secret@example.test
+https://user:secret@example.jfrog.io
+https://user:secret@proxy.example
+http://alice:s3cret@egress.example:3128
+http://:s3cret@egress.example
