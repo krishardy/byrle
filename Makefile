@@ -21,7 +21,7 @@ help:
 	@echo "  smoke-python   what the proxy does for PyPI, checked with pip and uv"
 	@echo "  smoke-clients  whether npm's other four clients route artifacts through it"
 	@echo "  smoke-proxy    whether upstream traffic honours HTTP_PROXY, HTTPS_PROXY and NO_PROXY"
-	@echo "  smoke-tls-front  the proxy behind Caddy and nginx on TLS, checked with npm and pip"
+	@echo "  smoke-tls-front  the proxy behind nginx on TLS, checked with npm and pip"
 	@echo "  bench          install times through the proxy against direct, for npm and uv"
 	@echo "  retry-matrix   what each client does when the proxy defers a request"
 	@echo "  offsite-urls   which packument URLs each client fetches as written"

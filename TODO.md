@@ -2868,11 +2868,12 @@ role gets 403 from every endpoint except `GET health`.
         client path. Done 2026-09-28: npm artifacts are asked for by the lockfile's path,
         for this machine's platform by default, in 16.9 s
         ([warm](docs/engineering_decisions/warm.md)).
-- [ ] ACME / Let's Encrypt support; document fronting with Caddy/nginx
-  - [x] Fronting with Caddy and nginx: `docs/fronting-tls.md`, both run against the proxy
-        by `make smoke-tls-front`, 2026-09-29.
-  - [ ] ACME: Caddy's automatic certificates are documented, not run: the test has no
-        public name. Nothing in byrle itself speaks ACME.
+- [ ] ACME / Let's Encrypt support; document fronting with nginx
+  - [x] Fronting with nginx: `docs/fronting-tls.md`, run against the proxy by `make
+        smoke-tls-front`, 2026-09-29. Caddy was removed 2026-10-12
+        ([tls-front-nginx](docs/engineering_decisions/tls-front-nginx.md)).
+  - [ ] ACME: the nginx configuration reads certbot's certificate paths. certbot is not
+        run: the test has no public name. Nothing in byrle itself speaks ACME.
 - [x] Honor `HTTPS_PROXY` for upstream traffic
       Done 2026-09-28. reqwest already read it, and `HTTP_PROXY` and `NO_PROXY`. Added:
       the variables in `--help`, the proxy in effect in the startup log, and `make

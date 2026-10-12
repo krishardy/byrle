@@ -1,10 +1,12 @@
 # Fronting byrle with TLS
 
-byrle serves plain HTTP. A proxy reached by name goes behind a TLS front: Caddy or nginx,
-below. `make smoke-tls-front` runs both against the proxy with a local CA and checks that
-the front passes everything through. It ran on 2026-09-29 with Caddy 2.10.2 and nginx
-1.28.0, built from source; the configurations here are the ones it runs, with the name and
-certificate paths changed.
+byrle serves plain HTTP. A proxy reached by name goes behind nginx on TLS, below. `make
+smoke-tls-front` runs it against the proxy with a local CA and checks that nginx passes
+everything through. It ran on 2026-10-12 with nginx 1.28.3. The configuration here is the
+one it runs, with the name and certificate paths changed.
+
+Caddy is not a supported front. Decided 2026-10-12
+([tls-front-nginx](engineering_decisions/tls-front-nginx.md)).
 
 ## The proxy
 
@@ -19,32 +21,13 @@ port off the network.
 
 The path of `BYRLE_PROXY_URL` is where the proxy answers, and a request outside it is
 answered 404. With `https://byrle.example.com/registry/`, the front passes `/registry/...`
-through unchanged: Caddy's `handle /registry/*`, not `handle_path`, which strips it; nginx's
-`location /registry/` with `proxy_pass http://127.0.0.1:8080;`, with no path after the
-port. The configurations below use the root, `/`, which needs neither.
+through unchanged: `location /registry/` with `proxy_pass http://127.0.0.1:8080;`, with no
+path after the port. The configuration below uses the root, `/`.
 
 The admin console, when `BYRLE_CONSOLE_URL` is set, answers under that URL's path. On the
 proxy's listener the two paths may not contain each other, so the proxy at `/` and a
 console beside it need `BYRLE_CONSOLE_LISTEN`
 ([console-listener](engineering_decisions/console-listener.md)).
-
-## Caddy
-
-```
-byrle.example.com {
-	reverse_proxy 127.0.0.1:8080 {
-		flush_interval -1
-	}
-}
-```
-
-- Caddy obtains and renews the certificate for `byrle.example.com` from Let's Encrypt
-  on its own, given a public DNS name and ports 80 and 443 reachable. That is Caddy's
-  documented default. The smoke test uses a local certificate with `tls <cert> <key>`
-  instead, so the ACME path is not what it ran.
-- `flush_interval -1` writes each chunk to the client as it arrives, so an artifact streams
-  through rather than being held.
-- Caddy passes the client's `Host` and every response header through as they are.
 
 ## nginx
 
@@ -78,14 +61,14 @@ The certificate paths are certbot's. The smoke test uses a local certificate.
 
 ## What the smoke test checks
 
-For each front, through TLS:
+Through nginx, on TLS:
 
-| Check | Caddy | nginx |
-|---|---|---|
-| `/-/byrle/health` | 200 | 200 |
-| an artifact nothing has analysed | 503 with `Retry-After: 1` and `x-byrle-not-ready: artifact-analysis` | the same |
-| `npm install debug@4.4.1` | installs; the lockfile records the front's `https://` address | the same |
-| `pip install six==1.17.0` | installs | installs |
+| Check | Result |
+|---|---|
+| `/-/byrle/health` | 200 |
+| an artifact nothing has analysed | 503 with `Retry-After: 1` and `x-byrle-not-ready: artifact-analysis` |
+| `npm install debug@4.4.1` | installs; the lockfile records nginx's `https://` address |
+| `pip install six==1.17.0` | installs |
 
 With `proxy_hide_header x-byrle-not-ready` added to the nginx configuration, the test
 failed: `x-byrle-not-ready did not pass through`.

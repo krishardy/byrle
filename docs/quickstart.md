@@ -76,8 +76,8 @@ byrle daemon
 - **`BYRLE_PROXY_URL`** is the address written into lockfiles. Set it to a name every
   machine that installs from a lockfile can reach: see the README's deployment note.
 - **`BYRLE_LISTEN`** is where it listens, `127.0.0.1:8080` by default. Put TLS in
-  front of it for a proxy reached by name: [fronting-tls](fronting-tls.md) has a Caddy
-  and an nginx configuration, both tested.
+  front of it for a proxy reached by name: [fronting-tls](fronting-tls.md) has a tested
+  nginx configuration.
 - **`BYRLE_MODE=observe`** serves what the policy refuses and logs it at WARN, so
   nothing breaks while you learn what it would refuse.
 

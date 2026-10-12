@@ -311,11 +311,8 @@ fi
 echo "==> ss (the smoke scripts check whether their port is already in use with it)"
 system_package ss iproute2 "The smoke scripts' port check finds nothing in use."
 
-echo "==> caddy (optional, used by 'make smoke-tls-front')"
-system_package caddy caddy "'make smoke-tls-front' skips Caddy."
-
-echo "==> nginx (optional, used by 'make smoke-tls-front')"
-system_package nginx nginx "'make smoke-tls-front' skips nginx."
+echo "==> nginx (required by 'make smoke-tls-front')"
+system_package nginx nginx "'make smoke-tls-front' cannot run."
 
 # Not installed here: scripts/make/lib/postgres.sh runs a local cluster from initdb and
 # pg_ctl when docker does not answer, so either one is enough.

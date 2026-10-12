@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# byrle behind Caddy and behind nginx on TLS, with the configurations in
-# docs/fronting-tls.md, checked with curl, npm and pip.
+# byrle behind nginx on TLS, with the configuration in docs/fronting-tls.md, checked
+# with curl, npm and pip.
 #
-# A local CA signs a certificate for localhost. For each front on PATH, `caddy` and
-# `nginx`, the proxy runs with BYRLE_PROXY_URL set to the front's address. Asserts, per
-# front:
+# A local CA signs a certificate for localhost. The proxy runs with BYRLE_PROXY_URL set to
+# nginx's address. Asserts:
 #   1. /-/byrle/health answers 200 through it
 #   2. an artifact nothing has analysed is a 503 with Retry-After and x-byrle-not-ready
 #   3. npm installs through it, and the lockfile records the front's https address
 #   4. pip installs through it
-# A front that is not installed is reported and skipped.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -17,7 +15,6 @@ proxy_port="${BYRLE_PORT:-8771}"
 workdir="$(mktemp -d)"
 pids=()
 failed=0
-checked=0
 
 cleanup() {
     for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done
@@ -26,6 +23,11 @@ cleanup() {
 trap cleanup EXIT
 
 fail() { echo "FAIL: $*"; failed=1; }
+
+if ! command -v nginx >/dev/null 2>&1; then
+    echo "FAIL: nginx is not on PATH. Run 'make dev-setup'."
+    exit 1
+fi
 
 cargo build --release --quiet --manifest-path "$repo_root/Cargo.toml"
 binary="$repo_root/target/release/byrle"
@@ -37,13 +39,6 @@ openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" \
 printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\n' >"$workdir/san.ext"
 openssl x509 -req -in "$workdir/cert.csr" -CA "$workdir/ca.pem" -CAkey "$workdir/ca.key" \
     -CAcreateserial -days 2 -extfile "$workdir/san.ext" -out "$workdir/cert.pem" 2>/dev/null
-
-# docs/fronting-tls.md's Caddyfile, with this run's certificate and ports.
-caddyfile() {
-    printf '{\n\tadmin off\n\tauto_https disable_redirects\n}\n'
-    printf 'localhost:%s {\n\ttls %s %s\n' "$1" "$workdir/cert.pem" "$workdir/key.pem"
-    printf '\treverse_proxy 127.0.0.1:%s {\n\t\tflush_interval -1\n\t}\n}\n' "$proxy_port"
-}
 
 # docs/fronting-tls.md's nginx server block, with this run's certificate, ports and paths.
 nginx_conf() {
@@ -67,30 +62,17 @@ nginx_conf() {
     printf '        }\n    }\n}\n'
 }
 
-# One front on `port`: the proxy, the front, then the four checks.
+# nginx on `port`: the proxy, nginx, then the four checks.
 check() {
-    local name="$1" port="$2" front="https://localhost:$2" dir="$workdir/$1"
-    if ! command -v "$name" >/dev/null 2>&1; then
-        echo "==> $name: NOT INSTALLED, skipped"
-        return 0
-    fi
-    checked=$((checked + 1))
+    local name=nginx port="$1" front="https://localhost:$1" dir="$workdir/nginx"
     mkdir -p "$dir/app"
     BYRLE_REQUIRE_TOKEN=0 BYRLE_PROXY_URL="$front" BYRLE_LISTEN="127.0.0.1:$proxy_port" \
         BYRLE_SPOOL_DIR="$dir/spool" "$binary" daemon >"$dir/proxy.log" 2>&1 &
     local proxy=$!
     pids+=("$proxy")
     for _ in $(seq 1 60); do grep -q "byrle listening" "$dir/proxy.log" && break; sleep 0.5; done
-    case "$name" in
-        caddy)
-            caddyfile "$port" >"$dir/Caddyfile"
-            caddy run --config "$dir/Caddyfile" --adapter caddyfile >"$dir/front.log" 2>&1 &
-            ;;
-        nginx)
-            nginx_conf "$port" "$dir" >"$dir/nginx.conf"
-            nginx -p "$dir" -c "$dir/nginx.conf" -g 'daemon off;' >"$dir/front.log" 2>&1 &
-            ;;
-    esac
+    nginx_conf "$port" "$dir" >"$dir/nginx.conf"
+    nginx -p "$dir" -c "$dir/nginx.conf" -g 'daemon off;' >"$dir/front.log" 2>&1 &
     local front_pid=$!
     pids+=("$front_pid")
     local curl=(curl -s --noproxy '*' --cacert "$workdir/ca.pem")
@@ -129,18 +111,12 @@ check() {
     echo "    checked: health, the 503's headers, npm with the lockfile on $front, pip"
 }
 
-check caddy 8772
-check nginx 8773
+check 8773
 
 if [[ "$failed" -ne 0 ]]; then
     echo
     echo "FAIL: see above."
     exit 1
 fi
-if [[ "$checked" -eq 0 ]]; then
-    echo
-    echo "FAIL: neither caddy nor nginx is on PATH, so nothing was checked."
-    exit 1
-fi
 echo
-echo "PASS: every installed front passes the proxy through on TLS."
+echo "PASS: nginx passes the proxy through on TLS."
