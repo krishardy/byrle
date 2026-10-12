@@ -1518,8 +1518,24 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
             .flat_map(|p| &p.records)
             .filter(|(_, r)| r.source == datadog::NPM_STREAM && r.malware)
             .count();
+        assert!(
+            from_postgres
+                .iter()
+                .flat_map(|p| p.records.iter().map(|(_, r)| r))
+                .chain(
+                    from_postgres
+                        .iter()
+                        .flat_map(|p| p.ranges.iter().map(|(_, r)| r))
+                )
+                .all(|r| r.cached.is_some()),
+            "every Postgres record has when it was stored: {name}"
+        );
         let from_files = kept.package("npm", name).await.expect("answers");
-        assert_eq!(from_files.map(sorted), from_postgres.map(sorted), "{name}");
+        assert_eq!(
+            from_files.map(sorted),
+            from_postgres.map(uncached).map(sorted),
+            "{name}"
+        );
     }
     assert!(
         banded_records > 0,
@@ -1539,6 +1555,18 @@ async fn a_kept_snapshot_answers_as_postgres_does() {
 
 /// A package's answer with its rows in one order. Postgres orders text by collation, and the
 /// files by byte.
+/// `intel` without `cached`, which a kept snapshot does not hold: it is when Postgres
+/// stored a row, not part of the rows a snapshot is made of.
+fn uncached(mut intel: PackageIntel) -> PackageIntel {
+    for (_, r) in &mut intel.records {
+        r.cached = None;
+    }
+    for (_, r) in &mut intel.ranges {
+        r.cached = None;
+    }
+    intel
+}
+
 fn sorted(intel: PackageIntel) -> (String, bool, Vec<String>, Vec<String>) {
     let mut records: Vec<String> = intel.records.iter().map(|r| format!("{r:?}")).collect();
     let mut ranges: Vec<String> = intel.ranges.iter().map(|r| format!("{r:?}")).collect();
@@ -2111,4 +2139,91 @@ async fn accounts_and_tokens_round_trip_through_postgres() {
         store.disable_account(&nobody).await,
         Err(AccountError::NotFound(_))
     ));
+}
+
+/// Load `osv` rows and a Datadog manifest naming `flagged` in one transaction, as one
+/// refresh does with several streams.
+async fn refresh_two(intel: &PgIntel, osv: &[Rows], flagged: &str, tag: &str) {
+    let encoded = load::encode(osv::bundle::NPM_STREAM, osv);
+    let manifest = datadog::parse(
+        byrle::identity::Ecosystem::Npm,
+        format!(r#"{{"{flagged}": null}}"#).as_bytes(),
+    )
+    .expect("parses");
+    let listed = load::encode(datadog::NPM_STREAM, &manifest);
+    let f = fetch(tag);
+    intel
+        .replace(
+            &[
+                Replacement {
+                    encoded: &encoded,
+                    rows: osv,
+                    streams: &f.streams,
+                },
+                Replacement {
+                    encoded: &listed,
+                    rows: &manifest,
+                    streams: &[],
+                },
+            ],
+            &[],
+            &f.taken_at,
+        )
+        .await
+        .expect("load");
+}
+
+/// Each stream's record of `name`, as (source, cached).
+async fn cached_of(intel: &PgIntel, name: &str) -> Vec<(String, Option<String>)> {
+    let mut found: Vec<(String, Option<String>)> = intel
+        .package("npm", name)
+        .await
+        .expect("query")
+        .expect("a snapshot is loaded")
+        .records
+        .into_iter()
+        .map(|(_, r)| (r.source, r.cached))
+        .collect();
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// `cached` is kept across a refresh in each source of the transaction, and an advisory that
+/// left and came back gets the time it came back.
+#[tokio::test]
+async fn a_refresh_keeps_when_each_advisory_was_first_stored() {
+    let intel = skip_without_database!("t_cached");
+    let (kept, left) = (osv_fixture("MAL-2021-1"), osv_fixture("MAL-2022-174"));
+    let (kept_name, _) = target(&kept);
+    let (left_name, _) = target(&left);
+    const OLD: &str = "2001-02-03T04:05:06Z";
+
+    refresh_two(&intel, &[kept.clone(), left.clone()], &kept_name, "s1").await;
+    sqlx::query("UPDATE advisory SET cached = $1::timestamptz")
+        .bind(OLD)
+        .execute(intel.pool())
+        .await
+        .expect("backdate");
+
+    refresh_two(&intel, std::slice::from_ref(&kept), &kept_name, "s2").await;
+    assert_eq!(
+        cached_of(&intel, &kept_name).await,
+        [
+            (datadog::NPM_STREAM.to_owned(), Some(OLD.to_owned())),
+            (osv::bundle::NPM_STREAM.to_owned(), Some(OLD.to_owned())),
+        ]
+    );
+
+    refresh_two(&intel, &[kept.clone(), left.clone()], &kept_name, "s3").await;
+    let back = cached_of(&intel, &left_name).await;
+    assert_eq!(back.len(), 1, "{back:?}");
+    let stored = back[0].1.as_deref().expect("a Postgres row has a time");
+    assert!(stored > OLD, "stored again at {stored}");
+    assert_eq!(
+        stored.len(),
+        OLD.len(),
+        "RFC 3339 UTC to the second: {stored}"
+    );
+    assert!(stored.ends_with('Z'), "{stored}");
 }

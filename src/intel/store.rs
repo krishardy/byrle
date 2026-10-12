@@ -24,6 +24,8 @@ pub struct Record {
     pub band: Option<String>,
     pub exploited: bool,
     pub malware: bool,
+    /// When byrle first stored the advisory, RFC 3339 UTC; `None` unless read from Postgres.
+    pub cached: Option<String>,
 }
 
 impl Record {
@@ -409,6 +411,7 @@ mod tests {
             cvss_source: None,
             exploited: false,
             malware: false,
+            cached: None,
         }
     }
 

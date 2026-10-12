@@ -1,0 +1,13 @@
+-- When byrle first stored an advisory: the time of the refresh whose transaction inserted
+-- its (source, publisher_id). A refresh deletes a source's rows and copies them again, and
+-- carries `cached` over for every (source, publisher_id) it held before; see
+-- `write_source` in src/intel/postgres.rs and
+-- docs/engineering_decisions/advisory-cached.md.
+--
+-- Not every stream gives `modified`, so this is the age of a record that has none.
+--
+-- Rows present before this migration get the time it ran, not when they were stored.
+--
+-- `explain` reads it back as text, formatted in UTC by the lookup query. The note in
+-- 0001_intel.sql that nothing reads a timestamp back predates this column.
+ALTER TABLE advisory ADD COLUMN cached TIMESTAMPTZ NOT NULL DEFAULT now();

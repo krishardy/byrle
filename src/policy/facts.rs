@@ -216,6 +216,7 @@ mod tests {
                 cvss_source: None,
                 exploited: false,
                 malware,
+                cached: None,
             },
         )
     }
