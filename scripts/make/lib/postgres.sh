@@ -16,7 +16,7 @@
 # bytes, got 0 bytes at EOF`, as `make test-integration` and `make sqlx-prepare` both did
 # on 2026-09-13.
 
-postgres_image="${BYRLE_PG_IMAGE:-postgres:17-alpine}"
+postgres_image="${BYRLE_PG_IMAGE:-docker.io/library/postgres:18-alpine}"
 postgres_container=""
 postgres_local_dir=""
 postgres_bin=""

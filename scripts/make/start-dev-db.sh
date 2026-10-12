@@ -15,7 +15,7 @@ elif dev_db_exists; then
 else
     podman run -d --name "$dev_db_name" \
         -e POSTGRES_PASSWORD=byrle -e POSTGRES_USER=byrle -e POSTGRES_DB=byrle \
-        -v "$dev_db_name:/var/lib/postgresql/data" \
+        -v "$dev_db_name:/var/lib/postgresql" \
         -p "127.0.0.1:$dev_db_port:5432" "$postgres_image" >/dev/null
     echo "$dev_db_name created and started."
 fi
