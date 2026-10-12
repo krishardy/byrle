@@ -44,6 +44,7 @@ fn route_log_records() {
 /// An empty directory for one test. `label` has to differ between the tests that call this,
 /// because the directory is emptied first.
 pub fn tempdir(label: &str) -> std::path::PathBuf {
+    // nosemgrep: rust.lang.security.temp-dir.temp-dir
     let dir = std::env::temp_dir().join(format!("byrle-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a temporary directory should be creatable");

@@ -5,6 +5,8 @@
 //! against real documents at a scale fixtures cannot reach.
 #[tokio::main]
 async fn main() {
+    // A developer tool reading the names the developer typed.
+    // nosemgrep: rust.lang.security.args.args
     let names: Vec<String> = std::env::args().skip(1).collect();
     let names = if names.is_empty() {
         vec!["requests".to_owned()]

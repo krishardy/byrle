@@ -111,11 +111,15 @@ else
     )
 fi
 
+# bad_syntax_*.yaml are the config-format spike's deliberately malformed policies, which
+# semgrep reports as parse errors.
+excludes=(--exclude=target --exclude='*.lock' --exclude='bad_syntax_*.yaml')
+
 note() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
 
 status=0
 semgrep "${rules[@]}" --metrics=off --error \
-    --exclude=target --exclude='*.lock' "$@" . || status=$?
+    "${excludes[@]}" "$@" . || status=$?
 
 # What the scan above was told to leave alone. semgrep reports a finding that a suppression
 # comment hides only when suppressions are off, so this is a second pass with
@@ -128,7 +132,7 @@ errors="$(mktemp)"
 trap 'rm -f "$json" "$errors"' EXIT
 pass=0
 semgrep "${rules[@]}" --metrics=off --disable-nosem --json --verbose \
-    --exclude=target --exclude='*.lock' "$@" . >"$json" 2>"$errors" || pass=$?
+    "${excludes[@]}" "$@" . >"$json" 2>"$errors" || pass=$?
 if [[ "$pass" == 0 ]]; then
     python3 "$repo_root/scripts/make/lib/semgrep_exceptions.py" "$json"
 else

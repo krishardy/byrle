@@ -152,12 +152,16 @@ echo "    ok ($(echo "$expected_purls" | wc -l) purls, $indexes indexes, 0 versi
 # one is a file fetched.
 DEFERRED='deferred: the artifact has not been analysed'
 served() {
-    echo "$(( $(count 'artifact requested') - $(count "$DEFERRED") ))"
+    local requested deferred
+    requested="$(count 'artifact requested')"
+    deferred="$(count "$DEFERRED")"
+    echo "$(( requested - deferred ))"
 }
 
 echo "==> 4/9  every file digest was known before the fetch and verified"
 deferred="$(count "$DEFERRED")"
-known="$(( $(count 'digest known') - deferred ))"
+known="$(count 'digest known')"
+known="$(( known - deferred ))"
 verified="$(count 'artifact digest verified')"
 files="$(served)"
 [[ "$files" -gt 0 ]] || fail "no files were fetched through the proxy"

@@ -50,7 +50,8 @@ def packument(tarball: bytes, registry: str, recorder: str) -> bytes:
         "dist": {
             "tarball": f"{registry}/widget/-/widget-1.0.0.tgz",
             "integrity": integrity,
-            "shasum": hashlib.sha1(tarball).hexdigest(),
+            # npm defines a packument's `shasum` as the tarball's SHA-1; integrity is the check.
+            "shasum": hashlib.sha1(tarball).hexdigest(),  # nosemgrep: python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1
             "attestations": {
                 "url": f"{recorder}/attestations",
                 "provenance": {"predicateType": "https://slsa.dev/provenance/v1"},
