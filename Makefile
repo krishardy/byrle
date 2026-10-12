@@ -40,6 +40,14 @@ help:
 #   make trufflehog TRUFFLEHOG_REPO_ROOT=/pwd
 TRUFFLEHOG_REPO_ROOT ?= $(CURDIR)
 
+# The development database's role, password and database, for start-dev-db and run-dev.
+# Postgres reads them only when start-dev-db creates the volume; to change them after
+# that, run make rm-dev-db first.
+DEV_DB_USER ?= byrle
+DEV_DB_PASSWORD ?= byrle
+DEV_DB_NAME ?= byrle
+DEV_DB_ARGS = $(DEV_DB_USER) $(DEV_DB_PASSWORD) $(DEV_DB_NAME)
+
 # Recipes stay one-line wrappers; the logic lives in scripts/make/<target>.sh
 dev-setup:
 	@scripts/make/dev-setup.sh
@@ -88,10 +96,10 @@ run:
 	@scripts/make/run.sh
 
 run-dev:
-	@scripts/make/run-dev.sh
+	@scripts/make/run-dev.sh $(DEV_DB_ARGS)
 
 start-dev-db:
-	@scripts/make/start-dev-db.sh
+	@scripts/make/start-dev-db.sh $(DEV_DB_ARGS)
 
 stop-dev-db:
 	@scripts/make/stop-dev-db.sh
