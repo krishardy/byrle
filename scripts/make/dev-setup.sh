@@ -63,18 +63,19 @@ fi
 . "$repo_root/scripts/make/lib/sqlx-cli.sh"
 byrle_install_sqlx_cli
 
-echo "==> cargo-llvm-cov (unit test coverage, used by 'make coverage')"
-if cargo llvm-cov --version >/dev/null 2>&1; then
+# shellcheck source=scripts/make/lib/coverage-toolchain.sh
+. "$repo_root/scripts/make/lib/coverage-toolchain.sh"
+
+echo "==> cargo-llvm-cov $byrle_llvm_cov_version (unit test coverage, used by 'make coverage')"
+if byrle_llvm_cov_pinned; then
     echo "    already installed"
 else
     # It reads the instrumentation rustc emits, so the matching llvm-tools component
     # has to be there as well.
     rustup component add llvm-tools-preview 2>&1 | sed 's/^/    /'
-    binstall cargo-llvm-cov
+    binstall --force "cargo-llvm-cov@$byrle_llvm_cov_version"
 fi
 
-# shellcheck source=scripts/make/lib/coverage-toolchain.sh
-. "$repo_root/scripts/make/lib/coverage-toolchain.sh"
 byrle_install_coverage_toolchain
 
 echo "==> cargo-mutants (mutation testing, used by 'make mutants')"

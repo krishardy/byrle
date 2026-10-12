@@ -6,7 +6,11 @@
 
 ## Decision
 
-`make coverage` runs cargo-llvm-cov on a pinned nightly, `nightly-2026-09-28`. On nightly,
+`make coverage` runs cargo-llvm-cov 0.9.1 on a pinned nightly, `nightly-2026-09-28`. Both
+are pinned in `scripts/make/lib/coverage-toolchain.sh`. This nightly's cargo keeps a test
+binary under `debug/build/<package>/<hash>/out`. cargo-llvm-cov 0.8.4 looked only in
+`debug/deps`, and `make coverage` failed with "failed to collect object files" until
+2026-10-12. `make coverage` refuses any other cargo-llvm-cov version. On nightly,
 cargo-llvm-cov sets `--cfg coverage_nightly`, and every `#[cfg(test)]` item carries
 `#[cfg_attr(coverage_nightly, coverage(off))]`. Test code is compiled and run but not
 counted. Builds, tests, lint, kani and release stay on stable.
