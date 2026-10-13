@@ -84,6 +84,36 @@ impl IntoResponse for Denied {
     }
 }
 
+/// 403, naming the permission the caller's roles do not grant.
+pub fn forbidden(permission: crate::account::Permission) -> Response {
+    refused(
+        StatusCode::FORBIDDEN,
+        &format!("this needs the {} permission", permission.name()),
+    )
+}
+
+/// `GET accounts`: every account, with its roles, when it was made and disabled.
+pub async fn accounts(site: Arc<Site>) -> Response {
+    match site.store.accounts().await {
+        Ok(accounts) => {
+            let listed: Vec<serde_json::Value> = accounts
+                .iter()
+                .map(|account| {
+                    let roles: Vec<&str> = account.roles.iter().map(|role| role.name()).collect();
+                    serde_json::json!({
+                        "account": account.name.as_str(),
+                        "roles": roles,
+                        "created": account.created,
+                        "disabled": account.disabled,
+                    })
+                })
+                .collect();
+            json(StatusCode::OK, serde_json::json!({ "accounts": listed }))
+        }
+        Err(_) => unanswered(),
+    }
+}
+
 /// The caller as JSON.
 fn described(caller: &Caller) -> serde_json::Value {
     let roles: Vec<&str> = caller.roles.iter().map(|role| role.name()).collect();
@@ -490,6 +520,36 @@ mod tests {
         let logged: serde_json::Value =
             serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
         assert_eq!(logged["source"], "203.0.113.7");
+    }
+
+    /// An admin reads every account with its roles; a store that cannot answer is 503.
+    #[tokio::test]
+    async fn an_admin_lists_the_accounts() {
+        let (_, base) = served(accounts().await).await;
+        let listed = get(&base, crate::console::routes::ACCOUNTS_PATH)
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(listed.status(), 200);
+        assert_eq!(
+            body(listed).await,
+            serde_json::json!({ "accounts": [
+                { "account": "alice", "roles": ["admin"], "created": "2026-10-13T00:00:00Z", "disabled": null },
+                { "account": "bob", "roles": [], "created": "2026-10-13T00:00:00Z", "disabled": null },
+            ]})
+        );
+        let failing = Failing {
+            inner: accounts().await,
+            fails: "accounts",
+        };
+        let (_, base) = served(Arc::new(failing)).await;
+        let unanswered = get(&base, crate::console::routes::ACCOUNTS_PATH)
+            .bearer_auth(TOKEN)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(unanswered.status(), 503);
     }
 
     #[tokio::test]

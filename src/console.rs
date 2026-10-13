@@ -3,13 +3,13 @@
 
 pub mod api;
 pub mod login;
+pub mod routes;
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
 
 use crate::account::Accounts;
 use crate::account::events::EventLog;
@@ -136,17 +136,11 @@ impl Site {
         }
     }
 
-    /// The console's routes, each under its path. Any other request goes to `rest`.
+    /// The console's [`routes::ROUTES`], each under its path. Any other request goes to
+    /// `rest`.
     fn router(self: &Arc<Self>, rest: Router) -> Router {
         let under = self.console.mount.to_string();
-        let under = under.trim_end_matches('/');
-        Router::new()
-            .route(&format!("{under}{HEALTH_PATH}"), get(health))
-            .route(&format!("{under}{LOGIN_PATH}"), post(api::login))
-            .route(&format!("{under}{LOGOUT_PATH}"), post(api::logout))
-            .route(&format!("{under}{SESSION_PATH}"), get(api::session))
-            .with_state(self.clone())
-            .fallback_service(rest)
+        routes::router(self.clone(), under.trim_end_matches('/')).fallback_service(rest)
     }
 }
 
