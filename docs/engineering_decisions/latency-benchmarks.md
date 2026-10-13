@@ -1,9 +1,41 @@
 # Install latency through the proxy, measured
 
-- **Status:** Measured 2026-09-28 with `make bench` (`scripts/make/bench.sh`), at `ca96897`
+- **Status:** Measured 2026-09-28, and as deployed 2026-10-13, with `make bench` (`scripts/make/bench.sh`); first at `ca96897`
   plus warm's two-pass change. The latency budget is not set.
 - **Related:** [warm](warm.md), [deferral-status-codes](deferral-status-codes.md),
   [artifact-spool](artifact-spool.md)
+
+## As deployed, 2026-10-13
+
+`make bench` now runs the proxy as a team deploys it: a token required, intel from a
+`byrle refresh` into Postgres, the default policy, and each request's usage recorded. The
+sets are resolved as of 8 days ago, past the default 7-day cooldown. A discovery pass
+installs through the proxy first and adds an exception for each version refused, so the
+installs finish with every check still run. Median of 3 runs, in seconds; npm 11.21.0,
+uv 0.13.0.
+
+| Set | direct, cold | direct, warm cache | proxy, cold | `byrle warm` | proxy, analysed | proxy, warm cache |
+|---|---|---|---|---|---|---|
+| npm: 207 packages | 9.6 | 2.8 | 15.7 | 4.9 | 12.0 | 2.8 |
+| pypi: 18 packages | 8.5 | 0.1 | 12.3 | 74.6, one run | 11.7 | 0.1 |
+
+| Set | cold over direct | analysed over direct |
+|---|---|---|
+| npm | +6.1 s, +64% | +2.4 s, +25% |
+| pypi | +3.8 s, +45% | +3.2 s, +38% |
+
+Analysed npm was +0.3 s on 2026-09-28, with no token, policy, intel store or usage.
+
+Refused under the defaults and released for the measurement:
+
+| Version | Reason |
+|---|---|
+| npm `@rolldown/pluginutils@1.0.1` | provenance: built by `rolldown/plugins/.github/workflows/publish.yml`; 1.0.0 by `rolldown/rolldown/.github/workflows/publish-to-npm.yml` |
+| pypi `scikit-learn@1.9.1` | provenance: built by `scikit-learn/scikit-learn-release/.github/workflows/wheels.yml`; 1.9.0 by `scikit-learn/scikit-learn/.github/workflows/publish_pypi.yml` |
+
+`byrle warm` over the PyPI set asks for every file of each version: 655 files. In one of
+three runs 16 wheels were answered 502, and the run failed; 18 sdists were refused by
+`install_scripts`, which no install here fetches.
 
 ## Method
 
