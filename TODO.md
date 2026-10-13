@@ -2947,14 +2947,17 @@ role gets 403 from every endpoint except `GET health`.
       shipped default" ([observe-mode](docs/engineering_decisions/observe-mode.md)).
       Done 2026-09-28: `BYRLE_MODE=observe` serves what the policy refuses, logs it at
       WARN, and audits it with `answered: served`.
-- [ ] Latency budget and benchmarks on a large lockfile (cold and warm cache)
+- [x] Latency budget and benchmarks on a large lockfile (cold and warm cache)
   - [x] Benchmarks: `make bench`. Measured 2026-09-28: through an analysed proxy, npm
         207 packages 9.7 s against 9.4 s direct, PyPI 18 packages 11.6 s against 9.0 s
         ([latency-benchmarks](docs/engineering_decisions/latency-benchmarks.md)).
-  - [ ] Set a latency budget: how much an install through the proxy may add over the
+  - [x] Set a latency budget: how much an install through the proxy may add over the
         same install direct, for an analysed proxy and for a cold one, and whether
-        `make bench` fails over it. Not set on 2026-09-28. Measured then: analysed, npm
-        +0.3 s and PyPI +2.6 s; cold, npm +10.7 s and PyPI +4.9 s.
+        `make bench` fails over it. Set by the user 2026-10-13: analysed at most 1.5
+        times direct, cold at most 2 times, a filled client cache at most 1 s over;
+        `make bench` exits 1 over it. Measured as deployed: analysed npm 1.25 times and
+        PyPI 1.38; cold npm 1.64 and PyPI 1.45
+        ([latency-benchmarks](docs/engineering_decisions/latency-benchmarks.md#budget)).
   - [x] `byrle warm` took 100.8 s where a cold `npm ci` took 20.1 s: it warmed every
         platform's optional packages, and fetched every metadata document through the
         client path. Done 2026-09-28: npm artifacts are asked for by the lockfile's path,
