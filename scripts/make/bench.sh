@@ -10,6 +10,10 @@
 # disposable Postgres, a policy of every default, and each request's usage recorded. A
 # version the defaults refuse would stop the install, so a discovery pass installs through
 # the proxy first and adds an exception for each refusal; the table lists them.
+#
+# The latency budget, set by the user 2026-10-13: a median over it exits 1. Through an
+# analysed proxy at most 1.5 times the direct cold install, through a cold one at most 2
+# times, and with the client's cache filled at most 1 s over the same direct.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -20,6 +24,10 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 port="${BYRLE_PORT:-8761}"
 pg_port="${BYRLE_PG_PORT:-55437}"
 runs="${BYRLE_BENCH_RUNS:-3}"
+analysed_ratio="${BYRLE_BENCH_ANALYSED_RATIO:-1.5}"
+cold_ratio="${BYRLE_BENCH_COLD_RATIO:-2}"
+warm_cache_seconds="${BYRLE_BENCH_WARM_CACHE_SECONDS:-1}"
+over_budget=()
 npm_packages=(next react react-dom eslint typescript vite vitest)
 pypi_packages=(pandas scikit-learn matplotlib)
 workdir="$(mktemp -d)"
@@ -117,10 +125,34 @@ row() {
         p_warm+=" $(seconds "$install" "$through" "$workdir/cache")"
         stop_proxy
     done
-    printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$name" \
-        "$(echo "$d_cold" | median)" "$(echo "$d_warm" | median)" \
-        "$(echo "$p_cold" | median)" "$(echo "$warm_time" | median)" \
-        "$(echo "$p_warmed" | median)" "$(echo "$p_warm" | median)"
+    local direct cached cold analysed warm
+    direct="$(echo "$d_cold" | median)"
+    cached="$(echo "$d_warm" | median)"
+    cold="$(echo "$p_cold" | median)"
+    analysed="$(echo "$p_warmed" | median)"
+    warm="$(echo "$p_warm" | median)"
+    printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$name" "$direct" "$cached" "$cold" \
+        "$(echo "$warm_time" | median)" "$analysed" "$warm"
+    within "$name, proxy analysed" "$analysed" "$direct * $analysed_ratio" \
+        "${analysed_ratio}x direct"
+    within "$name, proxy cold" "$cold" "$direct * $cold_ratio" "${cold_ratio}x direct"
+    within "$name, proxy warm cache" "$warm" "$cached + $warm_cache_seconds" \
+        "direct + ${warm_cache_seconds}s"
+}
+
+# Record case $1 as over budget when its median $2 is FAIL, or over the expression $3,
+# described as $4. A FAIL in $3 makes it over budget too.
+within() {
+    local limit
+    if [[ "$3" == *FAIL* ]]; then
+        limit=FAIL
+    else
+        limit="$(awk "BEGIN { printf \"%.1f\", $3 }")"
+    fi
+    if [[ "$2" == FAIL || "$limit" == FAIL ]] \
+        || awk -v m="$2" -v l="$limit" 'BEGIN { exit !(m > l) }'; then
+        over_budget+=("$1: $2 s, budget $limit s, $4")
+    fi
 }
 
 # Resolved as of 8 days ago, past the policy's default 7-day cooldown, so the proxy serves
@@ -182,3 +214,10 @@ if [[ -s "$workdir/exceptions.txt" ]]; then
 else
     echo "Nothing was refused under the defaults."
 fi
+echo
+if [[ ${#over_budget[@]} -gt 0 ]]; then
+    echo "Over the latency budget:"
+    printf '    %s\n' "${over_budget[@]}"
+    exit 1
+fi
+echo "Within the latency budget."

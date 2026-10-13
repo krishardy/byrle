@@ -1,9 +1,22 @@
 # Install latency through the proxy, measured
 
 - **Status:** Measured 2026-09-28, and as deployed 2026-10-13, with `make bench` (`scripts/make/bench.sh`); first at `ca96897`
-  plus warm's two-pass change. The latency budget is not set.
+  plus warm's two-pass change. The latency budget was set by the user 2026-10-13.
 - **Related:** [warm](warm.md), [deferral-status-codes](deferral-status-codes.md),
   [artifact-spool](artifact-spool.md)
+
+## Budget
+
+Set by the user 2026-10-13. `make bench` exits 1 when a median is over it, or a case fails.
+
+| Case | Budget | Variable |
+|---|---|---|
+| proxy, analysed | at most 1.5 times direct, cold | `BYRLE_BENCH_ANALYSED_RATIO` |
+| proxy, cold | at most 2 times direct, cold | `BYRLE_BENCH_COLD_RATIO` |
+| proxy, warm cache | at most 1 s over direct, warm cache | `BYRLE_BENCH_WARM_CACHE_SECONDS` |
+
+A ratio, so it scales with the size of the set. The cold npm median moved by about 3 s
+between runs (12.9 s and 15.7 s), which the cold budget leaves room for.
 
 ## As deployed, 2026-10-13
 
