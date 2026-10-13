@@ -222,7 +222,7 @@ pub async fn failures(site: Arc<Site>, parts: Parts) -> Response {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::audit::Answered;
     use crate::console::login::tests::store;
@@ -231,7 +231,7 @@ mod tests {
     use crate::usage::{Read, Usage, Use};
 
     /// Usage tables that never answer.
-    struct Down;
+    pub struct Down;
 
     impl Usage for Down {
         fn served<'a>(&'a self, _: &'a ServedQuery) -> Read<'a, Vec<ServedRow>> {

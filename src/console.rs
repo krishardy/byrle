@@ -1,6 +1,7 @@
 //! The admin console: where it answers, and its routes. Stage 4.9 builds it up from here:
 //! its health check, login, logout and session. See docs/admin-plan.md.
 
+pub mod alerts;
 pub mod api;
 pub mod config;
 pub mod login;
@@ -237,7 +238,8 @@ pub(crate) mod tests {
     /// no event log.
     pub fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
         let usage = Arc::new(crate::usage::tests::Kept::default());
-        let proxy = crate::proxy::Proxy::new(reqwest::Client::new());
+        let intel = Arc::new(crate::intel::store::testing::knowing_nothing());
+        let proxy = crate::proxy::Proxy::new(reqwest::Client::new()).with_intel(Some(intel));
         let missing = |name: &str| Some(std::path::Path::new("/nonexistent/byrle").join(name));
         Arc::new(
             unread(console, store)

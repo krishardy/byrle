@@ -16,6 +16,71 @@
         ],
         "type": "object"
       },
+      "Alert": {
+        "description": "One served version a malware advisory names.",
+        "properties": {
+          "advisory_id": {
+            "type": "string"
+          },
+          "aliases": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "loaded": {
+            "description": "When byrle first stored the advisory, RFC 3339; absent when the store does not say.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "served": {
+            "$ref": "#/components/schemas/ServedRow",
+            "description": "The served version, as `GET dependencies` lists it."
+          },
+          "source": {
+            "description": "The stream it came from.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "served",
+          "advisory_id",
+          "aliases",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Alerts": {
+        "description": "Alerts found, and where the next request goes on from.",
+        "properties": {
+          "alerts": {
+            "items": {
+              "$ref": "#/components/schemas/Alert"
+            },
+            "type": "array"
+          },
+          "next": {
+            "description": "`after` for the next request; absent once every served version is looked up.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "scanned": {
+            "description": "Served versions looked up for this answer.",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "alerts",
+          "scanned"
+        ],
+        "type": "object"
+      },
       "By": {
         "description": "How the caller came.",
         "enum": [
@@ -577,6 +642,88 @@
           "accounts"
         ],
         "x-byrle-permission": "accounts.read"
+      }
+    },
+    "/api/v1/alerts": {
+      "get": {
+        "operationId": "alerts",
+        "parameters": [
+          {
+            "description": "The `next` of the answer before; the first served version without it.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Alerts"
+                }
+              }
+            },
+            "description": "Alerts, and where to go on from"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`after` is not a row id"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant alerts.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No usage tables or intel store, or one did not answer"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET alerts`: served versions a malware advisory loaded after their serving names. R4.",
+        "tags": [
+          "usage"
+        ],
+        "x-byrle-permission": "alerts.read"
       }
     },
     "/api/v1/config": {
