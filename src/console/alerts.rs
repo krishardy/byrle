@@ -325,10 +325,15 @@ mod tests {
             mount: crate::mount::Mount::ROOT,
             listen: Some("127.0.0.1:9090".into()),
             rp_key: None,
+            proxy_mount: crate::mount::Mount::ROOT,
         };
         let store = crate::console::login::tests::store().await;
         let proxy = crate::proxy::Proxy::new(reqwest::Client::new()).with_intel(intel);
-        let site = crate::console::tests::unread(console, store).with_proxy(proxy, Vec::new());
+        let site = crate::console::tests::unread(console, store).with_proxy(
+            proxy,
+            Vec::new(),
+            "http://127.0.0.1:9".into(),
+        );
         let site = Arc::new(match usage {
             Some(usage) => site.with_usage(usage),
             None => site,

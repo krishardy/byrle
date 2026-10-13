@@ -348,4 +348,14 @@ impl Accounts for PgAccounts {
                 .map_err(backend)
         })
     }
+
+    fn ping(&self) -> Pending<'_, ()> {
+        Box::pin(async move {
+            sqlx::query!("SELECT 1 AS one")
+                .fetch_one(&self.pool)
+                .await
+                .map(drop)
+                .map_err(backend)
+        })
+    }
 }

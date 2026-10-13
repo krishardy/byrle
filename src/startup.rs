@@ -130,7 +130,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_gate(gate);
     #[cfg(debug_assertions)]
     let proxy = proxy.with_defer_test(defer_test);
-    let console = beside(console, &proxy, environment);
+    let console = beside(console, &proxy, environment, &listen);
 
     let watch = environment.watch_interval()?;
     match watch {
@@ -205,13 +205,17 @@ fn site<L: Fn(&str) -> Option<OsString>>(
     ))
 }
 
-/// `site` describing `proxy` and the settings in `environment`, ready to serve.
+/// `site` describing `proxy`, listening at `listen`, and the settings in `environment`.
 fn beside<L: Fn(&str) -> Option<OsString>>(
     site: Option<crate::console::Site>,
     proxy: &Proxy,
     environment: &Env<L>,
+    listen: &str,
 ) -> Option<Arc<crate::console::Site>> {
-    site.map(|site| Arc::new(site.with_proxy(proxy.clone(), environment.settings())))
+    site.map(|site| {
+        let reached_at = crate::console::status::reached_at(listen, &site.console.proxy_mount);
+        Arc::new(site.with_proxy(proxy.clone(), environment.settings(), reached_at))
+    })
 }
 
 /// What checks each request's token: `accounts`, unless [`env::REQUIRE_TOKEN`] is `0`.
@@ -675,7 +679,7 @@ mod tests {
         );
         let running = site(&with(&vars), console(), Some((accounts.clone(), kept()))).unwrap();
         let proxy = Proxy::new(reqwest::Client::new());
-        let running = beside(running, &proxy, &with(&vars)).expect("a console");
+        let running = beside(running, &proxy, &with(&vars), "0.0.0.0:8080").expect("a console");
         assert_eq!(running.console.mount.to_string(), "/admin/");
 
         let dir = crate::util::test_support::tempdir("startup-console-events");

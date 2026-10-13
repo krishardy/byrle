@@ -8,13 +8,13 @@ pub mod login;
 pub mod logs;
 pub mod openapi;
 pub mod routes;
+pub mod status;
 pub mod usage;
 
 use std::sync::Arc;
 
 use axum::Router;
 use axum::http::StatusCode;
-use axum::response::Response;
 
 use crate::account::Accounts;
 use crate::account::events::EventLog;
@@ -44,6 +44,8 @@ pub struct Console {
     pub listen: Option<String>,
     /// The key nginx sends, which makes `X-Forwarded-For` name the client.
     pub rp_key: Option<crate::reverse_proxy::RpKey>,
+    /// Where the proxy answers, [`env::PROXY_URL`]'s path, for the status checks.
+    pub proxy_mount: Mount,
 }
 
 impl Console {
@@ -89,6 +91,7 @@ impl Console {
             mount,
             listen,
             rp_key: environment.rp_key()?,
+            proxy_mount: proxy,
         }))
     }
 }
@@ -126,6 +129,8 @@ pub struct Site {
     event_log: Option<std::path::PathBuf>,
     /// `scheme://host[:port]` of [`Console::url`], which a browser's `Origin` matches.
     origin: String,
+    /// The usage rows dropped when last checked, for R10.
+    dropped: std::sync::Mutex<status::Dropped>,
 }
 
 impl Site {
@@ -149,6 +154,7 @@ impl Site {
             audit_log: None,
             event_log: None,
             origin,
+            dropped: std::sync::Mutex::default(),
             console,
         }
     }
@@ -171,13 +177,19 @@ impl Site {
         self
     }
 
-    /// Describe `proxy`, started with `settings`, for R7.
+    /// Describe `proxy`, started with `settings` and answering at `reached_at`, for R7 and
+    /// R10.
     pub fn with_proxy(
         mut self,
         proxy: crate::proxy::Proxy,
         settings: Vec<crate::env::Setting>,
+        reached_at: String,
     ) -> Self {
-        self.configured = Some(config::Configured { proxy, settings });
+        self.configured = Some(config::Configured {
+            proxy,
+            settings,
+            reached_at,
+        });
         self
     }
 
@@ -208,25 +220,6 @@ pub fn listeners(proxy: Router, listen: &str, site: Option<&Arc<Site>>) -> Vec<(
     }
 }
 
-/// Whether the console is up.
-#[derive(serde::Serialize, utoipa::ToSchema)]
-pub struct Up {
-    /// `up`.
-    pub status: &'static str,
-}
-
-/// The console answers. Its components are checked with `GET status`: admin-plan.md §4.9.
-#[utoipa::path(
-    get,
-    path = HEALTH_PATH,
-    tag = "status",
-    security(()),
-    responses((status = 200, description = "The console answers", body = Up)),
-)]
-async fn health() -> Response {
-    api::json(StatusCode::OK, &Up { status: "up" })
-}
-
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
@@ -234,17 +227,18 @@ pub(crate) mod tests {
     use crate::env::testing::with;
     use crate::proxy::testing::serve;
 
-    /// `console` running against `store` and empty usage tables, with a cheap hasher and
-    /// no event log.
-    pub fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
+    /// `console` running against `store` and empty usage tables, with a cheap hasher, no
+    /// event log, and a proxy served beside it.
+    pub async fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
         let usage = Arc::new(crate::usage::tests::Kept::default());
         let intel = Arc::new(crate::intel::store::testing::knowing_nothing());
         let proxy = crate::proxy::Proxy::new(reqwest::Client::new()).with_intel(Some(intel));
+        let at = serve(proxy.clone().router()).await;
         let missing = |name: &str| Some(std::path::Path::new("/nonexistent/byrle").join(name));
         Arc::new(
             unread(console, store)
                 .with_usage(usage)
-                .with_proxy(proxy, Vec::new())
+                .with_proxy(proxy, Vec::new(), at)
                 .with_logs(missing("audit.log"), missing("events.log")),
         )
     }
@@ -263,8 +257,9 @@ pub(crate) mod tests {
             mount: Mount::from_url("https://h/admin/").unwrap(),
             listen: Some("127.0.0.1:9090".into()),
             rp_key: None,
+            proxy_mount: Mount::ROOT,
         };
-        let site = site(console, store);
+        let site = site(console, store).await;
         let (_, router) = listeners(Router::new(), LISTEN, Some(&site)).pop().unwrap();
         (site, serve(router).await)
     }
@@ -416,9 +411,10 @@ pub(crate) mod tests {
             mount: Mount::from_url("https://h/admin/").unwrap(),
             listen: None,
             rp_key: None,
+            proxy_mount: Mount::ROOT,
         };
         let store = Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
-        let served = listeners(teapot(), LISTEN, Some(&site(shared, store)));
+        let served = listeners(teapot(), LISTEN, Some(&site(shared, store).await));
         assert_eq!(served.len(), 1);
         let (at, router) = served.into_iter().next().unwrap();
         assert_eq!(at, LISTEN);
@@ -446,9 +442,10 @@ pub(crate) mod tests {
             mount: Mount::ROOT,
             listen: Some("127.0.0.1:9090".into()),
             rp_key: None,
+            proxy_mount: Mount::ROOT,
         };
         let store = Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
-        let served = listeners(teapot(), LISTEN, Some(&site(alone, store)));
+        let served = listeners(teapot(), LISTEN, Some(&site(alone, store).await));
         let addresses: Vec<&str> = served.iter().map(|(at, _)| at.as_str()).collect();
         assert_eq!(addresses, [LISTEN, "127.0.0.1:9090"]);
         let mut routers = served.into_iter().map(|(_, router)| router);

@@ -606,6 +606,7 @@ mod tests {
             mount: crate::mount::Mount::ROOT,
             listen: Some("127.0.0.1:9090".into()),
             rp_key: Some(crate::reverse_proxy::RpKey::parse(KEY).unwrap()),
+            proxy_mount: crate::mount::Mount::ROOT,
         };
         let hasher = crate::account::password::tests::cheap();
         let limits = crate::console::login::tests::limits();

@@ -304,9 +304,16 @@ both down.
 
 `GET health` needs no session or token, and returns `200` with `{"status":"up"}`, or `503`
 with the components that are not `up`, by name only. It is for a monitor outside the
-process, which is the only way to report the process itself down. Since 2026-10-11 it
-answers `{"status":"up"}` whenever the console answers; the component checks come with
-`GET status`.
+process, which is the only way to report the process itself down.
+
+Built 2026-10-13: `src/console/status.rs`. `GET status` needs `status.read`. Each check
+waits 2 s. The proxy is asked at `BYRLE_LISTEN` under `BYRLE_PROXY_URL`'s path, with
+`0.0.0.0` and `[::]` asked on loopback. "Rows dropped since the last check" is read as rows
+dropped in the last 15 minutes: one check resetting the count would let a monitor polling
+`GET health` hide them from the status page. `GET health` answers `{"status":"up"}`, or
+503 with the worst state and the names of the components not up:
+`{"status":"down","components":["proxy","readiness"]}`. The page over `GET status` comes
+with the web interface.
 
 ## 5. Threat model changes
 

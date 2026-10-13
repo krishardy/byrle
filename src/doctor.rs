@@ -1077,9 +1077,18 @@ pub mod probe {
     /// with its JSON on a 503. Async, because a blocking client's own runtime panics when
     /// dropped inside doctor's. Errors with why nothing answered with the JSON expected.
     pub async fn own<T: serde::de::DeserializeOwned>(proxy: &str, path: &str) -> Result<T, String> {
+        within(proxy, path, TIMEOUT).await
+    }
+
+    /// [`own`], waiting at most `timeout` for the answer.
+    pub async fn within<T: serde::de::DeserializeOwned>(
+        proxy: &str,
+        path: &str,
+        timeout: std::time::Duration,
+    ) -> Result<T, String> {
         let response = reqwest::Client::new()
             .get(format!("{proxy}{path}"))
-            .timeout(TIMEOUT)
+            .timeout(timeout)
             .send()
             .await
             .map_err(|e| format!("the request failed: {}", causes(&e)))?;

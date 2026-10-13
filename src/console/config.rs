@@ -19,6 +19,8 @@ pub struct Configured {
     pub proxy: crate::proxy::Proxy,
     /// Read once, at startup, with each secret removed.
     pub settings: Vec<Setting>,
+    /// Where the console asks the proxy for its health and readiness.
+    pub reached_at: String,
 }
 
 /// The policy in force.
@@ -106,11 +108,12 @@ mod tests {
             mount: crate::mount::Mount::ROOT,
             listen: Some("127.0.0.1:9090".into()),
             rp_key: None,
+            proxy_mount: crate::mount::Mount::ROOT,
         };
         let store = crate::console::login::tests::store().await;
         let site = crate::console::tests::unread(console, store);
         let site = Arc::new(match proxy {
-            Some(proxy) => site.with_proxy(proxy, settings),
+            Some(proxy) => site.with_proxy(proxy, settings, "http://127.0.0.1:9".into()),
             None => site,
         });
         let (_, router) =

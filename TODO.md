@@ -2743,7 +2743,9 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       and `GET api/v1/logs/{day}`, read from the audit log and its rotated files by
       `console::logs::page`
 - [ ] `[!]` API and page: status of the proxy listener, its readiness, the database and the
-      index queue, and `GET health` without credentials (R10, plan §4.9)
+      index queue, and `GET health` without credentials (R10, plan §4.9). API done
+      2026-10-13: `GET api/v1/status`, and `GET api/v1/health` reports the same checks.
+      The page comes with the web interface
 - [ ] `[!]` Web interface over each endpoint: `maud` pages, forms, SVG charts
 - [ ] `[!]` OIDC login: discovery, `state`, `nonce`, PKCE, code exchange, key refetch, and
       `iss`, `aud`, `exp`, `nonce` and a configured algorithm list checked. Migration for
