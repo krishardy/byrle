@@ -46,17 +46,21 @@ reasoning per version. A version offered and not removed is not in the log.
 | `upstream-unreachable` | 502: the upstream sent no answer, or a metadata body stopped part way | on an artifact, yes; on a metadata request, no |
 | `upstream-status` | the upstream's status other than 2xx or 304, forwarded | on an artifact, yes; on a metadata request, no |
 | `cut-short` | a served artifact's body ended early: its bytes did not match their digest, or the upstream stopped part way. Written after the `served` line for the same request | no |
+| `unauthorized` | 401: no token, or one not held by an enabled account | no |
+| `account-store` | 503: the account store did not answer, so the token was not checked | no |
 
 A line with nothing decided has no `action` and no `inputs`. `audit verify` and `policy diff`
 skip it.
 
 An artifact's decision to serve is written once the upstream answers, so `served` means the
 upstream answered 2xx or 304. A metadata request gets a line of its own only when the
-policy removed a version, or when it failed: `intel-store`, `no-stream-for-ecosystem`,
-`upstream-unreachable` or `upstream-status`, with no `version`. A request for neither
+policy removed a version, or when it failed: `unauthorized`, `account-store`, `intel-store`,
+`no-stream-for-ecosystem`, `upstream-unreachable` or `upstream-status`, with no `version`. A request for neither
 a package's metadata nor one of its artifacts, such as npm's `/-/v1/search`, gets none.
 
-A 401 and a 503 `account-store` are not written. Until 2026-09-29 `unservable` and `no-strong-digest` were written as `refused`, and
+`unauthorized` and `account-store` lines have no `account`: the token was not accepted.
+pip and uv send credentials only after a 401, so their first request writes an
+`unauthorized` line. Until 2026-10-13 neither was written. Until 2026-09-29 `unservable` and `no-strong-digest` were written as `refused`, and
 the two undecided answers wrote no line.
 
 Every field has a default, so a line an older build wrote without a field still reads. Empty

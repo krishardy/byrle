@@ -55,8 +55,8 @@ From [request-flow](request-flow.md). R6 needs each one counted.
 | upstream unreachable, or stalled | 502 | yes, `upstream-unreachable` |
 | upstream answered 404 ("not found") or another non-2xx | forwarded | yes, `upstream-status`, with the status |
 | artifact streamed with 200, body cut short on a digest mismatch | 200, truncated | yes, `cut-short`, after its `served` line |
-| no token, or one unknown, revoked or of a disabled account | 401 | no, logged at INFO |
-| account store cannot answer | 503 `account-store` | no |
+| no token, or one unknown, revoked or of a disabled account | 401 | yes, `unauthorized`, with no account |
+| account store cannot answer | 503 `account-store` | yes, `account-store`, with no account |
 
 Recorded 2026-10-12, with the account on each line
 ([audit-log](engineering_decisions/audit-log.md)). An older build cannot read a line with an
