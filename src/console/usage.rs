@@ -83,6 +83,10 @@ pub struct Versions {
 /// Failure counts, by hour, ecosystem and case.
 #[derive(Serialize, ToSchema)]
 pub struct Failures {
+    /// The hours counted from, RFC 3339.
+    pub since: String,
+    /// The hours counted before, RFC 3339.
+    pub until: String,
     pub failures: Vec<FailureRow>,
 }
 
@@ -216,7 +220,11 @@ pub async fn counts(site: &Site, parts: &Parts) -> Result<Failures, Refused> {
         .failures(&query)
         .await
         .map_err(|_| Refused::unavailable(UNANSWERED))?;
-    Ok(Failures { failures })
+    Ok(Failures {
+        since: crate::usage::second(query.since),
+        until: crate::usage::second(query.until),
+        failures,
+    })
 }
 
 #[cfg(test)]

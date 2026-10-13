@@ -51,6 +51,20 @@ pub const CONFIG_PAGE_PATH: &str = "/config";
 /// Under the console's path: the accounts.
 pub const ACCOUNTS_PAGE_PATH: &str = "/accounts";
 
+/// Under the console's path: failures by hour and case, R6.
+pub const FAILURES_PAGE_PATH: &str = "/failures";
+
+/// The most hours the failures chart draws: 31 days.
+const MAX_BARS: usize = 31 * 24;
+
+/// The chart's drawing area, in its own units.
+const CHART: (f64, f64) = (720.0, 200.0);
+
+/// The colour of each `answered` case in the chart, in the order the cases are named.
+const PALETTE: [&str; 8] = [
+    "#cf222e", "#9a6700", "#0969da", "#8250df", "#1a7f37", "#bc4c00", "#57606a", "#bf3989",
+];
+
 /// The most days of the audit log a requests page links to.
 const MAX_DAY_LINKS: usize = 31;
 
@@ -62,8 +76,9 @@ pub const CSP: &str =
 const CSS: &str = include_str!("console.css");
 
 /// A page links, under the console's path, and the permission it needs.
-const NAV: [(&str, &str, Permission); 7] = [
+const NAV: [(&str, &str, Permission); 8] = [
     ("Status", STATUS_PAGE_PATH, Permission::StatusRead),
+    ("Failures", FAILURES_PAGE_PATH, Permission::RequestsRead),
     (
         "Dependencies",
         DEPENDENCIES_PAGE_PATH,
@@ -636,6 +651,129 @@ pub async fn config(site: Arc<Site>, asked: Asked) -> Response {
     })
 }
 
+/// The hours from `since` up to `until`, at most [`MAX_BARS`], each as the tables write it.
+fn hours(since: &str, until: &str) -> Vec<String> {
+    let (Ok(since), Ok(until)) = (
+        since.parse::<jiff::Timestamp>(),
+        until.parse::<jiff::Timestamp>(),
+    ) else {
+        return Vec::new();
+    };
+    let hour = jiff::SignedDuration::from_hours(1);
+    let first = crate::usage::hour_of(since);
+    std::iter::successors(Some(first), |at| at.checked_add(hour).ok())
+        .take_while(|at| *at < until)
+        .take(MAX_BARS)
+        .map(crate::usage::second)
+        .collect()
+}
+
+/// One bar's piece: its case, count, colour, and where it starts and how tall it is.
+struct Piece<'a> {
+    case: &'a str,
+    count: i64,
+    colour: &'static str,
+    top: f64,
+    tall: f64,
+}
+
+/// The pieces of the bar for `hour`, stacked from the bottom, scaled to `busiest`.
+fn stacked<'a>(
+    failures: &'a super::usage::Failures,
+    cases: &[&'a str],
+    hour: &str,
+    busiest: i64,
+) -> Vec<Piece<'a>> {
+    let height = CHART.1;
+    let mut top = height;
+    let mut pieces = Vec::new();
+    for (n, case) in cases.iter().enumerate() {
+        let count: i64 = failures
+            .failures
+            .iter()
+            .filter(|row| row.hour == hour && row.answered == *case)
+            .map(|row| row.count)
+            .sum();
+        if count > 0 {
+            let tall = height * count as f64 / busiest as f64;
+            top = (top - tall).max(0.0);
+            pieces.push(Piece {
+                case,
+                count,
+                colour: PALETTE[n % PALETTE.len()],
+                top,
+                tall,
+            });
+        }
+    }
+    pieces
+}
+
+/// `failures` as bars, one an hour, stacked by case, scaled to the busiest hour.
+fn chart(failures: &super::usage::Failures) -> Markup {
+    let hours = hours(&failures.since, &failures.until);
+    let mut cases: Vec<&str> = failures
+        .failures
+        .iter()
+        .map(|row| row.answered.as_str())
+        .collect();
+    cases.sort_unstable();
+    cases.dedup();
+    let totals: Vec<i64> = hours
+        .iter()
+        .map(|hour| {
+            stacked(failures, &cases, hour, 1)
+                .iter()
+                .map(|p| p.count)
+                .sum()
+        })
+        .collect();
+    let busiest = totals.iter().copied().max().unwrap_or(0).max(1);
+    let (width, height) = CHART;
+    let bar = width / hours.len().max(1) as f64;
+    html! {
+        svg.chart viewBox=(format!("0 0 {width} {height}")) role="img" aria-label="Failures by hour" {
+            @for (n, hour) in hours.iter().enumerate() {
+                @for piece in stacked(failures, &cases, hour, busiest) {
+                    rect x=(format!("{:.2}", n as f64 * bar)) y=(format!("{:.2}", piece.top))
+                        width=(format!("{:.2}", bar * 0.9)) height=(format!("{:.2}", piece.tall)) fill=(piece.colour) {
+                        title { (hour) " " (piece.case) ": " (piece.count) }
+                    }
+                }
+            }
+        }
+        p { "Busiest hour: " (busiest) ". " (failures.since) " to " (failures.until) "." }
+        ul.legend {
+            @for (n, case) in cases.iter().enumerate() {
+                li {
+                    svg width="12" height="12" { rect width="12" height="12" fill=(PALETTE[n % PALETTE.len()]) {} }
+                    " " (case)
+                }
+            }
+        }
+    }
+}
+
+/// `GET failures`: counts by hour and case, as a chart and a table. R6.
+pub async fn failures(site: Arc<Site>, asked: Asked) -> Response {
+    let pairs = pairs(&asked);
+    let data = super::usage::counts(&site, &asked.parts).await;
+    shown_page(&site, &asked, "Failures", data, |failures| {
+        html! {
+            (filters(&site, FAILURES_PAGE_PATH, &["ecosystem", "answered", "since", "until"], &pairs))
+            (chart(&failures))
+            table {
+                thead { tr { th { "Hour" } th { "Ecosystem" } th { "Answered" } th { "Count" } } }
+                tbody {
+                    @for row in &failures.failures {
+                        tr { td { (row.hour) } td { (row.ecosystem) } td { (row.answered) } td { (row.count) } }
+                    }
+                }
+            }
+        }
+    })
+}
+
 /// `GET accounts`: each account and its roles.
 pub async fn accounts(site: Arc<Site>, asked: Asked) -> Response {
     let data = super::api::listed(&site).await;
@@ -922,10 +1060,10 @@ mod tests {
     }
 
     /// A console with a served version, an alert, two log lines and a policy, logged in as
-    /// alice: its base URL and her cookie.
-    async fn full() -> (String, String) {
+    /// alice, its files under a directory named for `label`: its base URL and her cookie.
+    async fn full(label: &str) -> (String, String) {
         use crate::usage::Use;
-        let dir = crate::util::test_support::tempdir("pages-full");
+        let dir = crate::util::test_support::tempdir(label);
         let audit = dir.join("audit.log");
         let now = jiff::Timestamp::now();
         let line = serde_json::json!({
@@ -941,6 +1079,19 @@ mod tests {
         });
         std::fs::write(&events, format!("{failed}\n")).unwrap();
         let usage = Arc::new(crate::usage::tests::Kept::default());
+        let hour = crate::usage::hour_of(now - jiff::SignedDuration::from_hours(2));
+        usage.0.lock().unwrap().extend([
+            Use::Failed {
+                hour,
+                ecosystem: "npm".into(),
+                answered: crate::audit::Answered::UpstreamUnreachable,
+            },
+            Use::Failed {
+                hour,
+                ecosystem: "npm".into(),
+                answered: crate::audit::Answered::UpstreamUnreachable,
+            },
+        ]);
         usage.0.lock().unwrap().push(Use::Served {
             account: None,
             ecosystem: "npm".into(),
@@ -998,7 +1149,7 @@ mod tests {
     /// is escaped, never markup.
     #[tokio::test]
     async fn each_data_page_shows_its_data_escaped() {
-        let (base, cookie) = full().await;
+        let (base, cookie) = full("pages-full-shown").await;
         let (status, home) = page(&base, HOME_PATH, Some(&cookie)).await;
         assert_eq!(status, 200);
         for (label, path, _) in NAV {
@@ -1071,7 +1222,7 @@ mod tests {
     /// The next page keeps the filters; a filter that does not parse is a 400 page.
     #[tokio::test]
     async fn a_page_keeps_its_filters_and_refuses_one_that_does_not_parse() {
-        let (base, cookie) = full().await;
+        let (base, cookie) = full("pages-full-filters").await;
         let (_, body) = page(
             &base,
             &format!("{DEPENDENCIES_PAGE_PATH}?limit=1&ecosystem=npm"),
@@ -1110,5 +1261,110 @@ mod tests {
         assert_eq!(days(&year).len(), MAX_DAY_LINKS);
         assert_eq!(text(&serde_json::Value::Null), "");
         assert_eq!(text(&serde_json::json!(3)), "3");
+    }
+
+    fn row(hour: &str, answered: &str, count: i64) -> crate::usage::FailureRow {
+        crate::usage::FailureRow {
+            hour: hour.into(),
+            ecosystem: "npm".into(),
+            answered: answered.into(),
+            count,
+        }
+    }
+
+    /// The hours start on the hour, end before `until`, and are at most 31 days.
+    #[test]
+    fn the_chart_draws_each_hour_from_the_one_since_falls_in() {
+        assert_eq!(
+            hours("2026-10-13T09:27:00Z", "2026-10-13T11:00:00Z"),
+            ["2026-10-13T09:00:00Z", "2026-10-13T10:00:00Z"]
+        );
+        assert!(hours("never", "2026-10-13T11:00:00Z").is_empty());
+        assert_eq!(
+            hours("2025-01-01T00:00:00Z", "2026-01-01T00:00:00Z").len(),
+            744,
+            "31 days of hours"
+        );
+    }
+
+    /// A bar is its cases stacked from the bottom, scaled so the busiest hour fills the
+    /// chart; each piece is named in its title; a ninth case takes the first colour again.
+    #[test]
+    fn each_bar_stacks_its_cases_scaled_to_the_busiest_hour() {
+        let failures = super::super::usage::Failures {
+            since: "2026-10-13T09:00:00Z".into(),
+            until: "2026-10-13T11:00:00Z".into(),
+            failures: vec![
+                row("2026-10-13T09:00:00Z", "refused", 4),
+                row("2026-10-13T09:00:00Z", "unauthorized", 2),
+                row("2026-10-13T10:00:00Z", "refused", 3),
+            ],
+        };
+        let svg = chart(&failures).into_string();
+        assert!(svg.contains(r##"<rect x="0.00" y="66.67" width="324.00" height="133.33" fill="#cf222e"><title>2026-10-13T09:00:00Z refused: 4</title></rect>"##), "{svg}");
+        assert!(svg.contains(r##"<rect x="0.00" y="0.00" width="324.00" height="66.67" fill="#9a6700"><title>2026-10-13T09:00:00Z unauthorized: 2</title></rect>"##), "{svg}");
+        assert!(
+            svg.contains(
+                r##"<rect x="360.00" y="100.00" width="324.00" height="100.00" fill="#cf222e">"##
+            ),
+            "{svg}"
+        );
+        assert!(svg.contains("Busiest hour: 6."), "{svg}");
+        assert_eq!(
+            svg.matches("<rect x=").count(),
+            3,
+            "no piece for a case an hour does not have: {svg}"
+        );
+        assert!(
+            svg.contains(
+                r##"<rect width="12" height="12" fill="#9a6700"></rect></svg> unauthorized"##
+            ),
+            "a legend rect is closed, so its label is not inside the drawing: {svg}"
+        );
+
+        let many: Vec<_> = (0..9)
+            .map(|n| row("2026-10-13T09:00:00Z", &format!("case-{n}"), 1))
+            .collect();
+        let nine = super::super::usage::Failures {
+            since: String::new(),
+            until: String::new(),
+            failures: many.clone(),
+        };
+        let pieces = stacked(
+            &nine,
+            &many.iter().map(|r| r.answered.as_str()).collect::<Vec<_>>(),
+            "2026-10-13T09:00:00Z",
+            9,
+        );
+        assert_eq!(pieces[8].colour, pieces[0].colour);
+        let empty = super::super::usage::Failures {
+            since: "x".into(),
+            until: "y".into(),
+            failures: vec![],
+        };
+        assert!(chart(&empty).into_string().contains("Busiest hour: 1."));
+    }
+
+    #[tokio::test]
+    async fn the_failures_page_draws_the_counts_and_lists_them() {
+        let (base, cookie) = full("pages-full-failures").await;
+        let (status, body) = page(&base, FAILURES_PAGE_PATH, Some(&cookie)).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.contains(r#"<svg class="chart" viewBox="0 0 720 200""#),
+            "{body}"
+        );
+        assert!(
+            body.contains("<td>upstream-unreachable</td><td>2</td>"),
+            "{body}"
+        );
+        assert!(body.contains("upstream-unreachable: 2</title>"), "{body}");
+        let (status, _) = page(
+            &base,
+            &format!("{FAILURES_PAGE_PATH}?until=never"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, 400);
     }
 }

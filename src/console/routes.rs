@@ -86,7 +86,7 @@ pub const ALERTS_PATH: &str = "/api/v1/alerts";
 pub const STATUS_PATH: &str = "/api/v1/status";
 
 /// Every console route.
-pub const ROUTES: [Route; 25] = [
+pub const ROUTES: [Route; 26] = [
     Route {
         method: Method::GET,
         path: super::pages::HOME_PATH,
@@ -157,6 +157,14 @@ pub const ROUTES: [Route; 25] = [
         kind: Kind::Page,
         guard: Guard::Needs(Permission::ConfigRead, |site, asked| {
             Box::pin(super::pages::config(site, asked))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: super::pages::FAILURES_PAGE_PATH,
+        kind: Kind::Page,
+        guard: Guard::Needs(Permission::RequestsRead, |site, asked| {
+            Box::pin(super::pages::failures(site, asked))
         }),
     },
     Route {
