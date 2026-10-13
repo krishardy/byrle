@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO session (account_id, digest, expires_at)\n                SELECT id, $2, $3::text::timestamptz FROM account WHERE name = $1\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Bpchar",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "95768a0f6c87e35b8b01b8983ce248909bf3de7a1afa3065a696477f39a5b733"
+}

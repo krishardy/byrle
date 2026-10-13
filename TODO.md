@@ -2702,14 +2702,15 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       a test fails on one that does not. Begun 2026-10-13: `Role` and `Permission` in
       `src/account/role.rs`, `migrations/0020_account_role.sql`, roles in `byrle account
       list`. The handlers come with login
-- [ ] `[!]` Password login (Argon2id), sessions, CSRF, a login rate limit. Migrations for
-      `account_password` and `session`. Begun 2026-10-13: `byrle account password`,
-      `account_password` in `migrations/0021_account_password.sql`, Argon2id at 19 MiB and
-      2 passes, 15 characters at least
-      ([console-login](docs/engineering_decisions/console-login.md))
-- [ ] `[!]` The account event log (plan §4.5). Begun 2026-10-13: `src/account/events.rs`,
-      `BYRLE_ACCOUNT_EVENT_LOG`; `byrle account` and `byrle token` append their changes.
-      The console's logins, and the proxy rotating the file, come with login
+- [x] `[!]` Password login (Argon2id), sessions, CSRF, a login rate limit. Migrations for
+      `account_password` and `session`. Done 2026-10-13: `byrle account password`;
+      `POST api/v1/login` and `logout`, `GET api/v1/session`; 8-hour sessions; 5 failures
+      per account and 20 per address in 15 minutes, the address through `BYRLE_RP_KEY`
+      as the user decided ([console-login](docs/engineering_decisions/console-login.md)).
+      The values are Claude's, not yet confirmed
+- [x] `[!]` The account event log (plan §4.5). Done 2026-10-13: `src/account/events.rs`,
+      `BYRLE_ACCOUNT_EVENT_LOG`; `byrle account` and `byrle token` append their changes,
+      and the console its logins and logouts, rotating the file as the audit log is
 - [x] `[!]` `byrle account create --role admin`, for the first admin. Done 2026-10-13;
       `--role` repeats
 - [ ] `[!]` Accounts identified on requests by proxy token, per

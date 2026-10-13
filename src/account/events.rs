@@ -45,6 +45,9 @@ pub struct AccountEvent {
 /// The source of a change made by `byrle account` or `byrle token`.
 pub const CLI: &str = "cli";
 
+/// The source of a console request whose peer address the server did not record.
+pub const UNKNOWN: &str = "unknown";
+
 impl AccountEvent {
     /// `action` on `account`, made now from the command line.
     pub fn by_cli(action: Action, account: &super::Name) -> Self {
@@ -56,6 +59,29 @@ impl AccountEvent {
             role: None,
             token: None,
             source: CLI.to_owned(),
+        }
+    }
+
+    /// `action` on `account`, made now through the console by `actor` from `source`.
+    /// `account` is the username a failed login tried, cut to 256 bytes.
+    pub fn by_console(
+        action: Action,
+        account: &str,
+        actor: Option<&super::Name>,
+        source: Option<std::net::IpAddr>,
+    ) -> Self {
+        let mut cut = 256.min(account.len());
+        while !account.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        Self {
+            at: jiff::Timestamp::now().to_string(),
+            actor: actor.map(ToString::to_string),
+            action,
+            account: account[..cut].to_owned(),
+            role: None,
+            token: None,
+            source: source.map_or_else(|| UNKNOWN.to_owned(), |address| address.to_string()),
         }
     }
 
@@ -78,15 +104,31 @@ pub fn writable(path: &Path) -> std::io::Result<()> {
 
 /// Append `events` to `path`, one line each.
 pub fn append(path: &Path, events: &[AccountEvent]) -> std::io::Result<()> {
-    let lines: Vec<u8> = events
-        .iter()
-        .flat_map(|event| {
-            let mut line = serde_json::to_vec(event).expect("an event serialises");
-            line.push(b'\n');
-            line
-        })
-        .collect();
+    let lines: Vec<u8> = events.iter().flat_map(line).collect();
     opened(path).and_then(|mut file| file.write_all(&lines))
+}
+
+/// `event` as one line of JSON.
+fn line(event: &AccountEvent) -> Vec<u8> {
+    let mut line = serde_json::to_vec(event).expect("an event serialises");
+    line.push(b'\n');
+    line
+}
+
+/// The log as the proxy writes it, rotated as the audit log is.
+pub struct EventLog(crate::rotation::Lines);
+
+impl EventLog {
+    /// Open `path`, creating it. Rotated files older than `retention_days` are deleted.
+    pub fn open(path: &Path, retention_days: u32) -> std::io::Result<Self> {
+        let today = crate::rotation::today();
+        crate::rotation::Lines::open(path, retention_days, "account event log", today).map(Self)
+    }
+
+    /// Append `event`. A failure is warned about once and otherwise ignored.
+    pub fn write(&self, event: &AccountEvent) {
+        self.0.append(&line(event), crate::rotation::today());
+    }
 }
 
 fn opened(path: &Path) -> std::io::Result<std::fs::File> {
@@ -126,6 +168,40 @@ mod tests {
         assert_eq!(first["action"], "account-created");
         assert_eq!(first["source"], "cli");
         assert!(first.get("actor").is_none() && first.get("role").is_none());
+    }
+
+    /// The console names the actor and the address, and cuts a long username tried.
+    #[test]
+    fn the_console_writes_through_the_rotated_log() {
+        let dir = tempdir("account-events-console");
+        let path = dir.join("events.log");
+        let log = EventLog::open(&path, 30).unwrap();
+        let alice = Name::parse("alice").unwrap();
+        let login = AccountEvent::by_console(
+            Action::Login,
+            "alice",
+            Some(&alice),
+            Some("203.0.113.7".parse().unwrap()),
+        );
+        log.write(&login);
+        let long = format!("{}é", "a".repeat(255));
+        let failed = AccountEvent::by_console(Action::LoginFailed, &long, None, None);
+        assert_eq!(
+            failed.account,
+            "a".repeat(255),
+            "cut before the character it splits"
+        );
+        assert_eq!(failed.source, UNKNOWN);
+        log.write(&failed);
+        let read: Vec<AccountEvent> = std::fs::read_to_string(&path)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(read, [login.clone(), failed]);
+        assert_eq!(login.actor.as_deref(), Some("alice"));
+        assert_eq!(login.source, "203.0.113.7");
+        assert!(EventLog::open(&dir.join("no-such-dir").join("x.log"), 30).is_err());
     }
 
     #[test]

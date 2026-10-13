@@ -338,7 +338,7 @@ async fn run_daemon() -> std::process::ExitCode {
     report_listening(
         &proxy,
         &listen,
-        console.as_ref(),
+        console.as_ref().map(|site| &site.console),
         &or_exit(environment.proxy_base()),
     );
 

@@ -1,7 +1,9 @@
 //! [`Accounts`] over Postgres, in the database the intel store uses. Tested by
 //! `tests/postgres.rs`.
 
-use super::{Account, AccountError, Accounts, Holder, Name, Pending, Role, Token, TokenDigest};
+use super::{
+    Account, AccountError, Accounts, Caller, Holder, Name, Pending, Role, Token, TokenDigest,
+};
 use sqlx::PgPool;
 
 #[derive(Debug, Clone)]
@@ -266,6 +268,84 @@ impl Accounts for PgAccounts {
             .fetch_optional(&self.pool)
             .await
             .map_err(backend)
+        })
+    }
+
+    fn roles<'a>(&'a self, account: &'a Name) -> Pending<'a, Vec<Role>> {
+        Box::pin(async move {
+            sqlx::query_scalar!(
+                r#"
+                SELECT r.role::text AS "role!" FROM account_role r JOIN account a ON a.id = r.account_id
+                WHERE a.name = $1 AND a.disabled_at IS NULL
+                "#,
+                account.as_str(),
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map(|names| known(&names))
+            .map_err(backend)
+        })
+    }
+
+    fn create_session<'a>(
+        &'a self,
+        account: &'a Name,
+        digest: &'a TokenDigest,
+        expires: &'a str,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            sqlx::query!("DELETE FROM session WHERE expires_at <= now()")
+                .execute(&self.pool)
+                .await
+                .map_err(backend)?;
+            let done = sqlx::query!(
+                r#"
+                INSERT INTO session (account_id, digest, expires_at)
+                SELECT id, $2, $3::text::timestamptz FROM account WHERE name = $1
+                "#,
+                account.as_str(),
+                digest.as_str(),
+                expires,
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
+            if done.rows_affected() == 0 {
+                return Err(super::no_account(account));
+            }
+            Ok(())
+        })
+    }
+
+    fn session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, Option<Caller>> {
+        Box::pin(async move {
+            let row = sqlx::query!(
+                r#"
+                SELECT a.name,
+                    ARRAY(SELECT role::text FROM account_role r WHERE r.account_id = a.id ORDER BY role)
+                        AS "roles!"
+                FROM session s JOIN account a ON a.id = s.account_id
+                WHERE s.digest = $1 AND s.expires_at > now() AND a.disabled_at IS NULL
+                "#,
+                digest.as_str(),
+            )
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)?;
+            Ok(row.map(|row| Caller {
+                account: stored(row.name),
+                roles: known(&row.roles),
+            }))
+        })
+    }
+
+    fn end_session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, ()> {
+        Box::pin(async move {
+            sqlx::query!("DELETE FROM session WHERE digest = $1", digest.as_str())
+                .execute(&self.pool)
+                .await
+                .map(drop)
+                .map_err(backend)
         })
     }
 }

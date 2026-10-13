@@ -1,0 +1,28 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT a.name,\n                    ARRAY(SELECT role::text FROM account_role r WHERE r.account_id = a.id ORDER BY role)\n                        AS \"roles!\"\n                FROM session s JOIN account a ON a.id = s.account_id\n                WHERE s.digest = $1 AND s.expires_at > now() AND a.disabled_at IS NULL\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 1,
+        "name": "roles!",
+        "type_info": "TextArray"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Bpchar"
+      ]
+    },
+    "nullable": [
+      false,
+      null
+    ]
+  },
+  "hash": "a250c34e8b2b1167d26d7938cf8a182e0eb8f86bc9ebcd67cc84e192a26a224c"
+}

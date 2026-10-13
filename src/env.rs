@@ -255,14 +255,14 @@ pub const ACCOUNT_EVENT_LOG: Var = runtime(
     "",
     &[
         "path for one JSON line per change to an account,",
-        "its roles, tokens or password. `byrle account`",
-        "and `byrle token` append to it",
+        "its roles, tokens or password, and per console",
+        "login and logout. Rotated as BYRLE_AUDIT_LOG is",
     ],
 );
 pub const LOG_RETENTION_DAYS: Var = runtime(
     "BYRLE_LOG_RETENTION_DAYS",
     "",
-    &["days a rotated audit log file is kept"],
+    &["days a rotated audit or account event log file is kept"],
 )
 .with_default(Default::Number(DEFAULT_LOG_RETENTION_DAYS as u64));
 pub const DECISION_RETENTION_DAYS: Var = runtime(

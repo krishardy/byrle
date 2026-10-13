@@ -26,7 +26,7 @@ pub struct Started {
     pub proxy: Proxy,
     pub listen: String,
     /// The admin console, when [`env::CONSOLE_URL`] asks for one.
-    pub console: Option<crate::console::Console>,
+    pub console: Option<Arc<crate::console::Site>>,
     /// How long the watcher waits between passes. `None` when it is off.
     pub watch: Option<std::time::Duration>,
 }
@@ -81,7 +81,9 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     let store = postgres::from_env(environment)
         .await
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DATABASE_URL)))?;
-    let gate = gate(environment, crate::account::postgres::store(store.as_ref()))?;
+    let accounts = crate::account::postgres::store(store.as_ref());
+    let gate = gate(environment, accounts.clone())?;
+    let console = site(environment, console, accounts)?;
     let usage = crate::usage::postgres::queue(store.as_ref());
     let (intel, analyses) = crate::analysis::postgres::stores(store, max_verified);
     if policy.is_some() {
@@ -162,6 +164,39 @@ fn virustotal<L: Fn(&str) -> Option<OsString>>(
         None => info!(byrle.config.variable = %env::VIRUSTOTAL_API_KEY, "virustotal off"),
     }
     Ok(settings)
+}
+
+/// The console as it runs, logging in against `accounts` and writing logins to
+/// [`env::ACCOUNT_EVENT_LOG`]. Errors when there is a console and no store, or the log
+/// cannot be opened.
+fn site<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+    console: Option<crate::console::Console>,
+    accounts: Option<Arc<dyn crate::account::Accounts>>,
+) -> Result<Option<Arc<crate::console::Site>>, StartupError> {
+    let Some(console) = console else {
+        return Ok(None);
+    };
+    let Some(accounts) = accounts else {
+        return Err(StartupError::Unusable(format!(
+            "{} is set, and {} is not: the console logs in against the accounts kept there",
+            env::CONSOLE_URL,
+            env::DATABASE_URL
+        )));
+    };
+    let events = match environment.account_event_log()? {
+        Some(path) => Some(Arc::new(
+            crate::account::events::EventLog::open(&path, environment.log_retention_days()?)
+                .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::ACCOUNT_EVENT_LOG)))?,
+        )),
+        None => None,
+    };
+    Ok(Some(Arc::new(crate::console::Site::new(
+        console,
+        accounts,
+        crate::account::password::Hasher::standard(),
+        events,
+    ))))
 }
 
 /// What checks each request's token: `accounts`, unless [`env::REQUIRE_TOKEN`] is `0`.
@@ -598,10 +633,58 @@ mod tests {
                 (env::CONSOLE_URL, "https://h/admin/"),
             ],
         );
-        let started = proxy(&environment).await.expect("separate paths start");
-        let console = started.console.expect("a console");
-        assert_eq!(console.mount.to_string(), "/admin/");
+        let Err(StartupError::Unusable(why)) = proxy(&environment).await else {
+            panic!("a console without a database is not started");
+        };
+        assert!(why.contains(env::DATABASE_URL.name), "{why}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With a store, the console runs, writing logins to the event log when one is set and
+    /// refusing to start when it cannot be opened.
+    #[test]
+    fn the_console_runs_against_the_account_store() {
+        let accounts: Arc<dyn crate::account::Accounts> =
+            Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
+        let vars = [
+            (env::PROXY_URL, "https://h/registry/"),
+            (env::CONSOLE_URL, "https://h/admin/"),
+        ];
+        let console = || crate::console::Console::from_env(&with(&vars), "127.0.0.1:8080").unwrap();
+        assert!(
+            site(&with(&vars), None, Some(accounts.clone()))
+                .unwrap()
+                .is_none()
+        );
+        let running = site(&with(&vars), console(), Some(accounts.clone())).unwrap();
+        assert_eq!(running.unwrap().console.mount.to_string(), "/admin/");
+
+        let dir = crate::util::test_support::tempdir("startup-console-events");
+        let log = dir.join("events.log");
+        let logged = with(&[(env::ACCOUNT_EVENT_LOG, log.to_str().unwrap())]);
+        assert!(
+            site(&logged, console(), Some(accounts.clone()))
+                .unwrap()
+                .is_some()
+        );
+        assert!(log.exists());
+        let missing = dir.join("no-such-dir").join("events.log");
+        let unopened = with(&[(env::ACCOUNT_EVENT_LOG, missing.to_str().unwrap())]);
+        let Err(StartupError::Unusable(why)) = site(&unopened, console(), Some(accounts.clone()))
+        else {
+            panic!("an event log that cannot be opened stops the console");
+        };
+        assert!(why.starts_with(env::ACCOUNT_EVENT_LOG.name), "{why}");
+        let bad_days = with(&[
+            (env::ACCOUNT_EVENT_LOG, log.to_str().unwrap()),
+            (env::LOG_RETENTION_DAYS, "0"),
+        ]);
+        assert!(site(&bad_days, console(), Some(accounts.clone())).is_err());
+        let unreadable = crate::env::testing::with_unreadable(&[], env::ACCOUNT_EVENT_LOG);
+        let Err(StartupError::Env(e)) = site(&unreadable, console(), Some(accounts)) else {
+            panic!("an unreadable event log path is an environment error");
+        };
+        assert_eq!(e.var, env::ACCOUNT_EVENT_LOG.name);
     }
 
     /// What `proxy` logs at INFO and above for `pairs`, with whether it started.
@@ -835,7 +918,7 @@ mod tests {
         let (dir, environment) = spooled("startup-empty", &[]);
         let started = proxy(&environment).await.expect("the defaults are usable");
         assert_eq!(started.listen, env::DEFAULT_LISTEN);
-        assert_eq!(started.console, None);
+        assert!(started.console.is_none());
         assert_eq!(
             started.watch,
             Some(std::time::Duration::from_secs(

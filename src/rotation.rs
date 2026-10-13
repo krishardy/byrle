@@ -21,6 +21,43 @@ const BZ2: &str = ".bz2";
 /// Appended to a day's file name while it is compressed. Removed by the next tidy.
 const PART: &str = ".bz2.part";
 
+/// A rotated log of lines that warns once, naming itself, when a line cannot be written.
+#[derive(Debug)]
+pub struct Lines {
+    file: Rotating,
+    /// Such as `audit log`, in the warning.
+    name: &'static str,
+    warned: std::sync::atomic::AtomicBool,
+}
+
+impl Lines {
+    /// Open `path` as [`Rotating::open`] does, on `today`.
+    pub fn open(
+        path: &Path,
+        retention_days: u32,
+        name: &'static str,
+        today: Date,
+    ) -> io::Result<Self> {
+        Ok(Self {
+            file: Rotating::open(path, retention_days, today)?,
+            name,
+            warned: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// Append `line` on `today`. A failure is warned about once and otherwise ignored.
+    pub fn append(&self, line: &[u8], today: Date) {
+        if self.file.append(line, today).is_err()
+            && !self.warned.swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            warn!(
+                byrle.reason = format!("{} could not be written", self.name),
+                "the {} is incomplete from here on", self.name
+            );
+        }
+    }
+}
+
 /// Today, in UTC.
 pub fn today() -> Date {
     jiff::Timestamp::now()
