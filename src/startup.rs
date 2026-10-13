@@ -82,6 +82,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .await
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DATABASE_URL)))?;
     let gate = gate(environment, crate::account::postgres::store(store.as_ref()))?;
+    let usage = crate::usage::postgres::queue(store.as_ref());
     let (intel, analyses) = crate::analysis::postgres::stores(store, max_verified);
     if policy.is_some() {
         warn_enforcement(intel.as_deref()).await;
@@ -117,6 +118,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_max_traffic_clients(environment.max_traffic_clients()?)
         .with_policy(policy)
         .with_audit_log(audit)
+        .with_usage(usage)
         .with_max_metadata_bytes(max_metadata_bytes)
         .with_max_records(max_records)
         .with_max_verified(max_verified)

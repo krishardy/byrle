@@ -1,5 +1,6 @@
 //! Helpers shared between modules.
 
+pub mod batched;
 pub mod lru;
 
 /// `bytes` in lowercase hex, two digits each.

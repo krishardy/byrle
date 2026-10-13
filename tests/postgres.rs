@@ -1149,10 +1149,12 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "artifact_source",
         "artifact_virustotal",
         "exploited_cve",
+        "failure_count",
         "intel_ingestion",
         "intel_snapshot",
         "intel_source",
         "proxy_token",
+        "served_version",
         "version_detection",
         "virustotal_request",
     ];
@@ -2415,4 +2417,70 @@ async fn a_refresh_keeps_when_each_advisory_was_first_stored() {
         "RFC 3339 UTC to the second: {stored}"
     );
     assert!(stored.ends_with('Z'), "{stored}");
+}
+
+/// A batch with a key twice is merged before the statement, and later batches widen each
+/// version's first and last time and add to each hour's count. No account shares one row.
+#[tokio::test]
+async fn each_served_version_and_hourly_failure_count_is_merged() {
+    use byrle::audit::Answered;
+    use byrle::usage::Use;
+    let intel = skip_without_database!("t_usage");
+    let store = byrle::usage::postgres::PgUsage::new(intel.pool().clone());
+    let served = |account: Option<&str>, at: &str| Use::Served {
+        account: account.map(str::to_owned),
+        ecosystem: "npm".into(),
+        name: "@scope/a".into(),
+        version: "1.0.0".into(),
+        at: at.parse().unwrap(),
+    };
+    let failed = |answered| Use::Failed {
+        hour: "2026-10-13T09:00:00Z".parse().unwrap(),
+        ecosystem: "pypi".into(),
+        answered,
+    };
+    store
+        .write(&[
+            served(Some("alice"), "2026-10-13T09:00:00Z"),
+            served(Some("alice"), "2026-10-13T08:00:00Z"),
+            served(None, "2026-10-13T09:00:00Z"),
+            failed(Answered::Unauthorized),
+            failed(Answered::Unauthorized),
+        ])
+        .await
+        .expect("writes");
+    store
+        .write(&[
+            served(Some("alice"), "2026-10-13T10:00:00Z"),
+            served(None, "2026-10-13T07:00:00Z"),
+            failed(Answered::Unauthorized),
+            failed(Answered::UpstreamStatus),
+        ])
+        .await
+        .expect("writes");
+
+    let versions: Vec<(Option<String>, String, String)> = sqlx::query_as(
+        "SELECT account, to_char(first_served AT TIME ZONE 'UTC', 'HH24'), \
+         to_char(last_served AT TIME ZONE 'UTC', 'HH24') \
+         FROM served_version ORDER BY account NULLS FIRST",
+    )
+    .fetch_all(intel.pool())
+    .await
+    .expect("reads");
+    assert_eq!(
+        versions,
+        [
+            (None, "07".into(), "09".into()),
+            (Some("alice".into()), "08".into(), "10".into()),
+        ]
+    );
+    let counts: Vec<(String, i64)> =
+        sqlx::query_as("SELECT answered, count FROM failure_count ORDER BY answered")
+            .fetch_all(intel.pool())
+            .await
+            .expect("reads");
+    assert_eq!(
+        counts,
+        [("unauthorized".into(), 3), ("upstream-status".into(), 1)]
+    );
 }

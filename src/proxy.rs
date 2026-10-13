@@ -38,6 +38,8 @@ use crate::route::{DocumentKind, RequestTarget};
 use crate::signal::Signal;
 use crate::spool::Spool;
 use crate::store::{Lookup, RecordStore};
+use crate::usage::Use;
+use crate::util::batched::Batched;
 use crate::util::lru::Lru;
 use crate::verified::VerifiedArtifacts;
 use axum::{
@@ -145,6 +147,9 @@ pub struct Health {
     /// Artifact decisions dropped on a full queue or a failed write since the proxy started.
     #[serde(default)]
     pub decisions_unrecorded: u64,
+    /// Usage table rows dropped on a full queue or a failed write since the proxy started.
+    #[serde(default)]
+    pub usage_unrecorded: u64,
 }
 
 #[derive(Clone)]
@@ -204,6 +209,8 @@ struct Config {
     spool: Option<Arc<Spool>>,
     /// Analyses an artifact nothing has analysed. Without one, the metadata's claim decides.
     analyser: Option<Arc<Analyser>>,
+    /// Where each audit line's row for the usage tables is queued, with a database.
+    usage: Option<Batched<Use>>,
     max_metadata_bytes: usize,
     /// Point artifact URLs at the proxy so every client fetches through it.
     rewrite_artifacts: bool,
@@ -243,6 +250,7 @@ impl Proxy {
                 intel: None,
                 spool: None,
                 analyser: None,
+                usage: None,
                 max_metadata_bytes: DEFAULT_MAX_METADATA_BYTES,
                 rewrite_artifacts: true,
                 public_base: None,
@@ -377,6 +385,7 @@ impl Proxy {
         Sinks {
             audit: self.config.audit.clone(),
             analyser: self.config.analyser.clone(),
+            usage: self.config.usage.clone(),
         }
     }
 
@@ -429,6 +438,7 @@ impl Proxy {
                 .analyser
                 .as_ref()
                 .map_or(0, |analyser| analyser.decisions_unrecorded()),
+            usage_unrecorded: self.config.usage.as_ref().map_or(0, Batched::unrecorded),
         }
     }
 
@@ -554,6 +564,11 @@ impl Proxy {
         self
     }
 
+    pub fn with_usage(mut self, usage: Option<Batched<Use>>) -> Self {
+        self.config_mut().usage = usage;
+        self
+    }
+
     pub fn with_max_metadata_bytes(mut self, limit: usize) -> Self {
         self.config_mut().max_metadata_bytes = limit;
         self.rebuilt()
@@ -674,17 +689,15 @@ impl VerifyingStream {
             return;
         };
         let line = &served.line;
-        if let Some(log) = &sinks.audit {
-            log.write(
-                &audit::Event::undecided(
-                    &line.ecosystem,
-                    &line.name,
-                    line.version.as_deref(),
-                    audit::Answered::CutShort,
-                )
-                .with_account(line.account.as_deref()),
-            );
-        }
+        sinks.write(
+            &audit::Event::undecided(
+                &line.ecosystem,
+                &line.name,
+                line.version.as_deref(),
+                audit::Answered::CutShort,
+            )
+            .with_account(line.account.as_deref()),
+        );
         sinks.record(&Written {
             line: served.line.answered(audit::Answered::CutShort),
             basis: served.basis,
@@ -2337,7 +2350,10 @@ fn pinned_line(
         account,
     } = *pinned;
     let policy = proxy.config.policy.as_deref()?;
-    if proxy.config.audit.is_none() && proxy.config.analyser.is_none() {
+    if proxy.config.audit.is_none()
+        && proxy.config.analyser.is_none()
+        && proxy.config.usage.is_none()
+    {
         return None;
     }
     let mut facts = crate::policy::decide::Facts::from_record_and_times(record, times)
@@ -2377,11 +2393,9 @@ fn audit_not_ready(
     }
 }
 
-/// Write `line` to the audit log, when there is one.
+/// Write `line` to the audit log, and queue its usage row, where each is kept.
 fn write_audit(proxy: &Proxy, line: &audit::Event) {
-    if let Some(log) = &proxy.config.audit {
-        log.write(line);
-    }
+    proxy.sinks().write(line);
 }
 
 /// Write `written` to the audit log, and queue its decision for the analysis store.
@@ -2396,13 +2410,24 @@ struct Written {
     basis: decision::Basis,
 }
 
-/// Where a decision is written: the audit log, and the analyser's store.
+/// Where a decision is written: the audit log, the analyser's store and the usage tables.
 struct Sinks {
     audit: Option<Arc<AuditLog>>,
     analyser: Option<Arc<Analyser>>,
+    usage: Option<Batched<Use>>,
 }
 
 impl Sinks {
+    /// Write `line` to the audit log, and queue the row the usage tables count it as.
+    fn write(&self, line: &audit::Event) {
+        if let Some(log) = &self.audit {
+            log.write(line);
+        }
+        if let (Some(usage), Some(row)) = (&self.usage, Use::of(line)) {
+            usage.send(row);
+        }
+    }
+
     /// Queue the decision `written` records, when it decided something.
     fn record(&self, written: &Written) {
         if let (Some(analyser), Some(decided)) = (
@@ -9047,6 +9072,39 @@ mod tests {
             .with_analyser(Some(analyser.clone()))
             .with_policy(Some(policy(ALLOW_ALL)));
         (proxy, analyser)
+    }
+
+    /// With only the usage tables kept, a served version and the `cut-short` after it are
+    /// queued: the version with its account, and the failure in its hour.
+    #[tokio::test]
+    async fn each_audit_line_queues_its_usage_row() {
+        let honest: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
+        let digest = sri_of(&honest);
+        let mut tampered = honest.clone();
+        tampered[25_000] ^= 0xFF;
+        let upstream = serve(widget_registry(&digest, tampered)).await;
+        let kept = Arc::new(crate::usage::tests::Kept::default());
+        let usage = Batched::new("usage rows", kept.clone());
+        let proxy = Proxy::new(reqwest::Client::new())
+            .with_upstream(Ecosystem::Npm, upstream)
+            .with_policy(Some(policy(ALLOW_ALL)))
+            .with_usage(Some(usage.clone()));
+        let base = serve(proxy.clone().router()).await;
+        reqwest::get(format!("{base}/widget")).await.unwrap();
+        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+        usage.written(2).await;
+        let rows = kept.0.lock().unwrap().clone();
+        assert!(
+            matches!(
+                &rows[..],
+                [
+                    Use::Served { account: None, name, version, .. },
+                    Use::Failed { answered: audit::Answered::CutShort, .. },
+                ] if name == "widget" && version == "1.0.0"
+            ),
+            "{rows:?}"
+        );
+        assert_eq!(proxy.health().usage_unrecorded, 0);
     }
 
     /// Every decision the analyser recorded, oldest first.

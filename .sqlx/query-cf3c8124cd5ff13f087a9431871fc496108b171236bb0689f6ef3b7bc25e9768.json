@@ -1,0 +1,19 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO served_version\n                (account, ecosystem, name, version, first_served, last_served)\n            SELECT account, ecosystem, name, version, first::timestamptz, last::timestamptz\n            FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])\n                AS u (account, ecosystem, name, version, first, last)\n            ON CONFLICT (account, ecosystem, name, version) DO UPDATE SET\n                first_served = LEAST(served_version.first_served, EXCLUDED.first_served),\n                last_served  = GREATEST(served_version.last_served, EXCLUDED.last_served)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cf3c8124cd5ff13f087a9431871fc496108b171236bb0689f6ef3b7bc25e9768"
+}

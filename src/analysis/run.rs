@@ -26,8 +26,8 @@ mod virustotal;
 
 pub use virustotal::ScanJob;
 
+pub use crate::util::batched::{BATCH, QUEUE};
 pub use detecting::DETECTOR_SLOTS;
-pub use recording::{BATCH, QUEUE};
 pub use sourcing::{SOURCE_SLOTS, SOURCE_TREES, SourceJob};
 
 /// How long one job may take, from its fetch starting to its analysis being stored.
@@ -94,7 +94,7 @@ pub struct Analyser {
     /// VirusTotal, when it is on.
     scans: Option<virustotal::Scans>,
     /// Where each decision is queued to be written.
-    recorder: recording::Recorder,
+    recorder: crate::util::batched::Batched<crate::analysis::decision::Decided>,
 }
 
 impl Analyser {
@@ -106,6 +106,7 @@ impl Analyser {
         max_mismatches: usize,
     ) -> Self {
         Self {
+            recorder: recording::recorder(store.clone()),
             client,
             spool,
             store,
@@ -117,7 +118,6 @@ impl Analyser {
             sources: None,
             detectors: None,
             scans: None,
-            recorder: recording::Recorder::default(),
         }
     }
 

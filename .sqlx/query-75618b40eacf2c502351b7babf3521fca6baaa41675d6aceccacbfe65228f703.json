@@ -1,0 +1,17 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO failure_count (hour, ecosystem, answered, count)\n            SELECT hour::timestamptz, ecosystem, answered, count\n            FROM UNNEST($1::text[], $2::text[], $3::text[], $4::bigint[])\n                AS u (hour, ecosystem, answered, count)\n            ON CONFLICT (hour, ecosystem, answered) DO UPDATE SET\n                count = failure_count.count + EXCLUDED.count\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "TextArray",
+        "TextArray",
+        "TextArray",
+        "Int8Array"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "75618b40eacf2c502351b7babf3521fca6baaa41675d6aceccacbfe65228f703"
+}

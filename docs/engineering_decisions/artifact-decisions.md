@@ -53,8 +53,8 @@ features is wrong for training.
 
 ## Writing never delays a request
 
-Each row goes onto a queue of 4,096 (`recording::QUEUE`). One task writes up to 256 at a
-time (`recording::BATCH`) in one `INSERT`, every column read from the row's JSON. A row is
+Each row goes onto a queue of 4,096 (`util::batched::QUEUE`). One task writes up to 256 at
+a time (`util::batched::BATCH`) in one `INSERT`, every column read from the row's JSON. A row is
 dropped when the queue is full or the write fails. Each drop is logged at WARN and counted
 in `decisions_unrecorded` on `/-/byrle/health`.
 
@@ -102,4 +102,4 @@ Two artifacts were in `artifact_disposition`. A row's JSON averaged 1,066 bytes.
 | What | Why |
 |---|---|
 | metadata requests | a resolution line decides many versions and has no artifact, so it has no row |
-| `served_version` in [admin-plan](../admin-plan.md) §4.3 | it holds account, purl and version, which `artifact_decision` also holds. The console plan can read this table instead; that is for the console work to decide |
+| `served_version` in [admin-plan](../admin-plan.md) §4.3 | a table of its own, decided by the user 2026-10-13. It is not deleted after `BYRLE_DECISION_RETENTION_DAYS`, so R3 and R4 keep each version an account was served after its decision rows are deleted |
