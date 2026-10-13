@@ -526,4 +526,24 @@ mod tests {
         assert_eq!(forbidden.status(), 403);
         assert_eq!(forbidden.headers()["content-type"], "application/json");
     }
+
+    /// docs/console-api.md lists each API route, with the permission it needs.
+    #[test]
+    fn the_endpoint_reference_lists_every_api_route() {
+        let reference = include_str!("../../docs/console-api.md");
+        for route in ROUTES.iter().filter(|route| route.kind == Kind::Api) {
+            let needs = match route.guard {
+                Guard::Needs(permission, _) => format!("`{}`", permission.name()),
+                Guard::Authenticated(_) => "a session".to_owned(),
+                Guard::Public(_) => "nothing".to_owned(),
+            };
+            let row = format!(
+                "| {} | `{}` | {needs}",
+                route.method,
+                route.path.trim_start_matches('/')
+            );
+            let found = reference.lines().any(|line| line.starts_with(&row));
+            assert!(found, "docs/console-api.md has no row starting {row}");
+        }
+    }
 }

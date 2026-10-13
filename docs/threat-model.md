@@ -70,14 +70,37 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 - **What the health endpoint shows.** `/-/byrle/health` reports configuration and
   counters. It holds no credentials.
 - **Default exposure.** The proxy listens on `127.0.0.1:8080` unless `BYRLE_LISTEN`
-  says otherwise. Anyone who can reach the port can use it; it has no authentication.
-- **The audit log.** A local JSON Lines file. It is not signed, so whoever can write the
-  file can change it.
+  says otherwise. Each request needs a token from `byrle token create`, answered 401
+  without one, unless `BYRLE_REQUIRE_TOKEN=0`, when anyone who can reach the port can use
+  it ([account-identification](engineering_decisions/account-identification.md)).
+- **The audit log.** A local JSON Lines file, naming the account behind each request. It
+  is not signed, so whoever can write the file can change it, and whoever can read it or
+  the database's `served_version` can read who installed what.
 
 - **Detectors.** GuardDog downloads each version it scans from `registry.npmjs.org` or
   `pypi.org` itself, and fetches `hugovk.dev` and `packages.ecosyste.ms`. Those hosts learn
   which packages the organisation uses, as the intel streams do
   ([detectors](engineering_decisions/detectors.md)).
+
+## The console
+
+The console is on when `BYRLE_CONSOLE_URL` is set, and needs the database
+([admin-plan](admin-plan.md) §4, [console-login](engineering_decisions/console-login.md)).
+
+| Exposure | Control |
+|---|---|
+| The login form | Argon2id hashes; 5 failures per account and 20 per address in 15 minutes, then 429 unchecked; an unknown account takes as long as a known one; passwords hashed 2 at a time off the threads that answer requests |
+| Who a request is from | the address of the peer, or the last `X-Forwarded-For` entry when the request carries `BYRLE_RP_KEY`, which nginx sets and a client cannot ([fronting-tls](fronting-tls.md)) |
+| Sessions and tokens | stored as their SHA-256, never as themselves; a session ends at logout, after `BYRLE_SESSION_HOURS`, or when its account is disabled |
+| The session cookie | `HttpOnly; Secure; SameSite=Strict`, under the console's path |
+| A request from another site | a `POST` with another `Origin` is 403; a request with the session cookie that changes something needs its CSRF token, as `X-Byrle-CSRF` or a form's `csrf` |
+| Pages | `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'`; text from registries and logs, such as a username someone tried, is escaped |
+| Permissions | every route is in one table with its guard; a test checks each that needs a permission is 401 without credentials and 403 to an account without the role |
+| `GET api/v1/health` | answers without credentials, naming components, never addresses or errors; its checks run at most once per 5 s however often it is asked |
+| `GET api/v1/openapi.json` | answers without credentials; it describes the API and holds no data |
+| `GET api/v1/config` | secrets are shown as `set`; `BYRLE_DATABASE_URL` without its password, and not at all unless it reads as a URL with a host |
+| OIDC | the issuer fixed in `BYRLE_OIDC_ISSUER`; `state`, `nonce` and PKCE; the token's algorithm from a configured list with no shared-secret algorithm; `iss`, `aud`, `azp`, `exp` and `sub` checked. How an identity finds its account is not decided, so none logs in yet |
+| The account event log | logins, failed logins, logouts and changes to accounts and tokens; not signed, as the audit log is not |
 
 ## Bypasses
 

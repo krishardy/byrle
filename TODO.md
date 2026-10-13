@@ -2757,8 +2757,11 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       against a provider served in the tests. How an identity finds its account is left,
       for the user to decide. Migration for
       `account_oidc`
-- [ ] `[!]` `docs/threat-model.md` console section (plan §5)
-- [ ] Docs: the console in `docs/quickstart.md`, and an endpoint reference
+- [x] `[!]` `docs/threat-model.md` console section (plan §5). Done 2026-10-13: "The
+      console", and "Default exposure" now says a token is required
+- [x] Docs: the console in `docs/quickstart.md`, and an endpoint reference. Done
+      2026-10-13: quickstart §11, and `docs/console-api.md`, which a test holds to the
+      routes; the OpenAPI document gives each parameter and body
 
 **Exit:** an admin logs in by password and, separately, through an OIDC provider. After a
 real `npm install` and `pip install` through the proxy, each with its own user's token,
