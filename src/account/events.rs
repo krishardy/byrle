@@ -38,6 +38,9 @@ pub struct AccountEvent {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// The OIDC issuer an identity was linked at.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer: Option<String>,
     /// Where the change came from: [`CLI`], or the client's address.
     pub source: String,
 }
@@ -58,6 +61,7 @@ impl AccountEvent {
             account: account.to_string(),
             role: None,
             token: None,
+            issuer: None,
             source: CLI.to_owned(),
         }
     }
@@ -81,6 +85,7 @@ impl AccountEvent {
             account: account[..cut].to_owned(),
             role: None,
             token: None,
+            issuer: None,
             source: source.map_or_else(|| UNKNOWN.to_owned(), |address| address.to_string()),
         }
     }
@@ -92,6 +97,11 @@ impl AccountEvent {
 
     pub fn with_token(mut self, token: &super::Name) -> Self {
         self.token = Some(token.to_string());
+        self
+    }
+
+    pub fn with_issuer(mut self, issuer: &str) -> Self {
+        self.issuer = Some(issuer.to_owned());
         self
     }
 }

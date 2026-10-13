@@ -436,6 +436,30 @@ struct Callback {
     error: Option<String>,
 }
 
+/// A session started through the provider: a page setting the session cookie and clearing
+/// the login's, then reloading home. A redirect would come from the provider's site, and a
+/// `SameSite=Strict` cookie is not sent on it; the reload comes from this one.
+fn oidc_started(site: &Site, started: &super::login::Started) -> Response {
+    let home = site.href(HOME_PATH);
+    let page = html! {
+        (DOCTYPE)
+        html lang="en" {
+            head {
+                meta charset="utf-8";
+                meta http-equiv="refresh" content=(format!("0; url={home}"));
+                title { "Logged in · byrle" }
+            }
+            body { p { "Logged in as " (started.caller.account.as_str()) ". " a href=(home) { "Go on" } } }
+        }
+    };
+    let mut response = sent(StatusCode::OK, page);
+    let max_age = site.login.limits().session.as_secs();
+    let headers = response.headers_mut();
+    headers.append(header::SET_COOKIE, site.cookie(&started.id, max_age));
+    headers.append(header::SET_COOKIE, oidc_cookie("", 0));
+    response
+}
+
 /// `GET oidc/callback`: the provider's answer. Its state must be the cookie's before the
 /// code is exchanged; each failure counts against the address and is logged.
 pub async fn oidc_callback(site: Arc<Site>, request: Request) -> Response {
@@ -474,14 +498,29 @@ pub async fn oidc_callback(site: Arc<Site>, request: Request) -> Response {
         ),
         (Some(pending), None, Some(code)) => {
             match provider.finish(&code, &pending, &redirect_uri(&site)).await {
-                Ok(claims) => (
-                    StatusCode::FORBIDDEN,
-                    format!(
-                        "{} at {} is not linked to an account",
-                        claims.sub, claims.iss
+                Ok(claims) => match site.store.oidc_account(&claims.iss, &claims.sub).await {
+                    Ok(Some(name)) => match site.login.start(name, source).await {
+                        Attempt::Started(started) => return oidc_started(&site, &started),
+                        _ => (
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            super::api::UNANSWERED.to_owned(),
+                            None,
+                        ),
+                    },
+                    Ok(None) => (
+                        StatusCode::FORBIDDEN,
+                        format!(
+                            "{} at {} is not linked to an account",
+                            claims.sub, claims.iss
+                        ),
+                        Some(claims.sub),
                     ),
-                    Some(claims.sub),
-                ),
+                    Err(_) => (
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        super::api::UNANSWERED.to_owned(),
+                        None,
+                    ),
+                },
                 Err(super::oidc::Failed::Provider(why)) => (
                     StatusCode::BAD_GATEWAY,
                     format!("the identity provider: {why}"),
@@ -1513,6 +1552,15 @@ mod tests {
         provider: Option<crate::console::oidc::Provider>,
         label: &str,
     ) -> (Arc<Site>, String, std::path::PathBuf) {
+        oidc_site_over(store().await, provider, label).await
+    }
+
+    /// [`oidc_site`] over the account store `accounts`.
+    async fn oidc_site_over(
+        accounts: Arc<dyn crate::account::Accounts>,
+        provider: Option<crate::console::oidc::Provider>,
+        label: &str,
+    ) -> (Arc<Site>, String, std::path::PathBuf) {
         let dir = crate::util::test_support::tempdir(label);
         let log = dir.join("events.log");
         let events = Arc::new(crate::account::events::EventLog::open(&log, 30).unwrap());
@@ -1525,9 +1573,8 @@ mod tests {
         };
         let hasher = crate::account::password::tests::cheap();
         let limits = crate::console::login::tests::limits();
-        let site =
-            crate::console::Site::new(console, store().await, (hasher, limits), Some(events))
-                .with_oidc(provider);
+        let site = crate::console::Site::new(console, accounts, (hasher, limits), Some(events))
+            .with_oidc(provider);
         let site = Arc::new(site);
         let (_, router) =
             crate::console::listeners(axum::Router::new(), "127.0.0.1:8080", Some(&site))
@@ -1710,5 +1757,226 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(answered.status(), 502);
+    }
+
+    /// Log in through the fake provider as `user-42` against `accounts`: the callback's
+    /// answer, and the account event log's text.
+    async fn through_the_provider(
+        accounts: Arc<dyn crate::account::Accounts>,
+        label: &str,
+    ) -> (reqwest::Response, String, String) {
+        use crate::console::oidc::tests::{CLIENT, at, key, provider, signed};
+        let (issuer, held) = provider().await;
+        let (signing, jwk) = key("k1");
+        held.lock().unwrap().keys = vec![jwk];
+        let oidc = crate::console::oidc::Provider::new(at(&issuer), reqwest::Client::new());
+        let (_, base, log) = oidc_site_over(accounts, Some(oidc), label).await;
+        let begun = client()
+            .get(format!("{base}/admin{OIDC_LOGIN_PATH}"))
+            .send()
+            .await
+            .unwrap();
+        let location = begun.headers()["location"].to_str().unwrap().to_owned();
+        let cookie = begun.headers()["set-cookie"]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .to_owned();
+        let asked: std::collections::BTreeMap<String, String> = reqwest::Url::parse(&location)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        held.lock().unwrap().challenge = asked["code_challenge"].clone();
+        held.lock().unwrap().token = signed(
+            &signing,
+            "k1",
+            &serde_json::json!({
+                "iss": issuer, "sub": "user-42", "aud": CLIENT, "nonce": asked["nonce"],
+                "exp": jsonwebtoken::get_current_timestamp() + 3600,
+            }),
+        );
+        let callback = format!(
+            "{base}/admin{}?code=c1&state={}",
+            crate::console::oidc::CALLBACK_PATH,
+            asked["state"]
+        );
+        let answered = client()
+            .get(callback)
+            .header("cookie", cookie)
+            .send()
+            .await
+            .unwrap();
+        let logged = std::fs::read_to_string(&log).unwrap_or_default();
+        (answered, logged, issuer)
+    }
+
+    /// A linked identity starts a session as its account: the page sets the cookie and
+    /// reloads home, where the session works; the login is logged with its actor.
+    #[tokio::test]
+    async fn a_linked_oidc_identity_logs_in_as_its_account() {
+        let accounts = store().await;
+        let linked = Arc::new(Linking(accounts, std::sync::Mutex::default()));
+        let (answered, logged, issuer) =
+            through_the_provider(linked.clone(), "pages-oidc-linked").await;
+        assert_eq!(
+            *linked.1.lock().unwrap(),
+            [(issuer, "user-42".to_owned())],
+            "the account is looked up by the token's iss and sub"
+        );
+        assert_eq!(answered.status(), 200);
+        let cookies: Vec<String> = answered
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .map(|v| v.to_str().unwrap().to_owned())
+            .collect();
+        assert!(
+            cookies[0].starts_with("byrle_session=") && cookies[0].contains("SameSite=Strict"),
+            "{cookies:?}"
+        );
+        assert!(
+            cookies[1].starts_with("__Host-byrle_oidc=; Path=/; Max-Age=0;"),
+            "{cookies:?}"
+        );
+        let body = answered.text().await.unwrap();
+        assert!(
+            body.contains(r#"<meta http-equiv="refresh" content="0; url=/admin/">"#),
+            "{body}"
+        );
+        assert!(body.contains("Logged in as alice."), "{body}");
+        assert!(
+            logged.contains(r#""actor":"alice","action":"login","account":"alice""#),
+            "{logged}"
+        );
+    }
+
+    /// The account store failing to say whose the identity is, or to start the session.
+    #[tokio::test]
+    async fn a_store_that_does_not_answer_ends_an_oidc_login_with_503() {
+        for fails in ["oidc_account", "create_session"] {
+            let inner = store().await;
+            let failing = Linking(
+                Arc::new(Failing { inner, fails }),
+                std::sync::Mutex::default(),
+            );
+            let (answered, _, _) =
+                through_the_provider(Arc::new(failing), &format!("pages-oidc-{fails}")).await;
+            assert_eq!(answered.status(), 503, "{fails}");
+        }
+    }
+
+    /// `accounts`, linking any OIDC identity to alice and keeping each one asked about.
+    struct Linking(
+        Arc<dyn crate::account::Accounts>,
+        std::sync::Mutex<Vec<(String, String)>>,
+    );
+
+    impl crate::account::Accounts for Linking {
+        fn create_account<'a>(
+            &'a self,
+            n: &'a crate::account::Name,
+            r: &'a [crate::account::Role],
+        ) -> crate::account::Pending<'a, ()> {
+            self.0.create_account(n, r)
+        }
+        fn disable_account<'a>(
+            &'a self,
+            n: &'a crate::account::Name,
+        ) -> crate::account::Pending<'a, ()> {
+            self.0.disable_account(n)
+        }
+        fn accounts(&self) -> crate::account::Pending<'_, Vec<crate::account::Account>> {
+            self.0.accounts()
+        }
+        fn create_token<'a>(
+            &'a self,
+            a: &'a crate::account::Name,
+            n: &'a crate::account::Name,
+            d: &'a crate::account::TokenDigest,
+        ) -> crate::account::Pending<'a, ()> {
+            self.0.create_token(a, n, d)
+        }
+        fn revoke_token<'a>(
+            &'a self,
+            a: &'a crate::account::Name,
+            n: &'a crate::account::Name,
+        ) -> crate::account::Pending<'a, ()> {
+            self.0.revoke_token(a, n)
+        }
+        fn tokens<'a>(
+            &'a self,
+            a: Option<&'a crate::account::Name>,
+        ) -> crate::account::Pending<'a, Vec<crate::account::Token>> {
+            self.0.tokens(a)
+        }
+        fn holder<'a>(
+            &'a self,
+            d: &'a crate::account::TokenDigest,
+        ) -> crate::account::Pending<'a, Option<crate::account::Holder>> {
+            self.0.holder(d)
+        }
+        fn set_password<'a>(
+            &'a self,
+            a: &'a crate::account::Name,
+            h: &'a str,
+        ) -> crate::account::Pending<'a, ()> {
+            self.0.set_password(a, h)
+        }
+        fn password<'a>(
+            &'a self,
+            a: &'a crate::account::Name,
+        ) -> crate::account::Pending<'a, Option<String>> {
+            self.0.password(a)
+        }
+        fn roles<'a>(
+            &'a self,
+            a: &'a crate::account::Name,
+        ) -> crate::account::Pending<'a, Vec<crate::account::Role>> {
+            self.0.roles(a)
+        }
+        fn create_session<'a>(
+            &'a self,
+            a: &'a crate::account::Name,
+            d: &'a crate::account::TokenDigest,
+            e: &'a str,
+        ) -> crate::account::Pending<'a, ()> {
+            self.0.create_session(a, d, e)
+        }
+        fn session<'a>(
+            &'a self,
+            d: &'a crate::account::TokenDigest,
+        ) -> crate::account::Pending<'a, Option<crate::account::Caller>> {
+            self.0.session(d)
+        }
+        fn end_session<'a>(
+            &'a self,
+            d: &'a crate::account::TokenDigest,
+        ) -> crate::account::Pending<'a, ()> {
+            self.0.end_session(d)
+        }
+        fn ping(&self) -> crate::account::Pending<'_, ()> {
+            self.0.ping()
+        }
+        fn link_oidc<'a>(
+            &'a self,
+            a: &'a crate::account::Name,
+            i: &'a str,
+            s: &'a str,
+        ) -> crate::account::Pending<'a, ()> {
+            self.0.link_oidc(a, i, s)
+        }
+        fn oidc_account<'a>(
+            &'a self,
+            i: &'a str,
+            s: &'a str,
+        ) -> crate::account::Pending<'a, Option<crate::account::Name>> {
+            let alice = crate::account::Name::parse("alice").unwrap();
+            self.1.lock().unwrap().push((i.to_owned(), s.to_owned()));
+            let asked = self.0.oidc_account(i, s);
+            Box::pin(async move { asked.await.map(|_| Some(alice)) })
+        }
     }
 }

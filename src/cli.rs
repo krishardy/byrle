@@ -51,7 +51,7 @@ pub enum Command {
         crate::env::DATABASE_URL
     ))]
     Refresh,
-    /// Create, list and disable accounts, and set their console passwords
+    /// Create, list and disable accounts; set passwords; link OIDC identities
     #[command(subcommand)]
     Account(AccountCommand),
     /// Create, list and revoke the proxy tokens that identify an account on each request
@@ -101,6 +101,8 @@ pub enum AccountCommand {
     Disable(AccountName),
     /// Set an account's console password, read from the first line of stdin
     Password(AccountName),
+    /// Let an OIDC identity log in to the console as an account
+    Link(AccountLink),
     /// List every account
     List,
 }
@@ -113,6 +115,19 @@ pub struct AccountCreate {
     /// A role it holds, such as `admin`. Repeat for more than one
     #[arg(long = "role", value_parser = crate::account::Role::parse)]
     pub roles: Vec<crate::account::Role>,
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct AccountLink {
+    /// The account it logs in as
+    #[arg(value_parser = crate::account::Name::parse)]
+    pub name: crate::account::Name,
+    /// The provider's issuer URL, as the console is configured with
+    #[arg(long)]
+    pub issuer: String,
+    /// The identity's `sub` at the provider
+    #[arg(long)]
+    pub subject: String,
 }
 
 #[derive(Debug, PartialEq, Args)]
@@ -385,6 +400,24 @@ mod tests {
         assert_eq!(
             parse(&["account", "password", "ci"]).unwrap().command,
             Command::Account(AccountCommand::Password(AccountName { name: name("ci") }))
+        );
+        assert_eq!(
+            parse(&[
+                "account",
+                "link",
+                "alice",
+                "--issuer",
+                "https://idp.example",
+                "--subject",
+                "u-1"
+            ])
+            .unwrap()
+            .command,
+            Command::Account(AccountCommand::Link(AccountLink {
+                name: name("alice"),
+                issuer: "https://idp.example".into(),
+                subject: "u-1".into(),
+            }))
         );
         assert_eq!(
             parse(&["account", "list"]).unwrap().command,

@@ -237,6 +237,9 @@ async fn run_account(command: cli::AccountCommand) -> std::process::ExitCode {
             command::create_account(&store, &args.name, &args.roles).await
         }
         cli::AccountCommand::Disable(args) => command::disable_account(&store, &args.name).await,
+        cli::AccountCommand::Link(args) => {
+            command::link_oidc(&store, &args.name, &args.issuer, &args.subject).await
+        }
         cli::AccountCommand::Password(args) => {
             match byrle::account::password::read(&mut std::io::stdin().lock()) {
                 Ok(password) => {

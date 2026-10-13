@@ -235,7 +235,7 @@ impl Login {
     }
 
     /// Start a session for `name`, logged as `login`.
-    async fn start(&self, name: Name, source: Option<IpAddr>) -> Attempt {
+    pub(super) async fn start(&self, name: Name, source: Option<IpAddr>) -> Attempt {
         let id = crate::account::random();
         let expires = jiff::Timestamp::now()
             .checked_add(self.limiter.limits.session)

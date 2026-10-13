@@ -90,6 +90,31 @@ pub async fn set_password(
     }
 }
 
+/// Let the OIDC identity `subject` at `issuer` log in as `name`. Logged as `oidc-linked`
+/// with the issuer. The issuer is refused unless it is an https URL, or http to loopback.
+pub async fn link_oidc(store: &dyn Accounts, name: &Name, issuer: &str, subject: &str) -> Outcome {
+    let checked = crate::console::oidc::trusted(issuer).and_then(|_| {
+        (!subject.is_empty() && subject.len() <= 255)
+            .then_some(())
+            .ok_or_else(|| "the subject is 1 to 255 bytes".to_owned())
+    });
+    if let Err(why) = checked {
+        return Outcome {
+            code: 1,
+            stdout: String::new(),
+            stderr: format!("{why}\n"),
+            events: Vec::new(),
+        };
+    }
+    match store.link_oidc(name, issuer, subject).await {
+        Ok(()) => Outcome::done(
+            format!("OIDC identity {subject} at {issuer} logs in as account {name}\n"),
+            vec![AccountEvent::by_cli(Action::OidcLinked, name).with_issuer(issuer)],
+        ),
+        Err(e) => Outcome::refused(&e),
+    }
+}
+
 /// One line per account: name, roles or `-`, created, and disabled or `-`.
 pub async fn list_accounts(store: &dyn Accounts) -> Outcome {
     match store.accounts().await {
@@ -369,6 +394,43 @@ mod tests {
         assert_eq!(missing.stderr, "account nobody does not exist\n");
     }
 
+    /// The link is logged with its issuer; an issuer not https, or a subject empty or too
+    /// long, is refused before the store is asked.
+    #[tokio::test]
+    async fn an_oidc_identity_is_linked_and_logged() {
+        let store = InMemory::new(NOW);
+        let alice = name("alice");
+        create_account(&store, &alice, &[]).await;
+        let linked = link_oidc(&store, &alice, "https://idp.example", "u-1").await;
+        assert_eq!(
+            linked.stdout,
+            "OIDC identity u-1 at https://idp.example logs in as account alice\n"
+        );
+        assert_eq!(actions(&linked), [(Action::OidcLinked, None)]);
+        assert_eq!(
+            linked.events[0].issuer.as_deref(),
+            Some("https://idp.example")
+        );
+        let again = link_oidc(&store, &alice, "https://idp.example", "u-1").await;
+        assert_eq!(again.code, 1);
+        for (issuer, subject, said) in [
+            ("http://idp.example", "u-1", "is not an https URL"),
+            ("https://idp.example", "", "the subject is 1 to 255 bytes"),
+            (
+                "https://idp.example",
+                &"s".repeat(256),
+                "the subject is 1 to 255 bytes",
+            ),
+        ] {
+            let refused = link_oidc(&store, &alice, issuer, subject).await;
+            assert_eq!(refused.code, 1, "{issuer} {subject}");
+            assert!(refused.stderr.contains(said), "{}", refused.stderr);
+            assert!(refused.events.is_empty());
+        }
+        let longest = link_oidc(&store, &alice, "https://idp.example", &"s".repeat(255)).await;
+        assert_eq!(longest.code, 0, "{}", longest.stderr);
+    }
+
     /// A store that cannot answer fails every command with its reason.
     #[tokio::test]
     async fn a_store_that_cannot_answer_fails_each_command() {
@@ -376,6 +438,7 @@ mod tests {
         let ci = name("ci");
         for failed in [
             create_account(&Down, &ci, &[]).await,
+            link_oidc(&Down, &ci, "https://idp.example", "u-1").await,
             disable_account(&Down, &ci).await,
             list_accounts(&Down).await,
             create_token(&Down, &ci, &ci).await,

@@ -99,7 +99,7 @@ The console is on when `BYRLE_CONSOLE_URL` is set, and needs the database
 | `GET api/v1/health` | answers without credentials, naming components, never addresses or errors; its checks run at most once per 5 s however often it is asked |
 | `GET api/v1/openapi.json` | answers without credentials; it describes the API and holds no data |
 | `GET api/v1/config` | secrets are shown as `set`; `BYRLE_DATABASE_URL` without its password, and not at all unless it reads as a URL with a host |
-| OIDC | the issuer fixed in `BYRLE_OIDC_ISSUER`; `state`, `nonce` and PKCE; the token's algorithm from a configured list with no shared-secret algorithm; `iss`, `aud`, `azp`, `exp` and `sub` checked. How an identity finds its account is not decided, so none logs in yet |
+| OIDC | the issuer fixed in `BYRLE_OIDC_ISSUER`; `state`, `nonce` and PKCE; the token's algorithm from a configured list with no shared-secret algorithm; `iss`, `aud`, `azp`, `exp` and `sub` checked. An identity logs in only as the account an admin linked it to with `byrle account link` |
 | The account event log | logins, failed logins, logouts and changes to accounts and tokens; not signed, as the audit log is not |
 
 ## Bypasses

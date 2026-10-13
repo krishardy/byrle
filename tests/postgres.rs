@@ -1138,6 +1138,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .collect();
     let tables = [
         "account",
+        "account_oidc",
         "account_password",
         "account_role",
         "advisory",
@@ -2307,6 +2308,22 @@ async fn accounts_and_tokens_round_trip_through_postgres() {
     );
     assert_eq!(store.password(&nobody).await, Ok(None));
 
+    let issuer = "https://idp.example";
+    assert_eq!(store.oidc_account(issuer, "u-1").await, Ok(None));
+    store.link_oidc(&alice, issuer, "u-1").await.unwrap();
+    assert_eq!(
+        store.oidc_account(issuer, "u-1").await,
+        Ok(Some(alice.clone()))
+    );
+    assert!(matches!(
+        store.link_oidc(&ci, issuer, "u-1").await,
+        Err(AccountError::Exists(_))
+    ));
+    assert!(matches!(
+        store.link_oidc(&nobody, issuer, "u-2").await,
+        Err(AccountError::NotFound(_))
+    ));
+
     let token = byrle::account::issue();
     let digest = TokenDigest::of(&token);
     store.create_token(&ci, &laptop, &digest).await.unwrap();
@@ -2397,6 +2414,11 @@ async fn accounts_and_tokens_round_trip_through_postgres() {
     store.disable_account(&alice).await.unwrap();
     store.disable_account(&alice).await.unwrap();
     assert_eq!(store.session(&live).await, Ok(None), "disabled");
+    assert_eq!(
+        store.oidc_account(issuer, "u-1").await,
+        Ok(None),
+        "disabled"
+    );
     assert_eq!(store.roles(&alice).await, Ok(vec![]));
     store.end_session(&live).await.unwrap();
     let ended: i64 = sqlx::query_scalar("SELECT count(*) FROM session")
