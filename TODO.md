@@ -2747,7 +2747,9 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       2026-10-13: `GET api/v1/status`, and `GET api/v1/health` reports the same checks.
       The page comes with the web interface
 - [ ] `[!]` Web interface over each endpoint: `maud` pages, forms, SVG charts. Begun
-      2026-10-13: layout, home, login and logout forms, the status page
+      2026-10-13: layout, home, login and logout forms, and pages for status,
+      dependencies, alerts, requests, events, configuration and accounts. The failures
+      chart is left
 - [ ] `[!]` OIDC login: discovery, `state`, `nonce`, PKCE, code exchange, key refetch, and
       `iss`, `aud`, `exp`, `nonce` and a configured algorithm list checked. Migration for
       `account_oidc`

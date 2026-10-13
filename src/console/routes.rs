@@ -86,7 +86,7 @@ pub const ALERTS_PATH: &str = "/api/v1/alerts";
 pub const STATUS_PATH: &str = "/api/v1/status";
 
 /// Every console route.
-pub const ROUTES: [Route; 19] = [
+pub const ROUTES: [Route; 25] = [
     Route {
         method: Method::GET,
         path: super::pages::HOME_PATH,
@@ -117,6 +117,54 @@ pub const ROUTES: [Route; 19] = [
         kind: Kind::Page,
         guard: Guard::Needs(Permission::StatusRead, |site, asked| {
             Box::pin(super::pages::status(site, asked))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: super::pages::DEPENDENCIES_PAGE_PATH,
+        kind: Kind::Page,
+        guard: Guard::Needs(Permission::RequestsRead, |site, asked| {
+            Box::pin(super::pages::dependencies(site, asked))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: super::pages::ALERTS_PAGE_PATH,
+        kind: Kind::Page,
+        guard: Guard::Needs(Permission::AlertsRead, |site, asked| {
+            Box::pin(super::pages::alerts(site, asked))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: super::pages::REQUESTS_PAGE_PATH,
+        kind: Kind::Page,
+        guard: Guard::Needs(Permission::RequestsRead, |site, asked| {
+            Box::pin(super::pages::requests(site, asked))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: super::pages::EVENTS_PAGE_PATH,
+        kind: Kind::Page,
+        guard: Guard::Needs(Permission::EventsRead, |site, asked| {
+            Box::pin(super::pages::events(site, asked))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: super::pages::CONFIG_PAGE_PATH,
+        kind: Kind::Page,
+        guard: Guard::Needs(Permission::ConfigRead, |site, asked| {
+            Box::pin(super::pages::config(site, asked))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: super::pages::ACCOUNTS_PAGE_PATH,
+        kind: Kind::Page,
+        guard: Guard::Needs(Permission::AccountsRead, |site, asked| {
+            Box::pin(super::pages::accounts(site, asked))
         }),
     },
     Route {

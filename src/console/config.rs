@@ -3,13 +3,12 @@
 
 use std::sync::Arc;
 
-use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Serialize;
 use utoipa::ToSchema;
 
 use super::Site;
-use super::api::{Problem, json, refused};
+use super::api::{Problem, Refused, answered};
 use crate::env::Setting;
 use crate::proxy::Health;
 
@@ -58,39 +57,34 @@ pub struct Config {
     ),
 )]
 pub async fn config(site: Arc<Site>) -> Response {
-    let Some(configured) = &site.configured else {
-        return refused(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "this console runs beside no proxy",
-        );
-    };
+    answered(loaded(&site).await)
+}
+
+/// The proxy's health, its policy and its environment, as loaded.
+pub async fn loaded(site: &Site) -> Result<Config, Refused> {
+    let configured = site
+        .configured
+        .as_ref()
+        .ok_or_else(|| Refused::unavailable("this console runs beside no proxy"))?;
     let proxy = &configured.proxy;
     let policy = match proxy.policy() {
         Some(policy) => {
             let store = proxy.intel_store();
-            match crate::explain::intel_of(store.as_deref()).await {
-                Ok(intel) => Some(PolicyShown {
-                    digest: policy.digest.clone(),
-                    report: crate::explain::policy_report(&policy, intel),
-                }),
-                Err(_) => {
-                    return refused(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "the intel store did not answer",
-                    );
-                }
-            }
+            let intel = crate::explain::intel_of(store.as_deref())
+                .await
+                .map_err(|_| Refused::unavailable("the intel store did not answer"))?;
+            Some(PolicyShown {
+                digest: policy.digest.clone(),
+                report: crate::explain::policy_report(&policy, intel),
+            })
         }
         None => None,
     };
-    json(
-        StatusCode::OK,
-        &Config {
-            proxy: proxy.health(),
-            policy,
-            environment: configured.settings.clone(),
-        },
-    )
+    Ok(Config {
+        proxy: proxy.health(),
+        policy,
+        environment: configured.settings.clone(),
+    })
 }
 
 #[cfg(test)]
