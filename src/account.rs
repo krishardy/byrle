@@ -205,6 +205,9 @@ pub trait Accounts: Send + Sync {
 
     /// End the session with this digest. Ending one that is not there does nothing.
     fn end_session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, ()>;
+
+    /// Whether the store answers at all, for the console's status.
+    fn ping(&self) -> Pending<'_, ()>;
 }
 
 /// Accounts held in memory, for tests. Every time is the one given at construction.
@@ -425,6 +428,10 @@ impl Accounts for InMemory {
         self.held().sessions.remove(digest);
         Self::ready(Ok(()))
     }
+
+    fn ping(&self) -> Pending<'_, ()> {
+        Self::ready(Ok(()))
+    }
 }
 
 /// Stores for tests elsewhere in the crate.
@@ -506,6 +513,9 @@ pub mod testing {
         fn end_session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, ()> {
             self.or("end_session", self.inner.end_session(digest))
         }
+        fn ping(&self) -> Pending<'_, ()> {
+            self.or("ping", self.inner.ping())
+        }
     }
 
     /// A store that cannot answer: each call fails as a closed connection does.
@@ -563,6 +573,9 @@ pub mod testing {
             closed()
         }
         fn end_session<'a>(&'a self, _: &'a TokenDigest) -> Pending<'a, ()> {
+            closed()
+        }
+        fn ping(&self) -> Pending<'_, ()> {
             closed()
         }
     }

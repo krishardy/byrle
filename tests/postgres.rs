@@ -2264,6 +2264,7 @@ async fn accounts_and_tokens_round_trip_through_postgres() {
     let (ci, alice, laptop, nobody) = (name("ci"), name("alice"), name("laptop"), name("nobody"));
 
     use byrle::account::Role;
+    store.ping().await.expect("the store answers");
     store.create_account(&ci, &[]).await.unwrap();
     store
         .create_account(&alice, &[Role::Admin, Role::Admin])

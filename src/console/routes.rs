@@ -62,12 +62,15 @@ pub const EVENTS_PATH: &str = "/api/v1/events";
 /// Under the console's path: `GET` versions served before a malware advisory named them, R4.
 pub const ALERTS_PATH: &str = "/api/v1/alerts";
 
+/// Under the console's path: `GET` each component's status, R10.
+pub const STATUS_PATH: &str = "/api/v1/status";
+
 /// Every console route.
-pub const ROUTES: [Route; 13] = [
+pub const ROUTES: [Route; 14] = [
     Route {
         method: Method::GET,
         path: super::HEALTH_PATH,
-        guard: Guard::Public(|_, _| Box::pin(super::health())),
+        guard: Guard::Public(|site, _| Box::pin(super::status::health(site))),
     },
     Route {
         method: Method::GET,
@@ -115,6 +118,13 @@ pub const ROUTES: [Route; 13] = [
         path: LOGS_PATH,
         guard: Guard::Needs(Permission::RequestsRead, |site, _, parts| {
             Box::pin(super::logs::day(site, parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: STATUS_PATH,
+        guard: Guard::Needs(Permission::StatusRead, |site, _, _| {
+            Box::pin(super::status::status(site))
         }),
     },
     Route {

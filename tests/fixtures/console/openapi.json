@@ -89,6 +89,35 @@
         ],
         "type": "string"
       },
+      "Component": {
+        "description": "One component checked.",
+        "properties": {
+          "checked": {
+            "description": "When it was checked, RFC 3339.",
+            "type": "string"
+          },
+          "name": {
+            "description": "`proxy`, `readiness`, `database` or `usage-writes`.",
+            "type": "string"
+          },
+          "reason": {
+            "description": "Why it is not up.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/State"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "checked"
+        ],
+        "type": "object"
+      },
       "Config": {
         "description": "The configuration as loaded.",
         "properties": {
@@ -500,12 +529,42 @@
         ],
         "type": "object"
       },
-      "Up": {
-        "description": "Whether the console is up.",
+      "State": {
+        "description": "How a component is.",
+        "enum": [
+          "up",
+          "degraded",
+          "down"
+        ],
+        "type": "string"
+      },
+      "Status": {
+        "description": "Each component, checked now.",
         "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/Component"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "components"
+        ],
+        "type": "object"
+      },
+      "Up": {
+        "description": "The console's health: `up`, or the worst state and the components not up, by name.",
+        "properties": {
+          "components": {
+            "description": "The components not up; absent when every one is.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
           "status": {
-            "description": "`up`.",
-            "type": "string"
+            "$ref": "#/components/schemas/State"
           }
         },
         "required": [
@@ -1080,13 +1139,23 @@
                 }
               }
             },
-            "description": "The console answers"
+            "description": "Every component is up"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Up"
+                }
+              }
+            },
+            "description": "The worst state, and the components not up, by name"
           }
         },
         "security": [
           {}
         ],
-        "summary": "The console answers. Its components are checked with `GET status`: admin-plan.md §4.9.",
+        "summary": "`GET health`: 200 when every component is up, else 503 naming those that are not.",
         "tags": [
           "status"
         ]
@@ -1673,6 +1742,56 @@
         "tags": [
           "session"
         ]
+      }
+    },
+    "/api/v1/status": {
+      "get": {
+        "operationId": "status",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Status"
+                }
+              }
+            },
+            "description": "Each component, checked now"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant status.read"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET status`: each component, checked now. R10.",
+        "tags": [
+          "status"
+        ],
+        "x-byrle-permission": "status.read"
       }
     }
   },

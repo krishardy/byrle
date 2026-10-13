@@ -677,6 +677,7 @@ mod tests {
             mount: crate::mount::Mount::ROOT,
             listen: Some("127.0.0.1:9090".into()),
             rp_key: None,
+            proxy_mount: crate::mount::Mount::ROOT,
         };
         let store = crate::console::login::tests::store().await;
         let site =

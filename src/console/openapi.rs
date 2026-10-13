@@ -23,7 +23,7 @@ pub const OPENAPI_PATH: &str = "/api/v1/openapi.json";
                        it in `x-byrle-permission`; see docs/admin-plan.md §4.2.",
     ),
     paths(
-        super::health,
+        super::status::health,
         openapi,
         super::api::login,
         super::api::logout,
@@ -36,6 +36,7 @@ pub const OPENAPI_PATH: &str = "/api/v1/openapi.json";
         super::logs::day,
         super::logs::events,
         super::alerts::alerts,
+        super::status::status,
     ),
     modifiers(&Credentials),
 )]
