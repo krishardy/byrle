@@ -312,7 +312,9 @@ waits 2 s. The proxy is asked at `BYRLE_LISTEN` under `BYRLE_PROXY_URL`'s path, 
 dropped in the last 15 minutes: one check resetting the count would let a monitor polling
 `GET health` hide them from the status page. `GET health` answers `{"status":"up"}`, or
 503 with the worst state and the names of the components not up:
-`{"status":"down","components":["proxy","readiness"]}`. The page over `GET status` comes
+`{"status":"down","components":["proxy","readiness"]}`. One round of checks answers both
+for 5 s, so a flood of `GET health`, which needs no credentials, asks the proxy and the
+database pool, which token checks share, once per 5 s. The page over `GET status` comes
 with the web interface.
 
 ## 5. Threat model changes

@@ -131,6 +131,8 @@ pub struct Site {
     origin: String,
     /// The usage rows dropped when last checked, for R10.
     dropped: std::sync::Mutex<status::Dropped>,
+    /// The last round of R10's checks.
+    checked: status::Cache,
 }
 
 impl Site {
@@ -155,6 +157,7 @@ impl Site {
             event_log: None,
             origin,
             dropped: std::sync::Mutex::default(),
+            checked: std::sync::Mutex::default(),
             console,
         }
     }

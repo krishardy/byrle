@@ -16,6 +16,9 @@ use crate::proxy::{Health, Readiness};
 /// How long each check waits for an answer.
 pub const TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long one round of checks answers `health` and `status`, however often they are asked.
+pub const CACHED_FOR: Duration = Duration::from_secs(5);
+
 /// How long usage rows dropped keep the usage writes degraded.
 pub const DROPPED_FOR: Duration = Duration::from_secs(15 * 60);
 
@@ -65,9 +68,16 @@ pub struct Dropped {
 /// The base URL the console asks the proxy at: `listen`, with an unspecified address made
 /// loopback, and the proxy's `mount`.
 pub fn reached_at(listen: &str, mount: &crate::mount::Mount) -> String {
-    let listen = listen
-        .replace("0.0.0.0", "127.0.0.1")
-        .replace("[::]", "[::1]");
+    let listen = match listen.parse::<std::net::SocketAddr>() {
+        Ok(mut address) if address.ip().is_unspecified() => {
+            address.set_ip(match address {
+                std::net::SocketAddr::V4(_) => std::net::Ipv4Addr::LOCALHOST.into(),
+                std::net::SocketAddr::V6(_) => std::net::Ipv6Addr::LOCALHOST.into(),
+            });
+            address.to_string()
+        }
+        _ => listen.to_owned(),
+    };
     format!("http://{listen}{}", mount.to_string().trim_end_matches('/'))
 }
 
@@ -102,8 +112,24 @@ fn usage_writes(seen: &Mutex<Dropped>, dropped: u64, now: Instant) -> Component 
     }
 }
 
+/// The last round of checks, and when it ran.
+pub type Cache = Mutex<Option<(Instant, Vec<Component>)>>;
+
+/// Each component, as checked at most [`CACHED_FOR`] before `now`.
+pub async fn checked(site: &Site, now: Instant) -> Vec<Component> {
+    let cached = site.checked.lock().expect("status cache lock").clone();
+    if let Some((_, components)) =
+        cached.filter(|(at, _)| now.saturating_duration_since(*at) < CACHED_FOR)
+    {
+        return components;
+    }
+    let components = check(site).await;
+    *site.checked.lock().expect("status cache lock") = Some((now, components.clone()));
+    components
+}
+
 /// Each component, checked now.
-pub async fn check(site: &Site) -> Vec<Component> {
+async fn check(site: &Site) -> Vec<Component> {
     let mut components = Vec::new();
     match &site.configured {
         Some(configured) => {
@@ -171,7 +197,7 @@ pub async fn status(site: Arc<Site>) -> Response {
     json(
         StatusCode::OK,
         &Status {
-            components: check(&site).await,
+            components: checked(&site, Instant::now()).await,
         },
     )
 }
@@ -188,7 +214,7 @@ pub async fn status(site: Arc<Site>) -> Response {
     ),
 )]
 pub async fn health(site: Arc<Site>) -> Response {
-    let components = check(&site).await;
+    let components = checked(&site, Instant::now()).await;
     let worst = components
         .iter()
         .map(|c| c.status)
@@ -262,10 +288,12 @@ mod tests {
             reached_at("[::]:8080", &crate::mount::Mount::ROOT),
             "http://[::1]:8080"
         );
-        assert_eq!(
-            reached_at("10.0.0.5:8080", &crate::mount::Mount::ROOT),
-            "http://10.0.0.5:8080"
-        );
+        for kept in ["10.0.0.5:8080", "10.0.0.0:8080", "localhost:8080"] {
+            assert_eq!(
+                reached_at(kept, &crate::mount::Mount::ROOT),
+                format!("http://{kept}")
+            );
+        }
     }
 
     /// Rows dropped keep the usage writes degraded for 15 minutes from the last rise.
@@ -375,16 +403,18 @@ mod tests {
     /// A database that gives no answer within 2 s is down.
     #[tokio::test]
     async fn a_database_that_does_not_answer_in_time_is_down() {
-        let store = Arc::new(Hanging(crate::account::InMemory::new(
-            "2026-10-13T00:00:00Z",
-        )));
+        let store = Arc::new(hanging(true));
         let checked = check(&site(store, None).await).await;
         assert_eq!(checked[1].status, State::Down);
         assert_eq!(checked[1].reason.as_deref(), Some("no answer within 2 s"));
     }
 
     /// The in-memory store, except that `ping` never answers.
-    struct Hanging(crate::account::InMemory);
+    struct Hanging(
+        crate::account::InMemory,
+        std::sync::atomic::AtomicUsize,
+        bool,
+    );
 
     impl Accounts for Hanging {
         fn create_account<'a>(
@@ -457,8 +487,36 @@ mod tests {
             self.0.end_session(d)
         }
         fn ping(&self) -> Pending<'_, ()> {
-            Box::pin(std::future::pending())
+            self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.2 {
+                Box::pin(std::future::pending())
+            } else {
+                self.0.ping()
+            }
         }
+    }
+
+    fn hanging(hangs: bool) -> Hanging {
+        let inner = crate::account::InMemory::new("2026-10-13T00:00:00Z");
+        Hanging(inner, std::sync::atomic::AtomicUsize::new(0), hangs)
+    }
+
+    /// One round of checks answers for [`CACHED_FOR`]; then the next request checks again.
+    #[tokio::test]
+    async fn a_round_of_checks_answers_for_five_seconds() {
+        let store = Arc::new(hanging(false));
+        let site = site(store.clone(), None).await;
+        let pings = || store.1.load(std::sync::atomic::Ordering::Relaxed);
+        let start = Instant::now();
+        let first = checked(&site, start).await;
+        assert_eq!(
+            checked(&site, start + CACHED_FOR - Duration::from_millis(1)).await,
+            first
+        );
+        assert_eq!(pings(), 1);
+        checked(&site, start + CACHED_FOR).await;
+        assert_eq!(pings(), 2);
+        assert_eq!(CACHED_FOR, Duration::from_secs(5));
     }
 
     /// `GET health` names what is not up, and only that; `GET status` gives every reason.
