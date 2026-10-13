@@ -139,6 +139,11 @@ rather than a redirect: the browser comes from the provider's site, and a
 | B. The `preferred_username` or `email` claim names the account | anyone who can set that claim at the provider would become that account |
 | C. B the first time, then the link kept | B's risk, once per account |
 
+`make smoke-console` logs in through Dex v2.46.0, chosen by the user 2026-10-13, with a
+static password and no approval screen. Dex runs as `ghcr.io/dexidp/dex` when docker
+answers. Otherwise `scripts/make/lib/dex.sh` builds it from its tag with Go into
+`~/.cache/byrle/`, since Dex publishes no binaries.
+
 ## Rejected
 
 | Option | Why not |

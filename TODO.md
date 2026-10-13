@@ -2742,10 +2742,10 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
 - [x] `[!]` API: request log with accounts (R9). Done 2026-10-13: `GET api/v1/requests`
       and `GET api/v1/logs/{day}`, read from the audit log and its rotated files by
       `console::logs::page`
-- [ ] `[!]` API and page: status of the proxy listener, its readiness, the database and the
+- [x] `[!]` API and page: status of the proxy listener, its readiness, the database and the
       index queue, and `GET health` without credentials (R10, plan §4.9). API done
       2026-10-13: `GET api/v1/status`, and `GET api/v1/health` reports the same checks.
-      The page comes with the web interface
+      The page `status` came with the web interface the same day
 - [x] `[!]` Web interface over each endpoint: `maud` pages, forms, SVG charts. Done
       2026-10-13: layout, home, login and logout forms, and pages for status, failures
       (a chart of failures by hour and case), dependencies, alerts, requests, events,
@@ -2770,7 +2770,11 @@ appears as an alert. The status page shows the proxy `down` while its listener i
 and `degraded` while the intel store holds no snapshot. An account without the `admin`
 role gets 403 from every endpoint except `GET health`.
 
----
+- [ ] Exit tested by `make smoke-console`, 2026-10-13, through Dex v2.46.0 and test OSV
+      bundles served on loopback with `BYRLE_STREAM_URLS`. It checks each clause but one:
+      the proxy `down` while its listener is closed. The proxy and console share one
+      process, so the test cannot close the proxy's listener alone. `down` is checked by
+      `src/console/status.rs` against a closed port instead
 
 ## Stage 5 — Hardening
 

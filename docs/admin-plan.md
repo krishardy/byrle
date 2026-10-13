@@ -419,3 +419,6 @@ is answered 401. A package given a test `MAL-` advisory after it was installed a
 an alert. The status page shows the proxy `down` while its listener is closed, and
 `degraded` while the intel store holds no snapshot. An account without the `admin` role
 gets 403 from every endpoint except `GET health`.
+
+`make smoke-console` runs this, with Dex as the OIDC provider and a test `MAL-` record
+served from loopback through `BYRLE_STREAM_URLS`.
