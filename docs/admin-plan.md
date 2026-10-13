@@ -124,7 +124,11 @@ Only `admin` exists in Stage 4.9. Accounts hold role names, so adding `viewer` o
 `developer` later is a code change and no migration.
 
 Built 2026-10-13: `src/account/role.rs`, and `account_role` in
-`migrations/0020_account_role.sql`. `byrle account create alice --role admin` makes the
+`migrations/0020_account_role.sql`. The console answers only the routes in
+`console::routes::ROUTES`, each with a guard: `Public` (health, login), `Authenticated`
+(logout, session) or `Needs(Permission)`, which is checked before its handler runs and is
+given the caller. `every_route_that_needs_a_permission_refuses_an_account_without_it` is
+the exit criterion's last sentence, run over every route. `byrle account create alice --role admin` makes the
 first admin, and `byrle account list` shows each account's roles. A role name a later build
 added is skipped when an earlier one reads it.
 
@@ -241,7 +245,7 @@ ecosystem, purl, account and `answered`.
 | `GET config` | R7 |
 | `GET events` | R8 |
 | `GET requests`, and `GET logs/<date>` for a day's file | R9 |
-| `GET`, `POST`, `DELETE` under `accounts` | R1, R2 |
+| `GET`, `POST`, `DELETE` under `accounts` | R1, R2. `GET accounts`, needing `accounts.read`, built 2026-10-13 |
 | `GET status` | R10 |
 | `GET health`, with no session or token | R10, for an external monitor |
 | `POST login`, `POST logout`, `GET session` | R1. Built 2026-10-13 ([console-login](engineering_decisions/console-login.md)) |

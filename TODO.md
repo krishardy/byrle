@@ -2698,10 +2698,13 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       that never fails or delays an install, and counts the rows it drops. Done 2026-10-13:
       `src/usage.rs` beside each audit line, `usage_unrecorded` on health. The queue is
       `src/util/batched.rs`, shared with `artifact_decision`
-- [ ] `[!]` Accounts, roles and permissions; every API handler declares a permission, and
-      a test fails on one that does not. Begun 2026-10-13: `Role` and `Permission` in
-      `src/account/role.rs`, `migrations/0020_account_role.sql`, roles in `byrle account
-      list`. The handlers come with login
+- [x] `[!]` Accounts, roles and permissions; every API handler declares a permission, and
+      a test fails on one that does not. Done 2026-10-13: `Role` and `Permission` in
+      `src/account/role.rs`, `migrations/0020_account_role.sql`. Every console route is in
+      `console::routes::ROUTES` with a guard: `Public`, `Authenticated` or
+      `Needs(Permission)`. A test lists the four without a permission, and checks every
+      other answers 401 with no credential and 403 to a non-admin by session and token.
+      `GET api/v1/accounts` needs `accounts.read`
 - [x] `[!]` Password login (Argon2id), sessions, CSRF, a login rate limit. Migrations for
       `account_password` and `session`. Done 2026-10-13: `byrle account password`;
       `POST api/v1/login` and `logout`, `GET api/v1/session`; 8-hour sessions; 5 failures
