@@ -51,7 +51,7 @@ pub enum Command {
         crate::env::DATABASE_URL
     ))]
     Refresh,
-    /// Create, list and disable accounts
+    /// Create, list and disable accounts, and set their console passwords
     #[command(subcommand)]
     Account(AccountCommand),
     /// Create, list and revoke the proxy tokens that identify an account on each request
@@ -99,6 +99,8 @@ pub enum AccountCommand {
     Create(AccountCreate),
     /// Disable an account. Its tokens stop working
     Disable(AccountName),
+    /// Set an account's console password, read from the first line of stdin
+    Password(AccountName),
     /// List every account
     List,
 }
@@ -379,6 +381,10 @@ mod tests {
         assert_eq!(
             parse(&["account", "disable", "ci"]).unwrap().command,
             Command::Account(AccountCommand::Disable(AccountName { name: name("ci") }))
+        );
+        assert_eq!(
+            parse(&["account", "password", "ci"]).unwrap().command,
+            Command::Account(AccountCommand::Password(AccountName { name: name("ci") }))
         );
         assert_eq!(
             parse(&["account", "list"]).unwrap().command,

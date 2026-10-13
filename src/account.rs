@@ -6,6 +6,7 @@
 pub mod command;
 pub mod events;
 pub mod gate;
+pub mod password;
 pub mod postgres;
 pub mod role;
 
@@ -169,6 +170,13 @@ pub trait Accounts: Send + Sync {
     /// Whose token has this digest. `None` for a token that is unknown, one revoked,
     /// or one whose account is disabled.
     fn holder<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, Option<Holder>>;
+
+    /// Set `account`'s console password to the PHC string `hash`, replacing any it had.
+    fn set_password<'a>(&'a self, account: &'a Name, hash: &'a str) -> Pending<'a, ()>;
+
+    /// The PHC string of `account`'s password. `None` when it has none, is disabled, or
+    /// does not exist.
+    fn password<'a>(&'a self, account: &'a Name) -> Pending<'a, Option<String>>;
 }
 
 /// Accounts held in memory, for tests. Every time is the one given at construction.
@@ -180,6 +188,7 @@ pub struct InMemory {
 #[derive(Default)]
 struct Held {
     accounts: BTreeMap<Name, Account>,
+    passwords: BTreeMap<Name, String>,
     tokens: BTreeMap<(Name, Name), (Token, TokenDigest)>,
 }
 
@@ -317,6 +326,25 @@ impl Accounts for InMemory {
             });
         Self::ready(Ok(found))
     }
+
+    fn set_password<'a>(&'a self, account: &'a Name, hash: &'a str) -> Pending<'a, ()> {
+        let mut held = self.held();
+        Self::ready(if held.accounts.contains_key(account) {
+            held.passwords.insert(account.clone(), hash.to_owned());
+            Ok(())
+        } else {
+            Err(no_account(account))
+        })
+    }
+
+    fn password<'a>(&'a self, account: &'a Name) -> Pending<'a, Option<String>> {
+        let held = self.held();
+        let enabled = held
+            .accounts
+            .get(account)
+            .is_some_and(|held| held.disabled.is_none());
+        Self::ready(Ok(held.passwords.get(account).filter(|_| enabled).cloned()))
+    }
 }
 
 /// Stores for tests elsewhere in the crate.
@@ -357,6 +385,12 @@ pub mod testing {
             closed()
         }
         fn holder<'a>(&'a self, _: &'a TokenDigest) -> Pending<'a, Option<Holder>> {
+            closed()
+        }
+        fn set_password<'a>(&'a self, _: &'a Name, _: &'a str) -> Pending<'a, ()> {
+            closed()
+        }
+        fn password<'a>(&'a self, _: &'a Name) -> Pending<'a, Option<String>> {
             closed()
         }
     }
@@ -459,6 +493,25 @@ mod tests {
         assert_eq!(store.holder(&ci_token).await.unwrap(), None);
         store.disable_account(&alice).await.unwrap();
         assert_eq!(store.holder(&alice_token).await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_password_is_read_back_until_its_account_is_disabled() {
+        let store = InMemory::new("2026-10-13T00:00:00Z");
+        let alice = Name::parse("alice").unwrap();
+        let nobody = Name::parse("nobody").unwrap();
+        store.create_account(&alice, &[]).await.unwrap();
+        assert_eq!(store.password(&alice).await, Ok(None));
+        store.set_password(&alice, "$first").await.unwrap();
+        store.set_password(&alice, "$second").await.unwrap();
+        assert_eq!(store.password(&alice).await, Ok(Some("$second".into())));
+        assert_eq!(
+            store.set_password(&nobody, "$x").await,
+            Err(AccountError::NotFound("account nobody".into()))
+        );
+        assert_eq!(store.password(&nobody).await, Ok(None));
+        store.disable_account(&alice).await.unwrap();
+        assert_eq!(store.password(&alice).await, Ok(None));
     }
 
     #[tokio::test]

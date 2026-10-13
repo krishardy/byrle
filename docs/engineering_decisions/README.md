@@ -44,7 +44,8 @@ code, and the file names where.
 | [Console listener](console-listener.md) | Implemented |
 | [Log rotation](log-rotation.md) | Implemented for the audit log |
 | [Console web interface: Rust and maud](console-web-interface.md) | Decided |
-| [Console login crates: argon2 and jsonwebtoken](console-login-crates.md) | Decided |
+| [Console login crates: argon2 and jsonwebtoken](console-login-crates.md) | Decided; `argon2` implemented |
+| [Console login: passwords](console-login.md) | Implemented for setting a password; values not yet confirmed |
 | [byrle resolves no version ranges](no-range-resolution.md) | Decided |
 | [The PEP 503 HTML index is read, not forwarded](pep-503-html-index.md) | Implemented |
 | [PyPI provenance: the index says where the bundle is](pypi-provenance.md) | Implemented, verified by the provenance check |

@@ -1138,6 +1138,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .collect();
     let tables = [
         "account",
+        "account_password",
         "account_role",
         "advisory",
         "advisory_affected",
@@ -2288,6 +2289,22 @@ async fn accounts_and_tokens_round_trip_through_postgres() {
         "a role this build does not know is skipped"
     );
 
+    assert_eq!(store.password(&alice).await, Ok(None));
+    store.set_password(&alice, "$argon2id$first").await.unwrap();
+    store
+        .set_password(&alice, "$argon2id$second")
+        .await
+        .unwrap();
+    assert_eq!(
+        store.password(&alice).await,
+        Ok(Some("$argon2id$second".into()))
+    );
+    assert_eq!(
+        store.set_password(&nobody, "$x").await,
+        Err(AccountError::NotFound("account nobody".into()))
+    );
+    assert_eq!(store.password(&nobody).await, Ok(None));
+
     let token = byrle::account::issue();
     let digest = TokenDigest::of(&token);
     store.create_token(&ci, &laptop, &digest).await.unwrap();
@@ -2345,6 +2362,11 @@ async fn accounts_and_tokens_round_trip_through_postgres() {
 
     store.disable_account(&alice).await.unwrap();
     store.disable_account(&alice).await.unwrap();
+    assert_eq!(
+        store.password(&alice).await,
+        Ok(None),
+        "a disabled account has no password to log in with"
+    );
     assert_eq!(store.holder(&TokenDigest::of("other")).await.unwrap(), None);
     assert!(store.accounts().await.unwrap()[0].disabled.is_some());
     assert!(matches!(

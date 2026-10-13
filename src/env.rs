@@ -246,8 +246,8 @@ pub const ACCOUNT_EVENT_LOG: Var = runtime(
     "",
     &[
         "path for one JSON line per change to an account,",
-        "its roles or tokens. `byrle account` and",
-        "`byrle token` append to it",
+        "its roles, tokens or password. `byrle account`",
+        "and `byrle token` append to it",
     ],
 );
 pub const LOG_RETENTION_DAYS: Var = runtime(

@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                INSERT INTO account_password (account_id, hash)\n                SELECT id, $2 FROM account WHERE name = $1\n                ON CONFLICT (account_id) DO UPDATE SET hash = EXCLUDED.hash, set_at = now()\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "ea52028b46b1d99c90cd7f482895cb735b6c625caaf94a7138e785c1f783e090"
+}

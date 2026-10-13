@@ -13,7 +13,7 @@ Commands:
   lockfile  Work with lockfiles
   warm      Ask a running proxy for every artifact a lockfile locks, so each is analysed before a client asks for it. The exit code is the OR of 1 for a failure and 2 for an artifact still being analysed, and 4 on its own for an error
   refresh   Load OSV, GitHub, CISA KEV and Datadog intel into the Postgres at BYRLE_DATABASE_URL
-  account   Create, list and disable accounts
+  account   Create, list and disable accounts, and set their console passwords
   token     Create, list and revoke the proxy tokens that identify an account on each request
   artifact  Print what each artifact was decided on, and what was decided
   help      Print this message or the help of the given subcommand(s)
@@ -66,8 +66,8 @@ Proxy configuration, all through the environment:
                                     files 3 days old and older are compressed with
                                     bzip2. Refuses to start if it cannot be opened
   BYRLE_ACCOUNT_EVENT_LOG           path for one JSON line per change to an account,
-                                    its roles or tokens. `byrle account` and
-                                    `byrle token` append to it
+                                    its roles, tokens or password. `byrle account`
+                                    and `byrle token` append to it
   BYRLE_LOG_RETENTION_DAYS          days a rotated audit log file is kept (default 365)
   BYRLE_DECISION_RETENTION_DAYS     days an artifact decision is kept in the analysis store (default 365)
   BYRLE_EXPIRY_CEILING_DAYS         how many days ahead a `packages` entry may be dated (default 90)

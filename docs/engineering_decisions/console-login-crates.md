@@ -1,6 +1,7 @@
 # Console login crates: argon2, and jsonwebtoken on aws-lc-rs
 
-- **Status:** Decided 2026-10-11, by the user. Not yet implemented. TODO Stage 4.9.
+- **Status:** Decided 2026-10-11, by the user. `argon2` implemented 2026-10-13
+  ([console-login](console-login.md)); `jsonwebtoken` not yet. TODO Stage 4.9.
 - **Related:** [admin-plan](../admin-plan.md) §8 Q4,
   [sqlx-0-8-and-rsa-advisory](sqlx-0-8-and-rsa-advisory.md)
 

@@ -62,6 +62,34 @@ pub async fn disable_account(store: &dyn Accounts, name: &Name) -> Outcome {
     }
 }
 
+/// Set `name`'s console password to `password`, checked for length and hashed with
+/// `hasher`. Logged as `password-set`, without the password.
+pub async fn set_password(
+    store: &dyn Accounts,
+    name: &Name,
+    password: &str,
+    hasher: &super::password::Hasher,
+) -> Outcome {
+    let hash = match super::password::acceptable(password) {
+        Ok(password) => hasher.hash(password),
+        Err(why) => {
+            return Outcome {
+                code: 1,
+                stdout: String::new(),
+                stderr: format!("{why}\n"),
+                events: Vec::new(),
+            };
+        }
+    };
+    match store.set_password(name, &hash).await {
+        Ok(()) => Outcome::done(
+            format!("password of account {name} set\n"),
+            vec![AccountEvent::by_cli(Action::PasswordSet, name)],
+        ),
+        Err(e) => Outcome::refused(&e),
+    }
+}
+
 /// One line per account: name, roles or `-`, created, and disabled or `-`.
 pub async fn list_accounts(store: &dyn Accounts) -> Outcome {
     match store.accounts().await {
@@ -306,6 +334,39 @@ mod tests {
             "{}",
             failed.stderr
         );
+    }
+
+    /// The password is stored as its hash and logged without it; one too short is
+    /// refused before the store is asked.
+    #[tokio::test]
+    async fn a_password_is_stored_as_its_hash() {
+        let store = InMemory::new(NOW);
+        let alice = name("alice");
+        let hasher = crate::account::password::tests::cheap();
+        create_account(&store, &alice, &[]).await;
+        let set = set_password(&store, &alice, "correct horse battery", &hasher).await;
+        assert_eq!(set.stdout, "password of account alice set\n");
+        assert_eq!(actions(&set), [(Action::PasswordSet, None)]);
+        let stored = store.password(&alice).await.unwrap().unwrap();
+        assert!(hasher.verify("correct horse battery", &stored));
+        assert!(
+            !serde_json::to_string(&set.events)
+                .unwrap()
+                .contains("horse")
+        );
+
+        let short = set_password(&store, &alice, "short", &hasher).await;
+        assert_eq!(short.code, 1);
+        assert!(
+            short.stderr.contains("needs at least 15"),
+            "{}",
+            short.stderr
+        );
+        assert!(short.events.is_empty());
+        assert_eq!(store.password(&alice).await.unwrap(), Some(stored));
+        let nobody = name("nobody");
+        let missing = set_password(&store, &nobody, "correct horse battery", &hasher).await;
+        assert_eq!(missing.stderr, "account nobody does not exist\n");
     }
 
     /// A store that cannot answer fails every command with its reason.

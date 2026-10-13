@@ -237,6 +237,18 @@ async fn run_account(command: cli::AccountCommand) -> std::process::ExitCode {
             command::create_account(&store, &args.name, &args.roles).await
         }
         cli::AccountCommand::Disable(args) => command::disable_account(&store, &args.name).await,
+        cli::AccountCommand::Password(args) => {
+            match byrle::account::password::read(&mut std::io::stdin().lock()) {
+                Ok(password) => {
+                    let hasher = byrle::account::password::Hasher::standard();
+                    command::set_password(&store, &args.name, &password, &hasher).await
+                }
+                Err(why) => {
+                    eprintln!("byrle account password: {why}");
+                    return std::process::ExitCode::from(1);
+                }
+            }
+        }
         cli::AccountCommand::List => command::list_accounts(&store).await,
     };
     finish(outcome, log.as_deref())
