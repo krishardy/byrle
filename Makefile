@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front bench retry-matrix offsite-urls inspect spike-config duplicates unsigned run-dev
+.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front smoke-console bench retry-matrix offsite-urls inspect spike-config duplicates unsigned run-dev
 
 help:
 	@echo "byrle targets:"
@@ -24,6 +24,7 @@ help:
 	@echo "  smoke-clients  whether npm's other four clients route artifacts through it"
 	@echo "  smoke-proxy    whether upstream traffic honours HTTP_PROXY, HTTPS_PROXY and NO_PROXY"
 	@echo "  smoke-tls-front  the proxy behind nginx on TLS, checked with npm and pip"
+	@echo "  smoke-console    the Stage 4.9 exit test: installs, the console API, alerts, Dex login"
 	@echo "  bench          install times through the proxy against direct, for npm and uv"
 	@echo "  retry-matrix   what each client does when the proxy defers a request"
 	@echo "  offsite-urls   which packument URLs each client fetches as written"
@@ -112,6 +113,9 @@ smoke-proxy:
 
 smoke-tls-front:
 	@scripts/make/smoke-tls-front.sh
+
+smoke-console:
+	@scripts/make/smoke-console.sh
 
 bench:
 	@scripts/make/bench.sh

@@ -16,6 +16,9 @@
 # bytes, got 0 bytes at EOF`, as `make test-integration` and `make sqlx-prepare` both did
 # on 2026-09-13.
 
+# shellcheck source=scripts/make/lib/port.sh
+. "$(dirname "${BASH_SOURCE[0]}")/port.sh"
+
 postgres_image="${BYRLE_PG_IMAGE:-docker.io/library/postgres:18-alpine}"
 postgres_container=""
 postgres_local_dir=""
@@ -90,12 +93,7 @@ start_postgres() {
     [[ -n "$postgres_kind" ]] || choose_postgres || return 1
     # A server left on the port answers a migration in its place, or makes this one fail to
     # bind with only "Address already in use". Name what holds it, while it still does.
-    if ss -ltn 2>/dev/null | grep -q "[:.]$port "; then
-        echo "port $port is already in use, by:"
-        ss -ltnp 2>/dev/null | grep "[:.]$port " || true
-        pgrep -a -f "postgres|postmaster" || true
-        return 1
-    fi
+    require_free_ports "$port" || return 1
     case "$postgres_kind" in
         container) start_postgres_container "$name" "$port" ;;
         local) start_postgres_local "$port" ;;
