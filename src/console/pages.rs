@@ -1193,6 +1193,26 @@ mod tests {
         assert_eq!(shown(State::Down), "down");
     }
 
+    /// The status page shows the proxy `down` once its listener closes, admin-plan §9.
+    /// `make smoke-console` cannot close it: the proxy shares the console's process.
+    #[tokio::test]
+    async fn the_status_page_shows_the_proxy_down_once_its_listener_closes() {
+        let proxy = crate::console::tests::proxy();
+        let (at, serving) = crate::proxy::testing::serving(|_| proxy.clone().router()).await;
+        let (site, base) = crate::console::tests::served_asking(store().await, (proxy, at)).await;
+        let admin = logged_in(&base, "alice").await;
+        let row = |state: &str| format!(r#"<td>proxy</td><td class="{state}">{state}</td>"#);
+        let (_, body) = page(&base, STATUS_PAGE_PATH, Some(&admin)).await;
+        assert!(body.contains(&row("up")), "{body}");
+
+        serving.abort();
+        assert!(serving.await.unwrap_err().is_cancelled());
+        *site.checked.lock().unwrap() = None;
+        let (_, body) = page(&base, STATUS_PAGE_PATH, Some(&admin)).await;
+        assert!(body.contains(&row("down")), "{body}");
+        assert!(body.contains("the request failed"), "{body}");
+    }
+
     /// A store that does not answer is a page saying so.
     #[tokio::test]
     async fn a_store_that_does_not_answer_is_a_503_page() {

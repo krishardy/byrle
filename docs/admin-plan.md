@@ -421,4 +421,6 @@ an alert. The status page shows the proxy `down` while its listener is closed, a
 gets 403 from every endpoint except `GET health`.
 
 `make smoke-console` runs this, with Dex as the OIDC provider and a test `MAL-` record
-served from loopback through `BYRLE_STREAM_URLS`.
+served from loopback through `BYRLE_STREAM_URLS`. The proxy shares the console's process,
+so the smoke test cannot close its listener alone. A test in `src/console/pages.rs` serves
+a test proxy, closes its listener, and reads `down` from the status page.

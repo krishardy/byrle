@@ -238,10 +238,24 @@ pub(crate) mod tests {
     /// `console` running against `store` and empty usage tables, with a cheap hasher, no
     /// event log, and a proxy served beside it.
     pub async fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
-        let usage = Arc::new(crate::usage::tests::Kept::default());
-        let intel = Arc::new(crate::intel::store::testing::knowing_nothing());
-        let proxy = crate::proxy::Proxy::new(reqwest::Client::new()).with_intel(Some(intel));
+        let proxy = proxy();
         let at = serve(proxy.clone().router()).await;
+        site_asking(console, store, (proxy, at))
+    }
+
+    /// A proxy that knows no advisories.
+    pub fn proxy() -> crate::proxy::Proxy {
+        let intel = Arc::new(crate::intel::store::testing::knowing_nothing());
+        crate::proxy::Proxy::new(reqwest::Client::new()).with_intel(Some(intel))
+    }
+
+    /// [`site`], asking the proxy served at `at` for its status.
+    pub fn site_asking(
+        console: Console,
+        store: Arc<dyn Accounts>,
+        (proxy, at): (crate::proxy::Proxy, String),
+    ) -> Arc<Site> {
+        let usage = Arc::new(crate::usage::tests::Kept::default());
         let missing = |name: &str| Some(std::path::Path::new("/nonexistent/byrle").join(name));
         Arc::new(
             unread(console, store)
@@ -260,6 +274,16 @@ pub(crate) mod tests {
 
     /// The console at `https://h/admin/` on its own listener, served, with its base URL.
     pub async fn served(store: Arc<dyn Accounts>) -> (Arc<Site>, String) {
+        let proxy = proxy();
+        let at = serve(proxy.clone().router()).await;
+        served_asking(store, (proxy, at)).await
+    }
+
+    /// [`served`], asking the proxy served at `at` for its status.
+    pub async fn served_asking(
+        store: Arc<dyn Accounts>,
+        asked: (crate::proxy::Proxy, String),
+    ) -> (Arc<Site>, String) {
         let console = Console {
             url: "https://h/admin/".into(),
             mount: Mount::from_url("https://h/admin/").unwrap(),
@@ -267,7 +291,7 @@ pub(crate) mod tests {
             rp_key: None,
             proxy_mount: Mount::ROOT,
         };
-        let site = site(console, store).await;
+        let site = site_asking(console, store, asked);
         let (_, router) = listeners(Router::new(), LISTEN, Some(&site)).pop().unwrap();
         (site, serve(router).await)
     }
