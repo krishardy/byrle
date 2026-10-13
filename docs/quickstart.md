@@ -239,6 +239,31 @@ byrle audit verify /var/log/byrle/audit.jsonl --policy /etc/byrle/policy.yaml
 281 reproduced, 0 differ, 0 not replayable
 ```
 
+## 11. The console
+
+The console shows what was installed, refused and failed, and by whom. It needs the
+database, and logs in with an account's password:
+
+```
+$ byrle account create alice --role admin
+account alice created
+$ read -rs password; printf '%s\n' "$password" | byrle account password alice
+password of account alice set
+```
+
+Then give it a path beside the proxy's, and start the proxy again:
+
+```
+BYRLE_PROXY_URL=https://byrle.example.com/registry/
+BYRLE_CONSOLE_URL=https://byrle.example.com/admin/
+BYRLE_ACCOUNT_EVENT_LOG=/var/log/byrle/events.jsonl
+```
+
+`https://byrle.example.com/admin/` is the login form. Behind nginx, set `BYRLE_RP_KEY` and
+the two headers in [fronting-tls](fronting-tls.md), so failed logins are counted by the
+client's address rather than nginx's. The API under `admin/api/v1/` takes the same
+session, or a proxy token; [console-api](console-api.md) lists each endpoint.
+
 ## When it is in the way
 
 [break-glass](break-glass.md) says how to install while the proxy is down, and how to
