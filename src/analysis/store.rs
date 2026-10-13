@@ -140,6 +140,9 @@ pub trait Analyses: Send + Sync {
     /// The decisions `page` asks for, oldest first, each with the row id the next page
     /// starts after.
     fn decisions<'a>(&'a self, page: &'a Page) -> Stored<'a, Vec<(i64, Decided)>>;
+
+    /// Delete each decision made before `day`, YYYY-MM-DD in UTC. Returns how many.
+    fn forget_decisions<'a>(&'a self, day: &'a str) -> Stored<'a, u64>;
 }
 
 /// The decisions this process has recorded, the oldest dropped past its budget.
@@ -352,6 +355,15 @@ impl Analyses for InProcess {
                 .collect())
         })
     }
+
+    fn forget_decisions<'a>(&'a self, day: &'a str) -> Stored<'a, u64> {
+        Box::pin(async move {
+            let mut held = self.decisions_held();
+            let before = held.held.len();
+            held.held.retain(|(_, decided)| decided.day() >= day);
+            Ok((before - held.held.len()) as u64)
+        })
+    }
 }
 
 #[cfg(test)]
@@ -410,6 +422,9 @@ pub(crate) mod tests {
             broken()
         }
         fn decisions<'a>(&'a self, _: &'a Page) -> Stored<'a, Vec<(i64, Decided)>> {
+            broken()
+        }
+        fn forget_decisions<'a>(&'a self, _: &'a str) -> Stored<'a, u64> {
             broken()
         }
     }
@@ -611,6 +626,12 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(days, [(3, rows[2].clone())]);
+
+        assert_eq!(store.forget_decisions("2026-10-12").await.unwrap(), 1);
+        assert_eq!(
+            ids(store.decisions(&page(0, None, None, 10)).await.unwrap()),
+            [3, 4]
+        );
     }
 
     #[test]

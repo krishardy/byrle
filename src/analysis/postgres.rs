@@ -367,6 +367,10 @@ impl Analyses for PgAnalyses {
     fn decisions<'a>(&'a self, page: &'a Page) -> Stored<'a, Vec<(i64, Decided)>> {
         Box::pin(self.read_decisions(page))
     }
+
+    fn forget_decisions<'a>(&'a self, day: &'a str) -> Stored<'a, u64> {
+        Box::pin(self.delete_decisions(day))
+    }
 }
 
 impl PgAnalyses {
@@ -526,6 +530,20 @@ impl PgAnalyses {
             .iter()
             .filter_map(|row| Decided::from_json(row))
             .collect())
+    }
+
+    async fn delete_decisions(&self, day: &str) -> Result<u64, AnalysisError> {
+        sqlx::query!(
+            r#"
+            DELETE FROM artifact_decision
+            WHERE decided_at < ($1::text)::date::timestamp AT TIME ZONE 'UTC'
+            "#,
+            day,
+        )
+        .execute(&self.pool)
+        .await
+        .map(|done| done.rows_affected())
+        .map_err(AnalysisError::Backend)
     }
 
     async fn read_decisions(&self, page: &Page) -> Result<Vec<(i64, Decided)>, AnalysisError> {
