@@ -276,6 +276,11 @@ fn compress(plain: &Path, done: &Path, part: &Path) -> io::Result<()> {
 /// The files rotated from `path`, oldest first, then `path`. A day kept both uncompressed
 /// and compressed, which an interrupted compression leaves, is listed once.
 pub fn files(path: &Path) -> io::Result<Vec<PathBuf>> {
+    days(path).map(|files| files.into_iter().map(|(_, file)| file).collect())
+}
+
+/// [`files`], each with the day it was rotated for; `None` for `path` itself.
+pub fn days(path: &Path) -> io::Result<Vec<(Option<Date>, PathBuf)>> {
     let mut days = BTreeMap::new();
     for (day, form, file) in rotated(path)? {
         match form {
@@ -288,9 +293,12 @@ pub fn files(path: &Path) -> io::Result<Vec<PathBuf>> {
             Form::Part => {}
         }
     }
-    let mut files: Vec<PathBuf> = days.into_values().collect();
+    let mut files: Vec<(Option<Date>, PathBuf)> = days
+        .into_iter()
+        .map(|(day, file)| (Some(day), file))
+        .collect();
     match fs::metadata(path) {
-        Ok(_) => files.push(path.to_owned()),
+        Ok(_) => files.push((None, path.to_owned())),
         Err(e) if files.is_empty() => return Err(e),
         Err(_) => {}
     }

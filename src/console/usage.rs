@@ -89,14 +89,14 @@ pub struct Failures {
 }
 
 /// The query string of `parts` as `T`. Unknown keys are ignored.
-fn query<T: serde::de::DeserializeOwned>(parts: &Parts) -> Result<T, String> {
+pub(super) fn query<T: serde::de::DeserializeOwned>(parts: &Parts) -> Result<T, String> {
     axum::extract::Query::<T>::try_from_uri(&parts.uri)
         .map(|query| query.0)
         .map_err(|e| format!("the query string is not understood: {e}"))
 }
 
 /// `value` of `field` as a time, when given.
-fn time(field: &str, value: Option<&str>) -> Result<Option<Timestamp>, String> {
+pub(super) fn time(field: &str, value: Option<&str>) -> Result<Option<Timestamp>, String> {
     value
         .map(|value| {
             value
