@@ -115,6 +115,31 @@ A version before it whose attestation does not verify is left out of the identit
 comparison, and when every one of them fails the check is unknown for this version, not
 refused: this version's own attestation may be sound.
 
+## Identity changes across whole histories, measured 2026-10-13
+
+`examples/provenance_identity_changes.py` reads every attested version of every package in
+the five sets of [tier-1-false-positives](tier-1-false-positives.md), npm since 2023-04
+and PyPI since 2024-10, identities unverified. It counts the versions each rule refuses:
+
+- R0, this check: any version it is compared with names another identity
+- R1: no version it is compared with names its identity
+- R2: no attested version of the package published before it names its identity
+
+| Ecosystem | Packages attested | Attested versions compared | R0 | of R0, same owner | R1 | R2 | Packages R0 refuses in |
+|---|---|---|---|---|---|---|---|
+| npm | 98 | 30,261 | 2,339 | 2,327 | 291 | 71 | 35 |
+| pypi | 24 | 263 | 2 | 2 | 2 | 2 | 2 |
+
+R0's refusals are mostly release channels published from different workflows in one
+repository: rolldown and its 11 bindings alternate a release workflow with a nightly canary
+one, 205 refusals each. R2's 71 are the first version from each new identity:
+
+| Change | Packages |
+|---|---|
+| a new workflow file in the same repository | rolldown and its bindings, next and `@next/*`, `@eslint/*` manual publish, baseline-browser-mapping, caniuse-lite |
+| a new repository with the same owner | `@rolldown/pluginutils` 1.0.1, eslint-scope, eslint-visitor-keys, espree, matplotlib 3.10.8, scikit-learn 1.9.1 |
+| a new owner | react, react-dom, scheduler: `facebook/react` to `react/react` |
+
 ## Measured
 
 Every version in `npm install express eslint`, 141 on 2026-09-26, against the version
