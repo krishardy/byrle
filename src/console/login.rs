@@ -87,22 +87,49 @@ impl Limiter {
             .collect()
     }
 
-    /// Whether a login as `account` from `address` may be checked at `now`.
-    pub fn allows(&self, account: &str, address: Option<IpAddr>, now: Instant) -> bool {
+    /// The address's key and limit alone: an OIDC login names no account until it ends.
+    fn from(&self, address: Option<IpAddr>) -> Vec<(Key, usize)> {
+        address
+            .map(|address| (Key::address(address), self.limits.per_address))
+            .into_iter()
+            .collect()
+    }
+
+    /// Whether each of `keys` is under its limit at `now`.
+    fn under(&self, keys: &[(Key, usize)], now: Instant) -> bool {
         let mut failures = self.failures.lock().expect("limiter lock");
-        self.keys(account, address)
-            .iter()
+        keys.iter()
             .all(|(key, limit)| self.recent(&mut failures, key, now).len() < *limit)
     }
 
-    /// Count a failed login as `account` from `address` at `now`.
-    pub fn failed(&self, account: &str, address: Option<IpAddr>, now: Instant) {
+    /// Count a failure at `now` against each of `keys`.
+    fn count(&self, keys: Vec<(Key, usize)>, now: Instant) {
         let mut failures = self.failures.lock().expect("limiter lock");
-        for (key, _) in self.keys(account, address) {
+        for (key, _) in keys {
             let mut times = self.recent(&mut failures, &key, now);
             times.push(now);
             failures.insert(key, times);
         }
+    }
+
+    /// Whether a login as `account` from `address` may be checked at `now`.
+    pub fn allows(&self, account: &str, address: Option<IpAddr>, now: Instant) -> bool {
+        self.under(&self.keys(account, address), now)
+    }
+
+    /// Count a failed login as `account` from `address` at `now`.
+    pub fn failed(&self, account: &str, address: Option<IpAddr>, now: Instant) {
+        self.count(self.keys(account, address), now);
+    }
+
+    /// Whether an OIDC login from `address` may go on at `now`.
+    pub fn allows_from(&self, address: Option<IpAddr>, now: Instant) -> bool {
+        self.under(&self.from(address), now)
+    }
+
+    /// Count a failed OIDC login from `address` at `now`.
+    pub fn failed_from(&self, address: Option<IpAddr>, now: Instant) {
+        self.count(self.from(address), now);
     }
 }
 
@@ -256,6 +283,22 @@ impl Login {
             source,
         ));
         Ok(())
+    }
+
+    /// Whether an OIDC callback from `source` may be answered now.
+    pub fn oidc_allows(&self, source: Option<IpAddr>) -> bool {
+        self.limiter.allows_from(source, Instant::now())
+    }
+
+    /// Count an OIDC login from `source` that failed, logged as `login-failed` for `who`.
+    pub fn oidc_failed(&self, who: &str, source: Option<IpAddr>) {
+        self.limiter.failed_from(source, Instant::now());
+        self.record(AccountEvent::by_console(
+            Action::LoginFailed,
+            who,
+            None,
+            source,
+        ));
     }
 
     fn record(&self, event: AccountEvent) {
@@ -464,5 +507,23 @@ pub(crate) mod tests {
             roles: vec![],
         };
         assert!(down.end("id", &caller, None).await.is_err());
+    }
+
+    /// OIDC failures count against the address alone, and stop the next at the limit.
+    #[test]
+    fn oidc_failures_count_against_the_address() {
+        let login_store = futures_util::FutureExt::now_or_never(store()).unwrap();
+        let login = login(login_store, None);
+        let from = address("192.0.2.9");
+        for _ in 0..limits().per_address {
+            assert!(login.oidc_allows(from));
+            login.oidc_failed("someone", from);
+        }
+        assert!(!login.oidc_allows(from));
+        assert!(login.oidc_allows(address("192.0.2.10")));
+        assert!(
+            login.oidc_allows(None),
+            "with no address nothing is counted"
+        );
     }
 }

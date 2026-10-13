@@ -248,6 +248,201 @@ pub fn verify(
     Ok(claims)
 }
 
+/// The most bytes read from the provider in one answer.
+const MAX_ANSWER: usize = 256 * 1024;
+
+/// How long after fetching the keys a token naming an unknown key fetches them again.
+pub const REFETCH_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// The discovery document and keys, once fetched, and when the keys were.
+struct Found {
+    discovery: Discovery,
+    keys: JwkSet,
+    keys_at: std::time::Instant,
+}
+
+/// Why a login through the provider did not end in a verified identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Failed {
+    /// The provider did not answer as it should; nothing about the user is known.
+    Provider(String),
+    /// The provider answered, and its answer was not taken.
+    Refused(String),
+}
+
+/// The OIDC provider as the console uses it.
+pub struct Provider {
+    pub settings: Settings,
+    client: reqwest::Client,
+    found: tokio::sync::Mutex<Option<Found>>,
+    /// [`REFETCH_AFTER`], unless a test shortens it.
+    refetch_after: std::time::Duration,
+}
+
+/// `value` form-urlencoded, as RFC 6749 §2.3.1 has a client's id and secret encoded before
+/// they are sent as Basic credentials.
+fn encoded(value: &str) -> String {
+    let pair = serde_urlencoded::to_string([("v", value)]).expect("text encodes");
+    pair["v=".len()..].to_owned()
+}
+
+/// At most [`MAX_ANSWER`] bytes of `response`'s body, if its status is a success.
+async fn body(response: reqwest::Response) -> Result<Vec<u8>, String> {
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("{} answered {status}", response.url()));
+    }
+    let mut response = response;
+    let mut read = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        read.extend_from_slice(&chunk);
+        if read.len() > MAX_ANSWER {
+            return Err(format!(
+                "{} answered more than {MAX_ANSWER} bytes",
+                response.url()
+            ));
+        }
+    }
+    Ok(read)
+}
+
+impl Provider {
+    pub fn new(settings: Settings, client: reqwest::Client) -> Self {
+        Self {
+            settings,
+            client,
+            found: tokio::sync::Mutex::new(None),
+            refetch_after: REFETCH_AFTER,
+        }
+    }
+
+    /// Fetch the keys again for an unknown key once they are `after` old.
+    pub fn with_refetch_after(mut self, after: std::time::Duration) -> Self {
+        self.refetch_after = after;
+        self
+    }
+
+    async fn fetched(&self, url: &str) -> Result<Vec<u8>, String> {
+        let response = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        body(response).await
+    }
+
+    async fn keys(&self, discovery: &Discovery) -> Result<JwkSet, String> {
+        let read = self.fetched(&discovery.jwks_uri).await?;
+        serde_json::from_slice(&read).map_err(|e| format!("the provider's keys do not read: {e}"))
+    }
+
+    /// The discovery document, fetched with the keys the first time.
+    async fn discovery(&self) -> Result<Discovery, String> {
+        let mut found = self.found.lock().await;
+        if let Some(found) = &*found {
+            return Ok(found.discovery.clone());
+        }
+        let url = format!(
+            "{}/.well-known/openid-configuration",
+            self.settings.issuer.trim_end_matches('/')
+        );
+        let discovery = Discovery::read(&self.fetched(&url).await?, &self.settings.issuer)?;
+        let keys = self.keys(&discovery).await?;
+        *found = Some(Found {
+            discovery: discovery.clone(),
+            keys,
+            keys_at: std::time::Instant::now(),
+        });
+        Ok(discovery)
+    }
+
+    /// A login begun: what the browser carries, and where to send it, coming back to
+    /// `redirect`.
+    pub async fn begin(&self, redirect: &str) -> Result<(Pending, String), String> {
+        let discovery = self.discovery().await?;
+        let pending = Pending::begin();
+        let url = authorization(&discovery, &self.settings, &pending, redirect)
+            .expect("the discovery document's endpoints were read as URLs");
+        Ok((pending, url))
+    }
+
+    /// The ID token for `code`, exchanged at the token endpoint with `pending`'s PKCE
+    /// verifier and the client's secret.
+    async fn exchange(
+        &self,
+        discovery: &Discovery,
+        code: &str,
+        pending: &Pending,
+        redirect: &str,
+    ) -> Result<String, Failed> {
+        #[derive(Deserialize)]
+        struct Answer {
+            id_token: String,
+        }
+        let form = [
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect),
+            ("code_verifier", &pending.verifier),
+        ];
+        let response = self
+            .client
+            .post(&discovery.token_endpoint)
+            .basic_auth(
+                encoded(&self.settings.client_id),
+                Some(encoded(&self.settings.client_secret)),
+            )
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(serde_urlencoded::to_string(form).expect("pairs of text encode"))
+            .send()
+            .await
+            .map_err(|e| Failed::Provider(e.to_string()))?;
+        let read = body(response).await.map_err(Failed::Refused)?;
+        serde_json::from_slice::<Answer>(&read)
+            .map(|answer| answer.id_token)
+            .map_err(|e| {
+                Failed::Provider(format!("the token endpoint's answer does not read: {e}"))
+            })
+    }
+
+    /// The claims of the ID token `code` is exchanged for, checked against `pending`. The
+    /// keys are fetched again, once, for a key not held, when older than a minute.
+    pub async fn finish(
+        &self,
+        code: &str,
+        pending: &Pending,
+        redirect: &str,
+    ) -> Result<Claims, Failed> {
+        let discovery = self.discovery().await.map_err(Failed::Provider)?;
+        let token = self.exchange(&discovery, code, pending, redirect).await?;
+        let mut found = self.found.lock().await;
+        let found = found.as_mut().expect("discovery fetched the keys");
+        match verify(&token, &found.keys, &self.settings, &pending.nonce) {
+            Err(Refused::UnknownKey(kid)) if found.keys_at.elapsed() >= self.refetch_after => {
+                found.keys = self.keys(&discovery).await.map_err(Failed::Provider)?;
+                found.keys_at = std::time::Instant::now();
+                verify(&token, &found.keys, &self.settings, &pending.nonce).map_err(|refused| {
+                    match refused {
+                        Refused::UnknownKey(_) => Failed::Refused(format!(
+                            "the token names key {kid}, which the provider does not hold"
+                        )),
+                        Refused::Invalid(why) => Failed::Refused(why),
+                    }
+                })
+            }
+            Err(Refused::UnknownKey(kid)) => Err(Failed::Refused(format!(
+                "the token names key {kid}, not held"
+            ))),
+            Err(Refused::Invalid(why)) => Err(Failed::Refused(why)),
+            Ok(claims) => Ok(claims),
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
@@ -520,5 +715,318 @@ pub(crate) mod tests {
             .algorithm,
             Algorithm::EdDSA
         ));
+    }
+
+    /// What the fake provider holds, and how many times its keys were fetched.
+    #[derive(Default)]
+    pub struct Held {
+        pub keys: Vec<serde_json::Value>,
+        pub token: String,
+        pub challenge: String,
+        pub key_fetches: usize,
+        pub issuer: String,
+        /// Whether the keys endpoint answers 500.
+        pub keys_down: bool,
+    }
+
+    pub type Fake = std::sync::Arc<std::sync::Mutex<Held>>;
+
+    /// A provider served on loopback: discovery, keys, and a token endpoint that wants this
+    /// client's Basic credentials and the verifier of the challenge it was given.
+    pub async fn provider() -> (String, Fake) {
+        use axum::extract::State;
+        use axum::routing::{get, post};
+        let held: Fake = Fake::default();
+        let router = axum::Router::new()
+            .route("/.well-known/openid-configuration", get(|State(held): State<Fake>| async move {
+                let issuer = held.lock().unwrap().issuer.clone();
+                axum::Json(serde_json::json!({
+                    "issuer": issuer,
+                    "authorization_endpoint": format!("{issuer}/auth"),
+                    "token_endpoint": format!("{issuer}/token"),
+                    "jwks_uri": format!("{issuer}/keys"),
+                }))
+            }))
+            .route("/keys", get(|State(held): State<Fake>| async move {
+                let mut held = held.lock().unwrap();
+                held.key_fetches += 1;
+                if held.keys_down {
+                    return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, String::new());
+                }
+                (axum::http::StatusCode::OK, serde_json::json!({ "keys": held.keys }).to_string())
+            }))
+            .route("/token", post(|State(held): State<Fake>, headers: axum::http::HeaderMap, body: String| async move {
+                let held = held.lock().unwrap();
+                let form: std::collections::BTreeMap<String, String> = serde_urlencoded::from_str(&body).unwrap();
+                let basic = format!(
+                    "Basic {}",
+                    base64::engine::general_purpose::STANDARD.encode(format!("{CLIENT}:s3cret%2B"))
+                );
+                let verified = Pending { state: String::new(), nonce: String::new(), verifier: form["code_verifier"].clone() };
+                let good = headers["authorization"] == basic.as_str()
+                    && form["grant_type"] == "authorization_code"
+                    && verified.challenge() == held.challenge;
+                if good {
+                    (axum::http::StatusCode::OK, serde_json::json!({ "id_token": held.token }).to_string())
+                } else {
+                    (axum::http::StatusCode::BAD_REQUEST, r#"{"error":"invalid_grant"}"#.to_owned())
+                }
+            }))
+            .with_state(held.clone());
+        let base = crate::proxy::testing::serve(router).await;
+        held.lock().unwrap().issuer = base.clone();
+        (base, held)
+    }
+
+    /// [`settings`] for the provider at `issuer`, its secret needing form-urlencoding.
+    pub fn at(issuer: &str) -> Settings {
+        Settings {
+            issuer: issuer.into(),
+            client_secret: "s3cret+".into(),
+            ..settings()
+        }
+    }
+
+    #[test]
+    fn the_client_credentials_are_form_urlencoded() {
+        assert_eq!(encoded("a b:+%"), "a+b%3A%2B%25");
+    }
+
+    /// A login begun fetches discovery and keys once; its answer is verified with them.
+    #[tokio::test]
+    async fn a_login_is_begun_and_finished_against_the_provider() {
+        let (issuer, held) = provider().await;
+        let (signing, jwk) = key("k1");
+        held.lock().unwrap().keys = vec![jwk];
+        let provider = Provider::new(at(&issuer), reqwest::Client::new());
+        let (pending, url) = provider
+            .begin("https://h/admin/oidc/callback")
+            .await
+            .unwrap();
+        assert!(url.starts_with(&format!("{issuer}/auth?")), "{url}");
+        held.lock().unwrap().challenge = pending.challenge();
+        held.lock().unwrap().token = signed(
+            &signing,
+            "k1",
+            &serde_json::json!({
+                "iss": issuer, "sub": "user-42", "aud": CLIENT, "nonce": pending.nonce,
+                "exp": jsonwebtoken::get_current_timestamp() + 3600,
+            }),
+        );
+        let claims = provider
+            .finish("code-1", &pending, "https://h/admin/oidc/callback")
+            .await
+            .unwrap();
+        assert_eq!(claims.sub, "user-42");
+        provider
+            .begin("https://h/admin/oidc/callback")
+            .await
+            .unwrap();
+        assert_eq!(
+            held.lock().unwrap().key_fetches,
+            1,
+            "discovery and keys are held"
+        );
+
+        let wrong = Pending {
+            verifier: "another".into(),
+            ..pending.clone()
+        };
+        let refused = provider.finish("code-1", &wrong, "x").await.unwrap_err();
+        assert!(
+            matches!(refused, Failed::Refused(ref why) if why.contains("answered 400")),
+            "{refused:?}"
+        );
+        held.lock().unwrap().token = "not a token".into();
+        assert!(matches!(
+            provider.finish("code-1", &pending, "x").await,
+            Err(Failed::Refused(_))
+        ));
+    }
+
+    /// A token naming a key not held fetches the keys again, once they are old enough;
+    /// one the fresh keys do not hold either is refused.
+    #[tokio::test]
+    async fn a_new_key_is_fetched_once_the_keys_are_old_enough() {
+        let (issuer, held) = provider().await;
+        let (old, old_jwk) = key("k1");
+        held.lock().unwrap().keys = vec![old_jwk.clone()];
+        let token = |key: &EncodingKey, kid: &str, nonce: &str| {
+            signed(
+                key,
+                kid,
+                &serde_json::json!({
+                    "iss": issuer, "sub": "user-42", "aud": CLIENT, "nonce": nonce,
+                    "exp": jsonwebtoken::get_current_timestamp() + 3600,
+                }),
+            )
+        };
+        let soon = Provider::new(at(&issuer), reqwest::Client::new());
+        let (pending, _) = soon.begin("x").await.unwrap();
+        let (new, new_jwk) = key("k2");
+        held.lock().unwrap().keys = vec![old_jwk, new_jwk];
+        held.lock().unwrap().challenge = pending.challenge();
+        held.lock().unwrap().token = token(&new, "k2", &pending.nonce);
+        let early = soon.finish("c", &pending, "x").await.unwrap_err();
+        assert_eq!(
+            early,
+            Failed::Refused("the token names key k2, not held".into())
+        );
+
+        let late = Provider::new(at(&issuer), reqwest::Client::new())
+            .with_refetch_after(std::time::Duration::ZERO);
+        let (pending, _) = late.begin("x").await.unwrap();
+        held.lock().unwrap().challenge = pending.challenge();
+        held.lock().unwrap().token = token(&new, "k2", &pending.nonce);
+        assert_eq!(
+            late.finish("c", &pending, "x").await.unwrap().sub,
+            "user-42"
+        );
+        let fetches = held.lock().unwrap().key_fetches;
+        held.lock().unwrap().token = token(&old, "k9", &pending.nonce);
+        let unheld = late.finish("c", &pending, "x").await.unwrap_err();
+        assert!(
+            matches!(unheld, Failed::Refused(ref why) if why.contains("which the provider does not hold")),
+            "{unheld:?}"
+        );
+        assert_eq!(held.lock().unwrap().key_fetches, fetches + 1);
+        held.lock().unwrap().token = token(&old, "k1", "other nonce");
+        let fresh = late.finish("c", &pending, "x").await.unwrap_err();
+        assert!(
+            matches!(fresh, Failed::Refused(ref why) if why.contains("nonce")),
+            "{fresh:?}"
+        );
+    }
+
+    /// A provider that does not answer, answers too much, or answers what does not read.
+    #[tokio::test]
+    async fn a_provider_that_answers_badly_is_an_error() {
+        let gone = Provider::new(at("http://127.0.0.1:9"), reqwest::Client::new());
+        assert!(gone.begin("x").await.is_err());
+        let pending = Pending::begin();
+        assert!(matches!(
+            gone.finish("c", &pending, "x").await,
+            Err(Failed::Provider(_))
+        ));
+
+        let (issuer, held) = provider().await;
+        held.lock().unwrap().issuer = "https://elsewhere.example".into();
+        let other = Provider::new(at(&issuer), reqwest::Client::new());
+        assert!(other.begin("x").await.unwrap_err().contains("names issuer"));
+
+        use axum::routing::{get, post};
+        let big = "x".repeat(MAX_ANSWER + 1);
+        let most = "x".repeat(256 * 1024);
+        let odd = axum::Router::new()
+            .route("/big", get(move || std::future::ready(big.clone())))
+            .route("/most", get(move || std::future::ready(most.clone())))
+            .route(
+                "/missing",
+                get(|| async { axum::http::StatusCode::NOT_FOUND }),
+            )
+            .route("/garbled", get(|| async { "not json" }))
+            .route("/token", post(|| async { "not json" }));
+        let base = crate::proxy::testing::serve(odd).await;
+        let client = Provider::new(at(&base), reqwest::Client::new());
+        assert!(
+            client
+                .fetched(&format!("{base}/big"))
+                .await
+                .unwrap_err()
+                .contains("more than")
+        );
+        let read = client.fetched(&format!("{base}/most")).await.unwrap();
+        assert_eq!(
+            read.len(),
+            256 * 1024,
+            "an answer of exactly 256 KiB is read"
+        );
+        assert!(
+            client
+                .fetched(&format!("{base}/missing"))
+                .await
+                .unwrap_err()
+                .contains("404")
+        );
+        let discovery = Discovery {
+            issuer: base.clone(),
+            authorization_endpoint: String::new(),
+            token_endpoint: format!("{base}/token"),
+            jwks_uri: format!("{base}/garbled"),
+        };
+        assert!(
+            client
+                .keys(&discovery)
+                .await
+                .unwrap_err()
+                .contains("do not read")
+        );
+        let exchanged = client
+            .exchange(&discovery, "c", &pending, "x")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(exchanged, Failed::Provider(ref why) if why.contains("does not read")),
+            "{exchanged:?}"
+        );
+        let unreachable = Discovery {
+            token_endpoint: "http://127.0.0.1:9/token".into(),
+            ..discovery
+        };
+        assert!(matches!(
+            client.exchange(&unreachable, "c", &pending, "x").await,
+            Err(Failed::Provider(_))
+        ));
+    }
+
+    /// The keys endpoint failing stops a login beginning, and a fetch for a new key; a
+    /// token a new key verifies is still checked whole.
+    #[tokio::test]
+    async fn the_keys_endpoint_failing_or_a_fresh_key_on_a_bad_token() {
+        let (issuer, held) = provider().await;
+        held.lock().unwrap().keys_down = true;
+        let early = Provider::new(at(&issuer), reqwest::Client::new());
+        assert!(early.begin("x").await.unwrap_err().contains("answered 500"));
+
+        held.lock().unwrap().keys_down = false;
+        let late = Provider::new(at(&issuer), reqwest::Client::new())
+            .with_refetch_after(std::time::Duration::ZERO);
+        let (pending, _) = late.begin("x").await.unwrap();
+        let (fresh, fresh_jwk) = key("k3");
+        held.lock().unwrap().keys.push(fresh_jwk);
+        held.lock().unwrap().challenge = pending.challenge();
+        held.lock().unwrap().token = signed(
+            &fresh,
+            "k3",
+            &serde_json::json!({
+                "iss": issuer, "sub": "user-42", "aud": CLIENT, "nonce": "another login's",
+                "exp": jsonwebtoken::get_current_timestamp() + 3600,
+            }),
+        );
+        let refused = late.finish("c", &pending, "x").await.unwrap_err();
+        assert!(
+            matches!(refused, Failed::Refused(ref why) if why.contains("nonce")),
+            "{refused:?}"
+        );
+        held.lock().unwrap().keys_down = true;
+        held.lock().unwrap().token = signed(&fresh, "k4", &serde_json::json!({}));
+        let down = late.finish("c", &pending, "x").await.unwrap_err();
+        assert!(
+            matches!(down, Failed::Provider(ref why) if why.contains("answered 500")),
+            "{down:?}"
+        );
+    }
+
+    /// An answer cut off part way is an error, not a short answer.
+    #[tokio::test]
+    async fn an_answer_cut_off_is_an_error() {
+        use crate::util::test_support::{Answer, scripted};
+        let server = scripted(vec![Answer::cut_short()]).await;
+        let client = Provider::new(at(&format!("http://{server}")), reqwest::Client::new());
+        let cut = client
+            .fetched(&format!("http://{server}/keys"))
+            .await
+            .unwrap_err();
+        assert!(!cut.contains("answered"), "the body, not the status: {cut}");
     }
 }
