@@ -1,0 +1,15 @@
+body { font-family: system-ui, sans-serif; margin: 0; color: #1d1d1f; background: #fafafa; }
+header { display: flex; gap: 1.5rem; align-items: center; padding: 0.75rem 1.5rem; background: #1d1d1f; color: #fafafa; }
+header a { color: #fafafa; text-decoration: none; }
+header .brand { font-weight: 700; }
+header nav { display: flex; gap: 1rem; flex: 1; }
+header form.logout { display: flex; gap: 0.75rem; align-items: center; margin: 0; }
+main { padding: 1.5rem; max-width: 72rem; }
+table { border-collapse: collapse; width: 100%; background: #fff; }
+th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; vertical-align: top; }
+td.up { color: #1a7f37; }
+td.degraded { color: #9a6700; }
+td.down { color: #cf222e; font-weight: 700; }
+form.login { display: grid; gap: 0.75rem; max-width: 20rem; }
+form.login label { display: grid; gap: 0.25rem; }
+p.refused { color: #cf222e; }

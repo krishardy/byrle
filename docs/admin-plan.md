@@ -275,6 +275,16 @@ links; charts are SVG rendered on the server.
 Every page sends `Content-Security-Policy: default-src 'self'`, and state-changing requests
 need a CSRF token. The session cookie is `HttpOnly`, `Secure`, `SameSite=Strict`.
 
+Built 2026-10-13, the first part: `src/console/pages.rs`. Pages are routes in
+`console::routes::ROUTES` of kind `Page`, so the permission test covers them: without a
+session a page is 401 with the login form, and 403 to a caller whose roles do not grant
+its permission. A page `POST` that needs a permission carries the session's CSRF token in
+a `csrf` form field, which the guard reads, since a form cannot set a header. Every page
+sends `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; form-action
+'self'; base-uri 'none'`, `X-Content-Type-Options: nosniff` and
+`Referrer-Policy: same-origin`; the stylesheet is served at `console.css`, since the
+policy refuses inline styles. Built so far: home, login and logout forms, and status.
+
 ### 4.8 Where it listens
 
 Decided 2026-10-11 (Q2), revised the same day:

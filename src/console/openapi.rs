@@ -91,7 +91,7 @@ pub async fn openapi(site: Arc<Site>) -> Response {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
-    use crate::console::routes::{Guard, ROUTES};
+    use crate::console::routes::{Guard, Kind, ROUTES};
 
     /// The document as served, kept in tests/fixtures/console/openapi.json for reading and
     /// review, and rewritten as every golden file is.
@@ -112,8 +112,9 @@ mod tests {
             .values()
             .map(|item| item.as_object().unwrap().len())
             .sum();
-        assert_eq!(operations, ROUTES.len());
-        for route in ROUTES.iter() {
+        let api = || ROUTES.iter().filter(|route| route.kind == Kind::Api);
+        assert_eq!(operations, api().count());
+        for route in api() {
             let method = route.method.as_str().to_lowercase();
             let operation = &document["paths"][route.path][&method];
             assert!(
