@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT id, account, ecosystem, name, version,\n                    to_char(first_served AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"first_served!\",\n                    to_char(last_served AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"last_served!\"\n                FROM served_version\n                WHERE id > $1\n                    AND ($2::text IS NULL OR ecosystem = $2)\n                    AND ($3::text IS NULL OR name = $3)\n                    AND ($4::text IS NULL OR account = $4)\n                    AND ($5::text IS NULL OR last_served >= $5::text::timestamptz)\n                    AND ($6::text IS NULL OR first_served < $6::text::timestamptz)\n                ORDER BY id\n                LIMIT $7\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Int8"
+      },
+      {
+        "ordinal": 1,
+        "name": "account",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "ecosystem",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "name",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 4,
+        "name": "version",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 5,
+        "name": "first_served!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "last_served!",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Text",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      false,
+      null,
+      null
+    ]
+  },
+  "hash": "32cc2315a98aba6c39135ab3c2962c17a2db4ef324a4013c7a766529d614255c"
+}

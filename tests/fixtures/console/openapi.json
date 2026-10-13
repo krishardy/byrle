@@ -1,0 +1,846 @@
+{
+  "components": {
+    "schemas": {
+      "Accounts": {
+        "description": "Every account, by name.",
+        "properties": {
+          "accounts": {
+            "items": {
+              "$ref": "#/components/schemas/Listed"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "accounts"
+        ],
+        "type": "object"
+      },
+      "By": {
+        "description": "How the caller came.",
+        "enum": [
+          "session",
+          "token"
+        ],
+        "type": "string"
+      },
+      "Credentials": {
+        "description": "An account and its console password.",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "account",
+          "password"
+        ],
+        "type": "object"
+      },
+      "FailureRow": {
+        "description": "One hour's count of one case in one ecosystem, as `failure_count` holds it.",
+        "properties": {
+          "answered": {
+            "type": "string"
+          },
+          "count": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "ecosystem": {
+            "type": "string"
+          },
+          "hour": {
+            "description": "The hour's start, RFC 3339, UTC.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hour",
+          "ecosystem",
+          "answered",
+          "count"
+        ],
+        "type": "object"
+      },
+      "Failures": {
+        "description": "Failure counts, by hour, ecosystem and case.",
+        "properties": {
+          "failures": {
+            "items": {
+              "$ref": "#/components/schemas/FailureRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "failures"
+        ],
+        "type": "object"
+      },
+      "Listed": {
+        "description": "One account.",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "created": {
+            "description": "RFC 3339, UTC.",
+            "type": "string"
+          },
+          "disabled": {
+            "description": "When it was disabled; its tokens and sessions stopped then.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "account",
+          "roles",
+          "created"
+        ],
+        "type": "object"
+      },
+      "LoggedIn": {
+        "description": "A session started.",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "csrf": {
+            "description": "Sent back as `x-byrle-csrf` on each request with the cookie other than GET or HEAD.",
+            "type": "string"
+          },
+          "expires": {
+            "description": "When the session ends, RFC 3339, UTC.",
+            "type": "string"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "account",
+          "roles",
+          "csrf",
+          "expires"
+        ],
+        "type": "object"
+      },
+      "Problem": {
+        "description": "Why a request was not answered.",
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "type": "object"
+      },
+      "ServedRow": {
+        "description": "A version served to an account, as `served_version` holds it.",
+        "properties": {
+          "account": {
+            "description": "`None` for requests without a token.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "ecosystem": {
+            "type": "string"
+          },
+          "first_served": {
+            "description": "RFC 3339, UTC, to the second.",
+            "type": "string"
+          },
+          "id": {
+            "description": "What the next page starts after.",
+            "format": "int64",
+            "type": "integer"
+          },
+          "last_served": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "ecosystem",
+          "name",
+          "version",
+          "first_served",
+          "last_served"
+        ],
+        "type": "object"
+      },
+      "Up": {
+        "description": "Whether the console is up.",
+        "properties": {
+          "status": {
+            "description": "`up`.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      },
+      "Versions": {
+        "description": "A page of served versions.",
+        "properties": {
+          "next": {
+            "description": "`after` for the next page; absent on the last.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/ServedRow"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "versions"
+        ],
+        "type": "object"
+      },
+      "Who": {
+        "description": "Who the caller is.",
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "by": {
+            "$ref": "#/components/schemas/By"
+          },
+          "roles": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "account",
+          "roles",
+          "by"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "session": {
+        "in": "cookie",
+        "name": "byrle_session",
+        "type": "apiKey"
+      },
+      "token": {
+        "description": "A proxy token from `byrle token create`, in any form the proxy takes: Bearer, Basic with the token as the password, or X-Byrle-Token",
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "description": "The admin console's API. Each operation that needs a permission names it in `x-byrle-permission`; see docs/admin-plan.md §4.2.",
+    "license": {
+      "identifier": "Apache-2.0",
+      "name": "Apache-2.0"
+    },
+    "title": "byrle console",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/accounts": {
+      "get": {
+        "operationId": "accounts",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accounts"
+                }
+              }
+            },
+            "description": "Every account"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant accounts.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The account store did not answer"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET accounts`: every account, with its roles, when it was made and disabled.",
+        "tags": [
+          "accounts"
+        ],
+        "x-byrle-permission": "accounts.read"
+      }
+    },
+    "/api/v1/dependencies": {
+      "get": {
+        "operationId": "dependencies",
+        "parameters": [
+          {
+            "description": "The `next` of the page before; the first page without it.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "int64",
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Rows on a page, 1 to 1000; 100 without it.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "`npm` or `pypi`.",
+            "in": "query",
+            "name": "ecosystem",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The registry name, npm's with its scope.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The account served.",
+            "in": "query",
+            "name": "account",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Last served at or after this time.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "First served before this time.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Versions"
+                }
+              }
+            },
+            "description": "A page of served versions"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A filter that does not parse"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant requests.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The usage tables did not answer"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET dependencies`: served versions by row id, a page at a time. R3.",
+        "tags": [
+          "usage"
+        ],
+        "x-byrle-permission": "requests.read"
+      }
+    },
+    "/api/v1/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Up"
+                }
+              }
+            },
+            "description": "The console answers"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "The console answers. Its components are checked with `GET status`: admin-plan.md §4.9.",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/v1/login": {
+      "post": {
+        "operationId": "login",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credentials"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoggedIn"
+                }
+              }
+            },
+            "description": "Logged in; `Set-Cookie` holds the session"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The body is not credentials"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The account or the password is wrong"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "`Origin` is another site's"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Too many failed logins; `Retry-After` says when to try again"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The account store did not answer"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "`POST login`: 200 with the caller and its CSRF token, and the session cookie.",
+        "tags": [
+          "session"
+        ]
+      }
+    },
+    "/api/v1/logout": {
+      "post": {
+        "operationId": "logout",
+        "parameters": [
+          {
+            "description": "The `csrf` login returned",
+            "in": "header",
+            "name": "x-byrle-csrf",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The session ended; `Set-Cookie` clears it"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A token has no session to end"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No `x-byrle-csrf`, or `Origin` is another site's"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The account store did not answer"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "summary": "`POST logout`: ends the session the cookie names, 204, and clears the cookie.",
+        "tags": [
+          "session"
+        ]
+      }
+    },
+    "/api/v1/metrics/failures": {
+      "get": {
+        "operationId": "failures",
+        "parameters": [
+          {
+            "description": "`npm` or `pypi`.",
+            "in": "query",
+            "name": "ecosystem",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "An `answered` case, such as `upstream-unreachable`.",
+            "in": "query",
+            "name": "answered",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Hours from this time; 24 hours before `until` without it.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Hours before this time; now without it.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Failures"
+                }
+              }
+            },
+            "description": "Counts by hour, ecosystem and case"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A filter that does not parse"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant requests.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The usage tables did not answer"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET metrics/failures`: counts by hour, ecosystem and case, the last 24 hours by default. R6.",
+        "tags": [
+          "usage"
+        ],
+        "x-byrle-permission": "requests.read"
+      }
+    },
+    "/api/v1/openapi.json": {
+      "get": {
+        "operationId": "openapi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {}
+            },
+            "description": "The OpenAPI 3.1 document"
+          }
+        },
+        "security": [
+          {}
+        ],
+        "summary": "`GET openapi.json`: this API's OpenAPI document, its server the console's URL.",
+        "tags": [
+          "status"
+        ]
+      }
+    },
+    "/api/v1/session": {
+      "get": {
+        "operationId": "session",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Who"
+                }
+              }
+            },
+            "description": "The caller"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The account store did not answer"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET session`: who the caller is, and whether by a session or a token.",
+        "tags": [
+          "session"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://byrle.example/admin"
+    }
+  ]
+}

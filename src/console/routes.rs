@@ -6,6 +6,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::{Request, State};
 use axum::http::Method;
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use futures_util::future::BoxFuture;
 
@@ -15,8 +16,8 @@ use crate::account::{Caller, Permission, role};
 /// A handler that finds its caller itself, if it needs one.
 pub type Open = fn(Arc<Site>, Request) -> BoxFuture<'static, Response>;
 
-/// A handler given a caller already found to hold the route's permission.
-pub type Permitted = fn(Arc<Site>, Caller) -> BoxFuture<'static, Response>;
+/// A handler given the request and a caller already found to hold the route's permission.
+pub type Permitted = fn(Arc<Site>, Caller, Parts) -> BoxFuture<'static, Response>;
 
 /// Who may call a route.
 #[derive(Clone, Copy)]
@@ -40,12 +41,23 @@ pub struct Route {
 /// Under the console's path: `GET` every account.
 pub const ACCOUNTS_PATH: &str = "/api/v1/accounts";
 
+/// Under the console's path: `GET` the versions served, R3.
+pub const DEPENDENCIES_PATH: &str = "/api/v1/dependencies";
+
+/// Under the console's path: `GET` failures by hour and case, R6.
+pub const FAILURES_PATH: &str = "/api/v1/metrics/failures";
+
 /// Every console route.
-pub const ROUTES: [Route; 5] = [
+pub const ROUTES: [Route; 8] = [
     Route {
         method: Method::GET,
         path: super::HEALTH_PATH,
         guard: Guard::Public(|_, _| Box::pin(super::health())),
+    },
+    Route {
+        method: Method::GET,
+        path: super::openapi::OPENAPI_PATH,
+        guard: Guard::Public(|site, _| Box::pin(super::openapi::openapi(site))),
     },
     Route {
         method: Method::POST,
@@ -65,8 +77,22 @@ pub const ROUTES: [Route; 5] = [
     Route {
         method: Method::GET,
         path: ACCOUNTS_PATH,
-        guard: Guard::Needs(Permission::AccountsRead, |site, _| {
+        guard: Guard::Needs(Permission::AccountsRead, |site, _, _| {
             Box::pin(api::accounts(site))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: DEPENDENCIES_PATH,
+        guard: Guard::Needs(Permission::RequestsRead, |site, _, parts| {
+            Box::pin(super::usage::dependencies(site, parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: FAILURES_PATH,
+        guard: Guard::Needs(Permission::RequestsRead, |site, _, parts| {
+            Box::pin(super::usage::failures(site, parts))
         }),
     },
 ];
@@ -79,7 +105,7 @@ async fn guarded(guard: Guard, site: Arc<Site>, request: Request) -> Response {
             let (parts, _) = request.into_parts();
             match site.caller(&parts).await {
                 Ok((caller, _)) if role::permits(&caller.roles, permission) => {
-                    handler(site, caller).await
+                    handler(site, caller, parts).await
                 }
                 Ok(_) => api::forbidden(permission),
                 Err(denied) => denied.into_response(),
@@ -120,7 +146,7 @@ mod tests {
     /// Only these are answered without a permission. A route added to [`ROUTES`] with
     /// any other guard fails here until it is listed.
     #[test]
-    fn only_health_login_logout_and_session_are_without_a_permission() {
+    fn only_health_the_document_login_logout_and_session_are_without_a_permission() {
         let unpermitted: Vec<(Method, &str)> = ROUTES
             .iter()
             .filter(|route| !matches!(route.guard, Guard::Needs(..)))
@@ -130,6 +156,7 @@ mod tests {
             unpermitted,
             [
                 (Method::GET, crate::console::HEALTH_PATH),
+                (Method::GET, crate::console::openapi::OPENAPI_PATH),
                 (Method::POST, crate::console::LOGIN_PATH),
                 (Method::POST, crate::console::LOGOUT_PATH),
                 (Method::GET, crate::console::SESSION_PATH),
