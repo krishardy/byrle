@@ -7,6 +7,7 @@ pub mod config;
 pub mod login;
 pub mod logs;
 pub mod openapi;
+pub mod pages;
 pub mod routes;
 pub mod status;
 pub mod usage;

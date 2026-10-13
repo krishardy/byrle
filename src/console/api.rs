@@ -23,8 +23,8 @@ pub const COOKIE: &str = "byrle_session";
 /// The header a request changing something with a session cookie carries [`csrf`] in.
 pub const CSRF_HEADER: HeaderName = HeaderName::from_static("x-byrle-csrf");
 
-/// The largest login body read.
-const MAX_BODY: usize = 8 * 1024;
+/// The largest request body the console reads: a login, or a page's form.
+pub(super) const MAX_BODY: usize = 8 * 1024;
 
 /// The CSRF token of the session `id`: a page from the console has it, another site
 /// does not, and it is never stored.
@@ -173,7 +173,7 @@ fn session_id(headers: &HeaderMap) -> Option<String> {
 impl Site {
     /// Whether a request with `headers` came from a page of another origin. A request
     /// with no `Origin`, such as curl's, did not.
-    fn foreign(&self, headers: &HeaderMap) -> bool {
+    pub(super) fn foreign(&self, headers: &HeaderMap) -> bool {
         headers
             .get(header::ORIGIN)
             .is_some_and(|origin| origin.as_bytes() != self.origin.as_bytes())
@@ -182,6 +182,15 @@ impl Site {
     /// Who a request is from, and its session id when it came with one. A session request
     /// other than GET or HEAD needs its [`CSRF_HEADER`].
     pub async fn caller(&self, parts: &Parts) -> Result<(Caller, Option<String>), Denied> {
+        self.caller_sending(parts, None).await
+    }
+
+    /// [`Site::caller`], taking the CSRF token from a form field `form_csrf` as well.
+    pub async fn caller_sending(
+        &self,
+        parts: &Parts,
+        form_csrf: Option<&str>,
+    ) -> Result<(Caller, Option<String>), Denied> {
         let Some(id) = session_id(&parts.headers) else {
             return match self.gate.admit(&parts.headers).await {
                 Ok(holder) => match self.store.roles(&holder.account).await {
@@ -204,7 +213,11 @@ impl Site {
             Err(_) => return Err(Denied::Unanswered),
         };
         let changes = !matches!(parts.method, Method::GET | Method::HEAD);
-        let sent = parts.headers.get(CSRF_HEADER).map(HeaderValue::as_bytes);
+        let sent = parts
+            .headers
+            .get(CSRF_HEADER)
+            .map(HeaderValue::as_bytes)
+            .or(form_csrf.map(str::as_bytes));
         if changes && sent != Some(csrf(&id).as_bytes()) {
             return Err(Denied::NoCsrf);
         }
@@ -212,7 +225,7 @@ impl Site {
     }
 
     /// The client's address, through nginx when it sent the key.
-    fn source(&self, parts: &Parts) -> Option<std::net::IpAddr> {
+    pub(super) fn source(&self, parts: &Parts) -> Option<std::net::IpAddr> {
         crate::reverse_proxy::client(
             &parts.headers,
             crate::reverse_proxy::peer(&parts.extensions),
@@ -221,7 +234,7 @@ impl Site {
     }
 
     /// The `Set-Cookie` value holding `id` for `max_age` seconds; 0 ends it.
-    fn cookie(&self, id: &str, max_age: i64) -> HeaderValue {
+    pub(super) fn cookie(&self, id: &str, max_age: i64) -> HeaderValue {
         HeaderValue::from_str(&format!(
             "{COOKIE}={id}; Path={}; Max-Age={max_age}; HttpOnly; Secure; SameSite=Strict",
             self.console.mount

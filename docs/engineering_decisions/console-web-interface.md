@@ -1,6 +1,9 @@
 # The console's web interface: Rust, HTML from maud
 
-- **Status:** Decided 2026-10-11, by the user, "for now". Not yet implemented. TODO Stage 4.9.
+- **Status:** Decided 2026-10-11, by the user, "for now". Being implemented: the layout,
+  login, logout and status pages since 2026-10-13, in `src/console/pages.rs`. `maud`
+  0.27.0 measured again 2026-10-13: the same 3 crates, `cargo audit` clean beyond
+  RUSTSEC-2023-0071. TODO Stage 4.9.
 - **Related:** [admin-plan](../admin-plan.md) §8 Q3, [console-listener](console-listener.md)
 
 ## Decision
