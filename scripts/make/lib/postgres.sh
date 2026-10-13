@@ -88,6 +88,14 @@ start_postgres() {
     trap stop_postgres EXIT
 
     [[ -n "$postgres_kind" ]] || choose_postgres || return 1
+    # A server left on the port answers a migration in its place, or makes this one fail to
+    # bind with only "Address already in use". Name what holds it, while it still does.
+    if ss -ltn 2>/dev/null | grep -q "[:.]$port "; then
+        echo "port $port is already in use, by:"
+        ss -ltnp 2>/dev/null | grep "[:.]$port " || true
+        pgrep -a -f "postgres|postmaster" || true
+        return 1
+    fi
     case "$postgres_kind" in
         container) start_postgres_container "$name" "$port" ;;
         local) start_postgres_local "$port" ;;
