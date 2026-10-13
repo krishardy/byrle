@@ -117,6 +117,12 @@ pub const DEFAULT_ARGON2_MEMORY_KIB: u32 = 19 * 1024;
 /// The default Argon2id passes.
 pub const DEFAULT_ARGON2_PASSES: u32 = 2;
 
+/// The default algorithms an OIDC ID token may be signed with.
+pub const DEFAULT_OIDC_ALGORITHMS: &str = "RS256,ES256";
+
+/// The default seconds past its `exp` an OIDC ID token is still taken.
+pub const DEFAULT_OIDC_LEEWAY_SECONDS: u32 = 60;
+
 /// The default hours a console session lasts.
 pub const DEFAULT_SESSION_HOURS: u32 = 8;
 
@@ -222,6 +228,40 @@ pub const LOGIN_FAILURES_PER_ADDRESS: Var = runtime(
     ],
 )
 .with_default(Default::Number(DEFAULT_LOGIN_FAILURES_PER_ADDRESS as u64));
+pub const OIDC_ISSUER: Var = runtime(
+    "BYRLE_OIDC_ISSUER",
+    "",
+    &[
+        "the OIDC provider console logins may use, https or",
+        "loopback. With BYRLE_OIDC_CLIENT_ID and its secret",
+    ],
+);
+pub const OIDC_CLIENT_ID: Var = runtime(
+    "BYRLE_OIDC_CLIENT_ID",
+    "",
+    &["this console's client id at BYRLE_OIDC_ISSUER"],
+);
+pub const OIDC_CLIENT_SECRET: Var = runtime(
+    "BYRLE_OIDC_CLIENT_SECRET",
+    "",
+    &["this console's client secret at BYRLE_OIDC_ISSUER"],
+)
+.secret();
+pub const OIDC_ALGORITHMS: Var = runtime(
+    "BYRLE_OIDC_ALGORITHMS",
+    "",
+    &[
+        "algorithms an ID token may be signed with, by",
+        "comma; no shared-secret one such as HS256",
+    ],
+)
+.with_default(Default::Text(DEFAULT_OIDC_ALGORITHMS));
+pub const OIDC_LEEWAY_SECONDS: Var = runtime(
+    "BYRLE_OIDC_LEEWAY_SECONDS",
+    "",
+    &["seconds past its exp an ID token is still taken"],
+)
+.with_default(Default::Number(DEFAULT_OIDC_LEEWAY_SECONDS as u64));
 pub const RP_KEY: Var = runtime(
     "BYRLE_RP_KEY",
     "",
@@ -613,7 +653,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 73] = [
+pub const ALL: [Var; 78] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -621,6 +661,11 @@ pub const ALL: [Var; 73] = [
     CONSOLE_URL,
     CONSOLE_LISTEN,
     RP_KEY,
+    OIDC_ISSUER,
+    OIDC_CLIENT_ID,
+    OIDC_CLIENT_SECRET,
+    OIDC_ALGORITHMS,
+    OIDC_LEEWAY_SECONDS,
     PASSWORD_MIN_CHARS,
     ARGON2_MEMORY_KIB,
     ARGON2_PASSES,
@@ -994,6 +1039,44 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
                 u32::MAX,
             )? as usize,
         })
+    }
+
+    /// The OIDC provider, when [`OIDC_ISSUER`], [`OIDC_CLIENT_ID`] and [`OIDC_CLIENT_SECRET`]
+    /// are set; none of them set is none. One or two set is refused, naming one unset.
+    pub fn oidc(&self) -> Result<Option<crate::console::oidc::Settings>, EnvError> {
+        let given = [
+            (OIDC_ISSUER, self.text(OIDC_ISSUER)?),
+            (OIDC_CLIENT_ID, self.text(OIDC_CLIENT_ID)?),
+            (OIDC_CLIENT_SECRET, self.text(OIDC_CLIENT_SECRET)?),
+        ];
+        if given.iter().all(|(_, value)| value.is_none()) {
+            return Ok(None);
+        }
+        if let Some((unset, _)) = given.iter().find(|(_, value)| value.is_none()) {
+            return Err(EnvError::new(
+                *unset,
+                String::new(),
+                "is unset, and the other OIDC settings are set",
+            ));
+        }
+        let [issuer, client_id, client_secret] = given.map(|(_, value)| value.unwrap_or_default());
+        crate::console::oidc::trusted(&issuer)
+            .map_err(|why| EnvError::new(OIDC_ISSUER, issuer.clone(), why))?;
+        let listed = self.text_or(OIDC_ALGORITHMS, DEFAULT_OIDC_ALGORITHMS)?;
+        let algorithms = crate::console::oidc::algorithms(&listed)
+            .map_err(|why| EnvError::new(OIDC_ALGORITHMS, listed.clone(), why))?;
+        Ok(Some(crate::console::oidc::Settings {
+            issuer,
+            client_id,
+            client_secret,
+            algorithms,
+            leeway: u64::from(self.within(
+                OIDC_LEEWAY_SECONDS,
+                DEFAULT_OIDC_LEEWAY_SECONDS,
+                0,
+                300,
+            )?),
+        }))
     }
 
     /// [`RP_KEY`]. A key too short is refused without showing it.
@@ -2250,6 +2333,79 @@ mod tests {
         let unreadable = testing::with_unreadable(&[], LISTEN).settings();
         let unreadable = unreadable.iter().find(|s| s.name == LISTEN.name).unwrap();
         assert_eq!(unreadable.value.as_deref(), Some("set, and not UTF-8"));
+    }
+
+    /// OIDC is all three of issuer, client id and secret, or none; the algorithms and the
+    /// leeway default, and a list with a shared-secret algorithm is refused.
+    #[test]
+    fn oidc_is_its_three_settings_or_none() {
+        assert_eq!(with(&[]).oidc().unwrap(), None);
+        let all = [
+            (OIDC_ISSUER, "https://idp.example/realm"),
+            (OIDC_CLIENT_ID, "byrle"),
+            (OIDC_CLIENT_SECRET, "s3cret"),
+        ];
+        let read = with(&all).oidc().unwrap().unwrap();
+        assert_eq!(
+            (read.issuer.as_str(), read.client_id.as_str()),
+            ("https://idp.example/realm", "byrle")
+        );
+        assert_eq!(read.client_secret, "s3cret");
+        assert_eq!(
+            read.algorithms,
+            [
+                jsonwebtoken::Algorithm::RS256,
+                jsonwebtoken::Algorithm::ES256
+            ]
+        );
+        assert_eq!(read.leeway, 60);
+        for missing in 0..3 {
+            let partial: Vec<(Var, &str)> = all
+                .iter()
+                .enumerate()
+                .filter(|(n, _)| *n != missing)
+                .map(|(_, pair)| *pair)
+                .collect();
+            let refused = with(&partial).oidc().unwrap_err();
+            assert_eq!(refused.var, all[missing].0.name, "{refused}");
+            assert!(refused.reason.contains("is unset"), "{refused}");
+        }
+        let with_also = |extra: (Var, &'static str)| {
+            let mut pairs = all.to_vec();
+            pairs.push(extra);
+            with(&pairs).oidc()
+        };
+        let plain = with_also((OIDC_ISSUER, "http://idp.example/realm")).unwrap_err();
+        assert_eq!(plain.var, OIDC_ISSUER.name);
+        let shared = with_also((OIDC_ALGORITHMS, "RS256,HS256")).unwrap_err();
+        assert_eq!(shared.var, OIDC_ALGORITHMS.name);
+        assert_eq!(
+            with_also((OIDC_LEEWAY_SECONDS, "300"))
+                .unwrap()
+                .unwrap()
+                .leeway,
+            300
+        );
+        assert_eq!(
+            with_also((OIDC_LEEWAY_SECONDS, "301")).unwrap_err().var,
+            OIDC_LEEWAY_SECONDS.name
+        );
+        assert_eq!(
+            with_also((OIDC_ALGORITHMS, "ES256"))
+                .unwrap()
+                .unwrap()
+                .algorithms,
+            [jsonwebtoken::Algorithm::ES256]
+        );
+        for var in [
+            OIDC_ISSUER,
+            OIDC_CLIENT_ID,
+            OIDC_CLIENT_SECRET,
+            OIDC_ALGORITHMS,
+        ] {
+            let unread = testing::with_unreadable(&all, var).oidc().unwrap_err();
+            assert_eq!(unread.var, var.name);
+        }
     }
 
     /// Every accessor refuses a value that is not UTF-8, naming its variable.

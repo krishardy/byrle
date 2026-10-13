@@ -38,6 +38,13 @@ Proxy configuration, all through the environment:
   BYRLE_RP_KEY                      key nginx sends as X-Byrle-RP-Key, at least 32
                                     bytes. With it, X-Forwarded-For names the client.
                                     Make one with `openssl rand -hex 32`
+  BYRLE_OIDC_ISSUER                 the OIDC provider console logins may use, https or
+                                    loopback. With BYRLE_OIDC_CLIENT_ID and its secret
+  BYRLE_OIDC_CLIENT_ID              this console's client id at BYRLE_OIDC_ISSUER
+  BYRLE_OIDC_CLIENT_SECRET          this console's client secret at BYRLE_OIDC_ISSUER
+  BYRLE_OIDC_ALGORITHMS             algorithms an ID token may be signed with, by
+                                    comma; no shared-secret one such as HS256 (default RS256,ES256)
+  BYRLE_OIDC_LEEWAY_SECONDS         seconds past its exp an ID token is still taken (default 60)
   BYRLE_PASSWORD_MIN_CHARS          fewest characters a console password may have (default 15)
   BYRLE_ARGON2_MEMORY_KIB           memory, in KiB, each new password hash takes (default 19456)
   BYRLE_ARGON2_PASSES               passes over that memory each new password hash makes (default 2)
