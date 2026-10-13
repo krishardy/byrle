@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                WITH created AS (INSERT INTO account (name) VALUES ($1) RETURNING id)\n                INSERT INTO account_role (account_id, role)\n                SELECT created.id, role FROM created, (SELECT DISTINCT UNNEST($2::text[]) AS role) AS r\n                ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "TextArray"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "861a6785e8692926cbc7f81977ab12fda7777997bd19c2ef49ba8cea28757383"
+}

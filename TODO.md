@@ -2699,11 +2699,16 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       `src/usage.rs` beside each audit line, `usage_unrecorded` on health. The queue is
       `src/util/batched.rs`, shared with `artifact_decision`
 - [ ] `[!]` Accounts, roles and permissions; every API handler declares a permission, and
-      a test fails on one that does not. Migration for `account_role`
+      a test fails on one that does not. Begun 2026-10-13: `Role` and `Permission` in
+      `src/account/role.rs`, `migrations/0020_account_role.sql`, roles in `byrle account
+      list`. The handlers come with login
 - [ ] `[!]` Password login (Argon2id), sessions, CSRF, a login rate limit. Migrations for
       `account_password` and `session`
-- [ ] `[!]` The account event log (plan §4.5)
-- [ ] `[!]` `byrle account create --role admin`, for the first admin
+- [ ] `[!]` The account event log (plan §4.5). Begun 2026-10-13: `src/account/events.rs`,
+      `BYRLE_ACCOUNT_EVENT_LOG`; `byrle account` and `byrle token` append their changes.
+      The console's logins, and the proxy rotating the file, come with login
+- [x] `[!]` `byrle account create --role admin`, for the first admin. Done 2026-10-13;
+      `--role` repeats
 - [ ] `[!]` Accounts identified on requests by proxy token, per
       [account-identification](docs/engineering_decisions/account-identification.md).
       Moved from Stage 8 on 2026-10-11

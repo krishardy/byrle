@@ -123,6 +123,11 @@ no handler is reachable without one.
 Only `admin` exists in Stage 4.9. Accounts hold role names, so adding `viewer` or
 `developer` later is a code change and no migration.
 
+Built 2026-10-13: `src/account/role.rs`, and `account_role` in
+`migrations/0020_account_role.sql`. `byrle account create alice --role admin` makes the
+first admin, and `byrle account list` shows each account's roles. A role name a later build
+added is skipped when an earlier one reads it.
+
 ### 4.3 Storage
 
 Decided 2026-10-11 (Q5): logs are files on disk, rotated, compressed, and kept 365 days by
@@ -203,6 +208,21 @@ Recorded actions in Stage 4.9:
 
 Each line has the time, the acting account, the action, the target and the source
 address. A failed login names the username tried, not the password.
+
+Built 2026-10-13, for the command line: `src/account/events.rs`. With
+`BYRLE_ACCOUNT_EVENT_LOG` set, `byrle account` and `byrle token` check that they can open the
+file before changing anything, then append a line per change, with `"source": "cli"` and no
+actor. `byrle account create --role admin` writes `account-created`, then `role-granted`.
+A change made and not appended exits 1 and says so.
+
+```
+{"at":"2026-10-13T09:00:00Z","action":"account-created","account":"alice","source":"cli"}
+{"at":"2026-10-13T09:00:00Z","action":"role-granted","account":"alice","role":"admin","source":"cli"}
+```
+
+A command only appends. The proxy will rotate the file with the console's login, as it
+does the audit log, so a line a command appends after midnight and before the proxy's
+first write of the day is filed with the day before.
 
 ### 4.6 API
 

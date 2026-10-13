@@ -1,7 +1,7 @@
 //! [`Accounts`] over Postgres, in the database the intel store uses. Tested by
 //! `tests/postgres.rs`.
 
-use super::{Account, AccountError, Accounts, Holder, Name, Pending, Token, TokenDigest};
+use super::{Account, AccountError, Accounts, Holder, Name, Pending, Role, Token, TokenDigest};
 use sqlx::PgPool;
 
 #[derive(Debug, Clone)]
@@ -35,6 +35,16 @@ fn stored(name: String) -> Name {
     Name(name)
 }
 
+/// The roles in `names` this build knows, sorted. A role a later build added is skipped.
+fn known(names: &[String]) -> Vec<Role> {
+    super::sorted(
+        &names
+            .iter()
+            .filter_map(|name| Role::parse(name).ok())
+            .collect::<Vec<_>>(),
+    )
+}
+
 /// `Exists` for a unique violation, else the backend's error.
 fn unique_or_backend(e: sqlx::Error, what: String) -> AccountError {
     match e.as_database_error() {
@@ -44,13 +54,22 @@ fn unique_or_backend(e: sqlx::Error, what: String) -> AccountError {
 }
 
 impl Accounts for PgAccounts {
-    fn create_account<'a>(&'a self, name: &'a Name) -> Pending<'a, ()> {
+    fn create_account<'a>(&'a self, name: &'a Name, roles: &'a [Role]) -> Pending<'a, ()> {
         Box::pin(async move {
-            sqlx::query!("INSERT INTO account (name) VALUES ($1)", name.as_str())
-                .execute(&self.pool)
-                .await
-                .map(drop)
-                .map_err(|e| unique_or_backend(e, format!("account {name}")))
+            let roles: Vec<String> = roles.iter().map(|role| role.name().to_owned()).collect();
+            sqlx::query!(
+                r#"
+                WITH created AS (INSERT INTO account (name) VALUES ($1) RETURNING id)
+                INSERT INTO account_role (account_id, role)
+                SELECT created.id, role FROM created, (SELECT DISTINCT UNNEST($2::text[]) AS role) AS r
+                "#,
+                name.as_str(),
+                &roles,
+            )
+            .execute(&self.pool)
+            .await
+            .map(drop)
+            .map_err(|e| unique_or_backend(e, format!("account {name}")))
         })
     }
 
@@ -75,11 +94,13 @@ impl Accounts for PgAccounts {
             let rows = sqlx::query!(
                 r#"
                 SELECT
-                    name,
-                    to_char(created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "created!",
-                    to_char(disabled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS disabled
-                FROM account
-                ORDER BY name
+                    a.name,
+                    to_char(a.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "created!",
+                    to_char(a.disabled_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS disabled,
+                    ARRAY(SELECT role::text FROM account_role r WHERE r.account_id = a.id ORDER BY role)
+                        AS "roles!"
+                FROM account a
+                ORDER BY a.name
                 "#
             )
             .fetch_all(&self.pool)
@@ -91,6 +112,7 @@ impl Accounts for PgAccounts {
                     name: stored(row.name),
                     created: row.created,
                     disabled: row.disabled,
+                    roles: known(&row.roles),
                 })
                 .collect())
         })

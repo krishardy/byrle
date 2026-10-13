@@ -197,7 +197,7 @@ mod tests {
     async fn gate_with_token() -> (Gate, String, Arc<InMemory>) {
         let store = Arc::new(InMemory::new("2026-10-11T00:00:00Z"));
         let (ci, runner) = (Name::parse("ci").unwrap(), Name::parse("runner").unwrap());
-        store.create_account(&ci).await.unwrap();
+        store.create_account(&ci, &[]).await.unwrap();
         let issued = crate::account::issue();
         store
             .create_token(&ci, &runner, &TokenDigest::of(&issued))

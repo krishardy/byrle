@@ -1138,6 +1138,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         .collect();
     let tables = [
         "account",
+        "account_role",
         "advisory",
         "advisory_affected",
         "advisory_alias",
@@ -2260,11 +2261,31 @@ async fn accounts_and_tokens_round_trip_through_postgres() {
     let store = PgAccounts::new(intel.pool().clone());
     let (ci, alice, laptop, nobody) = (name("ci"), name("alice"), name("laptop"), name("nobody"));
 
-    store.create_account(&ci).await.unwrap();
-    store.create_account(&alice).await.unwrap();
+    use byrle::account::Role;
+    store.create_account(&ci, &[]).await.unwrap();
+    store
+        .create_account(&alice, &[Role::Admin, Role::Admin])
+        .await
+        .unwrap();
     assert_eq!(
-        store.create_account(&ci).await,
+        store.create_account(&ci, &[Role::Admin]).await,
         Err(AccountError::Exists("account ci".into()))
+    );
+    sqlx::query("INSERT INTO account_role (account_id, role) SELECT id, 'auditor' FROM account WHERE name = 'alice'")
+        .execute(intel.pool())
+        .await
+        .unwrap();
+    let roles: Vec<(String, Vec<Role>)> = store
+        .accounts()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|a| (a.name.to_string(), a.roles))
+        .collect();
+    assert_eq!(
+        roles,
+        [("alice".into(), vec![Role::Admin]), ("ci".into(), vec![])],
+        "a role this build does not know is skipped"
     );
 
     let token = byrle::account::issue();
