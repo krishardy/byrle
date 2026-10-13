@@ -88,6 +88,23 @@ login names the account tried, cut to 256 bytes, and never the password.
 The console does not start without `BYRLE_DATABASE_URL`, or with an `http://`
 `BYRLE_CONSOLE_URL` to a host other than loopback, where a browser drops a `Secure` cookie.
 
+## OIDC
+
+Begun 2026-10-13: `src/console/oidc.rs` holds the parts that ask no one. The provider is
+`BYRLE_OIDC_ISSUER`, with `BYRLE_OIDC_CLIENT_ID` and `BYRLE_OIDC_CLIENT_SECRET`; the three
+are set together or not at all. Its redirect URI is `BYRLE_CONSOLE_URL` and
+`oidc/callback`.
+
+| Check | What is refused |
+|---|---|
+| issuer and endpoints | a URL other than `https`, or `http` to loopback; a discovery document naming another issuer |
+| algorithm | one not in `BYRLE_OIDC_ALGORITHMS` (`RS256,ES256`), which may name no shared-secret algorithm such as `HS256`, since the client secret would then verify |
+| key | a token naming no `kid`; a key of another type than the algorithm, or declaring another `alg`. A `kid` not held is told apart, for the keys to be fetched again |
+| claims | `iss` not the issuer exactly; `aud` not naming the client id; several audiences without `azp` the client id; `exp` past by more than `BYRLE_OIDC_LEEWAY_SECONDS` (60); no `sub`; a `nonce` not this login's |
+| PKCE | S256 only; the verifier is 32 random bytes, as the state and nonce are |
+
+How an identity becomes an account is not decided.
+
 ## Rejected
 
 | Option | Why not |
