@@ -1,22 +1,26 @@
 //! `byrle account` and `byrle token`: what each prints and exits with, against any
-//! [`Accounts`].
+//! [`Accounts`], and the account event log lines for what each changed.
 
-use super::{AccountError, Accounts, Name, TokenDigest};
+use super::events::{AccountEvent, Action};
+use super::{AccountError, Accounts, Name, Role, TokenDigest};
 
 /// What a command printed and exits with.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Outcome {
     pub code: u8,
     pub stdout: String,
     pub stderr: String,
+    /// What it changed, for the account event log.
+    pub events: Vec<AccountEvent>,
 }
 
 impl Outcome {
-    fn done(stdout: String) -> Self {
+    fn done(stdout: String, events: Vec<AccountEvent>) -> Self {
         Self {
             code: 0,
             stdout,
             stderr: String::new(),
+            events,
         }
     }
 
@@ -25,41 +29,83 @@ impl Outcome {
             code: 1,
             stdout: String::new(),
             stderr: format!("{e}\n"),
+            events: Vec::new(),
         }
     }
 }
 
-pub async fn create_account(store: &dyn Accounts, name: &Name) -> Outcome {
-    match store.create_account(name).await {
-        Ok(()) => Outcome::done(format!("account {name} created\n")),
+/// Create `name` holding `roles`. Logged as `account-created`, then `role-granted` for
+/// each role.
+pub async fn create_account(store: &dyn Accounts, name: &Name, roles: &[Role]) -> Outcome {
+    match store.create_account(name, roles).await {
+        Ok(()) => {
+            Outcome::done(
+                format!("account {name} created\n"),
+                std::iter::once(AccountEvent::by_cli(Action::AccountCreated, name))
+                    .chain(super::sorted(roles).into_iter().map(|role| {
+                        AccountEvent::by_cli(Action::RoleGranted, name).with_role(role)
+                    }))
+                    .collect(),
+            )
+        }
         Err(e) => Outcome::refused(&e),
     }
 }
 
 pub async fn disable_account(store: &dyn Accounts, name: &Name) -> Outcome {
     match store.disable_account(name).await {
-        Ok(()) => Outcome::done(format!(
-            "account {name} disabled; its tokens no longer work\n"
-        )),
+        Ok(()) => Outcome::done(
+            format!("account {name} disabled; its tokens no longer work\n"),
+            vec![AccountEvent::by_cli(Action::AccountDisabled, name)],
+        ),
         Err(e) => Outcome::refused(&e),
     }
 }
 
-/// One line per account: name, created, and disabled or `-`.
+/// One line per account: name, roles or `-`, created, and disabled or `-`.
 pub async fn list_accounts(store: &dyn Accounts) -> Outcome {
     match store.accounts().await {
-        Ok(accounts) => Outcome::done(table(
-            ["ACCOUNT", "CREATED", "DISABLED"],
-            accounts.iter().map(|a| {
-                [
-                    a.name.to_string(),
-                    a.created.clone(),
-                    a.disabled.clone().unwrap_or_else(|| "-".into()),
-                ]
-            }),
-        )),
+        Ok(accounts) => Outcome::done(
+            table(
+                ["ACCOUNT", "ROLES", "CREATED", "DISABLED"],
+                accounts.iter().map(|a| {
+                    let roles: Vec<&str> = a.roles.iter().map(|role| role.name()).collect();
+                    [
+                        a.name.to_string(),
+                        or_dash(Some(roles.join(",")).filter(|r| !r.is_empty())),
+                        a.created.clone(),
+                        or_dash(a.disabled.clone()),
+                    ]
+                }),
+            ),
+            Vec::new(),
+        ),
         Err(e) => Outcome::refused(&e),
     }
+}
+
+/// `outcome`, with what it changed appended to the account event log at `log`, when one
+/// is set. A change made and not logged exits 1, and says so.
+pub fn logged(outcome: Outcome, log: Option<&std::path::Path>) -> Outcome {
+    match log
+        .filter(|_| !outcome.events.is_empty())
+        .map(|path| super::events::append(path, &outcome.events))
+    {
+        Some(Err(e)) => Outcome {
+            code: 1,
+            stderr: format!(
+                "{}the change was made, and is not in the account event log: {e}\n",
+                outcome.stderr
+            ),
+            ..outcome
+        },
+        _ => outcome,
+    }
+}
+
+/// `value`, or `-` when there is none.
+fn or_dash(value: Option<String>) -> String {
+    value.unwrap_or_else(|| "-".into())
 }
 
 /// Make a token and print it, alone, on stdout. It is not shown again.
@@ -76,6 +122,7 @@ pub async fn create_token(store: &dyn Accounts, account: &Name, name: &Name) -> 
                 "token {name} of account {account} created. It is shown once; byrle keeps \
                  only its SHA-256\n"
             ),
+            events: vec![AccountEvent::by_cli(Action::TokenCreated, account).with_token(name)],
         },
         Err(e) => Outcome::refused(&e),
     }
@@ -83,7 +130,10 @@ pub async fn create_token(store: &dyn Accounts, account: &Name, name: &Name) -> 
 
 pub async fn revoke_token(store: &dyn Accounts, account: &Name, name: &Name) -> Outcome {
     match store.revoke_token(account, name).await {
-        Ok(()) => Outcome::done(format!("token {name} of account {account} revoked\n")),
+        Ok(()) => Outcome::done(
+            format!("token {name} of account {account} revoked\n"),
+            vec![AccountEvent::by_cli(Action::TokenRevoked, account).with_token(name)],
+        ),
         Err(e) => Outcome::refused(&e),
     }
 }
@@ -91,17 +141,20 @@ pub async fn revoke_token(store: &dyn Accounts, account: &Name, name: &Name) -> 
 /// One line per token: account, name, created, and revoked or `-`.
 pub async fn list_tokens(store: &dyn Accounts, account: Option<&Name>) -> Outcome {
     match store.tokens(account).await {
-        Ok(tokens) => Outcome::done(table(
-            ["ACCOUNT", "TOKEN", "CREATED", "REVOKED"],
-            tokens.iter().map(|t| {
-                [
-                    t.account.to_string(),
-                    t.name.to_string(),
-                    t.created.clone(),
-                    t.revoked.clone().unwrap_or_else(|| "-".into()),
-                ]
-            }),
-        )),
+        Ok(tokens) => Outcome::done(
+            table(
+                ["ACCOUNT", "TOKEN", "CREATED", "REVOKED"],
+                tokens.iter().map(|t| {
+                    [
+                        t.account.to_string(),
+                        t.name.to_string(),
+                        t.created.clone(),
+                        or_dash(t.revoked.clone()),
+                    ]
+                }),
+            ),
+            Vec::new(),
+        ),
         Err(e) => Outcome::refused(&e),
     }
 }
@@ -138,24 +191,45 @@ mod tests {
         Name::parse(s).unwrap()
     }
 
+    /// Each event's action and role, which is what varies between commands.
+    fn actions(outcome: &Outcome) -> Vec<(Action, Option<String>)> {
+        outcome
+            .events
+            .iter()
+            .map(|event| (event.action, event.role.clone()))
+            .collect()
+    }
+
     #[tokio::test]
     async fn an_account_is_created_listed_and_disabled() {
         let store = InMemory::new(NOW);
         let ci = name("ci");
-        assert_eq!(
-            create_account(&store, &ci).await.stdout,
-            "account ci created\n"
-        );
-        let again = create_account(&store, &ci).await;
+        let created = create_account(&store, &ci, &[]).await;
+        assert_eq!(created.stdout, "account ci created\n");
+        assert_eq!(actions(&created), [(Action::AccountCreated, None)]);
+        let again = create_account(&store, &ci, &[Role::Admin]).await;
         assert_eq!(
             (again.code, again.stderr.as_str()),
             (1, "account ci already exists\n")
         );
+        assert!(again.events.is_empty());
+        let admin = create_account(&store, &name("alice"), &[Role::Admin, Role::Admin]).await;
+        assert_eq!(
+            actions(&admin),
+            [
+                (Action::AccountCreated, None),
+                (Action::RoleGranted, Some("admin".into()))
+            ]
+        );
         assert_eq!(
             list_accounts(&store).await.stdout,
-            "ACCOUNT  CREATED               DISABLED\nci       2026-10-11T00:00:00Z  -\n"
+            "ACCOUNT  ROLES  CREATED               DISABLED\n\
+             alice    admin  2026-10-11T00:00:00Z  -\n\
+             ci       -      2026-10-11T00:00:00Z  -\n"
         );
-        assert_eq!(disable_account(&store, &ci).await.code, 0);
+        let disabled = disable_account(&store, &ci).await;
+        assert_eq!(disabled.code, 0);
+        assert_eq!(actions(&disabled), [(Action::AccountDisabled, None)]);
         assert!(
             list_accounts(&store)
                 .await
@@ -169,9 +243,11 @@ mod tests {
     async fn a_token_is_printed_once_alone_and_works_until_revoked() {
         let store = InMemory::new(NOW);
         let (ci, laptop) = (name("ci"), name("laptop"));
-        create_account(&store, &ci).await;
+        create_account(&store, &ci, &[]).await;
         let made = create_token(&store, &ci, &laptop).await;
         assert_eq!(made.code, 0);
+        assert_eq!(actions(&made), [(Action::TokenCreated, None)]);
+        assert_eq!(made.events[0].token.as_deref(), Some("laptop"));
         let token = made.stdout.trim_end();
         assert!(token.starts_with(crate::account::TOKEN_PREFIX));
         assert_eq!(made.stdout.lines().count(), 1);
@@ -190,14 +266,46 @@ mod tests {
              ci       laptop  2026-10-11T00:00:00Z  -\n"
         );
         assert!(!listed.contains(token));
-        assert_eq!(
-            revoke_token(&store, &ci, &laptop).await.stdout,
-            "token laptop of account ci revoked\n"
-        );
+        let revoked = revoke_token(&store, &ci, &laptop).await;
+        assert_eq!(revoked.stdout, "token laptop of account ci revoked\n");
+        assert_eq!(actions(&revoked), [(Action::TokenRevoked, None)]);
         assert_eq!(store.holder(&digest).await.unwrap(), None);
         assert_eq!(revoke_token(&store, &ci, &name("phone")).await.code, 1);
         assert_eq!(list_tokens(&store, Some(&name("nobody"))).await.code, 1);
         assert_eq!(list_tokens(&store, None).await.stdout.lines().count(), 2);
+    }
+
+    /// The events are appended when there is a log; a log that cannot be written fails the
+    /// command after the change, and a command that changed nothing writes nothing.
+    #[tokio::test]
+    async fn what_a_command_changed_is_appended_to_the_event_log() {
+        let dir = crate::util::test_support::tempdir("account-command-log");
+        let path = dir.join("events.log");
+        let store = InMemory::new(NOW);
+        let created = logged(create_account(&store, &name("ci"), &[]).await, Some(&path));
+        assert_eq!(created.code, 0);
+        let listed = logged(list_accounts(&store).await, Some(&dir.join("x/y")));
+        assert_eq!(listed.code, 0);
+        assert_eq!(
+            logged(disable_account(&store, &name("ci")).await, None).code,
+            0
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap().lines().count(), 1);
+
+        let unwritable = dir.join("missing").join("events.log");
+        let failed = logged(
+            create_account(&store, &name("alice"), &[]).await,
+            Some(&unwritable),
+        );
+        assert_eq!(failed.code, 1);
+        assert_eq!(failed.stdout, "account alice created\n");
+        assert!(
+            failed
+                .stderr
+                .starts_with("the change was made, and is not in the account event log"),
+            "{}",
+            failed.stderr
+        );
     }
 
     /// A store that cannot answer fails every command with its reason.
@@ -206,7 +314,7 @@ mod tests {
         use crate::account::testing::Down;
         let ci = name("ci");
         for failed in [
-            create_account(&Down, &ci).await,
+            create_account(&Down, &ci, &[]).await,
             disable_account(&Down, &ci).await,
             list_accounts(&Down).await,
             create_token(&Down, &ci, &ci).await,

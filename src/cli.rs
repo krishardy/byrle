@@ -96,11 +96,21 @@ pub struct ExportDecisions {
 #[derive(Debug, PartialEq, Subcommand)]
 pub enum AccountCommand {
     /// Create an account
-    Create(AccountName),
+    Create(AccountCreate),
     /// Disable an account. Its tokens stop working
     Disable(AccountName),
     /// List every account
     List,
+}
+
+#[derive(Debug, PartialEq, Args)]
+pub struct AccountCreate {
+    /// 1 to 64 of a-z, 0-9, `.`, `_` and `-`
+    #[arg(value_parser = crate::account::Name::parse)]
+    pub name: crate::account::Name,
+    /// A role it holds, such as `admin`. Repeat for more than one
+    #[arg(long = "role", value_parser = crate::account::Role::parse)]
+    pub roles: Vec<crate::account::Role>,
 }
 
 #[derive(Debug, PartialEq, Args)]
@@ -361,7 +371,10 @@ mod tests {
         let name = |s: &str| crate::account::Name::parse(s).unwrap();
         assert_eq!(
             parse(&["account", "create", "ci"]).unwrap().command,
-            Command::Account(AccountCommand::Create(AccountName { name: name("ci") }))
+            Command::Account(AccountCommand::Create(AccountCreate {
+                name: name("ci"),
+                roles: Vec::new()
+            }))
         );
         assert_eq!(
             parse(&["account", "disable", "ci"]).unwrap().command,
@@ -397,6 +410,20 @@ mod tests {
                 account: Some(name("ci"))
             }))
         );
+        assert_eq!(
+            parse(&["account", "create", "alice", "--role", "admin"])
+                .unwrap()
+                .command,
+            Command::Account(AccountCommand::Create(AccountCreate {
+                name: name("alice"),
+                roles: vec![crate::account::Role::Admin]
+            }))
+        );
+        let refused = stops(
+            &["account", "create", "alice", "--role", "root"],
+            ErrorKind::ValueValidation,
+        );
+        assert!(refused.to_string().contains("is not a role"), "{refused}");
         let refused = stops(&["account", "create", "Alice"], ErrorKind::ValueValidation);
         assert!(refused.to_string().contains("is not a name"), "{refused}");
         let refused = stops(&["artifact", "show", "ms"], ErrorKind::ValueValidation);

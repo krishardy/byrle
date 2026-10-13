@@ -4,8 +4,10 @@
 //! See docs/engineering_decisions/account-identification.md and docs/admin-plan.md §4.1.
 
 pub mod command;
+pub mod events;
 pub mod gate;
 pub mod postgres;
+pub mod role;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -15,6 +17,8 @@ use std::sync::Mutex;
 
 use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
+
+pub use role::{Permission, Role};
 
 /// What every token starts with, so a secret scanner can find one where it should not be.
 pub const TOKEN_PREFIX: &str = "byrle_";
@@ -92,6 +96,8 @@ pub struct Account {
     pub created: String,
     /// When it was disabled. Its tokens stop working then.
     pub disabled: Option<String>,
+    /// Its roles, sorted.
+    pub roles: Vec<Role>,
 }
 
 /// One token, as listed. The token itself is never held.
@@ -136,7 +142,8 @@ pub type Pending<'a, T> = Pin<Box<dyn Future<Output = Result<T, AccountError>> +
 
 /// Where accounts and tokens are kept.
 pub trait Accounts: Send + Sync {
-    fn create_account<'a>(&'a self, name: &'a Name) -> Pending<'a, ()>;
+    /// Create an account holding `roles`, in one write.
+    fn create_account<'a>(&'a self, name: &'a Name, roles: &'a [Role]) -> Pending<'a, ()>;
 
     /// Disable an account, which stops each of its tokens. Disabling one already disabled
     /// keeps the first time.
@@ -193,6 +200,12 @@ impl InMemory {
     }
 }
 
+/// `roles` sorted, each once.
+fn sorted(roles: &[Role]) -> Vec<Role> {
+    let roles: std::collections::BTreeSet<Role> = roles.iter().copied().collect();
+    roles.into_iter().collect()
+}
+
 fn no_account(name: &Name) -> AccountError {
     AccountError::NotFound(format!("account {name}"))
 }
@@ -202,7 +215,7 @@ fn no_token(account: &Name, name: &Name) -> AccountError {
 }
 
 impl Accounts for InMemory {
-    fn create_account<'a>(&'a self, name: &'a Name) -> Pending<'a, ()> {
+    fn create_account<'a>(&'a self, name: &'a Name, roles: &'a [Role]) -> Pending<'a, ()> {
         let mut held = self.held();
         Self::ready(if held.accounts.contains_key(name) {
             Err(AccountError::Exists(format!("account {name}")))
@@ -211,6 +224,7 @@ impl Accounts for InMemory {
                 name: name.clone(),
                 created: self.now.clone(),
                 disabled: None,
+                roles: sorted(roles),
             };
             held.accounts.insert(name.clone(), account);
             Ok(())
@@ -319,7 +333,7 @@ pub mod testing {
     }
 
     impl Accounts for Down {
-        fn create_account<'a>(&'a self, _: &'a Name) -> Pending<'a, ()> {
+        fn create_account<'a>(&'a self, _: &'a Name, _: &'a [Role]) -> Pending<'a, ()> {
             closed()
         }
         fn disable_account<'a>(&'a self, _: &'a Name) -> Pending<'a, ()> {
@@ -427,8 +441,8 @@ mod tests {
     async fn a_token_identifies_its_holder_until_it_is_revoked_or_its_account_disabled() {
         let store = InMemory::new("2026-10-11T00:00:00Z");
         let (ci, alice, laptop) = (name("ci"), name("alice"), name("laptop"));
-        store.create_account(&ci).await.unwrap();
-        store.create_account(&alice).await.unwrap();
+        store.create_account(&ci, &[]).await.unwrap();
+        store.create_account(&alice, &[]).await.unwrap();
         let ci_token = TokenDigest::of("one");
         let alice_token = TokenDigest::of("two");
         store.create_token(&ci, &laptop, &ci_token).await.unwrap();
@@ -451,9 +465,9 @@ mod tests {
     async fn names_are_unique_and_unknown_names_are_not_found() {
         let store = InMemory::new("2026-10-11T00:00:00Z");
         let (ci, laptop, nobody) = (name("ci"), name("laptop"), name("nobody"));
-        store.create_account(&ci).await.unwrap();
+        store.create_account(&ci, &[]).await.unwrap();
         assert_eq!(
-            store.create_account(&ci).await,
+            store.create_account(&ci, &[]).await,
             Err(AccountError::Exists("account ci".into()))
         );
         let digest = TokenDigest::of("t");
@@ -482,8 +496,8 @@ mod tests {
     async fn listing_shows_when_each_was_made_disabled_and_revoked() {
         let store = InMemory::new("2026-10-11T00:00:00Z");
         let (ci, alice, laptop) = (name("ci"), name("alice"), name("laptop"));
-        store.create_account(&ci).await.unwrap();
-        store.create_account(&alice).await.unwrap();
+        store.create_account(&ci, &[]).await.unwrap();
+        store.create_account(&alice, &[]).await.unwrap();
         store
             .create_token(&ci, &laptop, &TokenDigest::of("a"))
             .await

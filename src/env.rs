@@ -241,6 +241,15 @@ pub const AUDIT_LOG: Var = runtime(
         "bzip2. Refuses to start if it cannot be opened",
     ],
 );
+pub const ACCOUNT_EVENT_LOG: Var = runtime(
+    "BYRLE_ACCOUNT_EVENT_LOG",
+    "",
+    &[
+        "path for one JSON line per change to an account,",
+        "its roles or tokens. `byrle account` and",
+        "`byrle token` append to it",
+    ],
+);
 pub const LOG_RETENTION_DAYS: Var = runtime(
     "BYRLE_LOG_RETENTION_DAYS",
     "",
@@ -499,7 +508,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 64] = [
+pub const ALL: [Var; 65] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -522,6 +531,7 @@ pub const ALL: [Var; 64] = [
     SNAPSHOT_LIMIT,
     POLICY,
     AUDIT_LOG,
+    ACCOUNT_EVENT_LOG,
     LOG_RETENTION_DAYS,
     DECISION_RETENTION_DAYS,
     EXPIRY_CEILING_DAYS,
@@ -984,6 +994,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.path(AUDIT_LOG)
     }
 
+    pub fn account_event_log(&self) -> Result<Option<PathBuf>, EnvError> {
+        self.path(ACCOUNT_EVENT_LOG)
+    }
+
     pub fn log_retention_days(&self) -> Result<u32, EnvError> {
         self.parsed(
             LOG_RETENTION_DAYS,
@@ -1283,6 +1297,7 @@ mod tests {
         assert_eq!(env.snapshot_limit().unwrap(), DEFAULT_SNAPSHOT_LIMIT);
         assert_eq!(env.policy().unwrap(), None);
         assert_eq!(env.audit_log().unwrap(), None);
+        assert_eq!(env.account_event_log().unwrap(), None);
         assert_eq!(
             env.log_retention_days().unwrap(),
             DEFAULT_LOG_RETENTION_DAYS
@@ -1350,6 +1365,7 @@ mod tests {
             (SNAPSHOT_LIMIT, "7"),
             (POLICY, "policy.yaml"),
             (AUDIT_LOG, "audit.jsonl"),
+            (ACCOUNT_EVENT_LOG, "events.jsonl"),
             (LOG_RETENTION_DAYS, "30"),
             (DECISION_RETENTION_DAYS, "90"),
             (EXPIRY_CEILING_DAYS, "30"),
@@ -1407,6 +1423,10 @@ mod tests {
         assert_eq!(env.snapshot_limit().unwrap(), 7);
         assert_eq!(env.policy().unwrap(), Some(PathBuf::from("policy.yaml")));
         assert_eq!(env.audit_log().unwrap(), Some(PathBuf::from("audit.jsonl")));
+        assert_eq!(
+            env.account_event_log().unwrap(),
+            Some(PathBuf::from("events.jsonl"))
+        );
         assert_eq!(env.expiry_ceiling_days().unwrap(), 30);
         assert_eq!(env.log_retention_days().unwrap(), 30);
         assert_eq!(env.decision_retention_days().unwrap(), 90);

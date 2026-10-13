@@ -177,8 +177,28 @@ async fn accounts(
     }
 }
 
-/// Print what an account or token command printed, and exit with its code.
-fn finish(outcome: byrle::account::command::Outcome) -> std::process::ExitCode {
+/// [`env::ACCOUNT_EVENT_LOG`], checked to be writable before anything is changed.
+fn event_log(command: &str) -> Result<Option<std::path::PathBuf>, std::process::ExitCode> {
+    let refused = |e: &dyn std::fmt::Display| {
+        eprintln!("byrle {command}: {}: {e}", env::ACCOUNT_EVENT_LOG);
+        std::process::ExitCode::from(1)
+    };
+    let path = env::process()
+        .account_event_log()
+        .map_err(|e| refused(&e))?;
+    if let Some(path) = &path {
+        byrle::account::events::writable(path).map_err(|e| refused(&e))?;
+    }
+    Ok(path)
+}
+
+/// Append what an account or token command changed to the account event log, print what
+/// it printed, and exit with its code.
+fn finish(
+    outcome: byrle::account::command::Outcome,
+    log: Option<&std::path::Path>,
+) -> std::process::ExitCode {
+    let outcome = byrle::account::command::logged(outcome, log);
     print!("{}", outcome.stdout);
     eprint!("{}", outcome.stderr);
     std::process::ExitCode::from(outcome.code)
@@ -208,25 +228,28 @@ async fn run_artifact(command: cli::ArtifactCommand) -> std::process::ExitCode {
 /// `byrle account create|disable|list`.
 async fn run_account(command: cli::AccountCommand) -> std::process::ExitCode {
     use byrle::account::command;
-    let store = match accounts("account").await {
-        Ok(store) => store,
-        Err(code) => return code,
+    let (store, log) = match (accounts("account").await, event_log("account")) {
+        (Ok(store), Ok(log)) => (store, log),
+        (Err(code), _) | (_, Err(code)) => return code,
     };
-    finish(match command {
-        cli::AccountCommand::Create(args) => command::create_account(&store, &args.name).await,
+    let outcome = match command {
+        cli::AccountCommand::Create(args) => {
+            command::create_account(&store, &args.name, &args.roles).await
+        }
         cli::AccountCommand::Disable(args) => command::disable_account(&store, &args.name).await,
         cli::AccountCommand::List => command::list_accounts(&store).await,
-    })
+    };
+    finish(outcome, log.as_deref())
 }
 
 /// `byrle token create|revoke|list`.
 async fn run_token(command: cli::TokenCommand) -> std::process::ExitCode {
     use byrle::account::command;
-    let store = match accounts("token").await {
-        Ok(store) => store,
-        Err(code) => return code,
+    let (store, log) = match (accounts("token").await, event_log("token")) {
+        (Ok(store), Ok(log)) => (store, log),
+        (Err(code), _) | (_, Err(code)) => return code,
     };
-    finish(match command {
+    let outcome = match command {
         cli::TokenCommand::Create(args) => {
             command::create_token(&store, &args.account, &args.name).await
         }
@@ -234,7 +257,8 @@ async fn run_token(command: cli::TokenCommand) -> std::process::ExitCode {
             command::revoke_token(&store, &args.account, &args.name).await
         }
         cli::TokenCommand::List(args) => command::list_tokens(&store, args.account.as_ref()).await,
-    })
+    };
+    finish(outcome, log.as_deref())
 }
 
 /// `byrle intel history`: the newest entries of the ingestion history.

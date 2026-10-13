@@ -6378,7 +6378,7 @@ mod tests {
             crate::account::Name::parse("runner").unwrap(),
         );
         let issued = crate::account::issue();
-        if accounts.create_account(&ci).await.is_ok() {
+        if accounts.create_account(&ci, &[]).await.is_ok() {
             accounts
                 .create_token(&ci, &runner, &crate::account::TokenDigest::of(&issued))
                 .await
