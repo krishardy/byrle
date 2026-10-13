@@ -31,6 +31,7 @@ fi
 
 cargo build --release --quiet --manifest-path "$repo_root/Cargo.toml"
 binary="$repo_root/target/release/byrle"
+rp_key="$(openssl rand -hex 32)"
 
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=byrle test CA" \
     -keyout "$workdir/ca.key" -out "$workdir/ca.pem" 2>/dev/null
@@ -56,6 +57,9 @@ nginx_conf() {
     # shellcheck disable=SC2016
     printf '            proxy_set_header Host $http_host;\n'
     printf '            proxy_set_header X-Forwarded-Proto https;\n'
+    # shellcheck disable=SC2016
+    printf '            proxy_set_header X-Forwarded-For $remote_addr;\n'
+    printf '            proxy_set_header X-Byrle-RP-Key %s;\n' "$rp_key"
     printf '            proxy_buffering off;\n'
     printf '            proxy_request_buffering off;\n'
     printf '            proxy_read_timeout 300s;\n'
@@ -66,7 +70,7 @@ nginx_conf() {
 check() {
     local name=nginx port="$1" front="https://localhost:$1" dir="$workdir/nginx"
     mkdir -p "$dir/app"
-    BYRLE_REQUIRE_TOKEN=0 BYRLE_PROXY_URL="$front" BYRLE_LISTEN="127.0.0.1:$proxy_port" \
+    BYRLE_REQUIRE_TOKEN=0 BYRLE_RP_KEY="$rp_key" BYRLE_PROXY_URL="$front" BYRLE_LISTEN="127.0.0.1:$proxy_port" \
         BYRLE_SPOOL_DIR="$dir/spool" "$binary" daemon >"$dir/proxy.log" 2>&1 &
     local proxy=$!
     pids+=("$proxy")

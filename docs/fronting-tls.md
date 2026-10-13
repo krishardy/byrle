@@ -43,6 +43,8 @@ server {
         proxy_http_version 1.1;
         proxy_set_header Host $http_host;
         proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Byrle-RP-Key <the value of BYRLE_RP_KEY>;
         proxy_buffering off;
         proxy_request_buffering off;
         proxy_read_timeout 300s;
@@ -56,8 +58,15 @@ server {
 | `proxy_read_timeout 300s` | the proxy reads, filters and rewrites a metadata document before its first byte, and a large one takes longer than nginx's default 60 s. `next`'s 4.4 MB packument took 21 s in [latency-benchmarks](engineering_decisions/latency-benchmarks.md) |
 | `proxy_set_header Host $http_host` | passes the name the client used. The proxy writes `BYRLE_PROXY_URL` into documents when it is set, and the `Host` otherwise |
 | `proxy_http_version 1.1` | keeps upstream connections open between requests |
+| `proxy_set_header X-Forwarded-For $remote_addr` | the client's address, replacing any the client sent. byrle reads the last entry |
+| `proxy_set_header X-Byrle-RP-Key` | authenticates nginx to byrle. Only a request carrying `BYRLE_RP_KEY` has its `X-Forwarded-For` read; any other is taken to come from its peer. The registry is not sent either header |
 
 The certificate paths are certbot's. The smoke test uses a local certificate.
+
+`BYRLE_RP_KEY` is at least 32 bytes; `openssl rand -hex 32` makes one. The nginx
+configuration then holds the key, so it is readable only by root and nginx. byrle keeps its
+SHA-256 and compares digests. The console reads the client's address this way, for the
+login rate limit and the account event log's `source`. Asked for by the user 2026-10-13.
 
 ## What the smoke test checks
 

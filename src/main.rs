@@ -416,6 +416,7 @@ async fn serve_each(servers: Vec<(String, axum::Router)>) {
         let listener = tokio::net::TcpListener::bind(&at)
             .await
             .unwrap_or_else(|e| panic!("cannot bind {at}: {e}"));
+        let router = router.into_make_service_with_connect_info::<std::net::SocketAddr>();
         serving.push(axum::serve(listener, router).into_future());
     }
     futures_util::future::try_join_all(serving)
