@@ -2720,9 +2720,11 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       and the console its logins and logouts, rotating the file as the audit log is
 - [x] `[!]` `byrle account create --role admin`, for the first admin. Done 2026-10-13;
       `--role` repeats
-- [ ] `[!]` Accounts identified on requests by proxy token, per
+- [x] `[!]` Accounts identified on requests by proxy token, per
       [account-identification](docs/engineering_decisions/account-identification.md).
-      Moved from Stage 8 on 2026-10-11
+      Moved from Stage 8 on 2026-10-11. Done: `src/account/gate.rs` reads `Bearer`,
+      `Basic` with the token's own account as the username, and `X-Byrle-Token`;
+      `make smoke-console` installs with each account's token, 2026-10-13
 - [x] `[!]` API: dependencies retrieved (R3). Done 2026-10-13: `GET api/v1/dependencies`,
       `served_version` a page at a time
 - [x] `[!]` The API described by an OpenAPI document. Asked for by the user 2026-10-13.

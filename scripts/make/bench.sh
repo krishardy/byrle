@@ -5,10 +5,20 @@
 # direct with an empty and a filled client cache, and through the proxy fresh (nothing
 # analysed), after `byrle warm`, and with the client's cache filled. Each case runs
 # BYRLE_BENCH_RUNS times (default 3) and the median is reported, in seconds.
+#
+# The proxy runs as deployed: a token required, intel from a `byrle refresh` into a
+# disposable Postgres, a policy of every default, and each request's usage recorded. A
+# version the defaults refuse would stop the install, so a discovery pass installs through
+# the proxy first and adds an exception for each refusal; the table lists them.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/postgres.sh
+. "$repo_root/scripts/make/lib/postgres.sh"
+# shellcheck source=scripts/make/lib/token.sh
+. "$repo_root/scripts/make/lib/token.sh"
 port="${BYRLE_PORT:-8761}"
+pg_port="${BYRLE_PG_PORT:-55437}"
 runs="${BYRLE_BENCH_RUNS:-3}"
 npm_packages=(next react react-dom eslint typescript vite vitest)
 pypi_packages=(pandas scikit-learn matplotlib)
@@ -18,18 +28,33 @@ proxy="http://127.0.0.1:${port}"
 
 cleanup() {
     [[ -n "$proxy_pid" ]] && kill "$proxy_pid" 2>/dev/null || true
+    stop_postgres
     rm -rf "$workdir"
 }
 trap cleanup EXIT
+fail() { echo "FAIL: $*"; exit 1; }
 
+require_free_ports "$port" || fail "the proxy's port is taken"
 cargo build --release --quiet --manifest-path "$repo_root/Cargo.toml"
 binary="$repo_root/target/release/byrle"
+
+start_postgres "byrle-bench-pg-$$" "$pg_port" || fail "postgres did not start"
+# start_postgres sets its own EXIT trap; cleanup stops Postgres as well as the rest.
+trap cleanup EXIT
+export BYRLE_DATABASE_URL
+BYRLE_DATABASE_URL="$(postgres_url "$pg_port")"
+# Exit 1 is an optional stream that did not load, such as GitHub's without a token.
+"$binary" refresh >"$workdir/refresh.out" 2>&1 || [[ $? -le 1 ]] \
+    || fail "byrle refresh failed: $(tail -5 "$workdir/refresh.out")"
+token="$(issue_token "$BYRLE_DATABASE_URL" bench)"
+printf 'version: 1\n' >"$workdir/policy.yaml"
 
 start_proxy() {
     stop_proxy
     rm -rf "$workdir/spool"
-    BYRLE_REQUIRE_TOKEN=0 BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_LISTEN="127.0.0.1:${port}" \
-        "$binary" daemon >"$workdir/proxy.log" 2>&1 &
+    BYRLE_POLICY="$workdir/policy.yaml" BYRLE_SPOOL_DIR="$workdir/spool" \
+        BYRLE_AUDIT_LOG="$workdir/audit.jsonl" \
+        BYRLE_LISTEN="127.0.0.1:${port}" "$binary" daemon >"$workdir/proxy.log" 2>&1 &
     proxy_pid=$!
     for _ in $(seq 1 60); do
         grep -q "byrle listening" "$workdir/proxy.log" && return 0
@@ -45,11 +70,21 @@ stop_proxy() {
     proxy_pid=""
 }
 
-# Seconds the command took, or FAIL.
+# Seconds the command took, or FAIL. The first failure's output goes to stderr.
 seconds() {
     local start end
     start="$(date +%s.%N)"
-    if ! "$@" >"$workdir/last.out" 2>&1; then echo FAIL; return 0; fi
+    if ! "$@" >"$workdir/last.out" 2>&1; then
+        if [[ ! -e "$workdir/failed" ]]; then
+            touch "$workdir/failed"
+            { echo "--- first failure: $* ---"; tail -15 "$workdir/last.out"
+              echo "--- proxy log, refusals and errors ---"
+              grep -E "refused|ERROR" "$workdir/proxy.log" | sed -E 's/\x1b\[[0-9;]*m//g' \
+                  | cut -c1-400 | tail -10; } >&2
+        fi
+        echo FAIL
+        return 0
+    fi
     end="$(date +%s.%N)"
     awk -v s="$start" -v e="$end" 'BEGIN { printf "%.1f", e - s }'
 }
@@ -75,7 +110,8 @@ row() {
         rm -rf "$workdir/cache"
         p_cold+=" $(seconds "$install" "$through" "$workdir/cache")"
         start_proxy
-        warm_time+=" $(seconds "$binary" warm --lockfile "$lockfile" --proxy "$proxy")"
+        warm_time+=" $(BYRLE_TOKEN="$token" seconds "$binary" warm --lockfile "$lockfile" \
+            --proxy "$proxy")"
         rm -rf "$workdir/cache"
         p_warmed+=" $(seconds "$install" "$through" "$workdir/cache")"
         p_warm+=" $(seconds "$install" "$through" "$workdir/cache")"
@@ -87,19 +123,62 @@ row() {
         "$(echo "$p_warmed" | median)" "$(echo "$p_warm" | median)"
 }
 
+# Resolved as of 8 days ago, past the policy's default 7-day cooldown, so the proxy serves
+# every version the lockfile names.
+before="$(date -u -d '8 days ago' +%Y-%m-%dT%H:%M:%SZ)"
 mkdir -p "$workdir/npm" "$workdir/pypi"
 (cd "$workdir/npm" && printf '{"name":"bench","version":"1.0.0","private":true}\n' >package.json \
-    && npm install "${npm_packages[@]}" --package-lock-only --no-audit --no-fund --loglevel=error)
+    && npm install "${npm_packages[@]}" --package-lock-only --before "$before" \
+        --no-audit --no-fund --loglevel=error)
+# Scoped to the proxy, so the direct installs send nothing.
+printf '//127.0.0.1:%s/:_authToken=%s\n' "$port" "$token" >"$workdir/npm/.npmrc"
 npm_count="$(grep -c '"node_modules/' "$workdir/npm/package-lock.json")"
 (cd "$workdir/pypi" && printf '%s\n' "${pypi_packages[@]}" >requirements.in \
-    && uv pip compile -q requirements.in -o requirements.txt --python-version 3.12)
+    && uv pip compile -q requirements.in -o requirements.txt --python-version 3.12 \
+        --exclude-newer "$before")
 pypi_count="$(grep -cE '^[a-z0-9]' "$workdir/pypi/requirements.txt")"
+
+npm_through="$proxy/"
+pypi_through="http://bench:${token}@127.0.0.1:${port}/simple/"
+
+# Install both sets through the proxy until neither is refused, adding an exception for
+# each version the audit log shows refused. Each round finds at least one, or stops.
+discover() {
+    local round
+    : >"$workdir/exceptions.txt"
+    for round in $(seq 1 20); do
+        start_proxy
+        rm -rf "$workdir/cache"
+        if npm_ci "$npm_through" "$workdir/cache" >"$workdir/discover.out" 2>&1 \
+            && uv_install "$pypi_through" "$workdir/cache" >"$workdir/discover.out" 2>&1; then
+            stop_proxy
+            return 0
+        fi
+        stop_proxy
+        sed -E 's/\x1b\[[0-9;]*m//g' "$workdir/proxy.log" | grep "refused by policy" \
+            | sed -E 's/.*claimed_purl=([^ ]+) .*policy.reasons=\[([^]]*)\].*/    \1: \2/' \
+            >>"$workdir/reasons.txt" || true
+        python3 "$repo_root/scripts/make/bench_exceptions.py" "$workdir/audit.jsonl" \
+            "$workdir/policy.yaml" >"$workdir/exceptions.txt"
+        cmp -s "$workdir/exceptions.txt" "$workdir/exceptions.before" \
+            && fail "round $round failed with no new refusal: $(tail -10 "$workdir/discover.out")"
+    done
+    fail "still refused after $round rounds"
+}
+discover
 
 echo "Median of $runs runs, in seconds. $(npm --version | sed 's/^/npm /'), $(uv --version)."
 echo
 echo "| Set | direct, cold | direct, warm cache | proxy, cold | byrle warm | proxy, analysed | proxy, warm cache |"
 echo "|---|---|---|---|---|---|---|"
-row "npm: $npm_count packages" npm_ci https://registry.npmjs.org/ "$proxy/" \
+row "npm: $npm_count packages" npm_ci https://registry.npmjs.org/ "$npm_through" \
     "$workdir/npm/package-lock.json"
-row "pypi: $pypi_count packages" uv_install https://pypi.org/simple "$proxy/simple/" \
+row "pypi: $pypi_count packages" uv_install https://pypi.org/simple "$pypi_through" \
     "$workdir/pypi/requirements.txt"
+echo
+if [[ -s "$workdir/exceptions.txt" ]]; then
+    echo "Refused under the defaults, and released by an exception for the measurement:"
+    sort -u "$workdir/reasons.txt"
+else
+    echo "Nothing was refused under the defaults."
+fi
