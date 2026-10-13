@@ -2750,13 +2750,12 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       2026-10-13: layout, home, login and logout forms, and pages for status, failures
       (a chart of failures by hour and case), dependencies, alerts, requests, events,
       configuration and accounts
-- [ ] `[!]` OIDC login: discovery, `state`, `nonce`, PKCE, code exchange, key refetch, and
-      `iss`, `aud`, `exp`, `nonce` and a configured algorithm list checked. Begun
-      2026-10-13: the settings, discovery, PKCE and the ID token's checks in
-      `src/console/oidc.rs`; the flow through `oidc/login` and `oidc/callback`, tested
-      against a provider served in the tests. How an identity finds its account is left,
-      for the user to decide. Migration for
-      `account_oidc`
+- [x] `[!]` OIDC login: discovery, `state`, `nonce`, PKCE, code exchange, key refetch, and
+      `iss`, `aud`, `exp`, `nonce` and a configured algorithm list checked. Migration for
+      `account_oidc`. Done 2026-10-13: `src/console/oidc.rs`, through `oidc/login` and
+      `oidc/callback`, tested against a provider served in the tests. An identity logs in
+      as the account `byrle account link` links it to, the user's choice A, which may
+      change ([console-login](docs/engineering_decisions/console-login.md))
 - [x] `[!]` `docs/threat-model.md` console section (plan §5). Done 2026-10-13: "The
       console", and "Default exposure" now says a token is required
 - [x] Docs: the console in `docs/quickstart.md`, and an endpoint reference. Done

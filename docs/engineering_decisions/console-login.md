@@ -118,8 +118,26 @@ the registries are, which trusts `BYRLE_CA_BUNDLE` and uses the forward proxy va
 routes answer 404 without a provider. Each failure is a `login-failed` line, naming the
 token's `sub` once it is verified.
 
-How a verified identity becomes an account is not decided, so a verified one is answered
-403, "`<sub>` at `<issuer>` is not linked to an account", and logged as `login-failed`.
+A verified identity logs in as the account an admin linked it to, decided by the user
+2026-10-13 ("start with A for now; we may change later"):
+
+```
+$ byrle account link alice --issuer https://idp.example.com/realms/corp --subject 8f1c…
+OIDC identity 8f1c… at https://idp.example.com/realms/corp logs in as account alice
+```
+
+`account_oidc` holds each issuer and subject once (`migrations/0023_account_oidc.sql`); the
+link is logged as `oidc-linked` with the issuer. An identity linked to no account, or to a
+disabled one, is answered 403, "`<sub>` at `<issuer>` is not linked to an account", and
+logged as `login-failed`. A linked one starts a session, logged as `login` with the account
+as its actor. That answer is a 200 page that sets the session cookie and reloads home,
+rather than a redirect: the browser comes from the provider's site, and a
+`SameSite=Strict` cookie is not sent on a request another site began.
+
+| Option | Not taken because |
+|---|---|
+| B. The `preferred_username` or `email` claim names the account | anyone who can set that claim at the provider would become that account |
+| C. B the first time, then the link kept | B's risk, once per account |
 
 ## Rejected
 

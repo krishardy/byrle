@@ -494,6 +494,21 @@ mod tests {
                 self.0.ping()
             }
         }
+        fn link_oidc<'a>(
+            &'a self,
+            a: &'a crate::account::Name,
+            i: &'a str,
+            s: &'a str,
+        ) -> Pending<'a, ()> {
+            self.0.link_oidc(a, i, s)
+        }
+        fn oidc_account<'a>(
+            &'a self,
+            i: &'a str,
+            s: &'a str,
+        ) -> Pending<'a, Option<crate::account::Name>> {
+            self.0.oidc_account(i, s)
+        }
     }
 
     fn hanging(hangs: bool) -> Hanging {

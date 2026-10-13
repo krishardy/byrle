@@ -208,6 +208,19 @@ pub trait Accounts: Send + Sync {
 
     /// Whether the store answers at all, for the console's status.
     fn ping(&self) -> Pending<'_, ()>;
+
+    /// Let the OIDC identity `subject` at `issuer` log in as `account`. `Exists` when the
+    /// identity is linked already, to any account.
+    fn link_oidc<'a>(
+        &'a self,
+        account: &'a Name,
+        issuer: &'a str,
+        subject: &'a str,
+    ) -> Pending<'a, ()>;
+
+    /// The account the OIDC identity `subject` at `issuer` logs in as. `None` when it is
+    /// linked to none, or to one disabled.
+    fn oidc_account<'a>(&'a self, issuer: &'a str, subject: &'a str) -> Pending<'a, Option<Name>>;
 }
 
 /// Accounts held in memory, for tests. Every time is the one given at construction.
@@ -220,6 +233,8 @@ pub struct InMemory {
 struct Held {
     accounts: BTreeMap<Name, Account>,
     passwords: BTreeMap<Name, String>,
+    /// Each OIDC identity, issuer and subject, and the account it logs in as.
+    oidc: BTreeMap<(String, String), Name>,
     tokens: BTreeMap<(Name, Name), (Token, TokenDigest)>,
     /// Each session's account and expiry, by its digest.
     sessions: BTreeMap<TokenDigest, (Name, String)>,
@@ -432,6 +447,42 @@ impl Accounts for InMemory {
     fn ping(&self) -> Pending<'_, ()> {
         Self::ready(Ok(()))
     }
+
+    fn link_oidc<'a>(
+        &'a self,
+        account: &'a Name,
+        issuer: &'a str,
+        subject: &'a str,
+    ) -> Pending<'a, ()> {
+        let mut held = self.held();
+        if !held.accounts.contains_key(account) {
+            return Self::ready(Err(no_account(account)));
+        }
+        let identity = (issuer.to_owned(), subject.to_owned());
+        Self::ready(match held.oidc.entry(identity) {
+            std::collections::btree_map::Entry::Occupied(_) => Err(AccountError::Exists(format!(
+                "OIDC identity {subject} at {issuer}"
+            ))),
+            std::collections::btree_map::Entry::Vacant(slot) => {
+                slot.insert(account.clone());
+                Ok(())
+            }
+        })
+    }
+
+    fn oidc_account<'a>(&'a self, issuer: &'a str, subject: &'a str) -> Pending<'a, Option<Name>> {
+        let held = self.held();
+        let found = held
+            .oidc
+            .get(&(issuer.to_owned(), subject.to_owned()))
+            .filter(|name| {
+                held.accounts
+                    .get(*name)
+                    .is_some_and(|a| a.disabled.is_none())
+            })
+            .cloned();
+        Self::ready(Ok(found))
+    }
 }
 
 /// Stores for tests elsewhere in the crate.
@@ -516,6 +567,21 @@ pub mod testing {
         fn ping(&self) -> Pending<'_, ()> {
             self.or("ping", self.inner.ping())
         }
+        fn link_oidc<'a>(
+            &'a self,
+            account: &'a Name,
+            issuer: &'a str,
+            subject: &'a str,
+        ) -> Pending<'a, ()> {
+            self.or("link_oidc", self.inner.link_oidc(account, issuer, subject))
+        }
+        fn oidc_account<'a>(
+            &'a self,
+            issuer: &'a str,
+            subject: &'a str,
+        ) -> Pending<'a, Option<Name>> {
+            self.or("oidc_account", self.inner.oidc_account(issuer, subject))
+        }
     }
 
     /// A store that cannot answer: each call fails as a closed connection does.
@@ -576,6 +642,12 @@ pub mod testing {
             closed()
         }
         fn ping(&self) -> Pending<'_, ()> {
+            closed()
+        }
+        fn link_oidc<'a>(&'a self, _: &'a Name, _: &'a str, _: &'a str) -> Pending<'a, ()> {
+            closed()
+        }
+        fn oidc_account<'a>(&'a self, _: &'a str, _: &'a str) -> Pending<'a, Option<Name>> {
             closed()
         }
     }
@@ -746,6 +818,38 @@ mod tests {
         store.end_session(&live).await.unwrap();
         assert!(store.held().sessions.is_empty());
         store.end_session(&live).await.unwrap();
+    }
+
+    /// An OIDC identity logs in as the account it is linked to, until that is disabled; it
+    /// is linked once, and to an account that exists.
+    #[tokio::test]
+    async fn an_oidc_identity_is_linked_to_one_account() {
+        let store = InMemory::new("2026-10-13T00:00:00Z");
+        let (alice, nobody) = (name("alice"), name("nobody"));
+        store.create_account(&alice, &[]).await.unwrap();
+        let issuer = "https://idp.example";
+        assert_eq!(store.oidc_account(issuer, "u-1").await, Ok(None));
+        store.link_oidc(&alice, issuer, "u-1").await.unwrap();
+        assert_eq!(
+            store.oidc_account(issuer, "u-1").await,
+            Ok(Some(alice.clone()))
+        );
+        assert_eq!(
+            store.oidc_account("https://other.example", "u-1").await,
+            Ok(None)
+        );
+        assert_eq!(
+            store.link_oidc(&alice, issuer, "u-1").await,
+            Err(AccountError::Exists(
+                "OIDC identity u-1 at https://idp.example".into()
+            ))
+        );
+        assert_eq!(
+            store.link_oidc(&nobody, issuer, "u-2").await,
+            Err(AccountError::NotFound("account nobody".into()))
+        );
+        store.disable_account(&alice).await.unwrap();
+        assert_eq!(store.oidc_account(issuer, "u-1").await, Ok(None));
     }
 
     #[tokio::test]

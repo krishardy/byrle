@@ -358,4 +358,47 @@ impl Accounts for PgAccounts {
                 .map_err(backend)
         })
     }
+
+    fn link_oidc<'a>(
+        &'a self,
+        account: &'a Name,
+        issuer: &'a str,
+        subject: &'a str,
+    ) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let done = sqlx::query!(
+                r#"
+                INSERT INTO account_oidc (account_id, issuer, subject)
+                SELECT id, $2, $3 FROM account WHERE name = $1
+                "#,
+                account.as_str(),
+                issuer,
+                subject,
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(|e| unique_or_backend(e, format!("OIDC identity {subject} at {issuer}")))?;
+            if done.rows_affected() == 0 {
+                return Err(super::no_account(account));
+            }
+            Ok(())
+        })
+    }
+
+    fn oidc_account<'a>(&'a self, issuer: &'a str, subject: &'a str) -> Pending<'a, Option<Name>> {
+        Box::pin(async move {
+            sqlx::query_scalar!(
+                r#"
+                SELECT a.name FROM account_oidc o JOIN account a ON a.id = o.account_id
+                WHERE o.issuer = $1 AND o.subject = $2 AND a.disabled_at IS NULL
+                "#,
+                issuer,
+                subject,
+            )
+            .fetch_optional(&self.pool)
+            .await
+            .map(|name| name.map(stored))
+            .map_err(backend)
+        })
+    }
 }
