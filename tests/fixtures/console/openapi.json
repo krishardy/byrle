@@ -200,9 +200,19 @@
               "$ref": "#/components/schemas/FailureRow"
             },
             "type": "array"
+          },
+          "since": {
+            "description": "The hours counted from, RFC 3339.",
+            "type": "string"
+          },
+          "until": {
+            "description": "The hours counted before, RFC 3339.",
+            "type": "string"
           }
         },
         "required": [
+          "since",
+          "until",
           "failures"
         ],
         "type": "object"

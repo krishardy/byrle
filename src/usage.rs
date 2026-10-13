@@ -46,13 +46,7 @@ impl Use {
                 at,
             }),
             answered => Some(Self::Failed {
-                hour: at
-                    .round(
-                        TimestampRound::new()
-                            .smallest(Unit::Hour)
-                            .mode(RoundMode::Trunc),
-                    )
-                    .expect("the start of an hour inside jiff's range is inside it"),
+                hour: hour_of(at),
                 ecosystem: line.ecosystem.clone(),
                 answered,
             }),
@@ -169,6 +163,16 @@ pub trait Usage: Send + Sync {
 
     /// Failure counts by hour, ecosystem and case.
     fn failures<'a>(&'a self, query: &'a FailureQuery) -> Read<'a, Vec<FailureRow>>;
+}
+
+/// The start of the UTC hour `at` falls in.
+pub fn hour_of(at: Timestamp) -> Timestamp {
+    at.round(
+        TimestampRound::new()
+            .smallest(Unit::Hour)
+            .mode(RoundMode::Trunc),
+    )
+    .expect("the start of an hour inside jiff's range is inside it")
 }
 
 /// `at` as RFC 3339 in UTC, to the second, as the tables give times back.
