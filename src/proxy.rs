@@ -3,7 +3,7 @@
 //!
 //! See docs/request-flow.md.
 
-use crate::account::gate::{self, Gate, TOKEN_HEADER};
+use crate::account::gate::{self, Gate};
 use crate::analysis::Claim;
 use crate::analysis::attestation;
 use crate::analysis::decision;
@@ -1228,16 +1228,20 @@ fn report_uninspected(
     }
 }
 
-/// The headers sent upstream: the client's, less those that stop at the proxy, with the
-/// encoding, `Accept` and `If-None-Match` the negotiation needs.
+/// The only client headers a registry is sent. Any other stops at the proxy.
+const FORWARDED: [header::HeaderName; 4] = [
+    header::ACCEPT,
+    header::ACCEPT_ENCODING,
+    header::IF_NONE_MATCH,
+    header::IF_MODIFIED_SINCE,
+];
+
+/// The headers sent upstream: the client's in [`FORWARDED`], less those the negotiation
+/// replaces, with the encoding, `Accept` and `If-None-Match` the negotiation needs.
 fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -> HeaderMap {
     let mut outbound = HeaderMap::new();
     for (name, value) in client {
-        if is_hop_by_hop(name.as_str())
-            || name == header::HOST
-            || name == header::AUTHORIZATION
-            || name == TOKEN_HEADER
-        {
+        if !FORWARDED.contains(name) {
             continue;
         }
         if negotiation.read_metadata && name == header::ACCEPT_ENCODING {
@@ -3579,6 +3583,7 @@ pub(crate) mod testing;
 mod tests {
     use super::testing::*;
     use super::*;
+    use crate::account::gate::TOKEN_HEADER;
     use crate::defer::DeferTest;
     use crate::identity::Ecosystem;
     use crate::util::test_support::NO_UPSTREAM;
@@ -4242,7 +4247,7 @@ mod tests {
             header::HeaderName,
             Option<&'a str>,
         );
-        let cases: [Case; 14] = [
+        let cases: [Case; 21] = [
             (
                 "br narrowed away",
                 None,
@@ -4322,6 +4327,65 @@ mod tests {
                 PACKUMENT,
                 &[(header::IF_RANGE, "\"abc\"")],
                 header::IF_RANGE,
+                None,
+            ),
+            (
+                "a date conditional on an artifact",
+                None,
+                TARBALL,
+                &[(header::IF_MODIFIED_SINCE, "Wed, 21 Oct 2015 07:28:00 GMT")],
+                header::IF_MODIFIED_SINCE,
+                Some("Wed, 21 Oct 2015 07:28:00 GMT"),
+            ),
+            (
+                "the client's own agent",
+                None,
+                TARBALL,
+                &[(header::USER_AGENT, "npm/11.6.0 node/v24.0.0 linux x64")],
+                header::USER_AGENT,
+                None,
+            ),
+            (
+                "the command npm ran",
+                None,
+                TARBALL,
+                &[(header::REFERER, "install lodash")],
+                header::REFERER,
+                None,
+            ),
+            (
+                "an npm session",
+                None,
+                TARBALL,
+                &[(header::HeaderName::from_static("npm-session"), "4f2a")],
+                header::HeaderName::from_static("npm-session"),
+                None,
+            ),
+            (
+                "a part of the body",
+                None,
+                TARBALL,
+                &[(header::RANGE, "bytes=0-99")],
+                header::RANGE,
+                None,
+            ),
+            (
+                "a cookie",
+                None,
+                TARBALL,
+                &[(header::COOKIE, "session=1")],
+                header::COOKIE,
+                None,
+            ),
+            (
+                "the client's address",
+                None,
+                TARBALL,
+                &[(
+                    header::HeaderName::from_static("x-forwarded-for"),
+                    "203.0.113.7",
+                )],
+                header::HeaderName::from_static("x-forwarded-for"),
                 None,
             ),
             (
@@ -4407,18 +4471,22 @@ mod tests {
         }
     }
 
-    /// A request the proxy does not read keeps every header the client sent it, other than
-    /// the ones that stop at the proxy.
+    /// A request the proxy does not read keeps the client's encoding and conditionals, and
+    /// nothing outside [`FORWARDED`].
     #[test]
     fn an_artifact_request_keeps_the_clients_encoding_and_conditionals() {
-        let client = [
+        let kept = [
             (header::ACCEPT_ENCODING, "gzip, br"),
             (header::IF_NONE_MATCH, "\"abc\""),
+        ];
+        let client = [
+            kept[0].clone(),
+            kept[1].clone(),
             (header::USER_AGENT, "npm/11"),
         ];
         let sent = sent_upstream(None, "/lodash/-/lodash-4.17.21.tgz", &client);
         let mut expected = HeaderMap::new();
-        for (name, value) in client {
+        for (name, value) in kept {
             expected.insert(name, HeaderValue::from_static(value));
         }
         assert_eq!(sent, expected);

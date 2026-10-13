@@ -62,7 +62,11 @@ Every metadata document and artifact is untrusted input, parsed by the proxy.
 | A repository and reference the metadata names | fetched only from `BYRLE_SOURCE_ARCHIVES`, `https://codeload.github.com` by default, as `/{owner}/{repo}/tar.gz/{ref}`; owner and repository are GitHub's name characters, `gitHead` 40 hex characters, and a tag has no `..`, `//` or characters outside `A-Z a-z 0-9 . _ - @ / +`. `off` fetches nothing | `analysis::source` |
 | A source archive | spooled under `BYRLE_MAX_ARTIFACT_BYTES`, and read only while its members state 512 MiB or less; each member is hashed as it streams | `analysis::source::MAX_SOURCE_BYTES` |
 
-- **Credentials.** The client's `Authorization` header is never forwarded upstream.
+- **What reaches the registry.** Of the client's headers, only `Accept`,
+  `Accept-Encoding`, `If-None-Match` and `If-Modified-Since` are sent upstream
+  (`proxy::FORWARDED`, since 2026-10-13). `Authorization`, `X-Byrle-Token`, `Cookie`,
+  `User-Agent`, `Referer`, npm's `npm-session` and `npm-command`, `X-Forwarded-For` and
+  anything nginx adds stop at the proxy. The registry sees `User-Agent: byrle/<version>`.
 - **What the health endpoint shows.** `/-/byrle/health` reports configuration and
   counters. It holds no credentials.
 - **Default exposure.** The proxy listens on `127.0.0.1:8080` unless `BYRLE_LISTEN`
