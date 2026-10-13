@@ -4,8 +4,9 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
+use jiff::civil::Date;
 use tokio::sync::{mpsc, watch};
-use tracing::warn;
+use tracing::{info, warn};
 
 use super::Analyser;
 use crate::analysis::decision::{Artifact, Decided, Page};
@@ -16,6 +17,9 @@ pub const QUEUE: usize = 4096;
 
 /// The most decisions written in one statement.
 pub const BATCH: usize = 256;
+
+/// How often decisions past their retention period are deleted.
+const FORGET_EVERY: std::time::Duration = std::time::Duration::from_secs(86_400);
 
 /// The queue, started by the first decision, and what became of the decisions sent to it.
 #[derive(Clone, Default)]
@@ -62,6 +66,18 @@ impl Analyser {
         self.store.decisions(page).await
     }
 
+    /// Delete the decisions older than `retention_days` now, then once a day.
+    pub fn forget_decisions_daily(&self, retention_days: u32) -> tokio::task::JoinHandle<()> {
+        let store = self.store.clone();
+        tokio::spawn(async move {
+            let mut each = tokio::time::interval(FORGET_EVERY);
+            loop {
+                each.tick().await;
+                forget(store.as_ref(), crate::rotation::today(), retention_days).await;
+            }
+        })
+    }
+
     /// Wait until `count` decisions have been written in all. Panics after 10 s: a test
     /// waits on it, and a write that never comes is a failure, not a hang.
     pub async fn decisions_written(&self, count: u64) {
@@ -81,6 +97,26 @@ fn lost(unrecorded: &AtomicU64, count: usize, why: &str) {
         byrle.decisions.dropped = count,
         "decisions not recorded: {why}"
     );
+}
+
+/// Delete the decisions made before the day `retention_days` before `today`, so that day's
+/// are kept. Returns how many, or 0 when the store fails, which is warned about.
+async fn forget(store: &dyn Analyses, today: Date, retention_days: u32) -> u64 {
+    let before = jiff::Span::new()
+        .try_days(i64::from(retention_days))
+        .and_then(|days| today.checked_sub(days))
+        .unwrap_or(Date::MIN)
+        .to_string();
+    match store.forget_decisions(&before).await {
+        Ok(count) => {
+            info!(byrle.decisions.deleted = count, byrle.decisions.before = %before, "decisions past their retention period deleted");
+            count
+        }
+        Err(e) => {
+            warn!(byrle.reason = %e, "decisions past their retention period not deleted");
+            0
+        }
+    }
 }
 
 /// Write what arrives on `waiting`, up to [`BATCH`] at a time, until every sender is gone.
@@ -169,6 +205,55 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_secs(1), ends)
             .await
             .expect("the writer ends");
+    }
+
+    /// A decision on the day `retention_days` before today is kept, and one the day before
+    /// that is deleted. A store that fails deletes none.
+    #[tokio::test]
+    async fn decisions_before_the_retention_period_are_deleted() {
+        let store = InProcess::new(16);
+        let mut rows = [decided("old", "sha512-x"), decided("kept", "sha512-x")];
+        rows[0].at = "2026-10-02T23:59:59Z".into();
+        rows[1].at = "2026-10-03T00:00:00Z".into();
+        store.put_decisions(&rows).await.unwrap();
+        let today = jiff::civil::date(2026, 10, 13);
+        assert_eq!(forget(&store, today, 10).await, 1);
+        assert_eq!(forget(&store, today, 10).await, 0);
+        assert_eq!(forget(&store, today, u32::MAX).await, 0);
+        let page = Page {
+            after: 0,
+            since: None,
+            until: None,
+            limit: 10,
+        };
+        let left = store.decisions(&page).await.unwrap();
+        assert_eq!(left, [(2, rows[1].clone())]);
+        assert_eq!(forget(&Broken, today, 10).await, 0);
+    }
+
+    /// The task deletes at once, without waiting a day.
+    #[tokio::test]
+    async fn the_daily_deletion_runs_at_start() {
+        let store = Arc::new(InProcess::new(16));
+        let mut old = decided("old", "sha512-x");
+        old.at = "2000-01-01T00:00:00Z".into();
+        store.put_decisions(&[old]).await.unwrap();
+        let analyser = analyser("recording-forget", store.clone());
+        let task = analyser.forget_decisions_daily(1);
+        let page = Page {
+            after: 0,
+            since: None,
+            until: None,
+            limit: 10,
+        };
+        for _ in 0..200 {
+            if store.decisions(&page).await.unwrap().is_empty() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        task.abort();
+        assert!(store.decisions(&page).await.unwrap().is_empty());
     }
 
     /// A full queue drops the decision rather than making the request wait.

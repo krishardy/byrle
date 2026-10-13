@@ -1,6 +1,6 @@
 # Each artifact decision is stored with its features and disposition
 
-- **Status:** Implemented 2026-10-13, decided with the user 2026-10-13. TODO Ad-hoc #32.
+- **Status:** Implemented 2026-10-13, decided with the user 2026-10-13. TODO Ad-hoc #32, #33.
   `src/analysis/decision.rs`, `src/analysis/decision/command.rs`,
   `src/analysis/run/recording.rs`, `migrations/0018_artifact_decision.sql`.
 - **Related:** [audit-log](audit-log.md), [artifact-analysis-store](artifact-analysis-store.md),
@@ -61,6 +61,19 @@ in `decisions_unrecorded` on `/-/byrle/health`.
 Without `BYRLE_DATABASE_URL`, rows are kept in memory: the newest `BYRLE_MAX_VERIFIED`, as
 the other analysis results are.
 
+## Rows are deleted after `BYRLE_DECISION_RETENTION_DAYS`
+
+Decided with the user 2026-10-13: a variable of its own, apart from
+`BYRLE_LOG_RETENTION_DAYS`. The default is 365.
+
+At startup and every 24 hours after, the proxy deletes each row decided before the UTC day
+`BYRLE_DECISION_RETENTION_DAYS` before today. That day's rows are kept, as the log file
+of the same age is. Each proxy on one database runs the same `DELETE`. A second run deletes
+nothing. A failure is warned about, and the next day's run deletes what it left.
+
+The latest row on an artifact is deleted with the rest. An artifact not requested within the
+period is not in `artifact_disposition`, and `byrle artifact show` exits 1 for it.
+
 ## A row without a digest is kept, and not in the view
 
 A version whose metadata publishes no strong digest is refused with `no-strong-digest` and
@@ -88,6 +101,5 @@ Two artifacts were in `artifact_disposition`. A row's JSON averaged 1,066 bytes.
 
 | What | Why |
 |---|---|
-| retention | `artifact_decision` grows by one row per artifact request and nothing deletes rows. TODO Ad-hoc #33 |
 | metadata requests | a resolution line decides many versions and has no artifact, so it has no row |
 | `served_version` in [admin-plan](../admin-plan.md) §4.3 | it holds account, purl and version, which `artifact_decision` also holds. The console plan can read this table instead; that is for the console work to decide |

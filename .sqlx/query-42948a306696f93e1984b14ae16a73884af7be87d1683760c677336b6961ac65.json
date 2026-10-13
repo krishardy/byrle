@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            DELETE FROM artifact_decision\n            WHERE decided_at < ($1::text)::date::timestamp AT TIME ZONE 'UTC'\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "42948a306696f93e1984b14ae16a73884af7be87d1683760c677336b6961ac65"
+}

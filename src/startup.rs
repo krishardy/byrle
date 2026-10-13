@@ -88,22 +88,23 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     }
     let spool = open_spool(environment)?;
 
-    let proxy = Proxy::new(client.clone())
+    let analyser = Analyser::new(
+        client.clone(),
+        spool.clone(),
+        analyses,
+        environment.max_concurrent_analyses()?,
+        max_verified,
+    )
+    .with_sources(environment.source_archives()?)
+    .with_detectors(detectors(environment).await?)
+    .with_virustotal(virustotal(environment)?.as_ref());
+    analyser.forget_decisions_daily(environment.decision_retention_days()?);
+
+    let proxy = Proxy::new(client)
         .with_upstreams(upstreams)
         .with_intel(intel)
-        .with_spool(Some(spool.clone()))
-        .with_analyser(Some(Arc::new(
-            Analyser::new(
-                client,
-                spool,
-                analyses,
-                environment.max_concurrent_analyses()?,
-                max_verified,
-            )
-            .with_sources(environment.source_archives()?)
-            .with_detectors(detectors(environment).await?)
-            .with_virustotal(virustotal(environment)?.as_ref()),
-        )))
+        .with_spool(Some(spool))
+        .with_analyser(Some(Arc::new(analyser)))
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
         .with_mode(mode)
@@ -1098,6 +1099,7 @@ mod tests {
             vec![(env::AUDIT_LOG, "audit.jsonl")],
             env::LOG_RETENTION_DAYS,
         ));
+        cases.push((vec![(env::SPOOL_DIR, &spool)], env::DECISION_RETENTION_DAYS));
         cases.push((vec![], env::REQUIRE_TOKEN));
         for (mut pairs, var) in cases {
             if var != env::REQUIRE_TOKEN {

@@ -366,9 +366,10 @@ Items that I've added that are not stage-bound.
     with its features and disposition, and the view `artifact_disposition`, the latest per
     digest. Read by `byrle artifact show` and `byrle artifact export`. Decided with the
     user ([artifact-decisions](docs/engineering_decisions/artifact-decisions.md)).
-33. [ ] Delete `artifact_decision` rows older than a retention period. Raised 2026-10-13.
-    The table grows by one row per artifact request, about 1 KB each, and nothing deletes
-    rows. `BYRLE_LOG_RETENTION_DAYS` (Stage 4.9) is the period the log files are kept.
+33. [x] Delete `artifact_decision` rows older than a retention period. Raised 2026-10-12.
+    Done 2026-10-13: `BYRLE_DECISION_RETENTION_DAYS`, 365 by default, a variable apart from
+    `BYRLE_LOG_RETENTION_DAYS`, decided by the user. Deleted at startup and daily
+    ([artifact-decisions](docs/engineering_decisions/artifact-decisions.md)).
 34. [x] Audit a 401 and a 503 `account-store`. Raised 2026-10-12 from admin-plan §3, decided
     by the user 2026-10-13. Done 2026-10-13: `unauthorized` and `account-store` lines, with
     no account, on a metadata or artifact request

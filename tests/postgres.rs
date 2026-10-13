@@ -2010,8 +2010,8 @@ fn decision(name: &str, digest: Option<&str>, at: &str) -> byrle::analysis::deci
     byrle::analysis::decision::Decided::from_json(&json.to_string()).expect("a decision")
 }
 
-/// Decisions are kept in order with their columns read from the JSON; the view answers
-/// the latest on each artifact; and a page is bounded by id and by day, in UTC.
+/// Decisions keep their order and JSON columns; the view answers the latest per artifact;
+/// a page is bounded by id and UTC day; and those before a UTC day are deleted.
 #[tokio::test]
 async fn each_decision_is_kept_and_the_latest_on_each_artifact_is_its_disposition() {
     use byrle::analysis::decision::{Artifact, Page};
@@ -2102,6 +2102,16 @@ async fn each_decision_is_kept_and_the_latest_on_each_artifact_is_its_dispositio
         ],
         "the last was decided at 11:00 UTC on the 11th"
     );
+
+    assert_eq!(
+        store.forget_decisions("2026-10-11").await.expect("deletes"),
+        1
+    );
+    let left = store
+        .decisions(&page(0, None, None, 10))
+        .await
+        .expect("answers");
+    assert_eq!(left, all[1..]);
 }
 
 /// An analysis another reader wrote, or one written before readers were recorded, is not
