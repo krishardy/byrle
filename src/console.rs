@@ -2,6 +2,7 @@
 //! its health check, login, logout and session. See docs/admin-plan.md.
 
 pub mod api;
+pub mod config;
 pub mod login;
 pub mod openapi;
 pub mod routes;
@@ -115,6 +116,8 @@ pub struct Site {
     store: Arc<dyn Accounts>,
     /// The usage tables. `None` until [`Site::with_usage`] is called.
     usage: Option<Arc<dyn crate::usage::Usage>>,
+    /// The proxy beside it. `None` until [`Site::with_proxy`] is called.
+    configured: Option<config::Configured>,
     /// `scheme://host[:port]` of [`Console::url`], which a browser's `Origin` matches.
     origin: String,
 }
@@ -136,6 +139,7 @@ impl Site {
             gate: Gate::new(store.clone()),
             store,
             usage: None,
+            configured: None,
             origin,
             console,
         }
@@ -144,6 +148,16 @@ impl Site {
     /// Read R3 and R6 from `usage`.
     pub fn with_usage(mut self, usage: Arc<dyn crate::usage::Usage>) -> Self {
         self.usage = Some(usage);
+        self
+    }
+
+    /// Describe `proxy`, started with `settings`, for R7.
+    pub fn with_proxy(
+        mut self,
+        proxy: crate::proxy::Proxy,
+        settings: Vec<crate::env::Setting>,
+    ) -> Self {
+        self.configured = Some(config::Configured { proxy, settings });
         self
     }
 
@@ -204,7 +218,12 @@ pub(crate) mod tests {
     /// no event log.
     pub fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
         let usage = Arc::new(crate::usage::tests::Kept::default());
-        Arc::new(unread(console, store).with_usage(usage))
+        let proxy = crate::proxy::Proxy::new(reqwest::Client::new());
+        Arc::new(
+            unread(console, store)
+                .with_usage(usage)
+                .with_proxy(proxy, Vec::new()),
+        )
     }
 
     /// [`site`] with no usage tables.

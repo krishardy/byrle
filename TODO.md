@@ -2729,7 +2729,8 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       malicious (R5)
 - [x] `[!]` API: failure counts by case and interval (R6). Done 2026-10-13:
       `GET api/v1/metrics/failures`, `failure_count` by hour
-- [ ] `[!]` API: configuration, with secrets removed (R7)
+- [x] `[!]` API: configuration, with secrets removed (R7). Done 2026-10-13:
+      `GET api/v1/config`, needing `config.read`
 - [ ] `[!]` API: account event log (R8)
 - [ ] `[!]` API: request log with accounts (R9)
 - [ ] `[!]` API and page: status of the proxy listener, its readiness, the database and the

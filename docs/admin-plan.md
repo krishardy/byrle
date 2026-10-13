@@ -242,7 +242,7 @@ ecosystem, purl, account and `answered`.
 | `GET alerts` | R4 |
 | `GET requests?answered=refused&check=known_malware` | R5 |
 | `GET metrics/failures` | R6: counts by case and hour. Built 2026-10-13: `failure_count`, the last 24 hours unless `since` and `until` say otherwise |
-| `GET config` | R7 |
+| `GET config` | R7. Built 2026-10-13: `proxy`, `policy` (its digest and the `explain --policy` report) and `environment`, every runtime variable with its value and default |
 | `GET events` | R8 |
 | `GET requests`, and `GET logs/<date>` for a day's file | R9 |
 | `GET`, `POST`, `DELETE` under `accounts` | R1, R2. `GET accounts`, needing `accounts.read`, built 2026-10-13 |
@@ -252,8 +252,10 @@ ecosystem, purl, account and `answered`.
 | `POST login`, `POST logout`, `GET session` | R1. Built 2026-10-13 ([console-login](engineering_decisions/console-login.md)) |
 
 `GET config` returns `proxy::Health` and the policy as `explain --policy` loads it.
-`BYRLE_GITHUB_TOKEN` is reported as set or unset. `BYRLE_DATABASE_URL` is reported without
-its password.
+`BYRLE_GITHUB_TOKEN`, `BYRLE_VIRUSTOTAL_API_KEY`, `BYRLE_TOKEN` and `BYRLE_RP_KEY` are
+reported as `set`. `BYRLE_DATABASE_URL` is reported without its password, and as `set, and
+not a URL with a host` when it does not parse as one, since a password could then be
+anywhere in it. The environment is read once, at startup.
 
 ### 4.7 Web interface
 

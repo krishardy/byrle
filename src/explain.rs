@@ -326,10 +326,18 @@ async fn answer_using<L: Fn(&str) -> Option<OsString>>(
 /// Whether the checks that need intel can be enforced. A store with no snapshot answers
 /// nothing, so they are reported as unenforced rather than as settings that will fire.
 async fn consulted(store: Option<&dyn IntelStore>) -> Result<Intel, Stopped> {
+    intel_of(store).await.map_err(|e| stopped(1, e))
+}
+
+/// Whether `store` holds a snapshot to decide against, and with which streams loaded.
+/// Errors when the store cannot answer.
+pub async fn intel_of(
+    store: Option<&dyn IntelStore>,
+) -> Result<Intel, crate::intel::store::IntelError> {
     let Some(store) = store else {
         return Ok(Intel::NotConsulted);
     };
-    Ok(match store.snapshot().await.map_err(|e| stopped(1, e))? {
+    Ok(match store.snapshot().await? {
         Some(snapshot) => Intel::Consulted {
             exploitation_loaded: snapshot.exploitation_loaded(),
         },

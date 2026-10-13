@@ -21,6 +21,28 @@ pub struct Var {
     help: &'static [&'static str],
     default: Default,
     kind: Kind,
+    secret: Secret,
+}
+
+/// How much of a value the console's `GET config` shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Secret {
+    /// All of it.
+    No,
+    /// Only that it is set.
+    Whole,
+    /// A URL without its password.
+    Password,
+}
+
+/// One runtime variable as the console shows it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct Setting {
+    pub name: &'static str,
+    /// As set, a secret as `set` and a URL without its password. Absent when unset.
+    pub value: Option<String>,
+    /// What applies when it is unset, when that is a value.
+    pub default: Option<String>,
 }
 
 impl fmt::Display for Var {
@@ -208,7 +230,8 @@ pub const RP_KEY: Var = runtime(
         "bytes. With it, X-Forwarded-For names the client.",
         "Make one with `openssl rand -hex 32`",
     ],
-);
+)
+.secret();
 pub const REQUIRE_TOKEN: Var = runtime(
     "BYRLE_REQUIRE_TOKEN",
     "=0",
@@ -222,7 +245,8 @@ pub const TOKEN: Var = runtime(
     "BYRLE_TOKEN",
     "",
     &["proxy token `byrle warm` sends, from `byrle token create`"],
-);
+)
+.secret();
 pub const ARTIFACT_ORIGINS: Var = runtime(
     "BYRLE_ARTIFACT_ORIGINS",
     "",
@@ -277,7 +301,8 @@ pub const DATABASE_URL: Var = runtime(
         "policy, known_malware is enforced from it, and a",
         "store that cannot answer is a 503",
     ],
-);
+)
+.url_with_password();
 pub const GITHUB_TOKEN: Var = runtime(
     "BYRLE_GITHUB_TOKEN",
     "",
@@ -286,7 +311,8 @@ pub const GITHUB_TOKEN: Var = runtime(
         "Database with. Unset, that one stream does not load",
         "and the others still do",
     ],
-);
+)
+.secret();
 pub const SNAPSHOT_DIR: Var = runtime(
     "BYRLE_SNAPSHOT_DIR",
     "",
@@ -468,7 +494,8 @@ pub const VIRUSTOTAL_API_KEY: Var = runtime(
         "key each artifact's SHA-256 is looked up on VirusTotal with, a report-only",
         "signal. Unset, VirusTotal is not asked",
     ],
-);
+)
+.secret();
 pub const VIRUSTOTAL_MODE: Var = runtime(
     "BYRLE_VIRUSTOTAL_MODE",
     "",
@@ -669,6 +696,7 @@ const fn runtime(name: &'static str, shown: &'static str, help: &'static [&'stat
         help,
         default: Default::None,
         kind: Kind::Runtime,
+        secret: Secret::No,
     }
 }
 
@@ -682,6 +710,40 @@ const fn other(kind: Kind, name: &'static str, help: &'static [&'static str]) ->
 impl Var {
     const fn with_default(self, default: Default) -> Var {
         Var { default, ..self }
+    }
+
+    /// A value `GET config` shows only as set.
+    const fn secret(self) -> Var {
+        Var {
+            secret: Secret::Whole,
+            ..self
+        }
+    }
+
+    /// A URL `GET config` shows without its password.
+    const fn url_with_password(self) -> Var {
+        Var {
+            secret: Secret::Password,
+            ..self
+        }
+    }
+
+    /// `value` as `GET config` shows it.
+    fn shown_value(&self, value: &str) -> String {
+        match self.secret {
+            Secret::No => value.to_owned(),
+            Secret::Whole => "set".to_owned(),
+            Secret::Password => reqwest::Url::parse(value)
+                .ok()
+                .filter(|url| url.has_host())
+                .map_or_else(
+                    || "set, and not a URL with a host".to_owned(),
+                    |mut url| {
+                        let _ = url.set_password(None);
+                        url.to_string()
+                    },
+                ),
+        }
     }
 
     /// The default, when it is text.
@@ -1139,6 +1201,22 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn audit_log(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(AUDIT_LOG)
+    }
+
+    /// Every runtime variable, set or not, for `GET config`. A value that is not UTF-8 is
+    /// shown as such.
+    pub fn settings(&self) -> Vec<Setting> {
+        ALL.iter()
+            .filter(|var| var.kind == Kind::Runtime)
+            .map(|var| Setting {
+                name: var.name,
+                value: match self.text(*var) {
+                    Ok(value) => value.map(|value| var.shown_value(&value)),
+                    Err(_) => Some("set, and not UTF-8".to_owned()),
+                },
+                default: var.default_shown(),
+            })
+            .collect()
     }
 
     pub fn account_event_log(&self) -> Result<Option<PathBuf>, EnvError> {
@@ -2112,6 +2190,66 @@ mod tests {
         refused(LOGIN_FAILURES_PER_ADDRESS, "many", |e| {
             e.login_limits().err()
         });
+    }
+
+    /// The builders that mark a secret, run here as well as when the constants are built.
+    #[test]
+    fn a_variable_is_marked_secret_or_a_url_with_a_password() {
+        let (whole, url) = (LISTEN.secret(), LISTEN.url_with_password());
+        assert_eq!(
+            (whole.secret, url.secret),
+            (Secret::Whole, Secret::Password)
+        );
+    }
+
+    /// Every runtime variable is listed, set or not, with its default; a secret is only
+    /// `set`, a database URL loses its password, and other programs' variables are left out.
+    #[test]
+    fn the_settings_show_each_runtime_variable_without_its_secrets() {
+        let settings = with(&[
+            (LISTEN, "0.0.0.0:9000"),
+            (GITHUB_TOKEN, "ghp_secret"),
+            (RP_KEY, "0123456789abcdef0123456789abcdef"),
+            (DATABASE_URL, "postgres://byrle:hunter2@db:5432/byrle"),
+        ])
+        .settings();
+        let shown = |var: Var| {
+            settings
+                .iter()
+                .find(|s| s.name == var.name)
+                .unwrap()
+                .clone()
+        };
+        assert_eq!(shown(LISTEN).value.as_deref(), Some("0.0.0.0:9000"));
+        assert_eq!(shown(LISTEN).default.as_deref(), Some(DEFAULT_LISTEN));
+        assert_eq!(shown(GITHUB_TOKEN).value.as_deref(), Some("set"));
+        assert_eq!(shown(RP_KEY).value.as_deref(), Some("set"));
+        assert_eq!(
+            shown(DATABASE_URL).value.as_deref(),
+            Some("postgres://byrle@db:5432/byrle")
+        );
+        assert_eq!(shown(POLICY).value, None);
+        for left_out in [BLESS, UV_NAMED] {
+            assert!(
+                !settings.iter().any(|s| s.name == left_out.name),
+                "{left_out}"
+            );
+        }
+        for unparsed in ["byrle:hunter2@db/byrle", "not a url"] {
+            let settings = with(&[(DATABASE_URL, unparsed)]).settings();
+            let shown = settings
+                .iter()
+                .find(|s| s.name == DATABASE_URL.name)
+                .unwrap();
+            assert_eq!(
+                shown.value.as_deref(),
+                Some("set, and not a URL with a host"),
+                "{unparsed}"
+            );
+        }
+        let unreadable = testing::with_unreadable(&[], LISTEN).settings();
+        let unreadable = unreadable.iter().find(|s| s.name == LISTEN.name).unwrap();
+        assert_eq!(unreadable.value.as_deref(), Some("set, and not UTF-8"));
     }
 
     /// Every accessor refuses a value that is not UTF-8, naming its variable.
