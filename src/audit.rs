@@ -50,6 +50,10 @@ pub enum Answered {
     UpstreamStatus,
     /// A served artifact's body ended early, on a digest mismatch or an upstream failure.
     CutShort,
+    /// 401: no token, or one not held by an enabled account. Nothing decided.
+    Unauthorized,
+    /// 503: the account store did not answer, so the token was not checked. Nothing decided.
+    AccountStore,
 }
 
 /// One decision, as written. A field an older build did not write reads as its default.
@@ -379,7 +383,9 @@ impl Event {
                 | Answered::NoMetadata
                 | Answered::IntelStore
                 | Answered::NoStreamForEcosystem
-                | Answered::CutShort,
+                | Answered::CutShort
+                | Answered::Unauthorized
+                | Answered::AccountStore,
             ) => false,
             Some(Answered::UpstreamUnreachable | Answered::UpstreamStatus) => {
                 !self.action.is_empty()
@@ -1200,6 +1206,8 @@ not json
             (Answered::UpstreamUnreachable, "upstream-unreachable"),
             (Answered::UpstreamStatus, "upstream-status"),
             (Answered::CutShort, "cut-short"),
+            (Answered::Unauthorized, "unauthorized"),
+            (Answered::AccountStore, "account-store"),
         ] {
             for version in [Some("2.0.0"), None] {
                 let event = Event::undecided("npm", "widget", version, answered);

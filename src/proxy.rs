@@ -2469,11 +2469,11 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     if let Some(response) = own_endpoint(&proxy, &path).await {
         return response;
     }
-    let account = match admit(&proxy, req.headers(), &path, &client).await {
+    let (ecosystem, target) = crate::route::classify(&path);
+    let account = match admit(&proxy, req.headers(), &path, &client, &target).await {
         Ok(account) => account,
         Err(refused) => return *refused,
     };
-    let (ecosystem, target) = crate::route::classify(&path);
     #[cfg(debug_assertions)]
     if let Some((deferral, since)) = &proxy.config.defer_test
         && let Some((status, retry_after)) = deferral.applies_to(&target, since.elapsed())
@@ -2530,12 +2530,13 @@ fn outside_mount(mount: &Mount, requested: &str) -> Response {
 
 /// The account a request's token is held by, `None` when no token is required. Errors
 /// with the answer for a token missing, not held, or not checked because the store did not
-/// answer.
+/// answer, which is audited when the request is for `target`.
 async fn admit(
     proxy: &Proxy,
     headers: &HeaderMap,
     path: &str,
     client: &str,
+    target: &RequestTarget,
 ) -> Result<Option<String>, Box<Response>> {
     let Some(gate) = proxy.config.gate.as_ref() else {
         return Ok(None);
@@ -2556,9 +2557,30 @@ async fn admit(
                 user_agent.original = %client,
                 "no valid token: 401"
             );
+            audit_refused(proxy, target, audit::Answered::Unauthorized);
             Err(Box::new(gate::unauthorized()))
         }
-        Err(gate::Refused::Unanswered) => Err(Box::new(NotReady::AccountStore.response())),
+        Err(gate::Refused::Unanswered) => {
+            audit_refused(proxy, target, audit::Answered::AccountStore);
+            Err(Box::new(NotReady::AccountStore.response()))
+        }
+    }
+}
+
+/// Audit a request for `target` refused before anything was decided, with no account: its
+/// token was not accepted. A request for neither metadata nor an artifact gets no line.
+fn audit_refused(proxy: &Proxy, target: &RequestTarget, answered: audit::Answered) {
+    let (key, version) = match target {
+        RequestTarget::Metadata(key) => (key, None),
+        RequestTarget::Artifact {
+            key,
+            claimed_version,
+            ..
+        } => (key, Some(claimed_version.as_str())),
+        RequestTarget::Other => return,
+    };
+    if let Some(line) = undecided_line(proxy, key, version, answered, None) {
+        write_audit(proxy, &line);
     }
 }
 
@@ -3303,12 +3325,13 @@ enum NotReady {
 
 impl NotReady {
     /// What the audit log records a request answered with this case as. `None` for a
-    /// deferral, which its decision line records, and for the account store.
+    /// deferral, which its decision line records.
     fn answered(&self) -> Option<audit::Answered> {
         match self {
             Self::Unanswered => Some(audit::Answered::IntelStore),
+            Self::AccountStore => Some(audit::Answered::AccountStore),
             Self::Uncovered(_) => Some(audit::Answered::NoStreamForEcosystem),
-            Self::AccountStore | Self::Analysing { .. } => None,
+            Self::Analysing { .. } => None,
         }
     }
 
@@ -6446,6 +6469,90 @@ mod tests {
         assert!(response.headers().contains_key(header::RETRY_AFTER));
     }
 
+    /// A 401 and a 503 `account-store` are audited, with nothing decided and no account, on
+    /// a metadata request and an artifact request. A search gets no line.
+    #[tokio::test]
+    async fn a_request_refused_at_the_gate_is_audited() {
+        use audit::{Answered, DecisionPath};
+        let (dir, path, log) = audit_log("audit-gate");
+        let (base, _) = token_proxy(held(), Mode::Enforce, Some(log.clone())).await;
+        for target in [
+            "/widget",
+            "/widget/-/widget-1.0.0.tgz",
+            "/-/v1/search?text=w",
+        ] {
+            assert_eq!(
+                reqwest::get(format!("{base}{target}"))
+                    .await
+                    .unwrap()
+                    .status(),
+                401
+            );
+        }
+        let (down, _) = token_proxy(
+            Arc::new(crate::account::testing::Down),
+            Mode::Enforce,
+            Some(log),
+        )
+        .await;
+        let tokened = [(TOKEN_HEADER, "byrle_x".to_owned())];
+        let response = get_with(&format!("{down}/widget/-/widget-1.0.0.tgz"), &tokened).await;
+        assert_eq!(response.status(), 503);
+
+        let lines = audited(&path);
+        assert_eq!(
+            answers(&lines),
+            [
+                (
+                    DecisionPath::Resolution,
+                    None,
+                    "",
+                    Some(Answered::Unauthorized)
+                ),
+                (
+                    DecisionPath::Pinned,
+                    Some("1.0.0"),
+                    "",
+                    Some(Answered::Unauthorized)
+                ),
+                (
+                    DecisionPath::Pinned,
+                    Some("1.0.0"),
+                    "",
+                    Some(Answered::AccountStore)
+                ),
+            ]
+        );
+        assert!(
+            lines
+                .iter()
+                .all(|l| l.name == "widget" && l.account.is_none() && !l.decided()),
+            "{lines:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Without a policy no line is written, and a deferral is written by its decision line.
+    #[test]
+    fn a_refusal_with_no_policy_or_a_deferral_writes_no_undecided_line() {
+        let (dir, path, log) = audit_log("audit-gate-none");
+        let key = PackageKey::from_registry_name(Ecosystem::Npm, "widget").unwrap();
+        let unpoliced = offline(None, None).with_audit_log(Some(log.clone()));
+        audit_refused(
+            &unpoliced,
+            &RequestTarget::Metadata(key.clone()),
+            audit::Answered::Unauthorized,
+        );
+        let analysing = NotReady::Analysing {
+            purl: "pkg:npm/widget@1.0.0".to_owned(),
+            digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+        };
+        let policed = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log));
+        audit_not_ready(&policed, &key, Some("1.0.0"), &analysing, None);
+        assert!(audited(&path).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Without a gate, health says no token is required.
     #[test]
     fn a_proxy_without_a_gate_requires_no_token() {
@@ -8665,23 +8772,21 @@ mod tests {
             ]
         );
         assert!(lines.iter().all(|l| l.name == "lodash" && !l.decided()));
-
-        let proxy = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log));
-        let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
-        audit_not_ready(&proxy, &key, None, &NotReady::AccountStore, None);
-        assert_eq!(audited(&path).len(), 4, "a case the log does not record");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The two not-ready cases a request is audited with are named in the log as the
+    /// The three not-ready cases a request is audited with are named in the log as the
     /// `x-byrle-not-ready` header names them.
     #[test]
     fn a_not_ready_case_is_audited_by_the_name_its_header_gives() {
-        for case in [NotReady::Unanswered, NotReady::Uncovered(Ecosystem::Npm)] {
+        for case in [
+            NotReady::Unanswered,
+            NotReady::AccountStore,
+            NotReady::Uncovered(Ecosystem::Npm),
+        ] {
             let answered = serde_json::to_value(case.answered().unwrap()).unwrap();
             assert_eq!(answered, case.reason());
         }
-        assert_eq!(NotReady::AccountStore.answered(), None);
         let analysing = NotReady::Analysing {
             purl: "pkg:npm/widget@1.0.0".to_owned(),
             digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
