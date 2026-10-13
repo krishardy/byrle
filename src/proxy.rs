@@ -102,7 +102,7 @@ pub enum IntelState {
 }
 
 /// What the proxy is, and what it is configured to do, without secrets. Served at [`HEALTH_PATH`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct Health {
     /// Always "byrle", so a response from something else is recognisable as such.
     pub service: String,
@@ -349,6 +349,11 @@ impl Proxy {
         self.config_mut().served_origins = served;
         self.config_mut().allowed_direct = allowed_direct;
         Ok(self)
+    }
+
+    /// The intel store the policy is decided against, when one is configured.
+    pub fn intel_store(&self) -> Option<Arc<dyn Intel>> {
+        self.config.intel.clone()
     }
 
     /// The policy in force, when one is configured: the last one reloaded, or the one

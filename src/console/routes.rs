@@ -47,8 +47,11 @@ pub const DEPENDENCIES_PATH: &str = "/api/v1/dependencies";
 /// Under the console's path: `GET` failures by hour and case, R6.
 pub const FAILURES_PATH: &str = "/api/v1/metrics/failures";
 
+/// Under the console's path: `GET` the configuration, R7.
+pub const CONFIG_PATH: &str = "/api/v1/config";
+
 /// Every console route.
-pub const ROUTES: [Route; 8] = [
+pub const ROUTES: [Route; 9] = [
     Route {
         method: Method::GET,
         path: super::HEALTH_PATH,
@@ -86,6 +89,13 @@ pub const ROUTES: [Route; 8] = [
         path: DEPENDENCIES_PATH,
         guard: Guard::Needs(Permission::RequestsRead, |site, _, parts| {
             Box::pin(super::usage::dependencies(site, parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: CONFIG_PATH,
+        guard: Guard::Needs(Permission::ConfigRead, |site, _, _| {
+            Box::pin(super::config::config(site))
         }),
     },
     Route {

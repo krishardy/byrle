@@ -24,6 +24,38 @@
         ],
         "type": "string"
       },
+      "Config": {
+        "description": "The configuration as loaded.",
+        "properties": {
+          "environment": {
+            "description": "Each runtime variable, set or not.",
+            "items": {
+              "$ref": "#/components/schemas/Setting"
+            },
+            "type": "array"
+          },
+          "policy": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PolicyShown",
+                "description": "Absent when no policy is set."
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "proxy": {
+            "$ref": "#/components/schemas/Health",
+            "description": "What `/-/byrle/health` answers."
+          }
+        },
+        "required": [
+          "proxy",
+          "environment"
+        ],
+        "type": "object"
+      },
       "Credentials": {
         "description": "An account and its console password.",
         "properties": {
@@ -78,6 +110,141 @@
         },
         "required": [
           "failures"
+        ],
+        "type": "object"
+      },
+      "Health": {
+        "description": "What the proxy is, and what it is configured to do, without secrets. Served at [`HEALTH_PATH`].",
+        "properties": {
+          "allowed_direct_origins": {
+            "description": "Origins it does not serve and permits a client to fetch directly.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "artifacts_revalidated": {
+            "description": "Artifact requests answered 304 since the proxy started, from the client's own cache.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "artifacts_verified": {
+            "description": "Artifacts fetched and verified since the proxy started. See [`crate::verified`].",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "artifacts_with_direct_dependencies": {
+            "description": "Artifact requests for a version that depends on a package by URL, git or path.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "clients_without_artifacts": {
+            "additionalProperties": {
+              "format": "int64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "description": "The clients the last window found reading documents and fetching no artifact.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "decisions_unrecorded": {
+            "description": "Artifact decisions dropped on a full queue or a failed write since the proxy started.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "documents_uninspected": {
+            "description": "Metadata documents forwarded without being read or rewritten since the proxy started.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "mode": {
+            "description": "`enforce` or `observe`.",
+            "type": "string"
+          },
+          "packages_held": {
+            "description": "Packages whose metadata is held, and the records in them.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "public_base": {
+            "description": "The address written into artifact URLs; `None` uses each request's own `Host`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "records_held": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refuse_unservable": {
+            "description": "Whether versions whose artifacts this proxy cannot serve are removed.",
+            "type": "boolean"
+          },
+          "rewrite_artifacts": {
+            "description": "Whether artifact URLs are pointed at this proxy.",
+            "type": "boolean"
+          },
+          "served_origins": {
+            "description": "Origins whose artifacts this proxy serves.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "service": {
+            "description": "Always \"byrle\", so a response from something else is recognisable as such.",
+            "type": "string"
+          },
+          "spool_dir": {
+            "description": "Where an artifact being analysed is written, when a spool is open.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tokens_required": {
+            "description": "Whether a request needs a proxy token. See [`crate::account::gate`].",
+            "type": "boolean"
+          },
+          "upstreams": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Each ecosystem's upstream, by purl type.",
+            "propertyNames": {
+              "type": "string"
+            },
+            "type": "object"
+          },
+          "usage_unrecorded": {
+            "description": "Usage table rows dropped on a full queue or a failed write since the proxy started.",
+            "format": "int64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "service",
+          "version",
+          "upstreams",
+          "rewrite_artifacts",
+          "refuse_unservable",
+          "served_origins",
+          "allowed_direct_origins",
+          "packages_held",
+          "records_held",
+          "artifacts_verified"
         ],
         "type": "object"
       },
@@ -141,6 +308,24 @@
         ],
         "type": "object"
       },
+      "PolicyShown": {
+        "description": "The policy in force.",
+        "properties": {
+          "digest": {
+            "description": "The SHA-256 of the file, as the audit log records it.",
+            "type": "string"
+          },
+          "report": {
+            "description": "What `byrle explain --policy` prints for it.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "digest",
+          "report"
+        ],
+        "type": "object"
+      },
       "Problem": {
         "description": "Why a request was not answered.",
         "properties": {
@@ -192,6 +377,32 @@
           "version",
           "first_served",
           "last_served"
+        ],
+        "type": "object"
+      },
+      "Setting": {
+        "description": "One runtime variable as the console shows it.",
+        "properties": {
+          "default": {
+            "description": "What applies when it is unset, when that is a value.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "value": {
+            "description": "As set, a secret as `set` and a URL without its password. Absent when unset.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
         ],
         "type": "object"
       },
@@ -337,6 +548,66 @@
           "accounts"
         ],
         "x-byrle-permission": "accounts.read"
+      }
+    },
+    "/api/v1/config": {
+      "get": {
+        "operationId": "config",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Config"
+                }
+              }
+            },
+            "description": "The configuration as loaded"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant config.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No proxy to describe, or the intel store did not answer"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET config`: the proxy's health, its policy and its environment, secrets removed. R7.",
+        "tags": [
+          "config"
+        ],
+        "x-byrle-permission": "config.read"
       }
     },
     "/api/v1/dependencies": {

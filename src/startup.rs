@@ -130,6 +130,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_gate(gate);
     #[cfg(debug_assertions)]
     let proxy = proxy.with_defer_test(defer_test);
+    let console = beside(console, &proxy, environment);
 
     let watch = environment.watch_interval()?;
     match watch {
@@ -176,7 +177,7 @@ fn site<L: Fn(&str) -> Option<OsString>>(
         Arc<dyn crate::account::Accounts>,
         Arc<dyn crate::usage::Usage>,
     )>,
-) -> Result<Option<Arc<crate::console::Site>>, StartupError> {
+) -> Result<Option<crate::console::Site>, StartupError> {
     let Some(console) = console else {
         return Ok(None);
     };
@@ -195,9 +196,18 @@ fn site<L: Fn(&str) -> Option<OsString>>(
         None => None,
     };
     let login = (environment.password_hasher()?, environment.login_limits()?);
-    Ok(Some(Arc::new(
+    Ok(Some(
         crate::console::Site::new(console, accounts, login, events).with_usage(usage),
-    )))
+    ))
+}
+
+/// `site` describing `proxy` and the settings in `environment`, ready to serve.
+fn beside<L: Fn(&str) -> Option<OsString>>(
+    site: Option<crate::console::Site>,
+    proxy: &Proxy,
+    environment: &Env<L>,
+) -> Option<Arc<crate::console::Site>> {
+    site.map(|site| Arc::new(site.with_proxy(proxy.clone(), environment.settings())))
 }
 
 /// What checks each request's token: `accounts`, unless [`env::REQUIRE_TOKEN`] is `0`.
@@ -660,7 +670,9 @@ mod tests {
                 .is_none()
         );
         let running = site(&with(&vars), console(), Some((accounts.clone(), kept()))).unwrap();
-        assert_eq!(running.unwrap().console.mount.to_string(), "/admin/");
+        let proxy = Proxy::new(reqwest::Client::new());
+        let running = beside(running, &proxy, &with(&vars)).expect("a console");
+        assert_eq!(running.console.mount.to_string(), "/admin/");
 
         let dir = crate::util::test_support::tempdir("startup-console-events");
         let log = dir.join("events.log");
