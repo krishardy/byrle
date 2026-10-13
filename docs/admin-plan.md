@@ -197,6 +197,16 @@ with `Intel::lookup`, the lookup the proxy and `explain` use. A version with an 
 where `malware` is set, first loaded after the version was served, is an alert. "First
 loaded" comes from `intel_ingestion`. Stage 8 sends the same matches by email.
 
+Built 2026-10-13 for when the console asks: `GET api/v1/alerts`, needing `alerts.read`
+(`src/console/alerts.rs`). It reads `served_version` by row id, up to 10,000 rows a
+request, and looks each package up once with `Intel::package`, matching versions as
+`Intel::lookup` does. "First loaded" is the advisory's `cached`
+([advisory-cached](engineering_decisions/advisory-cached.md)), the time byrle first stored
+it, which is per advisory where `intel_ingestion` is per refresh. An advisory whose
+`cached` the store does not give is reported as an alert, since a version served after it
+is still served with malware. The answer says how many rows it read in `scanned` and where
+to go on from in `next`. Nothing runs after a refresh yet; that comes with Stage 8's email.
+
 ### 4.5 The account event log (R8)
 
 Recorded actions in Stage 4.9:

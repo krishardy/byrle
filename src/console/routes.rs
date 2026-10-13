@@ -59,8 +59,11 @@ pub const LOGS_PATH: &str = "/api/v1/logs/{day}";
 /// Under the console's path: `GET` account event log lines, R8.
 pub const EVENTS_PATH: &str = "/api/v1/events";
 
+/// Under the console's path: `GET` versions served before a malware advisory named them, R4.
+pub const ALERTS_PATH: &str = "/api/v1/alerts";
+
 /// Every console route.
-pub const ROUTES: [Route; 12] = [
+pub const ROUTES: [Route; 13] = [
     Route {
         method: Method::GET,
         path: super::HEALTH_PATH,
@@ -112,6 +115,13 @@ pub const ROUTES: [Route; 12] = [
         path: LOGS_PATH,
         guard: Guard::Needs(Permission::RequestsRead, |site, _, parts| {
             Box::pin(super::logs::day(site, parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: ALERTS_PATH,
+        guard: Guard::Needs(Permission::AlertsRead, |site, _, parts| {
+            Box::pin(super::alerts::alerts(site, parts))
         }),
     },
     Route {
