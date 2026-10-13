@@ -86,6 +86,27 @@ pub const DEFAULT_LOG_RETENTION_DAYS: u32 = 365;
 /// The default number of days an artifact decision is kept.
 pub const DEFAULT_DECISION_RETENTION_DAYS: u32 = 365;
 
+/// The default fewest characters of a console password: NIST SP 800-63B-4's for a sole factor.
+pub const DEFAULT_PASSWORD_MIN_CHARS: u32 = 15;
+
+/// The default Argon2id memory, in KiB: the `argon2` crate's 19 MiB.
+pub const DEFAULT_ARGON2_MEMORY_KIB: u32 = 19 * 1024;
+
+/// The default Argon2id passes.
+pub const DEFAULT_ARGON2_PASSES: u32 = 2;
+
+/// The default hours a console session lasts.
+pub const DEFAULT_SESSION_HOURS: u32 = 8;
+
+/// The default minutes failed logins are counted over.
+pub const DEFAULT_LOGIN_WINDOW_MINUTES: u32 = 15;
+
+/// The default failed logins per account in the window before more are refused unchecked.
+pub const DEFAULT_LOGIN_FAILURES_PER_ACCOUNT: u32 = 5;
+
+/// The default failed logins per address in the window before more are refused unchecked.
+pub const DEFAULT_LOGIN_FAILURES_PER_ADDRESS: u32 = 20;
+
 /// The default number of snapshot manifests kept: a month of daily refreshes.
 pub const DEFAULT_SNAPSHOT_LIMIT: usize = 30;
 
@@ -131,6 +152,54 @@ pub const CONSOLE_LISTEN: Var = runtime(
         "BYRLE_LISTEN, and neither path may contain the other",
     ],
 );
+pub const PASSWORD_MIN_CHARS: Var = runtime(
+    "BYRLE_PASSWORD_MIN_CHARS",
+    "",
+    &["fewest characters a console password may have"],
+)
+.with_default(Default::Number(DEFAULT_PASSWORD_MIN_CHARS as u64));
+pub const ARGON2_MEMORY_KIB: Var = runtime(
+    "BYRLE_ARGON2_MEMORY_KIB",
+    "",
+    &["memory, in KiB, each new password hash takes"],
+)
+.with_default(Default::Number(DEFAULT_ARGON2_MEMORY_KIB as u64));
+pub const ARGON2_PASSES: Var = runtime(
+    "BYRLE_ARGON2_PASSES",
+    "",
+    &["passes over that memory each new password hash makes"],
+)
+.with_default(Default::Number(DEFAULT_ARGON2_PASSES as u64));
+pub const SESSION_HOURS: Var = runtime(
+    "BYRLE_SESSION_HOURS",
+    "",
+    &["hours a console session lasts from login"],
+)
+.with_default(Default::Number(DEFAULT_SESSION_HOURS as u64));
+pub const LOGIN_WINDOW_MINUTES: Var = runtime(
+    "BYRLE_LOGIN_WINDOW_MINUTES",
+    "",
+    &["minutes failed console logins are counted over"],
+)
+.with_default(Default::Number(DEFAULT_LOGIN_WINDOW_MINUTES as u64));
+pub const LOGIN_FAILURES_PER_ACCOUNT: Var = runtime(
+    "BYRLE_LOGIN_FAILURES_PER_ACCOUNT",
+    "",
+    &[
+        "failed logins to one account in the window before",
+        "more are refused unchecked",
+    ],
+)
+.with_default(Default::Number(DEFAULT_LOGIN_FAILURES_PER_ACCOUNT as u64));
+pub const LOGIN_FAILURES_PER_ADDRESS: Var = runtime(
+    "BYRLE_LOGIN_FAILURES_PER_ADDRESS",
+    "",
+    &[
+        "failed logins from one address, or IPv6 /64, in the",
+        "window before more are refused unchecked",
+    ],
+)
+.with_default(Default::Number(DEFAULT_LOGIN_FAILURES_PER_ADDRESS as u64));
 pub const RP_KEY: Var = runtime(
     "BYRLE_RP_KEY",
     "",
@@ -517,7 +586,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 66] = [
+pub const ALL: [Var; 73] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -525,6 +594,13 @@ pub const ALL: [Var; 66] = [
     CONSOLE_URL,
     CONSOLE_LISTEN,
     RP_KEY,
+    PASSWORD_MIN_CHARS,
+    ARGON2_MEMORY_KIB,
+    ARGON2_PASSES,
+    SESSION_HOURS,
+    LOGIN_WINDOW_MINUTES,
+    LOGIN_FAILURES_PER_ACCOUNT,
+    LOGIN_FAILURES_PER_ADDRESS,
     REQUIRE_TOKEN,
     TOKEN,
     ARTIFACT_ORIGINS,
@@ -805,6 +881,57 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     /// [`CONSOLE_LISTEN`]. `None` when the console shares [`LISTEN`].
     pub fn console_listen(&self) -> Result<Option<String>, EnvError> {
         self.text(CONSOLE_LISTEN)
+    }
+
+    /// A whole number from `min` to `max` in `var`, or `default`.
+    fn within(&self, var: Var, default: u32, min: u32, max: u32) -> Result<u32, EnvError> {
+        self.parsed(
+            var,
+            default,
+            |v| v.parse().ok().filter(|n| (min..=max).contains(n)),
+            &format!("is not a whole number from {min} to {max}"),
+        )
+    }
+
+    /// The console's password hasher, at [`ARGON2_MEMORY_KIB`] and [`ARGON2_PASSES`].
+    pub fn password_hasher(&self) -> Result<crate::account::password::Hasher, EnvError> {
+        Ok(crate::account::password::Hasher::with_cost(
+            self.within(ARGON2_MEMORY_KIB, DEFAULT_ARGON2_MEMORY_KIB, 8, u32::MAX)?,
+            self.within(ARGON2_PASSES, DEFAULT_ARGON2_PASSES, 1, u32::MAX)?,
+        ))
+    }
+
+    pub fn password_min_chars(&self) -> Result<usize, EnvError> {
+        let most = crate::account::password::MAX_BYTES as u32;
+        self.within(PASSWORD_MIN_CHARS, DEFAULT_PASSWORD_MIN_CHARS, 1, most)
+            .map(|n| n as usize)
+    }
+
+    /// The console's session length and limits on failed logins.
+    pub fn login_limits(&self) -> Result<crate::console::login::Limits, EnvError> {
+        let hours = self.within(SESSION_HOURS, DEFAULT_SESSION_HOURS, 1, 8760)?;
+        let minutes = self.within(
+            LOGIN_WINDOW_MINUTES,
+            DEFAULT_LOGIN_WINDOW_MINUTES,
+            1,
+            525_600,
+        )?;
+        Ok(crate::console::login::Limits {
+            session: jiff::SignedDuration::from_hours(i64::from(hours)),
+            window: std::time::Duration::from_secs(u64::from(minutes) * 60),
+            per_account: self.within(
+                LOGIN_FAILURES_PER_ACCOUNT,
+                DEFAULT_LOGIN_FAILURES_PER_ACCOUNT,
+                1,
+                u32::MAX,
+            )? as usize,
+            per_address: self.within(
+                LOGIN_FAILURES_PER_ADDRESS,
+                DEFAULT_LOGIN_FAILURES_PER_ADDRESS,
+                1,
+                u32::MAX,
+            )? as usize,
+        })
     }
 
     /// [`RP_KEY`]. A key too short is refused without showing it.
@@ -1926,6 +2053,65 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The login settings default to the values the user confirmed on 2026-10-13, take
+    /// any value in their range, and refuse one outside it, at each end.
+    #[test]
+    fn the_login_settings_are_read_within_their_ranges() {
+        let defaults = with(&[]);
+        assert_eq!(defaults.password_min_chars().unwrap(), 15);
+        let limits = defaults.login_limits().unwrap();
+        assert_eq!(limits.session, jiff::SignedDuration::from_hours(8));
+        assert_eq!(limits.window, std::time::Duration::from_secs(900));
+        assert_eq!((limits.per_account, limits.per_address), (5, 20));
+        let hash = defaults
+            .password_hasher()
+            .unwrap()
+            .hash("correct horse battery");
+        assert!(
+            hash.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"),
+            "{hash}"
+        );
+
+        let set = with(&[
+            (PASSWORD_MIN_CHARS, "1024"),
+            (ARGON2_MEMORY_KIB, "8"),
+            (ARGON2_PASSES, "1"),
+            (SESSION_HOURS, "8760"),
+            (LOGIN_WINDOW_MINUTES, "1"),
+            (LOGIN_FAILURES_PER_ACCOUNT, "1"),
+            (LOGIN_FAILURES_PER_ADDRESS, "3"),
+        ]);
+        assert_eq!(set.password_min_chars().unwrap(), 1024);
+        let limits = set.login_limits().unwrap();
+        assert_eq!(limits.session, jiff::SignedDuration::from_hours(8760));
+        assert_eq!(limits.window, std::time::Duration::from_secs(60));
+        assert_eq!((limits.per_account, limits.per_address), (1, 3));
+        let hash = set.password_hasher().unwrap().hash("x");
+        assert!(hash.starts_with("$argon2id$v=19$m=8,t=1,p=1$"), "{hash}");
+
+        let refused = |var: Var, value: &str, read: fn(&Process) -> Option<EnvError>| {
+            let error = read(&with(&[(var, value)])).expect(var.name);
+            assert_eq!(error.var, var.name);
+            assert!(
+                error.reason.starts_with("is not a whole number from"),
+                "{error}"
+            );
+        };
+        refused(PASSWORD_MIN_CHARS, "0", |e| e.password_min_chars().err());
+        refused(PASSWORD_MIN_CHARS, "1025", |e| e.password_min_chars().err());
+        refused(ARGON2_MEMORY_KIB, "7", |e| e.password_hasher().err());
+        refused(ARGON2_PASSES, "0", |e| e.password_hasher().err());
+        refused(SESSION_HOURS, "0", |e| e.login_limits().err());
+        refused(SESSION_HOURS, "8761", |e| e.login_limits().err());
+        refused(LOGIN_WINDOW_MINUTES, "0", |e| e.login_limits().err());
+        refused(LOGIN_WINDOW_MINUTES, "525601", |e| e.login_limits().err());
+        refused(LOGIN_FAILURES_PER_ACCOUNT, "0", |e| e.login_limits().err());
+        refused(LOGIN_FAILURES_PER_ADDRESS, "0", |e| e.login_limits().err());
+        refused(LOGIN_FAILURES_PER_ADDRESS, "many", |e| {
+            e.login_limits().err()
+        });
     }
 
     /// Every accessor refuses a value that is not UTF-8, naming its variable.

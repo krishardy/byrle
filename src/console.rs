@@ -116,18 +116,19 @@ pub struct Site {
 }
 
 impl Site {
-    /// `console`, logging in against `store` with `hasher`, writing logins to `events`.
+    /// `console`, logging in against `store` with `hasher` and within `limits`, writing
+    /// logins to `events`.
     pub fn new(
         console: Console,
         store: Arc<dyn Accounts>,
-        hasher: Hasher,
+        (hasher, limits): (Hasher, login::Limits),
         events: Option<Arc<EventLog>>,
     ) -> Self {
         let origin = reqwest::Url::parse(&console.url)
             .map(|url| url.origin().ascii_serialization())
             .expect("the console URL parsed when it was read");
         Self {
-            login: login::Login::new(store.clone(), hasher, events),
+            login: login::Login::new(store.clone(), hasher, limits, events),
             gate: Gate::new(store.clone()),
             store,
             origin,
@@ -189,7 +190,8 @@ pub(crate) mod tests {
     /// `console` running against `store`, with a cheap hasher and no event log.
     pub fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
         let hasher = crate::account::password::tests::cheap();
-        Arc::new(Site::new(console, store, hasher, None))
+        let limits = crate::console::login::tests::limits();
+        Arc::new(Site::new(console, store, (hasher, limits), None))
     }
 
     /// The console at `https://h/admin/` on its own listener, served, with its base URL.

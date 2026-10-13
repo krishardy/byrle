@@ -240,8 +240,20 @@ async fn run_account(command: cli::AccountCommand) -> std::process::ExitCode {
         cli::AccountCommand::Password(args) => {
             match byrle::account::password::read(&mut std::io::stdin().lock()) {
                 Ok(password) => {
-                    let hasher = byrle::account::password::Hasher::standard();
-                    command::set_password(&store, &args.name, &password, &hasher).await
+                    let environment = env::process();
+                    let settings = environment
+                        .password_min_chars()
+                        .and_then(|min| environment.password_hasher().map(|h| (min, h)));
+                    match settings {
+                        Ok((min_chars, hasher)) => {
+                            let policy = (min_chars, &hasher);
+                            command::set_password(&store, &args.name, &password, policy).await
+                        }
+                        Err(e) => {
+                            eprintln!("byrle account password: {e}");
+                            return std::process::ExitCode::from(2);
+                        }
+                    }
                 }
                 Err(why) => {
                     eprintln!("byrle account password: {why}");

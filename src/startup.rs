@@ -191,11 +191,9 @@ fn site<L: Fn(&str) -> Option<OsString>>(
         )),
         None => None,
     };
+    let login = (environment.password_hasher()?, environment.login_limits()?);
     Ok(Some(Arc::new(crate::console::Site::new(
-        console,
-        accounts,
-        crate::account::password::Hasher::standard(),
-        events,
+        console, accounts, login, events,
     ))))
 }
 
@@ -685,6 +683,14 @@ mod tests {
             panic!("an unreadable event log path is an environment error");
         };
         assert_eq!(e.var, env::ACCOUNT_EVENT_LOG.name);
+        for bad in [(env::ARGON2_PASSES, "0"), (env::SESSION_HOURS, "0")] {
+            let accounts: Arc<dyn crate::account::Accounts> =
+                Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
+            let Err(StartupError::Env(e)) = site(&with(&[bad]), console(), Some(accounts)) else {
+                panic!("{} out of range stops the console", bad.0);
+            };
+            assert_eq!(e.var, bad.0.name);
+        }
     }
 
     /// What `proxy` logs at INFO and above for `pairs`, with whether it started.

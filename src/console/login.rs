@@ -12,17 +12,18 @@ use crate::account::password::{self, Hasher};
 use crate::account::{Accounts, Caller, Name, TokenDigest};
 use crate::util::lru::Lru;
 
-/// How long a session lasts from login.
-pub const SESSION: jiff::SignedDuration = jiff::SignedDuration::from_hours(8);
-
-/// How far back failed logins are counted.
-pub const WINDOW: Duration = Duration::from_secs(15 * 60);
-
-/// Failed logins per account in [`WINDOW`] before more are refused unchecked.
-pub const PER_ACCOUNT: usize = 5;
-
-/// Failed logins per address in [`WINDOW`] before more are refused unchecked.
-pub const PER_ADDRESS: usize = 20;
+/// Session length and failed-login limits, as [`crate::env::Env::login_limits`] reads them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Limits {
+    /// From login.
+    pub session: jiff::SignedDuration,
+    /// How far back failed logins are counted.
+    pub window: Duration,
+    /// Failed logins per account in the window before more are refused unchecked.
+    pub per_account: usize,
+    /// Failed logins per address in the window before more are refused unchecked.
+    pub per_address: usize,
+}
 
 /// Passwords hashed at once, each on a blocking thread, off those answering requests.
 const HASHING: usize = 2;
@@ -47,53 +48,58 @@ impl Key {
     }
 }
 
-/// Failed logins in the last [`WINDOW`], by account and by address, in this process.
+/// Failed logins in the last window, by account and by address, in this process.
 pub struct Limiter {
+    limits: Limits,
     failures: Mutex<Lru<Key, Vec<Instant>>>,
 }
 
-impl Default for Limiter {
-    fn default() -> Self {
+impl Limiter {
+    pub fn new(limits: Limits) -> Self {
         Self {
+            limits,
             failures: Mutex::new(Lru::new(TRACKED)),
         }
     }
-}
 
-impl Limiter {
-    /// The failures against `key` within [`WINDOW`] of `now`.
-    fn recent(failures: &mut Lru<Key, Vec<Instant>>, key: &Key, now: Instant) -> Vec<Instant> {
+    /// The failures against `key` within the window of `now`.
+    fn recent(
+        &self,
+        failures: &mut Lru<Key, Vec<Instant>>,
+        key: &Key,
+        now: Instant,
+    ) -> Vec<Instant> {
         failures
             .get(key)
             .map(|times| {
                 times
                     .iter()
                     .copied()
-                    .filter(|at| now.saturating_duration_since(*at) < WINDOW)
+                    .filter(|at| now.saturating_duration_since(*at) < self.limits.window)
                     .collect()
             })
             .unwrap_or_default()
     }
 
-    fn keys(account: &str, address: Option<IpAddr>) -> Vec<(Key, usize)> {
-        std::iter::once((Key::Account(account.to_owned()), PER_ACCOUNT))
-            .chain(address.map(|address| (Key::address(address), PER_ADDRESS)))
+    fn keys(&self, account: &str, address: Option<IpAddr>) -> Vec<(Key, usize)> {
+        std::iter::once((Key::Account(account.to_owned()), self.limits.per_account))
+            .chain(address.map(|address| (Key::address(address), self.limits.per_address)))
             .collect()
     }
 
     /// Whether a login as `account` from `address` may be checked at `now`.
     pub fn allows(&self, account: &str, address: Option<IpAddr>, now: Instant) -> bool {
         let mut failures = self.failures.lock().expect("limiter lock");
-        Self::keys(account, address)
+        self.keys(account, address)
             .iter()
-            .all(|(key, limit)| Self::recent(&mut failures, key, now).len() < *limit)
+            .all(|(key, limit)| self.recent(&mut failures, key, now).len() < *limit)
     }
 
     /// Count a failed login as `account` from `address` at `now`.
     pub fn failed(&self, account: &str, address: Option<IpAddr>, now: Instant) {
         let mut failures = self.failures.lock().expect("limiter lock");
-        for (key, _) in Self::keys(account, address) {
-            let mut times = Self::recent(&mut failures, &key, now);
+        for (key, _) in self.keys(account, address) {
+            let mut times = self.recent(&mut failures, &key, now);
             times.push(now);
             failures.insert(key, times);
         }
@@ -133,15 +139,24 @@ pub struct Login {
 }
 
 impl Login {
-    pub fn new(store: Arc<dyn Accounts>, hasher: Hasher, events: Option<Arc<EventLog>>) -> Self {
+    pub fn new(
+        store: Arc<dyn Accounts>,
+        hasher: Hasher,
+        limits: Limits,
+        events: Option<Arc<EventLog>>,
+    ) -> Self {
         Self {
             dummy: hasher.hash(&crate::account::random()),
             store,
             hasher: Arc::new(hasher),
             hashing: Semaphore::new(HASHING),
-            limiter: Limiter::default(),
+            limiter: Limiter::new(limits),
             events,
         }
+    }
+
+    pub fn limits(&self) -> Limits {
+        self.limiter.limits
     }
 
     /// Log in as `account` with `password`, from `source`.
@@ -196,8 +211,8 @@ impl Login {
     async fn start(&self, name: Name, source: Option<IpAddr>) -> Attempt {
         let id = crate::account::random();
         let expires = jiff::Timestamp::now()
-            .checked_add(SESSION)
-            .expect("now and 8 hours is inside jiff's range");
+            .checked_add(self.limiter.limits.session)
+            .expect("now and a session of at most a year is inside jiff's range");
         let started = async {
             let roles = self.store.roles(&name).await?;
             self.store
@@ -259,6 +274,11 @@ pub(crate) mod tests {
 
     pub const PASSWORD: &str = "correct horse battery";
 
+    /// The defaults in [`crate::env`].
+    pub fn limits() -> Limits {
+        crate::env::testing::with(&[]).login_limits().unwrap()
+    }
+
     /// A store with `alice`, an admin with [`PASSWORD`], and `bob`, with no role.
     pub async fn store() -> Arc<InMemory> {
         let store = Arc::new(InMemory::new("2026-10-13T00:00:00Z"));
@@ -280,25 +300,29 @@ pub(crate) mod tests {
 
     #[test]
     fn an_account_is_limited_at_its_fifth_failure_in_the_window() {
-        let limiter = Limiter::default();
+        let limiter = Limiter::new(limits());
         let start = Instant::now();
-        for n in 0..PER_ACCOUNT {
+        for n in 0..limits().per_account {
             assert!(limiter.allows("alice", None, start), "failure {n}");
             limiter.failed("alice", None, start);
         }
         assert!(!limiter.allows("alice", None, start));
         assert!(!limiter.allows("alice", address("192.0.2.1"), start));
         assert!(limiter.allows("bob", None, start));
-        assert!(!limiter.allows("alice", None, start + WINDOW - Duration::from_secs(1)));
-        assert!(limiter.allows("alice", None, start + WINDOW));
+        assert!(!limiter.allows(
+            "alice",
+            None,
+            start + limits().window - Duration::from_secs(1)
+        ));
+        assert!(limiter.allows("alice", None, start + limits().window));
     }
 
     /// An address is limited across accounts; an IPv6 address by its /64.
     #[test]
     fn an_address_is_limited_at_its_twentieth_failure_and_ipv6_by_its_64() {
-        let limiter = Limiter::default();
+        let limiter = Limiter::new(limits());
         let now = Instant::now();
-        for n in 0..PER_ADDRESS {
+        for n in 0..limits().per_address {
             let tried = format!("user{n}");
             assert!(limiter.allows(&tried, address("2001:db8:0:1::1"), now));
             limiter.failed(&tried, address("2001:db8:0:1::1"), now);
@@ -313,7 +337,7 @@ pub(crate) mod tests {
     }
 
     fn login(store: Arc<InMemory>, events: Option<Arc<EventLog>>) -> Login {
-        Login::new(store, cheap(), events)
+        Login::new(store, cheap(), limits(), events)
     }
 
     #[tokio::test]
@@ -396,7 +420,7 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_limited_account_is_not_checked() {
         let login = login(store().await, None);
-        for _ in 0..PER_ACCOUNT {
+        for _ in 0..limits().per_account {
             login.attempt("alice", "wrong horse battery", None).await;
         }
         assert_eq!(
@@ -413,7 +437,12 @@ pub(crate) mod tests {
     /// starting the session.
     #[tokio::test]
     async fn a_store_that_cannot_answer_is_unanswered() {
-        let down = Login::new(Arc::new(crate::account::testing::Down), cheap(), None);
+        let down = Login::new(
+            Arc::new(crate::account::testing::Down),
+            cheap(),
+            limits(),
+            None,
+        );
         assert_eq!(
             down.attempt("alice", PASSWORD, None).await,
             Attempt::Unanswered
@@ -423,7 +452,7 @@ pub(crate) mod tests {
                 inner: store().await,
                 fails,
             };
-            let failing = Login::new(Arc::new(failing), cheap(), None);
+            let failing = Login::new(Arc::new(failing), cheap(), limits(), None);
             assert_eq!(
                 failing.attempt("alice", PASSWORD, None).await,
                 Attempt::Unanswered,

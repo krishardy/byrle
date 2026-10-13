@@ -1,8 +1,9 @@
 # Console login: passwords, sessions and the limit on failures
 
-- **Status:** Implemented 2026-10-13. The values below were chosen by Claude and are not
-  yet confirmed by the user, apart from reading the client's address through
-  `BYRLE_RP_KEY`, which the user decided. TODO Stage 4.9.
+- **Status:** Implemented 2026-10-13. The values below were proposed by Claude and
+  confirmed by the user on 2026-10-13, who asked that each be an environment variable.
+  Reading the client's address through `BYRLE_RP_KEY` was the user's decision. TODO
+  Stage 4.9.
 - **Related:** [admin-plan](../admin-plan.md) §4.1 and §4.5,
   [console-login-crates](console-login-crates.md)
 - **Code:** `src/account/password.rs`, `src/account/command.rs`, `src/console/login.rs`,
@@ -26,6 +27,23 @@ later leaves earlier hashes working.
 `argon2` is built with `default-features = false` and `alloc` and `password-hash`. Its
 default `getrandom` feature builds `getrandom` 0.4.3, which this crate does not use
 elsewhere; the salt comes from `getrandom` 0.3, which issues proxy tokens too.
+
+## Variables
+
+| Variable | Default | Accepted |
+|---|---|---|
+| `BYRLE_PASSWORD_MIN_CHARS` | 15 | 1 to 1,024 |
+| `BYRLE_ARGON2_MEMORY_KIB` | 19456 | 8 or more |
+| `BYRLE_ARGON2_PASSES` | 2 | 1 or more |
+| `BYRLE_SESSION_HOURS` | 8 | 1 to 8,760 |
+| `BYRLE_LOGIN_WINDOW_MINUTES` | 15 | 1 to 525,600 |
+| `BYRLE_LOGIN_FAILURES_PER_ACCOUNT` | 5 | 1 or more |
+| `BYRLE_LOGIN_FAILURES_PER_ADDRESS` | 20 | 1 or more |
+
+`byrle account password` reads the first three, so the command line and the console make
+hashes alike. A value outside its range stops the proxy at startup, and the command with
+exit 2. Changing the Argon2 cost leaves earlier hashes working; a password is rehashed only
+when it is set again.
 
 ## Setting one
 
