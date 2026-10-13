@@ -35,6 +35,9 @@ Proxy configuration, all through the environment:
                                     answers, and is never the proxy's. Unset, there is no console
   BYRLE_CONSOLE_LISTEN              address the console listens on. Unset, it shares
                                     BYRLE_LISTEN, and neither path may contain the other
+  BYRLE_RP_KEY                      key nginx sends as X-Byrle-RP-Key, at least 32
+                                    bytes. With it, X-Forwarded-For names the client.
+                                    Make one with `openssl rand -hex 32`
   BYRLE_REQUIRE_TOKEN=0             answer requests that carry no proxy token. Unset, each
                                     request needs one, and BYRLE_DATABASE_URL is required,
                                     since accounts and tokens are kept there

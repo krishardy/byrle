@@ -30,6 +30,7 @@ pub mod policy;
 pub mod proxy;
 pub mod record;
 pub mod refusal;
+pub mod reverse_proxy;
 pub mod rotation;
 pub mod route;
 pub mod signal;

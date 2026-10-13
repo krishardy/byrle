@@ -131,6 +131,15 @@ pub const CONSOLE_LISTEN: Var = runtime(
         "BYRLE_LISTEN, and neither path may contain the other",
     ],
 );
+pub const RP_KEY: Var = runtime(
+    "BYRLE_RP_KEY",
+    "",
+    &[
+        "key nginx sends as X-Byrle-RP-Key, at least 32",
+        "bytes. With it, X-Forwarded-For names the client.",
+        "Make one with `openssl rand -hex 32`",
+    ],
+);
 pub const REQUIRE_TOKEN: Var = runtime(
     "BYRLE_REQUIRE_TOKEN",
     "=0",
@@ -508,13 +517,14 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 65] = [
+pub const ALL: [Var; 66] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
     PROXY_URL,
     CONSOLE_URL,
     CONSOLE_LISTEN,
+    RP_KEY,
     REQUIRE_TOKEN,
     TOKEN,
     ARTIFACT_ORIGINS,
@@ -795,6 +805,16 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     /// [`CONSOLE_LISTEN`]. `None` when the console shares [`LISTEN`].
     pub fn console_listen(&self) -> Result<Option<String>, EnvError> {
         self.text(CONSOLE_LISTEN)
+    }
+
+    /// [`RP_KEY`]. A key too short is refused without showing it.
+    pub fn rp_key(&self) -> Result<Option<crate::reverse_proxy::RpKey>, EnvError> {
+        self.text(RP_KEY)?
+            .map(|key| {
+                crate::reverse_proxy::RpKey::parse(&key)
+                    .map_err(|why| EnvError::new(RP_KEY, "(not shown)".to_owned(), why))
+            })
+            .transpose()
     }
 
     fn url_and_mount(&self, var: Var) -> Result<Option<(String, Mount)>, EnvError> {
@@ -1218,6 +1238,16 @@ mod tests {
             env.console_listen().unwrap().as_deref(),
             Some("127.0.0.1:9090")
         );
+
+        let key = "k".repeat(crate::reverse_proxy::MIN_KEY_BYTES);
+        assert!(with(&[(RP_KEY, &key)]).rp_key().unwrap().is_some());
+        assert_eq!(with(&[]).rp_key().unwrap(), None);
+        let short = with(&[(RP_KEY, "short-key")]).rp_key().unwrap_err();
+        assert_eq!(
+            (short.var, short.value.as_str()),
+            (RP_KEY.name, "(not shown)")
+        );
+        assert!(!short.to_string().contains("short-key"), "{short}");
 
         let bad = with(&[(PROXY_URL, "https://user:pw@h/")]);
         for refused in [
@@ -1904,7 +1934,7 @@ mod tests {
         use testing::with_unreadable;
 
         type Read = fn(&Process) -> Option<EnvError>;
-        let cases: [(Var, Read); 19] = [
+        let cases: [(Var, Read); 20] = [
             (EXPIRY_CEILING_DAYS, |e| e.expiry_ceiling_days().err()),
             (LOG_RETENTION_DAYS, |e| e.log_retention_days().err()),
             (DECISION_RETENTION_DAYS, |e| {
@@ -1926,6 +1956,7 @@ mod tests {
             (UV_EXTRAS, |e| e.uv_indexes().err()),
             (UV_NAMED, |e| e.uv_indexes().err()),
             (GITHUB_TOKEN, |e| e.github_token().err()),
+            (RP_KEY, |e| e.rp_key().err()),
         ];
         for (var, read) in cases {
             let error = read(&with_unreadable(&[], var)).expect(var.name);

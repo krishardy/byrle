@@ -19,6 +19,8 @@ pub struct Console {
     pub mount: Mount,
     /// The console's own listener. `None` when it shares the proxy's.
     pub listen: Option<String>,
+    /// The key nginx sends, which makes `X-Forwarded-For` name the client.
+    pub rp_key: Option<crate::reverse_proxy::RpKey>,
 }
 
 impl Console {
@@ -52,7 +54,12 @@ impl Console {
                 reason: format!("{reason} ({} is {})", env::PROXY_URL, proxy),
             });
         }
-        Ok(Some(Console { url, mount, listen }))
+        Ok(Some(Console {
+            url,
+            mount,
+            listen,
+            rp_key: environment.rp_key()?,
+        }))
     }
 
     /// The console's routes, each under its path. Any other request goes to `rest`.
@@ -146,6 +153,14 @@ mod tests {
         .unwrap();
         assert_eq!(shared.listen, None);
         assert_eq!(shared.mount.to_string(), "/admin/");
+        assert_eq!(shared.rp_key, None);
+        let short_key = console(&[
+            (env::PROXY_URL, "https://h/registry/"),
+            (env::CONSOLE_URL, "https://h/admin/"),
+            (env::RP_KEY, "short"),
+        ])
+        .unwrap_err();
+        assert_eq!(short_key.var, env::RP_KEY.name);
 
         let refused = console(&[(env::CONSOLE_URL, "https://h/admin/")]).unwrap_err();
         assert_eq!(refused.var, env::CONSOLE_URL.name);
@@ -212,6 +227,7 @@ mod tests {
             url: "https://h/admin/".into(),
             mount: Mount::from_url("https://h/admin/").unwrap(),
             listen: None,
+            rp_key: None,
         };
         let served = listeners(teapot(), LISTEN, Some(&shared));
         assert_eq!(served.len(), 1);
@@ -237,6 +253,7 @@ mod tests {
             url: "https://admin.h/".into(),
             mount: Mount::ROOT,
             listen: Some("127.0.0.1:9090".into()),
+            rp_key: None,
         };
         let served = listeners(teapot(), LISTEN, Some(&alone));
         let addresses: Vec<&str> = served.iter().map(|(at, _)| at.as_str()).collect();
