@@ -73,8 +73,8 @@ One value each for the whole deployment.
 | `kev` | `block` or `allow` | `block` | a version with an advisory in CISA's known-exploited catalogue | `allow` |
 | `yanked` | `block` or `allow` | `block` | a PyPI file its publisher yanked; npm has no yank | `allow` |
 | `deprecated` | `block` or `allow` | `allow` | an npm version its publisher deprecated; PyPI has no marker | `allow` |
-| `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a changed repository or workflow ([provenance-check](engineering_decisions/provenance-check.md)) | `allow` |
-| `provenance_window_days` | a whole number of days | 7 | | a shorter window compares fewer earlier versions |
+| `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a repository and workflow no version from before the window used ([provenance-check](engineering_decisions/provenance-check.md)) | `allow` |
+| `provenance_window_days` | a whole number of days | 7 | | a shorter window establishes a new repository or workflow sooner |
 
 - **`max_cvss`:** a score at or below it is allowed. A value above 10.0 loads, and allows
   every scored advisory.

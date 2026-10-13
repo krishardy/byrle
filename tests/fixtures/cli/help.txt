@@ -69,6 +69,8 @@ Proxy configuration, all through the environment:
   BYRLE_MAX_METADATA_BYTES          ceiling on a metadata document (default 64 MiB)
   BYRLE_MAX_RECORDS                 package records held in memory (default 50000)
   BYRLE_MAX_VERIFIED                verified artifact digests remembered (default 50000)
+  BYRLE_PROVENANCE_HISTORY          attested versions older than provenance_window_days
+                                    a version's identity is looked for in, most recent first (default 64)
   BYRLE_DATABASE_URL                Postgres holding intel from `byrle refresh`. With a
                                     policy, known_malware is enforced from it, and a
                                     store that cannot answer is a 503

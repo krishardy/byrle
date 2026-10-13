@@ -61,7 +61,12 @@ impl Facts {
         use crate::analysis::attestation;
         let provenance = attestation::from_metadata(
             record,
-            &attestation::previous(records, version, times, policy.provenance_window()),
+            &attestation::previous(
+                records,
+                version,
+                times,
+                (policy.provenance_window(), attestation::METADATA_HISTORY),
+            ),
         );
         let facts = Self::from_record_and_times(record, times).with_provenance(provenance);
         match intel {

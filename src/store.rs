@@ -141,10 +141,10 @@ impl RecordStore {
         key: &PackageKey,
         version: &str,
         times: Option<&PublishTimes>,
-        window: jiff::SignedDuration,
+        compared: (jiff::SignedDuration, usize),
     ) -> Previous {
         self.entries.get(key).map_or(Previous::Unknown, |entry| {
-            previous(&entry.metadata.records, version, times, window)
+            previous(&entry.metadata.records, version, times, compared)
         })
     }
 

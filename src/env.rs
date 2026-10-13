@@ -333,6 +333,17 @@ pub const MAX_VERIFIED: Var = runtime(
     &["verified artifact digests remembered"],
 )
 .with_default(Default::Number(DEFAULT_MAX_VERIFIED as u64));
+pub const PROVENANCE_HISTORY: Var = runtime(
+    "BYRLE_PROVENANCE_HISTORY",
+    "",
+    &[
+        "attested versions older than provenance_window_days",
+        "a version's identity is looked for in, most recent first",
+    ],
+)
+.with_default(Default::Number(
+    crate::analysis::attestation::DEFAULT_HISTORY as u64,
+));
 pub const DATABASE_URL: Var = runtime(
     "BYRLE_DATABASE_URL",
     "",
@@ -662,7 +673,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 79] = [
+pub const ALL: [Var; 80] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -692,6 +703,7 @@ pub const ALL: [Var; 79] = [
     MAX_METADATA_BYTES,
     MAX_RECORDS,
     MAX_VERIFIED,
+    PROVENANCE_HISTORY,
     DATABASE_URL,
     STREAM_URLS,
     GITHUB_TOKEN,
@@ -933,6 +945,16 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.parsed(var, default, |v| v.parse().ok(), "is not a whole number")
     }
 
+    /// A whole number above 0, or `default` when `var` is unset.
+    fn above_zero<T: std::str::FromStr + std::default::Default + PartialOrd>(
+        &self,
+        var: Var,
+        default: T,
+    ) -> Result<T, EnvError> {
+        let parse = |v: &str| v.parse().ok().filter(|n| n > &T::default());
+        self.parsed(var, default, parse, "is not a whole number above 0")
+    }
+
     fn flag(&self, var: Var, default: bool) -> Result<bool, EnvError> {
         let parse = |v: &str| match v {
             "0" => Some(false),
@@ -1141,18 +1163,22 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
         self.count(MAX_VERIFIED, DEFAULT_MAX_VERIFIED)
     }
 
+    /// At least one: [`crate::analysis::attestation::from_metadata`] reads the most recent
+    /// attested version for dropped provenance.
+    pub fn provenance_history(&self) -> Result<usize, EnvError> {
+        self.above_zero(
+            PROVENANCE_HISTORY,
+            crate::analysis::attestation::DEFAULT_HISTORY,
+        )
+    }
+
     pub fn max_concurrent_metadata(&self) -> Result<usize, EnvError> {
         self.count(MAX_CONCURRENT_METADATA, DEFAULT_MAX_CONCURRENT_METADATA)
     }
 
     /// At least one: a window counting no name apart counts every client as `other`.
     pub fn max_traffic_clients(&self) -> Result<usize, EnvError> {
-        self.parsed(
-            MAX_TRAFFIC_CLIENTS,
-            DEFAULT_MAX_TRAFFIC_CLIENTS,
-            |v| v.parse().ok().filter(|limit| *limit > 0),
-            "is not a whole number above 0",
-        )
+        self.above_zero(MAX_TRAFFIC_CLIENTS, DEFAULT_MAX_TRAFFIC_CLIENTS)
     }
 
     /// How long the watcher waits between passes. `None` when it is off.
@@ -1222,12 +1248,7 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     /// At least one byte: a ceiling of none would refuse every artifact.
     pub fn max_artifact_bytes(&self) -> Result<u64, EnvError> {
-        self.parsed(
-            MAX_ARTIFACT_BYTES,
-            DEFAULT_MAX_ARTIFACT_BYTES,
-            |v| v.parse().ok().filter(|limit| *limit > 0),
-            "is not a whole number above 0",
-        )
+        self.above_zero(MAX_ARTIFACT_BYTES, DEFAULT_MAX_ARTIFACT_BYTES)
     }
 
     /// Whether a proxy request needs a token. On unless [`REQUIRE_TOKEN`] is `0`.
@@ -1307,12 +1328,7 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     /// At least one: keeping none would remove the snapshot the refresh just wrote.
     pub fn snapshot_limit(&self) -> Result<usize, EnvError> {
-        self.parsed(
-            SNAPSHOT_LIMIT,
-            DEFAULT_SNAPSHOT_LIMIT,
-            |v| v.parse().ok().filter(|limit| *limit > 0),
-            "is not a whole number above 0",
-        )
+        self.above_zero(SNAPSHOT_LIMIT, DEFAULT_SNAPSHOT_LIMIT)
     }
 
     pub fn policy(&self) -> Result<Option<PathBuf>, EnvError> {
@@ -1650,6 +1666,10 @@ mod tests {
         assert_eq!(env.console_listen().unwrap(), None);
         assert_eq!(env.snapshot_dir().unwrap(), None);
         assert_eq!(env.snapshot_limit().unwrap(), DEFAULT_SNAPSHOT_LIMIT);
+        assert_eq!(
+            env.provenance_history().unwrap(),
+            crate::analysis::attestation::DEFAULT_HISTORY
+        );
         assert_eq!(env.policy().unwrap(), None);
         assert_eq!(env.audit_log().unwrap(), None);
         assert_eq!(env.account_event_log().unwrap(), None);
@@ -1715,6 +1735,7 @@ mod tests {
             (MAX_ARTIFACT_BYTES, "4096"),
             (MAX_CONCURRENT_ANALYSES, "3"),
             (MAX_TRAFFIC_CLIENTS, "12"),
+            (PROVENANCE_HISTORY, "9"),
             (DATABASE_URL, "postgres://db"),
             (SNAPSHOT_DIR, "/var/lib/byrle"),
             (SNAPSHOT_LIMIT, "7"),
@@ -1767,6 +1788,7 @@ mod tests {
         assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
         assert_eq!(env.max_concurrent_analyses().unwrap(), 3);
         assert_eq!(env.max_traffic_clients().unwrap(), 12);
+        assert_eq!(env.provenance_history().unwrap(), 9);
         assert_eq!(
             env.database_url().unwrap().as_deref(),
             Some("postgres://db")
@@ -1846,8 +1868,9 @@ mod tests {
             (SNAPSHOT_LIMIT, "0"),
             (MAX_ARTIFACT_BYTES, "0"),
             (MAX_TRAFFIC_CLIENTS, "0"),
+            (PROVENANCE_HISTORY, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 15] = [
+        let cases: [(Result<(), EnvError>, &str); 16] = [
             (
                 env.max_records().map(drop),
                 "BYRLE_MAX_RECORDS: `5O000` is not a whole number",
@@ -1899,6 +1922,10 @@ mod tests {
             (
                 env.max_traffic_clients().map(drop),
                 "BYRLE_MAX_TRAFFIC_CLIENTS: `0` is not a whole number above 0",
+            ),
+            (
+                env.provenance_history().map(drop),
+                "BYRLE_PROVENANCE_HISTORY: `0` is not a whole number above 0",
             ),
             (
                 env.log_retention_days().map(drop),

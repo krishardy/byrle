@@ -193,6 +193,8 @@ struct Config {
     /// Whether to drop versions whose artifacts this proxy cannot serve.
     refuse_unservable: bool,
     mode: Mode,
+    /// Established versions a version's provenance identity is compared with.
+    provenance_history: usize,
     /// Origins the operator added, kept so a later upstream change can rebuild `origins`.
     served_origins: Vec<String>,
     /// Origins a client may fetch from directly, kept for the same reason.
@@ -259,6 +261,7 @@ impl Proxy {
                 refusal: RefusalStatus::default(),
                 refuse_unservable: true,
                 mode: Mode::Enforce,
+                provenance_history: attestation::DEFAULT_HISTORY,
                 #[cfg(debug_assertions)]
                 defer_test: None,
             }),
@@ -319,6 +322,11 @@ impl Proxy {
 
     pub fn with_mode(mut self, mode: Mode) -> Self {
         self.config_mut().mode = mode;
+        self
+    }
+
+    pub fn with_provenance_history(mut self, history: usize) -> Self {
+        self.config_mut().provenance_history = history;
         self
     }
 
@@ -2247,7 +2255,7 @@ async fn attested(
         key,
         record.package.version(),
         times,
-        window,
+        (window, proxy.config.provenance_history),
     );
     let Some(analyser) = analyser else {
         return (attestation::from_metadata(record, &previous), Vec::new());
@@ -3503,8 +3511,11 @@ fn policy_refused_versions(
     let mut order = Vec::new();
     let mut checks: BTreeSet<String> = BTreeSet::new();
     let mut strongest = crate::policy::Action::Allow;
-    let predecessors =
-        attestation::predecessors(&metadata.records, None, policy.provenance_window());
+    let predecessors = attestation::predecessors(
+        &metadata.records,
+        None,
+        (policy.provenance_window(), attestation::METADATA_HISTORY),
+    );
     for (record, previous) in metadata.records.iter().zip(&predecessors) {
         let provenance = attestation::from_metadata(record, previous);
         let enforce::Verdict::Refuse(refusal) =
