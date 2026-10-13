@@ -4,11 +4,8 @@
 
 use crate::policy::decide::{Advisory, Decision, Facts, Intel, Outcome, Provenance};
 use crate::policy::enforce::Unenforceable;
-use crate::rotation::Rotating;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::warn;
 
 /// Which of decision #4's two paths produced this.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -721,19 +718,15 @@ pub fn packages(log: &str) -> Vec<(String, String, String)> {
 /// The audit log, when one is configured.
 #[derive(Debug)]
 pub struct AuditLog {
-    file: Rotating,
-    /// So an unwritable log warns once rather than once per package.
-    warned: AtomicBool,
+    lines: crate::rotation::Lines,
 }
 
 impl AuditLog {
     /// Open for appending, creating it if it is not there. Rotated files older than
     /// `retention_days` are deleted.
     pub fn open(path: &Path, retention_days: u32) -> std::io::Result<Self> {
-        Ok(Self {
-            file: Rotating::open(path, retention_days, crate::rotation::today())?,
-            warned: AtomicBool::new(false),
-        })
+        crate::rotation::Lines::open(path, retention_days, "audit log", crate::rotation::today())
+            .map(|lines| Self { lines })
     }
 
     /// Append one event. Failure is warned about once and otherwise ignored.
@@ -745,18 +738,7 @@ impl AuditLog {
     fn write_on(&self, event: &Event, today: jiff::civil::Date) {
         let mut line = serde_json::to_vec(event).expect("an event serialises");
         line.push(b'\n');
-        if self.file.append(&line, today).is_err() {
-            self.warn_once("audit log could not be written");
-        }
-    }
-
-    fn warn_once(&self, message: &str) {
-        if !self.warned.swap(true, Ordering::Relaxed) {
-            warn!(
-                byrle.reason = message,
-                "the audit log is incomplete from here on"
-            );
-        }
+        self.lines.append(&line, today);
     }
 }
 
@@ -1540,8 +1522,7 @@ not json
         std::fs::write(&policy_path, REPLAYED).unwrap();
         let day = jiff::civil::date(2026, 10, 12);
         let log = AuditLog {
-            file: Rotating::open(&log_path, RETAINED, day).unwrap(),
-            warned: AtomicBool::new(false),
+            lines: crate::rotation::Lines::open(&log_path, RETAINED, "audit log", day).unwrap(),
         };
         let line: Event =
             serde_json::from_str(&recorded(&policy(REPLAYED), &refused_facts())).unwrap();
@@ -1581,7 +1562,8 @@ not json
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A log that cannot be written warns once, and the proxy goes on.
+    /// A log that cannot be written warns at the first failure and not again, and the
+    /// proxy goes on.
     #[test]
     fn a_log_that_cannot_be_written_warns_once() {
         use crate::util::test_support::{capture, text};
@@ -1589,16 +1571,16 @@ not json
         let log = AuditLog::open(Path::new("/dev/full"), RETAINED).expect("opens");
         let event = Event::pinned("npm", "lodash", "4.17.21", &decision("version: 1"), &[]);
         let (_guard, buf) = capture(tracing::Level::WARN);
-        log.write(&event);
-        log.write(&event);
-        let logged = text(&buf);
-        assert_eq!(
-            logged
+        let warnings = || {
+            text(&buf)
                 .matches("the audit log is incomplete from here on")
-                .count(),
-            1,
-            "{logged}"
-        );
+                .count()
+        };
+        log.write(&event);
+        assert_eq!(warnings(), 1, "at the first failure");
+        log.write(&event);
+        assert_eq!(warnings(), 1, "and not again");
+        let logged = text(&buf);
         assert!(
             logged.contains("audit log could not be written"),
             "{logged}"

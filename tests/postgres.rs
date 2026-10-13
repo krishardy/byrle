@@ -1157,6 +1157,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "intel_source",
         "proxy_token",
         "served_version",
+        "session",
         "version_detection",
         "virustotal_request",
     ];
@@ -2360,8 +2361,48 @@ async fn accounts_and_tokens_round_trip_through_postgres() {
         Err(AccountError::NotFound(_))
     ));
 
+    use byrle::account::Caller;
+    let (live, old) = (TokenDigest::of("live"), TokenDigest::of("old"));
+    store
+        .create_session(&alice, &old, "2000-01-01T00:00:00Z")
+        .await
+        .unwrap();
+    assert_eq!(store.session(&old).await, Ok(None), "expired");
+    store
+        .create_session(&alice, &live, "2999-01-01T00:00:00Z")
+        .await
+        .unwrap();
+    let left: Vec<String> = sqlx::query_scalar("SELECT digest FROM session")
+        .fetch_all(intel.pool())
+        .await
+        .unwrap();
+    assert_eq!(left, [live.as_str()], "the expired session is deleted");
+    assert_eq!(
+        store.session(&live).await,
+        Ok(Some(Caller {
+            account: alice.clone(),
+            roles: vec![Role::Admin],
+        }))
+    );
+    assert_eq!(store.roles(&alice).await, Ok(vec![Role::Admin]));
+    assert_eq!(store.roles(&nobody).await, Ok(vec![]));
+    assert!(matches!(
+        store
+            .create_session(&nobody, &old, "2999-01-01T00:00:00Z")
+            .await,
+        Err(AccountError::NotFound(_))
+    ));
+
     store.disable_account(&alice).await.unwrap();
     store.disable_account(&alice).await.unwrap();
+    assert_eq!(store.session(&live).await, Ok(None), "disabled");
+    assert_eq!(store.roles(&alice).await, Ok(vec![]));
+    store.end_session(&live).await.unwrap();
+    let ended: i64 = sqlx::query_scalar("SELECT count(*) FROM session")
+        .fetch_one(intel.pool())
+        .await
+        .unwrap();
+    assert_eq!(ended, 0);
     assert_eq!(
         store.password(&alice).await,
         Ok(None),

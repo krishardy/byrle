@@ -81,12 +81,14 @@ impl TokenDigest {
 /// A new token: [`TOKEN_PREFIX`] and 32 random bytes, base64url without padding. Shown
 /// once, when it is made.
 pub fn issue() -> String {
+    format!("{TOKEN_PREFIX}{}", random())
+}
+
+/// 32 random bytes, base64url without padding: a token's secret, or a session's id.
+pub fn random() -> String {
     let mut bytes = [0u8; TOKEN_BYTES];
     getrandom::fill(&mut bytes).expect("the operating system supplies random bytes");
-    format!(
-        "{TOKEN_PREFIX}{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-    )
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
 /// One account, as listed.
@@ -109,6 +111,13 @@ pub struct Token {
     /// RFC 3339, UTC.
     pub created: String,
     pub revoked: Option<String>,
+}
+
+/// The account a console request comes from, and its roles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Caller {
+    pub account: Name,
+    pub roles: Vec<Role>,
 }
 
 /// Who a token that works belongs to.
@@ -177,6 +186,25 @@ pub trait Accounts: Send + Sync {
     /// The PHC string of `account`'s password. `None` when it has none, is disabled, or
     /// does not exist.
     fn password<'a>(&'a self, account: &'a Name) -> Pending<'a, Option<String>>;
+
+    /// The roles `account` holds, sorted. Empty when it is disabled or does not exist.
+    fn roles<'a>(&'a self, account: &'a Name) -> Pending<'a, Vec<Role>>;
+
+    /// Record a console session for `account` under its id's digest, until `expires`,
+    /// RFC 3339 in UTC. Sessions already expired are deleted.
+    fn create_session<'a>(
+        &'a self,
+        account: &'a Name,
+        digest: &'a TokenDigest,
+        expires: &'a str,
+    ) -> Pending<'a, ()>;
+
+    /// Who the session with this digest belongs to. `None` once it has expired or ended,
+    /// or its account is disabled.
+    fn session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, Option<Caller>>;
+
+    /// End the session with this digest. Ending one that is not there does nothing.
+    fn end_session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, ()>;
 }
 
 /// Accounts held in memory, for tests. Every time is the one given at construction.
@@ -190,6 +218,8 @@ struct Held {
     accounts: BTreeMap<Name, Account>,
     passwords: BTreeMap<Name, String>,
     tokens: BTreeMap<(Name, Name), (Token, TokenDigest)>,
+    /// Each session's account and expiry, by its digest.
+    sessions: BTreeMap<TokenDigest, (Name, String)>,
 }
 
 impl InMemory {
@@ -345,6 +375,56 @@ impl Accounts for InMemory {
             .is_some_and(|held| held.disabled.is_none());
         Self::ready(Ok(held.passwords.get(account).filter(|_| enabled).cloned()))
     }
+
+    fn roles<'a>(&'a self, account: &'a Name) -> Pending<'a, Vec<Role>> {
+        let held = self.held();
+        Self::ready(Ok(held
+            .accounts
+            .get(account)
+            .filter(|held| held.disabled.is_none())
+            .map(|held| held.roles.clone())
+            .unwrap_or_default()))
+    }
+
+    fn create_session<'a>(
+        &'a self,
+        account: &'a Name,
+        digest: &'a TokenDigest,
+        expires: &'a str,
+    ) -> Pending<'a, ()> {
+        let mut held = self.held();
+        if !held.accounts.contains_key(account) {
+            return Self::ready(Err(no_account(account)));
+        }
+        held.sessions
+            .retain(|_, (_, expires)| expires.as_str() > self.now.as_str());
+        held.sessions
+            .insert(digest.clone(), (account.clone(), expires.to_owned()));
+        Self::ready(Ok(()))
+    }
+
+    fn session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, Option<Caller>> {
+        let held = self.held();
+        let found = held
+            .sessions
+            .get(digest)
+            .filter(|(_, expires)| expires.as_str() > self.now.as_str())
+            .and_then(|(account, _)| {
+                held.accounts
+                    .get(account)
+                    .filter(|held| held.disabled.is_none())
+                    .map(|held| Caller {
+                        account: account.clone(),
+                        roles: held.roles.clone(),
+                    })
+            });
+        Self::ready(Ok(found))
+    }
+
+    fn end_session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, ()> {
+        self.held().sessions.remove(digest);
+        Self::ready(Ok(()))
+    }
 }
 
 /// Stores for tests elsewhere in the crate.
@@ -352,6 +432,81 @@ impl Accounts for InMemory {
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub mod testing {
     use super::*;
+    use std::sync::Arc;
+
+    /// `inner`, except that the method named `fails` answers as a closed connection does.
+    pub struct Failing {
+        pub inner: Arc<InMemory>,
+        pub fails: &'static str,
+    }
+
+    impl Failing {
+        fn or<'a, T: Send + 'a>(&self, method: &str, answer: Pending<'a, T>) -> Pending<'a, T> {
+            if method == self.fails {
+                closed()
+            } else {
+                answer
+            }
+        }
+    }
+
+    impl Accounts for Failing {
+        fn create_account<'a>(&'a self, name: &'a Name, roles: &'a [Role]) -> Pending<'a, ()> {
+            self.or("create_account", self.inner.create_account(name, roles))
+        }
+        fn disable_account<'a>(&'a self, name: &'a Name) -> Pending<'a, ()> {
+            self.or("disable_account", self.inner.disable_account(name))
+        }
+        fn accounts(&self) -> Pending<'_, Vec<Account>> {
+            self.or("accounts", self.inner.accounts())
+        }
+        fn create_token<'a>(
+            &'a self,
+            account: &'a Name,
+            name: &'a Name,
+            digest: &'a TokenDigest,
+        ) -> Pending<'a, ()> {
+            self.or(
+                "create_token",
+                self.inner.create_token(account, name, digest),
+            )
+        }
+        fn revoke_token<'a>(&'a self, account: &'a Name, name: &'a Name) -> Pending<'a, ()> {
+            self.or("revoke_token", self.inner.revoke_token(account, name))
+        }
+        fn tokens<'a>(&'a self, account: Option<&'a Name>) -> Pending<'a, Vec<Token>> {
+            self.or("tokens", self.inner.tokens(account))
+        }
+        fn holder<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, Option<Holder>> {
+            self.or("holder", self.inner.holder(digest))
+        }
+        fn set_password<'a>(&'a self, account: &'a Name, hash: &'a str) -> Pending<'a, ()> {
+            self.or("set_password", self.inner.set_password(account, hash))
+        }
+        fn password<'a>(&'a self, account: &'a Name) -> Pending<'a, Option<String>> {
+            self.or("password", self.inner.password(account))
+        }
+        fn roles<'a>(&'a self, account: &'a Name) -> Pending<'a, Vec<Role>> {
+            self.or("roles", self.inner.roles(account))
+        }
+        fn create_session<'a>(
+            &'a self,
+            account: &'a Name,
+            digest: &'a TokenDigest,
+            expires: &'a str,
+        ) -> Pending<'a, ()> {
+            self.or(
+                "create_session",
+                self.inner.create_session(account, digest, expires),
+            )
+        }
+        fn session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, Option<Caller>> {
+            self.or("session", self.inner.session(digest))
+        }
+        fn end_session<'a>(&'a self, digest: &'a TokenDigest) -> Pending<'a, ()> {
+            self.or("end_session", self.inner.end_session(digest))
+        }
+    }
 
     /// A store that cannot answer: each call fails as a closed connection does.
     pub struct Down;
@@ -391,6 +546,23 @@ pub mod testing {
             closed()
         }
         fn password<'a>(&'a self, _: &'a Name) -> Pending<'a, Option<String>> {
+            closed()
+        }
+        fn roles<'a>(&'a self, _: &'a Name) -> Pending<'a, Vec<Role>> {
+            closed()
+        }
+        fn create_session<'a>(
+            &'a self,
+            _: &'a Name,
+            _: &'a TokenDigest,
+            _: &'a str,
+        ) -> Pending<'a, ()> {
+            closed()
+        }
+        fn session<'a>(&'a self, _: &'a TokenDigest) -> Pending<'a, Option<Caller>> {
+            closed()
+        }
+        fn end_session<'a>(&'a self, _: &'a TokenDigest) -> Pending<'a, ()> {
             closed()
         }
     }
@@ -512,6 +684,55 @@ mod tests {
         assert_eq!(store.password(&nobody).await, Ok(None));
         store.disable_account(&alice).await.unwrap();
         assert_eq!(store.password(&alice).await, Ok(None));
+    }
+
+    /// A session names its account and roles until it expires, ends, or its account is
+    /// disabled; creating one deletes those already expired.
+    #[tokio::test]
+    async fn a_session_names_its_caller_until_it_expires_ends_or_is_disabled() {
+        let store = InMemory::new("2026-10-13T12:00:00Z");
+        let (alice, nobody) = (name("alice"), name("nobody"));
+        store.create_account(&alice, &[Role::Admin]).await.unwrap();
+        let (live, old) = (TokenDigest::of("live"), TokenDigest::of("old"));
+        store
+            .create_session(&alice, &old, "2026-10-13T12:00:00Z")
+            .await
+            .unwrap();
+        assert_eq!(store.session(&old).await, Ok(None), "expired at now");
+        store
+            .create_session(&alice, &live, "2026-10-13T12:00:01Z")
+            .await
+            .unwrap();
+        assert!(!store.held().sessions.contains_key(&old));
+        store
+            .create_session(&alice, &old, "2026-10-14T00:00:00Z")
+            .await
+            .unwrap();
+        assert!(
+            store.held().sessions.contains_key(&live),
+            "a live session outlasts the sweep"
+        );
+        store.end_session(&old).await.unwrap();
+        let caller = Caller {
+            account: alice.clone(),
+            roles: vec![Role::Admin],
+        };
+        assert_eq!(store.session(&live).await, Ok(Some(caller)));
+        assert_eq!(store.roles(&alice).await, Ok(vec![Role::Admin]));
+        assert_eq!(store.roles(&nobody).await, Ok(vec![]));
+        assert_eq!(
+            store
+                .create_session(&nobody, &old, "2026-10-14T00:00:00Z")
+                .await,
+            Err(AccountError::NotFound("account nobody".into()))
+        );
+
+        store.disable_account(&alice).await.unwrap();
+        assert_eq!(store.session(&live).await, Ok(None));
+        assert_eq!(store.roles(&alice).await, Ok(vec![]));
+        store.end_session(&live).await.unwrap();
+        assert!(store.held().sessions.is_empty());
+        store.end_session(&live).await.unwrap();
     }
 
     #[tokio::test]

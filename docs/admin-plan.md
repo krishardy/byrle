@@ -220,9 +220,10 @@ A change made and not appended exits 1 and says so.
 {"at":"2026-10-13T09:00:00Z","action":"role-granted","account":"alice","role":"admin","source":"cli"}
 ```
 
-A command only appends. The proxy will rotate the file with the console's login, as it
-does the audit log, so a line a command appends after midnight and before the proxy's
-first write of the day is filed with the day before.
+A command only appends. The proxy rotates the file and writes `login`, `login-failed` and
+`logout` to it, with the client's address as `source`
+([console-login](engineering_decisions/console-login.md)). A line a command appends after
+midnight and before the proxy's first write of the day is filed with the day before.
 
 ### 4.6 API
 
@@ -243,6 +244,7 @@ ecosystem, purl, account and `answered`.
 | `GET`, `POST`, `DELETE` under `accounts` | R1, R2 |
 | `GET status` | R10 |
 | `GET health`, with no session or token | R10, for an external monitor |
+| `POST login`, `POST logout`, `GET session` | R1. Built 2026-10-13 ([console-login](engineering_decisions/console-login.md)) |
 
 `GET config` returns `proxy::Health` and the policy as `explain --policy` loads it.
 `BYRLE_GITHUB_TOKEN` is reported as set or unset. `BYRLE_DATABASE_URL` is reported without

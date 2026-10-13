@@ -1,16 +1,34 @@
-//! The admin console: where it answers, and its routes. Stage 4.9 builds it up from here;
-//! today it answers its health check. See docs/admin-plan.md.
+//! The admin console: where it answers, and its routes. Stage 4.9 builds it up from here:
+//! its health check, login, logout and session. See docs/admin-plan.md.
+
+pub mod api;
+pub mod login;
+
+use std::sync::Arc;
 
 use axum::Router;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 
+use crate::account::Accounts;
+use crate::account::events::EventLog;
+use crate::account::gate::Gate;
+use crate::account::password::Hasher;
 use crate::env::{self, EnvError};
 use crate::mount::{self, Mount};
 
 /// Under the console's path, answered with no session or token, for an outside monitor.
 pub const HEALTH_PATH: &str = "/api/v1/health";
+
+/// Under the console's path: `POST` an account and password for a session.
+pub const LOGIN_PATH: &str = "/api/v1/login";
+
+/// Under the console's path: `POST` to end the session.
+pub const LOGOUT_PATH: &str = "/api/v1/logout";
+
+/// Under the console's path: `GET` who the caller is.
+pub const SESSION_PATH: &str = "/api/v1/session";
 
 /// Where the console answers, read from [`env::CONSOLE_URL`] and [`env::CONSOLE_LISTEN`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +63,13 @@ impl Console {
                 None => Ok(None),
             };
         };
+        if let Some(reason) = insecure(&url) {
+            return Err(EnvError {
+                var: env::CONSOLE_URL.name,
+                value: url,
+                reason: reason.to_owned(),
+            });
+        }
         let listen = configured.filter(|listen| listen != proxy_listen);
         let proxy = environment.proxy_mount()?;
         if let Some(reason) = mount::conflict(&proxy, &mount, listen.is_none()) {
@@ -61,13 +86,65 @@ impl Console {
             rp_key: environment.rp_key()?,
         }))
     }
+}
+
+/// Why `url` cannot carry the session cookie, which is `Secure`: `http` to a host other
+/// than loopback, where a browser does not keep it. `None` for any other.
+fn insecure(url: &str) -> Option<&'static str> {
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    let loopback = host == "localhost"
+        || host
+            .trim_start_matches('[')
+            .trim_end_matches(']')
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback());
+    (parsed.scheme() == "http" && !loopback).then_some(
+        "is http to a host other than loopback, where a browser does not keep the session \
+         cookie; use https, through nginx as docs/fronting-tls.md shows",
+    )
+}
+
+/// The console as it runs: where it answers, and the accounts it logs in against.
+pub struct Site {
+    pub console: Console,
+    login: login::Login,
+    gate: Gate,
+    store: Arc<dyn Accounts>,
+    /// `scheme://host[:port]` of [`Console::url`], which a browser's `Origin` matches.
+    origin: String,
+}
+
+impl Site {
+    /// `console`, logging in against `store` with `hasher`, writing logins to `events`.
+    pub fn new(
+        console: Console,
+        store: Arc<dyn Accounts>,
+        hasher: Hasher,
+        events: Option<Arc<EventLog>>,
+    ) -> Self {
+        let origin = reqwest::Url::parse(&console.url)
+            .map(|url| url.origin().ascii_serialization())
+            .expect("the console URL parsed when it was read");
+        Self {
+            login: login::Login::new(store.clone(), hasher, events),
+            gate: Gate::new(store.clone()),
+            store,
+            origin,
+            console,
+        }
+    }
 
     /// The console's routes, each under its path. Any other request goes to `rest`.
-    fn router(&self, rest: Router) -> Router {
-        let under = self.mount.to_string();
+    fn router(self: &Arc<Self>, rest: Router) -> Router {
+        let under = self.console.mount.to_string();
         let under = under.trim_end_matches('/');
         Router::new()
             .route(&format!("{under}{HEALTH_PATH}"), get(health))
+            .route(&format!("{under}{LOGIN_PATH}"), post(api::login))
+            .route(&format!("{under}{LOGOUT_PATH}"), post(api::logout))
+            .route(&format!("{under}{SESSION_PATH}"), get(api::session))
+            .with_state(self.clone())
             .fallback_service(rest)
     }
 }
@@ -75,16 +152,16 @@ impl Console {
 /// Each address to listen on and what it serves. The proxy's `listen` serves `proxy`, with
 /// the console's routes in front of it when the two share it; the proxy answers 404
 /// outside its own path. A console with a listener of its own is served there alone.
-pub fn listeners(proxy: Router, listen: &str, console: Option<&Console>) -> Vec<(String, Router)> {
-    match console {
+pub fn listeners(proxy: Router, listen: &str, site: Option<&Arc<Site>>) -> Vec<(String, Router)> {
+    match site {
         None => vec![(listen.to_owned(), proxy)],
-        Some(console) => match &console.listen {
-            None => vec![(listen.to_owned(), console.router(proxy))],
+        Some(site) => match &site.console.listen {
+            None => vec![(listen.to_owned(), site.router(proxy))],
             Some(own) => vec![
                 (listen.to_owned(), proxy),
                 (
                     own.clone(),
-                    console.router(Router::new().fallback(|| async { StatusCode::NOT_FOUND })),
+                    site.router(Router::new().fallback(|| async { StatusCode::NOT_FOUND })),
                 ),
             ],
         },
@@ -104,10 +181,57 @@ async fn health() -> Response {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::env::testing::with;
     use crate::proxy::testing::serve;
+
+    /// `console` running against `store`, with a cheap hasher and no event log.
+    pub fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
+        let hasher = crate::account::password::tests::cheap();
+        Arc::new(Site::new(console, store, hasher, None))
+    }
+
+    /// The console at `https://h/admin/` on its own listener, served, with its base URL.
+    pub async fn served(store: Arc<dyn Accounts>) -> (Arc<Site>, String) {
+        let console = Console {
+            url: "https://h/admin/".into(),
+            mount: Mount::from_url("https://h/admin/").unwrap(),
+            listen: Some("127.0.0.1:9090".into()),
+            rp_key: None,
+        };
+        let site = site(console, store);
+        let (_, router) = listeners(Router::new(), LISTEN, Some(&site)).pop().unwrap();
+        (site, serve(router).await)
+    }
+
+    /// Plain http keeps the session cookie only on loopback.
+    #[test]
+    fn a_console_on_http_must_be_on_loopback() {
+        for url in [
+            "http://localhost:8080/admin/",
+            "http://127.0.0.1/",
+            "http://[::1]:9090/",
+            "https://h/admin/",
+        ] {
+            assert_eq!(insecure(url), None, "{url}");
+        }
+        for url in [
+            "http://h/admin/",
+            "http://10.0.0.1/",
+            "http://[2001:db8::1]/",
+        ] {
+            assert!(insecure(url).unwrap().contains("use https"), "{url}");
+        }
+        assert_eq!(insecure("not a url"), None);
+        assert_eq!(insecure("mailto:admin@h"), None, "a URL with no host");
+        let refused = console(&[
+            (env::PROXY_URL, "https://h/registry/"),
+            (env::CONSOLE_URL, "http://h/admin/"),
+        ])
+        .unwrap_err();
+        assert_eq!(refused.var, env::CONSOLE_URL.name);
+    }
 
     const LISTEN: &str = "127.0.0.1:8080";
 
@@ -229,7 +353,8 @@ mod tests {
             listen: None,
             rp_key: None,
         };
-        let served = listeners(teapot(), LISTEN, Some(&shared));
+        let store = Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
+        let served = listeners(teapot(), LISTEN, Some(&site(shared, store)));
         assert_eq!(served.len(), 1);
         let (at, router) = served.into_iter().next().unwrap();
         assert_eq!(at, LISTEN);
@@ -255,7 +380,8 @@ mod tests {
             listen: Some("127.0.0.1:9090".into()),
             rp_key: None,
         };
-        let served = listeners(teapot(), LISTEN, Some(&alone));
+        let store = Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
+        let served = listeners(teapot(), LISTEN, Some(&site(alone, store)));
         let addresses: Vec<&str> = served.iter().map(|(at, _)| at.as_str()).collect();
         assert_eq!(addresses, [LISTEN, "127.0.0.1:9090"]);
         let mut routers = served.into_iter().map(|(_, router)| router);
