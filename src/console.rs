@@ -3,13 +3,15 @@
 
 pub mod api;
 pub mod login;
+pub mod openapi;
 pub mod routes;
+pub mod usage;
 
 use std::sync::Arc;
 
 use axum::Router;
-use axum::http::{StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::http::StatusCode;
+use axum::response::Response;
 
 use crate::account::Accounts;
 use crate::account::events::EventLog;
@@ -111,6 +113,8 @@ pub struct Site {
     login: login::Login,
     gate: Gate,
     store: Arc<dyn Accounts>,
+    /// The usage tables. `None` until [`Site::with_usage`] is called.
+    usage: Option<Arc<dyn crate::usage::Usage>>,
     /// `scheme://host[:port]` of [`Console::url`], which a browser's `Origin` matches.
     origin: String,
 }
@@ -131,9 +135,16 @@ impl Site {
             login: login::Login::new(store.clone(), hasher, limits, events),
             gate: Gate::new(store.clone()),
             store,
+            usage: None,
             origin,
             console,
         }
+    }
+
+    /// Read R3 and R6 from `usage`.
+    pub fn with_usage(mut self, usage: Arc<dyn crate::usage::Usage>) -> Self {
+        self.usage = Some(usage);
+        self
     }
 
     /// The console's [`routes::ROUTES`], each under its path. Any other request goes to
@@ -163,15 +174,23 @@ pub fn listeners(proxy: Router, listen: &str, site: Option<&Arc<Site>>) -> Vec<(
     }
 }
 
-/// The console answers. Its components are checked once there are any: docs/admin-plan.md
-/// §4.9.
+/// Whether the console is up.
+#[derive(serde::Serialize, utoipa::ToSchema)]
+pub struct Up {
+    /// `up`.
+    pub status: &'static str,
+}
+
+/// The console answers. Its components are checked with `GET status`: admin-plan.md §4.9.
+#[utoipa::path(
+    get,
+    path = HEALTH_PATH,
+    tag = "status",
+    security(()),
+    responses((status = 200, description = "The console answers", body = Up)),
+)]
 async fn health() -> Response {
-    (
-        StatusCode::OK,
-        [(header::CACHE_CONTROL, "no-store")],
-        axum::Json(serde_json::json!({ "status": "up" })),
-    )
-        .into_response()
+    api::json(StatusCode::OK, &Up { status: "up" })
 }
 
 #[cfg(test)]
@@ -181,11 +200,18 @@ pub(crate) mod tests {
     use crate::env::testing::with;
     use crate::proxy::testing::serve;
 
-    /// `console` running against `store`, with a cheap hasher and no event log.
+    /// `console` running against `store` and empty usage tables, with a cheap hasher and
+    /// no event log.
     pub fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
+        let usage = Arc::new(crate::usage::tests::Kept::default());
+        Arc::new(unread(console, store).with_usage(usage))
+    }
+
+    /// [`site`] with no usage tables.
+    pub fn unread(console: Console, store: Arc<dyn Accounts>) -> Site {
         let hasher = crate::account::password::tests::cheap();
         let limits = crate::console::login::tests::limits();
-        Arc::new(Site::new(console, store, (hasher, limits), None))
+        Site::new(console, store, (hasher, limits), None)
     }
 
     /// The console at `https://h/admin/` on its own listener, served, with its base URL.
@@ -360,7 +386,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(health.status(), 200);
-        assert_eq!(health.headers()[header::CACHE_CONTROL], "no-store");
+        assert_eq!(
+            health.headers()[axum::http::header::CACHE_CONTROL],
+            "no-store"
+        );
         assert_eq!(health.text().await.unwrap(), r#"{"status":"up"}"#);
         assert_eq!(status(&base, "/lodash").await, StatusCode::IM_A_TEAPOT);
         assert_eq!(status(&base, HEALTH_PATH).await, StatusCode::IM_A_TEAPOT);

@@ -6,8 +6,13 @@ use std::sync::Arc;
 use futures_util::future::BoxFuture;
 use sqlx::PgPool;
 
-use super::{Collapsed, Use};
+use super::{Collapsed, FailureQuery, FailureRow, Read, ServedQuery, ServedRow, Usage, Use};
 use crate::util::batched::{Batched, Sink};
+
+/// The usage tables beside `intel`'s store, to read, when there is one.
+pub fn reader(intel: Option<&crate::intel::postgres::PgIntel>) -> Option<Arc<dyn Usage>> {
+    intel.map(|intel| Arc::new(PgUsage::new(intel.pool().clone())) as Arc<dyn Usage>)
+}
 
 /// The queue into the usage tables beside `intel`'s store, when there is one.
 pub fn queue(intel: Option<&crate::intel::postgres::PgIntel>) -> Option<Batched<Use>> {
@@ -89,5 +94,63 @@ impl PgUsage {
 impl Sink<Use> for PgUsage {
     fn put<'a>(&'a self, rows: &'a [Use]) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move { self.write(rows).await.map_err(|e| e.to_string()) })
+    }
+}
+
+impl Usage for PgUsage {
+    fn served<'a>(&'a self, query: &'a ServedQuery) -> Read<'a, Vec<ServedRow>> {
+        Box::pin(async move {
+            sqlx::query_as!(
+                ServedRow,
+                r#"
+                SELECT id, account, ecosystem, name, version,
+                    to_char(first_served AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "first_served!",
+                    to_char(last_served AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "last_served!"
+                FROM served_version
+                WHERE id > $1
+                    AND ($2::text IS NULL OR ecosystem = $2)
+                    AND ($3::text IS NULL OR name = $3)
+                    AND ($4::text IS NULL OR account = $4)
+                    AND ($5::text IS NULL OR last_served >= $5::text::timestamptz)
+                    AND ($6::text IS NULL OR first_served < $6::text::timestamptz)
+                ORDER BY id
+                LIMIT $7
+                "#,
+                query.after,
+                query.ecosystem,
+                query.name,
+                query.account,
+                query.since.map(|at| at.to_string()),
+                query.until.map(|at| at.to_string()),
+                i64::from(query.limit),
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| e.to_string())
+        })
+    }
+
+    fn failures<'a>(&'a self, query: &'a FailureQuery) -> Read<'a, Vec<FailureRow>> {
+        Box::pin(async move {
+            sqlx::query_as!(
+                FailureRow,
+                r#"
+                SELECT to_char(hour AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "hour!",
+                    ecosystem, answered, count
+                FROM failure_count
+                WHERE hour >= $1::text::timestamptz AND hour < $2::text::timestamptz
+                    AND ($3::text IS NULL OR ecosystem = $3)
+                    AND ($4::text IS NULL OR answered = $4)
+                ORDER BY hour, ecosystem, answered
+                "#,
+                query.since.to_string(),
+                query.until.to_string(),
+                query.ecosystem,
+                query.answered,
+            )
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| e.to_string())
+        })
     }
 }

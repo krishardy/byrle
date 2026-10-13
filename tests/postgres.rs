@@ -2567,4 +2567,102 @@ async fn each_served_version_and_hourly_failure_count_is_merged() {
         counts,
         [("unauthorized".into(), 3), ("upstream-status".into(), 1)]
     );
+
+    use byrle::usage::{FailureQuery, ServedQuery, Usage};
+    let page = |after, limit| ServedQuery {
+        after,
+        limit,
+        ..ServedQuery::default()
+    };
+    let first = store.served(&page(0, 1)).await.expect("reads");
+    assert_eq!(first.len(), 1);
+    assert_eq!(
+        (first[0].account.as_deref(), first[0].name.as_str()),
+        (None, "@scope/a"),
+        "a batch is written in key order, and no account sorts first"
+    );
+    assert_eq!(first[0].first_served, "2026-10-13T07:00:00Z");
+    assert_eq!(first[0].last_served, "2026-10-13T09:00:00Z");
+    let rest = store.served(&page(first[0].id, 10)).await.expect("reads");
+    assert_eq!(rest.len(), 1);
+    assert_eq!(rest[0].account.as_deref(), Some("alice"));
+    assert_eq!(rest[0].last_served, "2026-10-13T10:00:00Z");
+    let filtered = |query: ServedQuery| {
+        let store = &store;
+        async move { store.served(&query).await.expect("reads").len() }
+    };
+    let at = |s: &str| Some(s.parse().unwrap());
+    assert_eq!(
+        filtered(ServedQuery {
+            account: Some("alice".into()),
+            ..page(0, 10)
+        })
+        .await,
+        1
+    );
+    assert_eq!(
+        filtered(ServedQuery {
+            ecosystem: Some("pypi".into()),
+            ..page(0, 10)
+        })
+        .await,
+        0
+    );
+    assert_eq!(
+        filtered(ServedQuery {
+            name: Some("@scope/a".into()),
+            ..page(0, 10)
+        })
+        .await,
+        2
+    );
+    assert_eq!(
+        filtered(ServedQuery {
+            since: at("2026-10-13T09:30:00Z"),
+            ..page(0, 10)
+        })
+        .await,
+        1
+    );
+    assert_eq!(
+        filtered(ServedQuery {
+            until: at("2026-10-13T07:30:00Z"),
+            ..page(0, 10)
+        })
+        .await,
+        1
+    );
+
+    let hours = |since: &str, until: &str, answered: Option<&str>| FailureQuery {
+        since: since.parse().unwrap(),
+        until: until.parse().unwrap(),
+        ecosystem: Some("pypi".into()),
+        answered: answered.map(str::to_owned),
+    };
+    let read = store
+        .failures(&hours("2026-10-13T09:00:00Z", "2026-10-13T10:00:00Z", None))
+        .await
+        .expect("reads");
+    let read: Vec<(&str, &str, i64)> = read
+        .iter()
+        .map(|row| (row.hour.as_str(), row.answered.as_str(), row.count))
+        .collect();
+    assert_eq!(
+        read,
+        [
+            ("2026-10-13T09:00:00Z", "unauthorized", 3),
+            ("2026-10-13T09:00:00Z", "upstream-status", 1),
+        ]
+    );
+    let unauthorized = hours(
+        "2026-10-13T09:00:00Z",
+        "2026-10-13T10:00:00Z",
+        Some("unauthorized"),
+    );
+    assert_eq!(store.failures(&unauthorized).await.expect("reads").len(), 1);
+    let before = hours("2026-10-13T08:00:00Z", "2026-10-13T09:00:00Z", None);
+    assert!(
+        store.failures(&before).await.expect("reads").is_empty(),
+        "until is exclusive"
+    );
 }

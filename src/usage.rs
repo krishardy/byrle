@@ -2,8 +2,11 @@
 //! beside each audit line through a bounded queue. See docs/admin-plan.md §4.3.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use jiff::{RoundMode, Timestamp, TimestampRound, Unit};
+use serde::Serialize;
 
 use crate::audit::{Answered, Event};
 
@@ -108,6 +111,71 @@ impl Collapsed {
     }
 }
 
+/// A version served to an account, as `served_version` holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct ServedRow {
+    /// What the next page starts after.
+    pub id: i64,
+    /// `None` for requests without a token.
+    pub account: Option<String>,
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
+    /// RFC 3339, UTC, to the second.
+    pub first_served: String,
+    pub last_served: String,
+}
+
+/// Which served versions to read: those after `after` by id, matching each filter set.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ServedQuery {
+    pub after: i64,
+    pub limit: u32,
+    pub ecosystem: Option<String>,
+    pub name: Option<String>,
+    pub account: Option<String>,
+    /// Served at or after: `last_served` is not before it.
+    pub since: Option<Timestamp>,
+    /// Served before: `first_served` is before it.
+    pub until: Option<Timestamp>,
+}
+
+/// One hour's count of one case in one ecosystem, as `failure_count` holds it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, utoipa::ToSchema)]
+pub struct FailureRow {
+    /// The hour's start, RFC 3339, UTC.
+    pub hour: String,
+    pub ecosystem: String,
+    pub answered: String,
+    pub count: i64,
+}
+
+/// Which hours' failures to read: from `since` up to `until`, matching each filter set.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailureQuery {
+    pub since: Timestamp,
+    pub until: Timestamp,
+    pub ecosystem: Option<String>,
+    pub answered: Option<String>,
+}
+
+/// A read in flight. The error is the store's, as text.
+pub type Read<'a, T> = Pin<Box<dyn Future<Output = Result<T, String>> + Send + 'a>>;
+
+/// Where the usage tables are read from.
+pub trait Usage: Send + Sync {
+    /// Served versions by id, at most `query.limit`.
+    fn served<'a>(&'a self, query: &'a ServedQuery) -> Read<'a, Vec<ServedRow>>;
+
+    /// Failure counts by hour, ecosystem and case.
+    fn failures<'a>(&'a self, query: &'a FailureQuery) -> Read<'a, Vec<FailureRow>>;
+}
+
+/// `at` as RFC 3339 in UTC, to the second, as the tables give times back.
+pub fn second(at: Timestamp) -> String {
+    at.strftime("%Y-%m-%dT%H:%M:%SZ").to_string()
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) mod tests {
@@ -128,6 +196,80 @@ pub(crate) mod tests {
         fn put<'a>(&'a self, rows: &'a [Use]) -> BoxFuture<'a, Result<(), String>> {
             self.0.lock().unwrap().extend_from_slice(rows);
             Box::pin(async { Ok(()) })
+        }
+    }
+
+    /// The rows kept, read as the tables would give them: one per key, ids by key order.
+    impl Usage for Kept {
+        fn served<'a>(&'a self, query: &'a ServedQuery) -> Read<'a, Vec<ServedRow>> {
+            let kept = self.0.lock().unwrap();
+            let mut spans: Vec<_> = Collapsed::of(&kept).served.into_iter().collect();
+            let first_kept = |key: &ServedKey| {
+                kept.iter().position(|row| {
+                    matches!(row, Use::Served { account, ecosystem, name, version, .. }
+                        if (account, ecosystem, name, version) == (&key.0, &key.1, &key.2, &key.3))
+                })
+            };
+            spans.sort_by_key(|(key, _)| first_kept(key));
+            let rows = spans
+                .into_iter()
+                .zip(1..)
+                .map(
+                    |(((account, ecosystem, name, version), (first, last)), id)| {
+                        (
+                            first,
+                            last,
+                            ServedRow {
+                                id,
+                                account,
+                                ecosystem,
+                                name,
+                                version,
+                                first_served: second(first),
+                                last_served: second(last),
+                            },
+                        )
+                    },
+                )
+                .filter(|(first, last, row)| {
+                    row.id > query.after
+                        && query.ecosystem.as_ref().is_none_or(|e| *e == row.ecosystem)
+                        && query.name.as_ref().is_none_or(|n| *n == row.name)
+                        && query
+                            .account
+                            .as_ref()
+                            .is_none_or(|a| Some(a) == row.account.as_ref())
+                        && query.since.is_none_or(|since| *last >= since)
+                        && query.until.is_none_or(|until| *first < until)
+                })
+                .map(|(_, _, row)| row)
+                .take(query.limit as usize)
+                .collect();
+            Box::pin(async { Ok(rows) })
+        }
+
+        fn failures<'a>(&'a self, query: &'a FailureQuery) -> Read<'a, Vec<FailureRow>> {
+            let collapsed = Collapsed::of(&self.0.lock().unwrap());
+            let rows = collapsed
+                .failed
+                .into_iter()
+                .filter(|((hour, ecosystem, answered), _)| {
+                    *hour >= query.since
+                        && *hour < query.until
+                        && query.ecosystem.as_ref().is_none_or(|e| e == ecosystem)
+                        && query
+                            .answered
+                            .as_ref()
+                            .is_none_or(|a| *a == answered.name())
+                })
+                .map(|((hour, ecosystem, answered), count)| FailureRow {
+                    hour: second(hour),
+                    ecosystem,
+                    answered: answered.name(),
+                    count,
+                })
+                .collect();
+            Box::pin(async { Ok(rows) })
         }
     }
 

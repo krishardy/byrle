@@ -1,5 +1,5 @@
-//! The console's login, logout and session endpoints, and who a console request is from:
-//! a session cookie, or a proxy token. See docs/admin-plan.md §4.6.
+//! The console's login, logout, session and accounts endpoints, and who a console request
+//! is from: a session cookie, or a proxy token. See docs/admin-plan.md §4.6.
 
 use std::sync::Arc;
 
@@ -8,13 +8,14 @@ use axum::extract::{Request, State};
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
+use utoipa::ToSchema;
 
 use super::Site;
 use super::login::Attempt;
 use crate::account::gate::Refused;
-use crate::account::{Caller, TokenDigest};
+use crate::account::{Caller, Role, TokenDigest};
 
 /// The cookie the session id is kept in.
 pub const COOKIE: &str = "byrle_session";
@@ -35,7 +36,8 @@ pub fn csrf(id: &str) -> String {
 }
 
 /// `body` as JSON with `status`, never cached.
-fn json(status: StatusCode, body: serde_json::Value) -> Response {
+pub(super) fn json(status: StatusCode, body: &impl Serialize) -> Response {
+    let body = serde_json::to_value(body).expect("a console body serialises");
     (
         status,
         [(header::CACHE_CONTROL, "no-store")],
@@ -44,16 +46,27 @@ fn json(status: StatusCode, body: serde_json::Value) -> Response {
         .into_response()
 }
 
+/// Why a request was not answered.
+#[derive(Serialize, ToSchema)]
+pub struct Problem {
+    pub error: String,
+}
+
 /// `{"error": why}` with `status`. A 401 asks for nothing, so a browser shows no dialog.
-fn refused(status: StatusCode, why: &str) -> Response {
-    json(status, serde_json::json!({ "error": why }))
+pub(super) fn refused(status: StatusCode, why: &str) -> Response {
+    json(
+        status,
+        &Problem {
+            error: why.to_owned(),
+        },
+    )
 }
 
 fn unauthorized() -> Response {
     refused(StatusCode::UNAUTHORIZED, "log in, or send a token")
 }
 
-fn unanswered() -> Response {
+pub(super) fn unanswered() -> Response {
     refused(
         StatusCode::SERVICE_UNAVAILABLE,
         "the account store did not answer",
@@ -92,32 +105,58 @@ pub fn forbidden(permission: crate::account::Permission) -> Response {
     )
 }
 
+/// `roles` by name.
+fn names(roles: &[Role]) -> Vec<String> {
+    roles.iter().map(|role| role.name().to_owned()).collect()
+}
+
+/// One account.
+#[derive(Serialize, ToSchema)]
+pub struct Listed {
+    pub account: String,
+    pub roles: Vec<String>,
+    /// RFC 3339, UTC.
+    pub created: String,
+    /// When it was disabled; its tokens and sessions stopped then.
+    pub disabled: Option<String>,
+}
+
+/// Every account, by name.
+#[derive(Serialize, ToSchema)]
+pub struct Accounts {
+    pub accounts: Vec<Listed>,
+}
+
 /// `GET accounts`: every account, with its roles, when it was made and disabled.
+#[utoipa::path(
+    get,
+    path = super::routes::ACCOUNTS_PATH,
+    tag = "accounts",
+    security(("session" = []), ("token" = [])),
+    extensions(("x-byrle-permission" = json!("accounts.read"))),
+    responses(
+        (status = 200, description = "Every account", body = Accounts),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 403, description = "The caller's roles do not grant accounts.read", body = Problem),
+        (status = 503, description = "The account store did not answer", body = Problem),
+    ),
+)]
 pub async fn accounts(site: Arc<Site>) -> Response {
     match site.store.accounts().await {
         Ok(accounts) => {
-            let listed: Vec<serde_json::Value> = accounts
-                .iter()
-                .map(|account| {
-                    let roles: Vec<&str> = account.roles.iter().map(|role| role.name()).collect();
-                    serde_json::json!({
-                        "account": account.name.as_str(),
-                        "roles": roles,
-                        "created": account.created,
-                        "disabled": account.disabled,
-                    })
+            let accounts = accounts
+                .into_iter()
+                .map(|account| Listed {
+                    account: account.name.to_string(),
+                    roles: names(&account.roles),
+                    created: account.created,
+                    disabled: account.disabled,
                 })
                 .collect();
-            json(StatusCode::OK, serde_json::json!({ "accounts": listed }))
+            json(StatusCode::OK, &Accounts { accounts })
         }
         Err(_) => unanswered(),
     }
-}
-
-/// The caller as JSON.
-fn described(caller: &Caller) -> serde_json::Value {
-    let roles: Vec<&str> = caller.roles.iter().map(|role| role.name()).collect();
-    serde_json::json!({ "account": caller.account.as_str(), "roles": roles })
 }
 
 /// The session id in a `Cookie` header of `headers`.
@@ -191,14 +230,40 @@ impl Site {
     }
 }
 
-#[derive(Deserialize)]
-struct Credentials {
-    account: String,
-    password: String,
+/// An account and its console password.
+#[derive(Deserialize, ToSchema)]
+pub struct Credentials {
+    pub account: String,
+    pub password: String,
 }
 
-/// `POST login`, with `{"account", "password"}`: 200 with the caller and its CSRF token,
-/// and the session cookie; 401, 429 or 503 otherwise.
+/// A session started.
+#[derive(Serialize, ToSchema)]
+pub struct LoggedIn {
+    pub account: String,
+    pub roles: Vec<String>,
+    /// Sent back as `x-byrle-csrf` on each request with the cookie other than GET or HEAD.
+    pub csrf: String,
+    /// When the session ends, RFC 3339, UTC.
+    pub expires: String,
+}
+
+/// `POST login`: 200 with the caller and its CSRF token, and the session cookie.
+#[utoipa::path(
+    post,
+    path = super::LOGIN_PATH,
+    tag = "session",
+    security(()),
+    request_body = Credentials,
+    responses(
+        (status = 200, description = "Logged in; `Set-Cookie` holds the session", body = LoggedIn),
+        (status = 400, description = "The body is not credentials", body = Problem),
+        (status = 401, description = "The account or the password is wrong", body = Problem),
+        (status = 403, description = "`Origin` is another site's", body = Problem),
+        (status = 429, description = "Too many failed logins; `Retry-After` says when to try again", body = Problem),
+        (status = 503, description = "The account store did not answer", body = Problem),
+    ),
+)]
 pub async fn login(State(site): State<Arc<Site>>, request: Request) -> Response {
     let (parts, body) = request.into_parts();
     if site.foreign(&parts.headers) {
@@ -221,10 +286,13 @@ pub async fn login(State(site): State<Arc<Site>>, request: Request) -> Response 
         .await
     {
         Attempt::Started(started) => {
-            let mut body = described(&started.caller);
-            body["csrf"] = csrf(&started.id).into();
-            body["expires"] = started.expires.to_string().into();
-            let mut response = json(StatusCode::OK, body);
+            let body = LoggedIn {
+                account: started.caller.account.to_string(),
+                roles: names(&started.caller.roles),
+                csrf: csrf(&started.id),
+                expires: started.expires.to_string(),
+            };
+            let mut response = json(StatusCode::OK, &body);
             let max_age = site.login.limits().session.as_secs();
             response
                 .headers_mut()
@@ -252,6 +320,20 @@ pub async fn login(State(site): State<Arc<Site>>, request: Request) -> Response 
 }
 
 /// `POST logout`: ends the session the cookie names, 204, and clears the cookie.
+#[utoipa::path(
+    post,
+    path = super::LOGOUT_PATH,
+    tag = "session",
+    security(("session" = [])),
+    params(("x-byrle-csrf" = String, Header, description = "The `csrf` login returned")),
+    responses(
+        (status = 204, description = "The session ended; `Set-Cookie` clears it"),
+        (status = 400, description = "A token has no session to end", body = Problem),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 403, description = "No `x-byrle-csrf`, or `Origin` is another site's", body = Problem),
+        (status = 503, description = "The account store did not answer", body = Problem),
+    ),
+)]
 pub async fn logout(State(site): State<Arc<Site>>, request: Request<Body>) -> Response {
     let (parts, _) = request.into_parts();
     if site.foreign(&parts.headers) {
@@ -274,14 +356,44 @@ pub async fn logout(State(site): State<Arc<Site>>, request: Request<Body>) -> Re
     }
 }
 
+/// How the caller came.
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum By {
+    Session,
+    Token,
+}
+
+/// Who the caller is.
+#[derive(Serialize, ToSchema)]
+pub struct Who {
+    pub account: String,
+    pub roles: Vec<String>,
+    pub by: By,
+}
+
 /// `GET session`: who the caller is, and whether by a session or a token.
+#[utoipa::path(
+    get,
+    path = super::SESSION_PATH,
+    tag = "session",
+    security(("session" = []), ("token" = [])),
+    responses(
+        (status = 200, description = "The caller", body = Who),
+        (status = 401, description = "No session or token", body = Problem),
+        (status = 503, description = "The account store did not answer", body = Problem),
+    ),
+)]
 pub async fn session(State(site): State<Arc<Site>>, request: Request<Body>) -> Response {
     let (parts, _) = request.into_parts();
     match site.caller(&parts).await {
         Ok((caller, id)) => {
-            let mut body = described(&caller);
-            body["by"] = if id.is_some() { "session" } else { "token" }.into();
-            json(StatusCode::OK, body)
+            let body = Who {
+                account: caller.account.to_string(),
+                roles: names(&caller.roles),
+                by: if id.is_some() { By::Session } else { By::Token },
+            };
+            json(StatusCode::OK, &body)
         }
         Err(denied) => denied.into_response(),
     }

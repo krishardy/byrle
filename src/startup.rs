@@ -83,7 +83,8 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::DATABASE_URL)))?;
     let accounts = crate::account::postgres::store(store.as_ref());
     let gate = gate(environment, accounts.clone())?;
-    let console = site(environment, console, accounts)?;
+    let usage = crate::usage::postgres::reader(store.as_ref());
+    let console = site(environment, console, accounts.clone().zip(usage))?;
     let usage = crate::usage::postgres::queue(store.as_ref());
     let (intel, analyses) = crate::analysis::postgres::stores(store, max_verified);
     if policy.is_some() {
@@ -166,18 +167,20 @@ fn virustotal<L: Fn(&str) -> Option<OsString>>(
     Ok(settings)
 }
 
-/// The console as it runs, logging in against `accounts` and writing logins to
-/// [`env::ACCOUNT_EVENT_LOG`]. Errors when there is a console and no store, or the log
-/// cannot be opened.
+/// The console as it runs, against the account and usage `stores`, writing logins to
+/// [`env::ACCOUNT_EVENT_LOG`]. Errors without stores, or when the log cannot be opened.
 fn site<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
     console: Option<crate::console::Console>,
-    accounts: Option<Arc<dyn crate::account::Accounts>>,
+    stores: Option<(
+        Arc<dyn crate::account::Accounts>,
+        Arc<dyn crate::usage::Usage>,
+    )>,
 ) -> Result<Option<Arc<crate::console::Site>>, StartupError> {
     let Some(console) = console else {
         return Ok(None);
     };
-    let Some(accounts) = accounts else {
+    let Some((accounts, usage)) = stores else {
         return Err(StartupError::Unusable(format!(
             "{} is set, and {} is not: the console logs in against the accounts kept there",
             env::CONSOLE_URL,
@@ -192,9 +195,9 @@ fn site<L: Fn(&str) -> Option<OsString>>(
         None => None,
     };
     let login = (environment.password_hasher()?, environment.login_limits()?);
-    Ok(Some(Arc::new(crate::console::Site::new(
-        console, accounts, login, events,
-    ))))
+    Ok(Some(Arc::new(
+        crate::console::Site::new(console, accounts, login, events).with_usage(usage),
+    )))
 }
 
 /// What checks each request's token: `accounts`, unless [`env::REQUIRE_TOKEN`] is `0`.
@@ -642,6 +645,8 @@ mod tests {
     /// refusing to start when it cannot be opened.
     #[test]
     fn the_console_runs_against_the_account_store() {
+        let kept =
+            || -> Arc<dyn crate::usage::Usage> { Arc::new(crate::usage::tests::Kept::default()) };
         let accounts: Arc<dyn crate::account::Accounts> =
             Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
         let vars = [
@@ -650,25 +655,26 @@ mod tests {
         ];
         let console = || crate::console::Console::from_env(&with(&vars), "127.0.0.1:8080").unwrap();
         assert!(
-            site(&with(&vars), None, Some(accounts.clone()))
+            site(&with(&vars), None, Some((accounts.clone(), kept())))
                 .unwrap()
                 .is_none()
         );
-        let running = site(&with(&vars), console(), Some(accounts.clone())).unwrap();
+        let running = site(&with(&vars), console(), Some((accounts.clone(), kept()))).unwrap();
         assert_eq!(running.unwrap().console.mount.to_string(), "/admin/");
 
         let dir = crate::util::test_support::tempdir("startup-console-events");
         let log = dir.join("events.log");
         let logged = with(&[(env::ACCOUNT_EVENT_LOG, log.to_str().unwrap())]);
         assert!(
-            site(&logged, console(), Some(accounts.clone()))
+            site(&logged, console(), Some((accounts.clone(), kept())))
                 .unwrap()
                 .is_some()
         );
         assert!(log.exists());
         let missing = dir.join("no-such-dir").join("events.log");
         let unopened = with(&[(env::ACCOUNT_EVENT_LOG, missing.to_str().unwrap())]);
-        let Err(StartupError::Unusable(why)) = site(&unopened, console(), Some(accounts.clone()))
+        let Err(StartupError::Unusable(why)) =
+            site(&unopened, console(), Some((accounts.clone(), kept())))
         else {
             panic!("an event log that cannot be opened stops the console");
         };
@@ -677,16 +683,19 @@ mod tests {
             (env::ACCOUNT_EVENT_LOG, log.to_str().unwrap()),
             (env::LOG_RETENTION_DAYS, "0"),
         ]);
-        assert!(site(&bad_days, console(), Some(accounts.clone())).is_err());
+        assert!(site(&bad_days, console(), Some((accounts.clone(), kept()))).is_err());
         let unreadable = crate::env::testing::with_unreadable(&[], env::ACCOUNT_EVENT_LOG);
-        let Err(StartupError::Env(e)) = site(&unreadable, console(), Some(accounts)) else {
+        let Err(StartupError::Env(e)) = site(&unreadable, console(), Some((accounts, kept())))
+        else {
             panic!("an unreadable event log path is an environment error");
         };
         assert_eq!(e.var, env::ACCOUNT_EVENT_LOG.name);
         for bad in [(env::ARGON2_PASSES, "0"), (env::SESSION_HOURS, "0")] {
             let accounts: Arc<dyn crate::account::Accounts> =
                 Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));
-            let Err(StartupError::Env(e)) = site(&with(&[bad]), console(), Some(accounts)) else {
+            let Err(StartupError::Env(e)) =
+                site(&with(&[bad]), console(), Some((accounts, kept())))
+            else {
                 panic!("{} out of range stops the console", bad.0);
             };
             assert_eq!(e.var, bad.0.name);

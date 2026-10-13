@@ -238,16 +238,17 @@ ecosystem, purl, account and `answered`.
 
 | Endpoint | Requirement |
 |---|---|
-| `GET dependencies` | R3 |
+| `GET dependencies` | R3. Built 2026-10-13: `served_version` by row id, a page of up to 1,000, filtered by ecosystem, name, account and time |
 | `GET alerts` | R4 |
 | `GET requests?answered=refused&check=known_malware` | R5 |
-| `GET metrics/failures` | R6: counts by case and hour |
+| `GET metrics/failures` | R6: counts by case and hour. Built 2026-10-13: `failure_count`, the last 24 hours unless `since` and `until` say otherwise |
 | `GET config` | R7 |
 | `GET events` | R8 |
 | `GET requests`, and `GET logs/<date>` for a day's file | R9 |
 | `GET`, `POST`, `DELETE` under `accounts` | R1, R2. `GET accounts`, needing `accounts.read`, built 2026-10-13 |
 | `GET status` | R10 |
 | `GET health`, with no session or token | R10, for an external monitor |
+| `GET openapi.json`, with no session or token | this API's OpenAPI document ([console-openapi](engineering_decisions/console-openapi.md)) |
 | `POST login`, `POST logout`, `GET session` | R1. Built 2026-10-13 ([console-login](engineering_decisions/console-login.md)) |
 
 `GET config` returns `proxy::Health` and the policy as `explain --policy` loads it.

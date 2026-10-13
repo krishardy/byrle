@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n                SELECT to_char(hour AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') AS \"hour!\",\n                    ecosystem, answered, count\n                FROM failure_count\n                WHERE hour >= $1::text::timestamptz AND hour < $2::text::timestamptz\n                    AND ($3::text IS NULL OR ecosystem = $3)\n                    AND ($4::text IS NULL OR answered = $4)\n                ORDER BY hour, ecosystem, answered\n                ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "hour!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "ecosystem",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "answered",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "count",
+        "type_info": "Int8"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": [
+      null,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "6506742b2540f3a65267d823a345f8342ea424a789c43823c5e4599398a6a6a2"
+}
