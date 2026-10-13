@@ -2770,11 +2770,12 @@ appears as an alert. The status page shows the proxy `down` while its listener i
 and `degraded` while the intel store holds no snapshot. An account without the `admin`
 role gets 403 from every endpoint except `GET health`.
 
-- [ ] Exit tested by `make smoke-console`, 2026-10-13, through Dex v2.46.0 and test OSV
-      bundles served on loopback with `BYRLE_STREAM_URLS`. It checks each clause but one:
-      the proxy `down` while its listener is closed. The proxy and console share one
-      process, so the test cannot close the proxy's listener alone. `down` is checked by
-      `src/console/status.rs` against a closed port instead
+- [x] Exit tested by `make smoke-console`, 2026-10-13, through Dex v2.46.0 and test OSV
+      bundles served on loopback with `BYRLE_STREAM_URLS`. It checks each clause but the
+      proxy `down` while its listener is closed: the proxy and console share one process.
+      That clause is `the_status_page_shows_the_proxy_down_once_its_listener_closes` in
+      `src/console/pages.rs`, which serves a test proxy, closes its listener, and reads
+      the status page, as the user asked 2026-10-13
 
 ## Stage 5 — Hardening
 

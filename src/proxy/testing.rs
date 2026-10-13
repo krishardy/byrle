@@ -21,10 +21,17 @@ pub(crate) async fn serve(router: Router) -> String {
 /// Serve the router `build` makes from the address it will be reached at, for a router
 /// that has to know its own address.
 pub(crate) async fn serve_at(build: impl FnOnce(&str) -> Router) -> String {
+    serving(build).await.0
+}
+
+/// [`serve_at`], with the task serving it. Aborting the task closes the listener.
+pub(crate) async fn serving(
+    build: impl FnOnce(&str) -> Router,
+) -> (String, tokio::task::JoinHandle<std::io::Result<()>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(axum::serve(listener, build(&base)).into_future());
-    base
+    let task = tokio::spawn(axum::serve(listener, build(&base)).into_future());
+    (base, task)
 }
 
 pub(crate) fn policy(yaml: &str) -> std::sync::Arc<Policy> {
