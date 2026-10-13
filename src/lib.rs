@@ -38,6 +38,7 @@ pub mod startup;
 pub mod status;
 pub mod store;
 pub mod tls;
+pub mod usage;
 mod util;
 pub mod verified;
 pub mod warm;

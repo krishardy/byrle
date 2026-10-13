@@ -1811,6 +1811,7 @@ mod tests {
             documents_uninspected: 0,
             clients_without_artifacts: Default::default(),
             decisions_unrecorded: 0,
+            usage_unrecorded: 0,
         }
     }
 

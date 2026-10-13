@@ -155,13 +155,24 @@ scanned. The console requires it: with no database set, the console does not sta
 | `failure_count` | hour, ecosystem and `answered` case: a count. Answers R6 |
 
 `artifact_decision` (Ad-hoc #32, [artifact-decisions](engineering_decisions/artifact-decisions.md))
-already holds a row per pinned artifact decision, with its account, purl, version, features
-and disposition, written through a bounded queue. `served_version` can be read from it
-rather than written beside it.
+holds a row per pinned artifact decision, with its account, purl and version, and is deleted
+after `BYRLE_DECISION_RETENTION_DAYS`. `served_version` is a table of its own, decided by the
+user 2026-10-13, and is not deleted, so R3 and R4 keep a version served before that period.
 
-The two index tables are written by the proxy beside each audit line. The write never fails
-or delays an install: rows go through a bounded queue and are written in batches, and a
-full queue counts what it drops. The console shows the count.
+The two index tables are written by the proxy beside each audit line, with a database, in
+`migrations/0019_usage.sql` and `src/usage.rs`. The write never fails or delays an install:
+rows go through a bounded queue of 4,096 and are written up to 256 at a time, with the
+duplicates in a batch merged first. A full queue or a failed write counts the rows it drops
+in `usage_unrecorded` on `/-/byrle/health`. The console shows the count. Built 2026-10-13.
+
+| Audit line | Row |
+|---|---|
+| `answered: served`, with a version | `served_version`: the account, or NULL without a token, and the first and last `at` |
+| any other `answered` | `failure_count`: 1 more for the line's hour (UTC), ecosystem and `answered` |
+| a document filtered, with no `answered` or no version | none |
+
+A line is written only with a policy, so a proxy without one counts nothing. Times are the
+line's `at`, not when its batch was written.
 
 R5 and R9 read the log files for the time range asked. A range of a year reads a year of
 files; the console states how many files a query read.
@@ -245,7 +256,7 @@ the reason, and when it was checked:
 | proxy readiness | `-/byrle/ready` under the same path: `proxy::Readiness` | `degraded`: `ready` false, with `intel` (`empty`, `unavailable`) and `gaps` as the reason |
 | management API | the console answering the request at all | not reported: a console that cannot answer cannot report it |
 | database | a `SELECT 1` on `BYRLE_DATABASE_URL` | `down`: an error or no answer within 2 s |
-| index writes | the queue's dropped-row count (§4.3) | `degraded`: rows dropped since the last check |
+| index writes | `usage_unrecorded` on health, the queue's dropped-row count (§4.3) | `degraded`: rows dropped since the last check |
 
 The page reloads every 15 s with `<meta http-equiv="refresh">`, so it needs no JavaScript.
 When the process stops, the reload fails in the browser, and that failure is the report.

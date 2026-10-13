@@ -2689,12 +2689,19 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       `policy diff` and `audit verify` read the compressed files. Done 2026-10-12:
       `src/rotation.rs`, for the audit log. `audit verify` names each line `<file>:<line>`
       ([log-rotation](docs/engineering_decisions/log-rotation.md))
-- [ ] `[!]` Migrations for the plan §4.3 tables
-- [ ] `[!]` The proxy writes `served_version` and `failure_count` through a bounded queue
-      that never fails or delays an install, and counts the rows it drops
+- [x] `[!]` Migrations for the plan §4.3 index tables, `served_version` and
+      `failure_count`. Done 2026-10-13: `migrations/0019_usage.sql`. `served_version` is a
+      table of its own, not read from `artifact_decision`, and is not deleted, decided by
+      the user 2026-10-13. `account_role`, `account_password`, `account_oidc` and `session`
+      come with the items below that use them
+- [x] `[!]` The proxy writes `served_version` and `failure_count` through a bounded queue
+      that never fails or delays an install, and counts the rows it drops. Done 2026-10-13:
+      `src/usage.rs` beside each audit line, `usage_unrecorded` on health. The queue is
+      `src/util/batched.rs`, shared with `artifact_decision`
 - [ ] `[!]` Accounts, roles and permissions; every API handler declares a permission, and
-      a test fails on one that does not
-- [ ] `[!]` Password login (Argon2id), sessions, CSRF, a login rate limit
+      a test fails on one that does not. Migration for `account_role`
+- [ ] `[!]` Password login (Argon2id), sessions, CSRF, a login rate limit. Migrations for
+      `account_password` and `session`
 - [ ] `[!]` The account event log (plan §4.5)
 - [ ] `[!]` `byrle account create --role admin`, for the first admin
 - [ ] `[!]` Accounts identified on requests by proxy token, per
@@ -2712,7 +2719,8 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       index queue, and `GET health` without credentials (R10, plan §4.9)
 - [ ] `[!]` Web interface over each endpoint: `maud` pages, forms, SVG charts
 - [ ] `[!]` OIDC login: discovery, `state`, `nonce`, PKCE, code exchange, key refetch, and
-      `iss`, `aud`, `exp`, `nonce` and a configured algorithm list checked
+      `iss`, `aud`, `exp`, `nonce` and a configured algorithm list checked. Migration for
+      `account_oidc`
 - [ ] `[!]` `docs/threat-model.md` console section (plan §5)
 - [ ] Docs: the console in `docs/quickstart.md`, and an endpoint reference
 

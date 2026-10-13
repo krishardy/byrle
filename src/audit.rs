@@ -21,7 +21,7 @@ pub enum DecisionPath {
 }
 
 /// What a pinned request was answered, of which the policy's action is one input.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Answered {
     /// The artifact was fetched for the client.
@@ -54,6 +54,17 @@ pub enum Answered {
     Unauthorized,
     /// 503: the account store did not answer, so the token was not checked. Nothing decided.
     AccountStore,
+}
+
+impl Answered {
+    /// The value the audit log writes, such as `cut-short`.
+    pub fn name(self) -> String {
+        serde_json::to_value(self)
+            .expect("an Answered serialises")
+            .as_str()
+            .unwrap_or_default()
+            .to_owned()
+    }
 }
 
 /// One decision, as written. A field an older build did not write reads as its default.
@@ -1335,6 +1346,12 @@ not json
                 env!("CARGO_PKG_VERSION")
             )
         );
+    }
+
+    #[test]
+    fn an_answered_value_is_named_as_the_log_writes_it() {
+        assert_eq!(Answered::CutShort.name(), "cut-short");
+        assert_eq!(Answered::Served.name(), "served");
     }
 
     #[test]

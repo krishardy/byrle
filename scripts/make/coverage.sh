@@ -47,7 +47,7 @@ fi
 # set: connect, fetch, write, replace. Everything a refresh decides without a database is
 # elsewhere in `src/intel/`, inside the floor, and the analysis store's own logic is in
 # `src/analysis/store.rs`.
-live_only='src/(intel/(postgres|refresh/run)|analysis/postgres|account/postgres)\.rs'
+live_only='src/(intel/(postgres|refresh/run)|analysis/postgres|account/postgres|usage/postgres)\.rs'
 
 printf '\n\033[1m==> library coverage (floor %s%%, lines and functions and regions)\033[0m\n' "$floor"
 cargo "$nightly" llvm-cov --lib \
