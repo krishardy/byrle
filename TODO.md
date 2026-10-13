@@ -347,7 +347,7 @@ Items that I've added that are not stage-bound.
     makes readiness 503 with the gaps listed; `doctor` reports it as a problem. See
     [uncovered-ecosystem-fails-closed](docs/engineering_decisions/uncovered-ecosystem-fails-closed.md).
 
-30. [ ] Find why `make smoke-npm` step 4 failed once. Raised 2026-10-12: `FAIL: 69 tarballs
+30. [x] Find why `make smoke-npm` step 4 failed once. Raised 2026-10-12: `FAIL: 69 tarballs
     fetched but only 70 had a digest from their packument`, so one tarball request logged
     `artifact requested, digest known` and was neither deferred nor proxied. 1 failure in 7
     runs; the 6 passing runs logged no `upstream request failed` or `upstream body failed
@@ -355,6 +355,10 @@ Items that I've added that are not stage-bound.
     (`src/proxy.rs:2431`) logs no `proxied` line, so a transient registry error fits, but
     it is not confirmed. The Stage 4.9 audit item for upstream unreachable and non-2xx
     would record it.
+    Closed 2026-10-13 as a temporary network fluke, as the user asked if it did not
+    recur: 10 runs in a row passed, each with 69 tarballs, all with a known digest and
+    verified. A recurrence is now in the audit log as `upstream-unreachable` or
+    `upstream-status`.
 
 31. [x] Add a VirusTotal check on artifacts. Raised 2026-10-12. Done 2026-10-13: the
     built-in `virustotal` detector's rule `virustotal_detected`, a report-only signal rather
