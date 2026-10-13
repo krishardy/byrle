@@ -4,7 +4,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::Response;
 use jiff::Timestamp;
@@ -12,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use super::Site;
-use super::api::{Problem, json, refused};
+use super::api::{Problem, Refused, answered};
 use super::usage::query;
 use crate::intel::store::{Intel, PackageIntel};
 use crate::usage::{ServedQuery, ServedRow, Usage};
@@ -135,30 +134,31 @@ pub async fn scan(
     ),
 )]
 pub async fn alerts(site: Arc<Site>, parts: Parts) -> Response {
-    let after = query::<AlertFilters>(&parts).and_then(|filters| match filters.after {
-        Some(after) => after
-            .parse::<i64>()
-            .map_err(|_| format!("after is not a row id: `{after}`")),
-        None => Ok(0),
-    });
-    let after = match after {
-        Ok(after) => after,
-        Err(why) => return refused(StatusCode::BAD_REQUEST, &why),
-    };
+    answered(found(&site, &parts).await)
+}
+
+/// The alerts from the `after` the query string of `parts` asks for.
+pub async fn found(site: &Site, parts: &Parts) -> Result<Alerts, Refused> {
+    let after = query::<AlertFilters>(parts)
+        .and_then(|filters| match filters.after {
+            Some(after) => after
+                .parse::<i64>()
+                .map_err(|_| format!("after is not a row id: `{after}`")),
+            None => Ok(0),
+        })
+        .map_err(Refused::bad)?;
     let intel = site
         .configured
         .as_ref()
         .and_then(|configured| configured.proxy.intel_store());
     let (Some(usage), Some(intel)) = (&site.usage, intel) else {
-        return refused(
-            StatusCode::SERVICE_UNAVAILABLE,
+        return Err(Refused::unavailable(
             "alerts need the usage tables and an intel store",
-        );
+        ));
     };
-    match scan(usage.as_ref(), intel.as_ref(), after, MAX_SCANNED).await {
-        Ok(alerts) => json(StatusCode::OK, &alerts),
-        Err(why) => refused(StatusCode::SERVICE_UNAVAILABLE, &why),
-    }
+    scan(usage.as_ref(), intel.as_ref(), after, MAX_SCANNED)
+        .await
+        .map_err(|why| Refused::unavailable(&why))
 }
 
 #[cfg(test)]

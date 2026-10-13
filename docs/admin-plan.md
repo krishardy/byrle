@@ -283,7 +283,11 @@ a `csrf` form field, which the guard reads, since a form cannot set a header. Ev
 sends `Content-Security-Policy: default-src 'self'; frame-ancestors 'none'; form-action
 'self'; base-uri 'none'`, `X-Content-Type-Options: nosniff` and
 `Referrer-Policy: same-origin`; the stylesheet is served at `console.css`, since the
-policy refuses inline styles. Built so far: home, login and logout forms, and status.
+policy refuses inline styles. Built so far: home, login and logout forms, status, and a page
+for each of dependencies, alerts, requests (with a link to each day's NDJSON), events,
+configuration and accounts. Each page renders the data function its API endpoint returns,
+filtered by a form that reads the same query string, with a link to the next page. Text
+from a registry or a log is escaped: a name `<script>` is shown as text.
 
 ### 4.8 Where it listens
 

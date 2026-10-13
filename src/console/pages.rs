@@ -12,7 +12,7 @@ use maud::{DOCTYPE, Markup, html};
 use serde::Deserialize;
 
 use super::Site;
-use super::api::Denied;
+use super::api::{Denied, Refused};
 use super::login::Attempt;
 use super::routes::Asked;
 use super::status::{Component, State};
@@ -33,6 +33,27 @@ pub const LOGOUT_FORM_PATH: &str = "/logout";
 /// Under the console's path: each component's status, R10.
 pub const STATUS_PAGE_PATH: &str = "/status";
 
+/// Under the console's path: the versions served, R3.
+pub const DEPENDENCIES_PAGE_PATH: &str = "/dependencies";
+
+/// Under the console's path: versions served before a malware advisory named them, R4.
+pub const ALERTS_PAGE_PATH: &str = "/alerts";
+
+/// Under the console's path: the audit log, R5 and R9.
+pub const REQUESTS_PAGE_PATH: &str = "/requests";
+
+/// Under the console's path: the account event log, R8.
+pub const EVENTS_PAGE_PATH: &str = "/events";
+
+/// Under the console's path: the configuration, R7.
+pub const CONFIG_PAGE_PATH: &str = "/config";
+
+/// Under the console's path: the accounts.
+pub const ACCOUNTS_PAGE_PATH: &str = "/accounts";
+
+/// The most days of the audit log a requests page links to.
+const MAX_DAY_LINKS: usize = 31;
+
 /// What every page may load: this origin only, and no page of another may frame it.
 pub const CSP: &str =
     "default-src 'self'; frame-ancestors 'none'; form-action 'self'; base-uri 'none'";
@@ -41,7 +62,19 @@ pub const CSP: &str =
 const CSS: &str = include_str!("console.css");
 
 /// A page links, under the console's path, and the permission it needs.
-const NAV: [(&str, &str, Permission); 1] = [("Status", STATUS_PAGE_PATH, Permission::StatusRead)];
+const NAV: [(&str, &str, Permission); 7] = [
+    ("Status", STATUS_PAGE_PATH, Permission::StatusRead),
+    (
+        "Dependencies",
+        DEPENDENCIES_PAGE_PATH,
+        Permission::RequestsRead,
+    ),
+    ("Alerts", ALERTS_PAGE_PATH, Permission::AlertsRead),
+    ("Requests", REQUESTS_PAGE_PATH, Permission::RequestsRead),
+    ("Events", EVENTS_PAGE_PATH, Permission::EventsRead),
+    ("Configuration", CONFIG_PAGE_PATH, Permission::ConfigRead),
+    ("Accounts", ACCOUNTS_PAGE_PATH, Permission::AccountsRead),
+];
 
 /// `markup` as a page with `status`, with the headers every page carries.
 fn sent(status: StatusCode, markup: Markup) -> Response {
@@ -166,7 +199,7 @@ pub fn denied(site: &Site, denied: Denied) -> Response {
         Denied::Unanswered => refusal(
             site,
             StatusCode::SERVICE_UNAVAILABLE,
-            "the account store did not answer",
+            super::api::UNANSWERED,
         ),
     }
 }
@@ -357,6 +390,272 @@ pub async fn status(site: Arc<Site>, asked: Asked) -> Response {
         StatusCode::OK,
         layout(&site, "Status", Some(&viewer), true, body),
     )
+}
+
+/// The query string of `asked`, as pairs, in order.
+fn pairs(asked: &Asked) -> Vec<(String, String)> {
+    serde_urlencoded::from_str(asked.parts.uri.query().unwrap_or_default()).unwrap_or_default()
+}
+
+/// The value of `field` in `pairs`, or nothing.
+fn value<'a>(pairs: &'a [(String, String)], field: &str) -> &'a str {
+    pairs
+        .iter()
+        .find(|(name, _)| name == field)
+        .map_or("", |(_, value)| value.as_str())
+}
+
+/// A form that reads `path` again with `fields`, each filled with what `pairs` gave.
+fn filters(site: &Site, path: &str, fields: &[&str], pairs: &[(String, String)]) -> Markup {
+    html! {
+        form.filters method="get" action=(site.href(path)) {
+            @for field in fields {
+                label { (field) input name=(field) value=(value(pairs, field)); }
+            }
+            button type="submit" { "Show" }
+        }
+    }
+}
+
+/// A link to the next page: `path` with `pairs`, `after` set to `next`.
+fn next_link(site: &Site, path: &str, pairs: &[(String, String)], next: Option<String>) -> Markup {
+    let Some(next) = next else {
+        return html! {};
+    };
+    let mut pairs: Vec<(String, String)> = pairs
+        .iter()
+        .filter(|(name, _)| name != "after")
+        .cloned()
+        .collect();
+    pairs.push(("after".to_owned(), next));
+    let query = serde_urlencoded::to_string(&pairs).expect("pairs of text encode");
+    html! { p { a.next href=(format!("{}?{query}", site.href(path))) { "Next page" } } }
+}
+
+/// `data` rendered on a page titled `title` for `asked`, or the page saying why not.
+fn shown_page<T>(
+    site: &Site,
+    asked: &Asked,
+    title: &str,
+    data: Result<T, Refused>,
+    render: impl FnOnce(T) -> Markup,
+) -> Response {
+    match data {
+        Ok(data) => {
+            let viewer = Viewer {
+                caller: &asked.caller,
+                csrf: asked.csrf.as_deref(),
+            };
+            sent(
+                StatusCode::OK,
+                layout(site, title, Some(&viewer), false, render(data)),
+            )
+        }
+        Err(Refused(status, why)) => refusal(site, status, &why),
+    }
+}
+
+/// A JSON value as text: a string as itself, nothing as empty, anything else as JSON.
+fn text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+/// `GET dependencies`: the versions served, a page at a time. R3.
+pub async fn dependencies(site: Arc<Site>, asked: Asked) -> Response {
+    let pairs = pairs(&asked);
+    let data = super::usage::versions(&site, &asked.parts).await;
+    shown_page(&site, &asked, "Dependencies", data, |page| {
+        html! {
+            (filters(&site, DEPENDENCIES_PAGE_PATH, &["ecosystem", "name", "account", "since", "until", "limit"], &pairs))
+            table {
+                thead { tr { th { "Account" } th { "Ecosystem" } th { "Name" } th { "Version" } th { "First served" } th { "Last served" } } }
+                tbody {
+                    @for row in &page.versions {
+                        tr {
+                            td { (row.account.as_deref().unwrap_or("no token")) }
+                            td { (row.ecosystem) } td { (row.name) } td { (row.version) }
+                            td { (row.first_served) } td { (row.last_served) }
+                        }
+                    }
+                }
+            }
+            (next_link(&site, DEPENDENCIES_PAGE_PATH, &pairs, page.next.map(|id| id.to_string())))
+        }
+    })
+}
+
+/// `GET alerts`: versions served before a malware advisory named them. R4.
+pub async fn alerts(site: Arc<Site>, asked: Asked) -> Response {
+    let pairs = pairs(&asked);
+    let data = super::alerts::found(&site, &asked.parts).await;
+    shown_page(&site, &asked, "Alerts", data, |found| {
+        html! {
+            p { (found.scanned) " served versions looked up; " (found.alerts.len()) " alerts." }
+            table {
+                thead { tr { th { "Account" } th { "Package" } th { "Version" } th { "First served" } th { "Advisory" } th { "Loaded" } } }
+                tbody {
+                    @for alert in &found.alerts {
+                        tr {
+                            td { (alert.served.account.as_deref().unwrap_or("no token")) }
+                            td { (alert.served.ecosystem) " " (alert.served.name) }
+                            td { (alert.served.version) }
+                            td { (alert.served.first_served) }
+                            td { (alert.advisory_id) " (" (alert.source) ")" }
+                            td { (alert.loaded.as_deref().unwrap_or("unknown")) }
+                        }
+                    }
+                }
+            }
+            (next_link(&site, ALERTS_PAGE_PATH, &pairs, found.next.map(|id| id.to_string())))
+        }
+    })
+}
+
+/// The days from `since` to `until`, UTC, at most [`MAX_DAY_LINKS`].
+fn days(pairs: &[(String, String)]) -> Vec<jiff::civil::Date> {
+    let now = jiff::Timestamp::now();
+    let asked = (
+        None,
+        None,
+        Some(value(pairs, "since")).filter(|v| !v.is_empty()),
+        Some(value(pairs, "until")).filter(|v| !v.is_empty()),
+    );
+    let Ok(range) = super::logs::range(asked, now) else {
+        return Vec::new();
+    };
+    let utc = |at: jiff::Timestamp| at.to_zoned(jiff::tz::TimeZone::UTC).date();
+    let (first, last) = (utc(range.since), utc(range.until));
+    std::iter::successors(Some(first), |day| day.tomorrow().ok())
+        .take_while(|day| *day <= last)
+        .take(MAX_DAY_LINKS)
+        .collect()
+}
+
+/// `GET requests`: the audit log, filtered, a page at a time, and a link to each day. R5, R9.
+pub async fn requests(site: Arc<Site>, asked: Asked) -> Response {
+    let pairs = pairs(&asked);
+    let data =
+        super::logs::paged::<super::logs::RequestFilters>(site.audit_log.as_ref(), &asked.parts)
+            .await;
+    shown_page(&site, &asked, "Requests", data, |page| {
+        html! {
+            (filters(&site, REQUESTS_PAGE_PATH, &["ecosystem", "name", "account", "answered", "check", "path", "since", "until", "limit"], &pairs))
+            p { (page.files_read) " files read." }
+            table {
+                thead { tr { th { "At" } th { "Account" } th { "Package" } th { "Version" } th { "Answered" } th { "Checks" } } }
+                tbody {
+                    @for line in &page.lines {
+                        tr {
+                            td { (text(&line["at"])) }
+                            td { (text(&line["account"])) }
+                            td { (text(&line["ecosystem"])) " " (text(&line["name"])) }
+                            td { (text(&line["version"])) }
+                            td { (text(&line["answered"])) " " (text(&line["action"])) }
+                            td { (text(&line["checks"])) }
+                        }
+                    }
+                }
+            }
+            (next_link(&site, REQUESTS_PAGE_PATH, &pairs, page.next))
+            p.days {
+                "Each day as written: "
+                @for day in days(&pairs) {
+                    a href=(site.href(&super::routes::LOGS_PATH.replace("{day}", &day.to_string()))) { (day.to_string()) } " "
+                }
+            }
+        }
+    })
+}
+
+/// `GET events`: the account event log, filtered, a page at a time. R8.
+pub async fn events(site: Arc<Site>, asked: Asked) -> Response {
+    let pairs = pairs(&asked);
+    let data =
+        super::logs::paged::<super::logs::EventFilters>(site.event_log.as_ref(), &asked.parts)
+            .await;
+    shown_page(&site, &asked, "Events", data, |page| {
+        html! {
+            (filters(&site, EVENTS_PAGE_PATH, &["account", "action", "actor", "since", "until", "limit"], &pairs))
+            table {
+                thead { tr { th { "At" } th { "Actor" } th { "Action" } th { "Account" } th { "Role or token" } th { "Source" } } }
+                tbody {
+                    @for line in &page.lines {
+                        tr {
+                            td { (text(&line["at"])) }
+                            td { (text(&line["actor"])) }
+                            td { (text(&line["action"])) }
+                            td { (text(&line["account"])) }
+                            td { (text(&line["role"])) (text(&line["token"])) }
+                            td { (text(&line["source"])) }
+                        }
+                    }
+                }
+            }
+            (next_link(&site, EVENTS_PAGE_PATH, &pairs, page.next))
+        }
+    })
+}
+
+/// `GET config`: the proxy's health, its policy and its environment. R7.
+pub async fn config(site: Arc<Site>, asked: Asked) -> Response {
+    let data = super::config::loaded(&site).await;
+    shown_page(&site, &asked, "Configuration", data, |config| {
+        let health = serde_json::to_value(&config.proxy).expect("health serialises");
+        html! {
+            h2 { "Proxy" }
+            table {
+                tbody {
+                    @for (key, value) in health.as_object().into_iter().flatten() {
+                        tr { th { (key) } td { (text(value)) } }
+                    }
+                }
+            }
+            h2 { "Policy" }
+            @match &config.policy {
+                Some(policy) => { p { "Digest " code { (policy.digest) } } pre { (policy.report) } }
+                None => { p { "No policy is set." } }
+            }
+            h2 { "Environment" }
+            table {
+                thead { tr { th { "Variable" } th { "Value" } th { "Default" } } }
+                tbody {
+                    @for setting in &config.environment {
+                        tr {
+                            td { code { (setting.name) } }
+                            td { (setting.value.as_deref().unwrap_or("")) }
+                            td { (setting.default.as_deref().unwrap_or("")) }
+                        }
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// `GET accounts`: each account and its roles.
+pub async fn accounts(site: Arc<Site>, asked: Asked) -> Response {
+    let data = super::api::listed(&site).await;
+    shown_page(&site, &asked, "Accounts", data, |listed| {
+        html! {
+            table {
+                thead { tr { th { "Account" } th { "Roles" } th { "Created" } th { "Disabled" } } }
+                tbody {
+                    @for account in &listed.accounts {
+                        tr {
+                            td { (account.account) }
+                            td { (account.roles.join(", ")) }
+                            td { (account.created) }
+                            td { (account.disabled.as_deref().unwrap_or("")) }
+                        }
+                    }
+                }
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -620,5 +919,196 @@ mod tests {
             };
             assert_eq!(status, 503, "{fails}");
         }
+    }
+
+    /// A console with a served version, an alert, two log lines and a policy, logged in as
+    /// alice: its base URL and her cookie.
+    async fn full() -> (String, String) {
+        use crate::usage::Use;
+        let dir = crate::util::test_support::tempdir("pages-full");
+        let audit = dir.join("audit.log");
+        let now = jiff::Timestamp::now();
+        let line = serde_json::json!({
+            "at": now.to_string(), "path": "pinned", "ecosystem": "npm",
+            "name": "<script>alert(1)</script>", "version": "1.0.0", "answered": "refused",
+            "checks": ["known_malware"], "account": "alice",
+        });
+        std::fs::write(&audit, format!("{line}\n")).unwrap();
+        let events = dir.join("events.log");
+        let failed = serde_json::json!({
+            "at": now.to_string(), "action": "login-failed",
+            "account": "<script>steal()</script>", "source": "192.0.2.1",
+        });
+        std::fs::write(&events, format!("{failed}\n")).unwrap();
+        let usage = Arc::new(crate::usage::tests::Kept::default());
+        usage.0.lock().unwrap().push(Use::Served {
+            account: None,
+            ecosystem: "npm".into(),
+            name: "left-pad".into(),
+            version: "1.0.0".into(),
+            at: "2026-10-13T09:00:00Z".parse().unwrap(),
+        });
+        let malware = crate::intel::store::Record {
+            advisory_id: "MAL-1".into(),
+            aliases: vec![],
+            source: "ossf-malicious".into(),
+            cvss: None,
+            cvss_source: None,
+            band: None,
+            exploited: false,
+            malware: true,
+            cached: None,
+        };
+        let intel = Arc::new(crate::intel::store::testing::FixedIntel(Ok(Some(
+            crate::intel::store::PackageIntel {
+                snapshot: "s1".into(),
+                records: vec![(None, malware)],
+                ranges: vec![],
+                exploitation_loaded: false,
+            },
+        ))));
+        let policy =
+            Arc::new(crate::policy::Policy::parse("version: 1\ncooldown_days: 3\n").unwrap());
+        let proxy = crate::proxy::Proxy::new(reqwest::Client::new())
+            .with_policy(Some(policy))
+            .with_intel(Some(intel));
+        let settings = crate::env::testing::with(&[(crate::env::GITHUB_TOKEN, "ghp_x")]).settings();
+        let console = crate::console::Console {
+            url: "https://h/admin/".into(),
+            mount: crate::mount::Mount::from_url("https://h/admin/").unwrap(),
+            listen: Some("127.0.0.1:9090".into()),
+            rp_key: None,
+            proxy_mount: crate::mount::Mount::ROOT,
+        };
+        let site = crate::console::tests::unread(console, store().await)
+            .with_usage(usage)
+            .with_proxy(proxy, settings, "http://127.0.0.1:9".into())
+            .with_logs(Some(audit), Some(events));
+        let site = Arc::new(site);
+        let (_, router) =
+            crate::console::listeners(axum::Router::new(), "127.0.0.1:8080", Some(&site))
+                .pop()
+                .unwrap();
+        let base = crate::proxy::testing::serve(router).await;
+        let cookie = logged_in(&base, "alice").await;
+        (base, cookie)
+    }
+
+    /// Each data page shows its data; a name from a registry or a username someone tried
+    /// is escaped, never markup.
+    #[tokio::test]
+    async fn each_data_page_shows_its_data_escaped() {
+        let (base, cookie) = full().await;
+        let (status, home) = page(&base, HOME_PATH, Some(&cookie)).await;
+        assert_eq!(status, 200);
+        for (label, path, _) in NAV {
+            assert!(
+                home.contains(&format!(r#"<a href="/admin{path}">{label}</a>"#)),
+                "{label}"
+            );
+        }
+
+        let (status, body) = page(&base, REQUESTS_PAGE_PATH, Some(&cookie)).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "{body}"
+        );
+        assert!(!body.contains("<script>"), "{body}");
+        assert!(body.contains("[&quot;known_malware&quot;]"), "{body}");
+        assert!(body.contains("1 files read."), "{body}");
+        assert!(body.contains("/admin/api/v1/logs/"), "{body}");
+
+        let (status, body) = page(&base, EVENTS_PAGE_PATH, Some(&cookie)).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.contains("&lt;script&gt;steal()&lt;/script&gt;"),
+            "{body}"
+        );
+        assert!(!body.contains("<script>"), "{body}");
+        assert!(body.contains("<td>192.0.2.1</td>"), "{body}");
+
+        let (status, body) = page(&base, DEPENDENCIES_PAGE_PATH, Some(&cookie)).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.contains("<td>left-pad</td>") && body.contains("no token"),
+            "{body}"
+        );
+
+        let (status, body) = page(&base, ALERTS_PAGE_PATH, Some(&cookie)).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.contains("MAL-1 (ossf-malicious)") && body.contains("<td>unknown</td>"),
+            "{body}"
+        );
+        assert!(
+            body.contains("1 served versions looked up; 1 alerts."),
+            "{body}"
+        );
+        assert!(
+            body.contains(r#"<a class="next" href="/admin/alerts?after=1">"#),
+            "{body}"
+        );
+
+        let (status, body) = page(&base, CONFIG_PAGE_PATH, Some(&cookie)).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("<th>service</th><td>byrle</td>"), "{body}");
+        assert!(body.contains("cooldown_days    3"), "{body}");
+        assert!(
+            body.contains(&format!(
+                "<code>{}</code></td><td>set</td>",
+                crate::env::GITHUB_TOKEN
+            )),
+            "{body}"
+        );
+        assert!(!body.contains("ghp_x"));
+
+        let (status, body) = page(&base, ACCOUNTS_PAGE_PATH, Some(&cookie)).await;
+        assert_eq!(status, 200, "{body}");
+        assert!(body.contains("<td>alice</td><td>admin</td>"), "{body}");
+    }
+
+    /// The next page keeps the filters; a filter that does not parse is a 400 page.
+    #[tokio::test]
+    async fn a_page_keeps_its_filters_and_refuses_one_that_does_not_parse() {
+        let (base, cookie) = full().await;
+        let (_, body) = page(
+            &base,
+            &format!("{DEPENDENCIES_PAGE_PATH}?limit=1&ecosystem=npm"),
+            Some(&cookie),
+        )
+        .await;
+        assert!(
+            body.contains(r#"href="/admin/dependencies?limit=1&amp;ecosystem=npm&amp;after=1""#),
+            "{body}"
+        );
+        assert!(body.contains(r#"name="ecosystem" value="npm""#), "{body}");
+        let (status, body) = page(
+            &base,
+            &format!("{DEPENDENCIES_PAGE_PATH}?limit=0"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, 400);
+        assert!(body.contains("limit is not from 1 to 1000"), "{body}");
+        let (status, body) = page(
+            &base,
+            &format!("{REQUESTS_PAGE_PATH}?since=2026-10-10T00:00:00Z&until=2026-10-12T12:00:00Z"),
+            Some(&cookie),
+        )
+        .await;
+        assert_eq!(status, 200);
+        for day in ["2026-10-10", "2026-10-11", "2026-10-12"] {
+            assert!(body.contains(&format!(">{day}</a>")), "{day}: {body}");
+        }
+        assert!(!body.contains(">2026-10-13</a>"), "{body}");
+        assert!(days(&[("since".into(), "x".into())]).is_empty());
+        let year = [
+            ("since".into(), "2025-01-01T00:00:00Z".into()),
+            ("until".into(), "2026-01-01T00:00:00Z".into()),
+        ];
+        assert_eq!(days(&year).len(), MAX_DAY_LINKS);
+        assert_eq!(text(&serde_json::Value::Null), "");
+        assert_eq!(text(&serde_json::json!(3)), "3");
     }
 }

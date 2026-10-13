@@ -14,7 +14,7 @@ use utoipa::ToSchema;
 
 use super::Site;
 use super::login::Attempt;
-use crate::account::gate::Refused;
+use crate::account::gate;
 use crate::account::{Caller, Role, TokenDigest};
 
 /// The cookie the session id is kept in.
@@ -62,15 +62,45 @@ pub(super) fn refused(status: StatusCode, why: &str) -> Response {
     )
 }
 
+/// Why a request was not answered with its data: the status, and why, for JSON or a page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refused(pub StatusCode, pub String);
+
+impl Refused {
+    /// 400, saying `why` a filter did not parse.
+    pub fn bad(why: String) -> Self {
+        Self(StatusCode::BAD_REQUEST, why)
+    }
+
+    /// 503, saying `why`.
+    pub fn unavailable(why: &str) -> Self {
+        Self(StatusCode::SERVICE_UNAVAILABLE, why.to_owned())
+    }
+}
+
+impl IntoResponse for Refused {
+    fn into_response(self) -> Response {
+        refused(self.0, &self.1)
+    }
+}
+
+/// `data` as JSON, or why not.
+pub(super) fn answered(data: Result<impl Serialize, Refused>) -> Response {
+    match data {
+        Ok(data) => json(StatusCode::OK, &data),
+        Err(refused) => refused.into_response(),
+    }
+}
+
 fn unauthorized() -> Response {
     refused(StatusCode::UNAUTHORIZED, "log in, or send a token")
 }
 
+/// Why a request the account store did not answer is 503.
+pub(super) const UNANSWERED: &str = "the account store did not answer";
+
 pub(super) fn unanswered() -> Response {
-    refused(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "the account store did not answer",
-    )
+    refused(StatusCode::SERVICE_UNAVAILABLE, UNANSWERED)
 }
 
 /// Why a console request has no caller.
@@ -142,21 +172,26 @@ pub struct Accounts {
     ),
 )]
 pub async fn accounts(site: Arc<Site>) -> Response {
-    match site.store.accounts().await {
-        Ok(accounts) => {
-            let accounts = accounts
-                .into_iter()
-                .map(|account| Listed {
-                    account: account.name.to_string(),
-                    roles: names(&account.roles),
-                    created: account.created,
-                    disabled: account.disabled,
-                })
-                .collect();
-            json(StatusCode::OK, &Accounts { accounts })
-        }
-        Err(_) => unanswered(),
-    }
+    answered(listed(&site).await)
+}
+
+/// Every account, by name.
+pub async fn listed(site: &Site) -> Result<Accounts, Refused> {
+    let accounts = site
+        .store
+        .accounts()
+        .await
+        .map_err(|_| Refused::unavailable(UNANSWERED))?;
+    let accounts = accounts
+        .into_iter()
+        .map(|account| Listed {
+            account: account.name.to_string(),
+            roles: names(&account.roles),
+            created: account.created,
+            disabled: account.disabled,
+        })
+        .collect();
+    Ok(Accounts { accounts })
 }
 
 /// The session id in a `Cookie` header of `headers`.
@@ -203,8 +238,8 @@ impl Site {
                     )),
                     Err(_) => Err(Denied::Unanswered),
                 },
-                Err(Refused::Unauthorized) => Err(Denied::Unauthorized),
-                Err(Refused::Unanswered) => Err(Denied::Unanswered),
+                Err(gate::Refused::Unauthorized) => Err(Denied::Unauthorized),
+                Err(gate::Refused::Unanswered) => Err(Denied::Unanswered),
             };
         };
         let caller = match self.store.session(&TokenDigest::of(&id)).await {

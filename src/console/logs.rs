@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use super::Site;
-use super::api::{Problem, json, refused};
+use super::api::{Problem, Refused, answered, refused};
 use super::usage::{query, time};
 
 /// Lines a page has when `limit` is not given.
@@ -210,16 +210,13 @@ async fn read(
         .expect("reading a log does not panic")
 }
 
-/// Serve `page` as JSON.
-pub fn served(page: Page) -> Response {
-    json(
-        StatusCode::OK,
-        &Lines {
-            lines: page.lines.into_iter().map(|line| line.value).collect(),
-            next: page.next,
-            files_read: page.files_read,
-        },
-    )
+/// `page` as the API and the pages show it.
+pub fn served(page: Page) -> Lines {
+    Lines {
+        lines: page.lines.into_iter().map(|line| line.value).collect(),
+        next: page.next,
+        files_read: page.files_read,
+    }
 }
 
 /// `GET requests`: audit log lines, oldest first, a page at a time. R5 and R9.
@@ -239,11 +236,11 @@ pub fn served(page: Page) -> Response {
     ),
 )]
 pub async fn requests(site: Arc<Site>, parts: Parts) -> Response {
-    paged::<RequestFilters>(site.audit_log.as_ref(), &parts).await
+    answered(paged::<RequestFilters>(site.audit_log.as_ref(), &parts).await)
 }
 
 /// A query string that pages through a log, and keeps the lines its filters match.
-trait Filtered: serde::de::DeserializeOwned + Send + 'static {
+pub(super) trait Filtered: serde::de::DeserializeOwned + Send + 'static {
     /// `after`, `limit`, `since` and `until`, as given.
     fn asked(&self) -> (Option<&str>, Option<&str>, Option<&str>, Option<&str>);
 
@@ -267,17 +264,17 @@ impl Filtered for RequestFilters {
 }
 
 /// A page of `log` that the query string of `parts`, read as `F`, asks for.
-async fn paged<F: Filtered>(log: Option<&PathBuf>, parts: &Parts) -> Response {
-    let read_range = query::<F>(parts)
-        .and_then(|filters| range(filters.asked(), Timestamp::now()).map(|range| (filters, range)));
-    let (filters, range) = match read_range {
-        Ok(read) => read,
-        Err(why) => return refused(StatusCode::BAD_REQUEST, &why),
-    };
-    match read(log, range, Box::new(move |line| filters.keeps(line))).await {
-        Ok(page) => served(page),
-        Err(why) => refused(StatusCode::SERVICE_UNAVAILABLE, &why),
-    }
+pub(super) async fn paged<F: Filtered>(
+    log: Option<&PathBuf>,
+    parts: &Parts,
+) -> Result<Lines, Refused> {
+    let (filters, range) = query::<F>(parts)
+        .and_then(|filters| range(filters.asked(), Timestamp::now()).map(|range| (filters, range)))
+        .map_err(Refused::bad)?;
+    read(log, range, Box::new(move |line| filters.keeps(line)))
+        .await
+        .map(served)
+        .map_err(|why| Refused::unavailable(&why))
 }
 
 /// `GET events`'s query string, each value as given.
@@ -338,7 +335,7 @@ impl Filtered for EventFilters {
     ),
 )]
 pub async fn events(site: Arc<Site>, parts: Parts) -> Response {
-    paged::<EventFilters>(site.event_log.as_ref(), &parts).await
+    answered(paged::<EventFilters>(site.event_log.as_ref(), &parts).await)
 }
 
 /// `GET logs/{day}`: a UTC day of the audit log, its lines as written. R9.

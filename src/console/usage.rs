@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use axum::http::StatusCode;
 use axum::http::request::Parts;
 use axum::response::Response;
 use jiff::Timestamp;
@@ -11,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 use super::Site;
-use super::api::{Problem, json, refused};
+use super::api::{Problem, Refused, answered};
 use crate::usage::{FailureQuery, FailureRow, ServedQuery, ServedRow};
 
 /// Rows a page of served versions has when `limit` is not given.
@@ -26,12 +25,11 @@ pub const DEFAULT_FAILURE_SPAN: jiff::SignedDuration = jiff::SignedDuration::fro
 /// Why a read of the usage tables is 503.
 const UNANSWERED: &str = "the usage tables did not answer";
 
-/// 503 from a console with no usage tables to read.
-fn not_kept() -> Response {
-    refused(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "this console reads no usage tables",
-    )
+/// The usage tables, or why there are none to read.
+fn tables(site: &Site) -> Result<&Arc<dyn crate::usage::Usage>, Refused> {
+    site.usage
+        .as_ref()
+        .ok_or_else(|| Refused::unavailable("this console reads no usage tables"))
 }
 
 /// `GET dependencies`'s query string, each value as given.
@@ -165,29 +163,27 @@ impl FailureFilters {
     ),
 )]
 pub async fn dependencies(site: Arc<Site>, parts: Parts) -> Response {
-    let Some(usage) = &site.usage else {
-        return not_kept();
-    };
-    let query = match query::<DependencyFilters>(&parts).and_then(DependencyFilters::read) {
-        Ok(query) => query,
-        Err(why) => return refused(StatusCode::BAD_REQUEST, &why),
-    };
-    match usage.served(&query).await {
-        Ok(rows) => {
-            let next = rows
-                .last()
-                .filter(|_| rows.len() == query.limit as usize)
-                .map(|row| row.id);
-            json(
-                StatusCode::OK,
-                &Versions {
-                    versions: rows,
-                    next,
-                },
-            )
-        }
-        Err(_) => refused(StatusCode::SERVICE_UNAVAILABLE, UNANSWERED),
-    }
+    answered(versions(&site, &parts).await)
+}
+
+/// The page of served versions the query string of `parts` asks for.
+pub async fn versions(site: &Site, parts: &Parts) -> Result<Versions, Refused> {
+    let usage = tables(site)?;
+    let query = query::<DependencyFilters>(parts)
+        .and_then(DependencyFilters::read)
+        .map_err(Refused::bad)?;
+    let rows = usage
+        .served(&query)
+        .await
+        .map_err(|_| Refused::unavailable(UNANSWERED))?;
+    let next = rows
+        .last()
+        .filter(|_| rows.len() == query.limit as usize)
+        .map(|row| row.id);
+    Ok(Versions {
+        versions: rows,
+        next,
+    })
 }
 
 /// `GET metrics/failures`: counts by hour, ecosystem and case, the last 24 hours by default. R6.
@@ -207,17 +203,20 @@ pub async fn dependencies(site: Arc<Site>, parts: Parts) -> Response {
     ),
 )]
 pub async fn failures(site: Arc<Site>, parts: Parts) -> Response {
-    let Some(usage) = &site.usage else {
-        return not_kept();
-    };
-    let query = match query::<FailureFilters>(&parts).and_then(|f| f.read(Timestamp::now())) {
-        Ok(query) => query,
-        Err(why) => return refused(StatusCode::BAD_REQUEST, &why),
-    };
-    match usage.failures(&query).await {
-        Ok(rows) => json(StatusCode::OK, &Failures { failures: rows }),
-        Err(_) => refused(StatusCode::SERVICE_UNAVAILABLE, UNANSWERED),
-    }
+    answered(counts(&site, &parts).await)
+}
+
+/// The failure counts the query string of `parts` asks for.
+pub async fn counts(site: &Site, parts: &Parts) -> Result<Failures, Refused> {
+    let usage = tables(site)?;
+    let query = query::<FailureFilters>(parts)
+        .and_then(|filters| filters.read(Timestamp::now()))
+        .map_err(Refused::bad)?;
+    let failures = usage
+        .failures(&query)
+        .await
+        .map_err(|_| Refused::unavailable(UNANSWERED))?;
+    Ok(Failures { failures })
 }
 
 #[cfg(test)]
