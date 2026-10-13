@@ -124,11 +124,20 @@ and PyPI since 2024-10, identities unverified. It counts the versions each rule 
 - R0, this check: any version it is compared with names another identity
 - R1: no version it is compared with names its identity
 - R2: no attested version of the package published before it names its identity
+- R3: no attested version published at least 7 days before it names its identity; with
+  none that old, R0 over the attested versions of the 7 days before it
 
-| Ecosystem | Packages attested | Attested versions compared | R0 | of R0, same owner | R1 | R2 | Packages R0 refuses in |
-|---|---|---|---|---|---|---|---|
-| npm | 98 | 30,261 | 2,339 | 2,327 | 291 | 71 | 35 |
-| pypi | 24 | 263 | 2 | 2 | 2 | 2 | 2 |
+| Ecosystem | Packages attested | Attested versions compared | R0 | of R0, same owner | R1 | R2 | R3 | Packages R0 refuses in |
+|---|---|---|---|---|---|---|---|---|
+| npm | 98 | 30,261 | 2,339 | 2,327 | 291 | 71 | 382 | 35 |
+| pypi | 24 | 263 | 2 | 2 | 2 | 2 | 2 | 2 |
+
+R2 lets a burst through: once a new identity has published one version, every later one
+from it passes. Two releases an hour apart from a new workflow, `x1` and `x2`, are refused
+`x1` only. R3 refuses both until the identity is 7 days old. R0 refuses `x1` only too
+when no version from the old identity falls in its window. R3's 382 are R2's 71 and the
+versions after each within its first 7 days: 25 per rolldown binding, 12 each for react,
+react-dom and scheduler, 5 per `@next` package.
 
 R0's refusals are mostly release channels published from different workflows in one
 repository: rolldown and its 11 bindings alternate a release workflow with a nightly canary

@@ -14,6 +14,8 @@ recent attested one. Under each rule an attested version is refused when:
 - R0, byrle's: any attested version before it names another identity
 - R1: no attested version before it names its identity
 - R2: no attested version of the package published before it, ever, names its identity
+- R3: no attested version published at least 7 days before it names its identity; with
+  none that old, R0 over the attested versions in the 7 days before it
 
 Prints a table of versions refused under each, and each version R0 refuses.
 
@@ -131,7 +133,7 @@ def when(stamp):
 
 
 def refusals(history):
-    """(version, identity, R0's differing identity or None, R1 refuses, R2 refuses) for each
+    """(version, identity, R0's differing identity or None, R1, R2 and R3 refuse) for each
     attested version with an attested version before it, `history` in publish order."""
     found = []
     for i, (stamp, version, identity) in enumerate(history):
@@ -145,8 +147,11 @@ def refusals(history):
         compared.add(attested[-1])
         named = {h[2] for h in compared if h[2]}
         differing = next((n for n in sorted(named) if n != identity), None)
+        old = {h[2] for h in attested if when(stamp) - when(h[0]) >= WINDOW}
+        recent = {h[2] for h in attested if when(stamp) - when(h[0]) < WINDOW}
+        by_r3 = identity not in old if old else bool(recent - {identity})
         found.append((version, identity, differing, bool(named) and identity not in named,
-                      identity not in {h[2] for h in attested}))
+                      identity not in {h[2] for h in attested}, by_r3))
     return found
 
 
@@ -159,26 +164,30 @@ def main():
             names["pypi"] |= pypi_names(lockfile(work, "pypi", packages))
     read = {"npm": npm_versions, "pypi": pypi_versions}
     print("| Ecosystem | Packages attested | Attested versions compared | R0 refuses "
-          "| of them, same owner | R1 refuses | R2 refuses | Packages R0 refuses in |")
-    print("|---|---|---|---|---|---|---|---|")
+          "| of them, same owner | R1 refuses | R2 refuses | R3 refuses "
+          "| Packages R0 refuses in |")
+    print("|---|---|---|---|---|---|---|---|---|")
     listed = []
     for ecosystem in ("npm", "pypi"):
-        packages = compared = r0 = same = r1 = r2 = 0
+        packages = compared = r0 = same = r1 = r2 = r3 = 0
         refused_in = set()
         for name in sorted(names[ecosystem]):
             found = refusals(read[ecosystem](name))
             packages += bool(found)
             compared += len(found)
-            for version, identity, differing, by_r1, by_r2 in found:
+            for version, identity, differing, by_r1, by_r2, by_r3 in found:
                 r1 += by_r1
                 r2 += by_r2
+                r3 += by_r3
+                if by_r3:
+                    listed.append(f"R3 {ecosystem} {name} {version}: {identity}")
                 if differing:
                     r0 += 1
                     same += owner(differing) == owner(identity)
                     refused_in.add(name)
                     listed.append(f"{ecosystem} {name} {version}: {identity}, and before it "
                                   f"{differing}{'  R1' if by_r1 else ''}{'  R2' if by_r2 else ''}")
-        print(f"| {ecosystem} | {packages} | {compared} | {r0} | {same} | {r1} | {r2} "
+        print(f"| {ecosystem} | {packages} | {compared} | {r0} | {same} | {r1} | {r2} | {r3} "
               f"| {len(refused_in)} |")
     print()
     print("\n".join(listed))
