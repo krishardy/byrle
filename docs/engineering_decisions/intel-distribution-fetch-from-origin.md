@@ -23,6 +23,15 @@ now one backend. Storage is sqlx directly; see
 [storage-sqlx-postgres](storage-sqlx-postgres.md), which supersedes the ORM half of this
 document.
 
+### Amended 2026-10-13: a mirror for any stream
+
+`BYRLE_STREAM_URLS` names a URL to fetch a stream from instead of its origin, as
+`stream=url` pairs: `osv/npm=https://mirror.example/npm/all.zip`. Each stream named is one
+this build fetches, once; each URL is https, or http to loopback. A stream not named is
+fetched from its origin. The mirror serves what the origin does: OSV's zip, KEV's JSON,
+Datadog's manifest, GitHub's GraphQL. Asked for by the user for the console's exit test,
+which loads a test `MAL-` record from a mirror on loopback. We still host nothing.
+
 ## Rationale
 
 OSV publishes per-ecosystem bundles to a public GCS bucket, GitHub Advisory is queried

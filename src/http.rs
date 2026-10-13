@@ -74,6 +74,27 @@ pub fn client_builder(read_timeout: Duration) -> reqwest::ClientBuilder {
         .read_timeout(read_timeout)
 }
 
+/// Whether `url` is `https`, or `http` to loopback, where nothing between can read it.
+pub fn secure_or_loopback(url: &reqwest::Url) -> bool {
+    let loopback = url.host_str().is_some_and(|host| {
+        host == "localhost"
+            || host
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|address| address.is_loopback())
+    });
+    url.scheme() == "https" || url.scheme() == "http" && loopback
+}
+
+/// `url` if it is `https`, or `http` to loopback. Anything else could be read on the way.
+pub fn trusted(url: &str) -> Result<reqwest::Url, String> {
+    reqwest::Url::parse(url)
+        .ok()
+        .filter(secure_or_loopback)
+        .ok_or_else(|| format!("`{url}` is not an https URL, or http to loopback"))
+}
+
 /// Headers that describe a single hop and must not be forwarded. `Host` is dropped separately.
 pub const HOP_BY_HOP: &[&str] = &[
     "connection",

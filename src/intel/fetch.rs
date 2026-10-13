@@ -38,17 +38,15 @@ impl Fetched {
 pub async fn stream_bundle(
     http: &reqwest::Client,
     declared: &Stream,
-    github_token: Option<&str>,
+    (url, github_token): (&str, Option<&str>),
     notice: Notice<'_>,
 ) -> Result<Fetched, String> {
     let mut attempt = 1;
     loop {
         let got = match declared.transport {
-            Transport::Get => bundle(http, declared.url, declared.ceiling, notice).await,
+            Transport::Get => bundle(http, url, declared.ceiling, notice).await,
             Transport::GithubGraphql { query } => match github_token {
-                Some(token) => {
-                    graphql(http, declared.url, declared.ceiling, token, query, notice).await
-                }
+                Some(token) => graphql(http, url, declared.ceiling, token, query, notice).await,
                 None => Err(FetchFailure::settled(format!(
                     "{} is unset, so this stream is not read",
                     crate::env::GITHUB_TOKEN
@@ -145,12 +143,15 @@ pub struct Read {
 pub async fn read_streams(
     http: &reqwest::Client,
     streams: &'static [Stream],
-    github_token: Option<&str>,
+    (urls, github_token): (&std::collections::BTreeMap<String, String>, Option<&str>),
     notice: Notice<'_>,
 ) -> Read {
     let mut read = Read::default();
     for declared in streams {
-        let got = stream_bundle(http, declared, github_token, notice).await;
+        let url = urls
+            .get(declared.stream)
+            .map_or(declared.url, String::as_str);
+        let got = stream_bundle(http, declared, (url, github_token), notice).await;
         let parsed = match got {
             Ok(fetched) => {
                 let bundle = fetched.stream(declared.stream);
@@ -404,9 +405,14 @@ mod tests {
             url: Box::leak(format!("http://{addr}/all.zip").into_boxed_str()),
             ..crate::intel::stream::ALL[0]
         };
-        let fetched = stream_bundle(&client(), &declared, None, &printed.notice())
-            .await
-            .expect("the second attempt answers");
+        let fetched = stream_bundle(
+            &client(),
+            &declared,
+            (declared.url, None),
+            &printed.notice(),
+        )
+        .await
+        .expect("the second attempt answers");
         assert_eq!(fetched.bytes, b"{}");
         let lines = printed.lines();
         assert_eq!(lines.len(), 3, "{lines:?}");
@@ -517,7 +523,7 @@ mod tests {
         let read = read_streams(
             &client(),
             Box::leak(streams.into_boxed_slice()),
-            None,
+            (&std::collections::BTreeMap::new(), None),
             &printed.notice(),
         )
         .await;
@@ -528,6 +534,36 @@ mod tests {
                 .collect::<Vec<_>>(),
             [("first/one", "first/one"), ("second/one", "second/one")]
         );
+        assert!(read.not_loaded.is_empty());
+    }
+
+    /// A stream named in the overrides is fetched from its mirror, and one not named from
+    /// its own URL.
+    #[tokio::test]
+    async fn a_stream_given_a_mirror_is_fetched_from_it() {
+        let mirror = scripted(vec![Answer::body("{}")]).await;
+        let own = scripted(vec![Answer::body("{}")]).await;
+        let own: &'static str = Box::leak(format!("http://{own}/b").into_boxed_str());
+        let streams: Vec<Stream> = two_streams(true)
+            .iter()
+            .map(|declared| Stream {
+                url: own,
+                ..*declared
+            })
+            .collect();
+        let urls = std::collections::BTreeMap::from([(
+            "first/one".to_owned(),
+            format!("http://{mirror}/mirror"),
+        )]);
+        let printed = Printed::default();
+        let read = read_streams(
+            &client(),
+            Box::leak(streams.into_boxed_slice()),
+            (&urls, None),
+            &printed.notice(),
+        )
+        .await;
+        assert_eq!(read.loaded.len(), 2, "{:?}", read.not_loaded);
         assert!(read.not_loaded.is_empty());
     }
 
@@ -545,7 +581,7 @@ mod tests {
         let read = read_streams(
             &client(),
             Box::leak(streams.into_boxed_slice()),
-            None,
+            (&std::collections::BTreeMap::new(), None),
             &printed.notice(),
         )
         .await;
@@ -590,7 +626,7 @@ mod tests {
         let read = read_streams(
             &client(),
             Box::leak(streams.into_boxed_slice()),
-            None,
+            (&std::collections::BTreeMap::new(), None),
             &printed.notice(),
         )
         .await;
@@ -617,7 +653,7 @@ mod tests {
         let printed = Printed::default();
         let github = crate::intel::stream::by_stream(crate::intel::providers::github::NPM_STREAM)
             .expect("this build declares it");
-        let why = stream_bundle(&client(), github, None, &printed.notice())
+        let why = stream_bundle(&client(), github, (github.url, None), &printed.notice())
             .await
             .expect_err("no token");
         assert!(
@@ -632,7 +668,13 @@ mod tests {
     async fn a_stream_not_read_for_want_of_a_token_is_recorded_as_unconfigured() {
         const GITHUB: &[Stream] = &[crate::intel::stream::GITHUB_NPM];
         let printed = Printed::default();
-        let read = read_streams(&client(), GITHUB, None, &printed.notice()).await;
+        let read = read_streams(
+            &client(),
+            GITHUB,
+            (&std::collections::BTreeMap::new(), None),
+            &printed.notice(),
+        )
+        .await;
         assert_eq!(read.not_loaded.len(), 1);
         assert!(read.not_loaded[0].unconfigured);
     }
@@ -656,9 +698,14 @@ mod tests {
             ..*github
         };
         let printed = Printed::default();
-        let fetched = stream_bundle(&client(), &declared, Some("token"), &printed.notice())
-            .await
-            .expect("two pages");
+        let fetched = stream_bundle(
+            &client(),
+            &declared,
+            (declared.url, Some("token")),
+            &printed.notice(),
+        )
+        .await
+        .expect("two pages");
         let array: serde_json::Value = serde_json::from_slice(&fetched.bytes).expect("an array");
         assert_eq!(array.as_array().map(Vec::len), Some(2));
     }

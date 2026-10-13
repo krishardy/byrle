@@ -2900,7 +2900,8 @@ role gets 403 from every endpoint except `GET health`.
 - [ ] **Local mirrors for every stream**, so a refresh does not tell each upstream which
       packages this organisation asks about. Moved from Stage 2: nothing about it is
       needed to make a decision, and it is a deployment property of a team running the
-      proxy in blocking mode. Every stream is fetched from its own origin today
+      proxy in blocking mode. Begun 2026-10-13: `BYRLE_STREAM_URLS` fetches any stream from
+      a mirror instead of its origin; running one is left to the operator
       ([intel-distribution-fetch-from-origin](docs/engineering_decisions/intel-distribution-fetch-from-origin.md)).
   - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, is the same tradeoff
         from the other side: asking OSV about one package leaks that package. It stays

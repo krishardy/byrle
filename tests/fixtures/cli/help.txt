@@ -72,6 +72,9 @@ Proxy configuration, all through the environment:
   BYRLE_DATABASE_URL                Postgres holding intel from `byrle refresh`. With a
                                     policy, known_malware is enforced from it, and a
                                     store that cannot answer is a 503
+  BYRLE_STREAM_URLS                 stream=url pairs, by comma, fetching a stream from a
+                                    mirror: osv/npm=https://mirror.example/npm/all.zip.
+                                    https, or http to loopback; others keep their own
   BYRLE_GITHUB_TOKEN                token `byrle refresh` reads GitHub's Advisory
                                     Database with. Unset, that one stream does not load
                                     and the others still do

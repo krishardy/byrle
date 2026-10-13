@@ -343,6 +343,15 @@ pub const DATABASE_URL: Var = runtime(
     ],
 )
 .url_with_password();
+pub const STREAM_URLS: Var = runtime(
+    "BYRLE_STREAM_URLS",
+    "",
+    &[
+        "stream=url pairs, by comma, fetching a stream from a",
+        "mirror: osv/npm=https://mirror.example/npm/all.zip.",
+        "https, or http to loopback; others keep their own",
+    ],
+);
 pub const GITHUB_TOKEN: Var = runtime(
     "BYRLE_GITHUB_TOKEN",
     "",
@@ -653,7 +662,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 78] = [
+pub const ALL: [Var; 79] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -684,6 +693,7 @@ pub const ALL: [Var; 78] = [
     MAX_RECORDS,
     MAX_VERIFIED,
     DATABASE_URL,
+    STREAM_URLS,
     GITHUB_TOKEN,
     SNAPSHOT_DIR,
     SNAPSHOT_LIMIT,
@@ -1235,6 +1245,33 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     }
 
     /// The GitHub Advisory stream's token. `None` leaves that stream unloaded.
+    /// [`STREAM_URLS`], by stream. Each stream is one this build fetches, named once, and
+    /// each URL is https, or http to loopback.
+    pub fn stream_urls(&self) -> Result<std::collections::BTreeMap<String, String>, EnvError> {
+        let Some(listed) = self.text(STREAM_URLS)? else {
+            return Ok(std::collections::BTreeMap::new());
+        };
+        let refused = |why: String| EnvError::new(STREAM_URLS, listed.clone(), why);
+        let mut urls = std::collections::BTreeMap::new();
+        for pair in listed
+            .split(',')
+            .map(str::trim)
+            .filter(|pair| !pair.is_empty())
+        {
+            let (stream, url) = pair
+                .split_once('=')
+                .ok_or_else(|| refused(format!("`{pair}` is not stream=url")))?;
+            let (stream, url) = (stream.trim(), url.trim());
+            crate::intel::stream::by_stream(stream)
+                .ok_or_else(|| refused(format!("`{stream}` is not a stream this build fetches")))?;
+            crate::http::trusted(url).map_err(refused)?;
+            if urls.insert(stream.to_owned(), url.to_owned()).is_some() {
+                return Err(refused(format!("`{stream}` is named twice")));
+            }
+        }
+        Ok(urls)
+    }
+
     pub fn github_token(&self) -> Result<Option<String>, EnvError> {
         self.text(GITHUB_TOKEN)
     }
@@ -2406,6 +2443,40 @@ mod tests {
             let unread = testing::with_unreadable(&all, var).oidc().unwrap_err();
             assert_eq!(unread.var, var.name);
         }
+    }
+
+    /// Each stream named is one this build fetches, once, from an https URL or loopback.
+    #[test]
+    fn a_mirror_is_named_for_a_stream_this_build_fetches() {
+        assert!(with(&[]).stream_urls().unwrap().is_empty());
+        let urls = with(&[(
+            STREAM_URLS,
+            " osv/npm=https://mirror.example/npm/all.zip , osv/pypi=http://127.0.0.1:9/p.zip,",
+        )])
+        .stream_urls()
+        .unwrap();
+        assert_eq!(urls["osv/npm"], "https://mirror.example/npm/all.zip");
+        assert_eq!(urls["osv/pypi"], "http://127.0.0.1:9/p.zip");
+        for (value, said) in [
+            ("osv/npm", "is not stream=url"),
+            (
+                "osv/go=https://m.example/",
+                "is not a stream this build fetches",
+            ),
+            ("osv/npm=http://mirror.example/", "is not an https URL"),
+            (
+                "osv/npm=https://a.example/,osv/npm=https://b.example/",
+                "is named twice",
+            ),
+        ] {
+            let refused = with(&[(STREAM_URLS, value)]).stream_urls().unwrap_err();
+            assert_eq!(refused.var, STREAM_URLS.name);
+            assert!(refused.reason.contains(said), "{value}: {refused}");
+        }
+        let unread = testing::with_unreadable(&[], STREAM_URLS)
+            .stream_urls()
+            .unwrap_err();
+        assert_eq!(unread.var, STREAM_URLS.name);
     }
 
     /// Every accessor refuses a value that is not UTF-8, naming its variable.
