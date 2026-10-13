@@ -2753,7 +2753,9 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
 - [ ] `[!]` OIDC login: discovery, `state`, `nonce`, PKCE, code exchange, key refetch, and
       `iss`, `aud`, `exp`, `nonce` and a configured algorithm list checked. Begun
       2026-10-13: the settings, discovery, PKCE and the ID token's checks in
-      `src/console/oidc.rs`. The HTTP flow, and how an identity finds its account, are left. Migration for
+      `src/console/oidc.rs`; the flow through `oidc/login` and `oidc/callback`, tested
+      against a provider served in the tests. How an identity finds its account is left,
+      for the user to decide. Migration for
       `account_oidc`
 - [ ] `[!]` `docs/threat-model.md` console section (plan §5)
 - [ ] Docs: the console in `docs/quickstart.md`, and an endpoint reference

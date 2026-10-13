@@ -104,7 +104,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
     .with_virustotal(virustotal(environment)?.as_ref());
     analyser.forget_decisions_daily(environment.decision_retention_days()?);
 
-    let proxy = Proxy::new(client)
+    let proxy = Proxy::new(client.clone())
         .with_upstreams(upstreams)
         .with_intel(intel)
         .with_spool(Some(spool))
@@ -130,7 +130,10 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_gate(gate);
     #[cfg(debug_assertions)]
     let proxy = proxy.with_defer_test(defer_test);
-    let console = beside(console, &proxy, environment, &listen);
+    let oidc = environment.oidc()?;
+    let provider =
+        oidc.map(|settings| crate::console::oidc::Provider::new(settings, client.clone()));
+    let console = beside(console, &proxy, environment, (&listen, provider));
 
     let watch = environment.watch_interval()?;
     match watch {
@@ -205,16 +208,18 @@ fn site<L: Fn(&str) -> Option<OsString>>(
     ))
 }
 
-/// `site` describing `proxy`, listening at `listen`, and the settings in `environment`.
+/// `site` describing `proxy`, listening at `listen`, with the settings in `environment`,
+/// logging in through `oidc` too when it is set.
 fn beside<L: Fn(&str) -> Option<OsString>>(
     site: Option<crate::console::Site>,
     proxy: &Proxy,
     environment: &Env<L>,
-    listen: &str,
+    (listen, oidc): (&str, Option<crate::console::oidc::Provider>),
 ) -> Option<Arc<crate::console::Site>> {
     site.map(|site| {
         let reached_at = crate::console::status::reached_at(listen, &site.console.proxy_mount);
-        Arc::new(site.with_proxy(proxy.clone(), environment.settings(), reached_at))
+        let site = site.with_proxy(proxy.clone(), environment.settings(), reached_at);
+        Arc::new(site.with_oidc(oidc))
     })
 }
 
@@ -614,6 +619,28 @@ mod tests {
         }
     }
 
+    /// OIDC set in part does not start; set whole, with no console, it starts.
+    #[tokio::test]
+    async fn oidc_is_read_at_startup() {
+        let (dir, partial) = spooled(
+            "startup-oidc-partial",
+            &[(env::OIDC_ISSUER, "https://idp.example")],
+        );
+        let Err(StartupError::Env(e)) = proxy(&partial).await else {
+            panic!("an OIDC issuer without its client is an environment error");
+        };
+        assert_eq!(e.var, env::OIDC_CLIENT_ID.name);
+        let _ = std::fs::remove_dir_all(&dir);
+        let whole = [
+            (env::OIDC_ISSUER, "https://idp.example"),
+            (env::OIDC_CLIENT_ID, "byrle"),
+            (env::OIDC_CLIENT_SECRET, "s3cret"),
+        ];
+        let (dir, environment) = spooled("startup-oidc-whole", &whole);
+        assert!(proxy(&environment).await.is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Tokens are required by default, and without a database there is nowhere to check
     /// them, so the proxy is not started. With the requirement off it starts, and says so.
     #[tokio::test]
@@ -679,7 +706,8 @@ mod tests {
         );
         let running = site(&with(&vars), console(), Some((accounts.clone(), kept()))).unwrap();
         let proxy = Proxy::new(reqwest::Client::new());
-        let running = beside(running, &proxy, &with(&vars), "0.0.0.0:8080").expect("a console");
+        let running =
+            beside(running, &proxy, &with(&vars), ("0.0.0.0:8080", None)).expect("a console");
         assert_eq!(running.console.mount.to_string(), "/admin/");
 
         let dir = crate::util::test_support::tempdir("startup-console-events");

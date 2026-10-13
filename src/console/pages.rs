@@ -27,6 +27,15 @@ pub const HOME_PATH: &str = "/";
 /// Under the console's path: where the login form posts.
 pub const LOGIN_FORM_PATH: &str = "/login";
 
+/// Under the console's path: where a login through the OIDC provider begins.
+pub const OIDC_LOGIN_PATH: &str = "/oidc/login";
+
+/// A login's OIDC state, nonce and PKCE; `__Host-`, so no other host can plant one.
+pub const OIDC_COOKIE: &str = "__Host-byrle_oidc";
+
+/// Seconds a login through the OIDC provider may take.
+const OIDC_SECONDS: u32 = 600;
+
 /// Under the console's path: where the logout form posts.
 pub const LOGOUT_FORM_PATH: &str = "/logout";
 
@@ -183,6 +192,9 @@ fn login_form(site: &Site, why: Option<&str>) -> Markup {
                 label { "Account" input name="account" autocomplete="username" required; }
                 label { "Password" input type="password" name="password" autocomplete="current-password" required; }
                 button type="submit" { "Log in" }
+            }
+            @if site.oidc.is_some() {
+                p { a.oidc href=(site.href(OIDC_LOGIN_PATH)) { "Log in through your identity provider" } }
             }
         },
     )
@@ -368,6 +380,124 @@ pub async fn logout(site: Arc<Site>, request: Request) -> Response {
         }
         Err(_) => denied(&site, Denied::Unanswered),
     }
+}
+
+/// Where the OIDC provider sends the browser back.
+fn redirect_uri(site: &Site) -> String {
+    format!(
+        "{}{}",
+        site.console.url.trim_end_matches('/'),
+        super::oidc::CALLBACK_PATH
+    )
+}
+
+/// The `Set-Cookie` value carrying `value` for `max_age` seconds; 0 ends it. `Lax`, since
+/// the provider sends the browser back from another site.
+fn oidc_cookie(value: &str, max_age: u32) -> HeaderValue {
+    HeaderValue::from_str(&format!(
+        "{OIDC_COOKIE}={value}; Path=/; Max-Age={max_age}; HttpOnly; Secure; SameSite=Lax"
+    ))
+    .expect("base64url and digits are header text")
+}
+
+/// `GET oidc/login`: to the provider, carrying a new login's state in a cookie.
+pub async fn oidc_login(site: Arc<Site>, _: Request) -> Response {
+    let Some(provider) = &site.oidc else {
+        return refusal(&site, StatusCode::NOT_FOUND, "no OIDC provider is set");
+    };
+    match provider.begin(&redirect_uri(&site)).await {
+        Ok((pending, url)) => (
+            StatusCode::SEE_OTHER,
+            [
+                (
+                    header::LOCATION,
+                    HeaderValue::from_str(&url).expect("a URL is header text"),
+                ),
+                (
+                    header::SET_COOKIE,
+                    oidc_cookie(&pending.cookie(), OIDC_SECONDS),
+                ),
+            ],
+        )
+            .into_response(),
+        Err(why) => refusal(
+            &site,
+            StatusCode::BAD_GATEWAY,
+            &format!("the identity provider: {why}"),
+        ),
+    }
+}
+
+/// What the provider sends the browser back with.
+#[derive(Debug, Default, Deserialize)]
+struct Callback {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+/// `GET oidc/callback`: the provider's answer. Its state must be the cookie's before the
+/// code is exchanged; each failure counts against the address and is logged.
+pub async fn oidc_callback(site: Arc<Site>, request: Request) -> Response {
+    let Some(provider) = &site.oidc else {
+        return refusal(&site, StatusCode::NOT_FOUND, "no OIDC provider is set");
+    };
+    let (parts, _) = request.into_parts();
+    let source = site.source(&parts);
+    if !site.login.oidc_allows(source) {
+        return refusal(
+            &site,
+            StatusCode::TOO_MANY_REQUESTS,
+            "too many failed logins; try again later",
+        );
+    }
+    let asked: Callback =
+        serde_urlencoded::from_str(parts.uri.query().unwrap_or_default()).unwrap_or_default();
+    let pending = super::api::cookie_named(&parts.headers, OIDC_COOKIE)
+        .and_then(|cookie| super::oidc::Pending::parse(&cookie))
+        .filter(|pending| asked.state.as_deref() == Some(pending.state.as_str()));
+    let (status, why, subject) = match (pending, asked.error, asked.code) {
+        (None, _, _) => (
+            StatusCode::BAD_REQUEST,
+            "this login did not begin here".to_owned(),
+            None,
+        ),
+        (Some(_), Some(error), _) => (
+            StatusCode::UNAUTHORIZED,
+            format!("the identity provider refused: {error}"),
+            None,
+        ),
+        (Some(_), None, None) => (
+            StatusCode::BAD_REQUEST,
+            "the identity provider sent no code".to_owned(),
+            None,
+        ),
+        (Some(pending), None, Some(code)) => {
+            match provider.finish(&code, &pending, &redirect_uri(&site)).await {
+                Ok(claims) => (
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "{} at {} is not linked to an account",
+                        claims.sub, claims.iss
+                    ),
+                    Some(claims.sub),
+                ),
+                Err(super::oidc::Failed::Provider(why)) => (
+                    StatusCode::BAD_GATEWAY,
+                    format!("the identity provider: {why}"),
+                    None,
+                ),
+                Err(super::oidc::Failed::Refused(why)) => (StatusCode::UNAUTHORIZED, why, None),
+            }
+        }
+    };
+    site.login
+        .oidc_failed(subject.as_deref().unwrap_or("(oidc)"), source);
+    let mut response = refusal(&site, status, &why);
+    response
+        .headers_mut()
+        .insert(header::SET_COOKIE, oidc_cookie("", 0));
+    response
 }
 
 /// The word and class a state is shown with.
@@ -1366,5 +1496,219 @@ mod tests {
         )
         .await;
         assert_eq!(status, 400);
+    }
+
+    /// A console with OIDC through `provider`, logins logged to a file: its base URL and
+    /// the log's path.
+    async fn with_oidc(
+        provider: Option<crate::console::oidc::Provider>,
+        label: &str,
+    ) -> (String, std::path::PathBuf) {
+        let (_, base, log) = oidc_site(provider, label).await;
+        (base, log)
+    }
+
+    /// [`with_oidc`], with the site as well.
+    async fn oidc_site(
+        provider: Option<crate::console::oidc::Provider>,
+        label: &str,
+    ) -> (Arc<Site>, String, std::path::PathBuf) {
+        let dir = crate::util::test_support::tempdir(label);
+        let log = dir.join("events.log");
+        let events = Arc::new(crate::account::events::EventLog::open(&log, 30).unwrap());
+        let console = crate::console::Console {
+            url: "https://h/admin/".into(),
+            mount: crate::mount::Mount::from_url("https://h/admin/").unwrap(),
+            listen: Some("127.0.0.1:9090".into()),
+            rp_key: None,
+            proxy_mount: crate::mount::Mount::ROOT,
+        };
+        let hasher = crate::account::password::tests::cheap();
+        let limits = crate::console::login::tests::limits();
+        let site =
+            crate::console::Site::new(console, store().await, (hasher, limits), Some(events))
+                .with_oidc(provider);
+        let site = Arc::new(site);
+        let (_, router) =
+            crate::console::listeners(axum::Router::new(), "127.0.0.1:8080", Some(&site))
+                .pop()
+                .unwrap();
+        (site, crate::proxy::testing::serve(router).await, log)
+    }
+
+    /// Past 20 failed OIDC logins from an address in the window, the callback is 429
+    /// before anything is checked.
+    #[tokio::test]
+    async fn too_many_failed_oidc_logins_from_an_address_are_429() {
+        let down = crate::console::oidc::Provider::new(
+            crate::console::oidc::tests::at("http://127.0.0.1:9"),
+            reqwest::Client::new(),
+        );
+        let (site, _, _) = oidc_site(Some(down), "pages-oidc-limited").await;
+        let from = |address: [u8; 4]| {
+            axum::http::Request::get("/admin/oidc/callback?code=c&state=s")
+                .extension(axum::extract::ConnectInfo(std::net::SocketAddr::from((
+                    address, 4000,
+                ))))
+                .body(axum::body::Body::empty())
+                .unwrap()
+        };
+        for _ in 0..crate::console::login::tests::limits().per_address {
+            assert_eq!(
+                oidc_callback(site.clone(), from([192, 0, 2, 1]))
+                    .await
+                    .status(),
+                400
+            );
+        }
+        assert_eq!(
+            oidc_callback(site.clone(), from([192, 0, 2, 1]))
+                .await
+                .status(),
+            429
+        );
+        assert_eq!(
+            oidc_callback(site, from([192, 0, 2, 2])).await.status(),
+            400
+        );
+    }
+
+    /// Begin, come back with the code, and be told the identity is linked to no account,
+    /// logged as `login-failed`; the cookie that carried the login is cleared.
+    #[tokio::test]
+    async fn an_oidc_login_reaches_the_provider_and_comes_back_verified() {
+        use crate::console::oidc::tests::{CLIENT, at, key, provider, signed};
+        let (issuer, held) = provider().await;
+        let (signing, jwk) = key("k1");
+        held.lock().unwrap().keys = vec![jwk];
+        let oidc = crate::console::oidc::Provider::new(at(&issuer), reqwest::Client::new());
+        let (base, log) = with_oidc(Some(oidc), "pages-oidc").await;
+
+        let (_, form) = page(&base, HOME_PATH, None).await;
+        assert!(form.contains(r#"href="/admin/oidc/login""#), "{form}");
+        let begun = client()
+            .get(format!("{base}/admin{OIDC_LOGIN_PATH}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(begun.status(), 303);
+        let location = begun.headers()["location"].to_str().unwrap().to_owned();
+        let set = begun.headers()["set-cookie"].to_str().unwrap().to_owned();
+        assert!(
+            set.ends_with("; Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax"),
+            "{set}"
+        );
+        let cookie = set.split(';').next().unwrap().to_owned();
+        let asked: std::collections::BTreeMap<String, String> = reqwest::Url::parse(&location)
+            .unwrap()
+            .query_pairs()
+            .into_owned()
+            .collect();
+        assert_eq!(asked["redirect_uri"], "https://h/admin/oidc/callback");
+        held.lock().unwrap().challenge = asked["code_challenge"].clone();
+        held.lock().unwrap().token = signed(
+            &signing,
+            "k1",
+            &serde_json::json!({
+                "iss": issuer, "sub": "user-42", "aud": CLIENT, "nonce": asked["nonce"],
+                "exp": jsonwebtoken::get_current_timestamp() + 3600,
+            }),
+        );
+        let back = |query: String, cookie: Option<&str>| {
+            let mut request = client().get(format!(
+                "{base}/admin{}?{query}",
+                crate::console::oidc::CALLBACK_PATH
+            ));
+            if let Some(cookie) = cookie {
+                request = request.header("cookie", cookie);
+            }
+            request.send()
+        };
+        let state = &asked["state"];
+        let answered = back(format!("code=c1&state={state}"), Some(&cookie))
+            .await
+            .unwrap();
+        assert_eq!(answered.status(), 403);
+        assert!(
+            answered.headers()["set-cookie"]
+                .to_str()
+                .unwrap()
+                .starts_with("__Host-byrle_oidc=; Path=/; Max-Age=0;")
+        );
+        let body = answered.text().await.unwrap();
+        assert!(
+            body.contains(&format!("user-42 at {issuer} is not linked to an account")),
+            "{body}"
+        );
+        let logged = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            logged.contains(r#""action":"login-failed","account":"user-42""#),
+            "{logged}"
+        );
+
+        for (query, cookie, status, said) in [
+            (
+                format!("code=c1&state={state}"),
+                None,
+                400,
+                "this login did not begin here",
+            ),
+            (
+                "code=c1&state=other".to_owned(),
+                Some(cookie.as_str()),
+                400,
+                "this login did not begin here",
+            ),
+            (
+                format!("error=access_denied&state={state}"),
+                Some(cookie.as_str()),
+                401,
+                "the identity provider refused: access_denied",
+            ),
+            (
+                format!("state={state}"),
+                Some(cookie.as_str()),
+                400,
+                "the identity provider sent no code",
+            ),
+        ] {
+            let answered = back(query.clone(), cookie).await.unwrap();
+            assert_eq!(answered.status(), status, "{query}");
+            assert!(answered.text().await.unwrap().contains(said), "{query}");
+        }
+        held.lock().unwrap().token = "not a token".into();
+        let refused = back(format!("code=c1&state={state}"), Some(&cookie))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), 401);
+    }
+
+    /// No provider set is 404; one that does not answer is 502.
+    #[tokio::test]
+    async fn oidc_without_a_provider_or_with_one_down() {
+        let (base, _) = with_oidc(None, "pages-oidc-none").await;
+        for path in [OIDC_LOGIN_PATH, crate::console::oidc::CALLBACK_PATH] {
+            assert_eq!(page(&base, path, None).await.0, 404, "{path}");
+        }
+        let (_, form) = page(&base, HOME_PATH, None).await;
+        assert!(!form.contains("oidc/login"), "{form}");
+        let down = crate::console::oidc::Provider::new(
+            crate::console::oidc::tests::at("http://127.0.0.1:9"),
+            reqwest::Client::new(),
+        );
+        let (base, _) = with_oidc(Some(down), "pages-oidc-down").await;
+        assert_eq!(page(&base, OIDC_LOGIN_PATH, None).await.0, 502);
+        let pending = crate::console::oidc::Pending::begin();
+        let answered = client()
+            .get(format!(
+                "{base}/admin{}?code=c&state={}",
+                crate::console::oidc::CALLBACK_PATH,
+                pending.state
+            ))
+            .header("cookie", format!("{OIDC_COOKIE}={}", pending.cookie()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(answered.status(), 502);
     }
 }

@@ -103,7 +103,23 @@ are set together or not at all. Its redirect URI is `BYRLE_CONSOLE_URL` and
 | claims | `iss` not the issuer exactly; `aud` not naming the client id; several audiences without `azp` the client id; `exp` past by more than `BYRLE_OIDC_LEEWAY_SECONDS` (60); no `sub`; a `nonce` not this login's |
 | PKCE | S256 only; the verifier is 32 random bytes, as the state and nonce are |
 
-How an identity becomes an account is not decided.
+The flow, built 2026-10-13:
+
+| Step | What happens |
+|---|---|
+| `GET <console>/oidc/login` | the discovery document and keys are fetched once and held; the browser is sent to the authorization endpoint, with a `__Host-byrle_oidc` cookie holding the state, nonce and PKCE verifier: `Path=/; Max-Age=600; HttpOnly; Secure; SameSite=Lax`. `Lax`, since the provider sends the browser back from another site |
+| `GET <console>/oidc/callback` | refused unchecked past 20 failures from the address in 15 minutes; then the `state` must equal the cookie's, before the code is exchanged. The cookie is cleared |
+| the code exchange | a `POST` to the token endpoint, the client id and secret form-urlencoded as Basic credentials (RFC 6749 §2.3.1), with the PKCE verifier. An answer is read up to 256 KiB |
+| the ID token | checked as above. A `kid` not held fetches the keys again, at most once a minute |
+
+Register `BYRLE_CONSOLE_URL` followed by `oidc/callback` as the redirect URI, such as
+`https://byrle.example.com/admin/oidc/callback`. The provider is asked through the client
+the registries are, which trusts `BYRLE_CA_BUNDLE` and uses the forward proxy variables. The
+routes answer 404 without a provider. Each failure is a `login-failed` line, naming the
+token's `sub` once it is verified.
+
+How a verified identity becomes an account is not decided, so a verified one is answered
+403, "`<sub>` at `<issuer>` is not linked to an account", and logged as `login-failed`.
 
 ## Rejected
 

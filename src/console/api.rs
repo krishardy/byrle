@@ -194,14 +194,14 @@ pub async fn listed(site: &Site) -> Result<Accounts, Refused> {
     Ok(Accounts { accounts })
 }
 
-/// The session id in a `Cookie` header of `headers`.
-fn session_id(headers: &HeaderMap) -> Option<String> {
+/// The value of the cookie `name` in a `Cookie` header of `headers`.
+pub(super) fn cookie_named(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
-        .find_map(|pair| pair.trim().strip_prefix(COOKIE)?.strip_prefix('='))
+        .find_map(|pair| pair.trim().strip_prefix(name)?.strip_prefix('='))
         .map(str::to_owned)
 }
 
@@ -226,7 +226,7 @@ impl Site {
         parts: &Parts,
         form_csrf: Option<&str>,
     ) -> Result<(Caller, Option<String>), Denied> {
-        let Some(id) = session_id(&parts.headers) else {
+        let Some(id) = cookie_named(&parts.headers, COOKIE) else {
             return match self.gate.admit(&parts.headers).await {
                 Ok(holder) => match self.store.roles(&holder.account).await {
                     Ok(roles) => Ok((

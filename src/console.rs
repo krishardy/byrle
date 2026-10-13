@@ -142,6 +142,8 @@ pub struct Site {
     dropped: std::sync::Mutex<status::Dropped>,
     /// The last round of R10's checks.
     checked: status::Cache,
+    /// The OIDC provider logins may use, when one is set.
+    oidc: Option<oidc::Provider>,
 }
 
 impl Site {
@@ -167,8 +169,15 @@ impl Site {
             origin,
             dropped: std::sync::Mutex::default(),
             checked: std::sync::Mutex::default(),
+            oidc: None,
             console,
         }
+    }
+
+    /// Let logins use `provider`.
+    pub fn with_oidc(mut self, provider: Option<oidc::Provider>) -> Self {
+        self.oidc = provider;
+        self
     }
 
     /// Read R3 and R6 from `usage`.

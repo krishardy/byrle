@@ -86,7 +86,7 @@ pub const ALERTS_PATH: &str = "/api/v1/alerts";
 pub const STATUS_PATH: &str = "/api/v1/status";
 
 /// Every console route.
-pub const ROUTES: [Route; 26] = [
+pub const ROUTES: [Route; 28] = [
     Route {
         method: Method::GET,
         path: super::pages::HOME_PATH,
@@ -98,6 +98,18 @@ pub const ROUTES: [Route; 26] = [
         path: super::pages::CSS_PATH,
         kind: Kind::Page,
         guard: Guard::Public(|_, _| Box::pin(super::pages::css())),
+    },
+    Route {
+        method: Method::GET,
+        path: super::pages::OIDC_LOGIN_PATH,
+        kind: Kind::Page,
+        guard: Guard::Public(|site, request| Box::pin(super::pages::oidc_login(site, request))),
+    },
+    Route {
+        method: Method::GET,
+        path: super::oidc::CALLBACK_PATH,
+        kind: Kind::Page,
+        guard: Guard::Public(|site, request| Box::pin(super::pages::oidc_callback(site, request))),
     },
     Route {
         method: Method::POST,
@@ -365,6 +377,8 @@ mod tests {
             [
                 (Method::GET, crate::console::pages::HOME_PATH),
                 (Method::GET, crate::console::pages::CSS_PATH),
+                (Method::GET, crate::console::pages::OIDC_LOGIN_PATH),
+                (Method::GET, crate::console::oidc::CALLBACK_PATH),
                 (Method::POST, crate::console::pages::LOGIN_FORM_PATH),
                 (Method::POST, crate::console::pages::LOGOUT_FORM_PATH),
                 (Method::GET, crate::console::HEALTH_PATH),
