@@ -95,12 +95,12 @@ fn identity(san: &str) -> String {
         .to_owned()
 }
 
-/// The versions a version is compared against: before it, in the window, and last attested.
+/// The attested versions a version is compared against: the window's, then established ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Previous {
     /// The version has no publish time, so nothing can be said to come before it.
     Unknown,
-    /// Those of them that claim attestations, most recent first.
+    /// Most recent first: those in the window, then the established ones.
     Known(Vec<Prior>),
 }
 
@@ -110,6 +110,8 @@ pub struct Prior {
     pub version: String,
     pub attestation_url: String,
     pub integrity: Option<String>,
+    /// Published before the window opened, so its identity is established.
+    pub established: bool,
 }
 
 impl Prior {
@@ -128,6 +130,7 @@ impl Prior {
             version: record.package.version().to_owned(),
             attestation_url: url.clone(),
             integrity: file.integrity.clone(),
+            established: false,
         })
     }
 }
@@ -140,28 +143,43 @@ fn published(record: &PackageRecord, times: Option<&PublishTimes>) -> Option<jif
         .or(record.published_at)
 }
 
-/// The versions `version` is compared against. A record with no time is not a candidate.
+/// Established versions compared by default: [`crate::env::PROVENANCE_HISTORY`].
+pub const DEFAULT_HISTORY: usize = 64;
+
+/// The history [`from_metadata`] needs: it reads only the most recent attested version.
+pub const METADATA_HISTORY: usize = 1;
+
+/// The versions `version` is compared against, with at most `history` established ones.
+/// A record with no time is not a candidate.
 pub fn previous(
     records: &[PackageRecord],
     version: &str,
     times: Option<&PublishTimes>,
-    window: jiff::SignedDuration,
+    (window, history): (jiff::SignedDuration, usize),
 ) -> Previous {
-    let Some(index) = records.iter().position(|r| r.package.version() == version) else {
+    let Some(at) = records
+        .iter()
+        .find(|r| r.package.version() == version)
+        .and_then(|r| published(r, times))
+    else {
         return Previous::Unknown;
     };
-    predecessors(records, times, window).swap_remove(index)
+    let mut before: Vec<(jiff::Timestamp, Prior)> = records
+        .iter()
+        .filter_map(|r| Some((published(r, times).filter(|t| *t < at)?, Prior::of(r)?)))
+        .collect();
+    before.sort_by_key(|(t, _)| *t);
+    Previous::Known(chosen(&before, at, window, history))
 }
 
-/// [`previous`] for each of `records`, in their order: one sort, then a walk of each
-/// version's window, for a document that lists thousands.
+/// [`previous`] for each of `records`, in their order: one sort, then a walk, for a
+/// document that lists thousands.
 ///
-/// Versions published at the same instant are not before one another. Among several
-/// published at the latest earlier instant, the one listed last is the one just before.
+/// Versions published at the same instant are not before one another.
 pub fn predecessors(
     records: &[PackageRecord],
     times: Option<&PublishTimes>,
-    window: jiff::SignedDuration,
+    (window, history): (jiff::SignedDuration, usize),
 ) -> Vec<Previous> {
     let mut dated: Vec<(jiff::Timestamp, usize)> = records
         .iter()
@@ -170,41 +188,41 @@ pub fn predecessors(
         .collect();
     dated.sort();
     let mut out = vec![Previous::Unknown; records.len()];
-    let mut start = 0;
-    let mut anchor: Option<Prior> = None;
-    for (group_start, group) in dated.chunk_by(|a, b| a.0 == b.0).scan(0, |at, group| {
-        let here = *at;
-        *at += group.len();
-        Some((here, group))
-    }) {
-        let at = group[0].0;
-        let opens = at.checked_sub(window).unwrap_or(at);
-        while dated[start].0 < opens {
-            start += 1;
-        }
-        let from = start.min(group_start.saturating_sub(1));
-        let mut priors: Vec<Prior> = dated[from..group_start]
-            .iter()
-            .rev()
-            .filter_map(|&(_, i)| Prior::of(&records[i]))
-            .collect();
-        if let Some(anchor) = &anchor
-            && !priors.iter().any(|p| p.version == anchor.version)
-        {
-            priors.push(anchor.clone());
-        }
+    let mut before: Vec<(jiff::Timestamp, Prior)> = Vec::new();
+    for group in dated.chunk_by(|a, b| a.0 == b.0) {
+        let priors = chosen(&before, group[0].0, window, history);
         for &(_, i) in group {
             out[i] = Previous::Known(priors.clone());
         }
-        if let Some(latest) = group
-            .iter()
-            .rev()
-            .find_map(|&(_, i)| Prior::of(&records[i]))
-        {
-            anchor = Some(latest);
-        }
+        before.extend(
+            group
+                .iter()
+                .filter_map(|&(t, i)| Some((t, Prior::of(&records[i])?))),
+        );
     }
     out
+}
+
+/// From `before`, the attested versions published before `at`, oldest first: those in the
+/// window, then `history` established ones, each most recent first.
+fn chosen(
+    before: &[(jiff::Timestamp, Prior)],
+    at: jiff::Timestamp,
+    window: jiff::SignedDuration,
+    history: usize,
+) -> Vec<Prior> {
+    let opens = at.checked_sub(window).unwrap_or(at);
+    let split = before.partition_point(|(t, _)| *t <= opens);
+    let recent = before[split..].iter().rev().map(|(_, p)| p.clone());
+    let established = before[..split]
+        .iter()
+        .rev()
+        .take(history)
+        .map(|(_, p)| Prior {
+            established: true,
+            ..p.clone()
+        });
+    recent.chain(established).collect()
 }
 
 /// The fact as metadata alone answers it, with nothing verified: dropped provenance, or a
@@ -233,7 +251,8 @@ pub enum Answer {
     },
 }
 
-/// What the version's attestations say against the versions before it.
+/// What the version's attestations say against the versions before it. Its identity passes
+/// when an established version names it, or, with none, when every version in the window does.
 /// `this_result` is what verifying its attestations found, `None` where nothing has.
 /// `prior_results` is each prior's, in the order of [`Previous::Known`].
 /// Returns the fact, or the verification results still needed.
@@ -259,7 +278,13 @@ pub fn provenance(
             None => Provenance::Consistent,
         });
     }
+    let established = priors.iter().any(|p| p.established);
+    let compared = priors
+        .iter()
+        .filter(|p| p.established == established)
+        .count();
     let missing: Vec<usize> = (0..priors.len())
+        .filter(|&i| priors[i].established == established)
         .filter(|&i| prior_results.get(i).copied().flatten().is_none())
         .collect();
     let identity = match this_result {
@@ -274,6 +299,13 @@ pub fn provenance(
         }
         Some(Attested::Verified { identity }) => identity,
     };
+    let matched = priors.iter().zip(prior_results).any(|(prior, result)| {
+        prior.established
+            && matches!(result, Some(Attested::Verified { identity: before }) if before == identity)
+    });
+    if matched {
+        return Answer::Known(Provenance::Consistent);
+    }
     if !missing.is_empty() {
         return Answer::Needs {
             this: false,
@@ -283,15 +315,23 @@ pub fn provenance(
     let verified: Vec<(&Prior, &String)> = priors
         .iter()
         .zip(prior_results)
+        .filter(|(prior, _)| prior.established == established)
         .filter_map(|(prior, result)| match result {
             Some(Attested::Verified { identity }) => Some((prior, identity)),
             _ => None,
         })
         .collect();
-    if verified.is_empty() && !priors.is_empty() {
+    if verified.is_empty() && compared > 0 {
         return Answer::Known(Provenance::Unknown(
             "the attestations of the versions before it do not verify",
         ));
+    }
+    if let (true, Some((prior, before))) = (established, verified.first()) {
+        return Answer::Known(Provenance::IdentityChanged {
+            previous: prior.version.clone(),
+            from: (*before).clone(),
+            to: identity.clone(),
+        });
     }
     match verified.iter().find(|(_, before)| *before != identity) {
         Some((prior, before)) => Answer::Known(Provenance::IdentityChanged {
@@ -441,30 +481,67 @@ mod tests {
     const ALL: &[&str] = &["1.0.0", "2.0.0", "1.0.1", "3.0.0", "3.0.1", "3.0.2"];
     const WEEK: jiff::SignedDuration = jiff::SignedDuration::from_hours(168);
 
-    fn versions(previous: Previous) -> Option<Vec<String>> {
+    const COMPARED: (jiff::SignedDuration, usize) = (WEEK, DEFAULT_HISTORY);
+
+    /// The versions in the window, then the established ones, each most recent first.
+    fn versions(previous: Previous) -> Option<(Vec<String>, Vec<String>)> {
         match previous {
-            Previous::Known(priors) => Some(priors.into_iter().map(|p| p.version).collect()),
+            Previous::Known(priors) => {
+                let (old, recent): (Vec<_>, Vec<_>) =
+                    priors.into_iter().partition(|p| p.established);
+                let names = |priors: Vec<Prior>| priors.into_iter().map(|p| p.version).collect();
+                Some((names(recent), names(old)))
+            }
             Previous::Unknown => None,
         }
     }
 
-    /// The version just before, however old, and every version in the window, most recent
-    /// first.
+    fn named(versions: &[&str]) -> Vec<String> {
+        versions.iter().map(|v| (*v).to_owned()).collect()
+    }
+
+    /// Every attested version in the window, then up to `history` from before it.
     #[test]
-    fn the_versions_before_are_the_one_just_before_and_the_window() {
+    fn the_window_then_the_established_versions_most_recent_first() {
         let records = records(SCHEDULE, ALL);
-        let before = |v: &str, window| versions(previous(&records, v, None, window));
+        let before = |v: &str, compared| versions(previous(&records, v, None, compared));
         assert_eq!(
-            before("3.0.2", WEEK),
-            Some(vec!["3.0.1".into(), "3.0.0".into()])
+            before("3.0.2", COMPARED),
+            Some((
+                named(&["3.0.1", "3.0.0"]),
+                named(&["1.0.1", "2.0.0", "1.0.0"])
+            ))
         );
-        assert_eq!(before("1.0.1", WEEK), Some(vec!["2.0.0".into()]));
         assert_eq!(
-            before("3.0.2", jiff::SignedDuration::ZERO),
-            Some(vec!["3.0.1".into()])
+            before("3.0.2", (WEEK, 2)),
+            Some((named(&["3.0.1", "3.0.0"]), named(&["1.0.1", "2.0.0"])))
         );
-        assert_eq!(before("1.0.0", WEEK), Some(vec![]));
-        assert_eq!(before("9.9.9", WEEK), None);
+        assert_eq!(
+            before("1.0.1", COMPARED),
+            Some((vec![], named(&["2.0.0", "1.0.0"])))
+        );
+        assert_eq!(
+            before("3.0.2", (jiff::SignedDuration::ZERO, 1)),
+            Some((vec![], named(&["3.0.1"])))
+        );
+        assert_eq!(before("1.0.0", COMPARED), Some((vec![], vec![])));
+        assert_eq!(before("9.9.9", COMPARED), None);
+    }
+
+    /// [`predecessors`] answers for every version what [`previous`] answers for one.
+    #[test]
+    fn predecessors_agree_with_previous_for_each_version() {
+        let mut records = records(SCHEDULE, &["1.0.0", "2.0.0", "3.0.1"]);
+        records[1].published_at = None;
+        let each = predecessors(&records, None, (WEEK, 2));
+        for (record, previous_of) in records.iter().zip(each) {
+            let version = record.package.version();
+            assert_eq!(
+                previous_of,
+                previous(&records, version, None, (WEEK, 2)),
+                "{version}"
+            );
+        }
     }
 
     /// Only versions claiming attestations are compared against.
@@ -472,8 +549,8 @@ mod tests {
     fn only_attested_versions_are_kept() {
         let records = records(SCHEDULE, &["3.0.0", "3.0.2"]);
         assert_eq!(
-            versions(previous(&records, "3.0.2", None, WEEK)),
-            Some(vec!["3.0.0".into()])
+            versions(previous(&records, "3.0.2", None, COMPARED)),
+            Some((named(&["3.0.0"]), vec![]))
         );
     }
 
@@ -490,8 +567,8 @@ mod tests {
         );
         for version in ["2.0.0", "2.0.1"] {
             assert_eq!(
-                versions(previous(&records, version, None, WEEK)),
-                Some(vec!["1.0.0".into()])
+                versions(previous(&records, version, None, COMPARED)),
+                Some((named(&["1.0.0"]), vec![]))
             );
         }
     }
@@ -504,7 +581,10 @@ mod tests {
         for record in &mut records {
             record.published_at = None;
         }
-        assert_eq!(previous(&records, "2.0.0", None, WEEK), Previous::Unknown);
+        assert_eq!(
+            previous(&records, "2.0.0", None, COMPARED),
+            Previous::Unknown
+        );
         let times: PublishTimes = [
             ("1.0.0", "2026-05-01T00:00:00Z"),
             ("2.0.0", "2026-06-01T00:00:00Z"),
@@ -513,8 +593,8 @@ mod tests {
         .map(|(v, t)| (v.to_owned(), t.parse().expect("a timestamp")))
         .collect();
         assert_eq!(
-            versions(previous(&records, "2.0.0", Some(&times), WEEK)),
-            Some(vec!["1.0.0".into()])
+            versions(previous(&records, "2.0.0", Some(&times), COMPARED)),
+            Some((vec![], named(&["1.0.0"])))
         );
     }
 
@@ -543,8 +623,12 @@ mod tests {
     #[test]
     fn a_burst_after_an_attested_release_has_dropped_provenance() {
         let records = records(SCHEDULE, &["1.0.0", "2.0.0", "1.0.1", "3.0.0"]);
-        for version in ["3.0.1", "3.0.2"] {
-            let previous = previous(&records, version, None, WEEK);
+        for (version, compared) in [
+            ("3.0.1", COMPARED),
+            ("3.0.2", COMPARED),
+            ("3.0.2", (jiff::SignedDuration::ZERO, METADATA_HISTORY)),
+        ] {
+            let previous = previous(&records, version, None, compared);
             assert_eq!(
                 from_metadata(&find(&records, version), &previous),
                 Provenance::Dropped {
@@ -553,13 +637,6 @@ mod tests {
                 "{version}"
             );
         }
-        let previous = previous(&records, "3.0.2", None, jiff::SignedDuration::ZERO);
-        assert_eq!(
-            from_metadata(&find(&records, "3.0.2"), &previous),
-            Provenance::Dropped {
-                previous: "3.0.0".to_owned()
-            }
-        );
     }
 
     /// A burst long after the last attested release, as eslint-config-prettier's was, is
@@ -568,7 +645,7 @@ mod tests {
     fn a_burst_long_after_the_last_attested_release_is_compared_with_it() {
         let burst = records(SCHEDULE, &["2.0.0"]);
         for version in ["1.0.1", "3.0.0", "3.0.1", "3.0.2"] {
-            let previous = previous(&burst, version, None, WEEK);
+            let previous = previous(&burst, version, None, (WEEK, METADATA_HISTORY));
             assert_eq!(
                 from_metadata(&find(&burst, version), &previous),
                 Provenance::Dropped {
@@ -577,77 +654,103 @@ mod tests {
                 "{version}"
             );
         }
-        let attested = records(SCHEDULE, &["2.0.0", "3.0.1"]);
-        assert_eq!(
-            versions(previous(&attested, "3.0.2", None, WEEK)),
-            Some(vec!["3.0.1".into()])
-        );
-        let older = records(SCHEDULE, &["2.0.0", "3.0.0"]);
-        assert_eq!(
-            versions(previous(&older, "1.0.1", None, WEEK)),
-            Some(vec!["2.0.0".into()])
-        );
-        let both = records(SCHEDULE, &["1.0.0", "3.0.1"]);
-        assert_eq!(
-            versions(previous(&both, "3.0.2", None, jiff::SignedDuration::ZERO)),
-            Some(vec!["3.0.1".into()])
-        );
-        let far = records(SCHEDULE, &["1.0.0", "3.0.0"]);
-        assert_eq!(
-            versions(previous(&far, "2.0.0", None, WEEK)),
-            Some(vec!["1.0.0".into()])
-        );
     }
 
-    /// Every state `docs/engineering_decisions/provenance-check.md` names, with 3.0.2
-    /// compared against 3.0.1 and 3.0.0.
+    /// Every state `docs/engineering_decisions/provenance-check.md` names. 3.0.2 is
+    /// compared with 3.0.1 and 3.0.0 in the window, and 1.0.1, 2.0.0 and 1.0.0 before it.
     #[test]
-    fn each_state_is_decided_against_the_versions_before_it() {
-        let both = records(SCHEDULE, ALL);
-        let this = find(&both, "3.0.2");
-        let before = previous(&both, "3.0.2", None, WEEK);
+    fn an_identity_is_decided_against_the_established_versions() {
+        let all = records(SCHEDULE, ALL);
+        let this = find(&all, "3.0.2");
+        let before = previous(&all, "3.0.2", None, COMPARED);
         let ask = |this_result: Option<&Attested>, priors: &[Option<&Attested>]| {
             provenance(&this, &before, this_result, priors)
         };
         let known = Answer::Known;
-        let (a, b) = (verified("a"), verified("b"));
+        let (a, b, bad) = (verified("a"), verified("b"), failed());
 
         assert_eq!(
-            ask(Some(&a), &[Some(&a), Some(&a)]),
-            known(Provenance::Consistent)
+            ask(Some(&a), &[None, None, Some(&a), Some(&b), Some(&b)]),
+            known(Provenance::Consistent),
+            "a canary in the window does not matter once the identity is established"
         );
         assert_eq!(
-            ask(Some(&failed()), &[None, None]),
+            ask(Some(&a), &[Some(&b), Some(&b), Some(&b), Some(&a), None]),
+            known(Provenance::Consistent),
+            "an older match is enough, with others still unverified"
+        );
+        assert_eq!(
+            ask(
+                Some(&a),
+                &[Some(&a), Some(&a), Some(&b), Some(&bad), Some(&b)]
+            ),
+            known(Provenance::IdentityChanged {
+                previous: "1.0.1".to_owned(),
+                from: "b".to_owned(),
+                to: "a".to_owned(),
+            }),
+            "agreeing with the window is not enough"
+        );
+        assert_eq!(
+            ask(Some(&a), &[None, None, Some(&b), None, None]),
+            Answer::Needs {
+                this: false,
+                priors: vec![3, 4]
+            }
+        );
+        assert_eq!(
+            ask(None, &[None, None, None, None, None]),
+            Answer::Needs {
+                this: true,
+                priors: vec![2, 3, 4]
+            }
+        );
+        assert!(matches!(
+            ask(
+                Some(&a),
+                &[Some(&a), Some(&a), Some(&bad), Some(&bad), Some(&bad)]
+            ),
+            Answer::Known(Provenance::Unknown(_))
+        ));
+        assert_eq!(
+            ask(Some(&bad), &[None, None, None, None, None]),
             known(Provenance::Unverified {
                 why: "bad".to_owned()
             })
         );
+    }
+
+    /// With no version older than the window, every one in it has to agree.
+    #[test]
+    fn without_an_established_version_the_window_has_to_agree() {
+        let recent = records(SCHEDULE, &["3.0.0", "3.0.1", "3.0.2"]);
+        let this = find(&recent, "3.0.2");
+        let before = previous(&recent, "3.0.2", None, COMPARED);
+        let ask =
+            |priors: &[Option<&Attested>]| provenance(&this, &before, Some(&verified("a")), priors);
+        let (a, b, bad) = (verified("a"), verified("b"), failed());
         assert_eq!(
-            ask(Some(&a), &[Some(&a), Some(&b)]),
-            known(Provenance::IdentityChanged {
+            ask(&[Some(&a), Some(&a)]),
+            Answer::Known(Provenance::Consistent)
+        );
+        assert_eq!(
+            ask(&[Some(&a), Some(&b)]),
+            Answer::Known(Provenance::IdentityChanged {
                 previous: "3.0.0".to_owned(),
                 from: "b".to_owned(),
                 to: "a".to_owned(),
             })
         );
         assert_eq!(
-            ask(Some(&a), &[Some(&failed()), Some(&a)]),
-            known(Provenance::Consistent)
+            ask(&[Some(&bad), Some(&a)]),
+            Answer::Known(Provenance::Consistent)
         );
         assert!(matches!(
-            ask(Some(&a), &[Some(&failed()), Some(&failed())]),
+            ask(&[Some(&bad), Some(&bad)]),
             Answer::Known(Provenance::Unknown(_))
         ));
-
         assert_eq!(
-            ask(None, &[None, Some(&a)]),
-            Answer::Needs {
-                this: true,
-                priors: vec![0]
-            }
-        );
-        assert_eq!(
-            ask(Some(&a), &[Some(&a), None]),
+            ask(&[Some(&a), None]),
             Answer::Needs {
                 this: false,
                 priors: vec![1]
@@ -655,10 +758,10 @@ mod tests {
         );
 
         let alone = records(SCHEDULE, &["3.0.2"]);
-        let before = previous(&alone, "3.0.2", None, WEEK);
+        let before = previous(&alone, "3.0.2", None, COMPARED);
         assert_eq!(
             provenance(&find(&alone, "3.0.2"), &before, Some(&a), &[]),
-            known(Provenance::Consistent)
+            Answer::Known(Provenance::Consistent)
         );
         assert_eq!(
             from_metadata(&find(&alone, "3.0.2"), &before),
@@ -666,12 +769,62 @@ mod tests {
         );
         let none = records(SCHEDULE, &[]);
         assert_eq!(
-            from_metadata(&find(&none, "3.0.2"), &previous(&none, "3.0.2", None, WEEK)),
+            from_metadata(
+                &find(&none, "3.0.2"),
+                &previous(&none, "3.0.2", None, COMPARED)
+            ),
             Provenance::Consistent
         );
         assert!(matches!(
             provenance(&this, &Previous::Unknown, None, &[]),
             Answer::Known(Provenance::Unknown(_))
         ));
+    }
+
+    /// A new workflow's burst is refused until a version from it is a window old. A release
+    /// channel older than the window passes beside another.
+    #[test]
+    fn a_new_identity_is_refused_until_it_is_a_window_old() {
+        let schedule = &[
+            ("1.0.0", "2026-01-01"),
+            ("1.0.1-canary", "2026-01-02"),
+            ("1.1.0", "2026-02-01"),
+            ("1.1.1-canary", "2026-02-01"),
+            ("9.0.0", "2026-03-01"),
+            ("9.0.1", "2026-03-02"),
+            ("9.0.2", "2026-03-20"),
+        ];
+        let versions: Vec<&str> = schedule.iter().map(|(v, _)| *v).collect();
+        let all = records(schedule, &versions);
+        let identity = |version: &str| match version {
+            v if v.ends_with("-canary") => verified("canary"),
+            v if v.starts_with("9.") => verified("evil"),
+            _ => verified("release"),
+        };
+        let decided = |version: &str| {
+            let Previous::Known(priors) = previous(&all, version, None, COMPARED) else {
+                panic!("{version} has a publish time");
+            };
+            let results: Vec<Attested> = priors.iter().map(|p| identity(&p.version)).collect();
+            let results: Vec<Option<&Attested>> = results.iter().map(Some).collect();
+            match provenance(
+                &find(&all, version),
+                &Previous::Known(priors),
+                Some(&identity(version)),
+                &results,
+            ) {
+                Answer::Known(fact) => fact,
+                needs => panic!("{version}: {needs:?}"),
+            }
+        };
+        assert_eq!(decided("1.1.0"), Provenance::Consistent);
+        assert_eq!(decided("1.1.1-canary"), Provenance::Consistent);
+        for version in ["9.0.0", "9.0.1"] {
+            assert!(
+                matches!(decided(version), Provenance::IdentityChanged { .. }),
+                "{version}"
+            );
+        }
+        assert_eq!(decided("9.0.2"), Provenance::Consistent);
     }
 }

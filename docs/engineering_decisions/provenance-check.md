@@ -16,10 +16,19 @@
 |---|---|
 | An attestation it publishes fails verification | a forged or mismatched bundle |
 | It publishes none, and a version before it did | a release published from a laptop after a stolen token, instead of from CI |
-| Its attestation names a different repository or workflow file than a version before it | a fork, or a workflow added to the repository by an attacker |
+| Its attestation names a repository and workflow file that no attested version published `provenance_window_days` or more before it names | a fork, or a workflow added to the repository by an attacker |
 
-The versions before it are the one published just before it, every version published in
-`provenance_window_days`, 7 by default, before it, and the most recent attested version,
+A repository and workflow file is established once an attested version from it is
+`provenance_window_days`, 7 by default, old. A version from an established identity
+passes, whatever the versions in the window say: a canary channel and a release channel
+from two workflows of one project both do. The established versions are looked through
+most recent first, up to `BYRLE_PROVENANCE_HISTORY`, 64 by default. A package with no
+attested version that old is compared with every attested version in the window, and any
+other identity among them refuses it. Decided by the user 2026-10-13, as R3 in "Identity
+changes across whole histories" below: the rule before refused 2,339 of 30,261 npm
+versions, this one 382.
+
+For dropped provenance, the version is compared with the most recent attested version,
 however old. Only the one just before was compared until 2026-09-26: a burst of malicious
 releases then made each one after the first the predecessor of the next. Nx published 19 in
 two hours, and the check caught 6; the window catches 17. eslint-config-prettier's burst

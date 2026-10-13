@@ -112,6 +112,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_refusal_status(refusal)
         .with_refuse_unservable(refuse_unservable)
         .with_mode(mode)
+        .with_provenance_history(environment.provenance_history()?)
         .with_origin_policy(
             served_origins.iter().map(String::as_str),
             allowed_direct.iter().map(String::as_str),
@@ -1232,6 +1233,7 @@ mod tests {
             (vec![], env::REFUSAL_STATUS),
             (vec![], env::FORWARD_HTTPS),
             (vec![], env::MODE),
+            (vec![], env::PROVENANCE_HISTORY),
             (vec![], env::REFUSE_UNSERVABLE),
             (vec![], env::POLICY),
             (vec![], env::AUDIT_LOG),

@@ -2963,6 +2963,12 @@ role gets 403 from every endpoint except `GET health`.
         client path. Done 2026-09-28: npm artifacts are asked for by the lockfile's path,
         for this machine's platform by default, in 16.9 s
         ([warm](docs/engineering_decisions/warm.md)).
+- [x] Provenance identity refusals of release channels and moved repositories. Found
+      2026-10-13 by `make bench`: the defaults refused `@rolldown/pluginutils@1.0.1` and
+      `scikit-learn@1.9.1`. Done 2026-10-13: an identity passes once an attested version
+      from it is `provenance_window_days` old, searched through `BYRLE_PROVENANCE_HISTORY`
+      established versions; 382 of 30,261 npm versions refused, from 2,339
+      ([provenance-check](docs/engineering_decisions/provenance-check.md))
 - [ ] ACME / Let's Encrypt support; document fronting with nginx
   - [x] Fronting with nginx: `docs/fronting-tls.md`, run against the proxy by `make
         smoke-tls-front`, 2026-09-29. Caddy was removed 2026-10-12
