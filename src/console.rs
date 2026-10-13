@@ -103,23 +103,10 @@ impl Console {
 fn insecure(url: &str) -> Option<&'static str> {
     let parsed = reqwest::Url::parse(url).ok()?;
     parsed.host_str()?;
-    (parsed.scheme() == "http" && !secure_or_loopback(&parsed)).then_some(
+    (parsed.scheme() == "http" && !crate::http::secure_or_loopback(&parsed)).then_some(
         "is http to a host other than loopback, where a browser does not keep the session \
          cookie; use https, through nginx as docs/fronting-tls.md shows",
     )
-}
-
-/// Whether `url` is `https`, or `http` to loopback, where nothing between can read it.
-pub fn secure_or_loopback(url: &reqwest::Url) -> bool {
-    let loopback = url.host_str().is_some_and(|host| {
-        host == "localhost"
-            || host
-                .trim_start_matches('[')
-                .trim_end_matches(']')
-                .parse::<std::net::IpAddr>()
-                .is_ok_and(|address| address.is_loopback())
-    });
-    url.scheme() == "https" || url.scheme() == "http" && loopback
 }
 
 /// The console as it runs: where it answers, and the accounts it logs in against.

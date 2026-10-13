@@ -50,7 +50,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: 
     let read = fetch::read_streams(
         &setup.http,
         stream::ALL,
-        setup.github_token.as_deref(),
+        (&setup.urls, setup.github_token.as_deref()),
         notice,
     )
     .await;
@@ -114,6 +114,8 @@ struct Setup {
     kept: Option<SnapshotDir>,
     http: reqwest::Client,
     github_token: Option<String>,
+    /// [`crate::env::STREAM_URLS`]: a mirror for each stream named.
+    urls: std::collections::BTreeMap<String, String>,
 }
 
 impl Setup {
@@ -132,6 +134,9 @@ impl Setup {
         let limit = environment
             .snapshot_limit()
             .map_err(|e| stop(2, e.to_string()))?;
+        let urls = environment
+            .stream_urls()
+            .map_err(|e| stop(2, e.to_string()))?;
         let kept = environment
             .snapshot_dir()
             .map_err(|e| stop(2, e.to_string()))?
@@ -148,6 +153,7 @@ impl Setup {
             kept,
             http,
             github_token,
+            urls,
         })
     }
 }

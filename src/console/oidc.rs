@@ -49,13 +49,7 @@ pub fn algorithms(list: &str) -> Result<Vec<Algorithm>, String> {
     Ok(read)
 }
 
-/// `url` if it is `https`, or `http` to loopback. Anything else could be read on the way.
-pub fn trusted(url: &str) -> Result<reqwest::Url, String> {
-    reqwest::Url::parse(url)
-        .ok()
-        .filter(super::secure_or_loopback)
-        .ok_or_else(|| format!("`{url}` is not an https URL, or http to loopback"))
-}
+pub use crate::http::trusted;
 
 /// What the provider's discovery document says, of what login uses.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
