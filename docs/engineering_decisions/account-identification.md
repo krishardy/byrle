@@ -71,8 +71,9 @@ sent the token on artifact requests, where `user:pass@` in the registry URL sent
 
 `is_hop_by_hop` does not list `Authorization`, so `proxy::handle` copied it onto the upstream
 request, and a token a client sent the proxy reached registry.npmjs.org or pypi.org. Since
-2026-09-19 `proxy::handle` drops it, held by
-`hop_by_hop_headers_and_credentials_do_not_cross_the_proxy`. A private upstream that needs a
+2026-09-19 `proxy::handle` drops it. Since 2026-10-13 the proxy sends only the client
+headers in `proxy::FORWARDED`, asked for by the user, held by
+`what_each_request_sends_upstream`. A private upstream that needs a
 credential has none until the proxy's configuration gives it one: TODO Stage 8.
 
 ## Options

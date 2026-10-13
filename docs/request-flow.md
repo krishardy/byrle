@@ -108,7 +108,8 @@ these it finds, and only that one:
 | 3 | `Authorization: Basic`, the account as username and the token as password | pip and uv with `account:token@` in the index URL |
 
 Each request asks the account store, and keeps no answer: a revoked token or a disabled
-account is refused from the next request. Neither header is sent upstream. Observe mode
+account is refused from the next request. Neither header is sent upstream: only
+`Accept`, `Accept-Encoding`, `If-None-Match` and `If-Modified-Since` are. Observe mode
 does not change a 401. A store that cannot answer is 503 `account-store`, after the
 database pool's wait for a connection: 30.0 s per request with Postgres stopped, measured
 2026-10-11. The intel store uses the same pool.
