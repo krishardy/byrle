@@ -188,16 +188,20 @@ fn site<L: Fn(&str) -> Option<OsString>>(
             env::DATABASE_URL
         )));
     };
-    let events = match environment.account_event_log()? {
+    let event_log = environment.account_event_log()?;
+    let events = match &event_log {
         Some(path) => Some(Arc::new(
-            crate::account::events::EventLog::open(&path, environment.log_retention_days()?)
+            crate::account::events::EventLog::open(path, environment.log_retention_days()?)
                 .map_err(|e| StartupError::Unusable(format!("{}: {e}", env::ACCOUNT_EVENT_LOG)))?,
         )),
         None => None,
     };
     let login = (environment.password_hasher()?, environment.login_limits()?);
+    let audit_log = environment.audit_log()?;
     Ok(Some(
-        crate::console::Site::new(console, accounts, login, events).with_usage(usage),
+        crate::console::Site::new(console, accounts, login, events)
+            .with_usage(usage)
+            .with_logs(audit_log, event_log),
     ))
 }
 
@@ -697,11 +701,19 @@ mod tests {
         ]);
         assert!(site(&bad_days, console(), Some((accounts.clone(), kept()))).is_err());
         let unreadable = crate::env::testing::with_unreadable(&[], env::ACCOUNT_EVENT_LOG);
-        let Err(StartupError::Env(e)) = site(&unreadable, console(), Some((accounts, kept())))
+        let Err(StartupError::Env(e)) =
+            site(&unreadable, console(), Some((accounts.clone(), kept())))
         else {
             panic!("an unreadable event log path is an environment error");
         };
         assert_eq!(e.var, env::ACCOUNT_EVENT_LOG.name);
+        let unread_audit = crate::env::testing::with_unreadable(&[], env::AUDIT_LOG);
+        let Err(StartupError::Env(e)) =
+            site(&unread_audit, console(), Some((accounts.clone(), kept())))
+        else {
+            panic!("an unreadable audit log path stops the console");
+        };
+        assert_eq!(e.var, env::AUDIT_LOG.name);
         for bad in [(env::ARGON2_PASSES, "0"), (env::SESSION_HOURS, "0")] {
             let accounts: Arc<dyn crate::account::Accounts> =
                 Arc::new(crate::account::InMemory::new("2026-10-13T00:00:00Z"));

@@ -50,8 +50,17 @@ pub const FAILURES_PATH: &str = "/api/v1/metrics/failures";
 /// Under the console's path: `GET` the configuration, R7.
 pub const CONFIG_PATH: &str = "/api/v1/config";
 
+/// Under the console's path: `GET` audit log lines, R5 and R9.
+pub const REQUESTS_PATH: &str = "/api/v1/requests";
+
+/// Under the console's path: `GET` a day of the audit log, R9.
+pub const LOGS_PATH: &str = "/api/v1/logs/{day}";
+
+/// Under the console's path: `GET` account event log lines, R8.
+pub const EVENTS_PATH: &str = "/api/v1/events";
+
 /// Every console route.
-pub const ROUTES: [Route; 9] = [
+pub const ROUTES: [Route; 12] = [
     Route {
         method: Method::GET,
         path: super::HEALTH_PATH,
@@ -89,6 +98,27 @@ pub const ROUTES: [Route; 9] = [
         path: DEPENDENCIES_PATH,
         guard: Guard::Needs(Permission::RequestsRead, |site, _, parts| {
             Box::pin(super::usage::dependencies(site, parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: REQUESTS_PATH,
+        guard: Guard::Needs(Permission::RequestsRead, |site, _, parts| {
+            Box::pin(super::logs::requests(site, parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: LOGS_PATH,
+        guard: Guard::Needs(Permission::RequestsRead, |site, _, parts| {
+            Box::pin(super::logs::day(site, parts))
+        }),
+    },
+    Route {
+        method: Method::GET,
+        path: EVENTS_PATH,
+        guard: Guard::Needs(Permission::EventsRead, |site, _, parts| {
+            Box::pin(super::logs::events(site, parts))
         }),
     },
     Route {
@@ -203,7 +233,7 @@ mod tests {
         );
 
         for route in ROUTES.iter() {
-            let url = format!("{base}/admin{}", route.path);
+            let url = format!("{base}/admin{}", route.path.replace("{day}", "2026-10-13"));
             let request = || client.request(route.method.clone(), &url);
             let status = |builder: reqwest::RequestBuilder| async move {
                 builder.send().await.unwrap().status()

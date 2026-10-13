@@ -240,11 +240,11 @@ ecosystem, purl, account and `answered`.
 |---|---|
 | `GET dependencies` | R3. Built 2026-10-13: `served_version` by row id, a page of up to 1,000, filtered by ecosystem, name, account and time |
 | `GET alerts` | R4 |
-| `GET requests?answered=refused&check=known_malware` | R5 |
+| `GET requests?answered=refused&check=known_malware` | R5. Built 2026-10-13, as `GET requests` with filters; `path=resolution` gives versions removed from metadata |
 | `GET metrics/failures` | R6: counts by case and hour. Built 2026-10-13: `failure_count`, the last 24 hours unless `since` and `until` say otherwise |
 | `GET config` | R7. Built 2026-10-13: `proxy`, `policy` (its digest and the `explain --policy` report) and `environment`, every runtime variable with its value and default |
-| `GET events` | R8 |
-| `GET requests`, and `GET logs/<date>` for a day's file | R9 |
+| `GET events` | R8. Built 2026-10-13: the account event log, filtered by account, action and actor |
+| `GET requests`, and `GET logs/<date>` for a day's file | R9. Built 2026-10-13: `GET requests` pages by the last line's `at`, filtered by ecosystem, name, account, answered, check and path, the last 24 hours unless asked, and says how many files it read in `files_read`. `GET logs/{day}` is the day's lines as written, NDJSON |
 | `GET`, `POST`, `DELETE` under `accounts` | R1, R2. `GET accounts`, needing `accounts.read`, built 2026-10-13 |
 | `GET status` | R10 |
 | `GET health`, with no session or token | R10, for an external monitor |

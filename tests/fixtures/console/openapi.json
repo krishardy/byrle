@@ -248,6 +248,35 @@
         ],
         "type": "object"
       },
+      "Lines": {
+        "description": "A page of lines, as served.",
+        "properties": {
+          "files_read": {
+            "description": "How many files were read for this page.",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "lines": {
+            "description": "Each line as the log holds it: docs/engineering_decisions/audit-log.md.",
+            "items": {
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "next": {
+            "description": "`after` for the next page; absent on the last.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "lines",
+          "files_read"
+        ],
+        "type": "object"
+      },
       "Listed": {
         "description": "One account.",
         "properties": {
@@ -751,6 +780,147 @@
         "x-byrle-permission": "requests.read"
       }
     },
+    "/api/v1/events": {
+      "get": {
+        "operationId": "events",
+        "parameters": [
+          {
+            "description": "The `next` of the page before.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lines on a page, 1 to 1000; 100 without it.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Lines from this time; 24 hours before `until` without it.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lines before this time; now without it.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The account acted on, or the username a failed login tried.",
+            "in": "query",
+            "name": "account",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Such as `login-failed` or `token-created`.",
+            "in": "query",
+            "name": "action",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The account that acted.",
+            "in": "query",
+            "name": "actor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lines"
+                }
+              }
+            },
+            "description": "A page of account event log lines"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A filter that does not parse"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant events.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No account event log is kept, or a file did not read"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET events`: account event log lines, oldest first, a page at a time. R8.",
+        "tags": [
+          "logs"
+        ],
+        "x-byrle-permission": "events.read"
+      }
+    },
     "/api/v1/health": {
       "get": {
         "operationId": "health",
@@ -929,6 +1099,88 @@
         ]
       }
     },
+    "/api/v1/logs/{day}": {
+      "get": {
+        "operationId": "day",
+        "parameters": [
+          {
+            "description": "A UTC day, YYYY-MM-DD",
+            "in": "path",
+            "name": "day",
+            "required": true,
+            "schema": {
+              "format": "date",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/x-ndjson": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The day's lines, one JSON object each"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "Not a day"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant requests.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No audit log is kept, or a file did not read"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET logs/{day}`: a UTC day of the audit log, its lines as written. R9.",
+        "tags": [
+          "logs"
+        ],
+        "x-byrle-permission": "requests.read"
+      }
+    },
     "/api/v1/metrics/failures": {
       "get": {
         "operationId": "failures",
@@ -1057,6 +1309,174 @@
         "tags": [
           "status"
         ]
+      }
+    },
+    "/api/v1/requests": {
+      "get": {
+        "operationId": "requests",
+        "parameters": [
+          {
+            "description": "The `next` of the page before.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lines on a page, 1 to 1000; 100 without it.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "format": "int32",
+              "maximum": 1000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Lines from this time; 24 hours before `until` without it.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lines before this time; now without it.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "format": "date-time",
+              "type": "string"
+            }
+          },
+          {
+            "description": "`npm` or `pypi`.",
+            "in": "query",
+            "name": "ecosystem",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The registry name, npm's with its scope.",
+            "in": "query",
+            "name": "name",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The account whose token the request carried.",
+            "in": "query",
+            "name": "account",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "What a pinned request was answered, such as `refused`.",
+            "in": "query",
+            "name": "answered",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "A check among those that decided, such as `known_malware`.",
+            "in": "query",
+            "name": "check",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "`pinned` for one version asked for, `resolution` for a document filtered.",
+            "in": "query",
+            "name": "path",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Lines"
+                }
+              }
+            },
+            "description": "A page of audit log lines"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "A filter that does not parse"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No session or token"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "The caller's roles do not grant requests.read"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            },
+            "description": "No audit log is kept, or a file did not read"
+          }
+        },
+        "security": [
+          {
+            "session": []
+          },
+          {
+            "token": []
+          }
+        ],
+        "summary": "`GET requests`: audit log lines, oldest first, a page at a time. R5 and R9.",
+        "tags": [
+          "logs"
+        ],
+        "x-byrle-permission": "requests.read"
       }
     },
     "/api/v1/session": {

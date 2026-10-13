@@ -4,6 +4,7 @@
 pub mod api;
 pub mod config;
 pub mod login;
+pub mod logs;
 pub mod openapi;
 pub mod routes;
 pub mod usage;
@@ -118,6 +119,10 @@ pub struct Site {
     usage: Option<Arc<dyn crate::usage::Usage>>,
     /// The proxy beside it. `None` until [`Site::with_proxy`] is called.
     configured: Option<config::Configured>,
+    /// [`env::AUDIT_LOG`], for R5 and R9.
+    audit_log: Option<std::path::PathBuf>,
+    /// [`env::ACCOUNT_EVENT_LOG`], for R8.
+    event_log: Option<std::path::PathBuf>,
     /// `scheme://host[:port]` of [`Console::url`], which a browser's `Origin` matches.
     origin: String,
 }
@@ -140,6 +145,8 @@ impl Site {
             store,
             usage: None,
             configured: None,
+            audit_log: None,
+            event_log: None,
             origin,
             console,
         }
@@ -148,6 +155,18 @@ impl Site {
     /// Read R3 and R6 from `usage`.
     pub fn with_usage(mut self, usage: Arc<dyn crate::usage::Usage>) -> Self {
         self.usage = Some(usage);
+        self
+    }
+
+    /// Read R5 and R9 from `audit_log`, and R8 from `event_log`, each with its rotated
+    /// files.
+    pub fn with_logs(
+        mut self,
+        audit_log: Option<std::path::PathBuf>,
+        event_log: Option<std::path::PathBuf>,
+    ) -> Self {
+        self.audit_log = audit_log;
+        self.event_log = event_log;
         self
     }
 
@@ -219,10 +238,12 @@ pub(crate) mod tests {
     pub fn site(console: Console, store: Arc<dyn Accounts>) -> Arc<Site> {
         let usage = Arc::new(crate::usage::tests::Kept::default());
         let proxy = crate::proxy::Proxy::new(reqwest::Client::new());
+        let missing = |name: &str| Some(std::path::Path::new("/nonexistent/byrle").join(name));
         Arc::new(
             unread(console, store)
                 .with_usage(usage)
-                .with_proxy(proxy, Vec::new()),
+                .with_proxy(proxy, Vec::new())
+                .with_logs(missing("audit.log"), missing("events.log")),
         )
     }
 
