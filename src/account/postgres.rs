@@ -232,4 +232,40 @@ impl Accounts for PgAccounts {
             }))
         })
     }
+
+    fn set_password<'a>(&'a self, account: &'a Name, hash: &'a str) -> Pending<'a, ()> {
+        Box::pin(async move {
+            let done = sqlx::query!(
+                r#"
+                INSERT INTO account_password (account_id, hash)
+                SELECT id, $2 FROM account WHERE name = $1
+                ON CONFLICT (account_id) DO UPDATE SET hash = EXCLUDED.hash, set_at = now()
+                "#,
+                account.as_str(),
+                hash,
+            )
+            .execute(&self.pool)
+            .await
+            .map_err(backend)?;
+            if done.rows_affected() == 0 {
+                return Err(super::no_account(account));
+            }
+            Ok(())
+        })
+    }
+
+    fn password<'a>(&'a self, account: &'a Name) -> Pending<'a, Option<String>> {
+        Box::pin(async move {
+            sqlx::query_scalar!(
+                r#"
+                SELECT p.hash FROM account_password p JOIN account a ON a.id = p.account_id
+                WHERE a.name = $1 AND a.disabled_at IS NULL
+                "#,
+                account.as_str(),
+            )
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(backend)
+        })
+    }
 }

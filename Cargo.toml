@@ -54,6 +54,7 @@ toml = { version = "1.1.6", default-features = false, features = ["parse", "serd
 # three real attestations and compiles `rsa`; see
 # docs/engineering_decisions/sigstore-verifier.md.
 sigstore-verify = { version = "=0.14.0", default-features = false }
+argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash"] }
 
 [dev-dependencies]
 # Test builds only. `sqlx-core` turns on `tracing`'s `log` feature, which gives every event a
