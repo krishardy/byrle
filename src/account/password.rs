@@ -4,9 +4,6 @@
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher as _, PasswordVerifier as _};
 
-/// The fewest characters a password may have.
-pub const MIN_CHARS: usize = 15;
-
 /// The most bytes a password may have, which bounds the work of hashing one.
 pub const MAX_BYTES: usize = 1024;
 
@@ -17,9 +14,13 @@ const SALT_BYTES: usize = 16;
 pub struct Hasher(argon2::Argon2<'static>);
 
 impl Hasher {
-    /// Argon2id v19, 19 MiB, 2 passes, 1 lane: the `argon2` crate's defaults.
-    pub fn standard() -> Self {
-        Self(argon2::Argon2::default())
+    /// Argon2id v19 with `memory_kib` of memory, `passes` passes and 1 lane. `memory_kib`
+    /// is at least 8 and `passes` at least 1, as [`crate::env`] reads them.
+    pub fn with_cost(memory_kib: u32, passes: u32) -> Self {
+        Self::with(
+            argon2::Params::new(memory_kib, passes, 1, None)
+                .expect("8 KiB or more and 1 pass or more are valid Argon2 parameters"),
+        )
     }
 
     /// Argon2id with `params`, which tests make cheap.
@@ -49,12 +50,12 @@ impl Hasher {
     }
 }
 
-/// `password` if it is long enough and not too long; else why not.
-pub fn acceptable(password: &str) -> Result<&str, String> {
+/// `password` if it has `min_chars` characters and is not too long; else why not.
+pub fn acceptable(password: &str, min_chars: usize) -> Result<&str, String> {
     let chars = password.chars().count();
-    if chars < MIN_CHARS {
+    if chars < min_chars {
         Err(format!(
-            "the password has {chars} characters; it needs at least {MIN_CHARS}"
+            "the password has {chars} characters; it needs at least {min_chars}"
         ))
     } else if password.len() > MAX_BYTES {
         Err(format!(
@@ -105,7 +106,11 @@ pub(crate) mod tests {
     /// them is verified by a hasher with any parameters.
     #[test]
     fn the_standard_hash_is_argon2id_at_19_mib_and_2_passes() {
-        let phc = Hasher::standard().hash("correct horse battery");
+        let phc = Hasher::with_cost(
+            crate::env::DEFAULT_ARGON2_MEMORY_KIB,
+            crate::env::DEFAULT_ARGON2_PASSES,
+        )
+        .hash("correct horse battery");
         assert!(phc.starts_with("$argon2id$v=19$m=19456,t=2,p=1$"), "{phc}");
         assert!(cheap().verify("correct horse battery", &phc));
     }
@@ -113,13 +118,13 @@ pub(crate) mod tests {
     #[test]
     fn a_password_is_at_least_15_characters_and_at_most_1024_bytes() {
         assert_eq!(
-            acceptable("fourteen chars"),
+            acceptable("fourteen chars", 15),
             Err("the password has 14 characters; it needs at least 15".into())
         );
-        assert_eq!(acceptable("ééééééééééééééé"), Ok("ééééééééééééééé"));
-        assert!(acceptable(&"a".repeat(MAX_BYTES)).is_ok());
+        assert_eq!(acceptable("ééééééééééééééé", 15), Ok("ééééééééééééééé"));
+        assert!(acceptable(&"a".repeat(MAX_BYTES), 15).is_ok());
         assert_eq!(
-            acceptable(&"a".repeat(MAX_BYTES + 1)),
+            acceptable(&"a".repeat(MAX_BYTES + 1), 15),
             Err("the password has 1025 bytes; it may have at most 1024".into())
         );
     }

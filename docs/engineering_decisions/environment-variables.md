@@ -75,11 +75,16 @@ and excluding the file most likely to hold a credential inverts what the scanner
 habit.
 
 Nothing loads the file. byrle reads real environment variables and there is no dotenv
-crate, so a shell sources it:
+crate or configuration file, decided by the user on 2026-10-13. Whatever starts byrle
+loads the file:
 
-```sh
-set -a; . ~/.config/byrle/env; set +a
-```
+| Runner | How |
+|---|---|
+| a shell | `set -a; . ~/.config/byrle/env; set +a` |
+| systemd | `EnvironmentFile=/etc/byrle/env` in the unit's `[Service]` section |
+| Docker Compose | `env_file: byrle.env` on the service |
+
+The file is `BYRLE_NAME=value` lines, which all three read.
 
 `BYRLE_GITHUB_TOKEN` is the GitHub Advisory stream's token. It is not in `src/env.rs` yet:
 `--help` renders from those constants and `tests/fixtures/cli/help.txt` pins the output, so

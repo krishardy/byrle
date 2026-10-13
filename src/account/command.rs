@@ -62,15 +62,15 @@ pub async fn disable_account(store: &dyn Accounts, name: &Name) -> Outcome {
     }
 }
 
-/// Set `name`'s console password to `password`, checked for length and hashed with
+/// Set `name`'s console password to `password`, of `min_chars` or more, hashed with
 /// `hasher`. Logged as `password-set`, without the password.
 pub async fn set_password(
     store: &dyn Accounts,
     name: &Name,
     password: &str,
-    hasher: &super::password::Hasher,
+    (min_chars, hasher): (usize, &super::password::Hasher),
 ) -> Outcome {
-    let hash = match super::password::acceptable(password) {
+    let hash = match super::password::acceptable(password, min_chars) {
         Ok(password) => hasher.hash(password),
         Err(why) => {
             return Outcome {
@@ -344,7 +344,7 @@ mod tests {
         let alice = name("alice");
         let hasher = crate::account::password::tests::cheap();
         create_account(&store, &alice, &[]).await;
-        let set = set_password(&store, &alice, "correct horse battery", &hasher).await;
+        let set = set_password(&store, &alice, "correct horse battery", (15, &hasher)).await;
         assert_eq!(set.stdout, "password of account alice set\n");
         assert_eq!(actions(&set), [(Action::PasswordSet, None)]);
         let stored = store.password(&alice).await.unwrap().unwrap();
@@ -355,7 +355,7 @@ mod tests {
                 .contains("horse")
         );
 
-        let short = set_password(&store, &alice, "short", &hasher).await;
+        let short = set_password(&store, &alice, "short", (15, &hasher)).await;
         assert_eq!(short.code, 1);
         assert!(
             short.stderr.contains("needs at least 15"),
@@ -365,7 +365,7 @@ mod tests {
         assert!(short.events.is_empty());
         assert_eq!(store.password(&alice).await.unwrap(), Some(stored));
         let nobody = name("nobody");
-        let missing = set_password(&store, &nobody, "correct horse battery", &hasher).await;
+        let missing = set_password(&store, &nobody, "correct horse battery", (15, &hasher)).await;
         assert_eq!(missing.stderr, "account nobody does not exist\n");
     }
 

@@ -825,7 +825,7 @@ reasoning, alternatives and consequences live in the files, not here.
 | n/a | [Console listener](engineering_decisions/console-listener.md) | `BYRLE_PROXY_URL` and `BYRLE_CONSOLE_URL` give each part's path; one listener or two; never the same path |
 | n/a | [Console web interface](engineering_decisions/console-web-interface.md) | Rust, HTML from `maud`, for now: 3 crates, against 214 npm packages for React and Vite |
 | n/a | [Console login crates](engineering_decisions/console-login-crates.md) | `argon2` 0.6.0; `jsonwebtoken` 11.1.0 on `aws_lc_rs`, OIDC flow written here; no `rsa` built |
-| n/a | [Console login](engineering_decisions/console-login.md) | Argon2id at 19 MiB and 2 passes, 15 characters at least; 8-hour sessions; 5 failures per account and 20 per address in 15 minutes. Not yet confirmed by the user |
+| n/a | [Console login](engineering_decisions/console-login.md) | Argon2id at 19 MiB and 2 passes, 15 characters at least; 8-hour sessions; 5 failures per account and 20 per address in 15 minutes. Confirmed by the user; each a `BYRLE_*` variable |
 | n/a | [Log rotation](engineering_decisions/log-rotation.md) | Logs are files, rotated at UTC midnight, bzip2 from 3 days old, 365 days by default |
 | n/a | [Ecosystems in every build](engineering_decisions/no-ecosystem-features.md) | No Cargo feature per ecosystem; every build serves every ecosystem |
 | 10 | [Fetch path](engineering_decisions/fetch-path-branching.md) | Branch decided before fetching; npm and pnpm retry a deferred tarball, yarn 1 and bun fail the first install ([deferral-status-codes](engineering_decisions/deferral-status-codes.md)) |

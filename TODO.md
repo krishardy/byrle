@@ -2707,7 +2707,7 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       `POST api/v1/login` and `logout`, `GET api/v1/session`; 8-hour sessions; 5 failures
       per account and 20 per address in 15 minutes, the address through `BYRLE_RP_KEY`
       as the user decided ([console-login](docs/engineering_decisions/console-login.md)).
-      The values are Claude's, not yet confirmed
+      Values confirmed by the user, each a `BYRLE_*` variable
 - [x] `[!]` The account event log (plan §4.5). Done 2026-10-13: `src/account/events.rs`,
       `BYRLE_ACCOUNT_EVENT_LOG`; `byrle account` and `byrle token` append their changes,
       and the console its logins and logouts, rotating the file as the audit log is

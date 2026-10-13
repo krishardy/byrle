@@ -38,6 +38,15 @@ Proxy configuration, all through the environment:
   BYRLE_RP_KEY                      key nginx sends as X-Byrle-RP-Key, at least 32
                                     bytes. With it, X-Forwarded-For names the client.
                                     Make one with `openssl rand -hex 32`
+  BYRLE_PASSWORD_MIN_CHARS          fewest characters a console password may have (default 15)
+  BYRLE_ARGON2_MEMORY_KIB           memory, in KiB, each new password hash takes (default 19456)
+  BYRLE_ARGON2_PASSES               passes over that memory each new password hash makes (default 2)
+  BYRLE_SESSION_HOURS               hours a console session lasts from login (default 8)
+  BYRLE_LOGIN_WINDOW_MINUTES        minutes failed console logins are counted over (default 15)
+  BYRLE_LOGIN_FAILURES_PER_ACCOUNT  failed logins to one account in the window before
+                                    more are refused unchecked (default 5)
+  BYRLE_LOGIN_FAILURES_PER_ADDRESS  failed logins from one address, or IPv6 /64, in the
+                                    window before more are refused unchecked (default 20)
   BYRLE_REQUIRE_TOKEN=0             answer requests that carry no proxy token. Unset, each
                                     request needs one, and BYRLE_DATABASE_URL is required,
                                     since accounts and tokens are kept there

@@ -195,7 +195,7 @@ pub async fn login(State(site): State<Arc<Site>>, request: Request) -> Response 
             body["csrf"] = csrf(&started.id).into();
             body["expires"] = started.expires.to_string().into();
             let mut response = json(StatusCode::OK, body);
-            let max_age = super::login::SESSION.as_secs();
+            let max_age = site.login.limits().session.as_secs();
             response
                 .headers_mut()
                 .insert(header::SET_COOKIE, site.cookie(&started.id, max_age));
@@ -210,7 +210,7 @@ pub async fn login(State(site): State<Arc<Site>>, request: Request) -> Response 
                 StatusCode::TOO_MANY_REQUESTS,
                 "too many failed logins; try again later",
             );
-            let retry = super::login::WINDOW.as_secs().to_string();
+            let retry = site.login.limits().window.as_secs().to_string();
             response.headers_mut().insert(
                 header::RETRY_AFTER,
                 HeaderValue::from_str(&retry).expect("digits"),
@@ -466,7 +466,13 @@ mod tests {
             rp_key: Some(crate::reverse_proxy::RpKey::parse(KEY).unwrap()),
         };
         let hasher = crate::account::password::tests::cheap();
-        let site = Arc::new(Site::new(console, accounts().await, hasher, Some(events)));
+        let limits = crate::console::login::tests::limits();
+        let site = Arc::new(Site::new(
+            console,
+            accounts().await,
+            (hasher, limits),
+            Some(events),
+        ));
         let (_, router) =
             crate::console::listeners(axum::Router::new(), "127.0.0.1:8080", Some(&site))
                 .pop()
@@ -489,7 +495,7 @@ mod tests {
     #[tokio::test]
     async fn too_many_failures_are_429_with_when_to_try_again() {
         let (_, base) = served(accounts().await).await;
-        for _ in 0..crate::console::login::PER_ACCOUNT {
+        for _ in 0..crate::console::login::tests::limits().per_account {
             log_in(&base, "alice", "wrong horse battery").await;
         }
         let limited = log_in(&base, "alice", PASSWORD).await;
