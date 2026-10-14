@@ -116,6 +116,21 @@ impl Client {
     }
 }
 
+impl crate::ecosystem::Fetch for Client {
+    fn metadata<'a>(&'a self, key: &'a PackageKey) -> futures_util::future::BoxFuture<'a, Fetched> {
+        Box::pin(Client::metadata(self, key))
+    }
+
+    /// The index's records carry each file's `upload-time`: nothing more is asked.
+    fn full<'a>(
+        &'a self,
+        _: &'a PackageKey,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<crate::ecosystem::FullDocument>, String>>
+    {
+        Box::pin(async { Ok(None) })
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {

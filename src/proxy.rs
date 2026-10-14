@@ -14,7 +14,7 @@ use crate::analysis::virustotal::Scanned;
 use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
-use crate::ecosystem::npm::transport::FullDocument;
+use crate::ecosystem::FullDocument;
 use crate::ecosystem::{self, Clients, UncoveredMetadata, Upstreams};
 use crate::ecosystem::{npm, pypi};
 use crate::env::{

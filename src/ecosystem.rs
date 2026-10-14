@@ -10,31 +10,56 @@ use crate::doctor::Client;
 use crate::env::{Env, EnvError, Var};
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
 use crate::intel::range::VersionOrder;
-use crate::intel::stream::{self, Stream};
+use crate::intel::stream::Stream;
 use crate::lockfile::{Lockfile, Unread};
 use crate::policy::facts::PublishTimes;
 use crate::record::PackageMetadata;
 use crate::route::{DocumentKind, RequestTarget};
+use futures_util::future::BoxFuture;
 use std::collections::BTreeMap;
 
 /// Metadata the proxy fetched itself: the outer error is the fetch, the inner the document.
 pub type Fetched = Result<Result<PackageMetadata, String>, String>;
 
+/// What an ecosystem's registry client answers for a request the proxy makes itself.
+pub trait Fetch: Send + Sync + std::fmt::Debug {
+    /// The package's metadata as records.
+    fn metadata<'a>(&'a self, key: &'a PackageKey) -> BoxFuture<'a, Fetched>;
+
+    /// The fuller document with publish times, for an ecosystem whose client asks for
+    /// less. `Ok(None)` for one whose records carry `published_at`, which asks nothing.
+    fn full<'a>(
+        &'a self,
+        key: &'a PackageKey,
+    ) -> BoxFuture<'a, Result<Option<FullDocument>, String>>;
+}
+
+/// A document fetched for its publish times: [`Fetch::full`].
+#[derive(Debug, Clone)]
+pub struct FullDocument {
+    /// Publish time by version, without `created` and `modified`.
+    pub times: BTreeMap<String, jiff::Timestamp>,
+    /// The records, or why the document did not normalise when its times did.
+    pub metadata: Result<PackageMetadata, String>,
+}
+
 /// Each ecosystem's registry client, chosen by the package key, for a caller with no document.
 #[derive(Debug, Clone)]
-pub struct Clients {
-    npm: npm::Client,
-    pypi: pypi::Client,
-}
+pub struct Clients(BTreeMap<Ecosystem, std::sync::Arc<dyn Fetch>>);
 
 impl Clients {
     /// A client for each upstream. `max_bytes` bounds each decoded body.
     pub fn new(http: reqwest::Client, upstreams: &Upstreams, max_bytes: usize) -> Self {
-        Self {
-            npm: npm::Client::new(http.clone(), upstreams.get(Ecosystem::Npm))
-                .with_max_bytes(max_bytes),
-            pypi: pypi::Client::new(http, upstreams.get(Ecosystem::PyPI)).with_max_bytes(max_bytes),
-        }
+        Self(
+            TABLE
+                .iter()
+                .map(|row| {
+                    let client =
+                        (row.client)(http.clone(), upstreams.get(row.ecosystem), max_bytes);
+                    (row.ecosystem, client)
+                })
+                .collect(),
+        )
     }
 
     /// Clients for the upstreams and body limit the environment configures.
@@ -48,12 +73,13 @@ impl Clients {
         ))
     }
 
+    fn of(&self, key: &PackageKey) -> &dyn Fetch {
+        self.0[&key.ecosystem()].as_ref()
+    }
+
     /// The package's metadata as records.
     pub async fn metadata(&self, key: &PackageKey) -> Fetched {
-        match key.ecosystem() {
-            Ecosystem::Npm => self.npm.metadata(key).await,
-            Ecosystem::PyPI => self.pypi.metadata(key).await,
-        }
+        self.of(key).metadata(key).await
     }
 
     /// The record for `version` of `key`, from its registry's metadata document.
@@ -73,18 +99,9 @@ impl Clients {
         Ok(self.full_document(key).await?.map(|full| full.times))
     }
 
-    /// The full document, for an ecosystem whose client asks for less. `Ok(None)` for one
-    /// whose records carry `published_at`, which asks nothing.
-    pub async fn full_document(
-        &self,
-        key: &PackageKey,
-    ) -> Result<Option<npm::transport::FullDocument>, String> {
-        match of(key.ecosystem()).publish_times {
-            PublishTimeSource::Record => Ok(None),
-            PublishTimeSource::FullPackument => {
-                npm::fetched(self.npm.full(key).await, "publish times").map(Some)
-            }
-        }
+    /// The full document, for an ecosystem whose client asks for less: [`Fetch::full`].
+    pub async fn full_document(&self, key: &PackageKey) -> Result<Option<FullDocument>, String> {
+        self.of(key).full(key).await
     }
 }
 
@@ -214,6 +231,8 @@ pub struct Registry {
 
     /// Where a request path goes, given the upstream base.
     pub upstream_url: fn(&str, &str) -> String,
+    /// The registry client for the upstream, with each decoded body bounded.
+    pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
 }
 
 /// Each served ecosystem's upstream base, with no trailing slash, one per [`TABLE`] row.
@@ -314,64 +333,8 @@ impl Registry {
 /// The registry that answers a path no other registry claimed: npm, which asks for `/lodash`.
 pub const ROOT: Ecosystem = Ecosystem::Npm;
 
-pub const NPM: Registry = Registry {
-    ecosystem: Ecosystem::Npm,
-    prefixes: &[],
-    always_reachable: &[npm::DEFAULT_REGISTRY],
-    classify_path: npm::classify_path,
-    read_media_type: npm::document_from_content_type,
-    documents: &[npm::ABBREVIATED_ACCEPT, npm::FULL_ACCEPT],
-    other_is_probe: false,
-    publish_times: PublishTimeSource::FullPackument,
-    streams: &[&stream::OSV_NPM, &stream::DATADOG_NPM, &stream::GITHUB_NPM],
-    lockfiles: npm::lockfile::LOCKFILES,
-    unread_lockfiles: npm::lockfile::UNREAD,
-    clients: npm::clients::CLIENTS,
-    setup: Setup {
-        client: npm::clients::NPM.name,
-        command: npm::clients::NPM.set_registry,
-        path: "/",
-    },
-    uncovered_metadata: UncoveredMetadata::Refuse,
-    versions: VersionOrder::SemVer,
-    split_name: npm::paths::split_name,
-    canonical_name: npm::paths::canonical_name,
-    upstream: crate::env::UPSTREAM_NPM,
-    upstream_url: npm::paths::upstream_url,
-};
-
-pub const PYPI: Registry = Registry {
-    ecosystem: Ecosystem::PyPI,
-    prefixes: &[pypi::SIMPLE, "/packages/"],
-    always_reachable: &[pypi::INDEX, pypi::FILES],
-    classify_path: pypi::classify_path,
-    read_media_type: pypi::document_from_content_type,
-    documents: &[pypi::SIMPLE_JSON, pypi::SIMPLE_HTML, "text/html"],
-    other_is_probe: true,
-    publish_times: PublishTimeSource::Record,
-    streams: &[
-        &stream::OSV_PYPI,
-        &stream::DATADOG_PYPI,
-        &stream::GITHUB_PYPI,
-    ],
-    lockfiles: pypi::lockfile::LOCKFILES,
-    unread_lockfiles: pypi::lockfile::UNREAD,
-    clients: pypi::clients::CLIENTS,
-    setup: Setup {
-        client: "pip",
-        command: "pip config set global.index-url",
-        path: pypi::SIMPLE,
-    },
-    uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
-    versions: VersionOrder::Pep440,
-    split_name: pypi::paths::split_name,
-    canonical_name: pypi::paths::canonical_name,
-    upstream: crate::env::UPSTREAM_PYPI,
-    upstream_url: pypi::paths::upstream_url,
-};
-
 /// Every ecosystem the proxy routes, one row each, for which intel coverage is reported.
-pub const TABLE: &[Registry] = &[NPM, PYPI];
+pub const TABLE: &[Registry] = &[npm::REGISTRY, pypi::REGISTRY];
 
 /// The row for `ecosystem`.
 ///
@@ -396,6 +359,7 @@ pub fn serving(path: &str) -> &'static Registry {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod table {
     use super::*;
+    use crate::intel::stream;
     use crate::record::DocumentDetail;
 
     /// A limit that does not parse stops the clients being built, and a registry that cannot
@@ -679,6 +643,15 @@ mod table {
         }
     }
 
+    /// Whether the item after a `#[cfg(test)]`, past other attributes, is a module.
+    fn opens_module(after: &[&str]) -> bool {
+        after
+            .iter()
+            .map(|line| line.trim())
+            .find(|line| !line.starts_with("#["))
+            .is_some_and(|line| line.starts_with("mod ") || line.starts_with("pub(crate) mod "))
+    }
+
     /// Lines outside the adapters that name npm or PyPI, per file, until a file's tests:
     /// `npm::`, `pypi::`, `Ecosystem::Npm`, `Ecosystem::PyPI`.
     fn named_outside_adapters() -> std::collections::BTreeMap<String, usize> {
@@ -704,12 +677,12 @@ mod table {
             .filter(|f| !adapters.iter().any(|a| f.starts_with(a)))
         {
             let text = std::fs::read_to_string(file).expect("readable");
-            let count = text
-                .lines()
-                .take_while(|line| {
-                    let line = line.trim_start();
-                    !(line.starts_with("mod tests") || line.starts_with("pub(crate) mod tests"))
-                })
+            let lines: Vec<&str> = text.lines().collect();
+            let tests = (0..lines.len())
+                .find(|&i| lines[i].trim() == "#[cfg(test)]" && opens_module(&lines[i + 1..]))
+                .unwrap_or(lines.len());
+            let count = lines[..tests]
+                .iter()
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .filter(|line| names(line))
                 .count();
@@ -732,16 +705,14 @@ mod table {
             ("src/analysis/source.rs", 4),
             ("src/defer.rs", 1),
             ("src/doctor.rs", 3),
-            ("src/ecosystem.rs", 50),
+            ("src/ecosystem.rs", 2),
             ("src/env.rs", 4),
-            ("src/explain.rs", 5),
             ("src/identity.rs", 5),
             ("src/intel/providers/osv/mod.rs", 2),
             ("src/intel/range.rs", 1),
             ("src/intel/store.rs", 1),
             ("src/intel/stream.rs", 6),
-            ("src/policy/diff.rs", 4),
-            ("src/proxy.rs", 10),
+            ("src/proxy.rs", 9),
             ("src/proxy/testing.rs", 1),
             ("src/warm.rs", 5),
         ]

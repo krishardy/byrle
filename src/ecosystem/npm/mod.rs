@@ -26,6 +26,41 @@ use crate::record::DocumentDetail;
 pub use rewrite::{Filtered, Rewrite, filter_unservable_versions, rewrite_packument};
 pub use transport::{Client, fetched};
 
+use crate::ecosystem::{PublishTimeSource, Registry, Setup, UncoveredMetadata};
+use crate::identity::Ecosystem;
+use crate::intel::range::VersionOrder;
+use crate::intel::stream;
+
+/// This ecosystem's row of [`crate::ecosystem::TABLE`].
+pub const REGISTRY: Registry = Registry {
+    ecosystem: Ecosystem::Npm,
+    prefixes: &[],
+    always_reachable: &[DEFAULT_REGISTRY],
+    classify_path,
+    read_media_type: document_from_content_type,
+    documents: &[ABBREVIATED_ACCEPT, FULL_ACCEPT],
+    other_is_probe: false,
+    publish_times: PublishTimeSource::FullPackument,
+    streams: &[&stream::OSV_NPM, &stream::DATADOG_NPM, &stream::GITHUB_NPM],
+    lockfiles: lockfile::LOCKFILES,
+    unread_lockfiles: lockfile::UNREAD,
+    clients: clients::CLIENTS,
+    setup: Setup {
+        client: clients::NPM.name,
+        command: clients::NPM.set_registry,
+        path: "/",
+    },
+    uncovered_metadata: UncoveredMetadata::Refuse,
+    versions: VersionOrder::SemVer,
+    split_name: paths::split_name,
+    canonical_name: paths::canonical_name,
+    upstream: crate::env::UPSTREAM_NPM,
+    upstream_url: paths::upstream_url,
+    client: |http, upstream, max_bytes| {
+        std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))
+    },
+};
+
 /// npm's abbreviated packument media type, which is what `npm install` asks for.
 pub const ABBREVIATED_ACCEPT: &str = "application/vnd.npm.install-v1+json";
 /// The full packument, which the proxy asks for itself for publish times.

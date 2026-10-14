@@ -1,7 +1,5 @@
 //! Fetching packuments on the proxy's own behalf.
 
-use std::collections::BTreeMap;
-
 use crate::ecosystem::Fetched;
 use crate::identity::PackageKey;
 use crate::record::{DocumentDetail, PackageMetadata};
@@ -111,14 +109,7 @@ impl Client {
     }
 }
 
-/// The full packument, as [`Client::full`] read it.
-#[derive(Debug, Clone)]
-pub struct FullDocument {
-    /// Publish time by version, without `created` and `modified`.
-    pub times: BTreeMap<String, jiff::Timestamp>,
-    /// The records, or why the document did not normalise when its `time` map did.
-    pub metadata: Result<PackageMetadata, String>,
-}
+pub use crate::ecosystem::FullDocument;
 
 /// A registry request's value, or what went wrong: `<what> could not be fetched: ...` when
 /// the request failed, and `<what> could not be read: ...` when the body did not parse.
@@ -133,11 +124,25 @@ pub fn fetched<T>(
     }
 }
 
+impl crate::ecosystem::Fetch for Client {
+    fn metadata<'a>(&'a self, key: &'a PackageKey) -> futures_util::future::BoxFuture<'a, Fetched> {
+        Box::pin(Client::metadata(self, key))
+    }
+
+    fn full<'a>(
+        &'a self,
+        key: &'a PackageKey,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<FullDocument>, String>> {
+        Box::pin(async move { fetched(Client::full(self, key).await, "publish times").map(Some) })
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::super::fixture;
     use super::*;
+    use std::collections::BTreeMap;
 
     #[cfg(not(coverage))]
     use super::super::DEFAULT_REGISTRY;

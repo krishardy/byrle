@@ -23,6 +23,45 @@ pub use paths::{classify_path, document_from_content_type, index_url, normalise,
 pub use transport::{Client, FetchError};
 pub use wire::{File, Kind, Project, parse};
 
+use crate::ecosystem::{PublishTimeSource, Registry, Setup, UncoveredMetadata};
+use crate::identity::Ecosystem;
+use crate::intel::range::VersionOrder;
+use crate::intel::stream;
+
+/// This ecosystem's row of [`crate::ecosystem::TABLE`].
+pub const REGISTRY: Registry = Registry {
+    ecosystem: Ecosystem::PyPI,
+    prefixes: &[SIMPLE, "/packages/"],
+    always_reachable: &[INDEX, FILES],
+    classify_path,
+    read_media_type: document_from_content_type,
+    documents: &[SIMPLE_JSON, SIMPLE_HTML, "text/html"],
+    other_is_probe: true,
+    publish_times: PublishTimeSource::Record,
+    streams: &[
+        &stream::OSV_PYPI,
+        &stream::DATADOG_PYPI,
+        &stream::GITHUB_PYPI,
+    ],
+    lockfiles: lockfile::LOCKFILES,
+    unread_lockfiles: lockfile::UNREAD,
+    clients: clients::CLIENTS,
+    setup: Setup {
+        client: "pip",
+        command: "pip config set global.index-url",
+        path: SIMPLE,
+    },
+    uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
+    versions: VersionOrder::Pep440,
+    split_name: paths::split_name,
+    canonical_name: paths::canonical_name,
+    upstream: crate::env::UPSTREAM_PYPI,
+    upstream_url: paths::upstream_url,
+    client: |http, upstream, max_bytes| {
+        std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))
+    },
+};
+
 /// What `byrle` sends to ask for JSON rather than HTML. PEP 691.
 pub const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 
