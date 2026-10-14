@@ -18,7 +18,7 @@ case "$(uname -s)-$(uname -m)" in
     *) echo "no pinned shellcheck build for $(uname -s) $(uname -m)"; exit 1 ;;
 esac
 
-if [[ -x "$dest/shellcheck" ]] && "$dest/shellcheck" --version | grep -qx "version: ${shellcheck_version#v}"; then
+if [[ -x "$dest/shellcheck" ]] && grep -qx "version: ${shellcheck_version#v}" < <("$dest/shellcheck" --version); then
     echo "shellcheck $shellcheck_version is in $dest"
     exit 0
 fi

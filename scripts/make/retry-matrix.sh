@@ -57,7 +57,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-if ss -ltn 2>/dev/null | grep -q ":${port} "; then
+if grep -q ":${port} " < <(ss -ltn 2>/dev/null); then
     echo "port ${port} is already in use; set BYRLE_PORT to something free"
     exit 1
 fi

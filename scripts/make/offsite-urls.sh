@@ -35,7 +35,7 @@ cleanup() {
 trap cleanup EXIT
 
 for port in "$registry_port" "$recorder_port"; do
-    if ss -ltn 2>/dev/null | grep -q ":${port} "; then
+    if grep -q ":${port} " < <(ss -ltn 2>/dev/null); then
         echo "port ${port} is already in use; set BYRLE_OFFSITE_REGISTRY_PORT or"
         echo "BYRLE_OFFSITE_RECORDER_PORT to something free"
         exit 1

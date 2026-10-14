@@ -28,7 +28,7 @@ export CARGO_TARGET_DIR=/tmp/release-target
 
 SQLX_OFFLINE=true cargo build --release --locked
 binary="$CARGO_TARGET_DIR/release/byrle"
-if readelf -d "$binary" | grep -q NEEDED; then
+if grep -q NEEDED < <(readelf -d "$binary"); then
     echo "$binary links shared libraries:"
     readelf -d "$binary" | grep NEEDED
     exit 1

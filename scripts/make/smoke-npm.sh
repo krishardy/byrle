@@ -48,7 +48,7 @@ trap cleanup EXIT
 
 command -v npm >/dev/null || { echo "npm is required for this check"; exit 1; }
 
-if ss -ltn 2>/dev/null | grep -q ":${port} "; then
+if grep -q ":${port} " < <(ss -ltn 2>/dev/null); then
     echo "port ${port} is already in use; set BYRLE_PORT to something free"
     exit 1
 fi
@@ -129,7 +129,7 @@ unnormalized="$(comm -23 <(echo "$expected_purls") <(echo "$observed_purls") || 
 # of those documents was skipped. A skip means a shape the normalizer cannot read.
 grep -q 'packument normalized.*byrle.package.purl=pkg:npm/%40babel/code-frame' "$clean_log" \
     || fail "the scoped packument was never normalized"
-if grep -oE 'packument normalized.*skipped=[0-9]+' "$clean_log" | grep -qv 'skipped=0'; then
+if grep -qv 'skipped=0' < <(grep -oE 'packument normalized.*skipped=[0-9]+' "$clean_log"); then
     fail "a packument had versions the normalizer could not read:
 $(grep -E 'packument normalized.*skipped=[0-9]+' "$clean_log" | grep -v 'skipped=0')"
 fi
@@ -224,7 +224,7 @@ grep -q 'pkg:npm/ms@2.1.3' "$workdir/ms.out" \
     || fail "the refusal does not name the package it refused"
 grep -q 'denials' "$workdir/ms.out" || fail "the refusal does not say which check fired"
 
-if sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -qE 'proxied.*url.path=/ms/-/ms-2\.1\.3\.tgz'; then
+if grep -qE 'proxied.*url.path=/ms/-/ms-2\.1\.3\.tgz' < <(sed -E 's/\x1b\[[0-9;]*m//g' "$log"); then
     fail "the denied artifact was fetched upstream; the refusal came too late"
 fi
 echo "    ok (filtered on resolution, 403 on the pinned fetch, artifact never fetched)"
@@ -253,7 +253,7 @@ refused_both_ways() {
     status=$(proxy_curl -s -o "$workdir/$package.out" -w '%{http_code}' "http://127.0.0.1:${port}$tarball")
     [[ "$status" == "403" ]] || fail "a pinned fetch of $package@$version answered $status"
     grep -q "$check" "$workdir/$package.out" || fail "the refusal of $package does not name $check"
-    if sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -qE "proxied.*url.path=$tarball"; then
+    if grep -qE "proxied.*url.path=$tarball" < <(sed -E 's/\x1b\[[0-9;]*m//g' "$log"); then
         fail "the refused $package tarball was fetched upstream"
     fi
 }
@@ -278,7 +278,7 @@ start_proxy ""
 npm_install "$workdir/eicar" eicar@1.0.0 >/dev/null 2>&1 || fail "npm install eicar@1.0.0 failed"
 grep -q 'EICAR-STANDARD-ANTIVIRUS-TEST-FILE' "$workdir/eicar/node_modules/eicar/README.md" \
     || fail "the installed eicar package does not hold the EICAR string"
-sed -E 's/\x1b\[[0-9;]*m//g' "$log" | grep -q 'artifact digest verified.*pkg:npm/eicar@1.0.0' \
+grep -q 'artifact digest verified.*pkg:npm/eicar@1.0.0' < <(sed -E 's/\x1b\[[0-9;]*m//g' "$log") \
     || fail "the eicar tarball was not verified"
 echo "    ok (installed, digest verified)"
 stop_proxy

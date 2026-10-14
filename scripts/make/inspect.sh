@@ -50,7 +50,7 @@ if [[ -n "${BYRLE_PROXY:-}" ]]; then
     echo "using the proxy already running at $proxy"
 else
     proxy="http://127.0.0.1:${port}"
-    if ss -ltn 2>/dev/null | grep -q ":${port} "; then
+    if grep -q ":${port} " < <(ss -ltn 2>/dev/null); then
         echo "port ${port} is already in use; set BYRLE_PORT, or BYRLE_PROXY to use it"
         exit 1
     fi

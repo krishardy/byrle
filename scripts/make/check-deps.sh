@@ -83,7 +83,7 @@ fi
 # The premise is asserted rather than trusted. Enabling a MySQL feature would put `rsa` in
 # the build and this check fails loudly instead of the ignore quietly covering it.
 note "RUSTSEC-2023-0071 premise: rsa is not compiled"
-if cargo tree -e normal --target all 2>/dev/null | grep -q 'rsa v'; then
+if grep -q 'rsa v' < <(cargo tree -e normal --target all 2>/dev/null); then
     echo "    rsa IS in the build. The RUSTSEC-2023-0071 exception no longer holds."
     echo "    Remove the --ignore below and deal with the advisory."
     failed=1

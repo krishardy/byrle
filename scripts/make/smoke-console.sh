@@ -174,7 +174,7 @@ created="$(api "$admin" "events?action=account-created" | json 'sorted(l["accoun
 [[ "$created" == "['alice', 'bob']" ]] || fail "account-created events: $created"
 secret_shown="$(api "$admin" config | json '[s["value"] for s in d["environment"] if s["name"]=="BYRLE_OIDC_CLIENT_SECRET"][0]')"
 [[ "$secret_shown" == "set" ]] || fail "the client secret was shown as $secret_shown"
-api "$admin" "logs/$(date -u +%Y-%m-%d)" | grep -q '"name":"is-number"' || fail "the day's log holds no is-number line"
+grep -q '"name":"is-number"' < <(api "$admin" "logs/$(date -u +%Y-%m-%d)") || fail "the day's log holds no is-number line"
 echo "    ok (dependencies, requests, failures, events, config, logs)"
 
 step "5/8  a MAL record loaded after the install raises an alert, and refuses it now"

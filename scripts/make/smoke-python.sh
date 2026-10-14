@@ -46,7 +46,7 @@ trap cleanup EXIT
 
 command -v python3 >/dev/null || { echo "python3 is required for this check"; exit 1; }
 
-if ss -ltn 2>/dev/null | grep -q ":${port} "; then
+if grep -q ":${port} " < <(ss -ltn 2>/dev/null); then
     echo "port ${port} is already in use; set BYRLE_PORT to something free"
     exit 1
 fi
@@ -115,7 +115,7 @@ echo "==> 1/9  install completes through the proxy"
 start_proxy ""
 make_venv "$workdir/basic"
 pip_install "$workdir/basic" requests || fail "pip install requests failed"
-installed_purls "$workdir/basic" | grep -q '^pkg:pypi/requests@' \
+grep -q '^pkg:pypi/requests@' < <(installed_purls "$workdir/basic") \
     || fail "requests was not installed"
 echo "    ok"
 
@@ -140,7 +140,7 @@ unnormalized="$(comm -23 <(echo "$expected_purls") <(echo "$observed_purls") || 
     || fail "installed but never normalized to a purl: $(echo "$unnormalized" | tr '\n' ' ')"
 
 # A skipped version is a shape the normalizer cannot read.
-if grep -oE 'simple index normalized.*skipped=[0-9]+' "$clean_log" | grep -qv 'skipped=0'; then
+if grep -qv 'skipped=0' < <(grep -oE 'simple index normalized.*skipped=[0-9]+' "$clean_log"); then
     fail "an index had versions the normalizer could not read:
 $(grep -E 'simple index normalized.*skipped=[0-9]+' "$clean_log" | grep -v 'skipped=0')"
 fi
@@ -272,7 +272,7 @@ stop_proxy
 start_proxy "$workdir/allow.yaml"
 make_venv "$workdir/docopt"
 pip_install "$workdir/docopt" "docopt==0.6.2" || fail "docopt 0.6.2 was not installed under allow"
-installed_purls "$workdir/docopt" | grep -q '^pkg:pypi/docopt@0.6.2$' || fail "docopt was not installed"
+grep -q '^pkg:pypi/docopt@0.6.2$' < <(installed_purls "$workdir/docopt") || fail "docopt was not installed"
 echo "    ok (block: filtered and 403; allow: built and installed)"
 stop_proxy
 
@@ -304,7 +304,7 @@ else
     make_venv "$workdir/token"
     mapfile -t cmd < <(byrle_pip_command "$workdir/token/venv" "$with_token" --quiet "six==1.17.0")
     "${cmd[@]}" || fail "pip install with a token failed"
-    installed_purls "$workdir/token" | grep -q '^pkg:pypi/six@1.17.0$' || fail "six was not installed"
+    grep -q '^pkg:pypi/six@1.17.0$' < <(installed_purls "$workdir/token") || fail "six was not installed"
     clean
     grep -q 'artifact digest verified.*pkg:pypi/six@1.17.0' "$clean_log" \
         || fail "the six file was not fetched through the proxy"

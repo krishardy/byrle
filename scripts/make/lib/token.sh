@@ -21,7 +21,7 @@ assert_unauthorized() {
     headers="$(curl -s -o /dev/null -D - "$1")"
     status="$(printf '%s' "$headers" | head -1 | cut -d' ' -f2)"
     [[ "$status" == "401" ]] || fail "$1 without a token answered $status, not 401"
-    printf '%s' "$headers" | grep -qi '^www-authenticate: Basic realm="byrle"' \
+    grep -qi '^www-authenticate: Basic realm="byrle"' < <(printf '%s' "$headers") \
         || fail "the 401 for $1 does not ask for Basic credentials"
 }
 

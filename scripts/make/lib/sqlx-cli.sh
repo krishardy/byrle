@@ -15,7 +15,7 @@ byrle_sqlx_minor="0.8"
 
 byrle_install_sqlx_cli() {
     echo "==> sqlx-cli $byrle_sqlx_minor (offline query cache, used by 'make sqlx-prepare')"
-    if cargo sqlx --version 2>/dev/null | grep -q " $byrle_sqlx_minor\."; then
+    if grep -q " $byrle_sqlx_minor\." < <(cargo sqlx --version 2>/dev/null); then
         echo "    already installed"
         return 0
     fi
