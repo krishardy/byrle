@@ -37,7 +37,7 @@ help:
 	@echo "  spike-config   re-run the config-format spike (plan §5, decision #11)"
 	@echo "  duplicates     repeated code blocks and string literals (docs/duplication-catalogue.md)"
 	@echo "  unsigned       list unsigned commits; SIGN=1 [KEY=<id>] signs them by rebasing"
-	@echo "  strip-claude   list commits crediting Claude; STRIP=1 rewrites them without those lines"
+	@echo "  strip-claude   list unpushed commits crediting Claude; STRIP=1 rewrites them, ALL=1 pushed too"
 	@echo "  install-shellcheck  the pinned shellcheck into ~/.local/bin, or SHELLCHECK_DEST"
 	@echo "  ci-setup       the tools CI job JOB=lint|test|sqlx needs"
 
@@ -162,7 +162,7 @@ unsigned:
 	@SIGN="$(SIGN)" KEY="$(KEY)" scripts/make/unsigned.sh
 
 strip-claude:
-	@STRIP="$(STRIP)" scripts/make/strip-claude.sh
+	@STRIP="$(STRIP)" ALL="$(ALL)" scripts/make/strip-claude.sh
 
 install-shellcheck:
 	@scripts/make/install-shellcheck.sh
