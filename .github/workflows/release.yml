@@ -1,7 +1,9 @@
-# Build, attest and publish a release when a v* tag is pushed.
+# Build, attest and publish a release when a v* tag is pushed. Run by hand, it builds the
+# binaries and stops: nothing is attested or published.
 #
-# Each Linux target's binary is built on its own runner, packaged by `make release-binary`,
-# and attested with SLSA build provenance through Sigstore. The GitHub release carries the
+# Each architecture's static binary is built on its own runner, in the pinned rust:1-alpine
+# image `make release-binary` starts, and attested with SLSA build provenance through
+# Sigstore. The GitHub release carries the
 # tarballs; the image on ghcr.io is built from the same attested binaries, not a second
 # build, and is attested by digest. See docs/engineering_decisions/release-provenance.md.
 #
@@ -11,12 +13,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: "stable"
 
 jobs:
   binaries:
@@ -36,13 +38,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install Rust
-        run: |
-          rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal
-          rustup default "$RUST_TOOLCHAIN"
-      - run: make release-check TAG="$GITHUB_REF_NAME"
+      - if: github.ref_type == 'tag'
+        run: make release-check TAG="$GITHUB_REF_NAME"
       - run: make release-binary
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      - if: github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/*.tar.gz
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -53,6 +53,7 @@ jobs:
 
   release:
     needs: binaries
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -71,6 +72,7 @@ jobs:
 
   image:
     needs: binaries
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: read

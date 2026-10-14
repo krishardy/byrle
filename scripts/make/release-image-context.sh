@@ -13,8 +13,8 @@ tarballs=(dist/byrle-*.tar.gz)
 for tarball in "${tarballs[@]}"; do
     name="$(basename "$tarball" .tar.gz)"
     case "$name" in
-        *-x86_64-unknown-linux-gnu) arch=amd64 ;;
-        *-aarch64-unknown-linux-gnu) arch=arm64 ;;
+        *-x86_64-unknown-linux-musl) arch=amd64 ;;
+        *-aarch64-unknown-linux-musl) arch=arm64 ;;
         *) echo "no container platform for $name"; exit 1 ;;
     esac
     mkdir -p "dist/image/$arch"
