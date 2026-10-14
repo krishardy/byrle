@@ -72,6 +72,12 @@ log = "0.4.34"
 ctor = "1.0.13"
 aws-lc-rs = "1.18.1"
 
+# `make mutants` builds one copy of the crate per mutant. No debug information: a mutant is
+# caught or missed by its tests, and nobody attaches a debugger to it.
+[profile.mutants]
+inherits = "dev"
+debug = false
+
 [lints.rust]
 # `coverage` is set by cargo-llvm-cov, which `make coverage` runs. Declared so the
 # network- and corpus-dependent tests can be compiled out of a coverage build without

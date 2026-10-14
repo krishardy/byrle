@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front smoke-console bench retry-matrix offsite-urls inspect spike-config duplicates unsigned run-dev
+.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned run-dev
 
 help:
 	@echo "byrle targets:"
@@ -14,6 +14,7 @@ help:
 	@echo "  sqlx-prepare   regenerate .sqlx/, the offline query cache"
 	@echo "  coverage       unit test coverage, failing under the CLAUDE.md floor"
 	@echo "  mutants        mutation testing of the Rust changed since BASE (default HEAD)"
+	@echo "  mutants-status how far the current or last mutants run is, and what it missed"
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
@@ -26,6 +27,7 @@ help:
 	@echo "  smoke-tls-front  the proxy behind nginx on TLS, checked with npm and pip"
 	@echo "  smoke-console    the Stage 4.9 exit test: installs, the console API, alerts, Dex login"
 	@echo "  bench          install times through the proxy against direct, for npm and uv"
+	@echo "  memory         the proxy's peak, median and idle RSS under install and document loads"
 	@echo "  retry-matrix   what each client does when the proxy defers a request"
 	@echo "  offsite-urls   which packument URLs each client fetches as written"
 	@echo "  inspect        show one request per client, for looking at by eye"
@@ -84,6 +86,9 @@ coverage:
 mutants:
 	@scripts/make/mutants.sh $(BASE)
 
+mutants-status:
+	@scripts/make/mutants-status.py
+
 verify:
 	@scripts/make/verify.sh
 
@@ -119,6 +124,9 @@ smoke-console:
 
 bench:
 	@scripts/make/bench.sh
+
+memory:
+	@scripts/make/memory.sh
 
 retry-matrix:
 	@scripts/make/retry-matrix.sh

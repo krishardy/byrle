@@ -11,11 +11,12 @@ Set by the user 2026-10-13. `make bench` exits 1 when a median is over it, or a 
 
 | Case | Budget | Variable |
 |---|---|---|
-| proxy, analysed | at most 1.5 times direct, cold | `BYRLE_BENCH_ANALYSED_RATIO` |
-| proxy, cold | at most 2 times direct, cold | `BYRLE_BENCH_COLD_RATIO` |
+| proxy, analysed | at most 1.5 times direct, cold, or 3 s over it, whichever is larger | `BYRLE_BENCH_ANALYSED_RATIO`, `BYRLE_BENCH_ALLOWANCE_SECONDS` |
+| proxy, cold | at most 2 times direct, cold, or 3 s over it, whichever is larger | `BYRLE_BENCH_COLD_RATIO`, `BYRLE_BENCH_ALLOWANCE_SECONDS` |
 | proxy, warm cache | at most 1 s over direct, warm cache | `BYRLE_BENCH_WARM_CACHE_SECONDS` |
 
-A ratio, so it scales with the size of the set. The cold npm median moved by about 3 s
+A ratio, so it scales with the size of the set. The 3 s allowance was added by the user
+2026-10-14: that day direct PyPI took 1.6 s, and the proxy's 4.2 s was over 1.5 times it. The cold npm median moved by about 3 s
 between runs (12.9 s and 15.7 s), which the cold budget leaves room for.
 
 ## As deployed, 2026-10-13
