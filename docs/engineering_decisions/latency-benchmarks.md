@@ -19,6 +19,20 @@ A ratio, so it scales with the size of the set. The 3 s allowance was added by t
 2026-10-14: that day direct PyPI took 1.6 s, and the proxy's 4.2 s was over 1.5 times it. The cold npm median moved by about 3 s
 between runs (12.9 s and 15.7 s), which the cold budget leaves room for.
 
+## Where an analysed PyPI install's time went, 2026-10-14
+
+uv installing the 18-package set through an analysed proxy took 4.4 s against 1.2 s
+direct. Three causes, each measured on its own:
+
+| Cause | Measured | Fix | After |
+|---|---|---|---|
+| Repointing a document's URLs searched for every served origin from each URL, so an origin the document never names was read to the end each time | pillow's index, 2,986 URLs in 2.3 MB: 2.19 s with no policy | `origin::Candidates` keeps each prefix's next position | 0.051 s |
+| The intel query worked out each advisory's `exploited` and aliases once per row, and pillow's 153 advisories, listing their versions, are 9,441 rows; each was a sequential scan of `exploited_cve` | 1,261 ms to execute | once per advisory, in a materialised CTE, with an indexed EXISTS for each of the two ways to be exploited | 66 ms |
+| HTTP/2 to the file host at hyper's default window, through the forward proxy | scipy's 35 MB wheel in 1.20 s through the proxy, 0.41 to 0.72 s by curl; the proxy used 15% of a core | `http2_adaptive_window` on every upstream client | 0.52 to 0.94 s |
+
+`http1_only` left the wheel at 1.14 to 1.20 s. With all three the install took 1.57 to
+2.30 s through the proxy, and 1.59 to 2.99 s direct in the same run.
+
 ## As deployed, 2026-10-13
 
 `make bench` now runs the proxy as a team deploys it: a token required, intel from a

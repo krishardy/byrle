@@ -322,13 +322,14 @@ fn rewrite_listed(
         .iter()
         .map(|origin| format!("\"{origin}"))
         .collect();
+    let mut candidates = Candidates::new(text, &prefixes);
 
     let mut out = String::with_capacity(text.len() + replacements.len() * 8);
     let mut found: HashSet<&str> = HashSet::new();
     let mut occurrences = 0;
     let mut cursor = 0;
 
-    while let Some(open) = next_candidate(text, cursor, &prefixes) {
+    while let Some(open) = candidates.next(cursor) {
         let Some(offset) = text[open + 1..].find('"') else {
             break;
         };
@@ -364,12 +365,38 @@ fn rewrite_listed(
     })
 }
 
-/// The earliest position at or after `from` where any prefix occurs.
-fn next_candidate(text: &str, from: usize, prefixes: &[String]) -> Option<usize> {
-    prefixes
-        .iter()
-        .filter_map(|prefix| text[from..].find(prefix.as_str()).map(|at| from + at))
-        .min()
+/// Where each prefix next occurs, found again only once passed: one read per prefix.
+struct Candidates<'a> {
+    text: &'a str,
+    prefixes: &'a [String],
+    /// Per prefix, its next position, or `None` once it occurs no more.
+    next: Vec<Option<usize>>,
+}
+
+impl<'a> Candidates<'a> {
+    fn new(text: &'a str, prefixes: &'a [String]) -> Self {
+        let next = prefixes
+            .iter()
+            .map(|prefix| text.find(prefix.as_str()))
+            .collect();
+        Self {
+            text,
+            prefixes,
+            next,
+        }
+    }
+
+    /// The earliest position at or after `from` where any prefix occurs.
+    fn next(&mut self, from: usize) -> Option<usize> {
+        for (at, prefix) in self.next.iter_mut().zip(self.prefixes) {
+            if at.is_some_and(|at| at < from) {
+                *at = self.text[from..]
+                    .find(prefix.as_str())
+                    .map(|found| from + found);
+            }
+        }
+        self.next.iter().flatten().min().copied()
+    }
 }
 
 /// The path to keep, when this URL names an origin the proxy fronts, with its fragment,
@@ -834,6 +861,34 @@ mod tests {
             not_json
                 .to_string()
                 .starts_with("document is not valid JSON: ")
+        );
+    }
+
+    /// URLs on two served origins, interleaved, with a third served origin the text never
+    /// names, are each rewritten: each prefix's next position is found again once passed.
+    #[test]
+    fn interleaved_origins_are_each_rewritten() {
+        let reachable = ReachableOrigins::new(
+            ["https://a.example", "https://b.example"],
+            ["https://never.example"],
+        )
+        .expect("valid origins");
+        let urls = [
+            "https://a.example/1.tgz",
+            "https://b.example/2.tgz",
+            "https://a.example/3.tgz",
+            "https://b.example/4.tgz",
+        ];
+        let json = format!(
+            r#"["{}","{}","{}","{}"]"#,
+            urls[0], urls[1], urls[2], urls[3]
+        );
+        let out = rewrite_artifact_origins(json.as_bytes(), urls, &reachable, "http://p")
+            .expect("rewrites");
+        assert_eq!(out.rewritten, 4);
+        assert_eq!(
+            String::from_utf8(out.body).unwrap(),
+            r#"["http://p/1.tgz","http://p/2.tgz","http://p/3.tgz","http://p/4.tgz"]"#
         );
     }
 }
