@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude run-dev
+.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck run-dev
 
 help:
 	@echo "byrle targets:"
@@ -38,6 +38,7 @@ help:
 	@echo "  duplicates     repeated code blocks and string literals (docs/duplication-catalogue.md)"
 	@echo "  unsigned       list unsigned commits; SIGN=1 [KEY=<id>] signs them by rebasing"
 	@echo "  strip-claude   list commits crediting Claude; STRIP=1 rewrites them without those lines"
+	@echo "  install-shellcheck  the pinned shellcheck into ~/.local/bin, or SHELLCHECK_DEST"
 
 # The repository path as trufflehog sees it, which is the real path for a native
 # binary. Override it if trufflehog runs in a container, where the repository is
@@ -161,3 +162,6 @@ unsigned:
 
 strip-claude:
 	@STRIP="$(STRIP)" scripts/make/strip-claude.sh
+
+install-shellcheck:
+	@scripts/make/install-shellcheck.sh

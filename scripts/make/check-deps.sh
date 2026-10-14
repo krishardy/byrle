@@ -144,6 +144,20 @@ else
     echo "    It is still audited for vulnerabilities above."
 fi
 
+note "pinned tools"
+# shellcheck source=scripts/make/lib/shellcheck.sh
+. "$repo_root/scripts/make/lib/shellcheck.sh"
+latest="$(curl -sSf https://api.github.com/repos/koalaman/shellcheck/releases/latest \
+    | sed -n 's/^  "tag_name": "\(.*\)",$/\1/p' || true)"
+if [[ -z "$latest" ]]; then
+    echo "shellcheck: the latest release could not be read; pinned $shellcheck_version"
+elif [[ "$latest" != "$shellcheck_version" ]]; then
+    echo "shellcheck: $latest is out; scripts/make/lib/shellcheck.sh pins $shellcheck_version"
+    echo "    (outdated, not failing)"
+else
+    echo "shellcheck: $shellcheck_version is the latest release"
+fi
+
 note "result"
 if [[ "$failed" -ne 0 ]]; then
     echo "FAIL: see above."

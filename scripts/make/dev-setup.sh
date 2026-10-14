@@ -127,6 +127,9 @@ system_package trivy trivy "'make sast' cannot scan the Containerfile or the dev
 echo "==> shellcheck (shell linting, used by 'make lint')"
 if need shellcheck; then
     echo "    found $(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}')"
+elif [[ "$(uname -s)" == Linux ]]; then
+    # The version CI runs, from the release, checked against its sha256.
+    "$repo_root/scripts/make/install-shellcheck.sh"
 elif need pipx; then
     # The shellcheck-py package ships the real binary in a platform wheel, so this
     # needs no root and works the same on Linux and macOS.
