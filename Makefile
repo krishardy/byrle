@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned run-dev
+.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned run-dev
 
 help:
 	@echo "byrle targets:"
@@ -15,6 +15,9 @@ help:
 	@echo "  coverage       unit test coverage, failing under the CLAUDE.md floor"
 	@echo "  mutants        mutation testing of the Rust changed since BASE (default HEAD)"
 	@echo "  mutants-status how far the current or last mutants run is, and what it missed"
+	@echo "  release-check  whether TAG names the version in Cargo.toml"
+	@echo "  release-binary a release tarball for this machine in dist/, with its sha256"
+	@echo "  release-image-context  unpack dist/ tarballs for Containerfile.release"
 	@echo "  verify         formal verification (kani)"
 	@echo "  check-deps     vulnerable and out-of-date dependencies"
 	@echo "  update-deps    update Cargo.lock within the manifest's constraints"
@@ -88,6 +91,15 @@ mutants:
 
 mutants-status:
 	@scripts/make/mutants-status.py
+
+release-check:
+	@scripts/make/release-check.sh $(TAG)
+
+release-binary:
+	@scripts/make/release-binary.sh
+
+release-image-context:
+	@scripts/make/release-image-context.sh
 
 verify:
 	@scripts/make/verify.sh

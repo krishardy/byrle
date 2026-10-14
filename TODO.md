@@ -2990,7 +2990,12 @@ role gets 403 from every endpoint except `GET health`.
       proxy that is down, measured for npm and uv, and releasing a refused package with a
       policy exception and `SIGHUP`, which now reloads the policy
       ([policy-reload](docs/engineering_decisions/policy-reload.md)).
-- [ ] Our own releases published with provenance attestations
+- [ ] Our own releases published with provenance attestations. Workflow done 2026-10-14:
+      `.github/workflows/release.yml` builds Linux x86_64 and aarch64 binaries and an image
+      on ghcr.io from them, each attested with `actions/attest-build-provenance`, on a `v*`
+      tag matching `Cargo.toml`
+      ([release-provenance](docs/engineering_decisions/release-provenance.md)). Left: push
+      the first tag, and check its attestations with `gh attestation verify`
 - [x] `SECURITY.md`, disclosure policy, threat model doc
   - [x] Threat model: `docs/threat-model.md`, 2026-09-28.
   - [x] `SECURITY.md`, 2026-09-28. Reports go to GitHub private vulnerability reporting

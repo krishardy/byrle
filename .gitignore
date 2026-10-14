@@ -7,3 +7,4 @@ mutants.out.old/
 # this file, so a token here fails that gate as well as risking a commit.
 .env
 .env.*
+/dist/
