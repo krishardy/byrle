@@ -691,6 +691,50 @@ mod table {
             .is_some_and(|line| line.starts_with("mod ") || line.starts_with("pub(crate) mod "))
     }
 
+    /// A row reads only its own kind of document, and one it can parse; anything else is
+    /// forwarded unread.
+    #[test]
+    fn a_row_reads_only_its_own_kind_of_document() {
+        use crate::record::DocumentDetail;
+        use crate::route::IndexFormat;
+        let store = std::sync::Mutex::new(crate::store::RecordStore::new(10));
+        let origins = crate::origin::OriginPolicy::new(
+            crate::origin::ReachableOrigins::new([npm::DEFAULT_REGISTRY], std::iter::empty())
+                .expect("valid origins"),
+            std::iter::empty(),
+        )
+        .expect("valid policy");
+        for (row, kind, body) in [
+            (
+                &npm::REGISTRY,
+                DocumentKind::SimpleIndex(IndexFormat::Json),
+                &b"{}"[..],
+            ),
+            (
+                &pypi::REGISTRY,
+                DocumentKind::Packument(DocumentDetail::Abbreviated),
+                b"{}",
+            ),
+            (
+                &pypi::REGISTRY,
+                DocumentKind::SimpleIndex(IndexFormat::Json),
+                b"not json",
+            ),
+        ] {
+            let read = (row.read)(Reading {
+                decoded: body,
+                kind,
+                page: "https://pypi.org/simple/x/",
+                store: &store,
+                origins: &origins,
+                encoded_bytes: 2,
+                parse_started: std::time::Instant::now(),
+                path: "/x",
+            });
+            assert!(read.is_none(), "{:?}", row.ecosystem);
+        }
+    }
+
     /// Lines outside the adapters that name npm or PyPI, per file, until a file's tests:
     /// `npm::`, `pypi::`, `Ecosystem::Npm`, `Ecosystem::PyPI`.
     fn named_outside_adapters() -> std::collections::BTreeMap<String, usize> {
