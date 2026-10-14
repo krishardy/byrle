@@ -248,6 +248,54 @@ pub fn uv_config(vars: &UvVars, files: &[&str]) -> Indexes {
     Indexes { index, extra }
 }
 
+/// Which form the configured PyPI index serves, and so where a cooldown is answered: the
+/// index, or a PEP 503 file's `Last-Modified`.
+/// See docs/engineering_decisions/pep-503-html-index.md.
+pub fn check_index_format(
+    index: &str,
+    content_type: Option<&str>,
+    uses_cooldown: bool,
+) -> crate::doctor::Finding {
+    let title = "pypi index form";
+    let shown = crate::origin::without_credentials(index);
+    let format = content_type.and_then(|t| super::REGISTRY.document(Some(t)));
+    match format {
+        Some(crate::route::DocumentKind::SimpleIndex(crate::route::IndexFormat::Json)) => {
+            crate::doctor::Finding::new(
+                crate::doctor::Severity::Ok,
+                title,
+                format!("{shown} serves PEP 691 JSON"),
+            )
+        }
+        Some(crate::route::DocumentKind::SimpleIndex(crate::route::IndexFormat::Html))
+            if uses_cooldown =>
+        {
+            crate::doctor::Finding::new(
+                crate::doctor::Severity::Warn,
+                title,
+                format!(
+                    "{shown} serves PEP 503 HTML, which carries no publish time, so \
+                     cooldown_days is answered on the artifact request rather than while \
+                     filtering the index"
+                ),
+            )
+            .with_fix(
+                "nothing to change here; a version too new is refused when its file is fetched",
+            )
+        }
+        Some(_) => crate::doctor::Finding::new(
+            crate::doctor::Severity::Ok,
+            title,
+            format!("{shown} serves PEP 503 HTML"),
+        ),
+        None => crate::doctor::Finding::new(
+            crate::doctor::Severity::Warn,
+            title,
+            format!("{shown} did not say which form it serves"),
+        ),
+    }
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {

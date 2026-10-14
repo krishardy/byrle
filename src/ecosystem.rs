@@ -71,6 +71,13 @@ pub struct Rewriting<'a> {
     pub path: &'a str,
 }
 
+/// What `byrle doctor` asks an upstream with `HEAD` under a cooldown, and what it makes of it.
+#[derive(Debug, Clone, Copy)]
+pub struct UpstreamCheck {
+    pub accept: &'static str,
+    pub check: fn(&str, Option<&str>, bool) -> crate::doctor::Finding,
+}
+
 /// A document fetched for its publish times: [`Fetch::full`].
 #[derive(Debug, Clone)]
 pub struct FullDocument {
@@ -286,6 +293,10 @@ pub struct Registry {
     ) -> Option<crate::analysis::source::Comparison>,
     /// Why nothing was compared, when [`Registry::compare_source`] answers `None`.
     pub unfound_source: &'static str,
+    /// Under a cooldown, what `byrle doctor` asks the upstream and makes of its answer.
+    pub upstream_check: Option<UpstreamCheck>,
+    /// Keeps of a version's files those that install on one of the targets, for `byrle warm`.
+    pub keep_for_platforms: fn(&mut Vec<&crate::record::Artifact>, &[crate::lockfile::Target]),
     /// The name OSV gives this ecosystem, in `affected[].package.ecosystem` and its bundle's path.
     pub osv_name: &'static str,
     /// Whether a record's metadata would name a repository, so that naming none is a signal.
@@ -709,6 +720,21 @@ mod table {
             .is_some_and(|line| line.starts_with("mod ") || line.starts_with("pub(crate) mod "))
     }
 
+    /// An npm version installs the same file on every platform, so `warm` keeps every one.
+    #[test]
+    fn npm_keeps_every_file_for_any_platform() {
+        let packument = npm::normalized(
+            "lodash-4.17.21.abbrev.json",
+            crate::record::DocumentDetail::Abbreviated,
+        );
+        let record = &packument.records[0];
+        let mut files: Vec<&crate::record::Artifact> = record.artifacts.iter().collect();
+        let before = files.len();
+        let windows = crate::lockfile::Target::parse("win32-arm64").expect("a target");
+        (npm::REGISTRY.keep_for_platforms)(&mut files, &[windows]);
+        assert_eq!((files.len(), before), (1, 1));
+    }
+
     /// A row reads only its own kind of document, and one it can parse; anything else is
     /// forwarded unread.
     #[test]
@@ -801,7 +827,6 @@ mod table {
     fn only_the_adapters_name_npm_or_pypi() {
         let allowed: std::collections::BTreeMap<String, usize> = [
             ("src/defer.rs", 1),
-            ("src/doctor.rs", 3),
             ("src/ecosystem.rs", 2),
             ("src/env.rs", 4),
             ("src/identity.rs", 5),
@@ -809,7 +834,6 @@ mod table {
             ("src/intel/store.rs", 1),
             ("src/proxy.rs", 3),
             ("src/proxy/testing.rs", 1),
-            ("src/warm.rs", 5),
         ]
         .into_iter()
         .map(|(file, count): (&str, usize)| (file.to_owned(), count))

@@ -104,6 +104,8 @@ pub const REGISTRY: Registry = Registry {
             .map(|built| crate::analysis::source::compare(package, &built))
     },
     unfound_source: "no package.json in the source names the package",
+    upstream_check: None,
+    keep_for_platforms: |_, _| {},
     osv_name: "npm",
     metadata_names_repository: |record| record.detail == crate::record::DocumentDetail::Full,
     client: |http, upstream, max_bytes| {

@@ -10,7 +10,6 @@ use futures_util::StreamExt;
 
 use crate::ecosystem::{Clients, Upstreams};
 use crate::env::Env;
-use crate::identity::Ecosystem;
 use crate::lockfile::{Locked, LockfileError, Target};
 
 /// How long one artifact may stay deferred for its analysis before warm stops asking.
@@ -163,13 +162,12 @@ async fn warm(
     (plan, targets): (&Plan, Option<&[Target]>),
     deadline: Duration,
 ) -> (Vec<(String, Outcome)>, usize) {
-    let upstreams = Upstreams::defaults().with(Ecosystem::Npm, base).with(
-        Ecosystem::PyPI,
-        &format!(
-            "{base}{}",
-            crate::ecosystem::pypi::SIMPLE.trim_end_matches('/')
-        ),
-    );
+    let upstreams = crate::ecosystem::TABLE
+        .iter()
+        .fold(Upstreams::defaults(), |upstreams, row| {
+            let path = row.setup.path.trim_end_matches('/');
+            upstreams.with(row.ecosystem, &format!("{base}{path}"))
+        });
     let clients = Clients::new(
         http.clone(),
         &upstreams,
@@ -243,14 +241,10 @@ fn asks_for(
         Ok(Some(record)) => record,
     };
     let mut files: Vec<&crate::record::Artifact> = record.artifacts.iter().collect();
-    if let (Ecosystem::PyPI, Some(targets)) = (record.package.key().ecosystem(), targets) {
-        let wheel = |filename: &str| {
-            targets
-                .iter()
-                .any(|t| crate::ecosystem::pypi::wheel::installs_on(filename, t))
-        };
-        let wheels = files.iter().any(|a| wheel(&a.filename));
-        files.retain(|a| wheel(&a.filename) || !wheels && !a.filename.ends_with(".whl"));
+    if let Some(targets) = targets {
+        (crate::ecosystem::of(record.package.key().ecosystem()).keep_for_platforms)(
+            &mut files, targets,
+        );
     }
     let asks = files
         .iter()

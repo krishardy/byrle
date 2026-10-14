@@ -48,7 +48,11 @@ pub struct Finding {
 }
 
 impl Finding {
-    fn new(severity: Severity, title: impl Into<String>, detail: impl Into<String>) -> Self {
+    pub(crate) fn new(
+        severity: Severity,
+        title: impl Into<String>,
+        detail: impl Into<String>,
+    ) -> Self {
         Self {
             severity,
             title: title.into(),
@@ -57,7 +61,7 @@ impl Finding {
         }
     }
 
-    fn with_fix(mut self, fix: impl Into<String>) -> Self {
+    pub(crate) fn with_fix(mut self, fix: impl Into<String>) -> Self {
         self.fix = Some(fix.into());
         self
     }
@@ -359,43 +363,6 @@ pub enum CacheBypass {
     ArtifactsOnly,
     /// Every install still asks the registry for the index and the files.
     None,
-}
-
-/// Which form the configured PyPI index serves, and so where a cooldown is answered: the
-/// index, or a PEP 503 file's `Last-Modified`.
-/// See docs/engineering_decisions/pep-503-html-index.md.
-pub fn check_index_format(index: &str, content_type: Option<&str>, uses_cooldown: bool) -> Finding {
-    let title = "pypi index form";
-    let shown = crate::origin::without_credentials(index);
-    let format = content_type
-        .and_then(|t| crate::ecosystem::of(crate::identity::Ecosystem::PyPI).document(Some(t)));
-    match format {
-        Some(crate::route::DocumentKind::SimpleIndex(crate::route::IndexFormat::Json)) => {
-            Finding::new(Severity::Ok, title, format!("{shown} serves PEP 691 JSON"))
-        }
-        Some(crate::route::DocumentKind::SimpleIndex(crate::route::IndexFormat::Html))
-            if uses_cooldown =>
-        {
-            Finding::new(
-                Severity::Warn,
-                title,
-                format!(
-                    "{shown} serves PEP 503 HTML, which carries no publish time, so \
-                     cooldown_days is answered on the artifact request rather than while \
-                     filtering the index"
-                ),
-            )
-            .with_fix(
-                "nothing to change here; a version too new is refused when its file is fetched",
-            )
-        }
-        Some(_) => Finding::new(Severity::Ok, title, format!("{shown} serves PEP 503 HTML")),
-        None => Finding::new(
-            Severity::Warn,
-            title,
-            format!("{shown} did not say which form it serves"),
-        ),
-    }
 }
 
 /// A warm client cache serves without the registry, so what it supplies is never examined.
@@ -911,12 +878,19 @@ async fn policy_findings(environment: &env::Process) -> Result<Vec<Finding>, env
         .map(|policy| policy.uses_cooldown())
         .unwrap_or(false);
     if uses_cooldown {
-        let index = environment
-            .upstreams()?
-            .get(crate::identity::Ecosystem::PyPI)
-            .to_owned();
-        let content_type = probe::index_content_type(&index).await;
-        findings.push(check_index_format(&index, content_type.as_deref(), true));
+        let upstreams = environment.upstreams()?;
+        for row in crate::ecosystem::TABLE {
+            let Some(upstream_check) = row.upstream_check else {
+                continue;
+            };
+            let upstream = upstreams.get(row.ecosystem);
+            let content_type = probe::index_content_type(upstream, upstream_check.accept).await;
+            findings.push((upstream_check.check)(
+                upstream,
+                content_type.as_deref(),
+                true,
+            ));
+        }
     }
 
     let loaded = crate::policy::check::load(
@@ -1055,11 +1029,11 @@ pub mod probe {
     /// fetching a body. Measured 2026-09-21: pypi.org answers
     /// `application/vnd.pypi.simple.v1+json`, and www.piwheels.org, pypi.nvidia.com and
     /// download.pytorch.org answer `text/html`, to the same request.
-    pub async fn index_content_type(index: &str) -> Option<String> {
+    pub async fn index_content_type(index: &str, accept: &str) -> Option<String> {
         let response = reqwest::Client::new()
             .head(index)
             .timeout(TIMEOUT)
-            .header(reqwest::header::ACCEPT, crate::ecosystem::pypi::SIMPLE_JSON)
+            .header(reqwest::header::ACCEPT, accept)
             .send()
             .await
             .ok()?;
@@ -1158,15 +1132,22 @@ pub mod probe {
                 .expect("a bound listener has an address");
             tokio::spawn(axum::serve(listener, router).into_future());
             assert_eq!(
-                index_content_type(&format!("http://{addr}/simple/"))
-                    .await
-                    .as_deref(),
+                index_content_type(
+                    &format!("http://{addr}/simple/"),
+                    crate::ecosystem::pypi::SIMPLE_JSON
+                )
+                .await
+                .as_deref(),
                 Some("text/html")
             );
 
             let silent = closing_server().await;
             assert_eq!(
-                index_content_type(&format!("http://{silent}/simple/")).await,
+                index_content_type(
+                    &format!("http://{silent}/simple/"),
+                    crate::ecosystem::pypi::SIMPLE_JSON
+                )
+                .await,
                 None,
                 "nothing is listening for this"
             );
@@ -1201,11 +1182,19 @@ pub mod probe {
                 .expect("a bound listener has an address");
             tokio::spawn(axum::serve(listener, router).into_future());
             assert_eq!(
-                index_content_type(&format!("http://{addr}/untyped/")).await,
+                index_content_type(
+                    &format!("http://{addr}/untyped/"),
+                    crate::ecosystem::pypi::SIMPLE_JSON
+                )
+                .await,
                 None
             );
             assert_eq!(
-                index_content_type(&format!("http://{addr}/unreadable/")).await,
+                index_content_type(
+                    &format!("http://{addr}/unreadable/"),
+                    crate::ecosystem::pypi::SIMPLE_JSON
+                )
+                .await,
                 None
             );
         }
@@ -1345,7 +1334,8 @@ mod tests {
     /// Which form the index serves is reported, because a PEP 503 page carries no publish time.
     #[test]
     fn the_index_form_says_what_a_cooldown_can_be_answered_from() {
-        use super::{Severity, check_index_format};
+        use super::Severity;
+        use crate::ecosystem::pypi::clients::check_index_format;
         let json = check_index_format(
             "https://pypi.org/simple/",
             Some(crate::ecosystem::pypi::SIMPLE_JSON),

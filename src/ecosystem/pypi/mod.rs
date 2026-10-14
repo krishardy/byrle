@@ -102,6 +102,11 @@ pub const REGISTRY: Registry = Registry {
         crate::analysis::source::compare_pypi(package, built, job.layout)
     },
     unfound_source: "none of the package's Python files is in the source",
+    upstream_check: Some(crate::ecosystem::UpstreamCheck {
+        accept: SIMPLE_JSON,
+        check: clients::check_index_format,
+    }),
+    keep_for_platforms: wheel::keep_for_platforms,
     osv_name: "PyPI",
     metadata_names_repository: |_| false,
     client: |http, upstream, max_bytes| {

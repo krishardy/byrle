@@ -53,6 +53,14 @@ fn tag_installs_on(tag: &str, target: &Target) -> bool {
     }
 }
 
+/// Keeps of a version's `files` those an install on one of `targets` could fetch: its
+/// wheels for them, or, when it has none, its sdist.
+pub fn keep_for_platforms(files: &mut Vec<&crate::record::Artifact>, targets: &[Target]) {
+    let wheel = |filename: &str| targets.iter().any(|t| installs_on(filename, t));
+    let wheels = files.iter().any(|a| wheel(&a.filename));
+    files.retain(|a| wheel(&a.filename) || !wheels && !a.filename.ends_with(".whl"));
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
