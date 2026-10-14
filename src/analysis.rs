@@ -505,6 +505,18 @@ mod tests {
         ));
     }
 
+    /// cargo packages one directory, so a second `Cargo.toml` at the same depth is not the
+    /// crate's and cannot hide its build script.
+    #[test]
+    fn the_first_cargo_toml_is_the_crate_s() {
+        let archive = tarball(&[
+            ("x-1/Cargo.toml", b"[package]\nbuild = \"gen.rs\"\n"),
+            ("y/Cargo.toml", b"[package]\nbuild = false\n"),
+        ]);
+        let found = crate_build_scripts(&mut &*archive).expect("reads");
+        assert_eq!(found.names, ["gen.rs"]);
+    }
+
     /// A member past the ceiling is refused rather than read into memory.
     #[test]
     fn a_member_past_the_ceiling_is_refused() {
