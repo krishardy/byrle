@@ -4,13 +4,12 @@ use std::collections::{BTreeMap, HashSet};
 
 use tracing::warn;
 
-use crate::origin::{
-    Disposition, OriginPolicy, RewriteError, reachable_path, rewrite_artifact_origins,
-};
+use crate::origin::{Disposition, OriginPolicy, RewriteError, rewrite_artifact_origins};
 use crate::record::PackageMetadata;
+use serde_json::value::RawValue;
 
 /// Remove the versions the policy refuses and those whose artifact is on an origin the proxy
-/// does not front, and point the rest at the proxy.
+/// does not front, and point the rest at the proxy when `public_base` is given.
 /// See docs/engineering_decisions/enforcement-tiers.md.
 /// `policy` says which origins are served, allowed or refused.
 /// `refuse_unservable` removes a refused origin's versions; false keeps them as published.
@@ -20,81 +19,160 @@ pub fn filter_unservable_versions(
     policy: &OriginPolicy,
     refused_by_policy: &HashSet<String>,
     refuse_unservable: bool,
-    public_base: &str,
+    public_base: Option<&str>,
 ) -> Result<Filtered, RewriteError> {
     filter_listed(
         json,
         artifacts.into_iter().collect(),
         policy,
-        refused_by_policy,
-        refuse_unservable,
+        (refused_by_policy, refuse_unservable),
         public_base,
     )
 }
 
+/// A JSON object's members in document order, each value the text it was written as.
+struct Members<'a>(Vec<(String, &'a RawValue)>);
+
+impl<'de: 'a, 'a> serde::Deserialize<'de> for Members<'a> {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visit<'a>(std::marker::PhantomData<&'a ()>);
+        impl<'de: 'a, 'a> serde::de::Visitor<'de> for Visit<'a> {
+            type Value = Members<'a>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON object")
+            }
+            fn visit_map<M: serde::de::MapAccess<'de>>(
+                self,
+                mut map: M,
+            ) -> Result<Self::Value, M::Error> {
+                let mut members = Vec::new();
+                while let Some(member) = map.next_entry::<String, &'a RawValue>()? {
+                    members.push(member);
+                }
+                Ok(Members(members))
+            }
+        }
+        deserializer.deserialize_map(Visit(std::marker::PhantomData))
+    }
+}
+
+impl<'a> Members<'a> {
+    /// `raw`'s members, or `None` when it is not an object.
+    fn of(raw: &'a RawValue) -> Option<Self> {
+        serde_json::from_str(raw.get()).ok()
+    }
+
+    fn get(&self, key: &str) -> Option<&'a RawValue> {
+        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| *v)
+    }
+
+    /// Write the members whose key `keep` accepts, each as `value` writes it.
+    fn write(
+        &self,
+        out: &mut Vec<u8>,
+        keep: impl Fn(&str, &RawValue) -> bool,
+        value: impl Fn(&str, &'a RawValue, &mut Vec<u8>),
+    ) {
+        out.push(b'{');
+        let mut first = true;
+        for (key, raw) in self.0.iter().filter(|(k, v)| keep(k, v)) {
+            if !first {
+                out.push(b',');
+            }
+            first = false;
+            serde_json::to_writer(&mut *out, key).expect("a string serialises");
+            out.push(b':');
+            value(key, raw, out);
+        }
+        out.push(b'}');
+    }
+}
+
 /// [`filter_unservable_versions`] with its list collected, so there is one body.
+///
+/// The document is read as slices of itself, not as a `serde_json::Value` tree: the tree
+/// of a large packument costs several times its size, and a cooldown filters most of them.
 fn filter_listed(
     json: &[u8],
     artifacts: Vec<(String, String)>,
     policy: &OriginPolicy,
-    refused_by_policy: &HashSet<String>,
-    refuse_unservable: bool,
-    public_base: &str,
+    (refused_by_policy, refuse_unservable): (&HashSet<String>, bool),
+    public_base: Option<&str>,
 ) -> Result<Filtered, RewriteError> {
-    let mut document: serde_json::Value =
-        serde_json::from_slice(json).map_err(RewriteError::NotJson)?;
-    let base = public_base.trim_end_matches('/');
+    let top: Members<'_> = serde_json::from_slice(json).map_err(RewriteError::NotJson)?;
+    let versions = top.get("versions").and_then(Members::of);
+    let listed = |version: &str| versions.as_ref().is_some_and(|v| v.get(version).is_some());
 
     let mut removed = Vec::new();
-    let mut rewritten = 0;
+    let mut repointed = Vec::new();
     let mut allowed = 0;
-    if let Some(versions) = document
-        .get_mut("versions")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        for (version, url) in artifacts {
-            if refused_by_policy.contains(&version) {
-                versions.remove(&version);
-                removed.push(version);
-                continue;
-            }
-            match policy.disposition(&url) {
-                Disposition::Served => {
-                    let path = reachable_path(&url, policy.reachable())
-                        .expect("a served URL has a reachable path");
-                    if let Some(tarball) = versions
-                        .get_mut(&version)
-                        .and_then(|entry| entry.get_mut("dist"))
-                        .and_then(|dist| dist.get_mut("tarball"))
-                    {
-                        *tarball = serde_json::Value::String(format!("{base}{path}"));
-                        rewritten += 1;
-                    }
-                }
-                Disposition::AllowedDirect(_) => allowed += 1,
-                Disposition::Refused(_) if refuse_unservable => {
-                    versions.remove(&version);
-                    removed.push(version);
-                }
-                Disposition::Refused(_) => allowed += 1,
-            }
+    for (version, url) in artifacts {
+        if refused_by_policy.contains(&version) {
+            removed.push(version);
+            continue;
+        }
+        match policy.disposition(&url) {
+            Disposition::Served if listed(&version) => repointed.push(url),
+            Disposition::Served => {}
+            Disposition::AllowedDirect(_) => allowed += 1,
+            Disposition::Refused(_) if refuse_unservable => removed.push(version),
+            Disposition::Refused(_) => allowed += 1,
         }
     }
 
-    let removed_set: HashSet<&str> = removed.iter().map(String::as_str).collect();
-    if let Some(tags) = document
-        .get_mut("dist-tags")
-        .and_then(serde_json::Value::as_object_mut)
-    {
-        tags.retain(|_, value| value.as_str().is_none_or(|v| !removed_set.contains(v)));
-    }
+    let gone: HashSet<&str> = removed.iter().map(String::as_str).collect();
+    let tags = top.get("dist-tags").and_then(Members::of);
+    let mut body = Vec::with_capacity(json.len());
+    top.write(
+        &mut body,
+        |_, _| true,
+        |key, raw, out| match (key, &versions, &tags) {
+            ("versions", Some(versions), _) => {
+                versions.write(
+                    out,
+                    |v, _| !gone.contains(v),
+                    |_, raw, out| {
+                        out.extend_from_slice(raw.get().as_bytes());
+                    },
+                );
+            }
+            ("dist-tags", _, Some(tags)) => tags.write(
+                out,
+                |_, raw| {
+                    serde_json::from_str::<&str>(raw.get()).map_or(true, |v| !gone.contains(v))
+                },
+                |_, raw, out| out.extend_from_slice(raw.get().as_bytes()),
+            ),
+            _ => out.extend_from_slice(raw.get().as_bytes()),
+        },
+    );
 
     removed.sort();
+    let rewritten = repointed.len();
+    let (body, unrepointed) = match public_base {
+        Some(base) => {
+            match rewrite_artifact_origins(
+                &body,
+                repointed.iter().map(String::as_str),
+                policy.reachable(),
+                base,
+            ) {
+                Ok(done) => (done.body, None),
+                Err(e) => (body, Some(e.to_string())),
+            }
+        }
+        _ => (body, None),
+    };
     Ok(Filtered {
-        body: serde_json::to_vec(&document).expect("a JSON value serialises"),
+        body,
         removed,
-        rewritten,
+        rewritten: if public_base.is_some() && unrepointed.is_none() {
+            rewritten
+        } else {
+            0
+        },
         allowed,
+        unrepointed,
     })
 }
 
@@ -108,6 +186,8 @@ pub struct Filtered {
     pub rewritten: usize,
     /// Versions kept with their artifact left as published.
     pub allowed: usize,
+    /// Why the kept versions could not be pointed at the proxy, which left them as published.
+    pub unrepointed: Option<String>,
 }
 
 /// What the packument path needs to decide what to send back.
@@ -167,9 +247,12 @@ fn filtered(r: &Rewrite<'_>, refused: &BTreeMap<String, usize>) -> Option<Vec<u8
         r.origins,
         r.refused_by_policy,
         r.refuse_unservable,
-        r.base.unwrap_or(""),
+        r.base,
     ) {
         Ok(filtered) => {
+            if let Some(why) = &filtered.unrepointed {
+                warn!(url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path), error.message = %why, "UNINSPECTED: the versions kept could not be pointed at the proxy");
+            }
             warn!(
                 url.path = %crate::http::url_path(r.path), url.query = crate::http::url_query(r.path),
                 byrle.package.removed = filtered.removed.len(),
@@ -400,7 +483,7 @@ mod tests {
             policy,
             refused_by_policy,
             true,
-            PROXY,
+            Some(PROXY),
         )
         .expect("should filter")
     }
@@ -606,7 +689,7 @@ mod tests {
             &policy(&[], &[]),
             &refusing(&["1.0.0"]),
             false,
-            PROXY,
+            Some(PROXY),
         )
         .expect("should filter");
 
@@ -782,7 +865,7 @@ mod tests {
             &policy(&[], &[]),
             &HashSet::new(),
             true,
-            PROXY,
+            Some(PROXY),
         );
         assert!(matches!(result, Err(RewriteError::NotJson(_))));
     }
@@ -1000,19 +1083,141 @@ mod tests {
             &origins,
             &HashSet::new(),
             true,
-            PROXY,
+            Some(PROXY),
         )
         .expect("filters");
         assert_eq!(out.rewritten, 0);
+        assert_eq!(out.unrepointed, None, "an absent version is not looked for");
         let out = filter_unservable_versions(
             br#"{"name":"w"}"#,
             absent,
             &origins,
             &HashSet::new(),
             true,
-            PROXY,
+            Some(PROXY),
         )
         .expect("filters");
         assert!(out.removed.is_empty());
+    }
+
+    /// A refused version leaves `versions` and the tags naming it; the rest is written as it
+    /// came, with each kept artifact URL, `_resolved` too, pointed at the proxy.
+    #[test]
+    fn a_refused_version_leaves_the_document_and_the_rest_is_as_written() {
+        let json = r#"{"name":"w","dist-tags":{"latest":"1.0.1","old":"1.0.0","n":1},
+            "time":{"1.0.0":"2026-01-01T00:00:00.000Z"},"x\"y":[1,2.50,{"a":null}],
+            "versions":{
+              "1.0.0":{"version":"1.0.0","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.0.tgz"}},
+              "1.0.1":{"version":"1.0.1","_resolved":"https://registry.npmjs.org/w/-/w-1.0.1.tgz",
+                "dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.1.tgz"}}}}"#;
+        let out = filter_refusing(json, &policy(&[], &[]), &refusing(&["1.0.1"]));
+        assert_eq!(out.removed, ["1.0.1"]);
+        assert_eq!(out.rewritten, 1);
+        assert_eq!(out.unrepointed, None);
+        let body: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "name": "w",
+                "dist-tags": {"old": "1.0.0", "n": 1},
+                "time": {"1.0.0": "2026-01-01T00:00:00.000Z"},
+                "x\"y": [1, 2.50, {"a": null}],
+                "versions": {"1.0.0": {"version": "1.0.0",
+                    "dist": {"tarball": format!("{PROXY}/w/-/w-1.0.0.tgz")}}}
+            })
+        );
+        assert!(
+            String::from_utf8(out.body).unwrap().contains("2.50"),
+            "a number is written as it came"
+        );
+
+        let kept = filter_refusing(json, &policy(&[], &[]), &refusing(&["1.0.0"]));
+        let body: serde_json::Value = serde_json::from_slice(&kept.body).unwrap();
+        assert_eq!(
+            body["versions"]["1.0.1"]["_resolved"],
+            format!("{PROXY}/w/-/w-1.0.1.tgz")
+        );
+    }
+
+    /// With artifact rewriting off, the versions kept keep their URLs as published.
+    /// Until 2026-10-14 they were rewritten to a bare path, which no client can fetch.
+    #[test]
+    fn with_rewriting_off_a_filtered_document_keeps_its_urls() {
+        let body = rewrite_document(MIXED, &policy(&[], &[]), None, &refusing(&["1.0.2"]), false)
+            .expect("filtered");
+        assert_eq!(
+            body["versions"]["1.0.0"]["dist"]["tarball"],
+            "https://registry.npmjs.org/w/-/w-1.0.0.tgz"
+        );
+        assert!(body["versions"].get("1.0.2").is_none());
+    }
+
+    /// `versions` or `dist-tags` that are not objects are written as they came.
+    #[test]
+    fn members_that_are_not_objects_are_left_alone() {
+        let json = r#"{"name":"w","dist-tags":null,"versions":[]}"#;
+        let out = filter_unservable_versions(
+            json.as_bytes(),
+            vec![(
+                "1.0.0".to_owned(),
+                "https://registry.npmjs.org/w/-/w-1.0.0.tgz".to_owned(),
+            )],
+            &policy(&[], &[]),
+            &refusing(&["1.0.0"]),
+            true,
+            Some(PROXY),
+        )
+        .expect("filters");
+        assert_eq!(out.removed, ["1.0.0"]);
+        assert_eq!(String::from_utf8(out.body).unwrap(), json.replace(' ', ""));
+        for (not_an_object, said) in [
+            (
+                &b"[1]"[..],
+                "invalid type: sequence, expected a JSON object",
+            ),
+            (br#"{"a":}"#, "expected value"),
+        ] {
+            let refused = filter_unservable_versions(
+                not_an_object,
+                std::iter::empty(),
+                &policy(&[], &[]),
+                &HashSet::new(),
+                true,
+                None,
+            );
+            assert!(
+                matches!(&refused, Err(RewriteError::NotJson(e)) if e.to_string().contains(said)),
+                "{refused:?}"
+            );
+        }
+    }
+
+    /// A kept URL written with escaped slashes cannot be pointed at the proxy. The refused
+    /// version is still removed, and the rest are left as published.
+    #[test]
+    fn a_kept_url_that_cannot_be_repointed_still_leaves_the_refused_version_out() {
+        let json = r#"{"name":"w","versions":{
+            "1.0.0":{"version":"1.0.0","dist":{"tarball":"https:\/\/registry.npmjs.org\/w\/-\/w-1.0.0.tgz"}},
+            "1.0.1":{"version":"1.0.1","dist":{"tarball":"https://registry.npmjs.org/w/-/w-1.0.1.tgz"}}}}"#;
+        let out = filter_refusing(json, &policy(&[], &[]), &refusing(&["1.0.1"]));
+        assert_eq!(out.removed, ["1.0.1"]);
+        assert_eq!(out.rewritten, 0);
+        assert!(out.unrepointed.is_some());
+        let body: serde_json::Value = serde_json::from_slice(&out.body).unwrap();
+        assert!(body["versions"].get("1.0.1").is_none());
+        assert_eq!(
+            body["versions"]["1.0.0"]["dist"]["tarball"],
+            "https://registry.npmjs.org/w/-/w-1.0.0.tgz"
+        );
+        assert!(
+            rewrite_document(
+                json,
+                &policy(&[], &[]),
+                Some(PROXY),
+                &refusing(&["1.0.1"]),
+                true
+            )
+            .is_some()
+        );
     }
 }

@@ -40,6 +40,42 @@ tree the rewrite walks, the serialised output and the gzip buffer are live toget
 Eight kept the worst case near half a gigabyte when typescript's 15.7 MB was the largest
 packument.
 
+### As deployed, 2026-10-14
+
+`make memory` (`scripts/make/memory.sh`) runs the proxy as `make bench` does: a token
+required, Postgres intel, the default policy and usage recorded. Each load is on a fresh
+process; RSS is sampled every 0.2 s, and idle is 30 s after the load ends. In MB:
+
+| Load | peak | median while loaded | idle |
+|---|---|---|---|
+| `npm ci`, 207 packages, cold proxy | 376 | 319 | 352 |
+| `uv pip install`, 18 packages, cold proxy | 133 | 120 | 125 |
+| 8 at once: vite's full document | 918 | 173 | 69 |
+| 24 at once: the 8 largest documents, 3 times each | 700 | 537 | 499 |
+
+Before 2026-10-14 the same loads peaked at 586, 131, 923 and 1,181 MB. A cooldown refuses
+recent versions of nearly every large package, and removing them parsed the document
+into a `serde_json::Value` tree. The 24-document load without Postgres, one check on at a
+time:
+
+| Policy | peak | idle |
+|---|---|---|
+| none | 639 | 371 |
+| the defaults | 1,425 | 1,224 |
+| only `cooldown_days` | 1,446 | 1,233 |
+| only `provenance` | 860 | 787 |
+| only `install_scripts` | 874 | 699 |
+| only `kev` | 495 | 348 |
+| only `yanked` | 535 | 385 |
+| the defaults, removal by slices | 778 | 418 |
+
+`npm::rewrite::filter_unservable_versions` now reads the document as slices of itself
+and points the kept URLs at the proxy with the same byte replacement as an unfiltered
+document. PyPI's JSON index removal still builds the tree; its documents are small.
+
+`MALLOC_ARENA_MAX=2`, before the change, lowered idle RSS by about 40%: `npm ci` 586 to
+349 MB, the 24 documents 1,093 to 689 MB. Peaks moved less: 586 to 448 and 1,181 to 809.
+
 A request waits for a slot after its body is read, not before. The upstream connection is
 then finished and waiting costs only time. With the wait placed before the read, the
 response stalled until it timed out: 18 of 24 concurrent requests failed with "error
