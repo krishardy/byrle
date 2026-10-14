@@ -1,4 +1,4 @@
-//! One-off conformance check: does `pypi::version::Version` read and order every version
+//! One-off conformance check: does `intel::pep440::Version` read and order every version
 //! OSV lists for PyPI as Python's `packaging` does?
 //!
 //! Not a unit test, because it needs OSV's PyPI bundle and `packaging`. Regenerate the input
@@ -11,7 +11,7 @@
 //!   # where equal versions share a rank.
 //!
 //! Run: cargo run --example pep440_conformance -- /path/to/pep440_expected.tsv
-use byrle::ecosystem::pypi::version::Version;
+use byrle::intel::pep440::Version;
 
 fn main() {
     // The rule below guards against trusting argv for security decisions. This is a

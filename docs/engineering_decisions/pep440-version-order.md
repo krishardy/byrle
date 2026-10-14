@@ -1,7 +1,7 @@
 # Each ecosystem's versions order by its own rules; PEP 440 is hand-written
 
 - **Status:** Implemented 2026-09-18. `VersionOrder` and `Ordered` in `src/intel/range.rs`,
-  `src/ecosystem/pypi/version.rs`, `Registry::versions` in `src/ecosystem.rs`,
+  `src/intel/pep440.rs` (in `src/ecosystem/pypi/version.rs` until 2026-10-14), `Registry::versions` in `src/ecosystem.rs`,
   `examples/pep440_conformance.rs`.
 - **Related:** [osv-ranges-and-scores](osv-ranges-and-scores.md),
   [pypi-simple-index](pypi-simple-index.md), [adapter-interface](adapter-interface.md)
@@ -13,7 +13,7 @@ Each registry row names how its versions order: `VersionOrder::SemVer` for npm a
 order of the ecosystem it is for. A listed version is stored in the order's normalised form
 and matches a version equal to it in that order, so a listed PyPI `1.0` matches `1.0.0`.
 
-PEP 440 is parsed and ordered by `pypi::version::Version`, written here: 344 lines, and 112
+PEP 440 is parsed and ordered by `intel::pep440::Version`, written here: 344 lines, and 112
 of tests. It follows the `packaging` library, which is what pip resolves with.
 
 ## Normalisation and order

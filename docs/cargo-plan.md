@@ -91,7 +91,8 @@ source of attestation data. Q2 and Q6 are taken as recommended.
 ## Steps
 
 1. The adapter interface (Q1): each branch point above becomes a question the adapter
-   answers. npm and PyPI move onto it with no change in behaviour.
+   answers. npm and PyPI move onto it with no change in behaviour. Done 2026-10-14
+   ([adapter-interface](engineering_decisions/adapter-interface.md)).
 2. The cargo adapter: `config.json` with `dl` pointed at the proxy and `auth-required`,
    index files read into records and filtered by removing refused versions' lines,
    downloads verified against `cksum`.

@@ -6,6 +6,7 @@
 pub mod fetch;
 pub mod history;
 pub mod load;
+pub mod pep440;
 pub mod postgres;
 pub mod providers;
 pub mod range;

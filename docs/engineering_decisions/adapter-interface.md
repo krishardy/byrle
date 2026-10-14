@@ -4,6 +4,29 @@ Stage 3's goal was to extract the adapter interface from two working implementat
 rather than design one up front. npm was built first, PyPI second, and what they turned
 out to share is smaller and more concrete than a trait.
 
+## Amended 2026-10-14: Stage 6, no branch outside the adapters
+
+Stage 6 adds cargo, Go and Maven on one unchanged interface ([cargo-plan](../cargo-plan.md)).
+The three `match` expressions below, and the others that had grown since, would each have
+needed an arm per ecosystem. Asked for by the user (cargo-plan Q1), each is now the row's:
+
+| Was | Now |
+|---|---|
+| `NPM` and `PYPI` rows in `ecosystem.rs` | `npm::REGISTRY` and `pypi::REGISTRY`, each in its adapter; `TABLE` lists them |
+| `Clients` with a field per ecosystem | a map of `Fetch` trait objects, one per row, from `Registry::client` |
+| `proxy.rs`'s `Read` enum and its two `match`es | `Registry::read` returns a `Document` trait object, which answers its records and its rewrite |
+| `analysis::Reader`'s variants, `Layout::of`, the source comparison, the no-repository signal | `reader`, `layout`, `source`, `compare_source`, `unfound_source`, `metadata_names_repository` |
+| the stream constants and `stream::ALL` | each adapter's `OSV`, `DATADOG` and `GITHUB`, built with `stream::osv`, `datadog` and `github`; `stream::all()` in the order they loaded before |
+| `warm`'s upstreams and wheel filter, `doctor`'s index check | `setup.path`, `keep_for_platforms`, `upstream_check` |
+| `PublishTimeSource`'s two variants, the attestation reader | `PublishTimeSource { said, full_accept, cost }`, `provenance_bundle` |
+| `pypi::version` | `intel::pep440`, beside `intel::range`: a version scheme cargo shares with npm, and Go and Maven add to |
+
+Two trait objects, `Fetch` and `Document`, hold what has state or a type of its own; every
+other question is a field. `only_the_adapters_name_npm_or_pypi` counts the lines outside the
+adapters that name npm or PyPI: 116 when it was written, the `Ecosystem` enum, `TABLE` and
+the environment's variables now. A new ecosystem is a module, a row, an enum variant and
+its `BYRLE_UPSTREAM_*` variable.
+
 ## Decision
 
 No `trait Adapter`. Four modules hold what both ecosystems answer the same way. Of those,

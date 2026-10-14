@@ -840,15 +840,14 @@ mod table {
         found
     }
 
-    /// Stage 6's interface: what branches on npm or PyPI outside the adapters, per file. Each
-    /// commit of docs/cargo-plan.md step 1 shortens this list; the step ends when it is empty.
+    /// Stage 6's interface: only declarations name npm or PyPI outside the adapters, the
+    /// `Ecosystem` enum, `TABLE` and the environment's variables (docs/cargo-plan.md step 1).
     #[test]
     fn only_the_adapters_name_npm_or_pypi() {
         let allowed: std::collections::BTreeMap<String, usize> = [
             ("src/ecosystem.rs", 2),
             ("src/env.rs", 4),
             ("src/identity.rs", 5),
-            ("src/intel/range.rs", 1),
         ]
         .into_iter()
         .map(|(file, count): (&str, usize)| (file.to_owned(), count))
