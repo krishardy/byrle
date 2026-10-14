@@ -85,6 +85,9 @@ pub struct Disposition {
     pub checks: Vec<String>,
     /// Checks that could not be answered.
     pub unenforceable: Vec<String>,
+    /// Checks whose fact is in the artifact, which was not read for this decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_analyzed: Vec<String>,
     /// Indices of the `packages` entries that did work.
     pub exceptions_used: Vec<usize>,
     /// The signals' sum under the policy's `signal_weights`. `None` with no signal.
@@ -158,6 +161,7 @@ impl Decided {
                 mode: basis.mode.to_owned(),
                 checks: line.checks.clone(),
                 unenforceable: line.unenforceable.clone(),
+                not_analyzed: line.not_analyzed.clone(),
                 exceptions_used: line.exceptions_used.clone(),
                 risk_score: line.risk_score,
                 upstream_status: line.upstream_status,
@@ -287,6 +291,7 @@ pub(crate) mod tests {
             advisories: Vec::new(),
             intel: crate::policy::decide::Intel::NotConsulted,
             has_install_scripts: false,
+            install_scripts_analyzed: true,
             yanked: None,
             deprecated: None,
             provenance: crate::policy::decide::Provenance::NOT_VERIFIED,
@@ -375,6 +380,7 @@ pub(crate) mod tests {
             .with_upstream_status(404)
             .with_intel_snapshot(Some("sha256:snap"));
         line.unenforceable = vec!["kev".into()];
+        line.not_analyzed = vec!["install_scripts".into()];
         line.exceptions_used = vec![2];
         line.risk_score = Some(3);
         let decided = Decided::of(&line, &basis("sha512-x")).unwrap();
@@ -383,6 +389,7 @@ pub(crate) mod tests {
         assert_eq!(disposition.upstream_status, Some(404));
         assert_eq!(disposition.intel_snapshot.as_deref(), Some("sha256:snap"));
         assert_eq!(disposition.unenforceable, ["kev"]);
+        assert_eq!(disposition.not_analyzed, ["install_scripts"]);
         assert_eq!(disposition.exceptions_used, [2]);
         assert_eq!(disposition.risk_score, Some(3));
     }

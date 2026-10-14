@@ -2166,6 +2166,15 @@ async fn analysed(
                     .scripts
                     .names()
                     .is_none_or(|names| !names.is_empty());
+                record.install_scripts.get_or_insert_with(|| {
+                    analysis
+                        .scripts
+                        .names()
+                        .unwrap_or_default()
+                        .iter()
+                        .map(|name| (name.clone(), String::new()))
+                        .collect()
+                });
                 None
             }
             Known::Mismatched(mismatch) => {

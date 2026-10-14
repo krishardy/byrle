@@ -17,6 +17,21 @@ pub enum Answerable {
     Missing(&'static str),
 }
 
+/// Why `install_scripts` has no answer for `record`: its registry's metadata does not say,
+/// and its artifact has not been read. `None` when one of them answers.
+pub fn install_scripts_unread(record: &PackageRecord) -> Option<&'static str> {
+    if record.install_scripts.is_some() {
+        return None;
+    }
+    unread_why(record.package.key().ecosystem().as_str())
+}
+
+/// [`crate::ecosystem::Registry::install_scripts_unread`] for `ecosystem`, as facts spell it.
+pub fn unread_why(ecosystem: &str) -> Option<&'static str> {
+    let served = ecosystem.parse::<crate::identity::Ecosystem>().ok()?;
+    crate::ecosystem::of(served).install_scripts_unread
+}
+
 /// When each version was published, from the full packument, which the abbreviated record lacks.
 pub type PublishTimes = std::collections::BTreeMap<String, jiff::Timestamp>;
 
@@ -37,6 +52,7 @@ impl Facts {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: record.has_install_scripts,
+            install_scripts_analyzed: install_scripts_unread(record).is_none(),
             yanked: record.yanked.clone(),
             deprecated: record.deprecated.clone(),
             intel: Intel::NotConsulted,

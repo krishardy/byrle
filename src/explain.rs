@@ -40,7 +40,7 @@ pub fn decision(
     for result in &decision.results {
         let unenforced = unenforceable.iter().find(|u| u.check == result.check);
         let (state, detail) = match (unenforced, &result.outcome) {
-            (Some(u), _) => ("unenforced".to_owned(), u.why.to_owned()),
+            (Some(u), _) => (u.kind.as_str().to_owned(), u.why.to_owned()),
             (None, Outcome::Passed) => ("pass".to_owned(), String::new()),
             (None, Outcome::NotApplicable) => (
                 "n/a".to_owned(),
@@ -809,6 +809,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            install_scripts_analyzed: true,
             yanked: None,
             deprecated: None,
             intel: Intel::NotConsulted,
@@ -918,6 +919,7 @@ mod tests {
         let unenforceable = [Unenforceable {
             check: Check::CooldownDays,
             why: "the abbreviated packument carries no publish times",
+            kind: crate::policy::enforce::Unanswered::Unenforced,
         }];
         let facts = Facts {
             published: None,
@@ -1186,6 +1188,7 @@ mod tests {
                 unenforceable: vec![Unenforceable {
                     check: Check::CooldownDays,
                     why: "the abbreviated packument carries no publish times",
+                    kind: crate::policy::enforce::Unanswered::Unenforced,
                 }],
                 ..case(
                     "cooldown with no publish times to read",
@@ -1397,6 +1400,7 @@ mod tests {
                 unenforceable: vec![Unenforceable {
                     check: Check::Provenance,
                     why: "no attestation of it has been verified",
+                    kind: crate::policy::enforce::Unanswered::Unenforced,
                 }],
                 ..case(
                     "provenance: nothing verified yet",
@@ -1412,6 +1416,7 @@ mod tests {
                     .map(|check| Unenforceable {
                         check,
                         why: "no intel store was consulted, so nothing was asked",
+                        kind: crate::policy::enforce::Unanswered::Unenforced,
                     })
                     .to_vec(),
                 ..case("no intel store", "version: 1", facts())

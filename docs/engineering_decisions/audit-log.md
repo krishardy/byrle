@@ -23,6 +23,7 @@ reasoning per version. A version offered and not removed is not in the log.
 | `action` | on a `resolution` line, the strongest action taken against any version. Absent on a pinned line answered before anything was decided |
 | `checks` | strongest first on a `pinned` line; sorted on a `resolution` line, which is the union over the versions removed |
 | `unenforceable` | the checks that could not be answered, so an unenforced `cooldown_days` does not read as passed |
+| `not_analyzed` | the checks whose fact is in an artifact that was not read for the decision: cargo's `install_scripts` before its `.crate` is. Added 2026-10-14 |
 | `intel_snapshot` | absent when no store was asked, so a decision without intel does not read as one against an empty snapshot |
 | `answered` | what the request got, below. On a pinned line always; on a resolution line in observe mode, and when the request failed. A deferral, a digest mismatch, an upstream failure and the proxy's own refusals answer requests the policy would have served |
 | `signals` | pinned only: what the [metadata heuristics](metadata-heuristics.md) and the [source comparison](source-diff.md) reported. No verdict reads it |

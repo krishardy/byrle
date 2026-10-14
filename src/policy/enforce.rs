@@ -55,6 +55,25 @@ impl Refusal {
 pub struct Unenforceable {
     pub check: Check,
     pub why: &'static str,
+    pub kind: Unanswered,
+}
+
+/// Why a check gave no answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unanswered {
+    /// The fact it needs is not available in this build or this store.
+    Unenforced,
+    /// The fact is in the artifact, which has not been read for this answer.
+    NotAnalyzed,
+}
+
+impl Unanswered {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unenforced => "unenforced",
+            Self::NotAnalyzed => "not analyzed",
+        }
+    }
 }
 
 /// The checks this build cannot answer for a record.
@@ -73,7 +92,8 @@ pub fn unenforceable(
         super::facts::Answerable::Missing(why) => Some(why),
         super::facts::Answerable::Yes => None,
     };
-    unenforceable_given(policy, cooldown, intel, provenance)
+    let install_scripts = super::facts::install_scripts_unread(record);
+    unenforceable_given(policy, (cooldown, install_scripts), intel, provenance)
 }
 
 /// [`unenforceable`] from facts alone, as `byrle audit verify` has them. The same checks:
@@ -83,21 +103,37 @@ pub fn unenforceable_of(policy: &Policy, facts: &Facts) -> Vec<Unenforceable> {
         .published
         .is_none()
         .then_some("no publish date was recorded for this version");
-    unenforceable_given(policy, cooldown, facts.intel, &facts.provenance)
+    let install_scripts = (!facts.install_scripts_analyzed)
+        .then(|| super::facts::unread_why(&facts.ecosystem))
+        .flatten();
+    unenforceable_given(
+        policy,
+        (cooldown, install_scripts),
+        facts.intel,
+        &facts.provenance,
+    )
 }
 
 /// The checks that cannot be answered, given why the cooldown has no date when it has none.
 fn unenforceable_given(
     policy: &Policy,
-    cooldown: Option<&'static str>,
+    (cooldown, install_scripts): (Option<&'static str>, Option<&'static str>),
     intel: Intel,
     provenance: &Provenance,
 ) -> Vec<Unenforceable> {
     let mut out = Vec::new();
+    if let Some(why) = install_scripts {
+        out.push(Unenforceable {
+            check: Check::InstallScripts,
+            why,
+            kind: Unanswered::NotAnalyzed,
+        });
+    }
     if let Provenance::Unknown(why) = provenance {
         out.push(Unenforceable {
             check: Check::Provenance,
             why,
+            kind: Unanswered::Unenforced,
         });
     }
     if policy.uses_cooldown()
@@ -106,6 +142,7 @@ fn unenforceable_given(
         out.push(Unenforceable {
             check: Check::CooldownDays,
             why,
+            kind: Unanswered::Unenforced,
         });
     }
     match intel {
@@ -113,6 +150,7 @@ fn unenforceable_given(
             |check| Unenforceable {
                 check,
                 why: "no intel store was consulted, so nothing was asked",
+                kind: Unanswered::Unenforced,
             },
         )),
         Intel::Consulted {
@@ -120,6 +158,7 @@ fn unenforceable_given(
         } => out.push(Unenforceable {
             check: Check::Kev,
             why: "no exploitation stream is loaded, so no advisory is marked exploited",
+            kind: Unanswered::Unenforced,
         }),
         Intel::Consulted {
             exploitation_loaded: true,
@@ -277,6 +316,45 @@ mod tests {
             },
             false,
         )
+    }
+
+    /// crates.io's index says nothing of a build script, so a crate's `install_scripts` is
+    /// not analyzed until its `.crate` is read, from the record and from the facts alike.
+    #[test]
+    fn a_crate_s_install_scripts_are_not_analyzed_until_its_crate_is_read() {
+        let policy = loaded("version: 1\ncooldown_days: 0\n");
+        let metadata =
+            crate::ecosystem::cargo::wire::normalize(&crate::ecosystem::cargo::fixture())
+                .expect("reads");
+        let unread = metadata.version("1.0.18").expect("listed").clone();
+        let read = PackageRecord {
+            install_scripts: Some(std::collections::BTreeMap::new()),
+            ..unread.clone()
+        };
+        let answered = |record: &PackageRecord| {
+            let facts = Facts::from_record(record).with_provenance(Provenance::Consistent);
+            let from_record: Vec<(Check, Unanswered)> = unenforceable(
+                &policy,
+                record,
+                None,
+                Intel::NotConsulted,
+                &Provenance::Consistent,
+            )
+            .iter()
+            .map(|u| (u.check, u.kind))
+            .collect();
+            let from_facts: Vec<(Check, Unanswered)> = unenforceable_of(&policy, &facts)
+                .iter()
+                .map(|u| (u.check, u.kind))
+                .collect();
+            assert_eq!(from_record, from_facts);
+            from_record.contains(&(Check::InstallScripts, Unanswered::NotAnalyzed))
+        };
+        assert!(answered(&unread));
+        assert!(!answered(&read));
+        assert!(!answered(&record()), "npm's packument says");
+        assert_eq!(Unanswered::NotAnalyzed.as_str(), "not analyzed");
+        assert_eq!(super::super::facts::unread_why("gem"), None, "no row");
     }
 
     /// `byrle audit verify` has the facts and not the record. Every way a record can have
@@ -708,6 +786,7 @@ mod tests {
             Some(Unenforceable {
                 check: Check::CooldownDays,
                 why: "the abbreviated packument carries no publish times",
+                kind: crate::policy::enforce::Unanswered::Unenforced,
             })
         );
         assert_eq!(

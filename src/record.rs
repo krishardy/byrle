@@ -69,7 +69,7 @@ pub struct PackageRecord {
     /// Whether installing this version runs a lifecycle script, which both documents answer.
     pub has_install_scripts: bool,
 
-    /// The lifecycle script bodies. Full packument only.
+    /// The lifecycle script bodies: the full packument's, or the artifact's once read.
     pub install_scripts: Option<BTreeMap<String, String>>,
 
     /// Attestations and signatures. Present in both documents.

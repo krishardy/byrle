@@ -306,6 +306,8 @@ pub struct Registry {
     pub osv_name: &'static str,
     /// Whether a record's metadata would name a repository, so that naming none is a signal.
     pub metadata_names_repository: fn(&crate::record::PackageRecord) -> bool,
+    /// Why `install_scripts` is not analyzed until the artifact is read; `None` if metadata says.
+    pub install_scripts_unread: Option<&'static str>,
     /// The checks this ecosystem's registry gives no meaning to, such as npm's `yanked`.
     pub meaningless: &'static [crate::policy::merge::Rule],
     /// A document the proxy writes for this path rather than fetching; `None` to fetch it.

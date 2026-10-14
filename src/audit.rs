@@ -3,7 +3,7 @@
 //! See docs/engineering_decisions/audit-log.md.
 
 use crate::policy::decide::{Advisory, Decision, Facts, Intel, Outcome, Provenance};
-use crate::policy::enforce::Unenforceable;
+use crate::policy::enforce::{Unanswered, Unenforceable};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -91,6 +91,9 @@ pub struct Event {
     /// Checks that could not be answered, and why.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unenforceable: Vec<String>,
+    /// Checks whose fact is in an artifact that was not read for this decision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub not_analyzed: Vec<String>,
     /// Which intel the verdict was reached against. `None` when no intel store was asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub intel_snapshot: Option<String>,
@@ -153,9 +156,16 @@ pub struct RecordedFacts {
     /// `consulted`, `consulted-without-exploitation` or `not-consulted`.
     pub intel: String,
     pub has_install_scripts: bool,
+    /// Absent from a line written before 2026-10-14, when every answer was analyzed.
+    #[serde(default = "analyzed")]
+    pub install_scripts_analyzed: bool,
     pub yanked: Option<String>,
     pub deprecated: Option<String>,
     pub provenance: RecordedProvenance,
+}
+
+fn analyzed() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -217,6 +227,7 @@ impl RecordedFacts {
             }
             .to_owned(),
             has_install_scripts: facts.has_install_scripts,
+            install_scripts_analyzed: facts.install_scripts_analyzed,
             yanked: facts.yanked.clone(),
             deprecated: facts.deprecated.clone(),
             provenance: match &facts.provenance {
@@ -278,6 +289,7 @@ impl RecordedFacts {
                 .collect(),
             intel,
             has_install_scripts: self.has_install_scripts,
+            install_scripts_analyzed: self.install_scripts_analyzed,
             yanked: self.yanked.clone(),
             deprecated: self.deprecated.clone(),
             provenance: match &self.provenance {
@@ -314,6 +326,7 @@ impl Default for Event {
             checks: Vec::new(),
             exceptions_used: Vec::new(),
             unenforceable: Vec::new(),
+            not_analyzed: Vec::new(),
             intel_snapshot: None,
             answered: None,
             inputs: None,
@@ -323,6 +336,15 @@ impl Default for Event {
             upstream_status: None,
         }
     }
+}
+
+/// The checks in `unenforceable` of `kind`, by name.
+fn named(unenforceable: &[Unenforceable], kind: Unanswered) -> Vec<String> {
+    unenforceable
+        .iter()
+        .filter(|u| u.kind == kind)
+        .map(|u| u.check.as_str().to_owned())
+        .collect()
 }
 
 impl Event {
@@ -345,10 +367,8 @@ impl Event {
             removed: Vec::new(),
             checks: decided_against(decision),
             exceptions_used: decision.exceptions_used(),
-            unenforceable: unenforceable
-                .iter()
-                .map(|u| u.check.as_str().to_owned())
-                .collect(),
+            unenforceable: named(unenforceable, Unanswered::Unenforced),
+            not_analyzed: named(unenforceable, Unanswered::NotAnalyzed),
             intel_snapshot: None,
             answered: None,
             inputs: None,
@@ -462,10 +482,8 @@ impl Event {
             removed,
             checks,
             exceptions_used: Vec::new(),
-            unenforceable: unenforceable
-                .iter()
-                .map(|u| u.check.as_str().to_owned())
-                .collect(),
+            unenforceable: named(unenforceable, Unanswered::Unenforced),
+            not_analyzed: named(unenforceable, Unanswered::NotAnalyzed),
             intel_snapshot: None,
             answered: None,
             inputs: None,
@@ -759,6 +777,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            install_scripts_analyzed: true,
             yanked: None,
             deprecated: None,
             intel: Intel::NotConsulted,
@@ -835,6 +854,7 @@ mod tests {
         let unenforceable = [Unenforceable {
             check: crate::policy::decide::Check::CooldownDays,
             why: "the abbreviated packument carries no publish times",
+            kind: crate::policy::enforce::Unanswered::Unenforced,
         }];
         let event = Event::pinned(
             "npm",
@@ -850,6 +870,37 @@ mod tests {
         );
     }
 
+    /// A check left for an unread artifact is named apart from one this build cannot answer,
+    /// and a line written before the fact existed reads as analyzed.
+    #[test]
+    fn a_check_not_analyzed_is_named_apart() {
+        let unenforceable = [Unenforceable {
+            check: crate::policy::decide::Check::InstallScripts,
+            why: "crates.io's index does not say",
+            kind: crate::policy::enforce::Unanswered::NotAnalyzed,
+        }];
+        let event = Event::pinned(
+            "cargo",
+            "serde",
+            "1.0.229",
+            &decision("version: 1"),
+            &unenforceable,
+        );
+        let written = line(&event);
+        assert_eq!(
+            field(&written, "not_analyzed"),
+            &serde_json::json!(["install_scripts"])
+        );
+        assert!(written.get("unenforceable").is_none(), "{written}");
+        let mut recorded = serde_json::to_value(RecordedFacts::of(&facts())).unwrap();
+        recorded
+            .as_object_mut()
+            .unwrap()
+            .remove("install_scripts_analyzed");
+        let old: RecordedFacts = serde_json::from_value(recorded).unwrap();
+        assert!(old.install_scripts_analyzed);
+    }
+
     /// The engine alone quarantines this, and the proxy serves it because the check is
     /// unenforced. The line records what the proxy did.
     #[test]
@@ -857,6 +908,7 @@ mod tests {
         let unenforceable = [Unenforceable {
             check: crate::policy::decide::Check::CooldownDays,
             why: "the abbreviated packument carries no publish times",
+            kind: crate::policy::enforce::Unanswered::Unenforced,
         }];
         let young = decision("version: 1\ncooldown_days: 36500");
         assert_eq!(young.action(), crate::policy::Action::Quarantine);

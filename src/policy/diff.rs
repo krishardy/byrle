@@ -5,7 +5,7 @@
 use std::ffi::OsString;
 
 use super::decide::{Check, Decision, Outcome};
-use super::enforce::Unenforceable;
+use super::enforce::{Unanswered, Unenforceable};
 use super::strictness::Strictness;
 use super::{Action, Policy, today};
 use crate::ecosystem::Clients;
@@ -31,6 +31,8 @@ pub enum Shown {
     NotApplicable,
     /// The fact the check needs is not available in this build.
     Unenforced,
+    /// The fact is in the artifact, which was not read.
+    NotAnalyzed,
 }
 
 impl Shown {
@@ -40,14 +42,17 @@ impl Shown {
             Self::Fail(action) => format!("FAIL {}", action.as_str()),
             Self::Excepted(entry) => format!("excepted by packages[{entry}]"),
             Self::NotApplicable => "n/a".to_owned(),
-            Self::Unenforced => "unenforced".to_owned(),
+            Self::Unenforced => Unanswered::Unenforced.as_str().to_owned(),
+            Self::NotAnalyzed => Unanswered::NotAnalyzed.as_str().to_owned(),
         }
     }
 
     /// What the package actually gets. `None` where the check cannot be compared at all.
     fn effect(self) -> Option<Action> {
         match self {
-            Self::Pass | Self::Excepted(_) | Self::Unenforced => Some(Action::Allow),
+            Self::Pass | Self::Excepted(_) | Self::Unenforced | Self::NotAnalyzed => {
+                Some(Action::Allow)
+            }
             Self::Fail(action) => Some(action),
             Self::NotApplicable => None,
         }
@@ -56,8 +61,11 @@ impl Shown {
 
 /// Read one check out of a decision.
 pub fn shown(decision: &Decision, unenforceable: &[Unenforceable], check: Check) -> Shown {
-    if unenforceable.iter().any(|u| u.check == check) {
-        return Shown::Unenforced;
+    if let Some(u) = unenforceable.iter().find(|u| u.check == check) {
+        return match u.kind {
+            Unanswered::Unenforced => Shown::Unenforced,
+            Unanswered::NotAnalyzed => Shown::NotAnalyzed,
+        };
     }
     match decision.results.iter().find(|r| r.check == check) {
         None => Shown::Unenforced,
@@ -969,6 +977,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            install_scripts_analyzed: true,
             yanked: None,
             deprecated: None,
             intel: Intel::Consulted {
@@ -1071,6 +1080,7 @@ mod tests {
         let unenforceable = [Unenforceable {
             check: Check::CooldownDays,
             why: "no publish date",
+            kind: crate::policy::enforce::Unanswered::Unenforced,
         }];
         let from = decided("version: 1\ncooldown_days: 3650", &facts());
         let to = decided("version: 1\ncooldown_days: 3650", &facts());
@@ -1097,6 +1107,7 @@ mod tests {
         let unenforceable = [Unenforceable {
             check: Check::CooldownDays,
             why: "no publish date",
+            kind: crate::policy::enforce::Unanswered::Unenforced,
         }];
         let from = decided("version: 1\ncooldown_days: 3650", &facts());
         let to = decided("version: 1\ncooldown_days: 3650", &facts());
@@ -1329,6 +1340,7 @@ mod tests {
         let unenforceable = [Unenforceable {
             check: Check::Kev,
             why: "no exploitation stream is loaded, so no advisory is marked exploited",
+            kind: crate::policy::enforce::Unanswered::Unenforced,
         }];
         let facts = Facts {
             advisories: vec![crate::policy::decide::Advisory {
@@ -1361,6 +1373,21 @@ mod tests {
         assert_eq!(Shown::Excepted(3).as_str(), "excepted by packages[3]");
         assert_eq!(Shown::NotApplicable.as_str(), "n/a");
         assert_eq!(Shown::Unenforced.as_str(), "unenforced");
+        assert_eq!(Shown::NotAnalyzed.as_str(), "not analyzed");
+        assert_eq!(Shown::NotAnalyzed.effect(), Some(Action::Allow));
+        let unread = [Unenforceable {
+            check: Check::InstallScripts,
+            why: "not read",
+            kind: Unanswered::NotAnalyzed,
+        }];
+        let decision = Decision {
+            results: Vec::new(),
+            entry: None,
+        };
+        assert_eq!(
+            shown(&decision, &unread, Check::InstallScripts),
+            Shown::NotAnalyzed
+        );
     }
 
     /// A check the decision never produced reads as unenforced rather than as a pass.

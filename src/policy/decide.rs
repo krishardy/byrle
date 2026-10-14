@@ -24,6 +24,8 @@ pub struct Facts {
     /// Whether an advisory stream was asked at all, so empty advisories are not read as clean.
     pub intel: Intel,
     pub has_install_scripts: bool,
+    /// Whether `has_install_scripts` was answered, by the metadata or by reading the artifact.
+    pub install_scripts_analyzed: bool,
     /// The reason the registry gave for withdrawing this version, PyPI's PEP 592 yank.
     pub yanked: Option<String>,
     /// npm's `deprecated` message for this version.
@@ -531,6 +533,7 @@ mod tests {
             known_malware: false,
             advisories: Vec::new(),
             has_install_scripts: false,
+            install_scripts_analyzed: true,
             yanked: None,
             deprecated: None,
             intel: Intel::NotConsulted,

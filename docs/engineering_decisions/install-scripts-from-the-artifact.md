@@ -68,6 +68,14 @@ Read from the published `.crate` files, `real_crates_declare_their_build_scripts
 | `itoa` 1.0.18 | `build = false` | nothing |
 | `libc` 0.2.0 | no `build`, no `build.rs` | nothing |
 
+Until the `.crate` is read, `install_scripts` is `not analyzed`, asked for by the user
+2026-10-14: `byrle explain pkg:cargo/serde@1.0.229` prints `install_scripts  not analyzed
+crates.io's index does not say; the .crate is read when it is downloaded`, and the audit
+line names it under `not_analyzed`. Before, it read `pass`. Like an unenforced check, it is
+dropped from the verdict; a download is decided once its `.crate` is read, which records the
+answer in `PackageRecord::install_scripts`. `Facts::install_scripts_analyzed` carries it to
+`audit verify`; a line without it reads as analyzed.
+
 `rustls` 0.23.45 has a build script too: under the default `block`, `make smoke-cargo`
 saw it refused once read. The read took 79 ms, and the download was answered after one
 1-second deferral. `analysis::READER` is `install-scripts 3`.

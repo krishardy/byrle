@@ -85,6 +85,9 @@ pub const REGISTRY: Registry = Registry {
     client: |http, upstream, max_bytes| std::sync::Arc::new(Client::new(http, upstream, max_bytes)),
     write,
     meaningless: &[crate::policy::merge::Rule::Deprecated],
+    install_scripts_unread: Some(
+        "crates.io's index does not say; the .crate is read when it is downloaded",
+    ),
 };
 
 /// The path the proxy serves cargo's registry under.
