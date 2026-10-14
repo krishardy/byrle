@@ -3027,6 +3027,9 @@ role gets 403 from every endpoint except `GET health`.
 
 ## Stage 6 — More ecosystems (cargo, Go, Maven)
 
+Plan for cargo and the adapter interface before it: [cargo-plan](docs/cargo-plan.md),
+2026-10-14. Its decisions Q1 to Q6 come first.
+
 - [ ] cargo: sparse index transport adapter
 - [ ] cargo: source replacement configuration + onboarding docs
 - [ ] cargo: `build.rs` mapped to install-script semantics
