@@ -1,6 +1,6 @@
 //! What a refresh knows about each advisory stream before it fetches anything.
 //!
-//! One [`Stream`] per stream, in [`ALL`]. `byrle refresh` does the fetching.
+//! One [`Stream`] per stream, in [`all`]. `byrle refresh` does the fetching.
 //! See docs/engineering_decisions/stream-descriptor-table.md.
 
 use std::collections::BTreeSet;
@@ -74,7 +74,7 @@ pub struct Parsed {
 }
 
 /// One advisory stream, as this build declares it.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Stream {
     /// The name of the bundle in a snapshot, and the source of its rows in the store.
     pub stream: &'static str,
@@ -90,32 +90,60 @@ pub struct Stream {
 }
 
 /// Match and malware, which OSV and Datadog both hold for the packages they list.
-const MATCH_AND_MALWARE: &[Grant] = &[Grant {
+pub const MATCH_AND_MALWARE: &[Grant] = &[Grant {
     scope: Scope::Listed,
     capabilities: &[Capability::Match, Capability::Malware],
 }];
 
-/// OSV's npm bundle: every npm vulnerability and malware record OSV holds.
-pub const OSV_NPM: Stream = Stream {
-    stream: bundle::NPM_STREAM,
-    url: bundle::NPM_BUNDLE,
-    ceiling: bundle::MAX_BUNDLE_BYTES,
-    transport: Transport::Get,
-    grants: MATCH_AND_MALWARE,
-    parse: |bytes| osv_bundle(Ecosystem::Npm, bytes),
-};
+/// Match, which GitHub's advisories hold. It publishes malware separately, and not here.
+pub const MATCH: &[Grant] = &[Grant {
+    scope: Scope::Listed,
+    capabilities: &[Capability::Match],
+}];
 
-/// OSV's PyPI bundle: every PyPI vulnerability and malware record OSV holds.
-pub const OSV_PYPI: Stream = Stream {
-    stream: bundle::PYPI_STREAM,
-    url: bundle::PYPI_BUNDLE,
-    ceiling: bundle::MAX_BUNDLE_BYTES,
-    transport: Transport::Get,
-    grants: MATCH_AND_MALWARE,
-    parse: |bytes| osv_bundle(Ecosystem::PyPI, bytes),
-};
+/// The bytes of a bundle as the rows it holds.
+pub type Parse = fn(&[u8]) -> Result<Parsed, String>;
 
-fn osv_bundle(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, String> {
+/// An ecosystem's OSV bundle at `url`: every vulnerability and malware record OSV holds for
+/// it. `parse` is [`osv_bundle`] for that ecosystem.
+pub const fn osv(stream: &'static str, url: &'static str, parse: Parse) -> Stream {
+    Stream {
+        stream,
+        url,
+        ceiling: bundle::MAX_BUNDLE_BYTES,
+        transport: Transport::Get,
+        grants: MATCH_AND_MALWARE,
+        parse,
+    }
+}
+
+/// An ecosystem's Datadog manifest at `url`. `parse` is [`datadog_manifest`] for it.
+pub const fn datadog(stream: &'static str, url: &'static str, parse: Parse) -> Stream {
+    Stream {
+        stream,
+        url,
+        ceiling: datadog::MAX_MANIFEST_BYTES,
+        transport: Transport::Get,
+        grants: MATCH_AND_MALWARE,
+        parse,
+    }
+}
+
+/// An ecosystem's GitHub advisories, asked for with `query`, a signal stream beside OSV.
+/// `parse` is [`github_advisories`] for it.
+pub const fn github(stream: &'static str, query: &'static str, parse: Parse) -> Stream {
+    Stream {
+        stream,
+        url: github::ENDPOINT,
+        ceiling: github::MAX_BYTES,
+        transport: Transport::GithubGraphql { query },
+        grants: MATCH,
+        parse,
+    }
+}
+
+/// `bytes`, an OSV bundle, as `ecosystem`'s rows.
+pub fn osv_bundle(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, String> {
     bundle::read_bundle(ecosystem, bytes)
         .map(|bundle| Parsed {
             payload: Payload::Advisories(bundle.rows),
@@ -124,7 +152,27 @@ fn osv_bundle(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, String> {
         .map_err(|e| e.to_string())
 }
 
-/// CISA's KEV catalogue.
+/// `bytes`, a Datadog manifest, as `ecosystem`'s rows.
+pub fn datadog_manifest(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, String> {
+    datadog::parse(ecosystem, bytes)
+        .map(|rows| Parsed {
+            payload: Payload::Advisories(rows),
+            tally: None,
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// `bytes`, GitHub's advisories, as `ecosystem`'s rows.
+pub fn github_advisories(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, String> {
+    github::parse(ecosystem, bytes)
+        .map(|rows| Parsed {
+            payload: Payload::Advisories(rows),
+            tally: None,
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// CISA's KEV catalogue, which covers no one ecosystem.
 const KEV: Stream = Stream {
     stream: kev::STREAM,
     url: kev::CATALOGUE,
@@ -144,88 +192,31 @@ const KEV: Stream = Stream {
     },
 };
 
-/// Datadog's npm manifest.
-pub const DATADOG_NPM: Stream = Stream {
-    stream: datadog::NPM_STREAM,
-    url: datadog::NPM_MANIFEST,
-    ceiling: datadog::MAX_MANIFEST_BYTES,
-    transport: Transport::Get,
-    grants: MATCH_AND_MALWARE,
-    parse: |bytes| datadog_manifest(Ecosystem::Npm, bytes),
-};
+/// The order a refresh loads providers in, by the prefix of their streams' names.
+const PROVIDERS: [&str; 4] = ["osv/", "cisa/", "datadog/", "github/"];
 
-/// Datadog's PyPI manifest.
-pub const DATADOG_PYPI: Stream = Stream {
-    stream: datadog::PYPI_STREAM,
-    url: datadog::PYPI_MANIFEST,
-    ceiling: datadog::MAX_MANIFEST_BYTES,
-    transport: Transport::Get,
-    grants: MATCH_AND_MALWARE,
-    parse: |bytes| datadog_manifest(Ecosystem::PyPI, bytes),
-};
-
-fn datadog_manifest(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, String> {
-    datadog::parse(ecosystem, bytes)
-        .map(|rows| Parsed {
-            payload: Payload::Advisories(rows),
-            tally: None,
-        })
-        .map_err(|e| e.to_string())
+/// Every stream a refresh loads, in the order it loads them: each ecosystem's from its row
+/// of [`crate::ecosystem::TABLE`], and KEV, by provider and then by row.
+pub fn all() -> &'static [Stream] {
+    static ALL: std::sync::OnceLock<Vec<Stream>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let mut all: Vec<Stream> = crate::ecosystem::TABLE
+            .iter()
+            .flat_map(|row| row.streams.iter().map(|stream| **stream))
+            .chain([KEV])
+            .collect();
+        all.sort_by_key(|stream| {
+            PROVIDERS
+                .iter()
+                .position(|provider| stream.stream.starts_with(provider))
+        });
+        all
+    })
 }
-
-/// GitHub's Advisory Database, a signal stream beside OSV.
-pub const GITHUB_NPM: Stream = Stream {
-    stream: github::NPM_STREAM,
-    url: github::ENDPOINT,
-    ceiling: github::MAX_BYTES,
-    transport: Transport::GithubGraphql {
-        query: github::NPM_QUERY,
-    },
-    grants: MATCH,
-    parse: |bytes| github_advisories(Ecosystem::Npm, bytes),
-};
-
-/// GitHub's PyPI advisories, as [`GITHUB_NPM`] reads npm's.
-pub const GITHUB_PYPI: Stream = Stream {
-    stream: github::PYPI_STREAM,
-    url: github::ENDPOINT,
-    ceiling: github::MAX_BYTES,
-    transport: Transport::GithubGraphql {
-        query: github::PYPI_QUERY,
-    },
-    grants: MATCH,
-    parse: |bytes| github_advisories(Ecosystem::PyPI, bytes),
-};
-
-/// Match, which GitHub's advisories hold. It publishes malware separately, and not here.
-const MATCH: &[Grant] = &[Grant {
-    scope: Scope::Listed,
-    capabilities: &[Capability::Match],
-}];
-
-fn github_advisories(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, String> {
-    github::parse(ecosystem, bytes)
-        .map(|rows| Parsed {
-            payload: Payload::Advisories(rows),
-            tally: None,
-        })
-        .map_err(|e| e.to_string())
-}
-
-/// Every stream a refresh loads, in the order it loads them.
-pub const ALL: &[Stream] = &[
-    OSV_NPM,
-    OSV_PYPI,
-    KEV,
-    DATADOG_NPM,
-    DATADOG_PYPI,
-    GITHUB_NPM,
-    GITHUB_PYPI,
-];
 
 /// The stream a snapshot records under `stream`, or `None` for one this build does not know.
 pub fn by_stream(stream: &str) -> Option<&'static Stream> {
-    ALL.iter().find(|s| s.stream == stream)
+    all().iter().find(|s| s.stream == stream)
 }
 
 #[cfg(test)]
@@ -241,7 +232,7 @@ mod tests {
     #[test]
     fn a_stream_this_build_does_not_declare_is_not_found() {
         assert_eq!(
-            ALL.iter().map(|s| s.stream).collect::<Vec<_>>(),
+            all().iter().map(|s| s.stream).collect::<Vec<_>>(),
             [
                 "osv/npm",
                 "osv/pypi",
@@ -349,7 +340,7 @@ mod tests {
     /// page into advisory rows.
     #[test]
     fn each_stream_reads_its_own_document_only() {
-        for stream in ALL {
+        for stream in all() {
             assert!(
                 (stream.parse)(b"not a document").is_err(),
                 "{}",
@@ -362,5 +353,32 @@ mod tests {
         let parsed =
             (declared(crate::intel::providers::github::NPM_STREAM).parse)(page).expect("a page");
         assert!(matches!(parsed.payload, Payload::Advisories(rows) if rows.len() == 1));
+    }
+
+    /// Each provider's constructor gives its ceiling, transport and grants, whatever the
+    /// ecosystem: the adapters' streams are built with them as constants.
+    #[test]
+    fn a_provider_constructor_fills_in_what_the_provider_shares() {
+        let parse: Parse = |_| Err("unread".to_owned());
+        let osv = osv("osv/x", "https://osv.example/x.zip", parse);
+        assert_eq!(
+            (osv.ceiling, osv.grants.len(), osv.url),
+            (bundle::MAX_BUNDLE_BYTES, 1, "https://osv.example/x.zip")
+        );
+        assert!(matches!(osv.transport, Transport::Get));
+        let datadog = datadog("datadog/x", "https://datadog.example/x", parse);
+        assert_eq!(datadog.ceiling, datadog::MAX_MANIFEST_BYTES);
+        assert!(matches!(datadog.transport, Transport::Get));
+        let github = github("github/x", "query", parse);
+        assert_eq!(
+            (github.ceiling, github.url),
+            (github::MAX_BYTES, github::ENDPOINT)
+        );
+        assert!(matches!(
+            github.transport,
+            Transport::GithubGraphql { query: "query" }
+        ));
+        assert_eq!(github.grants[0].capabilities, MATCH[0].capabilities);
+        assert!((github.parse)(b"").is_err());
     }
 }

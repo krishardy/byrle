@@ -403,7 +403,7 @@ mod tests {
         let printed = Printed::default();
         let declared = Stream {
             url: Box::leak(format!("http://{addr}/all.zip").into_boxed_str()),
-            ..crate::intel::stream::ALL[0]
+            ..crate::intel::stream::all()[0]
         };
         let fetched = stream_bundle(
             &client(),
@@ -500,12 +500,12 @@ mod tests {
             Stream {
                 stream: "first/one",
                 parse: if first_parses { ok } else { unreadable },
-                ..crate::intel::stream::ALL[0]
+                ..crate::intel::stream::all()[0]
             },
             Stream {
                 stream: "second/one",
                 parse: ok,
-                ..crate::intel::stream::ALL[0]
+                ..crate::intel::stream::all()[0]
             },
         ]))
     }
@@ -666,7 +666,7 @@ mod tests {
     /// A stream not read for want of its token is recorded as unconfigured.
     #[tokio::test]
     async fn a_stream_not_read_for_want_of_a_token_is_recorded_as_unconfigured() {
-        const GITHUB: &[Stream] = &[crate::intel::stream::GITHUB_NPM];
+        const GITHUB: &[Stream] = &[crate::ecosystem::npm::GITHUB];
         let printed = Printed::default();
         let read = read_streams(
             &client(),

@@ -286,6 +286,8 @@ pub struct Registry {
     ) -> Option<crate::analysis::source::Comparison>,
     /// Why nothing was compared, when [`Registry::compare_source`] answers `None`.
     pub unfound_source: &'static str,
+    /// The name OSV gives this ecosystem, in `affected[].package.ecosystem` and its bundle's path.
+    pub osv_name: &'static str,
     /// Whether a record's metadata would name a repository, so that naming none is a signal.
     pub metadata_names_repository: fn(&crate::record::PackageRecord) -> bool,
 }
@@ -605,7 +607,7 @@ mod table {
     /// A stream is listed by a row exactly when one of its grants is scoped to the listing.
     #[test]
     fn a_stream_is_listed_by_one_row_exactly_when_a_grant_is_scoped_to_its_listing() {
-        for declared in stream::ALL {
+        for declared in stream::all() {
             let listed_by = TABLE
                 .iter()
                 .filter(|registry| {
@@ -803,10 +805,8 @@ mod table {
             ("src/ecosystem.rs", 2),
             ("src/env.rs", 4),
             ("src/identity.rs", 5),
-            ("src/intel/providers/osv/mod.rs", 2),
             ("src/intel/range.rs", 1),
             ("src/intel/store.rs", 1),
-            ("src/intel/stream.rs", 6),
             ("src/proxy.rs", 3),
             ("src/proxy/testing.rs", 1),
             ("src/warm.rs", 5),

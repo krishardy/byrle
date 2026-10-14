@@ -28,8 +28,26 @@ pub use transport::{Client, fetched};
 
 use crate::ecosystem::{PublishTimeSource, Registry, Setup, UncoveredMetadata};
 use crate::identity::Ecosystem;
+use crate::intel::providers::osv::bundle;
+use crate::intel::providers::{datadog, github};
 use crate::intel::range::VersionOrder;
 use crate::intel::stream;
+
+/// OSV's bundle for this ecosystem.
+pub const OSV: stream::Stream = stream::osv(bundle::NPM_STREAM, bundle::NPM_BUNDLE, |bytes| {
+    stream::osv_bundle(Ecosystem::Npm, bytes)
+});
+
+/// Datadog's manifest for this ecosystem.
+pub const DATADOG: stream::Stream =
+    stream::datadog(datadog::NPM_STREAM, datadog::NPM_MANIFEST, |bytes| {
+        stream::datadog_manifest(Ecosystem::Npm, bytes)
+    });
+
+/// GitHub's advisories for this ecosystem.
+pub const GITHUB: stream::Stream = stream::github(github::NPM_STREAM, github::NPM_QUERY, |bytes| {
+    stream::github_advisories(Ecosystem::Npm, bytes)
+});
 
 /// This ecosystem's row of [`crate::ecosystem::TABLE`].
 pub const REGISTRY: Registry = Registry {
@@ -41,7 +59,7 @@ pub const REGISTRY: Registry = Registry {
     documents: &[ABBREVIATED_ACCEPT, FULL_ACCEPT],
     other_is_probe: false,
     publish_times: PublishTimeSource::FullPackument,
-    streams: &[&stream::OSV_NPM, &stream::DATADOG_NPM, &stream::GITHUB_NPM],
+    streams: &[&OSV, &DATADOG, &GITHUB],
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
     clients: clients::CLIENTS,
@@ -86,6 +104,7 @@ pub const REGISTRY: Registry = Registry {
             .map(|built| crate::analysis::source::compare(package, &built))
     },
     unfound_source: "no package.json in the source names the package",
+    osv_name: "npm",
     metadata_names_repository: |record| record.detail == crate::record::DocumentDetail::Full,
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))

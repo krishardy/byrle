@@ -25,8 +25,27 @@ pub use wire::{File, Kind, Project, parse};
 
 use crate::ecosystem::{PublishTimeSource, Registry, Setup, UncoveredMetadata};
 use crate::identity::Ecosystem;
+use crate::intel::providers::osv::bundle;
+use crate::intel::providers::{datadog, github};
 use crate::intel::range::VersionOrder;
 use crate::intel::stream;
+
+/// OSV's bundle for this ecosystem.
+pub const OSV: stream::Stream = stream::osv(bundle::PYPI_STREAM, bundle::PYPI_BUNDLE, |bytes| {
+    stream::osv_bundle(Ecosystem::PyPI, bytes)
+});
+
+/// Datadog's manifest for this ecosystem.
+pub const DATADOG: stream::Stream =
+    stream::datadog(datadog::PYPI_STREAM, datadog::PYPI_MANIFEST, |bytes| {
+        stream::datadog_manifest(Ecosystem::PyPI, bytes)
+    });
+
+/// GitHub's advisories for this ecosystem.
+pub const GITHUB: stream::Stream =
+    stream::github(github::PYPI_STREAM, github::PYPI_QUERY, |bytes| {
+        stream::github_advisories(Ecosystem::PyPI, bytes)
+    });
 
 /// This ecosystem's row of [`crate::ecosystem::TABLE`].
 pub const REGISTRY: Registry = Registry {
@@ -38,11 +57,7 @@ pub const REGISTRY: Registry = Registry {
     documents: &[SIMPLE_JSON, SIMPLE_HTML, "text/html"],
     other_is_probe: true,
     publish_times: PublishTimeSource::Record,
-    streams: &[
-        &stream::OSV_PYPI,
-        &stream::DATADOG_PYPI,
-        &stream::GITHUB_PYPI,
-    ],
+    streams: &[&OSV, &DATADOG, &GITHUB],
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
     clients: clients::CLIENTS,
@@ -87,6 +102,7 @@ pub const REGISTRY: Registry = Registry {
         crate::analysis::source::compare_pypi(package, built, job.layout)
     },
     unfound_source: "none of the package's Python files is in the source",
+    osv_name: "PyPI",
     metadata_names_repository: |_| false,
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))

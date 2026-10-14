@@ -31,7 +31,7 @@ impl Run {
     }
 }
 
-/// Load every stream in [`stream::ALL`] into the intel store, and append what each stream
+/// Load every stream in [`stream::all`] into the intel store, and append what each stream
 /// did to the ingestion history.
 pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: Notice<'_>) -> Run {
     let intel = match postgres::required(environment).await {
@@ -49,7 +49,7 @@ pub async fn run<L: Fn(&str) -> Option<OsString>>(environment: &Env<L>, notice: 
 
     let read = fetch::read_streams(
         &setup.http,
-        stream::ALL,
+        stream::all(),
         (&setup.urls, setup.github_token.as_deref()),
         notice,
     )

@@ -22,11 +22,8 @@ const PUBLISHERS: [(&str, bool); 4] = [
 
 /// The name OSV gives `ecosystem`, in `affected[].package.ecosystem` and in its bundle's
 /// path.
-pub const fn osv_name(ecosystem: Ecosystem) -> &'static str {
-    match ecosystem {
-        Ecosystem::Npm => "npm",
-        Ecosystem::PyPI => "PyPI",
-    }
+pub fn osv_name(ecosystem: Ecosystem) -> &'static str {
+    crate::ecosystem::of(ecosystem).osv_name
 }
 
 /// Why a record produced no rows.
