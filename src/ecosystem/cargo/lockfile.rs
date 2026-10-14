@@ -77,7 +77,11 @@ fn packages(text: &str) -> Result<BTreeSet<Locked>, String> {
 
 /// For `byrle warm`: each crates.io package's download, at the path the proxy serves it.
 fn downloads(text: &str) -> Result<Vec<LockedArtifact>, String> {
-    Ok(lock(text)?
+    Ok(crates_io_downloads(&lock(text)?))
+}
+
+fn crates_io_downloads(packages: &[Package]) -> Vec<LockedArtifact> {
+    packages
         .iter()
         .filter(|package| package.is_crates_io())
         .map(|package| LockedArtifact {
@@ -89,14 +93,15 @@ fn downloads(text: &str) -> Result<Vec<LockedArtifact>, String> {
             platform: Platform::default(),
             url: None,
         })
-        .collect())
+        .collect()
 }
 
 /// For `byrle lockfile verify`: a crates.io package records no URL; a git or other
 /// registry's package is named by its source. A path dependency is the project's own.
 fn sources(text: &str) -> Result<Vec<LockedArtifact>, String> {
-    let artifacts = downloads(text)?;
-    let elsewhere = lock(text)?
+    let packages = lock(text)?;
+    let artifacts = crates_io_downloads(&packages);
+    let elsewhere = packages
         .into_iter()
         .filter(|package| !package.is_crates_io())
         .filter_map(|package| {

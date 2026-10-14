@@ -467,7 +467,7 @@ mod tests {
             (
                 "unknown",
                 run(
-                    &[PathBuf::from("/nonexistent/Cargo.lock")],
+                    &[PathBuf::from("/nonexistent/go.sum")],
                     Some("http://proxy.test"),
                     &with(&[]),
                 ),
