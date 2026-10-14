@@ -13,6 +13,7 @@ Dependency Firewall - Detects and blocks malicious dependencies
 * docs/threat-model.md - What byrle defends against, what it trusts, and its bypasses
 * docs/policy-reference.md - Every policy key, its default, and which way it loosens
 * docs/admin-plan.md - Stage 4.9 plan: admin console, its APIs and web interface
+* docs/runbook.md - A team running byrle in blocking mode, from a release
 
 ## Standards
 

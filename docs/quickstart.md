@@ -13,7 +13,8 @@ warm the lockfiles, then enforce.
 cargo build --release
 ```
 
-The binary is `target/release/byrle`. There is no published release yet.
+The binary is `target/release/byrle`. A release's static binaries and image, and how to
+verify them, are in [runbook](runbook.md) §1.
 
 ## 2. An intel store
 

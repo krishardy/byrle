@@ -3015,7 +3015,9 @@ role gets 403 from every endpoint except `GET health`.
       `unclaimed_maintainer_email_domain`, once the sandbox has a SOCKS5 proxy allowing
       WHOIS, TCP port 43. Moved from Stage 4 on 2026-10-01. Checked that day: the only
       egress is `egress-proxy:3128`, and `whois.verisign-grs.com` does not resolve.
-- [ ] Get one external team running it in blocking mode; fix what they hit
+- [ ] Get one external team running it in blocking mode; fix what they hit. Runbook written
+      2026-10-14 for v0.1.0: [runbook](docs/runbook.md). Left: a team, and what they send
+      back
 
 **Exit:** an external team runs it enforcing for two weeks without disabling it.
 
