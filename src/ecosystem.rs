@@ -34,6 +34,43 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
     ) -> BoxFuture<'a, Result<Option<FullDocument>, String>>;
 }
 
+/// A metadata document the proxy read on its way to the client.
+pub trait Document: Send + Sync {
+    /// The records, when the document normalised.
+    fn metadata(&self) -> Option<&PackageMetadata>;
+
+    /// The body with refused versions removed and artifacts pointed at the proxy, or
+    /// `None` to forward it as it came.
+    fn rewrite(&self, rewriting: &Rewriting<'_>) -> Option<Vec<u8>>;
+}
+
+/// What an adapter's [`Registry::read`] is given: a metadata body on its way to the client.
+pub struct Reading<'a> {
+    pub decoded: &'a [u8],
+    pub kind: DocumentKind,
+    /// The upstream URL of the document, which relative links in it are resolved against.
+    pub page: &'a str,
+    pub store: &'a std::sync::Mutex<crate::store::RecordStore>,
+    pub origins: &'a crate::origin::OriginPolicy,
+    /// The body's size as it arrived, before decoding.
+    pub encoded_bytes: usize,
+    pub parse_started: std::time::Instant,
+    pub path: &'a str,
+}
+
+/// What [`Document::rewrite`] is given.
+pub struct Rewriting<'a> {
+    pub decoded: &'a [u8],
+    /// The proxy's own address, or `None` when artifacts are left on their own host.
+    pub base: Option<&'a str>,
+    pub origins: &'a crate::origin::OriginPolicy,
+    /// Versions the policy refuses, which are removed.
+    pub refused_by_policy: &'a std::collections::HashSet<String>,
+    /// Whether a version on an origin the proxy does not serve is removed too.
+    pub refuse_unservable: bool,
+    pub path: &'a str,
+}
+
 /// A document fetched for its publish times: [`Fetch::full`].
 #[derive(Debug, Clone)]
 pub struct FullDocument {
@@ -233,6 +270,8 @@ pub struct Registry {
     pub upstream_url: fn(&str, &str) -> String,
     /// The registry client for the upstream, with each decoded body bounded.
     pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
+    /// A metadata body read on its way to the client, or `None` to forward it unread.
+    pub read: fn(Reading<'_>) -> Option<Box<dyn Document>>,
 }
 
 /// Each served ecosystem's upstream base, with no trailing slash, one per [`TABLE`] row.
@@ -712,7 +751,7 @@ mod table {
             ("src/intel/range.rs", 1),
             ("src/intel/store.rs", 1),
             ("src/intel/stream.rs", 6),
-            ("src/proxy.rs", 9),
+            ("src/proxy.rs", 3),
             ("src/proxy/testing.rs", 1),
             ("src/warm.rs", 5),
         ]

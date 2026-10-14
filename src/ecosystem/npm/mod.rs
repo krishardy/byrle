@@ -56,6 +56,21 @@ pub const REGISTRY: Registry = Registry {
     canonical_name: paths::canonical_name,
     upstream: crate::env::UPSTREAM_NPM,
     upstream_url: paths::upstream_url,
+    read: |reading| {
+        let crate::route::DocumentKind::Packument(detail) = reading.kind else {
+            return None;
+        };
+        let packument = read_packument(
+            reading.decoded,
+            detail,
+            reading.store,
+            reading.origins,
+            reading.encoded_bytes,
+            reading.parse_started,
+            reading.path,
+        )?;
+        Some(Box::new(Packument(packument)))
+    },
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))
     },
@@ -82,4 +97,25 @@ pub(crate) fn fixture(name: &str) -> Vec<u8> {
 #[cfg_attr(coverage_nightly, coverage(off))]
 pub(crate) fn normalized(name: &str, detail: DocumentDetail) -> crate::record::PackageMetadata {
     normalize_packument(&fixture(name), detail).expect("fixture should normalise")
+}
+
+/// A packument read on its way to the client.
+struct Packument(Box<crate::record::PackageMetadata>);
+
+impl crate::ecosystem::Document for Packument {
+    fn metadata(&self) -> Option<&crate::record::PackageMetadata> {
+        Some(&self.0)
+    }
+
+    fn rewrite(&self, r: &crate::ecosystem::Rewriting<'_>) -> Option<Vec<u8>> {
+        rewrite_packument(Rewrite {
+            decoded: r.decoded,
+            packument: &self.0,
+            base: r.base,
+            origins: r.origins,
+            refused_by_policy: r.refused_by_policy,
+            refuse_unservable: r.refuse_unservable,
+            path: r.path,
+        })
+    }
 }

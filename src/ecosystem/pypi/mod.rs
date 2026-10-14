@@ -57,6 +57,19 @@ pub const REGISTRY: Registry = Registry {
     canonical_name: paths::canonical_name,
     upstream: crate::env::UPSTREAM_PYPI,
     upstream_url: paths::upstream_url,
+    read: |reading| {
+        let crate::route::DocumentKind::SimpleIndex(format) = reading.kind else {
+            return None;
+        };
+        let index = read_index(
+            reading.decoded,
+            format,
+            reading.page,
+            reading.store,
+            reading.path,
+        )?;
+        Some(Box::new(index))
+    },
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))
     },
@@ -89,4 +102,22 @@ pub(crate) fn fixture() -> Vec<u8> {
         env!("CARGO_MANIFEST_DIR")
     );
     std::fs::read(path).expect("the fixture is present")
+}
+
+impl crate::ecosystem::Document for Index {
+    fn metadata(&self) -> Option<&crate::record::PackageMetadata> {
+        self.metadata.as_deref()
+    }
+
+    fn rewrite(&self, r: &crate::ecosystem::Rewriting<'_>) -> Option<Vec<u8>> {
+        rewrite::rewrite_index(rewrite::Rewrite {
+            decoded: r.decoded,
+            format: self.format,
+            project: &self.project,
+            reachable: r.origins.reachable(),
+            base: r.base,
+            refused_by_policy: r.refused_by_policy,
+            path: r.path,
+        })
+    }
 }

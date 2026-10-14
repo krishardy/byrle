@@ -1071,29 +1071,25 @@ async fn filtered_document(
         }
     };
 
-    let read = match document {
-        DocumentKind::Packument(detail) => npm::read_packument(
-            &decoded,
-            detail,
-            &proxy.store,
-            &proxy.config.origins,
-            body.len(),
-            parse_started,
-            path,
-        )
-        .map(Read::Packument),
-        DocumentKind::SimpleIndex(format) => {
-            let page = upstream_url(proxy, Ecosystem::PyPI, path, None);
-            pypi::read_index(&decoded, format, &page, &proxy.store, path).map(Read::SimpleIndex)
-        }
-    };
+    let registry = ecosystem::serving(path);
+    let page = upstream_url(proxy, registry.ecosystem, path, None);
+    let read = (registry.read)(ecosystem::Reading {
+        decoded: &decoded,
+        kind: document,
+        page: &page,
+        store: &proxy.store,
+        origins: &proxy.config.origins,
+        encoded_bytes: body.len(),
+        parse_started,
+        path,
+    });
     let Some(read) = read else {
         return DocumentStep::Forward {
             body: None,
             refused: Refused::default(),
         };
     };
-    report_undated(proxy, &read, path);
+    report_undated(proxy, read.as_ref(), path);
     let normalized = read.metadata();
 
     let intel = match normalized {
@@ -1133,26 +1129,14 @@ async fn filtered_document(
         .then_some(negotiation.rewrite_base.as_deref())
         .flatten();
 
-    let body = match &read {
-        Read::Packument(packument) => npm::rewrite_packument(npm::Rewrite {
-            decoded: &decoded,
-            packument,
-            base,
-            origins: &proxy.config.origins,
-            refused_by_policy: &refused_by_policy.versions,
-            refuse_unservable: proxy.config.refuse_unservable,
-            path,
-        }),
-        Read::SimpleIndex(index) => pypi::rewrite::rewrite_index(pypi::rewrite::Rewrite {
-            decoded: &decoded,
-            format: index.format,
-            project: &index.project,
-            reachable: proxy.config.origins.reachable(),
-            base,
-            refused_by_policy: &refused_by_policy.versions,
-            path,
-        }),
-    };
+    let body = read.rewrite(&ecosystem::Rewriting {
+        decoded: &decoded,
+        base,
+        origins: &proxy.config.origins,
+        refused_by_policy: &refused_by_policy.versions,
+        refuse_unservable: proxy.config.refuse_unservable,
+        path,
+    });
     DocumentStep::Forward {
         body,
         refused: refused_by_policy,
@@ -3090,7 +3074,7 @@ async fn full_document(proxy: &Proxy, key: &PackageKey) -> Option<FullDocument> 
 
 /// Say when a cooldown cannot be answered while filtering this document, because a PEP 503
 /// page carries no publish time, and that [`dated_by_host`] answers it on the artifact.
-fn report_undated(proxy: &Proxy, read: &Read, path: &str) {
+fn report_undated(proxy: &Proxy, read: &dyn ecosystem::Document, path: &str) {
     if !proxy
         .config
         .policy
@@ -3181,22 +3165,6 @@ fn uncached_json(status: StatusCode, body: impl Serialize) -> Response {
         axum::Json(body),
     )
         .into_response()
-}
-
-/// A metadata document as its ecosystem's reader returned it.
-enum Read {
-    Packument(Box<PackageMetadata>),
-    SimpleIndex(pypi::Index),
-}
-
-impl Read {
-    /// The records, when the document normalised.
-    fn metadata(&self) -> Option<&PackageMetadata> {
-        match self {
-            Self::Packument(packument) => Some(packument),
-            Self::SimpleIndex(index) => index.metadata.as_deref(),
-        }
-    }
 }
 
 /// `Retry-After` on a 503. See docs/engineering_decisions/deferral-status-codes.md.
