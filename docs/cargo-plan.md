@@ -36,6 +36,10 @@ twice more.
 
 ## Decisions
 
+Answered by the user 2026-10-14: Q1 yes; Q3 yes, on any path; Q4 as `install_scripts`, not
+the check of its own recommended; Q5 deferred until there are measurements and a reliable
+source of attestation data. Q2 and Q6 are taken as recommended.
+
 | | Question | Recommended |
 |---|---|---|
 | Q1 | Move the branch points behind the adapter before cargo? | Yes: an `Adapter` per ecosystem, holding what each branch point asks, with npm and PyPI's behaviour unchanged and their tests passing as they are. Then cargo is a new adapter and a row in the table |
@@ -52,13 +56,16 @@ twice more.
 2. The cargo adapter: `config.json` with `dl` pointed at the proxy and `auth-required`,
    index files read into records and filtered by removing refused versions' lines,
    downloads verified against `cksum`.
-3. The `.crate` reader: its `Cargo.toml` for a build script and `proc-macro`, for Q4.
+3. The `.crate` reader: its `Cargo.toml` for a build script and `proc-macro`, which
+   `install_scripts` refuses under the default `block` (Q4).
 4. `osv/cargo` (Q6), and `Cargo.lock` for `warm`, `explain`, `policy diff` and
    `lockfile verify`.
 5. `byrle doctor` for `~/.cargo/config.toml` and `CARGO_REGISTRIES_*`, and the startup line.
 6. `make smoke-cargo`: real `cargo build` and `cargo install` through the proxy, with a
    token, a refused version and a cooldown.
 7. Docs: quickstart, policy-reference, threat-model, runbook.
+8. Q5, later: measure how many versions carry `trustpub_data`, and whether it can be read
+   reliably without a request per version, before deciding.
 
 ## Exit
 
