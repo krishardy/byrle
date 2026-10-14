@@ -35,7 +35,12 @@ jobs:
           rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
           rustup default "$RUST_TOOLCHAIN"
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # shellcheck 0.11.0 and python3 are preinstalled on ubuntu-26.04, which `make lint` requires.
+      # The pinned shellcheck, ahead of the runner's on PATH, so the version is ours to choose.
+      # python3, which `make lint` also needs, is preinstalled.
+      - run: make install-shellcheck
+        env:
+          SHELLCHECK_DEST: ${{ runner.temp }}/bin
+      - run: echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - run: make lint
 
   test:
