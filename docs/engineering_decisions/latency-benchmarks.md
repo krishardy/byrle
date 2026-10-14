@@ -30,7 +30,16 @@ direct. Three causes, each measured on its own:
 | The intel query worked out each advisory's `exploited` and aliases once per row, and pillow's 153 advisories, listing their versions, are 9,441 rows; each was a sequential scan of `exploited_cve` | 1,261 ms to execute | once per advisory, in a materialised CTE, with an indexed EXISTS for each of the two ways to be exploited | 66 ms |
 | HTTP/2 to the file host at hyper's default window, through the forward proxy | scipy's 35 MB wheel in 1.20 s through the proxy, 0.41 to 0.72 s by curl; the proxy used 15% of a core | `http2_adaptive_window` on every upstream client | 0.52 to 0.94 s |
 
-`http1_only` left the wheel at 1.14 to 1.20 s. With all three the install took 1.57 to
+`http1_only` left the wheel at 1.14 to 1.20 s. npm was not slowed by the default window,
+measured the same day through an analysed proxy:
+
+| | `@next/swc-linux-x64-gnu-16.4.0.tgz`, three downloads | `npm ci`, 207 packages |
+|---|---|---|
+| default window | 0.51, 0.51, 0.51 s | 4.32, 4.42, 4.80 s |
+| adaptive window | 0.48, 0.48, 0.50 s | 4.45, 4.64, 4.74 s |
+| direct | 0.34, 0.33, 0.33 s | 4.31, 4.45, 4.51 s |
+
+With all three the install took 1.57 to
 2.30 s through the proxy, and 1.59 to 2.99 s direct in the same run.
 
 ## As deployed, 2026-10-13
