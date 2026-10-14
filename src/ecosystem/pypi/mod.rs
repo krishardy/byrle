@@ -13,6 +13,7 @@ pub mod paths;
 pub mod rewrite;
 pub mod transport;
 pub mod version;
+pub mod wheel;
 pub mod wire;
 
 pub use error::PypiError;

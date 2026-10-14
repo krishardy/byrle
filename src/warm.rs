@@ -86,10 +86,10 @@ pub async fn run<L: Fn(&str) -> Option<std::ffi::OsString>>(
         Ok(plan) => plan,
         Err(e) => return unread(e.to_string()),
     };
-    let outcomes = warm(&http, &base, &plan, deadline).await;
+    let (outcomes, skipped) = warm(&http, &base, (&plan, targets), deadline).await;
     Warmed {
         notes: Vec::new(),
-        report: render(&outcomes, plan.skipped),
+        report: render(&outcomes, plan.skipped + skipped),
         code: code(&outcomes),
     }
 }
@@ -155,12 +155,14 @@ fn client(token: Option<String>) -> Result<reqwest::Client, String> {
 
 /// `plan`'s artifacts asked of the proxy at `base`, labelled. Every artifact is asked for
 /// once, which starts each analysis, before any is asked for again.
+/// Each artifact's outcome, and how many files of the versions read through the proxy were
+/// left out for other platforms.
 async fn warm(
     http: &reqwest::Client,
     base: &str,
-    plan: &Plan,
+    (plan, targets): (&Plan, Option<&[Target]>),
     deadline: Duration,
-) -> Vec<(String, Outcome)> {
+) -> (Vec<(String, Outcome)>, usize) {
     let upstreams = Upstreams::defaults().with(Ecosystem::Npm, base).with(
         Ecosystem::PyPI,
         &format!(
@@ -174,19 +176,25 @@ async fn warm(
         crate::env::DEFAULT_MAX_METADATA_BYTES,
     );
     let versions = crate::lockfile::references(plan.versions.iter().cloned());
-    let found: Vec<Vec<(String, Ask)>> = futures_util::stream::iter(&versions)
+    let found: Vec<(Vec<(String, Ask)>, usize)> = futures_util::stream::iter(&versions)
         .map(|(purl, reference, version)| {
             let clients = &clients;
-            async move { asks_for(base, purl, clients.record(reference.key(), version).await) }
+            async move {
+                let record = clients.record(reference.key(), version).await;
+                asks_for(base, purl, record, targets)
+            }
         })
         .buffered(IN_FLIGHT)
         .collect()
         .await;
+    let skipped = found.iter().map(|(_, skipped)| skipped).sum();
     let direct = plan
         .direct
         .iter()
         .map(|(label, path)| (label.clone(), Ask::Fetch(format!("{base}{path}"))));
-    let asks: Vec<(String, Ask)> = direct.chain(found.into_iter().flatten()).collect();
+    let asks: Vec<(String, Ask)> = direct
+        .chain(found.into_iter().flat_map(|(asks, _)| asks))
+        .collect();
     let first: Vec<(String, Answer, Option<String>)> = futures_util::stream::iter(asks)
         .map(|(label, ask)| {
             let http = http.clone();
@@ -200,7 +208,7 @@ async fn warm(
         .buffered(IN_FLIGHT)
         .collect()
         .await;
-    futures_util::stream::iter(first)
+    let outcomes = futures_util::stream::iter(first)
         .map(|(label, answer, url)| {
             let http = http.clone();
             async move {
@@ -216,27 +224,42 @@ async fn warm(
         })
         .buffered(IN_FLIGHT)
         .collect()
-        .await
+        .await;
+    (outcomes, skipped)
 }
 
-/// What to ask for one locked version, given its record from the proxy.
+/// What to ask for one locked version, given its record from the proxy, and how many of
+/// its files were left out. A PyPI version's files are those an install on one of
+/// `targets` could fetch: its wheels for them, or its sdist when it has none.
 fn asks_for(
     base: &str,
     purl: &str,
     record: Result<Option<crate::record::PackageRecord>, String>,
-) -> Vec<(String, Ask)> {
-    match record {
-        Err(e) => vec![(purl.to_owned(), Ask::Known(Outcome::Failed(e)))],
-        Ok(None) => vec![(purl.to_owned(), Ask::Known(Outcome::NotListed))],
-        Ok(Some(record)) => record
-            .artifacts
-            .iter()
-            .map(|artifact| {
-                let label = format!("{purl} {}", artifact.filename);
-                (label, Ask::Fetch(on_proxy(base, &artifact.url)))
-            })
-            .collect(),
+    targets: Option<&[Target]>,
+) -> (Vec<(String, Ask)>, usize) {
+    let record = match record {
+        Err(e) => return (vec![(purl.to_owned(), Ask::Known(Outcome::Failed(e)))], 0),
+        Ok(None) => return (vec![(purl.to_owned(), Ask::Known(Outcome::NotListed))], 0),
+        Ok(Some(record)) => record,
+    };
+    let mut files: Vec<&crate::record::Artifact> = record.artifacts.iter().collect();
+    if let (Ecosystem::PyPI, Some(targets)) = (record.package.key().ecosystem(), targets) {
+        let wheel = |filename: &str| {
+            targets
+                .iter()
+                .any(|t| crate::ecosystem::pypi::wheel::installs_on(filename, t))
+        };
+        let wheels = files.iter().any(|a| wheel(&a.filename));
+        files.retain(|a| wheel(&a.filename) || !wheels && !a.filename.ends_with(".whl"));
     }
+    let asks = files
+        .iter()
+        .map(|artifact| {
+            let label = format!("{purl} {}", artifact.filename);
+            (label, Ask::Fetch(on_proxy(base, &artifact.url)))
+        })
+        .collect();
+    (asks, record.artifacts.len() - files.len())
 }
 
 /// What to do for one label: an answer already known, or an artifact URL to ask for.
@@ -566,17 +589,25 @@ mod tests {
         }
     }
 
-    /// A lockfile with no artifact reader is warmed through the proxy's metadata, sending
-    /// [`crate::env::TOKEN`]: a listed version's files are asked for, an unlisted one reported.
-    #[tokio::test]
-    async fn a_lockfile_without_artifact_paths_is_warmed_through_the_metadata() {
+    /// A proxy serving project `x`'s JSON index listing `files`, each served at
+    /// `/packages/<file>` behind a token but those in `missing`, which are 404, and its URL.
+    async fn index_of(files: &[&str], missing: &[&str]) -> String {
+        let missing: Vec<String> = missing.iter().map(|m| (*m).to_owned()).collect();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
+        let listed: Vec<String> = files
+            .iter()
+            .map(|file| {
+                format!(
+                    r#"{{"filename":"{file}","url":"https://byrle.example/packages/{file}",
+                        "hashes":{{"sha256":"{}"}}}}"#,
+                    "a".repeat(64)
+                )
+            })
+            .collect();
         let index = format!(
-            r#"{{"meta":{{"api-version":"1.0"}},"name":"x","files":[{{"filename":"x-1.0.tar.gz",
-                "url":"https://byrle.example/packages/x-1.0.tar.gz",
-                "hashes":{{"sha256":"{}"}}}}]}}"#,
-            "a".repeat(64)
+            r#"{{"meta":{{"api-version":"1.0"}},"name":"x","files":[{}]}}"#,
+            listed.join(",")
         );
         let router = Router::new()
             .route(
@@ -594,9 +625,28 @@ mod tests {
                     }
                 }),
             )
-            .route("/packages/x-1.0.tar.gz", get(|| async { "bytes" }))
+            .route(
+                "/packages/{file}",
+                get(
+                    move |axum::extract::Path(file): axum::extract::Path<String>| async move {
+                        if missing.contains(&file) {
+                            Err(StatusCode::NOT_FOUND)
+                        } else {
+                            Ok("bytes")
+                        }
+                    },
+                ),
+            )
             .layer(axum::middleware::from_fn(needs_token));
         tokio::spawn(axum::serve(listener, router).into_future());
+        base
+    }
+
+    /// A lockfile with no artifact reader is warmed through the proxy's metadata, sending
+    /// [`crate::env::TOKEN`]: a listed version's files are asked for, an unlisted one reported.
+    #[tokio::test]
+    async fn a_lockfile_without_artifact_paths_is_warmed_through_the_metadata() {
+        let base = index_of(&["x-1.0.tar.gz"], &[]).await;
         let path = crate::util::test_support::tempdir("warm-pypi").join("requirements.txt");
         std::fs::write(&path, "x==1.0\nx==2.0\n").unwrap();
 
@@ -608,6 +658,43 @@ mod tests {
             "pkg:pypi/x@2.0: not listed by the proxy\n\
              1 warmed, 0 refused, 1 not listed, 0 not ready, 0 still being analysed, 0 failed; \
              0 skipped for other platforms\n"
+        );
+    }
+
+    /// For a target, a version's wheels for it are asked for, or its sdist when it has none.
+    /// Every other file is skipped, and 404, so asking for one would be reported.
+    #[tokio::test]
+    async fn a_pypi_version_is_warmed_with_the_files_its_target_installs() {
+        let files = [
+            "x-1.0.tar.gz",
+            "x-1.0-cp313-cp313-manylinux_2_17_x86_64.whl",
+            "x-1.0-cp313-cp313-win_amd64.whl",
+            "x-2.0.tar.gz",
+            "x-2.0-cp313-cp313-win_amd64.whl",
+        ];
+        let base = index_of(&files, &[files[0], files[2], files[4]]).await;
+        let path = crate::util::test_support::tempdir("warm-pypi-target").join("requirements.txt");
+        std::fs::write(&path, "x==1.0\nx==2.0\n").unwrap();
+        let environment = with(&[(crate::env::TOKEN, "byrle_t")]);
+        let linux = [Target::parse("linux-x64").unwrap()];
+        let warmed = run(
+            std::slice::from_ref(&path),
+            Some(&base),
+            Some(&linux),
+            SHORT,
+            &environment,
+        )
+        .await;
+        assert_eq!(
+            warmed.report,
+            "2 warmed, 0 refused, 0 not listed, 0 not ready, 0 still being analysed, 0 failed; \
+             3 skipped for other platforms\n"
+        );
+        let every = run(&[path], Some(&base), None, SHORT, &environment).await;
+        assert!(
+            every.report.contains("2 warmed, 3 refused"),
+            "every platform's files are asked for: {}",
+            every.report
         );
     }
 
@@ -740,7 +827,13 @@ mod tests {
     fn a_version_lockfile_or_record_that_cannot_be_read_fails() {
         let missing = PathBuf::from("/nonexistent/requirements.txt");
         assert!(plan(&[missing], None).is_err());
-        let asked = asks_for("http://p", "pkg:npm/a@1.0.0", Err("unreachable".to_owned()));
+        let (asked, skipped) = asks_for(
+            "http://p",
+            "pkg:npm/a@1.0.0",
+            Err("unreachable".to_owned()),
+            None,
+        );
+        assert_eq!(skipped, 0);
         assert!(matches!(
             asked.as_slice(),
             [(purl, Ask::Known(Outcome::Failed(why)))] if purl == "pkg:npm/a@1.0.0" && why == "unreachable"
