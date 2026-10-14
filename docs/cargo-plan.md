@@ -34,6 +34,45 @@ two adapters, about 30 places still branch on npm against PyPI, among them:
 Adding cargo to each of those would change the interface a third time, and Go and Maven
 twice more.
 
+## The adapter, checked against five ecosystems
+
+Each branch point is one of the questions below. A cell the adapter cannot answer would
+make the interface change again, so each is checked before any code. npm, PyPI, cargo and
+Go were measured 2026-10-14; Maven Central answers this machine's forward proxy with 403,
+so its column is from its documented repository layout, unmeasured.
+
+| Question | npm | PyPI | cargo | Go | Maven |
+|---|---|---|---|---|---|
+| Route a path to metadata or artifact | packument, tarball | simple page, file | index line file, `.crate` | `@v/list`, `.info`, `.mod`, `.zip` | `maven-metadata.xml`, `.pom`, `.jar` |
+| Read and filter a document | JSON object of versions | JSON or HTML list of files | JSON lines, one per version | text, one version per line | XML `<versions>` |
+| Publish time | full packument, a second request | the file's `upload-time`, or the host's `Last-Modified` | `pubtime` on each line | `Time` in `@v/<ver>.info`, a request per version | the artifact's `Last-Modified`, a request per version |
+| Artifact digest | SRI in the document, checked while streaming | sha256 in the document, streaming | `cksum`, sha256, streaming | `h1:`, a hash over the zip's files, from `sum.golang.org`: checked after the whole zip is read | `.sha1` or `.sha256` beside the file, a second request |
+| Code run at install or build | `package.json` scripts | an sdist's build | build script, proc-macro (Q4) | none | none: a dependency's plugins do not run |
+| Source to compare with | `repository` | none today | `.cargo_vcs_info.json` names the commit | the zip is the repository at a tag | `-sources.jar` |
+| Attestations | Sigstore | Sigstore (PEP 740) | none; `trustpub_data` (Q5) | none; the checksum database | PGP `.asc` |
+| Lockfile | `package-lock.json` and others | `requirements.txt`, `uv.lock` | `Cargo.lock` | `go.sum` | none standard |
+| Client configuration | `.npmrc` | `pip.conf`, `uv.toml` | `~/.cargo/config.toml` source replacement | `GOPROXY` | `settings.xml` mirror |
+| Token sent as | `Bearer`, `Basic` | `Basic` | bare `Authorization` (Q3) | `Basic`, from `.netrc` | `Basic`, from `settings.xml` |
+| Version order | SemVer | PEP 440 | SemVer | SemVer with `v` and pseudo-versions | Maven's own |
+| Advisories | OSV `npm` | OSV `PyPI` | OSV `crates.io` | OSV `Go` | OSV `Maven` |
+
+So the adapter answers each row with its own types:
+
+- Fetching and reading a document, and filtering it, is a trait object per ecosystem:
+  the `Clients` fields, `Read` and `DocumentKind` become one value the adapter returns.
+- Publish times are asked per document or per pinned version, not chosen between two
+  ways: npm, Go and Maven each need a second request, of a different shape.
+- A digest is checked while streaming, or after the artifact is spooled: Go's `h1:` and
+  Maven's sidecar file cannot be checked as the bytes pass.
+- The rest are fields of the `Registry` table, as now: each returns `None` where an
+  ecosystem has nothing, such as Go's install-time code.
+
+`DocumentDetail` (`record.rs:11`), npm's abbreviated and full packuments, is used in shared
+code at `analysis.rs:207`, `detector/metadata.rs:91`, `policy/facts.rs:138` and
+`record.rs:205`; it becomes the adapter's own. A test asserts that no `ecosystem::npm`,
+`ecosystem::pypi` or `Ecosystem::Npm`/`PyPI` arm appears outside `src/ecosystem/`, with
+today's sites on an allow-list that each commit shortens. Step 1 is done when it is empty.
+
 ## Decisions
 
 Answered by the user 2026-10-14: Q1 yes; Q3 yes, on any path; Q4 as `install_scripts`, not
