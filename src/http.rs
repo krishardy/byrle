@@ -66,12 +66,14 @@ fn redacted(url: &str) -> String {
 
 /// Every client this build fetches with: the proxy's upstream client and the intel
 /// refresh's. `read_timeout` is [`READ_TIMEOUT`] in the binary; a test passes a short one.
-/// There is no total timeout: see [`READ_TIMEOUT`].
+/// There is no total timeout: see [`READ_TIMEOUT`]. HTTP/2's window grows with the link:
+/// at hyper's default, scipy's 35 MB wheel came through a forward proxy at half curl's rate.
 pub fn client_builder(read_timeout: Duration) -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .user_agent(concat!("byrle/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(read_timeout)
+        .http2_adaptive_window(true)
 }
 
 /// Whether `url` is `https`, or `http` to loopback, where nothing between can read it.

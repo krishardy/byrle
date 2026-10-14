@@ -533,36 +533,7 @@ impl Intel for PgIntel {
         Box::pin(async move {
             let rows = sqlx::query!(
                 r#"
-                SELECT
-                    s.digest        AS "snapshot!",
-                    EXISTS (SELECT 1 FROM intel_source WHERE source = $3)
-                                    AS "exploitation_loaded!",
-                    m.is_range      AS "is_range?",
-                    m.version       AS "version?",
-                    m.introduced    AS "introduced?",
-                    m.introduced_excluded AS "introduced_excluded?",
-                    m.fixed         AS "fixed?",
-                    m.last_affected AS "last_affected?",
-                    a.publisher_id  AS "advisory_id?",
-                    a.source        AS "source?",
-                    a.cvss          AS "cvss?",
-                    a.cvss_source   AS "cvss_source?",
-                    a.severity_band AS "severity_band?",
-                    (a.exploited OR EXISTS (
-                        SELECT 1 FROM exploited_cve k
-                        WHERE k.cve_id = a.publisher_id
-                           OR k.cve_id IN (
-                               SELECT al.alias FROM advisory_alias al WHERE al.advisory_id = a.id
-                           )
-                    ))              AS "exploited?",
-                    a.malware       AS "malware?",
-                    to_char(a.cached AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "cached?",
-                    ARRAY(
-                        SELECT al.alias FROM advisory_alias al
-                        WHERE al.advisory_id = a.id ORDER BY al.alias
-                    )               AS "aliases!"
-                FROM (SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s
-                LEFT JOIN (
+                WITH m AS (
                     SELECT advisory_id, FALSE AS is_range, version,
                            NULL::varchar AS introduced, NULL::boolean AS introduced_excluded,
                            NULL::varchar AS fixed, NULL::varchar AS last_affected
@@ -571,9 +542,36 @@ impl Intel for PgIntel {
                     SELECT advisory_id, TRUE, NULL, introduced, introduced_excluded,
                            fixed, last_affected
                     FROM advisory_range WHERE ecosystem = $1 AND name = $2
-                ) m ON TRUE
-                LEFT JOIN advisory a ON a.id = m.advisory_id
-                ORDER BY a.publisher_id, m.is_range, m.version, m.introduced,
+                ),
+                adv AS MATERIALIZED (
+                    SELECT a.id, a.publisher_id, a.source, a.cvss, a.cvss_source,
+                        a.severity_band, a.malware, a.cached,
+                        (a.exploited
+                            OR EXISTS (SELECT 1 FROM exploited_cve k WHERE k.cve_id = a.publisher_id)
+                            OR EXISTS (SELECT 1 FROM advisory_alias al JOIN exploited_cve k
+                                ON k.cve_id = al.alias WHERE al.advisory_id = a.id)) AS exploited,
+                        ARRAY(SELECT al.alias FROM advisory_alias al
+                            WHERE al.advisory_id = a.id ORDER BY al.alias) AS aliases
+                    FROM advisory a
+                    WHERE a.id IN (SELECT advisory_id FROM m)
+                )
+                SELECT
+                    s.digest        AS "snapshot!",
+                    EXISTS (SELECT 1 FROM intel_source WHERE source = $3)
+                                    AS "exploitation_loaded!",
+                    m.is_range AS "is_range?", m.version AS "version?",
+                    m.introduced AS "introduced?", m.introduced_excluded AS "introduced_excluded?",
+                    m.fixed AS "fixed?", m.last_affected AS "last_affected?",
+                    adv.publisher_id AS "advisory_id?", adv.source AS "source?",
+                    adv.cvss AS "cvss?", adv.cvss_source AS "cvss_source?",
+                    adv.severity_band AS "severity_band?", adv.exploited AS "exploited?",
+                    adv.malware AS "malware?",
+                    to_char(adv.cached AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "cached?",
+                    COALESCE(adv.aliases, ARRAY[]::varchar[]) AS "aliases!"
+                FROM (SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s
+                LEFT JOIN m ON TRUE
+                LEFT JOIN adv ON adv.id = m.advisory_id
+                ORDER BY adv.publisher_id, m.is_range, m.version, m.introduced,
                          m.introduced_excluded, m.fixed, m.last_affected
                 "#,
                 ecosystem,
