@@ -191,8 +191,8 @@ pub enum UncoveredMetadata {
 pub struct Setup {
     /// The client.
     pub client: &'static str,
-    /// The command that sets its registry, before the address.
-    pub command: &'static str,
+    /// What points the client at `url`, the proxy's address with [`Setup::path`] after it.
+    pub command: fn(&str) -> String,
     /// The path the proxy serves this ecosystem under, after the address.
     pub path: &'static str,
 }
@@ -200,7 +200,7 @@ pub struct Setup {
 impl Setup {
     /// The command line for a proxy reached at `base`, a URL without a trailing `/`.
     pub fn command_line(&self, base: &str) -> String {
-        format!("{} {base}{}", self.command, self.path)
+        (self.command)(&format!("{base}{}", self.path))
     }
 }
 

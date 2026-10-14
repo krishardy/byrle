@@ -14,7 +14,7 @@ pub const PIP: Client = Client {
     name: "pip",
     registry: Some(RegistrySource::Read {
         read: pip_indexes,
-        set_index: |url| format!("pip config set global.index-url {url}"),
+        set_index: pip_set_index,
         drop_extra: || {
             "pip config unset global.extra-index-url, and the same for any other section or \
              variable `pip config list` shows setting one"
@@ -59,6 +59,11 @@ pub const UV: Client = Client {
 };
 
 pub const CLIENTS: &[Client] = &[PIP, UV];
+
+/// What points pip at `url`.
+pub fn pip_set_index(url: &str) -> String {
+    format!("pip config set global.index-url {url}")
+}
 
 fn pip_indexes(machine: &Machine) -> Result<Option<Indexes>, EnvError> {
     Ok((machine.run)("pip", &["config", "list"]).map(|listed| pip_config(&listed)))

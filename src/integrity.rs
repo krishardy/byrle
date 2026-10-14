@@ -236,6 +236,22 @@ impl Verifier {
     }
 }
 
+/// A hex sha256, as PyPI's index and cargo's write it, as the SRI string [`Sri::parse`] reads.
+/// Returns `None` when `hex` is not 64 hex characters.
+pub fn sri_from_sha256_hex(hex: &str) -> Option<String> {
+    use base64::Engine as _;
+    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let bytes: Vec<u8> = (0..32)
+        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("checked above"))
+        .collect();
+    Some(format!(
+        "sha256-{}",
+        base64::engine::general_purpose::STANDARD.encode(&bytes)
+    ))
+}
+
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
@@ -408,6 +424,31 @@ mod tests {
         assert!(Algorithm::Sha256 < Algorithm::Sha384);
         assert!(Algorithm::Sha384 < Algorithm::Sha512);
         assert_eq!(Algorithm::Sha512.to_string(), "sha512");
+    }
+
+    /// The index writes a hex digest and the verifier reads SRI, so one converts. The
+    /// digest below is `requests-0.2.0.tar.gz` as PyPI publishes it.
+    #[test]
+    fn a_hex_sha256_becomes_the_sri_string_the_verifier_reads() {
+        let hex = "813202ace4d9301a3c00740c700e012fb9f3f8c73ddcfe02ab558a8df6f175fd";
+        let converted = sri_from_sha256_hex(hex).expect("64 hex characters");
+        assert_eq!(
+            converted,
+            "sha256-gTICrOTZMBo8AHQMcA4BL7nz+Mc93P4Cq1WKjfbxdf0="
+        );
+        let parsed = Sri::parse(&converted).expect("valid SRI");
+        assert_eq!(parsed.algorithm(), Algorithm::Sha256);
+
+        assert!(sri_from_sha256_hex("not hex at all").is_none());
+        assert!(sri_from_sha256_hex(&hex[..63]).is_none(), "too short");
+        assert!(
+            sri_from_sha256_hex(&format!("{hex}0")).is_none(),
+            "too long"
+        );
+        assert!(
+            sri_from_sha256_hex(&"g".repeat(64)).is_none(),
+            "not hex digits"
+        );
     }
 }
 

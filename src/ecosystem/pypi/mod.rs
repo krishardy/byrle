@@ -66,7 +66,7 @@ pub const REGISTRY: Registry = Registry {
     clients: clients::CLIENTS,
     setup: Setup {
         client: "pip",
-        command: "pip config set global.index-url",
+        command: clients::pip_set_index,
         path: SIMPLE,
     },
     uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,

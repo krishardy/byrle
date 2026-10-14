@@ -73,7 +73,7 @@ pub const REGISTRY: Registry = Registry {
     clients: clients::CLIENTS,
     setup: Setup {
         client: clients::NPM.name,
-        command: clients::NPM.set_registry,
+        command: |url| format!("{} {url}", clients::NPM.set_registry),
         path: "/",
     },
     uncovered_metadata: UncoveredMetadata::Refuse,

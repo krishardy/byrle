@@ -1,8 +1,5 @@
 //! Turning a project index into records the policy engine reads.
 
-use base64::Engine as _;
-use base64::engine::general_purpose::STANDARD as BASE64;
-
 use crate::record::{PackageMetadata, SkippedVersion};
 
 use super::error::PypiError;
@@ -15,24 +12,15 @@ fn artifact(file: &File) -> crate::record::Artifact {
         runs_install_scripts: file.kind == Kind::Sdist,
         yanked: file.yanked.clone(),
         url: file.url.clone(),
-        integrity: file.sha256.as_deref().and_then(sri),
+        integrity: file
+            .sha256
+            .as_deref()
+            .and_then(crate::integrity::sri_from_sha256_hex),
         legacy_sha1: None,
         attestation_url: file.provenance.clone(),
         file_count: None,
         unpacked_size: None,
     }
-}
-
-/// `hashes.sha256` as an SRI string, the shape [`crate::integrity`] verifies.
-/// Returns `None` when `hex` is not 64 hex characters.
-fn sri(hex: &str) -> Option<String> {
-    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return None;
-    }
-    let bytes: Vec<u8> = (0..32)
-        .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).expect("checked above"))
-        .collect();
-    Some(format!("sha256-{}", BASE64.encode(&bytes)))
 }
 
 /// One [`crate::record::PackageRecord`] per version, holding every file, wheels first, each
@@ -265,25 +253,6 @@ mod tests {
             "2011-02-14T08:49:42.64166Z"
         );
         assert!(records.iter().all(|r| r.published_at.is_some()));
-    }
-
-    /// The index writes a hex digest and the verifier reads SRI, so one converts. The
-    /// digest below is `requests-0.2.0.tar.gz` as PyPI publishes it.
-    #[test]
-    fn a_hex_sha256_becomes_the_sri_string_the_verifier_reads() {
-        let hex = "813202ace4d9301a3c00740c700e012fb9f3f8c73ddcfe02ab558a8df6f175fd";
-        let converted = sri(hex).expect("64 hex characters");
-        assert_eq!(
-            converted,
-            "sha256-gTICrOTZMBo8AHQMcA4BL7nz+Mc93P4Cq1WKjfbxdf0="
-        );
-        let parsed = crate::integrity::Sri::parse(&converted).expect("valid SRI");
-        assert_eq!(parsed.algorithm(), crate::integrity::Algorithm::Sha256);
-
-        assert!(sri("not hex at all").is_none());
-        assert!(sri(&hex[..63]).is_none(), "too short");
-        assert!(sri(&format!("{hex}0")).is_none(), "too long");
-        assert!(sri(&"g".repeat(64)).is_none(), "not hex digits");
     }
 
     /// PEP 740: the index says where a file's attestation bundle is, in both forms.
