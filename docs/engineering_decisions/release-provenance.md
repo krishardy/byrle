@@ -19,9 +19,9 @@ Chosen by the user 2026-10-14:
 
 | Job | Runner | Does |
 |---|---|---|
-| `binaries` | `ubuntu-latest`, `ubuntu-24.04-arm` | `make release-check`, `make release-binary` in the pinned image, attests each tarball, uploads it |
-| `release` | `ubuntu-latest` | creates the GitHub release with each tarball and its `.sha256` |
-| `image` | `ubuntu-latest` | `make release-image-context`, builds `Containerfile.release` for `linux/amd64` and `linux/arm64`, pushes it tagged with the version, attests it by digest |
+| `binaries` | `ubuntu-26.04`, `ubuntu-26.04-arm` | `make release-check`, `make release-binary` in the pinned image, attests each tarball, uploads it |
+| `release` | `ubuntu-slim`, one CPU in a container: it only runs `gh` | creates the GitHub release with each tarball and its `.sha256` |
+| `image` | `ubuntu-26.04`, for a Docker daemon | `make release-image-context`, builds `Containerfile.release` for `linux/amd64` and `linux/arm64`, pushes it tagged with the version, attests it by digest |
 
 The image holds the binaries the `binaries` job attested, unpacked from their tarballs, so
 it is not a second, unattested build. It is distroless `static-debian13:nonroot`: CA

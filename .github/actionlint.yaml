@@ -1,0 +1,6 @@
+# Runner labels GitHub hosts that actionlint 1.7.12 does not list yet: Ubuntu 26.04, which
+# the workflows name rather than following ubuntu-latest's move to it from 2026-10-19.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
