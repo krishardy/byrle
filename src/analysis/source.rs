@@ -392,6 +392,9 @@ fn files(package: &Tree, source: &Tree, found: &mut Comparison, skip: &dyn Fn(&s
     }
 }
 
+/// The repository and directory a record names; `None` where the artifact's metadata says.
+pub type NamedSource = (Option<Repo>, Option<String>);
+
 /// How an artifact's files are laid out, which says how it is read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Layout {
@@ -405,12 +408,7 @@ impl Layout {
     /// The layout of the artifact `filename` in `ecosystem`. `None` for one this does not
     /// read, such as a zip sdist.
     pub fn of(ecosystem: Ecosystem, filename: &str) -> Option<Self> {
-        match ecosystem {
-            Ecosystem::Npm => Some(Self::Tar),
-            Ecosystem::PyPI if filename.ends_with(".whl") => Some(Self::Wheel),
-            Ecosystem::PyPI if filename.ends_with(".tar.gz") => Some(Self::Tar),
-            Ecosystem::PyPI => None,
-        }
+        (crate::ecosystem::of(ecosystem).layout)(filename)
     }
 }
 

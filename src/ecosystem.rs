@@ -272,6 +272,22 @@ pub struct Registry {
     pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
     /// A metadata body read on its way to the client, or `None` to forward it unread.
     pub read: fn(Reading<'_>) -> Option<Box<dyn Document>>,
+    /// What reads an artifact file for the code it runs on install; `None` if it runs none.
+    pub reader: fn(&str) -> Option<crate::analysis::Reader>,
+    /// How an artifact file is laid out, or `None` for one the source comparison does not read.
+    pub layout: fn(&str) -> Option<crate::analysis::source::Layout>,
+    /// Where a record's source is; `None` when there is nothing to compare with.
+    pub source: fn(&crate::record::PackageRecord) -> Option<crate::analysis::source::NamedSource>,
+    /// The artifact's files against its repository's; `None` if it holds nothing of them.
+    pub compare_source: fn(
+        &crate::analysis::source::Tree,
+        &crate::analysis::source::Tree,
+        &crate::analysis::run::SourceJob,
+    ) -> Option<crate::analysis::source::Comparison>,
+    /// Why nothing was compared, when [`Registry::compare_source`] answers `None`.
+    pub unfound_source: &'static str,
+    /// Whether a record's metadata would name a repository, so that naming none is a signal.
+    pub metadata_names_repository: fn(&crate::record::PackageRecord) -> bool,
 }
 
 /// Each served ecosystem's upstream base, with no trailing slash, one per [`TABLE`] row.
@@ -782,10 +798,6 @@ mod table {
     #[test]
     fn only_the_adapters_name_npm_or_pypi() {
         let allowed: std::collections::BTreeMap<String, usize> = [
-            ("src/analysis.rs", 3),
-            ("src/analysis/detector/metadata.rs", 1),
-            ("src/analysis/run/sourcing.rs", 4),
-            ("src/analysis/source.rs", 4),
             ("src/defer.rs", 1),
             ("src/doctor.rs", 3),
             ("src/ecosystem.rs", 2),

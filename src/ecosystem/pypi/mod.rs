@@ -70,6 +70,24 @@ pub const REGISTRY: Registry = Registry {
         )?;
         Some(Box::new(index))
     },
+    reader: |filename| {
+        (!filename.ends_with(".whl"))
+            .then_some(crate::analysis::sdist_install_scripts as crate::analysis::Reader)
+    },
+    layout: |filename| {
+        use crate::analysis::source::Layout;
+        if filename.ends_with(".whl") {
+            Some(Layout::Wheel)
+        } else {
+            filename.ends_with(".tar.gz").then_some(Layout::Tar)
+        }
+    },
+    source: |_| Some((None, None)),
+    compare_source: |package, built, job| {
+        crate::analysis::source::compare_pypi(package, built, job.layout)
+    },
+    unfound_source: "none of the package's Python files is in the source",
+    metadata_names_repository: |_| false,
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))
     },

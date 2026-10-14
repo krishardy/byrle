@@ -71,6 +71,22 @@ pub const REGISTRY: Registry = Registry {
         )?;
         Some(Box::new(Packument(packument)))
     },
+    reader: |_| Some(crate::analysis::npm_install_scripts),
+    layout: |_| Some(crate::analysis::source::Layout::Tar),
+    source: |record| {
+        let repository = record.repository.as_ref()?;
+        Some((
+            Some(crate::analysis::source::Repo::from_url(&repository.url)?),
+            repository.directory.clone(),
+        ))
+    },
+    compare_source: |package, built, job| {
+        built
+            .package(&job.name, job.directory.as_deref())
+            .map(|built| crate::analysis::source::compare(package, &built))
+    },
+    unfound_source: "no package.json in the source names the package",
+    metadata_names_repository: |record| record.detail == crate::record::DocumentDetail::Full,
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))
     },

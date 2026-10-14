@@ -4,8 +4,7 @@
 //! See docs/engineering_decisions/metadata-heuristics.md.
 
 use super::{Detecting, Detection, Detector, Finding};
-use crate::identity::Ecosystem;
-use crate::record::{DocumentDetail, PackageMetadata, PackageRecord};
+use crate::record::{PackageMetadata, PackageRecord};
 
 /// Its name, which its rules are not prefixed with in `signal_weights`.
 pub const NAME: &str = "metadata";
@@ -88,8 +87,7 @@ fn detection(listing: &Listing<'_>) -> Detection {
         );
     }
     let key = record.package.key();
-    if key.ecosystem() == Ecosystem::Npm
-        && record.detail == DocumentDetail::Full
+    if (crate::ecosystem::of(key.ecosystem()).metadata_names_repository)(record)
         && record.repository.is_none()
     {
         fired(RULES[2], "the metadata names none".to_owned());
@@ -149,6 +147,8 @@ mod tests {
     use super::*;
     use crate::analysis::detector::at_once;
     use crate::ecosystem::npm::normalize::normalize_packument;
+    use crate::identity::Ecosystem;
+    use crate::record::DocumentDetail;
 
     /// A full npm packument for `name` whose versions are each a version, days before
     /// 2026-09-29, a publisher, and whether it names a repository.

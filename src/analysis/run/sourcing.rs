@@ -48,16 +48,7 @@ impl SourceJob {
     /// not read.
     pub fn of(record: &PackageRecord, filename: &str, digest: &Sri, url: String) -> Option<Self> {
         let ecosystem = record.package.key().ecosystem();
-        let (repo, directory) = match ecosystem {
-            Ecosystem::Npm => {
-                let repository = record.repository.as_ref()?;
-                (
-                    Some(Repo::from_url(&repository.url)?),
-                    repository.directory.clone(),
-                )
-            }
-            Ecosystem::PyPI => (None, None),
-        };
+        let (repo, directory) = (crate::ecosystem::of(ecosystem).source)(record)?;
         Some(Self {
             digest: digest.clone(),
             url,
@@ -222,18 +213,9 @@ impl Analyser {
                 Archive::Unreadable(why) => return Some(Sourced::NotCompared(why)),
                 Archive::Tree(tree) => tree,
             };
-            let (comparison, unfound) = match job.ecosystem {
-                Ecosystem::Npm => (
-                    built
-                        .package(&job.name, job.directory.as_deref())
-                        .map(|built| source::compare(&package, &built)),
-                    "no package.json in the source names the package",
-                ),
-                Ecosystem::PyPI => (
-                    source::compare_pypi(&package, &built, job.layout),
-                    "none of the package's Python files is in the source",
-                ),
-            };
+            let row = crate::ecosystem::of(job.ecosystem);
+            let comparison = (row.compare_source)(&package, &built, job);
+            let unfound = row.unfound_source;
             return Some(match comparison {
                 Some(comparison) => Sourced::Compared {
                     repository: format!("{}/{}", repo.owner, repo.name),

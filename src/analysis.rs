@@ -61,32 +61,12 @@ pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 /// The readers' version, stored with each analysis; bumped whenever a reader's answer changes.
 pub const READER: &str = "install-scripts 2";
 
-/// Which reader an artifact is read by. A file no reader reads is never analysed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reader {
-    /// An npm tarball, read by [`npm_install_scripts`].
-    NpmTarball,
-    /// A PyPI sdist, read by [`sdist_install_scripts`].
-    Sdist,
-}
+/// What reads an artifact for the code it runs on install, such as [`npm_install_scripts`].
+pub type Reader = fn(&mut dyn Read) -> Result<InstallScripts, ReadError>;
 
-impl Reader {
-    /// The reader for `filename` in `ecosystem`. `None` for a PyPI wheel, which runs
-    /// nothing on install, so nothing reads it.
-    pub fn for_file(ecosystem: Ecosystem, filename: &str) -> Option<Self> {
-        match ecosystem {
-            Ecosystem::Npm => Some(Self::NpmTarball),
-            Ecosystem::PyPI if filename.ends_with(".whl") => None,
-            Ecosystem::PyPI => Some(Self::Sdist),
-        }
-    }
-
-    pub fn read(self, artifact: &mut dyn Read) -> Result<InstallScripts, ReadError> {
-        match self {
-            Self::NpmTarball => npm_install_scripts(artifact),
-            Self::Sdist => sdist_install_scripts(artifact),
-        }
-    }
+/// The reader for `filename` in `ecosystem`, from its row's [`crate::ecosystem::Registry::reader`].
+pub fn reader(ecosystem: Ecosystem, filename: &str) -> Option<Reader> {
+    (crate::ecosystem::of(ecosystem).reader)(filename)
 }
 
 /// npm's install lifecycle, in the order npm runs them.
@@ -334,23 +314,19 @@ mod tests {
     /// A wheel runs nothing on install, so nothing reads it. Every other file is read.
     #[test]
     fn a_reader_is_chosen_for_every_file_but_a_wheel() {
+        let npm = reader(Ecosystem::Npm, "widget-1.0.0.tgz").expect("a tarball is read");
+        let package = tarball(&[(
+            "package/package.json",
+            br#"{"scripts":{"postinstall":"x"}}"#,
+        )]);
         assert_eq!(
-            Reader::for_file(Ecosystem::Npm, "widget-1.0.0.tgz"),
-            Some(Reader::NpmTarball)
+            npm(&mut &package[..]).expect("reads").names,
+            ["postinstall"]
         );
-        assert_eq!(
-            Reader::for_file(Ecosystem::PyPI, "six-1.17.0.tar.gz"),
-            Some(Reader::Sdist)
-        );
-        assert_eq!(
-            Reader::for_file(Ecosystem::PyPI, "six-1.17.0-py2.py3-none-any.whl"),
-            None
-        );
-        let sdist = tarball(&[("six-1.17.0/setup.py", b"")]);
-        assert_eq!(
-            Reader::Sdist.read(&mut &sdist[..]).expect("reads").names,
-            ["setup.py"]
-        );
+        let sdist = reader(Ecosystem::PyPI, "six-1.17.0.tar.gz").expect("an sdist is read");
+        let built = tarball(&[("six-1.17.0/setup.py", b"")]);
+        assert_eq!(sdist(&mut &built[..]).expect("reads").names, ["setup.py"]);
+        assert!(reader(Ecosystem::PyPI, "six-1.17.0-py2.py3-none-any.whl").is_none());
     }
 
     /// `bufferutil` 4.1.0 declares `install: node-gyp-build`, which is what its packument's

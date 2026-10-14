@@ -449,7 +449,7 @@ fn log_attested(attestation: &Attestation, attested: &Attested, fetch_ms: u64, v
 async fn read(job: &Job, spooled: Spooled, reader: Reader) -> Option<Scripts> {
     let read = tokio::task::spawn_blocking(move || {
         let file = spooled.reader()?;
-        Ok(Scripts::of(reader.read(&mut std::io::BufReader::new(file))))
+        Ok(Scripts::of(reader(&mut std::io::BufReader::new(file))))
     })
     .await
     .map_err(std::io::Error::other)
@@ -579,7 +579,7 @@ pub(crate) mod tests {
         Job {
             digest: digest.clone(),
             url: url.to_owned(),
-            reader: Some(Reader::NpmTarball),
+            reader: Some(crate::analysis::npm_install_scripts),
             ecosystem: "npm".to_owned(),
             name: "widget".to_owned(),
             version: "1.0.0".to_owned(),
@@ -1032,7 +1032,7 @@ pub(crate) mod tests {
         let unread = read(
             &job(&digest, crate::util::test_support::NO_UPSTREAM),
             spooled,
-            Reader::NpmTarball,
+            crate::analysis::npm_install_scripts,
         )
         .await;
         assert!(unread.is_none());

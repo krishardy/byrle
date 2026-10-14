@@ -2136,7 +2136,7 @@ async fn analysed(
     let key = record.package.key();
     let analyser = proxy.config.analyser.as_deref();
     let (provenance, attestations) = attested(proxy, analyser, &record, digest, times).await;
-    let reader = crate::analysis::Reader::for_file(key.ecosystem(), filename);
+    let reader = crate::analysis::reader(key.ecosystem(), filename);
     let decided = |record, provenance| Analysed {
         record,
         provenance,
