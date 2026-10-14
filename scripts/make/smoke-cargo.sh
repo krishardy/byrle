@@ -3,7 +3,8 @@
 #
 # Asserts, in order:
 #   1. `cargo build` of a project using itoa and serde with derive completes through the
-#      proxy, and every crate in its Cargo.lock was fetched through it and verified
+#      proxy, and every crate in its Cargo.lock was fetched through it and verified; then
+#      `cargo install` of hello-cli 0.2.2, a binary, whose crate is verified too
 #   2. a denial of itoa 1.0.18 removes its line, cargo resolves 1.0.17, and the download
 #      of 1.0.18 answers 403
 #   3. a cooldown covering itoa's newest version makes cargo resolve an older one
@@ -70,6 +71,10 @@ stop_proxy() {
 
 clean_log() { sed -E 's/\x1b\[[0-9;]*m//g' "$log"; }
 
+# Whether the proxy log has a line matching $1. Not `clean_log | grep -q`: under pipefail
+# that fails when grep stops at its match while sed is still writing.
+logged() { grep -q -- "$1" < <(clean_log); }
+
 # A project in $1 depending on the Cargo.toml dependency lines in $2, with a fresh
 # CARGO_HOME pointed at the proxy, as the startup line says.
 project() {
@@ -114,7 +119,7 @@ download() {
     echo "$status"
 }
 
-echo "==> 1/7  cargo build through the proxy, every crate verified"
+echo "==> 1/7  cargo build and cargo install through the proxy, every crate verified"
 start_proxy ""
 project "$workdir/build" $'itoa = "1"\nserde = { version = "1", features = ["derive"] }'
 printed="$(client "$workdir/build" run --quiet 2>"$workdir/build.err")" \
@@ -128,11 +133,17 @@ print("\n".join("{}@{}".format(p["name"], p["version"]) for p in lock["package"]
 count=0
 while read -r crate; do
     name="${crate%@*}" version="${crate#*@}"
-    clean_log | grep -q "artifact digest verified.*pkg:cargo/${name,,}@${version}" \
+    logged "artifact digest verified.*pkg:cargo/${name,,}@${version}" \
         || fail "$crate was not verified through the proxy"
     count=$((count + 1))
 done <<<"$crates"
-echo "    ok ($count crates, each verified)"
+project "$workdir/install" 'itoa = "1"'
+client "$workdir/install" install --quiet --locked hello-cli@0.2.2 --root "$workdir/install/bin" \
+    2>"$workdir/install.err" || fail "cargo install failed: $(tail -5 "$workdir/install.err")"
+[[ -x "$workdir/install/bin/bin/hello" ]] || fail "cargo install wrote no hello binary"
+logged "artifact digest verified.*pkg:cargo/hello-cli@0.2.2" \
+    || fail "hello-cli was not verified through the proxy"
+echo "    ok ($count crates, each verified; hello-cli installed and verified)"
 stop_proxy
 
 echo "==> 2/7  a denied version is not resolved, and its download is 403"
@@ -227,7 +238,7 @@ start_proxy "$workdir/allow.yaml"
 for crate in "rustls 0.23.45 advisory vulnerability" "tempdir 0.3.7 advisory unmaintained"; do
     read -r name version _ kind <<<"$crate"
     [[ "$(download "$name" "$version")" == "200" ]] || fail "$name $version was not served"
-    clean_log | grep -q "signals reported.*pkg:cargo/${name}@${version}.*advisory ${kind}" \
+    logged "signals reported.*pkg:cargo/${name}@${version}.*advisory ${kind}" \
         || fail "$name $version reported no advisory_${kind} signal"
 done
 echo "    ok (rustls 0.23.45 and tempdir 0.3.7 served, each with its signal)"

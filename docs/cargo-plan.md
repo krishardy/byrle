@@ -128,9 +128,10 @@ source of attestation data. Q2 and Q6 are taken as recommended.
    read: cargo ignored the replacement from the environment, so it is in a file.
 6. `make smoke-cargo`: real `cargo build` through the proxy, with a token, a refused
    version, a cooldown, `rustls` 0.23.45 refused under `max_cvss: 3.9`, and `serde`
-   and `serde_derive` refused under `install_scripts: block`. Written 2026-10-14;
-   `cargo install` remains.
-7. Docs: quickstart, policy-reference, threat-model, runbook.
+   and `serde_derive` refused under `install_scripts: block`, and `cargo install` of
+   `hello-cli` 0.2.2. Done 2026-10-14.
+7. Docs: quickstart, policy-reference, threat-model, runbook. Done 2026-10-14; the
+   runbook is for v0.1.0, which has no cargo, and is unchanged.
 8. Q5, later: measure how many versions carry `trustpub_data`, and whether it can be read
    reliably without a request per version, before deciding.
 
