@@ -41,6 +41,18 @@ fn route_log_records() {
     log::set_max_level(log::LevelFilter::Trace);
 }
 
+/// Every `.rs` file under `dir`, appended to `out`.
+pub fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("readable directory") {
+        let path = entry.expect("entry").path();
+        if path.is_dir() {
+            rust_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+
 /// An empty directory for one test. `label` has to differ between the tests that call this,
 /// because the directory is emptied first.
 pub fn tempdir(label: &str) -> std::path::PathBuf {

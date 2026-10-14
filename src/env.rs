@@ -2222,7 +2222,7 @@ mod tests {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
         for dir in ["src", "tests", "examples"] {
-            rust_files(&root.join(dir), &mut files);
+            crate::util::test_support::rust_files(&root.join(dir), &mut files);
         }
         let this = root.join("src/env.rs");
         files.retain(|f| *f != this);
@@ -2572,16 +2572,5 @@ mod tests {
             !before.is_some_and(identifier)
                 && (name.ends_with('_') || !after.is_some_and(identifier))
         })
-    }
-
-    fn rust_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-        for entry in std::fs::read_dir(dir).expect("readable directory") {
-            let path = entry.expect("entry").path();
-            if path.is_dir() {
-                rust_files(&path, out);
-            } else if path.extension().is_some_and(|e| e == "rs") {
-                out.push(path);
-            }
-        }
     }
 }

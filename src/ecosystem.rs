@@ -678,4 +678,76 @@ mod table {
             }
         }
     }
+
+    /// Lines outside the adapters that name npm or PyPI, per file, until a file's tests:
+    /// `npm::`, `pypi::`, `Ecosystem::Npm`, `Ecosystem::PyPI`.
+    fn named_outside_adapters() -> std::collections::BTreeMap<String, usize> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut files = Vec::new();
+        crate::util::test_support::rust_files(&root.join("src"), &mut files);
+        let adapters = [
+            root.join("src/ecosystem/npm"),
+            root.join("src/ecosystem/pypi"),
+        ];
+        let identifier = |c: char| c.is_alphanumeric() || c == '_';
+        let names = |line: &str| {
+            ["npm::", "pypi::", "Ecosystem::Npm", "Ecosystem::PyPI"]
+                .iter()
+                .any(|name| {
+                    line.match_indices(name)
+                        .any(|(i, _)| !line[..i].chars().next_back().is_some_and(identifier))
+                })
+        };
+        let mut found = std::collections::BTreeMap::new();
+        for file in files
+            .iter()
+            .filter(|f| !adapters.iter().any(|a| f.starts_with(a)))
+        {
+            let text = std::fs::read_to_string(file).expect("readable");
+            let count = text
+                .lines()
+                .take_while(|line| {
+                    let line = line.trim_start();
+                    !(line.starts_with("mod tests") || line.starts_with("pub(crate) mod tests"))
+                })
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .filter(|line| names(line))
+                .count();
+            if count > 0 {
+                let path = file.strip_prefix(root).unwrap_or(file);
+                found.insert(path.display().to_string(), count);
+            }
+        }
+        found
+    }
+
+    /// Stage 6's interface: what branches on npm or PyPI outside the adapters, per file. Each
+    /// commit of docs/cargo-plan.md step 1 shortens this list; the step ends when it is empty.
+    #[test]
+    fn only_the_adapters_name_npm_or_pypi() {
+        let allowed: std::collections::BTreeMap<String, usize> = [
+            ("src/analysis.rs", 3),
+            ("src/analysis/detector/metadata.rs", 1),
+            ("src/analysis/run/sourcing.rs", 4),
+            ("src/analysis/source.rs", 4),
+            ("src/defer.rs", 1),
+            ("src/doctor.rs", 3),
+            ("src/ecosystem.rs", 50),
+            ("src/env.rs", 4),
+            ("src/explain.rs", 5),
+            ("src/identity.rs", 5),
+            ("src/intel/providers/osv/mod.rs", 2),
+            ("src/intel/range.rs", 1),
+            ("src/intel/store.rs", 1),
+            ("src/intel/stream.rs", 6),
+            ("src/policy/diff.rs", 4),
+            ("src/proxy.rs", 10),
+            ("src/proxy/testing.rs", 1),
+            ("src/warm.rs", 5),
+        ]
+        .into_iter()
+        .map(|(file, count): (&str, usize)| (file.to_owned(), count))
+        .collect();
+        assert_eq!(named_outside_adapters(), allowed);
+    }
 }
