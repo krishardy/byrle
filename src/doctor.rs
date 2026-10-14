@@ -363,6 +363,8 @@ pub enum CacheBypass {
     ArtifactsOnly,
     /// Every install still asks the registry for the index and the files.
     None,
+    /// Files are cached per registry, so none cached from another reaches an install.
+    PerRegistry,
 }
 
 /// A warm client cache serves without the registry, so what it supplies is never examined.
@@ -385,6 +387,17 @@ pub fn check_cache(client: &Client, cache: Option<&std::path::Path>) -> Finding 
                 title,
                 format!(
                     "{} holds cached packages, and a warm cache still asks the proxy",
+                    cache.display()
+                ),
+            );
+        }
+        CacheBypass::PerRegistry => {
+            return Finding::new(
+                Severity::Ok,
+                title,
+                format!(
+                    "{} holds a directory per registry, so packages cached from another \
+                     registry are not used through the proxy",
                     cache.display()
                 ),
             );
@@ -1702,6 +1715,22 @@ mod tests {
         );
     }
 
+    /// cargo keeps a cache per registry, so crates.io's cache is not used once the proxy
+    /// replaces it.
+    #[test]
+    fn a_cache_per_registry_is_not_a_bypass() {
+        let finding = check_cache(
+            &crate::ecosystem::cargo::clients::CARGO,
+            Some(Path::new("/tmp/cargo")),
+        );
+        assert_eq!(finding.severity, Severity::Ok);
+        assert!(
+            finding.detail.contains("a directory per registry"),
+            "{}",
+            finding.detail
+        );
+    }
+
     /// `npm cache clean` is not the command for every client.
     #[test]
     fn each_client_gets_its_own_way_to_clear_the_cache() {
@@ -2137,7 +2166,8 @@ mod tests {
                 ("yarn", true),
                 ("bun", false),
                 ("pip", true),
-                ("uv", true)
+                ("uv", true),
+                ("cargo", true)
             ]
         );
     }
@@ -2320,6 +2350,15 @@ mod tests {
             (env::UV_NO_FILES, "1"),
         ]);
         let dir = crate::util::test_support::tempdir("doctor-run-ok");
+        std::fs::create_dir_all(dir.join(".cargo")).expect("creates");
+        std::fs::write(
+            dir.join(".cargo/config.toml"),
+            format!(
+                "[source.crates-io]\nreplace-with = \"byrle\"\n\
+                 [registries.byrle]\nindex = \"sparse+{url}/cargo/\"\n"
+            ),
+        )
+        .expect("writes");
 
         let checked = doctored(&environment, &dir, &at_proxy).await.expect("runs");
         assert_eq!(checked.code, 0, "{}", checked.report);

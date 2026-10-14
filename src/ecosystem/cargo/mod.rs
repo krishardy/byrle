@@ -2,6 +2,7 @@
 //! JSON line per version, and `.crate` downloads checked against each line's `cksum`. See
 //! docs/cargo-plan.md.
 
+pub mod clients;
 pub mod inspect;
 pub mod lockfile;
 pub mod paths;
@@ -40,16 +41,10 @@ pub const REGISTRY: Registry = Registry {
     streams: &[&OSV],
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
-    clients: &[],
+    clients: clients::CLIENTS,
     setup: Setup {
         client: "cargo",
-        command: |url| {
-            format!(
-                "in ~/.cargo/config.toml: [registries.byrle] index = \"sparse+{url}\" and \
-                 credential-provider = \"cargo:token\", and [source.crates-io] replace-with = \
-                 \"byrle\""
-            )
-        },
+        command: config_line,
         path: PREFIX,
     },
     uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
@@ -89,6 +84,15 @@ pub const REGISTRY: Registry = Registry {
         "crates.io's index does not say; the .crate is read when it is downloaded",
     ),
 };
+
+/// What points cargo at `url`, the proxy's cargo registry, with or without a trailing `/`.
+pub fn config_line(url: &str) -> String {
+    format!(
+        "in ~/.cargo/config.toml: [registries.byrle] index = \"sparse+{}/\" and \
+         credential-provider = \"cargo:token\", and [source.crates-io] replace-with = \"byrle\"",
+        url.trim_end_matches('/')
+    )
+}
 
 /// The path the proxy serves cargo's registry under.
 pub const PREFIX: &str = "/cargo/";

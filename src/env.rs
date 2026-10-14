@@ -642,6 +642,11 @@ pub const BUN_CACHE: Var = other(
     "BUN_INSTALL_CACHE_DIR",
     &["where bun keeps its cache, when set"],
 );
+pub const CARGO_DIR: Var = other(
+    Kind::External,
+    "CARGO_HOME",
+    &["where cargo keeps its configuration and cache, when set"],
+);
 pub const CONFIG_HOME: Var = other(
     Kind::External,
     "XDG_CONFIG_HOME",
@@ -679,7 +684,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 81] = [
+pub const ALL: [Var; 82] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -754,6 +759,7 @@ pub const ALL: [Var; 81] = [
     TEST_DATABASE_URL,
     HOME_DIR,
     BUN_CACHE,
+    CARGO_DIR,
     CONFIG_HOME,
     UV_DEFAULT,
     UV_OLDER_INDEX,
@@ -1468,6 +1474,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     pub fn bun_install_cache_dir(&self) -> Result<Option<PathBuf>, EnvError> {
         self.path(BUN_CACHE)
+    }
+
+    pub fn cargo_home(&self) -> Result<Option<PathBuf>, EnvError> {
+        self.path(CARGO_DIR)
     }
 
     pub fn xdg_config_home(&self) -> Result<Option<PathBuf>, EnvError> {
