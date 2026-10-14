@@ -124,6 +124,8 @@ source of attestation data. Q2 and Q6 are taken as recommended.
    `advisory_malware`. `Cargo.lock` for `warm`, `policy diff` and `lockfile verify`: done
    2026-10-14. `explain` takes a purl, and reads `pkg:cargo/...`.
 5. `byrle doctor` for `~/.cargo/config.toml` and `CARGO_REGISTRIES_*`, and the startup line.
+   Done 2026-10-14 for the configuration files and the cache. `CARGO_REGISTRIES_*` is not
+   read: cargo ignored the replacement from the environment, so it is in a file.
 6. `make smoke-cargo`: real `cargo build` through the proxy, with a token, a refused
    version, a cooldown, `rustls` 0.23.45 refused under `max_cvss: 3.9`, and `serde`
    and `serde_derive` refused under `install_scripts: block`. Written 2026-10-14;

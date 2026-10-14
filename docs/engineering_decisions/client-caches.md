@@ -13,6 +13,7 @@ what the proxy saw the second time. `byrle doctor` reports each client's `CacheB
 |---|---|---|
 | npm 11, pnpm 10, bun 1.3 | nothing reached the proxy | `Complete` |
 | yarn 1, yarn 4 | the packument did, the artifact did not | `ArtifactsOnly` |
+| cargo 1.99.0 | with crates.io replaced, `itoa` cached from crates.io was downloaded again through the replacement, 2026-10-14 | `PerRegistry` |
 
 ## Where doctor looks
 
@@ -20,6 +21,7 @@ what the proxy saw the second time. `byrle doctor` reports each client's `CacheB
 |---|---|---|
 | npm, pnpm, yarn | `config get registry`, which prints `undefined` for no value and reads a project `.npmrc`, then the user's, then the global one | the directory `config get cache` (npm), `store path` (pnpm) or `cache dir` (yarn) prints; npm's responses are one file each under `_cacache/index-v5` |
 | bun | not checked | `BUN_INSTALL_CACHE_DIR`, else `~/.bun/install/cache`: `bun pm cache` needs a `package.json` in the working directory, which doctor cannot assume |
+| cargo | `.cargo/config.toml` in the working directory and each above it, then `CARGO_HOME`'s, else `~/.cargo`'s: `[source.crates-io] replace-with` and that source's index | `CARGO_HOME/registry/cache`, else `~/.cargo/registry/cache`, a directory per registry, so reported and not warned about |
 
 The cache is looked up from the directory doctor runs in, because it can differ per
 directory: `pnpm store path` answers with a store on the project's own filesystem, so it is
