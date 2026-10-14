@@ -545,7 +545,7 @@ impl Intel for PgIntel {
                 ),
                 adv AS MATERIALIZED (
                     SELECT a.id, a.publisher_id, a.source, a.cvss, a.cvss_source,
-                        a.severity_band, a.malware, a.cached,
+                        a.severity_band, a.malware, a.informational, a.cached,
                         (a.exploited
                             OR EXISTS (SELECT 1 FROM exploited_cve k WHERE k.cve_id = a.publisher_id)
                             OR EXISTS (SELECT 1 FROM advisory_alias al JOIN exploited_cve k
@@ -565,7 +565,7 @@ impl Intel for PgIntel {
                     adv.publisher_id AS "advisory_id?", adv.source AS "source?",
                     adv.cvss AS "cvss?", adv.cvss_source AS "cvss_source?",
                     adv.severity_band AS "severity_band?", adv.exploited AS "exploited?",
-                    adv.malware AS "malware?",
+                    adv.malware AS "malware?", adv.informational AS "informational?",
                     to_char(adv.cached AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') AS "cached?",
                     COALESCE(adv.aliases, ARRAY[]::varchar[]) AS "aliases!"
                 FROM (SELECT digest FROM intel_snapshot ORDER BY taken_at DESC LIMIT 1) s
@@ -606,6 +606,7 @@ impl Intel for PgIntel {
                     band: row.severity_band,
                     exploited,
                     malware,
+                    informational: row.informational,
                     cached: row.cached,
                 };
                 if row.is_range == Some(true) {

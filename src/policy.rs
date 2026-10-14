@@ -244,9 +244,12 @@ impl<'de> Deserialize<'de> for SignalWeights {
 pub const DEFAULT_SIGNAL_WEIGHT: u32 = 1;
 
 impl SignalWeights {
-    /// The weight of the rule `key` names, [`DEFAULT_SIGNAL_WEIGHT`] unless set.
+    /// The weight of the rule `key` names, its [`crate::signal::default_weight`] unless set.
     pub fn of(&self, key: &str) -> u32 {
-        self.0.get(key).copied().unwrap_or(DEFAULT_SIGNAL_WEIGHT)
+        self.0
+            .get(key)
+            .copied()
+            .unwrap_or_else(|| crate::signal::default_weight(key))
     }
 
     /// Weights set as `pairs`, of a key and its weight, for a test.
@@ -807,7 +810,7 @@ mod tests {
         }
     }
 
-    /// A weight is 1 unless set and a whole number, and each name is its kind's name.
+    /// A weight is 1 unless set, an advisory's that of its kind, and a whole number.
     #[test]
     fn signal_weights_default_to_1_and_are_whole_numbers() {
         use crate::analysis::detector::BUILT_IN_RULES;
@@ -815,6 +818,7 @@ mod tests {
         assert!(
             BUILT_IN_RULES
                 .iter()
+                .filter(|rule| !crate::signal::ADVISORY_RULES.contains(rule))
                 .all(|rule| SignalWeights::default().of(rule) == 1)
         );
         let set = parse("signal_weights: { near_name: 0, source_install_files: 5 }\n")
@@ -947,6 +951,11 @@ mod tests {
                     "source_install_files",
                     "source_differing",
                     "virustotal_detected",
+                    "advisory_malware",
+                    "advisory_vulnerability",
+                    "advisory_unsound",
+                    "advisory_unmaintained",
+                    "advisory_notice",
                 ],
             ),
         ];

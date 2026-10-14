@@ -215,6 +215,7 @@ mod tests {
             summary: None,
             modified: None,
             malware,
+            informational: None,
             cvss: None,
             band: None,
             unread_vectors: 0,

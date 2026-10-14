@@ -13,11 +13,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::identity::Ecosystem;
 
 /// The publishers whose records are read, by id prefix, and whether each publishes malware.
-const PUBLISHERS: [(&str, bool); 4] = [
+const PUBLISHERS: [(&str, bool); 5] = [
     ("MAL-", true),
     ("GHSA-", false),
     ("PYSEC-", false),
     ("OSV-", false),
+    ("RUSTSEC-", false),
 ];
 
 /// The name OSV gives `ecosystem`, in `affected[].package.ecosystem` and in its bundle's
@@ -71,6 +72,8 @@ struct Severity {
 #[derive(Deserialize)]
 struct Entry {
     package: Option<Package>,
+    /// Read only for RustSec's `informational`. Any shape is accepted.
+    database_specific: Option<serde_json::Value>,
     #[serde(default)]
     ranges: Vec<Range>,
     #[serde(default)]
@@ -208,6 +211,10 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, serde_json::E
     if entries.is_empty() {
         return Ok(Parsed::Skipped(Skipped::NoPackage));
     }
+    let informational = entries.iter().find_map(|(entry, _)| {
+        let kind = entry.database_specific.as_ref()?.get("informational")?;
+        kind.as_str().map(str::to_owned)
+    });
 
     let (mut affected, mut ranges) = (BTreeSet::new(), BTreeSet::new());
     let mut unexpressed = 0;
@@ -257,6 +264,7 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, serde_json::E
         summary: record.summary,
         modified: record.modified,
         malware,
+        informational,
         cvss,
         band,
         unread_vectors,
@@ -725,5 +733,26 @@ mod tests {
         }
         assert_eq!(osv_name(Ecosystem::PyPI), "PyPI");
         assert_eq!(osv_name(Ecosystem::Npm), "npm");
+    }
+
+    /// RustSec writes a record's kind in `affected[].database_specific`, as OSV served
+    /// RUSTSEC-2018-0017 and RUSTSEC-2026-0349 on 2026-10-14.
+    #[test]
+    fn a_rustsec_record_keeps_its_kind() {
+        let rustsec = |id: &str, informational: &str| {
+            let record = format!(
+                r#"{{"id": "{id}", "affected": [{{
+                    "package": {{"ecosystem": "crates.io", "name": "tempdir"}},
+                    "ranges": [{{"type": "SEMVER", "events": [{{"introduced": "0.0.0-0"}}]}}],
+                    "database_specific": {{"informational": {informational}}}
+                }}]}}"#
+            );
+            stored(parse(Ecosystem::Cargo, record.as_bytes()).expect("parses"))
+        };
+        let unmaintained = rustsec("RUSTSEC-2018-0017", r#""unmaintained""#);
+        assert_eq!(unmaintained.informational.as_deref(), Some("unmaintained"));
+        assert!(!unmaintained.malware);
+        assert_eq!(rustsec("RUSTSEC-2026-0349", "null").informational, None);
+        assert_eq!(rustsec("RUSTSEC-1", "7").informational, None, "not text");
     }
 }

@@ -24,20 +24,29 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::identity::Ecosystem;
 
 /// The detectors whose rules a policy may weight, and those rules.
-pub const KNOWN: [(&str, &[&str]); 4] = [
+pub const KNOWN: [(&str, &[&str]); 5] = [
     (metadata::NAME, &metadata::RULES),
+    (crate::signal::ADVISORY, &crate::signal::ADVISORY_RULES),
     (source::NAME, &source::RULES),
     (virustotal::NAME, &virustotal::RULES),
     ("guarddog", &guarddog::RULES),
 ];
 
 /// The detectors built in, whose rules a policy names without the detector's name.
-pub const BUILT_IN: [&str; 3] = [metadata::NAME, source::NAME, virustotal::NAME];
+pub const BUILT_IN: [&str; 4] = [
+    metadata::NAME,
+    source::NAME,
+    virustotal::NAME,
+    crate::signal::ADVISORY,
+];
 
 /// The rules of the detectors built in, as a policy names them.
-pub const BUILT_IN_RULES: [&str; 9] = joined(
-    &joined::<8>(&metadata::RULES, &source::RULES),
-    &virustotal::RULES,
+pub const BUILT_IN_RULES: [&str; 14] = joined(
+    &joined::<9>(
+        &joined::<8>(&metadata::RULES, &source::RULES),
+        &virustotal::RULES,
+    ),
+    &crate::signal::ADVISORY_RULES,
 );
 
 /// `a` then `b`, in an array of their length together.
@@ -473,7 +482,8 @@ esac
         assert_eq!(key("guarddog", "bundled_binary"), "guarddog.bundled_binary");
         assert_eq!(BUILT_IN_RULES[..4], metadata::RULES);
         assert_eq!(BUILT_IN_RULES[4..8], source::RULES);
-        assert_eq!(BUILT_IN_RULES[8..], virustotal::RULES);
+        assert_eq!(BUILT_IN_RULES[8..9], virustotal::RULES);
+        assert_eq!(BUILT_IN_RULES[9..], crate::signal::ADVISORY_RULES);
         assert!(knows("virustotal_detected"));
         assert_eq!(joined::<3>(&["a"], &["b", "c"]), ["a", "b", "c"]);
     }

@@ -36,7 +36,7 @@ The id is a hash over every source's stored rows.
 `load::encode` writes one source's rows as below, and its sha256 is `intel_source.digest`:
 
 ```text
-byrle intel rows 2
+byrle intel rows 3
 source osv
 advisory 23771415
 (23,771,415 bytes of CSV)

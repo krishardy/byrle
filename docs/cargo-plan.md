@@ -114,15 +114,18 @@ source of attestation data. Q2 and Q6 are taken as recommended.
    index files read into records and filtered by removing refused versions' lines,
    downloads verified against `cksum`. Done 2026-10-14. `osv/cargo` came with it, because
    `/-/byrle/ready` answers 503 while any served ecosystem has no `match` or `malware`
-   stream. It reads the bundle's `GHSA-` and `MAL-` records; its `RUSTSEC-` records are
-   step 4's.
+   stream.
 3. The `.crate` reader: its `Cargo.toml` for a build script and `proc-macro`, which
    `install_scripts` refuses under the default `block` (Q4).
-4. `RUSTSEC-` records in `osv/cargo` (Q6), and `Cargo.lock` for `warm`, `explain`,
-   `policy diff` and `lockfile verify`.
+4. `RUSTSEC-` records in `osv/cargo` (Q6): done 2026-10-14, all kinds, as the user asked.
+   A vulnerability is refused as any other. `unmaintained`, `unsound` and `notice` refuse
+   nothing, and each is a signal of its own weight, beside `advisory_vulnerability` and
+   `advisory_malware`. `Cargo.lock` for `warm`, `explain`, `policy diff` and
+   `lockfile verify` remains.
 5. `byrle doctor` for `~/.cargo/config.toml` and `CARGO_REGISTRIES_*`, and the startup line.
-6. `make smoke-cargo`: real `cargo build` and `cargo install` through the proxy, with a
-   token, a refused version and a cooldown.
+6. `make smoke-cargo`: real `cargo build` through the proxy, with a token, a refused
+   version, a cooldown, and `rustls` 0.23.45 refused under `max_cvss: 3.9`. Written
+   2026-10-14; `cargo install` remains.
 7. Docs: quickstart, policy-reference, threat-model, runbook.
 8. Q5, later: measure how many versions carry `trustpub_data`, and whether it can be read
    reliably without a request per version, before deciding.

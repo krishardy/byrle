@@ -24,6 +24,8 @@ pub struct Record {
     pub band: Option<String>,
     pub exploited: bool,
     pub malware: bool,
+    /// RustSec's kind for an advisory that is no vulnerability, which refuses nothing.
+    pub informational: Option<String>,
     /// When byrle first stored the advisory, RFC 3339 UTC; `None` unless read from Postgres.
     pub cached: Option<String>,
 }
@@ -411,6 +413,7 @@ mod tests {
             cvss_source: None,
             exploited: false,
             malware: false,
+            informational: None,
             cached: None,
         }
     }

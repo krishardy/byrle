@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck ci-setup run-dev
+.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
@@ -25,6 +25,7 @@ help:
 	@echo "  run-dev        build byrle and start it with Postgres in podman-compose"
 	@echo "  smoke-npm      what the proxy does, checked with npm"
 	@echo "  smoke-python   what the proxy does for PyPI, checked with pip and uv"
+	@echo "  smoke-cargo    what the proxy does for crates.io, checked with cargo"
 	@echo "  smoke-clients  whether npm's other four clients route artifacts through it"
 	@echo "  smoke-proxy    whether upstream traffic honours HTTP_PROXY, HTTPS_PROXY and NO_PROXY"
 	@echo "  smoke-tls-front  the proxy behind nginx on TLS, checked with npm and pip"
@@ -124,6 +125,9 @@ smoke-npm:
 
 smoke-python:
 	@scripts/make/smoke-python.sh
+
+smoke-cargo:
+	@scripts/make/smoke-cargo.sh
 
 smoke-clients:
 	@scripts/make/smoke-clients.sh

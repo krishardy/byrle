@@ -20,6 +20,12 @@ Amended 2026-10-12, with the user: `virustotal_detected` was added to `signal_we
 [virustotal](virustotal.md). No release had been published, so no written file changes
 meaning.
 
+Amended 2026-10-14, asked for by the user: `advisory_malware`, `advisory_vulnerability`,
+`advisory_unsound`, `advisory_unmaintained` and `advisory_notice` were added to
+`signal_weights`, for [advisory-kinds](advisory-kinds.md). v0.1.0 had been released. A file
+written for it still parses and means the same; a file setting one of these keys does not
+parse under v0.1.0.
+
 ## The keys
 
 | Level | Keys |
@@ -29,7 +35,7 @@ meaning.
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
-| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
+| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
 | `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `vuln_advisory_ids` |
 
 | Key | Value | Default |
@@ -54,7 +60,7 @@ meaning.
 | `set.vuln_advisory_ids` | advisory ids, each matched against an advisory's id and its aliases | empty |
 | `advisory_scores[].advisory_id` | an advisory id, matched against an advisory's id and its aliases | required |
 | `advisory_scores[].cvss` | a number, 0.0 to 10.0 | required |
-| `signal_weights.*` | a whole number, 0 or more | 1 |
+| `signal_weights.*` | a whole number, 0 or more | 1; the `advisory_` keys 8, 4, 3, 2 and 1 |
 
 The rules the keys obey are fixed with them: every key refused when unknown, at every level;
 a `packages` entry that loosens needs `expires` or `permanent: true`; an entry that tightens

@@ -340,6 +340,7 @@ mod tests {
                 summary: None,
                 modified: None,
                 malware,
+                informational: None,
                 cvss,
                 band: band.map(str::to_owned),
                 unread_vectors,

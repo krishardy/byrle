@@ -102,6 +102,7 @@ fn record(
         summary: None,
         modified: None,
         malware: true,
+        informational: None,
         cvss: None,
         band: None,
         unread_vectors: 0,

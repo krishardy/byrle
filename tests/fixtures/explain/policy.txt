@@ -21,6 +21,11 @@ signal weights, for the risk score
   source_install_files    1
   source_differing        1
   virustotal_detected     1
+  advisory_malware        8
+  advisory_vulnerability  4
+  advisory_unsound        3
+  advisory_unmaintained   2
+  advisory_notice         1
 
 checks
   denials           enforced
@@ -56,6 +61,11 @@ signal weights, for the risk score
   source_install_files    1
   source_differing        1
   virustotal_detected     1
+  advisory_malware        8
+  advisory_vulnerability  4
+  advisory_unsound        3
+  advisory_unmaintained   2
+  advisory_notice         1
 
 checks
   denials           enforced
@@ -91,6 +101,11 @@ signal weights, for the risk score
   source_install_files    1
   source_differing        1
   virustotal_detected     1
+  advisory_malware        8
+  advisory_vulnerability  4
+  advisory_unsound        3
+  advisory_unmaintained   2
+  advisory_notice         1
 
 checks
   denials           enforced
@@ -132,6 +147,11 @@ signal weights, for the risk score
   source_install_files    1
   source_differing        1
   virustotal_detected     1
+  advisory_malware        8
+  advisory_vulnerability  4
+  advisory_unsound        3
+  advisory_unmaintained   2
+  advisory_notice         1
 
 checks
   denials           enforced

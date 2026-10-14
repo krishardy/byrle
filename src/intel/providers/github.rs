@@ -214,6 +214,7 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Vec<Rows>, GithubErro
                 summary: a.summary.clone(),
                 modified: a.updated_at.clone(),
                 malware: false,
+                informational: None,
                 cvss,
                 band,
                 unread_vectors: 0,

@@ -81,9 +81,11 @@ impl Facts {
         self
     }
 
-    /// Add what the intel store knows about this version, one advisory per id.
+    /// Add what the intel store knows about this version, one advisory per id. An
+    /// informational advisory is left out: it is a signal, not a refusal.
     pub fn with_intel(mut self, intel: &PackageIntel) -> Self {
-        let records = intel.for_version(&self.ecosystem, &self.version);
+        let mut records = intel.for_version(&self.ecosystem, &self.version);
+        records.retain(|r| r.informational.is_none());
         self.known_malware = records.iter().any(|r| r.malware);
         let mut by_id: std::collections::BTreeMap<String, Advisory> =
             std::collections::BTreeMap::new();
@@ -221,6 +223,7 @@ mod tests {
                 cvss_source: None,
                 exploited: false,
                 malware,
+                informational: None,
                 cached: None,
             },
         )
@@ -295,6 +298,26 @@ mod tests {
             [("GHSA-1", true)]
         );
         assert_eq!(Intel::of(None), Intel::NotConsulted);
+    }
+
+    /// RUSTSEC-2018-0017, tempdir unmaintained, has no score: as an advisory `max_cvss`
+    /// would refuse every version of the crate.
+    #[test]
+    fn an_informational_advisory_refuses_nothing() {
+        let (version, mut record) = stored(None, "RUSTSEC-2018-0017", false, None);
+        record.informational = Some("unmaintained".to_owned());
+        let facts = Facts::from_record(&full()).with_intel(&intel(vec![(version, record)]));
+        assert!(facts.advisories.is_empty());
+        assert!(!facts.known_malware);
+        let none_known = Facts::from_record(&full()).with_intel(&intel(Vec::new()));
+        let decided = |facts: &Facts| {
+            decide(
+                &policy("version: 1\ncooldown_days: 0\n"),
+                facts,
+                jiff::civil::date(2026, 10, 14),
+            )
+        };
+        assert_eq!(decided(&facts), decided(&none_known));
     }
 
     #[test]

@@ -190,6 +190,7 @@ mod tests {
             band: None,
             exploited: false,
             malware,
+            informational: None,
             cached: cached.map(str::to_owned),
         }
     }

@@ -1337,7 +1337,6 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             detected: &detected,
         },
     );
-    let signals = deciding.signals(&detections);
     let basis = decision::Basis::of(
         fetch.digest.as_ref().map(ToString::to_string),
         proxy.config.mode,
@@ -1364,6 +1363,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             return ArtifactStep::Answer(unavailable.response());
         }
     };
+    let signals = deciding.signals(&detections, &record, intel.as_ref());
     if sourced.is_none() {
         deciding.compare_source(&described, &fetch, refusal.as_ref());
     }
@@ -1489,12 +1489,20 @@ impl<'a> Deciding<'a> {
             .collect()
     }
 
-    /// The signals `detections` report, logged when there is any.
+    /// The signals `detections` report and the advisories against `record`, logged when any.
     fn signals(
         &self,
         detections: &[(String, crate::analysis::detector::Detection)],
+        record: &PackageRecord,
+        intel: Option<&PackageIntel>,
     ) -> Vec<Signal> {
-        let signals = crate::signal::of_detections(detections);
+        let mut signals = crate::signal::of_detections(detections);
+        if let Some(intel) = intel {
+            let key = record.package.key();
+            signals.extend(crate::signal::of_advisories(
+                &intel.for_version(key.ecosystem().as_str(), record.package.version()),
+            ));
+        }
         if !signals.is_empty() {
             let found: Vec<String> = signals.iter().map(ToString::to_string).collect();
             let weights = self
@@ -4071,6 +4079,7 @@ mod tests {
                 cvss_source: None,
                 exploited: false,
                 malware,
+                informational: None,
                 cached: None,
             },
             false,
@@ -4938,6 +4947,7 @@ mod tests {
                                     cvss_source: None,
                                     exploited: false,
                                     malware: false,
+                                    informational: None,
                                     cached: None,
                                 }
                             },

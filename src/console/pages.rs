@@ -1297,6 +1297,7 @@ mod tests {
             band: None,
             exploited: false,
             malware: true,
+            informational: None,
             cached: None,
         };
         let intel = Arc::new(crate::intel::store::testing::FixedIntel(Ok(Some(

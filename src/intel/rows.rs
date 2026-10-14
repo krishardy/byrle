@@ -11,6 +11,8 @@ pub struct Rows {
     /// RFC 3339, as OSV wrote it.
     pub modified: Option<String>,
     pub malware: bool,
+    /// RustSec's kind for an advisory that is no vulnerability: `unmaintained`, `unsound`, `notice`.
+    pub informational: Option<String>,
     /// The CVSS base score, from a vector, or else the top of the severity band.
     pub cvss: Option<f64>,
     /// The `database_specific.severity` band `cvss` was read from, if it was.
@@ -155,6 +157,7 @@ mod tests {
             summary: None,
             modified: None,
             malware: false,
+            informational: None,
             cvss,
             band: band.map(str::to_owned),
             unread_vectors: 0,

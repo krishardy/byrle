@@ -412,10 +412,13 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         served: Vec::new(),
         now: jiff::Timestamp::now(),
     };
-    answer.push_str(&signals(
-        &crate::signal::of_detections(&[built_in(&Metadata, &listing)]),
-        &policy.signal_weights,
-    ));
+    let mut found = crate::signal::of_detections(&[built_in(&Metadata, &listing)]);
+    if let Some(intel) = intel.as_ref() {
+        found.extend(crate::signal::of_advisories(
+            &intel.for_version(&facts.ecosystem, &facts.version),
+        ));
+    }
+    answer.push_str(&signals(&found, &policy.signal_weights));
     Ok(answer)
 }
 
@@ -742,6 +745,7 @@ mod run_tests {
                     band: None,
                     exploited: false,
                     malware: true,
+                    informational: None,
                     cached: None,
                 },
             )],
@@ -1013,6 +1017,7 @@ mod tests {
             band: None,
             exploited: false,
             malware: false,
+            informational: None,
             cached: cached.map(str::to_owned),
         };
         assert_eq!(advisories(&[]), "  advisories: none\n");

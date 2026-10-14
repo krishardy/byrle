@@ -55,6 +55,7 @@ impl SnapshotIntel {
                         band: rows.band,
                         exploited: false,
                         malware: rows.malware,
+                        informational: rows.informational,
                         cached: None,
                     }),
                     Row::Alias(i, alias) => records[i].aliases.push(alias),
@@ -220,6 +221,7 @@ pub(crate) mod testing {
             summary: None,
             modified: None,
             malware: id.starts_with("MAL-"),
+            informational: None,
             cvss: None,
             band: None,
             unread_vectors: 0,
@@ -416,6 +418,7 @@ mod tests {
                         cvss_source: None,
                         exploited: false,
                         malware: true,
+                        informational: None,
                         cached: None,
                     }
                 )],
