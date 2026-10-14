@@ -221,6 +221,16 @@ The consequence cuts both ways: a lockfile committed from behind the proxy canno
 installed without it, so CI cannot silently skip enforcement, and the proxy becomes
 something CI depends on being reachable.
 
+## Verifying a release
+
+Each release's binaries and image carry SLSA build provenance, signed through Sigstore by
+the workflow that built them ([release-provenance](docs/engineering_decisions/release-provenance.md)):
+
+```
+gh attestation verify byrle-<version>-x86_64-unknown-linux-gnu.tar.gz --repo krishardy/byrle
+gh attestation verify oci://ghcr.io/krishardy/byrle:<version> --repo krishardy/byrle
+```
+
 ## License
 
 Apache-2.0 ([LICENSE](LICENSE)), with DCO sign-off rather than a CLA
