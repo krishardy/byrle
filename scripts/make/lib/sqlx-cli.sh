@@ -4,10 +4,10 @@
 # Sourced, not executed. `byrle_install_sqlx_cli` installs it when it is missing or of
 # another minor, and returns with nothing installed when the right one is already there.
 #
-# Both `scripts/make/dev-setup.sh` and the CI workflow call this, so the pin is written
-# once. It has to track the `sqlx` version in Cargo.toml: `make sqlx-prepare` writes the
-# offline cache that the build then reads, and a CLI of another minor writes a cache the
-# build does not accept.
+# Both `scripts/make/dev-setup.sh` and `scripts/make/ci-setup.sh` call this, so the pin
+# is written once. It has to track the `sqlx` version in Cargo.toml: `make sqlx-prepare`
+# writes the offline cache that the build then reads, and a CLI of another minor writes a
+# cache the build does not accept.
 
 # Pinned to the sqlx minor in Cargo.toml. An installed CLI of another minor is replaced
 # rather than kept.

@@ -21,6 +21,18 @@ The logic stays in `scripts/make/`, per CLAUDE.md.
 so the workflow has no `services:` block. The runner has Docker, and the script a contributor
 runs is the one that runs here.
 
+Each job's tools come from `make ci-setup JOB=<job>` (`scripts/make/ci-setup.sh`), added
+2026-10-14 so the workflow holds no install logic:
+
+| Job | `ci-setup` installs |
+|---|---|
+| `lint` | Rust with clippy and rustfmt, and shellcheck v0.11.0 from `make install-shellcheck`, put ahead of the runner's on `PATH` |
+| `test` | Rust |
+| `sqlx` | Rust, and sqlx-cli |
+
+`rust-cache` restores before `ci-setup` runs, so a cached sqlx-cli is found rather than
+built again.
+
 `sqlx-cli` is installed by `byrle_install_sqlx_cli` in `scripts/make/lib/sqlx-cli.sh`, which
 `scripts/make/dev-setup.sh` also calls. The pin was in `dev-setup.sh` alone; CI needed it too,
 and a second copy could drift from the first. It has to track the `sqlx` version in
@@ -29,8 +41,8 @@ another minor writes a cache the build does not accept.
 
 The toolchain is `stable`. There is no `rust-toolchain.toml` and no `rust-version` in
 `Cargo.toml`, so a contributor runs whatever stable rustup gives them; CI checking an older
-toolchain would pass on lints they cannot see. It is written out rather than left to the
-runner's default so the choice is visible.
+toolchain would pass on lints they cannot see. It is written in `scripts/make/lib/rust.sh`
+rather than left to the runner's default so the choice is visible.
 
 ## What is not gated
 
