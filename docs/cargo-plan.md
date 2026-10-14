@@ -116,7 +116,9 @@ source of attestation data. Q2 and Q6 are taken as recommended.
    `/-/byrle/ready` answers 503 while any served ecosystem has no `match` or `malware`
    stream.
 3. The `.crate` reader: its `Cargo.toml` for a build script and `proc-macro`, which
-   `install_scripts` refuses under the default `block` (Q4).
+   `install_scripts` refuses under the default `block` (Q4). Done 2026-10-14
+   ([install-scripts-from-the-artifact](engineering_decisions/install-scripts-from-the-artifact.md)).
+   It needs the analysis store, so Postgres.
 4. `RUSTSEC-` records in `osv/cargo` (Q6): done 2026-10-14, all kinds, as the user asked.
    A vulnerability is refused as any other. `unmaintained`, `unsound` and `notice` refuse
    nothing, and each is a signal of its own weight, beside `advisory_vulnerability` and
@@ -124,8 +126,9 @@ source of attestation data. Q2 and Q6 are taken as recommended.
    `lockfile verify` remains.
 5. `byrle doctor` for `~/.cargo/config.toml` and `CARGO_REGISTRIES_*`, and the startup line.
 6. `make smoke-cargo`: real `cargo build` through the proxy, with a token, a refused
-   version, a cooldown, and `rustls` 0.23.45 refused under `max_cvss: 3.9`. Written
-   2026-10-14; `cargo install` remains.
+   version, a cooldown, `rustls` 0.23.45 refused under `max_cvss: 3.9`, and `serde`
+   and `serde_derive` refused under `install_scripts: block`. Written 2026-10-14;
+   `cargo install` remains.
 7. Docs: quickstart, policy-reference, threat-model, runbook.
 8. Q5, later: measure how many versions carry `trustpub_data`, and whether it can be read
    reliably without a request per version, before deciding.

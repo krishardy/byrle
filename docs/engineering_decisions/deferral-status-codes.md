@@ -194,3 +194,20 @@ has been deferred, and logs `returned after a deferral` on the first request tha
 analysis stored, with the deferral count, `byrle.deferral.count`, and `byrle.deferral.after_ms` since the first one. A digest with
 deferral lines and no return line is a client that gave up. Those lines are what the table
 above can be checked against in a real install.
+
+## cargo, measured 2026-10-14
+
+`make retry-matrix` added cargo 1.99.0, `cargo fetch` of `itoa`. Metadata is an index file
+and an artifact a `.crate`. `BYRLE_RETRY_CLIENTS=cargo` runs it alone.
+
+| Deferral | Attempts | Gaps | Fetched | Elapsed |
+|---|---|---|---|---|
+| 429 index file, never lifting | 4 | 1.0s, 1.0s, 1.0s | no | 3.1s |
+| 503 index file, never lifting | 4 | 1.0s, 1.0s, 1.0s | no | 3.1s |
+| 429 `.crate`, never lifting | 4 | 1.0s, 1.0s, 1.0s | no | 3.2s |
+| 503 `.crate`, never lifting | 4 | 1.0s, 1.0s, 1.0s | no | 3.2s |
+| 503 everything, lifting after 8s | 4 | 1.0s, 1.0s, 1.0s | **no** | 3.1s |
+
+- **cargo honours `Retry-After`** and treats 429 and 503 alike, as yarn 4 and pip do.
+- **Its patience is about 3 seconds**: `net.retry`, 3 by default, retries after the first.
+  An analysis of a `.crate` has that long. `rustls` 0.23.45's took 79 ms.

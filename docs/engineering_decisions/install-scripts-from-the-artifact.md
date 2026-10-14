@@ -31,6 +31,7 @@ claiming `false`.
 |---|---|---|
 | npm | `<top>/package.json`, the manifest directly under the tarball's top directory, as npm unpacks it | `preinstall`, `install`, `postinstall`, in the order npm runs them |
 | PyPI | the sdist | a `setup.py` at the root of its directory, which pip runs to build it |
+| cargo | `<top>/Cargo.toml` in the `.crate` | the build script `package.build` names, or `<top>/build.rs` when it names none, and `[lib] proc-macro = true`. `build = false` is none |
 
 Until 2026-09-27 the npm reader took the first member whose path ended in `package.json`.
 `package/node_modules/x/package.json`, a bundled dependency's manifest listed before the
@@ -49,6 +50,27 @@ which is ignored by default because it downloads them:
 | `bufferutil` 4.1.0, 163,631 bytes | `hasInstallScript: true` | `install: node-gyp-build` |
 | `node-gyp-build` 4.8.4, 5,449 bytes | no `hasInstallScript` | a `test` script only |
 | `six` 1.17.0 sdist, 34,031 bytes | an sdist, so pip builds it | `setup.py` |
+
+## cargo, added 2026-10-14
+
+Asked for by the user ([cargo-plan](../cargo-plan.md) Q4): a build script and a proc-macro
+are what `install_scripts` refuses, as a `postinstall` is. A crates.io index line says
+neither, so a cargo record claims nothing, and every build script is `undeclared`. The
+check is decided only from the `.crate`, which needs the analysis store: without Postgres,
+nothing reads one and `install_scripts` passes every crate.
+
+Read from the published `.crate` files, `real_crates_declare_their_build_scripts_and_proc_macros`:
+
+| Crate | `Cargo.toml` | Read as |
+|---|---|---|
+| `serde` 1.0.229 | `build = "build.rs"` | `build.rs` |
+| `serde_derive` 1.0.229 | `build = false`, `proc-macro = true` | `proc-macro` |
+| `itoa` 1.0.18 | `build = false` | nothing |
+| `libc` 0.2.0 | no `build`, no `build.rs` | nothing |
+
+`rustls` 0.23.45 has a build script too: under the default `block`, `make smoke-cargo`
+saw it refused once read. The read took 79 ms, and the download was answered after one
+1-second deferral. `analysis::READER` is `install-scripts 3`.
 
 ## Cost
 

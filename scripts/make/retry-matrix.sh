@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # What each package manager does when the proxy defers a request: npm, pnpm, yarn 1,
-# yarn 4 and bun installing from npm, and pip and uv installing from PyPI.
+# yarn 4 and bun installing from npm, pip and uv installing from PyPI, and cargo fetching
+# from crates.io. BYRLE_RETRY_CLIENTS, such as `cargo`, runs only the clients it names.
 #
 # §5 defers rather than refuses when the proxy is not ready to answer: warming, or an
 # artifact still under analysis. Which status code says that is an open decision, and it
@@ -39,6 +40,9 @@ package="${BYRLE_RETRY_PACKAGE:-lodash}"
 pypi_package="${BYRLE_RETRY_PYPI_PACKAGE:-idna}"
 npm_clients=(npm pnpm yarn yarn-berry bun)
 pypi_clients=(pip uv)
+cargo_clients=(cargo)
+# One crate with no dependencies, pinned, so the lockfile resolves one index file.
+crate="${BYRLE_RETRY_CRATE:-itoa}"
 # How long a bounded deferral lasts. Long enough that a client which gives up straight
 # away is not credited with waiting, short enough to run five clients through it.
 bounded_seconds="${BYRLE_RETRY_BOUNDED_SECONDS:-8}"
@@ -112,6 +116,17 @@ prepare_python() {
     esac
 }
 
+# A project depending on $crate, with a CARGO_HOME pointing crates.io at the proxy.
+prepare_cargo() {
+    local dir="$1"
+    mkdir -p "$dir/src" "$dir/home"
+    printf '[package]\nname = "byrle-retry"\nversion = "0.1.0"\nedition = "2021"\n[dependencies]\n%s = "*"\n' \
+        "$crate" >"$dir/Cargo.toml"
+    : >"$dir/src/main.rs"
+    printf '[source.crates-io]\nreplace-with = "byrle"\n[registries.byrle]\nindex = "sparse+%scargo/"\n' \
+        "$registry" >"$dir/home/config.toml"
+}
+
 # The install command for one client, into a cache directory nothing else shares.
 client_command() {
     local client="$1" dir="$2"
@@ -134,6 +149,7 @@ client_command() {
             yarn add "$package" ;;
         pip) byrle_pip_command "$dir/venv" "$index" "$pypi_package" ;;
         uv) byrle_uv_command "$dir/venv" "$index" "$pypi_package" ;;
+        cargo) printf '%s\n' env "CARGO_HOME=$dir/home" cargo fetch ;;
     esac
 }
 
@@ -161,6 +177,7 @@ run_cell() {
         printf '  %-11s needs corepack and node 18 or later, skipped\n' "$client"
         return 0
     fi
+    if [[ "$client" == cargo ]]; then prepare_cargo "$dir"; fi
     if [[ "$client" == pip || "$client" == uv ]] && ! prepare_python "$client" "$dir"; then
         printf '  %-11s could not create a venv, skipped\n' "$client"
         return 0
@@ -197,8 +214,9 @@ run_cell() {
     fi
 }
 
-clients=("${npm_clients[@]}" "${pypi_clients[@]}")
-echo "==> deferral matrix: ${package} from npm and ${pypi_package} from PyPI through the proxy, ${#clients[@]} clients"
+clients=("${npm_clients[@]}" "${pypi_clients[@]}" "${cargo_clients[@]}")
+if [[ -n "${BYRLE_RETRY_CLIENTS:-}" ]]; then read -r -a clients <<<"$BYRLE_RETRY_CLIENTS"; fi
+echo "==> deferral matrix: ${package} from npm, ${pypi_package} from PyPI and ${crate} from crates.io, ${#clients[@]} clients"
 echo "    Retry-After is 1 second throughout. Gaps are the seconds between the attempts"
 echo "    the proxy saw, so a client that honours the header shows gaps near 1."
 echo
@@ -231,5 +249,6 @@ Reading this:
             somewhere the proxy did not see.
   ua        the user-agent the proxy saw, which is the key a per-client code table
             would use. yarn 4 sends `got`, not `yarn`.
-  metadata  an npm packument or a PyPI index; artifact, an npm tarball or a PyPI file.
+  metadata  an npm packument, a PyPI index or a cargo index file; artifact, an npm
+            tarball, a PyPI file or a .crate.
 NOTE

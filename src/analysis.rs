@@ -59,7 +59,7 @@ impl std::fmt::Display for ReadError {
 pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 
 /// The readers' version, stored with each analysis; bumped whenever a reader's answer changes.
-pub const READER: &str = "install-scripts 2";
+pub const READER: &str = "install-scripts 3";
 
 /// What reads an artifact for the code it runs on install, such as [`npm_install_scripts`].
 pub type Reader = fn(&mut dyn Read) -> Result<InstallScripts, ReadError>;
@@ -110,6 +110,56 @@ pub fn sdist_install_scripts(sdist: &mut dyn Read) -> Result<InstallScripts, Rea
         Err(ReadError::NothingToRead) => Ok(InstallScripts::default()),
         Err(e) => Err(e),
     }
+}
+
+/// The code a `.crate` runs when it is built: its build script and its proc-macro, read
+/// from `<top>/Cargo.toml`. One naming no `build`, as libc 0.2.0's, has one if
+/// `<top>/build.rs` exists.
+pub fn crate_build_scripts(archive: &mut dyn Read) -> Result<InstallScripts, ReadError> {
+    let (mut manifest, mut build_rs) = (None, false);
+    walk(archive, &mut |path, member| {
+        let Some((_, rest)) = path.split_once('/') else {
+            return Ok(false);
+        };
+        match rest {
+            "build.rs" => build_rs = true,
+            "Cargo.toml" if manifest.is_none() => {
+                if member.size as usize > MAX_MEMBER_BYTES {
+                    return Err(ReadError::TooLarge {
+                        member: path.to_owned(),
+                        limit: MAX_MEMBER_BYTES,
+                    });
+                }
+                let mut text = String::new();
+                member
+                    .bytes
+                    .read_to_string(&mut text)
+                    .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+                manifest = Some(text);
+            }
+            _ => {}
+        }
+        Ok(false)
+    })?;
+    let manifest: toml::Table = manifest
+        .ok_or(ReadError::NothingToRead)?
+        .parse()
+        .map_err(|e: toml::de::Error| ReadError::NotAnArchive(e.to_string()))?;
+    let mut found = InstallScripts::default();
+    let build = match manifest.get("package").and_then(|p| p.get("build")) {
+        Some(toml::Value::String(script)) => Some(script.clone()),
+        Some(toml::Value::Boolean(true)) | None if build_rs => Some("build.rs".to_owned()),
+        _ => None,
+    };
+    found.names.extend(build);
+    let lib = manifest.get("lib");
+    if ["proc-macro", "proc_macro"]
+        .iter()
+        .any(|key| lib.and_then(|l| l.get(key)).and_then(toml::Value::as_bool) == Some(true))
+    {
+        found.names.push("proc-macro".to_owned());
+    }
+    Ok(found)
 }
 
 /// The first member of a gzipped tar whose path `wanted` accepts.
@@ -210,6 +260,7 @@ mod tests {
     fn answers() -> String {
         let npm = |files: &[(&str, &[u8])]| npm_install_scripts(&mut &*tarball(files));
         let sdist = |files: &[(&str, &[u8])]| sdist_install_scripts(&mut &*tarball(files));
+        let krate = |files: &[(&str, &[u8])]| crate_build_scripts(&mut &*tarball(files));
         let cases: Vec<(&str, Result<InstallScripts, ReadError>)> = vec![
             (
                 "npm, every install lifecycle script and two others",
@@ -256,6 +307,43 @@ mod tests {
             ("sdist, setup.py only deeper", sdist(&[("x-1.0/sub/setup.py", b"")])),
             ("sdist, pyproject.toml only", sdist(&[("x-1.0/pyproject.toml", b"")])),
             ("sdist, not gzip", sdist_install_scripts(&mut &b"plain"[..])),
+            (
+                "crate, build named",
+                krate(&[("x-1/Cargo.toml", b"[package]\nbuild = \"src/gen.rs\"\n")]),
+            ),
+            (
+                "crate, build.rs and no build key",
+                krate(&[("x-1/Cargo.toml", b"[package]\n"), ("x-1/build.rs", b"")]),
+            ),
+            (
+                "crate, build = true and build.rs",
+                krate(&[("x-1/Cargo.toml", b"[package]\nbuild = true\n"), ("x-1/build.rs", b"")]),
+            ),
+            (
+                "crate, build = false and build.rs",
+                krate(&[("x-1/Cargo.toml", b"[package]\nbuild = false\n"), ("x-1/build.rs", b"")]),
+            ),
+            (
+                "crate, build.rs only deeper",
+                krate(&[("x-1/Cargo.toml", b"[package]\n"), ("x-1/src/build.rs", b"")]),
+            ),
+            (
+                "crate, proc-macro",
+                krate(&[("x-1/Cargo.toml", b"[package]\nbuild = false\n[lib]\nproc-macro = true\n")]),
+            ),
+            (
+                "crate, proc_macro, the old spelling",
+                krate(&[("x-1/Cargo.toml", b"[lib]\nproc_macro = true\n")]),
+            ),
+            (
+                "crate, neither",
+                krate(&[("x-1/Cargo.toml", b"[package]\nbuild = false\n[lib]\n")]),
+            ),
+            ("crate, no Cargo.toml", krate(&[("x-1/src/lib.rs", b"")])),
+            ("crate, Cargo.toml at the root", krate(&[("Cargo.toml", b"[package]\n")])),
+            ("crate, Cargo.toml not UTF-8", krate(&[("x-1/Cargo.toml", b"\xff")])),
+            ("crate, Cargo.toml not TOML", krate(&[("x-1/Cargo.toml", b"[package")])),
+            ("crate, not gzip", crate_build_scripts(&mut &b"plain"[..])),
         ];
         cases
             .into_iter()
@@ -327,6 +415,31 @@ mod tests {
         let built = tarball(&[("six-1.17.0/setup.py", b"")]);
         assert_eq!(sdist(&mut &built[..]).expect("reads").names, ["setup.py"]);
         assert!(reader(Ecosystem::PyPI, "six-1.17.0-py2.py3-none-any.whl").is_none());
+        let krate = reader(Ecosystem::Cargo, "serde-1.0.229.crate").expect("a .crate is read");
+        let built = tarball(&[(
+            "serde-1.0.229/Cargo.toml",
+            b"[package]\nbuild = \"build.rs\"\n",
+        )]);
+        assert_eq!(krate(&mut &built[..]).expect("reads").names, ["build.rs"]);
+        assert!(reader(Ecosystem::Cargo, "serde-1.0.229.tar.gz").is_none());
+    }
+
+    /// Read from the published `.crate` files on 2026-10-14. libc 0.2.0's manifest names no
+    /// `build`, and it has no `build.rs`.
+    #[tokio::test]
+    #[ignore = "downloads from static.crates.io"]
+    async fn real_crates_declare_their_build_scripts_and_proc_macros() {
+        for (name, version, expected) in [
+            ("serde", "1.0.229", &["build.rs"][..]),
+            ("serde_derive", "1.0.229", &["proc-macro"][..]),
+            ("itoa", "1.0.18", &[][..]),
+            ("libc", "0.2.0", &[][..]),
+        ] {
+            let url = format!("https://static.crates.io/crates/{name}/{version}/download");
+            let bytes = reqwest::get(url).await.unwrap().bytes().await.unwrap();
+            let found = crate_build_scripts(&mut &bytes[..]).expect("reads");
+            assert_eq!(found.names, expected, "{name} {version}");
+        }
     }
 
     /// `bufferutil` 4.1.0 declares `install: node-gyp-build`, which is what its packument's
@@ -401,6 +514,14 @@ mod tests {
             npm_install_scripts(&mut &*archive),
             Err(ReadError::TooLarge {
                 member: "package/package.json".to_owned(),
+                limit: MAX_MEMBER_BYTES,
+            })
+        );
+        let manifest = tarball(&[("x-1/Cargo.toml", &big)]);
+        assert_eq!(
+            crate_build_scripts(&mut &*manifest),
+            Err(ReadError::TooLarge {
+                member: "x-1/Cargo.toml".to_owned(),
                 limit: MAX_MEMBER_BYTES,
             })
         );

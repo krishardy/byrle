@@ -67,7 +67,11 @@ pub const REGISTRY: Registry = Registry {
             reading.path,
         )))
     },
-    reader: |_| None,
+    reader: |filename| {
+        filename
+            .ends_with(".crate")
+            .then_some(crate::analysis::crate_build_scripts as crate::analysis::Reader)
+    },
     layout: |_| None,
     source: |_| None,
     compare_source: |_, _, _| None,
