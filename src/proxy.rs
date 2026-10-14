@@ -16,7 +16,6 @@ use crate::audit::{self, AuditLog};
 use crate::defer::DeferTest;
 use crate::ecosystem::FullDocument;
 use crate::ecosystem::{self, Clients, UncoveredMetadata, Upstreams};
-use crate::ecosystem::{npm, pypi};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_METADATA, DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_TRAFFIC_CLIENTS, DEFAULT_MAX_VERIFIED,
@@ -1154,8 +1153,8 @@ struct Negotiation {
     rewrite_base: Option<String>,
     /// Artifact URLs are pointed at the proxy.
     rewriting: bool,
-    /// The full packument is asked for and served, for its publish times and the heuristics.
-    full_document: bool,
+    /// The `Accept` asking for the fuller document, for its publish times; `None` if not asked.
+    full_document: Option<&'static str>,
 }
 
 fn negotiate(
@@ -1175,8 +1174,10 @@ fn negotiate(
         && encoding != RequestedEncoding::Unreadable;
     let rewrite_base = public_base(headers, proxy.config.public_base.as_deref());
     let rewriting = read_metadata && proxy.config.rewrite_artifacts && rewrite_base.is_some();
-    let full_document = read_metadata
-        && ecosystem::of(ecosystem).publish_times == ecosystem::PublishTimeSource::FullPackument;
+    let full_document = ecosystem::of(ecosystem)
+        .publish_times
+        .full_accept
+        .filter(|_| read_metadata);
     Negotiation {
         encoding,
         read_metadata,
@@ -1244,7 +1245,7 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
         if negotiation.read_metadata && name == header::ACCEPT_ENCODING {
             continue;
         }
-        if negotiation.full_document && name == header::ACCEPT {
+        if negotiation.full_document.is_some() && name == header::ACCEPT {
             continue;
         }
         if negotiation.rewriting && is_conditional(name.as_str()) {
@@ -1257,8 +1258,8 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
     {
         outbound.append(header::ACCEPT_ENCODING, HeaderValue::from_static(value));
     }
-    if negotiation.full_document {
-        outbound.append(header::ACCEPT, HeaderValue::from_static(npm::FULL_ACCEPT));
+    if let Some(accept) = negotiation.full_document {
+        outbound.append(header::ACCEPT, HeaderValue::from_static(accept));
     }
     if negotiation.rewriting
         && let Some(inm) = client
@@ -2227,10 +2228,7 @@ async fn attested(
     times: Option<&facts::PublishTimes>,
 ) -> (Provenance, Vec<Attestation>) {
     let key = record.package.key();
-    let bundle: fn(&[u8]) -> Result<_, String> = match key.ecosystem() {
-        Ecosystem::Npm => npm::attestation::provenance_bundle,
-        Ecosystem::PyPI => pypi::attestation::provenance_bundle,
-    };
+    let bundle = ecosystem::of(key.ecosystem()).provenance_bundle;
     let window = proxy.config.policy.as_deref().map_or_else(
         || crate::policy::window_of(crate::policy::DEFAULT_PROVENANCE_WINDOW_DAYS),
         Policy::provenance_window,
@@ -3569,6 +3567,7 @@ mod tests {
     use super::*;
     use crate::account::gate::TOKEN_HEADER;
     use crate::defer::DeferTest;
+    use crate::ecosystem::{npm, pypi};
     use crate::identity::Ecosystem;
     use crate::util::test_support::NO_UPSTREAM;
     use crate::util::test_support::{capture, text};
@@ -4176,7 +4175,8 @@ mod tests {
         for (yaml, method, path, encoding, full) in cases {
             let negotiation = negotiated(yaml, method.clone(), path, encoding);
             assert_eq!(
-                negotiation.full_document, full,
+                negotiation.full_document.is_some(),
+                full,
                 "{yaml:?} {method} {path} {encoding}"
             );
         }
@@ -4192,7 +4192,7 @@ mod tests {
                 read_metadata: true,
                 rewrite_base: Some("http://proxy.test".to_owned()),
                 rewriting: true,
-                full_document: true,
+                full_document: Some(npm::FULL_ACCEPT),
             }
         );
         let unread = negotiated(None, Method::GET, "/lodash", UNREADABLE);

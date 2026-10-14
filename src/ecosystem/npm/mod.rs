@@ -58,7 +58,15 @@ pub const REGISTRY: Registry = Registry {
     read_media_type: document_from_content_type,
     documents: &[ABBREVIATED_ACCEPT, FULL_ACCEPT],
     other_is_probe: false,
-    publish_times: PublishTimeSource::FullPackument,
+    publish_times: PublishTimeSource {
+        said: "the full packument, fetched under a cooldown",
+        full_accept: Some(FULL_ACCEPT),
+        cost: Some(
+            "a full-packument fetch per package that the client never asked for. npm \
+             publishes version timestamps only in the full document, measured at 1.7x to \
+             3.6x the abbreviated one",
+        ),
+    },
     streams: &[&OSV, &DATADOG, &GITHUB],
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
@@ -106,6 +114,7 @@ pub const REGISTRY: Registry = Registry {
     unfound_source: "no package.json in the source names the package",
     upstream_check: None,
     keep_for_platforms: |_, _| {},
+    provenance_bundle: attestation::provenance_bundle,
     osv_name: "npm",
     metadata_names_repository: |record| record.detail == crate::record::DocumentDetail::Full,
     client: |http, upstream, max_bytes| {

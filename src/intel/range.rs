@@ -6,7 +6,7 @@
 use semver::{BuildMetadata, Version};
 use std::collections::BTreeMap;
 
-use crate::ecosystem::pypi::version::Version as Pep440;
+use super::pep440::Version as Pep440;
 use crate::identity::Ecosystem;
 
 /// How an ecosystem orders its versions.

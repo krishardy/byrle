@@ -161,33 +161,20 @@ pub fn fetched(result: Fetched) -> Result<PackageMetadata, String> {
 
 /// Where the policy reads a version's publish time from, for `cooldown_days`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PublishTimeSource {
-    /// The normaliser sets `published_at` from the document the client asked for.
-    Record,
-    /// npm's full packument, fetched separately; the abbreviated one has no `time` map.
-    FullPackument,
-}
-
-impl PublishTimeSource {
-    /// What a policy with `cooldown_days` costs, when it costs a request the client never
-    /// made. `None` when the publish time is in the document the client asked for.
-    pub fn cost(self) -> Option<&'static str> {
-        match self {
-            Self::Record => None,
-            Self::FullPackument => Some(
-                "a full-packument fetch per package that the client never asked for. npm \
-                 publishes version timestamps only in the full document, measured at 1.7x to \
-                 3.6x the abbreviated one",
-            ),
-        }
-    }
+pub struct PublishTimeSource {
+    /// Where the times are, as `byrle status` says it.
+    pub said: &'static str,
+    /// The `Accept` asking for the fuller document holding the times; `None` if the client's does.
+    pub full_accept: Option<&'static str>,
+    /// What a policy with `cooldown_days` costs, when it costs a request the client never made.
+    pub cost: Option<&'static str>,
 }
 
 /// Each served ecosystem whose cooldown costs a request, and what it costs.
 pub fn cooldown_costs() -> Vec<(Ecosystem, &'static str)> {
     TABLE
         .iter()
-        .filter_map(|registry| Some((registry.ecosystem, registry.publish_times.cost()?)))
+        .filter_map(|registry| Some((registry.ecosystem, registry.publish_times.cost?)))
         .collect()
 }
 
@@ -297,6 +284,8 @@ pub struct Registry {
     pub upstream_check: Option<UpstreamCheck>,
     /// Keeps of a version's files those that install on one of the targets, for `byrle warm`.
     pub keep_for_platforms: fn(&mut Vec<&crate::record::Artifact>, &[crate::lockfile::Target]),
+    /// What reads a document of this ecosystem's attestations as a Sigstore bundle.
+    pub provenance_bundle: fn(&[u8]) -> Result<sigstore_verify::types::Bundle, String>,
     /// The name OSV gives this ecosystem, in `affected[].package.ecosystem` and its bundle's path.
     pub osv_name: &'static str,
     /// Whether a record's metadata would name a repository, so that naming none is a signal.
@@ -519,7 +508,7 @@ mod table {
             [Ecosystem::Npm]
         );
         assert!(costs[0].1.contains("full-packument fetch"));
-        assert_eq!(PublishTimeSource::Record.cost(), None);
+        assert_eq!(pypi::REGISTRY.publish_times.cost, None);
     }
 
     #[test]
@@ -688,7 +677,7 @@ mod table {
     fn only_npm_reads_publish_times_from_a_full_packument() {
         let fetching: Vec<_> = TABLE
             .iter()
-            .filter(|registry| registry.publish_times == PublishTimeSource::FullPackument)
+            .filter(|registry| registry.publish_times.full_accept.is_some())
             .map(|registry| registry.ecosystem)
             .collect();
         assert_eq!(fetching, [Ecosystem::Npm]);
@@ -711,13 +700,44 @@ mod table {
         }
     }
 
+    /// `text`'s lines outside each `#[cfg(test)]` or `#[cfg(kani)]` module, wherever it is.
+    fn outside_tests(text: &str) -> Vec<&str> {
+        let lines: Vec<&str> = text.lines().collect();
+        let mut kept = Vec::new();
+        let mut i = 0;
+        while i < lines.len() {
+            let gate = matches!(lines[i].trim(), "#[cfg(test)]" | "#[cfg(kani)]");
+            if !(gate && opens_module(&lines[i + 1..])) {
+                kept.push(lines[i]);
+                i += 1;
+                continue;
+            }
+            let mut depth = 0i64;
+            let mut opened = false;
+            while i < lines.len() {
+                depth +=
+                    lines[i].matches('{').count() as i64 - lines[i].matches('}').count() as i64;
+                opened |= lines[i].contains('{');
+                i += 1;
+                if opened && depth == 0 || !opened && lines[i - 1].trim_end().ends_with(';') {
+                    break;
+                }
+            }
+        }
+        kept
+    }
+
     /// Whether the item after a `#[cfg(test)]`, past other attributes, is a module.
     fn opens_module(after: &[&str]) -> bool {
         after
             .iter()
             .map(|line| line.trim())
             .find(|line| !line.starts_with("#["))
-            .is_some_and(|line| line.starts_with("mod ") || line.starts_with("pub(crate) mod "))
+            .is_some_and(|line| {
+                ["mod ", "pub mod ", "pub(crate) mod "]
+                    .iter()
+                    .any(|start| line.starts_with(start))
+            })
     }
 
     /// An npm version installs the same file on every platform, so `warm` keeps every one.
@@ -803,13 +823,12 @@ mod table {
             .iter()
             .filter(|f| !adapters.iter().any(|a| f.starts_with(a)))
         {
+            if file.ends_with("testing.rs") || file.ends_with("test_support.rs") {
+                continue;
+            }
             let text = std::fs::read_to_string(file).expect("readable");
-            let lines: Vec<&str> = text.lines().collect();
-            let tests = (0..lines.len())
-                .find(|&i| lines[i].trim() == "#[cfg(test)]" && opens_module(&lines[i + 1..]))
-                .unwrap_or(lines.len());
-            let count = lines[..tests]
-                .iter()
+            let count = outside_tests(&text)
+                .into_iter()
                 .filter(|line| !line.trim_start().starts_with("//"))
                 .filter(|line| names(line))
                 .count();
@@ -826,14 +845,10 @@ mod table {
     #[test]
     fn only_the_adapters_name_npm_or_pypi() {
         let allowed: std::collections::BTreeMap<String, usize> = [
-            ("src/defer.rs", 1),
             ("src/ecosystem.rs", 2),
             ("src/env.rs", 4),
             ("src/identity.rs", 5),
             ("src/intel/range.rs", 1),
-            ("src/intel/store.rs", 1),
-            ("src/proxy.rs", 3),
-            ("src/proxy/testing.rs", 1),
         ]
         .into_iter()
         .map(|(file, count): (&str, usize)| (file.to_owned(), count))

@@ -12,7 +12,6 @@ pub mod normalize;
 pub mod paths;
 pub mod rewrite;
 pub mod transport;
-pub mod version;
 pub mod wheel;
 pub mod wire;
 
@@ -56,7 +55,11 @@ pub const REGISTRY: Registry = Registry {
     read_media_type: document_from_content_type,
     documents: &[SIMPLE_JSON, SIMPLE_HTML, "text/html"],
     other_is_probe: true,
-    publish_times: PublishTimeSource::Record,
+    publish_times: PublishTimeSource {
+        said: "in the document",
+        full_accept: None,
+        cost: None,
+    },
     streams: &[&OSV, &DATADOG, &GITHUB],
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
@@ -107,6 +110,7 @@ pub const REGISTRY: Registry = Registry {
         check: clients::check_index_format,
     }),
     keep_for_platforms: wheel::keep_for_platforms,
+    provenance_bundle: attestation::provenance_bundle,
     osv_name: "PyPI",
     metadata_names_repository: |_| false,
     client: |http, upstream, max_bytes| {

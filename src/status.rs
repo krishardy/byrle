@@ -50,12 +50,7 @@ fn adapter(registry: &Registry, upstreams: &Upstreams) -> String {
     line(
         &mut out,
         "publish times",
-        match registry.publish_times {
-            crate::ecosystem::PublishTimeSource::Record => "in the document".to_owned(),
-            crate::ecosystem::PublishTimeSource::FullPackument => {
-                "the full packument, fetched under a cooldown".to_owned()
-            }
-        },
+        registry.publish_times.said.to_owned(),
     );
     line(
         &mut out,
