@@ -76,3 +76,5 @@ These apply to chat messages. The documentation rules above apply here too.
 * make lint (runs clippy)
 * make verify (runs kani)
 * make test
+* make check-deps. If there are any issues, make a note. Do not updated them yourself unless you have been told to by the operator.
+* Check docker image versions to ensure that they are the latest version. If they are not, make a note. Do not update them yourself unless you have been told to by the operator.
