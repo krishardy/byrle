@@ -73,7 +73,17 @@ time:
 and points the kept URLs at the proxy with the same byte replacement as an unfiltered
 document. PyPI's JSON index removal still builds the tree; its documents are small.
 
-`MALLOC_ARENA_MAX=2`, before the change, lowered idle RSS by about 40%: `npm ci` 586 to
+With `mimalloc` as the binary's allocator, 2026-10-14, chosen with the static musl
+release ([release-provenance](release-provenance.md)), the same loads, in MB:
+
+| Load | peak | median while loaded | idle |
+|---|---|---|---|
+| `npm ci`, 207 packages, cold proxy | 395 | 189 | 172 |
+| `uv pip install`, 18 packages, cold proxy | 173 | 123 | 125 |
+| 8 at once: vite's full document | 776 | 230 | 101 |
+| 24 at once: the 8 largest documents, 3 times each | 597 | 298 | 196 |
+
+`MALLOC_ARENA_MAX=2`, with glibc's allocator before the change, lowered idle RSS by about 40%: `npm ci` 586 to
 349 MB, the 24 documents 1,093 to 689 MB. Peaks moved less: 586 to 448 and 1,181 to 809.
 
 A request waits for a slot after its body is read, not before. The upstream connection is

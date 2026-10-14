@@ -227,7 +227,7 @@ Each release's binaries and image carry SLSA build provenance, signed through Si
 the workflow that built them ([release-provenance](docs/engineering_decisions/release-provenance.md)):
 
 ```
-gh attestation verify byrle-<version>-x86_64-unknown-linux-gnu.tar.gz --repo krishardy/byrle
+gh attestation verify byrle-<version>-x86_64-unknown-linux-musl.tar.gz --repo krishardy/byrle
 gh attestation verify oci://ghcr.io/krishardy/byrle:<version> --repo krishardy/byrle
 ```
 

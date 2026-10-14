@@ -1,7 +1,7 @@
-# The release image: the binary a release attested, for the platform being built, on
-# distroless with no shell. Built by .github/workflows/release.yml from the context
+# The release image: the static binary a release attested, for the platform being built,
+# on distroless static: CA certificates and time zones, with no libc and no shell. Built by .github/workflows/release.yml from the context
 # scripts/make/release-image-context.sh writes; Containerfile builds from source instead.
-FROM gcr.io/distroless/cc-debian13:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 ARG TARGETARCH
 COPY dist/image/${TARGETARCH}/byrle /usr/local/bin/byrle
 USER nonroot

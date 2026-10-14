@@ -19,6 +19,16 @@ A ratio, so it scales with the size of the set. The 3 s allowance was added by t
 2026-10-14: that day direct PyPI took 1.6 s, and the proxy's 4.2 s was over 1.5 times it. The cold npm median moved by about 3 s
 between runs (12.9 s and 15.7 s), which the cold budget leaves room for.
 
+## With mimalloc, 2026-10-14
+
+After the three fixes below, with `mimalloc` as the allocator. Median of 3 runs, in
+seconds; within the budget.
+
+| Set | direct, cold | direct, warm cache | proxy, cold | `byrle warm` | proxy, analysed | proxy, warm cache |
+|---|---|---|---|---|---|---|
+| npm: 207 packages | 3.6 | 2.9 | 4.0 | 3.4 | 3.7 | 3.1 |
+| pypi: 18 packages | 2.5 | 0.1 | 2.3 | 0.4 | 1.6 | 0.1 |
+
 ## Where an analysed PyPI install's time went, 2026-10-14
 
 uv installing the 18-package set through an analysed proxy took 4.4 s against 1.2 s

@@ -15,6 +15,10 @@ use byrle::intel::refresh;
 use byrle::policy::{check, diff, today};
 use byrle::startup;
 
+/// mimalloc rather than the C library's allocator, on glibc as on the static musl release.
+#[global_allocator]
+static ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 /// A variable that does not parse ends the process with exit 2, as a malformed command line
 /// does: the operator asked for something, and continuing without it would hide that.
 fn or_exit<T>(result: Result<T, env::EnvError>) -> T {
