@@ -29,7 +29,7 @@ recorded="$workdir/recorded.log"
 asked="$workdir/registry.log"
 
 cleanup() {
-    [[ -n "$servers_pid" ]] && kill "$servers_pid" 2>/dev/null || true
+    if [[ -n "$servers_pid" ]]; then kill "$servers_pid" 2>/dev/null || true; fi
     rm -rf "$workdir"
 }
 trap cleanup EXIT

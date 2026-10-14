@@ -41,7 +41,7 @@ require_token=0
 proxy_token=""
 
 cleanup() {
-    [[ -n "$proxy_pid" ]] && kill "$proxy_pid" 2>/dev/null || true
+    if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; fi
     rm -rf "$workdir"
 }
 trap cleanup EXIT
@@ -69,7 +69,7 @@ start_proxy() {
 }
 
 stop_proxy() {
-    [[ -n "$proxy_pid" ]] && kill "$proxy_pid" 2>/dev/null || true
+    if [[ -n "$proxy_pid" ]]; then kill "$proxy_pid" 2>/dev/null || true; fi
     wait "$proxy_pid" 2>/dev/null || true
     proxy_pid=""
 }
