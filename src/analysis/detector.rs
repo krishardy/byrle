@@ -245,32 +245,42 @@ impl Command {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
+            .process_group(0)
             .kill_on_drop(true);
         let program = self.program.display();
-        let running = async {
-            let mut child = command
-                .spawn()
-                .map_err(|e| format!("{program} did not start: {e}"))?;
-            let mut stdout = child.stdout.take().expect("stdout is piped");
-            let mut stderr = child.stderr.take().expect("stderr is piped");
-            let (stdout, stderr) =
-                tokio::try_join!(read_capped(&mut stdout), read_capped(&mut stderr))
-                    .map_err(|e| format!("{program}: {e}"))?;
-            let success = child.wait().await.is_ok_and(|status| status.success());
-            Ok(Output {
-                success,
-                stdout,
-                stderr,
-            })
+        let ran = match command.spawn() {
+            Err(e) => Err(format!("{program} did not start: {e}")),
+            Ok(mut child) => {
+                let leader = child.id().expect("a child just spawned has a pid");
+                let mut reaped = false;
+                let running = async {
+                    let mut stdout = child.stdout.take().expect("stdout is piped");
+                    let mut stderr = child.stderr.take().expect("stderr is piped");
+                    let (stdout, stderr) =
+                        tokio::try_join!(read_capped(&mut stdout), read_capped(&mut stderr))
+                            .map_err(|e| format!("{program}: {e}"))?;
+                    let success = child.wait().await.is_ok_and(|status| status.success());
+                    reaped = true;
+                    Ok(Output {
+                        success,
+                        stdout,
+                        stderr,
+                    })
+                };
+                let ran = tokio::time::timeout(self.timeout, running)
+                    .await
+                    .unwrap_or_else(|_| {
+                        Err(format!(
+                            "{program} ran past {} seconds",
+                            self.timeout.as_secs_f32()
+                        ))
+                    });
+                if !reaped {
+                    kill_group(leader);
+                }
+                ran
+            }
         };
-        let ran = tokio::time::timeout(self.timeout, running)
-            .await
-            .unwrap_or_else(|_| {
-                Err(format!(
-                    "{program} ran past {} seconds",
-                    self.timeout.as_secs_f32()
-                ))
-            });
         let _ = std::fs::remove_dir_all(&directory);
         ran
     }
@@ -306,6 +316,13 @@ impl Detector for Command {
                 .map_err(|e| format!("{}: {e}; it said {}", self.name, tail(&printed.stderr)))
         })
     }
+}
+
+/// SIGKILL to the process group `leader` leads, while the leader is unreaped so its id is
+/// not reused: a detector's own children die with it. `killpg` reads no memory.
+fn kill_group(leader: u32) {
+    let group = libc::pid_t::try_from(leader).expect("a pid fits a pid_t");
+    unsafe { libc::killpg(group, libc::SIGKILL) };
 }
 
 /// Read `stream` to its end, or to where it can no longer be read.
@@ -392,7 +409,7 @@ case "$3" in
   quiet) echo '{"results":{"r":null,"f":false,"s":"","a":[],"o":{}}}' ;;
   loud) echo '{"results":{"a":{"x":1},"b":["y"],"c":"text","n":3},"errors":{"e":"boom"}}' ;;
   env) printf '{"results":{"env":"%s","cwd":"%s"}}' "$(env | sort | tr '\n' ' ')" "$(pwd)" ;;
-  slow) echo $$ > "$4"; sleep 30 ;;
+  slow) sleep 30 & echo "$$ $!" > "$4"; wait ;;
   flood) head -c 20000000 /dev/zero | tr '\0' 'x' ;;
   garbage) echo "not json" ; echo "it went wrong" >&2 ;;
 esac
@@ -564,7 +581,7 @@ esac
         assert_eq!(tail(b"\n  \n"), "nothing");
     }
 
-    /// A run past its timeout is killed: the process it started is gone.
+    /// A run past its timeout is killed with the processes it started: none is left.
     #[tokio::test]
     async fn a_command_past_its_timeout_is_killed() {
         let detector = fake("detector-slow")
@@ -575,19 +592,20 @@ esac
         slow.version = pidfile.display().to_string();
         let error = detector.detect(&slow).await.unwrap_err();
         assert!(error.contains("ran past 0.5 seconds"), "{error}");
-        let pid = std::fs::read_to_string(&pidfile).expect("the script wrote its pid");
-        let status = format!("/proc/{}/stat", pid.trim());
-        let gone = || {
-            std::fs::read_to_string(&status)
+        let pids = std::fs::read_to_string(&pidfile).expect("the script wrote its pids");
+        let gone = |pid: &str| {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
                 .map_or(true, |stat| stat.split_whitespace().nth(2) == Some("Z"))
         };
-        for _ in 0..40 {
-            if gone() {
-                break;
+        for pid in pids.split_whitespace() {
+            for _ in 0..40 {
+                if gone(pid) {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
             }
-            std::thread::sleep(Duration::from_millis(50));
+            assert!(gone(pid), "process {pid} still runs, of {pids}");
         }
-        assert!(gone(), "process {} still runs", pid.trim());
     }
 
     /// Each spec that cannot be a detector is refused, and so is a program that prints no

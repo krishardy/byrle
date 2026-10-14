@@ -378,13 +378,16 @@ Items that I've added that are not stage-bound.
     by the user 2026-10-13. Done 2026-10-13: `unauthorized` and `account-store` lines, with
     no account, on a metadata or artifact request
     ([audit-log](docs/engineering_decisions/audit-log.md)).
-35. [ ] A detector run past its timeout leaves its own children running. `kill_on_drop`
+35. [x] A detector run past its timeout leaves its own children running. `kill_on_drop`
     kills the process byrle started, not what it started: in
     `a_command_past_its_timeout_is_killed` the fake's `sleep 30` outlives the kill. A
     detector that starts others, as GuardDog starts semgrep, would leave them past the
     timeout. Start each detector in its own process group and kill the group. Raised
     2026-10-14. The same test failed twice in full runs, "process <pid> still runs", and
-    passed 30 runs alone, 30 under 20 busy loops, and 5 full runs
+    passed 30 runs alone, 30 under 20 busy loops, and 5 full runs. Done 2026-10-14: each
+    detector leads its own process group, and a run that ends without byrle reaping it, by
+    timeout or output past the cap, is ended with `libc::killpg`, the user's choice of
+    killpg. The test checks the fake's `sleep 30` is gone too
 
 ## Architecture Refactor
 

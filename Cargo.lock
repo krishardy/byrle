@@ -239,6 +239,7 @@ dependencies = [
  "getrandom 0.3.4",
  "jiff",
  "jsonwebtoken",
+ "libc",
  "log",
  "maud",
  "mimalloc",

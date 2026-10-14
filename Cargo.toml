@@ -62,6 +62,9 @@ jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_
 # The binary's allocator. A release is a static musl binary, and musl's own allocator is
 # slow under many threads; see docs/engineering_decisions/release-provenance.md.
 mimalloc = "0.1.52"
+# killpg, to end a detector with the processes it started. Already in the tree through
+# tokio and others.
+libc = "0.2.189"
 
 [dev-dependencies]
 # Test builds only. `sqlx-core` turns on `tracing`'s `log` feature, which gives every event a
