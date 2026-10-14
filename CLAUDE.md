@@ -71,6 +71,17 @@ These apply to chat messages. The documentation rules above apply here too.
 | "OSSF is Apache-2.0 with no attribution, GHSA is CC-BY-4.0 requiring it..." | a source/licence/attribution table |
 | "`Match` originates findings, `Enrich` only adds to them..." | a capability/meaning table |
 
+## GitHub
+
+* The repository is public: https://github.com/krishardy/byrle. The `origin` remote pushes over SSH through the host alias `krishardy-github`.
+* `gh` is not installed. Read the repository and its Actions through the REST API with `curl`, which needs no token for a public repository but allows 60 requests an hour:
+  * Recent runs: `curl -s "https://api.github.com/repos/krishardy/byrle/actions/runs?per_page=5"`, each with `id`, `name`, `event`, `status`, `conclusion` and `head_sha`
+  * A run's jobs and steps: `curl -s "https://api.github.com/repos/krishardy/byrle/actions/runs/<run id>/jobs"`
+  * A run's artifacts: `curl -s "https://api.github.com/repos/krishardy/byrle/actions/runs/<run id>/artifacts"`
+  * A commit on GitHub: `curl -s "https://api.github.com/repos/krishardy/byrle/commits/<sha>"`
+* A job's log needs a token, so ask the user for a failing job's output.
+* The workflows are `.github/workflows/ci.yml` (lint, test, sqlx on each push) and `.github/workflows/release.yml` (a `v*` tag builds, attests and publishes; run by hand, it only builds). Check them with `GOFLAGS=-mod=mod go run github.com/rhysd/actionlint/cmd/actionlint@latest`.
+
 ## Finalization
 
 * make lint (runs clippy)
