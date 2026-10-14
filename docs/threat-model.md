@@ -6,7 +6,7 @@ decided.
 
 ## What it protects
 
-A developer's or CI machine's installs from npm and PyPI. byrle sits between the
+A developer's or CI machine's installs from npm, PyPI and crates.io. byrle sits between the
 package manager and the registry, and serves an artifact only after deciding on it:
 
 - a version the policy refuses is removed from the metadata document, so the resolver
@@ -20,7 +20,7 @@ package manager and the registry, and serves an artifact only after deciding on 
 | Party | Trusted for | Not trusted for |
 |---|---|---|
 | The operator | the policy file, the environment, the host | |
-| The registry (npm, PyPI, or a mirror) | serving the metadata a publisher uploaded | the bytes: each artifact is checked against the digest the metadata published |
+| The registry (npm, PyPI, crates.io, or a mirror) | serving the metadata a publisher uploaded | the bytes: each artifact is checked against the digest the metadata published |
 | A package's publisher | nothing | everything: this is who the policy and the analysis are about |
 | The intel streams (OSV, GitHub advisories, CISA KEV, Datadog) | what they report | completeness: a package no stream reports is not known to be clean |
 | VirusTotal, when `BYRLE_VIRUSTOTAL_API_KEY` is set | its engines' counts, a signal that refuses nothing | anything else. It learns the SHA-256 of each artifact asked about, and with `BYRLE_VIRUSTOTAL_MODE=upload` it receives the bytes of an artifact it does not know from npm's or PyPI's public registry, which joins its dataset ([virustotal](engineering_decisions/virustotal.md)) |
@@ -35,8 +35,8 @@ package manager and the registry, and serves an artifact only after deciding on 
 |---|---|---|
 | A known-malicious version | `known_malware` refuses it, with no exception | `policy::decide`, [intel-in-decisions](engineering_decisions/intel-in-decisions.md) |
 | A version published minutes ago by a hijacked account | `cooldown_days` quarantines it | [quarantine-filter-metadata](engineering_decisions/quarantine-filter-metadata.md) |
-| An install script, declared or not | `install_scripts: block`, decided from the artifact's own `package.json` or sdist | [install-scripts-from-the-artifact](engineering_decisions/install-scripts-from-the-artifact.md) |
-| A release published outside the project's CI | `provenance: block` refuses a dropped attestation, a changed identity, and one that does not verify | [provenance-check](engineering_decisions/provenance-check.md) |
+| An install script, declared or not | `install_scripts: block`, decided from the artifact's own `package.json`, sdist, or a `.crate`'s `Cargo.toml`: a build script or a proc-macro. Before a `.crate` is read, cargo's is `not analyzed` | [install-scripts-from-the-artifact](engineering_decisions/install-scripts-from-the-artifact.md) |
+| A release published outside the project's CI | `provenance: block` refuses a dropped attestation, a changed identity, and one that does not verify. crates.io serves no attestations, so it decides nothing for a crate ([cargo-plan](cargo-plan.md) Q5) | [provenance-check](engineering_decisions/provenance-check.md) |
 | A known vulnerability, or one being exploited | `max_cvss`, `kev` | `policy::decide` |
 | A registry, mirror or network path serving other bytes than the metadata describes | the digest is checked on the way through; the last chunk is held until it matches | [artifact-digest-verification](engineering_decisions/artifact-digest-verification.md) |
 | An artifact on an origin the proxy does not serve, which the client would fetch directly | the version is removed from the metadata, and a pinned fetch is refused | [enforcement-tiers](engineering_decisions/enforcement-tiers.md), tier 3 |
@@ -116,6 +116,8 @@ Each of these is a way for a package to be installed without byrle deciding on i
 | `BYRLE_MODE=observe` | what the policy refuses is served and logged | a startup warning and `byrle doctor`; never serves what cannot be assessed |
 | Break-glass installs | an install pointed at the registry while the proxy is down | [break-glass](break-glass.md); a lockfile the bypass changed must not be committed |
 | pnpm's lockfile | records no artifact URL, so it cannot evidence that the proxy was used | none in the lockfile |
+| `Cargo.lock` | records crates.io as each crate's source whichever registry replaced it | `byrle doctor` reads `.cargo/config.toml` |
+| A cargo `[patch]`, git or path dependency | cargo fetches it from where it points | `byrle lockfile verify` names a git dependency's source |
 | A dependency named by URL, git or path | npm fetches it from where it points | logged `BYPASS` and counted: [bypass-self-detection](engineering_decisions/bypass-self-detection.md) |
 
 ## Out of scope
@@ -127,4 +129,4 @@ Each of these is a way for a package to be installed without byrle deciding on i
 - Code that runs when a package is imported rather than installed. The install-script
   check does not see it: of the 2025 npm incidents measured, chalk/debug and xrpl.js ran
   their payloads on import ([incident-benchmark](engineering_decisions/incident-benchmark.md)).
-- Ecosystems other than npm and PyPI.
+- Ecosystems other than npm, PyPI and crates.io.

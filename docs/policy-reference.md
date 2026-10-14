@@ -69,7 +69,7 @@ One value each for the whole deployment.
 | `version` | `1` | required | | |
 | `cooldown_days` | a whole number of days | 7 | a version published fewer days ago, with `quarantine` | lower |
 | `max_cvss` | a number | 6.9 | a version with an advisory scored above it, or scored by no stream and not in `advisory_scores` | higher |
-| `install_scripts` | `block` or `allow` | `block` | a version whose artifact runs an install script | `allow` |
+| `install_scripts` | `block` or `allow` | `block` | a version whose artifact runs an install script; for a crate, a build script or a proc-macro | `allow` |
 | `kev` | `block` or `allow` | `block` | a version with an advisory in CISA's known-exploited catalogue | `allow` |
 | `yanked` | `block` or `allow` | `block` | a PyPI file its publisher yanked; npm has no yank | `allow` |
 | `deprecated` | `block` or `allow` | `allow` | an npm version its publisher deprecated; PyPI has no marker | `allow` |

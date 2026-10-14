@@ -22,17 +22,19 @@ does nothing is worse than no tool at all. Rationale and the evidence behind it 
 
 ## Status
 
-**Pre-release, enforcing for npm and PyPI.** The proxy runs, decides on every metadata
-document and artifact, and refuses what its policy refuses. No outside team has run it
-yet: that is the exit criterion of the current stage. There is no published release;
-build it with `cargo build --release` and follow [docs/quickstart.md](docs/quickstart.md). See
+**Pre-release, enforcing for npm, PyPI and crates.io.** The proxy runs, decides on every
+metadata document and artifact, and refuses what its policy refuses. No outside team has
+run it yet: that is the exit criterion of the current stage. v0.1.0 serves npm and PyPI;
+crates.io is on `main`, after it. Build with `cargo build --release` and follow
+[docs/quickstart.md](docs/quickstart.md). See
 [TODO.md](TODO.md) for the staged plan and current position.
 
 | Ecosystem | Tier | Clients measured through it |
 |---|---|---|
 | npm | **enforcing** | npm, pnpm, yarn 1, yarn 4, bun |
 | PyPI | **enforcing** | pip, uv |
-| cargo, Go, Maven | not built | |
+| crates.io | **enforcing**, provenance not checked: crates.io serves no attestations | cargo |
+| Go, Maven | not built | |
 
 A tier is what the proxy does for the ecosystem today:
 
@@ -108,7 +110,7 @@ stay stuck in observe mode forever.
 |---|---|---|
 | npm | registry URL; artifact URLs rewritten to the proxy | enforcing |
 | PyPI | `--index-url`, PEP 691 and PEP 503 | enforcing |
-| cargo | source replacement, sparse index | not built |
+| cargo | source replacement, sparse index; `config.json`'s `dl` points at the proxy | enforcing |
 | Go | `GOPROXY` | not built |
 | Maven | mirror in `settings.xml` | not built |
 
@@ -239,7 +241,7 @@ adapter contributions are the scarce resource.
 
 ## Documentation
 
-* [docs/quickstart.md](docs/quickstart.md) takes npm and PyPI installs from observe mode to
+* [docs/quickstart.md](docs/quickstart.md) takes npm, PyPI and cargo installs from observe mode to
   enforcing.
 * [docs/project_plan.md](docs/project_plan.md) covers detection strategy, policy
   semantics, the threat model, and milestones.

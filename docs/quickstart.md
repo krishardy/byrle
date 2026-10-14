@@ -1,8 +1,9 @@
 # Quickstart
 
-From a checkout to installs through byrle in enforcing mode, for npm and PyPI. Every
+From a checkout to installs through byrle in enforcing mode, for npm, PyPI and cargo. Every
 command here was run on 2026-09-29, and each excerpt below is that run's output, except
-for tokens: §3, the token table in §6 and `BYRLE_TOKEN` in §8 were run on 2026-10-11.
+for tokens: §3, the token table in §6 and `BYRLE_TOKEN` in §8 were run on 2026-10-11, and
+cargo's lines on 2026-10-14.
 
 The order is: run the proxy in observe mode, point clients at it, check with `doctor`,
 warm the lockfiles, then enforce.
@@ -59,8 +60,9 @@ Start from the defaults:
 version: 1
 ```
 
-That refuses known malware, a version published in the last 7 days, install scripts, an
-advisory scored above 6.9, a known-exploited vulnerability, a yanked PyPI file, and
+That refuses known malware, a version published in the last 7 days, install scripts (for a
+crate, a build script or a proc-macro, which `serde` and `rustls` have), an advisory scored
+above 6.9, a known-exploited vulnerability, a yanked PyPI file, and
 contradicted provenance. [policy-reference](policy-reference.md) lists every key.
 `byrle policy check policy.yaml` loads it as the proxy does.
 
@@ -92,6 +94,12 @@ INFO point a client at the proxy byrle.client.name="npm" byrle.client.command=np
 INFO point a client at the proxy byrle.client.name="pip" byrle.client.command=pip config set global.index-url http://127.0.0.1:18990/simple/
 ```
 
+and cargo's, from a run on 2026-10-14:
+
+```
+INFO point a client at the proxy byrle.client.name="cargo" byrle.client.command=in ~/.cargo/config.toml: [registries.byrle] index = "sparse+http://127.0.0.1:18081/cargo/" and credential-provider = "cargo:token", and [source.crates-io] replace-with = "byrle"
+```
+
 `GET /-/byrle/ready` answers 200 once the store holds a snapshot. Point a readiness probe
 at it.
 
@@ -108,6 +116,21 @@ With the proxy at `https://byrle.example.com`:
 | bun | `registry = "https://byrle.example.com/"` under `[install]` in `bunfig.toml` |
 | pip | `pip config set global.index-url https://byrle.example.com/simple/` |
 | uv | `UV_DEFAULT_INDEX=https://byrle.example.com/simple`, or `index-url` in `uv.toml` |
+| cargo | in `~/.cargo/config.toml`, below |
+
+```toml
+[source.crates-io]
+replace-with = "byrle"
+
+[registries.byrle]
+index = "sparse+https://byrle.example.com/cargo/"
+credential-provider = "cargo:token"
+```
+
+cargo reads the replacement only from a file: cargo 1.99.0 ignored
+`CARGO_SOURCE_CRATES_IO_REPLACE_WITH` and fetched from crates.io. Without
+`credential-provider`, it refused a registry asking for a token: "authenticated registries
+require a credential-provider to be configured".
 
 Each line was run on 2026-09-29, in a home directory of its own and against a fresh proxy
 at `http://127.0.0.1:18995`, then used to install one package:
@@ -130,6 +153,7 @@ Each client also sends the token. `<token>` is the output of `byrle token create
 | bun | `registry = { url = "https://byrle.example.com/", token = "<token>" }` under `[install]` in `bunfig.toml`, in place of the `registry` line above |
 | pip | `https://alice:<token>@byrle.example.com/simple/` as the index URL |
 | uv | `https://alice:<token>@byrle.example.com/simple` as the index URL |
+| cargo | `CARGO_REGISTRIES_BYRLE_TOKEN=<token>`, or `cargo login --registry byrle`. cargo sends it alone in `Authorization` |
 | `byrle warm` | `BYRLE_TOKEN=<token>` |
 
 The username in pip's and uv's URL is the account name, not `__token__`: any other name is
@@ -201,6 +225,11 @@ package-lock.json: 66 artifacts, 66 through the proxy
 
 It exits 1 for an artifact from elsewhere, and 2 for one the lockfile records no URL for,
 as pnpm does for its configured registry ([lockfile-verify](engineering_decisions/lockfile-verify.md)).
+`Cargo.lock` records none for any crates.io crate, so it exits 2 for each.
+
+cargo retries a 503 three times, a second apart, so it waits about 3 seconds for an
+analysis. Reading `rustls` 0.23.45's `.crate` took 79 ms. `byrle warm --lockfile
+Cargo.lock` asks for each crate first.
 
 ## 9. Read what it would refuse
 
