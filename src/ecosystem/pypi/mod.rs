@@ -116,6 +116,8 @@ pub const REGISTRY: Registry = Registry {
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))
     },
+    write: |_| None,
+    meaningless: &[crate::policy::merge::Rule::Deprecated],
 };
 
 /// What `byrle` sends to ask for JSON rather than HTML. PEP 691.

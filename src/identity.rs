@@ -13,17 +13,20 @@ pub enum Ecosystem {
     Npm,
     /// PyPI. `crate::ecosystem::pypi` reads its simple index.
     PyPI,
+    /// crates.io's sparse index. `crate::ecosystem::cargo` reads it.
+    Cargo,
 }
 
 impl Ecosystem {
     /// Every ecosystem a package can be named in. `ecosystem::TABLE` has a row for each.
-    pub const EXPRESSIBLE: [Ecosystem; 2] = [Ecosystem::Npm, Ecosystem::PyPI];
+    pub const EXPRESSIBLE: [Ecosystem; 3] = [Ecosystem::Npm, Ecosystem::PyPI, Ecosystem::Cargo];
 
     /// The purl `type` component, and the string OSV keys on.
     pub const fn as_str(self) -> &'static str {
         match self {
             Ecosystem::Npm => "npm",
             Ecosystem::PyPI => "pypi",
+            Ecosystem::Cargo => "cargo",
         }
     }
 }
@@ -41,6 +44,7 @@ impl FromStr for Ecosystem {
         match s {
             "npm" => Ok(Ecosystem::Npm),
             "pypi" => Ok(Ecosystem::PyPI),
+            "cargo" => Ok(Ecosystem::Cargo),
             other => Err(IdentityError::UnsupportedEcosystem(other.to_string())),
         }
     }
@@ -255,8 +259,8 @@ mod tests {
     /// Both error variants are read by operators, so both have to say which is which.
     #[test]
     fn identity_errors_describe_themselves() {
-        let unsupported = IdentityError::UnsupportedEcosystem("cargo".into());
-        assert_eq!(unsupported.to_string(), "unsupported ecosystem `cargo`");
+        let unsupported = IdentityError::UnsupportedEcosystem("gem".into());
+        assert_eq!(unsupported.to_string(), "unsupported ecosystem `gem`");
 
         let Err(malformed) = PackageKey::from_registry_name(Ecosystem::Npm, "  ") else {
             panic!("whitespace is not a package name");
@@ -426,7 +430,7 @@ mod tests {
         assert!(PackageKey::from_registry_name(Ecosystem::Npm, "a/b/c").is_err());
         assert!(key("lodash").at_version("").is_err());
         assert!(matches!(
-            "pkg:cargo/serde".parse::<PackageKey>(),
+            "pkg:gem/serde".parse::<PackageKey>(),
             Err(IdentityError::UnsupportedEcosystem(_))
         ));
     }
@@ -468,9 +472,9 @@ mod tests {
     /// key.
     #[test]
     fn a_purl_that_is_not_one_or_of_another_ecosystem_is_no_key() {
-        for purl in ["not a purl", "pkg:cargo/serde"] {
+        for purl in ["not a purl", "pkg:gem/serde"] {
             assert!(purl.parse::<PackageKey>().is_err(), "{purl}");
         }
-        assert!("pkg:cargo/serde@1.0.0".parse::<PackageRef>().is_err());
+        assert!("pkg:gem/serde@1.0.0".parse::<PackageRef>().is_err());
     }
 }

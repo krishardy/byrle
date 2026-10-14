@@ -112,6 +112,7 @@ variable at both is not expressible.
 |---|---|---|
 | `BYRLE_UPSTREAM_NPM` | `https://registry.npmjs.org` | the proxy, `policy diff`, `explain` |
 | `BYRLE_UPSTREAM_PYPI` | `https://pypi.org/simple` | the proxy |
+| `BYRLE_UPSTREAM_CARGO` | `https://index.crates.io` | the proxy. Added 2026-10-14 |
 
 `BYRLE_UPSTREAM` is gone rather than kept as an alias. Nothing has been released, and a
 variable that silently means one of two ecosystems is the thing the split exists to remove.
@@ -123,5 +124,9 @@ lockfiles and npm package references and ask npm about them.
 PyPI's files come from `files.pythonhosted.org`, which is not `BYRLE_UPSTREAM_PYPI` and is
 not a third variable. The simple index gives each file's URL in full, so the artifact host
 is read from the document the way `npm::origin_of_url` already reads `dist.tarball`.
+
+cargo's downloads come from `static.crates.io`, `cargo::FILES`, also not a variable. The
+proxy writes cargo's `config.json` with `dl` at itself, so the upstream's `config.json`
+and its `dl` are not read: a mirror set as `BYRLE_UPSTREAM_CARGO` serves index files only.
 
 The rows above that name `BYRLE_UPSTREAM` record measurements taken before the split.

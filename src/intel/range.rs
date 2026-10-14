@@ -652,7 +652,7 @@ mod tests {
     fn each_ecosystem_has_its_own_order() {
         assert_eq!(VersionOrder::of("npm"), Some(VersionOrder::SemVer));
         assert_eq!(VersionOrder::of("pypi"), Some(VersionOrder::Pep440));
-        assert_eq!(VersionOrder::of("cargo"), None);
+        assert_eq!(VersionOrder::of("gem"), None);
         assert_eq!(stored(VersionOrder::Pep440, "1.0-1"), "1.0.post1");
         assert_eq!(stored(VersionOrder::SemVer, "13.0"), "13.0.0");
         assert_eq!(

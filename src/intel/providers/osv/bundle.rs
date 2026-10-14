@@ -17,6 +17,13 @@ pub const PYPI_BUNDLE: &str = "https://osv-vulnerabilities.storage.googleapis.co
 /// The name a snapshot records the PyPI bundle under.
 pub const PYPI_STREAM: &str = "osv/pypi";
 
+/// 3,584,713 bytes on 2026-10-14: 1,601 `GHSA-`, 1,295 `RUSTSEC-` and 21 `MAL-` records.
+pub const CARGO_BUNDLE: &str =
+    "https://osv-vulnerabilities.storage.googleapis.com/crates.io/all.zip";
+
+/// The name a snapshot records the crates.io bundle under.
+pub const CARGO_STREAM: &str = "osv/cargo";
+
 /// 2.5 times the bundle on 2026-09-13.
 pub const MAX_BUNDLE_BYTES: usize = 512 << 20;
 

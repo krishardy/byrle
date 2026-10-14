@@ -236,6 +236,7 @@ mod tests {
             [
                 "osv/npm",
                 "osv/pypi",
+                "osv/cargo",
                 "cisa/kev",
                 "datadog/npm",
                 "datadog/pypi",
@@ -243,7 +244,7 @@ mod tests {
                 "github/pypi"
             ]
         );
-        assert!(by_stream("osv/cargo").is_none());
+        assert!(by_stream("osv/gem").is_none());
         assert!(by_stream("osv").is_none());
     }
 

@@ -430,8 +430,9 @@ mod tests {
             recorded("cisa/kev"),
             recorded("datadog/npm"),
             recorded("osv/pypi"),
+            recorded("osv/cargo"),
         ]);
-        assert_eq!(served(), ["npm", "pypi"]);
+        assert_eq!(served(), ["npm", "pypi", "cargo"]);
         assert_eq!(
             caps.providers("npm", Capability::Match),
             ["datadog/npm", "osv/npm"]
@@ -444,7 +445,8 @@ mod tests {
         assert!(caps.has("osv/pypi", "pypi", Capability::Match));
         assert!(!caps.has("osv/pypi", "npm", Capability::Match));
         assert_eq!(caps.providers("pypi", Capability::Match), ["osv/pypi"]);
-        assert!(caps.gaps(&["npm", "pypi"]).is_empty());
+        assert_eq!(caps.providers("cargo", Capability::Malware), ["osv/cargo"]);
+        assert!(caps.gaps(&served()).is_empty());
         assert!(caps.uncovered_by(&["npm"], Capability::Malware).is_empty());
         assert_eq!(caps.providers("pypi", Capability::Enrich), ["cisa/kev"]);
     }
@@ -456,6 +458,7 @@ mod tests {
         assert_eq!(listing("osv/npm"), ["npm"]);
         assert!(listing("cisa/kev").is_empty());
         assert_eq!(listing("osv/pypi"), ["pypi"]);
+        assert_eq!(listing("osv/cargo"), ["cargo"]);
     }
 
     /// PyPI is served and the snapshot records none of its streams, so both gaps are reported
@@ -466,6 +469,7 @@ mod tests {
             recorded("osv/npm"),
             recorded("cisa/kev"),
             recorded("datadog/npm"),
+            recorded("osv/cargo"),
         ]);
         let pypi_without = |capability| Gap {
             ecosystem: "pypi".to_owned(),

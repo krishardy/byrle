@@ -15,6 +15,23 @@ interface. This plans cargo, and the interface work before it. Written 2026-10-1
 | Advisories | OSV's `crates.io/all.zip`, 3,579,876 bytes, which includes RustSec |
 | Build-time code | of the 100 most-downloaded crates, 21 have a build script, among them `serde`, `libc`, `proc-macro2`, `quote`, `thiserror`, `anyhow`; 2 are proc-macros |
 
+## What cargo sends, measured 2026-10-14
+
+cargo 1.99.0 ran `cargo fetch` against a stub registry on `http://127.0.0.1`, with
+`[source.crates-io] replace-with` pointing at it:
+
+| Stub | cargo |
+|---|---|
+| `"auth-required": true`, 401 on `config.json` without a token | asked `config.json` without one, then again with `Authorization: byrle_x`, and sent it on the index file and the download |
+| the same, no `credential-provider` configured | refused: "authenticated registries require a credential-provider to be configured" |
+| 401 on `config.json`, no `auth-required` | sent the token on the index file and none on the download |
+| no token asked for, no `auth-required` | fetched with no token |
+| `CARGO_SOURCE_CRATES_IO_REPLACE_WITH` set instead of `config.toml` | ignored: fetched from crates.io |
+| `config.json` with no `api` key | fetched |
+
+static.crates.io answers `/crates/Inflector/0.11.4/download` and refuses
+`/crates/inflector/0.11.4/download` with 403.
+
 ## The interface today
 
 The `Registry` table in `src/ecosystem.rs:160` holds 19 per-ecosystem fields. Outside the
@@ -95,11 +112,14 @@ source of attestation data. Q2 and Q6 are taken as recommended.
    ([adapter-interface](engineering_decisions/adapter-interface.md)).
 2. The cargo adapter: `config.json` with `dl` pointed at the proxy and `auth-required`,
    index files read into records and filtered by removing refused versions' lines,
-   downloads verified against `cksum`.
+   downloads verified against `cksum`. Done 2026-10-14. `osv/cargo` came with it, because
+   `/-/byrle/ready` answers 503 while any served ecosystem has no `match` or `malware`
+   stream. It reads the bundle's `GHSA-` and `MAL-` records; its `RUSTSEC-` records are
+   step 4's.
 3. The `.crate` reader: its `Cargo.toml` for a build script and `proc-macro`, which
    `install_scripts` refuses under the default `block` (Q4).
-4. `osv/cargo` (Q6), and `Cargo.lock` for `warm`, `explain`, `policy diff` and
-   `lockfile verify`.
+4. `RUSTSEC-` records in `osv/cargo` (Q6), and `Cargo.lock` for `warm`, `explain`,
+   `policy diff` and `lockfile verify`.
 5. `byrle doctor` for `~/.cargo/config.toml` and `CARGO_REGISTRIES_*`, and the startup line.
 6. `make smoke-cargo`: real `cargo build` and `cargo install` through the proxy, with a
    token, a refused version and a cooldown.

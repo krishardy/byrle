@@ -2498,6 +2498,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         Ok(account) => account,
         Err(refused) => return *refused,
     };
+    if let Some(response) = written(&proxy, ecosystem, &path, req.headers()) {
+        return response;
+    }
     #[cfg(debug_assertions)]
     if let Some((deferral, since)) = &proxy.config.defer_test
         && let Some((status, retry_after)) = deferral.applies_to(&target, since.elapsed())
@@ -2533,6 +2536,29 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         .audit_upstream(held, Some(upstream.status))
         .map(Box::new);
     exchange.respond(upstream, artifact).await
+}
+
+/// A document the row writes itself, such as cargo's `config.json`, answered without asking
+/// upstream. `None` for a path it does not write.
+fn written(
+    proxy: &Proxy,
+    ecosystem: Ecosystem,
+    path: &str,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    let base = public_base(headers, proxy.config.public_base.as_deref());
+    let writing = ecosystem::Writing {
+        path,
+        base: base.as_deref(),
+        tokens_required: proxy.config.gate.is_some(),
+    };
+    Some(match (ecosystem::of(ecosystem).write)(&writing)? {
+        Ok(written) => {
+            info!(url.path = %crate::http::url_path(path), "written by the proxy");
+            ([(header::CONTENT_TYPE, written.content_type)], written.body).into_response()
+        }
+        Err(reason) => (StatusCode::BAD_REQUEST, format!("byrle: {reason}\n")).into_response(),
+    })
 }
 
 /// A request for a path outside the one the proxy answers under: 404, naming that path.
@@ -4719,6 +4745,7 @@ mod tests {
         Proxy::new(reqwest::Client::new())
             .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
             .with_upstream(Ecosystem::PyPI, NO_UPSTREAM)
+            .with_upstream(Ecosystem::Cargo, NO_UPSTREAM)
             .with_intel(intel)
             .with_refuse_unservable(false)
             .with_policy(yaml.map(policy))
@@ -5789,6 +5816,110 @@ mod tests {
         );
         let names = served_filenames(&proxy, PYPI_TWO_VERSIONS).await;
         assert_eq!(names, ["x-1.0-py3-none-any.whl", "x-1.0.tar.gz"]);
+    }
+
+    const ITOA_INDEX: &str = "/cargo/it/oa/itoa";
+    const ITOA_DOWNLOAD: &str = "/cargo/crates/itoa/1.0.18/download";
+    const DENY_ITOA: &str = "version: 1\ncooldown_days: 0\n\
+                             denials:\n  - purl: pkg:cargo/itoa@1.0.18\n    reason: test\n";
+
+    /// The lines of itoa's index file the proxy serves, after reading it as cargo asked.
+    async fn served_itoa_versions(proxy: &Proxy) -> Vec<String> {
+        let fixture = crate::ecosystem::cargo::fixture();
+        let body = match resolve(proxy, ITOA_INDEX, "text/plain", &fixture).await {
+            DocumentStep::Forward {
+                body: Some(body), ..
+            } => body.to_vec(),
+            DocumentStep::Forward { body: None, .. } => fixture,
+            _ => panic!("the index file is forwarded"),
+        };
+        String::from_utf8(body)
+            .unwrap()
+            .lines()
+            .map(|line| {
+                serde_json::from_str::<serde_json::Value>(line).unwrap()["vers"].to_string()
+            })
+            .collect()
+    }
+
+    /// cargo reads its index file, then downloads what it chose: the download is decided on
+    /// the line's record and checked against its `cksum`.
+    #[tokio::test]
+    async fn a_crate_download_is_fetched_with_the_cksum_its_line_publishes() {
+        let proxy = offline(None, Some(ALLOW_ALL));
+        assert_eq!(served_itoa_versions(&proxy).await.len(), 37);
+        let ArtifactStep::Fetch(fetch) = pinned(&proxy, ITOA_DOWNLOAD).await else {
+            panic!("nothing refuses it");
+        };
+        assert_eq!(fetch.purl, "pkg:cargo/itoa@1.0.18");
+        assert_eq!(
+            fetch.digest.map(|d| d.to_string()),
+            crate::integrity::sri_from_sha256_hex(
+                "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+            )
+        );
+    }
+
+    /// A refused version's line is removed, so cargo resolves to another, and a lockfile
+    /// pinning it gets 403.
+    #[tokio::test]
+    async fn a_crate_version_the_policy_refuses_loses_its_line_and_its_download() {
+        let proxy = offline(None, Some(DENY_ITOA));
+        let versions = served_itoa_versions(&proxy).await;
+        assert_eq!(versions.len(), 36);
+        assert!(!versions.contains(&"\"1.0.18\"".to_owned()), "{versions:?}");
+        let (status, _) = refused(pinned(&proxy, ITOA_DOWNLOAD).await).await;
+        assert_eq!(status, 403);
+    }
+
+    /// cargo 1.99.0 asked for `config.json` without a token, then with it alone once
+    /// answered 401, and sent the token with downloads only under `auth-required`.
+    #[tokio::test]
+    async fn config_json_is_written_here_and_asks_for_the_token_the_gate_requires() {
+        let config = |response: reqwest::Response| async move {
+            assert_eq!(response.status(), 200);
+            assert_eq!(response.headers()[header::CONTENT_TYPE], "application/json");
+            serde_json::from_slice::<serde_json::Value>(&response.bytes().await.unwrap()).unwrap()
+        };
+        let open = serve(offline(None, None).router()).await;
+        let written = config(
+            reqwest::get(format!("{open}/cargo/config.json"))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(written["dl"], format!("{open}/cargo/crates"));
+        assert_eq!(written["auth-required"], false);
+
+        let (gated, issued) = token_proxy(held(), Mode::Enforce, None).await;
+        let url = format!("{gated}/cargo/config.json");
+        assert_eq!(reqwest::get(&url).await.unwrap().status(), 401);
+        let written = config(get_with(&url, &[(header::AUTHORIZATION, issued)]).await).await;
+        assert_eq!(written["auth-required"], true);
+    }
+
+    /// Without a `Host` there is no address to give `dl`, so cargo is told rather than sent
+    /// to crates.io.
+    #[tokio::test]
+    async fn config_json_without_a_host_is_400() {
+        let proxy = offline(None, None);
+        let response = written(
+            &proxy,
+            Ecosystem::Cargo,
+            "/cargo/config.json",
+            &HeaderMap::new(),
+        )
+        .expect("cargo writes config.json");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            written(
+                &proxy,
+                Ecosystem::Npm,
+                "/cargo/config.json",
+                &HeaderMap::new()
+            )
+            .is_none()
+        );
     }
 
     /// Every stream a served ecosystem lists, as a snapshot records them.
@@ -7251,7 +7382,8 @@ mod tests {
         );
         assert_eq!(
             proxy.upstreams().to_string(),
-            "npm=https://registry.npmjs.org pypi=https://mirror.example/simple"
+            "npm=https://registry.npmjs.org pypi=https://mirror.example/simple \
+             cargo=https://index.crates.io"
         );
         let both = Proxy::new(reqwest::Client::new()).with_upstreams(proxy.upstreams().clone());
         assert_eq!(both.upstreams(), proxy.upstreams());

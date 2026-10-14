@@ -146,7 +146,7 @@ mod tests {
         }
         assert_eq!(Affected::new("pypi", "GitPython", None).name, "gitpython");
         assert_eq!(Affected::new("npm", "JSONStream", None).name, "JSONStream");
-        assert_eq!(Affected::new("cargo", "Serde", None).name, "Serde");
+        assert_eq!(Affected::new("gem", "Serde", None).name, "Serde");
     }
 
     fn advisory(id: &str, cvss: Option<f64>, band: Option<&str>, aliases: &[&str]) -> Rows {

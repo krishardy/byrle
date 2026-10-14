@@ -3,6 +3,7 @@
 //!
 //! See docs/engineering_decisions/adapter-interface.md.
 
+pub mod cargo;
 pub mod npm;
 pub mod pypi;
 
@@ -69,6 +70,21 @@ pub struct Rewriting<'a> {
     /// Whether a version on an origin the proxy does not serve is removed too.
     pub refuse_unservable: bool,
     pub path: &'a str,
+}
+
+/// What [`Registry::write`] is given: a request the proxy may answer itself.
+pub struct Writing<'a> {
+    pub path: &'a str,
+    /// The address the client reached the proxy at, `None` when the request named none.
+    pub base: Option<&'a str>,
+    /// Whether the proxy asks every request for a token.
+    pub tokens_required: bool,
+}
+
+/// A document [`Registry::write`] wrote.
+pub struct Written {
+    pub content_type: &'static str,
+    pub body: Vec<u8>,
 }
 
 /// What `byrle doctor` asks an upstream with `HEAD` under a cooldown, and what it makes of it.
@@ -290,6 +306,10 @@ pub struct Registry {
     pub osv_name: &'static str,
     /// Whether a record's metadata would name a repository, so that naming none is a signal.
     pub metadata_names_repository: fn(&crate::record::PackageRecord) -> bool,
+    /// The checks this ecosystem's registry gives no meaning to, such as npm's `yanked`.
+    pub meaningless: &'static [crate::policy::merge::Rule],
+    /// A document the proxy writes for this path rather than fetching; `None` to fetch it.
+    pub write: fn(&Writing<'_>) -> Option<Result<Written, String>>,
 }
 
 /// Each served ecosystem's upstream base, with no trailing slash, one per [`TABLE`] row.
@@ -391,7 +411,7 @@ impl Registry {
 pub const ROOT: Ecosystem = Ecosystem::Npm;
 
 /// Every ecosystem the proxy routes, one row each, for which intel coverage is reported.
-pub const TABLE: &[Registry] = &[npm::REGISTRY, pypi::REGISTRY];
+pub const TABLE: &[Registry] = &[npm::REGISTRY, pypi::REGISTRY, cargo::REGISTRY];
 
 /// The row for `ecosystem`.
 ///
@@ -522,6 +542,7 @@ mod table {
             [
                 "npm config set registry http://127.0.0.1:8080/",
                 "pip config set global.index-url http://127.0.0.1:8080/simple/",
+                &cargo::REGISTRY.setup.command_line("http://127.0.0.1:8080"),
             ]
         );
         assert_eq!(
@@ -784,6 +805,11 @@ mod table {
                 DocumentKind::SimpleIndex(IndexFormat::Json),
                 b"not json",
             ),
+            (
+                &cargo::REGISTRY,
+                DocumentKind::SimpleIndex(IndexFormat::Json),
+                b"{}",
+            ),
         ] {
             let read = (row.read)(Reading {
                 decoded: body,
@@ -799,24 +825,31 @@ mod table {
         }
     }
 
-    /// Lines outside the adapters that name npm or PyPI, per file, until a file's tests:
-    /// `npm::`, `pypi::`, `Ecosystem::Npm`, `Ecosystem::PyPI`.
+    /// Lines outside the adapters that name a row's ecosystem, per file, until a file's
+    /// tests: `npm::` or `Ecosystem::Npm`, and the same for each row.
     fn named_outside_adapters() -> std::collections::BTreeMap<String, usize> {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files = Vec::new();
         crate::util::test_support::rust_files(&root.join("src"), &mut files);
-        let adapters = [
-            root.join("src/ecosystem/npm"),
-            root.join("src/ecosystem/pypi"),
-        ];
+        let adapters: Vec<_> = TABLE
+            .iter()
+            .map(|row| root.join("src/ecosystem").join(row.ecosystem.as_str()))
+            .collect();
+        let spellings: Vec<String> = TABLE
+            .iter()
+            .flat_map(|row| {
+                [
+                    format!("{}::", row.ecosystem.as_str()),
+                    format!("Ecosystem::{:?}", row.ecosystem),
+                ]
+            })
+            .collect();
         let identifier = |c: char| c.is_alphanumeric() || c == '_';
         let names = |line: &str| {
-            ["npm::", "pypi::", "Ecosystem::Npm", "Ecosystem::PyPI"]
-                .iter()
-                .any(|name| {
-                    line.match_indices(name)
-                        .any(|(i, _)| !line[..i].chars().next_back().is_some_and(identifier))
-                })
+            spellings.iter().any(|name| {
+                line.match_indices(name)
+                    .any(|(i, _)| !line[..i].chars().next_back().is_some_and(identifier))
+            })
         };
         let mut found = std::collections::BTreeMap::new();
         for file in files
@@ -840,14 +873,14 @@ mod table {
         found
     }
 
-    /// Stage 6's interface: only declarations name npm or PyPI outside the adapters, the
+    /// Stage 6's interface: only declarations name an ecosystem outside its adapter, the
     /// `Ecosystem` enum, `TABLE` and the environment's variables (docs/cargo-plan.md step 1).
     #[test]
-    fn only_the_adapters_name_npm_or_pypi() {
+    fn only_the_adapters_name_an_ecosystem() {
         let allowed: std::collections::BTreeMap<String, usize> = [
             ("src/ecosystem.rs", 2),
-            ("src/env.rs", 4),
-            ("src/identity.rs", 5),
+            ("src/env.rs", 5),
+            ("src/identity.rs", 7),
         ]
         .into_iter()
         .map(|(file, count): (&str, usize)| (file.to_owned(), count))

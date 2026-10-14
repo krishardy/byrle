@@ -24,3 +24,15 @@ pypi
   streams          osv/pypi, datadog/pypi, github/pypi
   loaded           osv/pypi
   not covered      nothing: every capability has a stream
+
+cargo
+  upstream         https://index.crates.io
+  documents        text/plain
+  publish times    `pubtime` on each line of the index file
+  versions         SemVer 2.0
+  checks           no meaning here: deprecated
+  clients          none checked by doctor
+  client lockfiles none read
+  streams          osv/cargo
+  loaded           none of them
+  not covered      match, malware

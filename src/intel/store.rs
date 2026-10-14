@@ -592,8 +592,8 @@ mod tests {
         assert_eq!(ids("pypi", "1.0.0"), ["PYSEC-1", "GHSA-1"]);
         assert_eq!(ids("pypi", "2.6.11"), ["GHSA-1"]);
         assert!(ids("pypi", "2.6.11-1").is_empty());
-        assert_eq!(ids("cargo", "1.0"), ["PYSEC-1"]);
-        assert!(ids("cargo", "1.0.0").is_empty());
+        assert_eq!(ids("gem", "1.0"), ["PYSEC-1"]);
+        assert!(ids("gem", "1.0.0").is_empty());
     }
 
     #[tokio::test]
@@ -660,7 +660,7 @@ mod tests {
                 })
                 .collect()
         };
-        let without_osv = recording(&["datadog/npm", "datadog/pypi", "osv/pypi"]);
+        let without_osv = recording(&["datadog/npm", "datadog/pypi", "osv/pypi", "osv/cargo"]);
         assert_eq!(
             stream_gaps(&without_osv),
             [
@@ -715,22 +715,24 @@ mod tests {
             crate::intel::Capability::Malware,
         );
         assert_eq!(
-            capability_gaps(&recording(&["cisa/kev", "osv/npm"])),
+            capability_gaps(&recording(&["cisa/kev", "osv/npm", "osv/cargo"])),
             [without("pypi", matching), without("pypi", malware)]
         );
         assert_eq!(
-            capability_gaps(&recording(&["osv/pypi"])),
+            capability_gaps(&recording(&["osv/pypi", "osv/cargo"])),
             [without("npm", matching), without("npm", malware)]
         );
-        assert!(capability_gaps(&recording(&["osv/npm", "osv/pypi"])).is_empty());
+        assert!(capability_gaps(&recording(&["osv/npm", "osv/pypi", "osv/cargo"])).is_empty());
         for streams in [&[][..], &["cisa/kev"]] {
             assert_eq!(
                 capability_gaps(&recording(streams)),
                 [
                     without("npm", matching),
                     without("pypi", matching),
+                    without("cargo", matching),
                     without("npm", malware),
                     without("pypi", malware),
+                    without("cargo", malware),
                 ],
                 "{streams:?}"
             );

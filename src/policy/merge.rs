@@ -41,16 +41,14 @@ impl Rule {
     ];
 }
 
-/// Whether a check means anything for an ecosystem.
+/// Whether a check means anything for an ecosystem: its row's [`crate::ecosystem::Registry::
+/// meaningless`] says, and one with no row has every check but Go's install scripts.
 /// See docs/engineering_decisions/policy-tier-resolution.md.
-/// `ecosystem` is as the policy spells it, so it may name one with no adapter.
 pub fn applies(ecosystem: &str, rule: Rule) -> bool {
-    !matches!(
-        (ecosystem, rule),
-        ("golang" | "go", Rule::InstallScripts)
-            | ("npm", Rule::Yanked)
-            | ("pypi", Rule::Deprecated)
-    )
+    match ecosystem.parse::<crate::identity::Ecosystem>() {
+        Ok(served) => !crate::ecosystem::of(served).meaningless.contains(&rule),
+        Err(_) => !matches!((ecosystem, rule), ("golang" | "go", Rule::InstallScripts)),
+    }
 }
 
 /// The settings an exception may change, borrowed from the global settings or a `set` block.

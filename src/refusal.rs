@@ -354,7 +354,7 @@ mod tests {
             ),
             ("npm/npm=four-oh-three", "status is not a number"),
             ("npm=403", "expected <ecosystem>/<client>"),
-            ("cargo/cargo=403", "unknown ecosystem"),
+            ("gem/gem=403", "unknown ecosystem"),
             ("npm/=403", "client is empty"),
         ] {
             let Err(e) = RefusalStatus::parse(spec) else {

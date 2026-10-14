@@ -154,6 +154,12 @@ pub const UPSTREAM_PYPI: Var = runtime(
     &["PyPI simple index to forward to"],
 )
 .with_default(Default::Text(crate::ecosystem::pypi::INDEX));
+pub const UPSTREAM_CARGO: Var = runtime(
+    "BYRLE_UPSTREAM_CARGO",
+    "",
+    &["cargo sparse index to forward to"],
+)
+.with_default(Default::Text(crate::ecosystem::cargo::INDEX));
 pub const PROXY_URL: Var = runtime(
     "BYRLE_PROXY_URL",
     "",
@@ -673,10 +679,11 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 80] = [
+pub const ALL: [Var; 81] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
+    UPSTREAM_CARGO,
     PROXY_URL,
     CONSOLE_URL,
     CONSOLE_LISTEN,

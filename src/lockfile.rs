@@ -514,7 +514,7 @@ mod tests {
     fn what_makes_no_purl_or_names_no_file_is_skipped() {
         let listed = [
             ("npm".to_owned(), "a".to_owned(), "1.0.0".to_owned()),
-            ("cargo".to_owned(), "b".to_owned(), "1.0.0".to_owned()),
+            ("gem".to_owned(), "b".to_owned(), "1.0.0".to_owned()),
         ];
         assert_eq!(references(listed).len(), 1);
         assert!(unread(Path::new("/")).is_none());

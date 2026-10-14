@@ -22,10 +22,22 @@ needed an arm per ecosystem. Asked for by the user (cargo-plan Q1), each is now 
 | `pypi::version` | `intel::pep440`, beside `intel::range`: a version scheme cargo shares with npm, and Go and Maven add to |
 
 Two trait objects, `Fetch` and `Document`, hold what has state or a type of its own; every
-other question is a field. `only_the_adapters_name_npm_or_pypi` counts the lines outside the
-adapters that name npm or PyPI: 116 when it was written, the `Ecosystem` enum, `TABLE` and
-the environment's variables now. A new ecosystem is a module, a row, an enum variant and
-its `BYRLE_UPSTREAM_*` variable.
+other question is a field. `only_the_adapters_name_an_ecosystem` counts the lines outside
+the adapters that name a row's ecosystem: 116 when it was written, the `Ecosystem` enum,
+`TABLE` and the environment's variables now. A new ecosystem is a module, a row, an enum
+variant and its `BYRLE_UPSTREAM_*` variable.
+
+## Amended 2026-10-14: cargo, the first new row
+
+Adding the `Ecosystem::Cargo` variant compiled with no other change: no `match` was left.
+Four questions cargo asks that npm and PyPI did not became fields:
+
+| Question | Was | Now |
+|---|---|---|
+| The setup line | `Setup::command`, the words before the address | a `fn` given the URL: cargo's is `sparse+<url>` in `config.toml`, with no space |
+| A document the proxy writes | none | `Registry::write`, with `Writing` and `Written`: cargo's `config.json` |
+| A check with no meaning | `policy::merge::applies`, matching `"npm"` and `"pypi"` as strings, which the guard did not count | `Registry::meaningless`. A name with no row keeps Go's `install_scripts` |
+| An index file | `DocumentKind` had a variant per ecosystem's documents | `DocumentKind::IndexLines` beside them |
 
 ## Decision
 

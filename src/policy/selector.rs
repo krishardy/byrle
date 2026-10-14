@@ -1006,7 +1006,7 @@ mod tests {
         assert!(wide.matches("npm", "x", "1.9.9", false));
         assert!(!wide.matches("npm", "x", "2.0.0", false));
         assert!(!wide.matches("npm", "x", "not a version", false));
-        assert!(!wide.matches("cargo", "x", "1.0.0", false));
+        assert!(!wide.matches("gem", "x", "1.0.0", false));
     }
 
     /// A PyPI name compares by PEP 503 and a PyPI version by PEP 440, as pip reads them.
@@ -1028,7 +1028,7 @@ mod tests {
         assert!(!post.matches("pypi", "x", "1.0.post2", false));
 
         assert_eq!(
-            canon("cargo", Some("Serde"), None, None).name,
+            canon("gem", Some("Serde"), None, None).name,
             NamePattern::Exact("Serde".to_owned())
         );
     }
@@ -1037,8 +1037,8 @@ mod tests {
     fn a_version_that_cannot_be_read_is_refused_by_what_is_wrong_with_it() {
         let refused = |selector: Selector| Canonical::of(&selector).unwrap_err();
         assert_eq!(
-            refused(sel("cargo", Some("serde"), Some("1.0.0"), None)),
-            SelectorError::UnorderedEcosystem("cargo".to_owned())
+            refused(sel("gem", Some("serde"), Some("1.0.0"), None)),
+            SelectorError::UnorderedEcosystem("gem".to_owned())
         );
         assert!(matches!(
             refused(sel("npm", Some("x"), Some("vers:pypi/>=1.0"), None)),
@@ -1110,7 +1110,7 @@ mod tests {
             ),
             (SelectorError::PurlAndVersion, "Write it once"),
             (
-                SelectorError::UnorderedEcosystem("cargo".to_owned()),
+                SelectorError::UnorderedEcosystem("gem".to_owned()),
                 "no version order for it",
             ),
             (SelectorError::NoVersion, "a VERS range in `version`"),
@@ -1158,9 +1158,9 @@ mod tests {
             assert!(denial.matches(ecosystem, name, version, false), "{purl}");
         }
         assert_eq!(
-            decompose("pkg:cargo/ns/serde@1.0.0").expect("readable"),
+            decompose("pkg:gem/ns/serde@1.0.0").expect("readable"),
             (
-                "cargo".to_owned(),
+                "gem".to_owned(),
                 "ns/serde".to_owned(),
                 Some("1.0.0".to_owned())
             )
@@ -1202,10 +1202,7 @@ mod tests {
                 with_purl("npm", "pkg:npm/a", None, Some("not.a.version")),
                 "not.a.version",
             ),
-            (
-                sel("cargo", Some("x"), Some("vers:cargo/>=1"), None),
-                "cargo",
-            ),
+            (sel("gem", Some("x"), Some("vers:gem/>=1"), None), "gem"),
         ] {
             let err = Canonical::of(&selector).expect_err(says).to_string();
             assert!(err.contains(says), "{says}: {err}");
@@ -1213,7 +1210,7 @@ mod tests {
         for (purl, version) in [
             ("pkg:npm/a@not.a.version", None),
             ("pkg:npm/a", Some("vers:npm/>=not.a.version")),
-            ("pkg:cargo/serde@1.0.0", None),
+            ("pkg:gem/serde@1.0.0", None),
         ] {
             assert!(Canonical::of_denial(purl, version).is_err(), "{purl}");
         }

@@ -509,8 +509,8 @@ mod tests {
         );
     }
 
-    /// The set a default deployment fronts: npm's registry, PyPI's index and PyPI's file
-    /// host. Every ecosystem's, not only the served ones.
+    /// The set a default deployment fronts: npm's registry, PyPI's index and file host, and
+    /// crates.io's index and file host. Every ecosystem's, not only the served ones.
     #[test]
     fn every_expressible_ecosystem_contributes_its_own_origins() {
         let r = ReachableOrigins::new(["https://npm.corp.example"], std::iter::empty()).unwrap();
@@ -521,6 +521,8 @@ mod tests {
                 "https://registry.npmjs.org",
                 "https://pypi.org",
                 "https://files.pythonhosted.org",
+                "https://index.crates.io",
+                "https://static.crates.io",
             ]
         );
     }
@@ -578,6 +580,8 @@ mod tests {
                 "https://registry.npmjs.org",
                 "https://pypi.org",
                 "https://files.pythonhosted.org",
+                "https://index.crates.io",
+                "https://static.crates.io",
             ],
             "the upstream is already the default registry, so it is listed once"
         );
@@ -609,8 +613,8 @@ mod tests {
         assert!(!r.routes_directly("https://npm.corp.example"));
         assert_eq!(
             r.as_slice().len(),
-            4,
-            "the upstream and the three origins an ecosystem always reaches"
+            6,
+            "the upstream and the five origins an ecosystem always reaches"
         );
     }
 
@@ -642,6 +646,8 @@ mod tests {
                 "https://registry.npmjs.org",
                 "https://pypi.org",
                 "https://files.pythonhosted.org",
+                "https://index.crates.io",
+                "https://static.crates.io",
                 "https://cdn.example",
             ]
         );

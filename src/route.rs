@@ -28,6 +28,8 @@ pub enum DocumentKind {
     Packument(DocumentDetail),
     /// A simple index, in the form the index served it.
     SimpleIndex(IndexFormat),
+    /// A cargo index file: one JSON line per version.
+    IndexLines,
 }
 
 /// Which of the two simple-index forms a body is.
