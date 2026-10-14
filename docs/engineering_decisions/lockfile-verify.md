@@ -34,6 +34,7 @@ that is not an HTTP URL. The exit code follows `warm` and `audit verify`.
 | `pnpm-lock.yaml` | `resolution.tarball`, written only for a URL that is not the configured registry's |
 | `bun.lock` | each package's second element |
 | `uv.lock` | the `url` of each registry package's sdist and every wheel |
+| `Cargo.lock` | none for a crates.io package; a git or other registry's `source` |
 
 - pnpm records no URL for the registry it was configured with, so a pnpm project that
   installs through the proxy sets bit 2 for every package. The registry is in its `.npmrc`,
@@ -47,6 +48,11 @@ that is not an HTTP URL. The exit code follows `warm` and `audit verify`.
   which nothing fetches.
 - `uv.lock` has a URL reader and no `artifacts` reader: `warm` still asks for a PyPI version
   through the proxy's metadata, not for every wheel the file lists.
+- `Cargo.lock` keeps crates.io's `source` whichever registry replaced it, so like pnpm it
+  sets bit 2 for every crates.io package; the replacement is in `~/.cargo/config.toml`. A
+  git dependency or another registry's crate is named by its `source`. Added 2026-10-14:
+  the probe project's 8 crates read `8 artifacts, 0 through the proxy, 8 with no URL
+  recorded`, and `warm` asked for each at `/cargo/crates/<name>/<version>/download`.
 
 ## Run on real lockfiles
 

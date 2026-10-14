@@ -34,6 +34,7 @@ The file name chooses the reader. A lockfile under any other name is refused.
 | `uv.lock`, `poetry.lock` | TOML | each `[[package]]`'s `name` and `version` |
 | `requirements.txt` | pip's requirement lines | a line pinned with `==`, its name normalised |
 | `Pipfile.lock` | JSON | each entry of `default` and `develop` whose `version` is an `==` pin |
+| `Cargo.lock` | TOML | each `[[package]]` whose `source` is crates.io's, by either protocol: `name` and `version` |
 
 In npm, yarn and bun an entry's key can be an alias. The fixtures lock `my-lodash` as
 `npm:lodash@4.17.21`:

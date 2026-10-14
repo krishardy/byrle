@@ -56,8 +56,8 @@ which is ignored by default because it downloads them:
 Asked for by the user ([cargo-plan](../cargo-plan.md) Q4): a build script and a proc-macro
 are what `install_scripts` refuses, as a `postinstall` is. A crates.io index line says
 neither, so a cargo record claims nothing, and every build script is `undeclared`. The
-check is decided only from the `.crate`, which needs the analysis store: without Postgres,
-nothing reads one and `install_scripts` passes every crate.
+check is decided only from the `.crate`, read when it is downloaded. Without Postgres the
+analyses are kept in memory, and the `.crate` is still read.
 
 Read from the published `.crate` files, `real_crates_declare_their_build_scripts_and_proc_macros`:
 

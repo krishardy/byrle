@@ -32,7 +32,7 @@ cargo
   versions         SemVer 2.0
   checks           no meaning here: deprecated
   clients          none checked by doctor
-  client lockfiles none read
+  client lockfiles Cargo.lock
   streams          osv/cargo
   loaded           none of them
   not covered      match, malware

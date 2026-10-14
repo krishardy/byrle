@@ -3,6 +3,7 @@
 //! docs/cargo-plan.md.
 
 pub mod inspect;
+pub mod lockfile;
 pub mod paths;
 pub mod transport;
 pub mod wire;
@@ -37,8 +38,8 @@ pub const REGISTRY: Registry = Registry {
         cost: None,
     },
     streams: &[&OSV],
-    lockfiles: &[],
-    unread_lockfiles: &[],
+    lockfiles: lockfile::LOCKFILES,
+    unread_lockfiles: lockfile::UNREAD,
     clients: &[],
     setup: Setup {
         client: "cargo",

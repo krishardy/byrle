@@ -7,17 +7,16 @@
 #   2. a denial of itoa 1.0.18 removes its line, cargo resolves 1.0.17, and the download
 #      of 1.0.18 answers 403
 #   3. a cooldown covering itoa's newest version makes cargo resolve an older one
-#   4. with Postgres, after a refresh: rustls 0.23.45, whose four RUSTSEC advisories score
-#      2.3 to 4.0, is refused under `max_cvss: 3.9`, and 0.23.46, which fixes them, resolves
-#   5. under the default `max_cvss` and `install_scripts: allow`, rustls 0.23.45 is served with an
-#      `advisory_vulnerability` signal, and tempdir 0.3.7, unmaintained, with an
-#      `advisory_unmaintained` one
-#   6. under `install_scripts: block`, serde, which has a build script, and serde_derive,
+#   4. under `install_scripts: block`, serde, which has a build script, and serde_derive,
 #      a proc-macro, are refused once their .crate files are read, and cargo fetch fails;
-#      under `allow` it succeeds
+#      under `allow` it fetches
+#   5. with Postgres, after a refresh: rustls 0.23.45, whose four RUSTSEC advisories score
+#      2.3 to 4.0, is refused under `max_cvss: 3.9`, and 0.23.46, which fixes them, resolves
+#   6. under the default `max_cvss` and `install_scripts: allow`, rustls 0.23.45 is served
+#      with an `advisory_vulnerability` signal, and tempdir 0.3.7, unmaintained, with an
+#      `advisory_unmaintained` one
 #   7. with tokens required, config.json asks for one, and cargo sends it alone
-# Steps 1 to 3 run with no Postgres, and so with BYRLE_REQUIRE_TOKEN=0. Without Postgres
-# nothing reads a .crate, so step 6 needs it.
+# Steps 1 to 4 run with no Postgres, and so with BYRLE_REQUIRE_TOKEN=0.
 # Client cargo runs get their own CARGO_HOME, so the proxy's own `cargo run` is untouched.
 set -euo pipefail
 
@@ -166,10 +165,31 @@ resolved="$(locked "$workdir/cooldown" itoa)"
 echo "    ok (cooldown_days: $cooldown; resolved $resolved, not $newest_version)"
 stop_proxy
 
-echo "==> 4/7  an osv/cargo advisory over max_cvss is refused, and the fix resolves"
+echo "==> 4/7  install_scripts refuses a build script and a proc-macro, read from the .crate"
+printf 'version: 1\ncooldown_days: 0\n' >"$workdir/default.yaml"
+printf 'version: 1\ncooldown_days: 0\ninstall_scripts: allow\n' >"$workdir/allow.yaml"
+start_proxy "$workdir/default.yaml"
+for crate in "serde 1.0.229" "serde_derive 1.0.229"; do
+    read -r name version <<<"$crate"
+    [[ "$(download "$name" "$version")" == "403" ]] || fail "$name $version was not refused"
+    grep -q "install_scripts" "$workdir/download.out" \
+        || fail "the refusal of $name $version does not name install_scripts"
+done
+project "$workdir/blocked" 'serde = { version = "=1.0.229", features = ["derive"] }'
+if client "$workdir/blocked" fetch --quiet 2>/dev/null; then
+    fail "cargo fetched serde under install_scripts: block"
+fi
+stop_proxy
+start_proxy "$workdir/allow.yaml"
+project "$workdir/allowed" 'serde = { version = "=1.0.229", features = ["derive"] }'
+client "$workdir/allowed" fetch --quiet || fail "cargo fetch failed under install_scripts: allow"
+echo "    ok (serde and serde_derive 403 naming install_scripts; fetched under allow)"
+stop_proxy
+
+echo "==> 5/7  an osv/cargo advisory over max_cvss is refused, and the fix resolves"
 if ! choose_postgres >/dev/null; then
     echo "    skipped (neither docker nor initdb and pg_ctl are available)"
-    echo "==> 5/7  skipped (no snapshot to read advisories from)"
+    echo "==> 6/7  skipped (no snapshot to read advisories from)"
     echo "==> 7/7  skipped (no Postgres to keep the accounts and tokens in)"
     echo "PASS: the proxy serves cargo, without the steps that need Postgres."
     exit 0
@@ -201,10 +221,8 @@ client "$workdir/fixed" generate-lockfile --quiet || fail "rustls 0.23.46 did no
 echo "    ok (0.23.45 not resolved and 403 naming max_cvss; 0.23.46 resolved)"
 stop_proxy
 
-echo "==> 5/7  under the default max_cvss, advisories are signals with their own weights"
-printf 'version: 1\ncooldown_days: 0\n' >"$workdir/default.yaml"
+echo "==> 6/7  under the default max_cvss, advisories are signals with their own weights"
 # rustls has a build script, which the default install_scripts: block refuses.
-printf 'version: 1\ncooldown_days: 0\ninstall_scripts: allow\n' >"$workdir/allow.yaml"
 start_proxy "$workdir/allow.yaml"
 for crate in "rustls 0.23.45 advisory vulnerability" "tempdir 0.3.7 advisory unmaintained"; do
     read -r name version _ kind <<<"$crate"
@@ -213,25 +231,6 @@ for crate in "rustls 0.23.45 advisory vulnerability" "tempdir 0.3.7 advisory unm
         || fail "$name $version reported no advisory_${kind} signal"
 done
 echo "    ok (rustls 0.23.45 and tempdir 0.3.7 served, each with its signal)"
-stop_proxy
-
-echo "==> 6/7  install_scripts refuses a build script and a proc-macro, read from the .crate"
-start_proxy "$workdir/default.yaml"
-for crate in "serde 1.0.229" "serde_derive 1.0.229"; do
-    read -r name version <<<"$crate"
-    [[ "$(download "$name" "$version")" == "403" ]] || fail "$name $version was not refused"
-    grep -q "install_scripts" "$workdir/download.out" \
-        || fail "the refusal of $name $version does not name install_scripts"
-done
-project "$workdir/blocked" 'serde = { version = "=1.0.229", features = ["derive"] }'
-if client "$workdir/blocked" fetch --quiet 2>/dev/null; then
-    fail "cargo fetched serde under install_scripts: block"
-fi
-stop_proxy
-start_proxy "$workdir/allow.yaml"
-project "$workdir/allowed" 'serde = { version = "=1.0.229", features = ["derive"] }'
-client "$workdir/allowed" fetch --quiet || fail "cargo fetch failed under install_scripts: allow"
-echo "    ok (serde and serde_derive 403 naming install_scripts; fetched under allow)"
 stop_proxy
 
 echo "==> 7/7  a token is required, and cargo sends it alone"
