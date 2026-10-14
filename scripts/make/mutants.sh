@@ -9,6 +9,11 @@
 #   make mutants                 the working tree against HEAD, before committing
 #   make mutants BASE=HEAD~3     everything since another commit
 #
+# BYRLE_MUTANTS_JOBS mutants (default 4) are built and tested at once, each in its own
+# copy of the tree, with the `mutants` profile, which has no debug information. A cargo
+# command running past BYRLE_MUTANTS_TIMEOUT seconds (default 300) is stopped and its
+# mutant reported as timed out, so one hanging test cannot hold the run.
+#
 # An untracked `.rs` file is included whole: it is in no diff, and leaving it out reported
 # "every mutant caught" for a module nothing had mutated.
 #
@@ -38,4 +43,5 @@ if [[ ! -s "$diff" ]]; then
 fi
 
 cd "$repo_root"
-cargo mutants --in-diff "$diff" --output "$repo_root/target"
+cargo mutants --in-diff "$diff" --output "$repo_root/target" --profile mutants \
+    --jobs "${BYRLE_MUTANTS_JOBS:-4}" --timeout "${BYRLE_MUTANTS_TIMEOUT:-300}"

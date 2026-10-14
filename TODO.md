@@ -2882,6 +2882,11 @@ role gets 403 from every endpoint except `GET health`.
       rewritten by targeted byte replacement rather than a `serde_json::Value` tree),
       which took peak RSS on 24 simultaneous large packuments from 1,436 MB to 472 MB.
       What is left here is whether the remaining retention is worth chasing.
+      Measured as deployed 2026-10-14 with `make memory`: a cooldown sent every filtered
+      packument through a `serde_json::Value` tree, 1,181 MB on 24 large documents. Now
+      read as slices, 700 MB, idle 499 MB. `MALLOC_ARENA_MAX=2` cut idle by about 40%
+      before the change; not set
+      ([default-ceilings](docs/engineering_decisions/default-ceilings.md#as-deployed-2026-10-14)).
 - [ ] The store is per-process and dies with the proxy. It also holds the whole
       `NormalizedPackument`, not just what the fetch path needs, which makes the
       concurrency-memory item worse rather than better. Measured RSS after an
@@ -2955,6 +2960,7 @@ role gets 403 from every endpoint except `GET health`.
         same install direct, for an analysed proxy and for a cold one, and whether
         `make bench` fails over it. Set by the user 2026-10-13: analysed at most 1.5
         times direct, cold at most 2 times, a filled client cache at most 1 s over;
+        since 2026-10-14 the first two may instead be 3 s over direct, whichever is larger;
         `make bench` exits 1 over it. Measured as deployed: analysed npm 1.25 times and
         PyPI 1.38; cold npm 1.64 and PyPI 1.45
         ([latency-benchmarks](docs/engineering_decisions/latency-benchmarks.md#budget)).
