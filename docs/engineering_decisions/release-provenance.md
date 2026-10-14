@@ -1,7 +1,8 @@
 # Releases and their provenance
 
-- **Status:** Implemented 2026-10-14: `.github/workflows/release.yml`. No release has been
-  published yet.
+- **Status:** Implemented 2026-10-14: `.github/workflows/release.yml`. v0.1.0 published
+  2026-10-14 by run 38519157946; its tarballs' and image's attestations pass
+  `gh attestation verify`, checked by the user.
 - **Related:** [provenance-check](provenance-check.md), [ci-gates](ci-gates.md)
 
 ## Decision
