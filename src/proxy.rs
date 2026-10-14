@@ -4231,7 +4231,7 @@ mod tests {
             header::HeaderName,
             Option<&'a str>,
         );
-        let cases: [Case; 21] = [
+        let cases: [Case; 23] = [
             (
                 "br narrowed away",
                 None,
@@ -4263,6 +4263,22 @@ mod tests {
                 &[(header::ACCEPT_ENCODING, "gzip, deflate, br")],
                 header::ACCEPT_ENCODING,
                 Some("gzip, deflate, br"),
+            ),
+            (
+                "an artifact's Accept is the client's",
+                None,
+                TARBALL,
+                &[(header::ACCEPT, "application/octet-stream")],
+                header::ACCEPT,
+                Some("application/octet-stream"),
+            ),
+            (
+                "a packument's Accept asks for the full document",
+                None,
+                PACKUMENT,
+                &[(header::ACCEPT, npm::ABBREVIATED_ACCEPT)],
+                header::ACCEPT,
+                Some(npm::FULL_ACCEPT),
             ),
             (
                 "hop-by-hop",
