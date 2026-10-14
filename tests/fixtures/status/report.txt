@@ -31,7 +31,7 @@ cargo
   publish times    `pubtime` on each line of the index file
   versions         SemVer 2.0
   checks           no meaning here: deprecated
-  clients          none checked by doctor
+  clients          cargo
   client lockfiles Cargo.lock
   streams          osv/cargo
   loaded           none of them
