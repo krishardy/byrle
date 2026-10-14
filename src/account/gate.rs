@@ -23,9 +23,9 @@ struct Presented {
     user: Option<String>,
 }
 
-/// The credential in `headers`: [`TOKEN_HEADER`] when it is set, otherwise
-/// `Authorization` as `Bearer <token>`, or `Basic` with the token as the password. `None`
-/// for no credential, or one in another form.
+/// The credential in `headers`: [`TOKEN_HEADER`] when it is set, otherwise `Authorization`
+/// as `Bearer <token>`, `Basic` with the token as the password, or the token alone, as cargo
+/// sends it. `None` for no credential, or one in another form.
 fn presented(headers: &HeaderMap) -> Option<Presented> {
     if let Some(value) = headers.get(TOKEN_HEADER) {
         return value.to_str().ok().map(|token| Presented {
@@ -34,6 +34,12 @@ fn presented(headers: &HeaderMap) -> Option<Presented> {
         });
     }
     let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    if value.trim().starts_with(super::TOKEN_PREFIX) && !value.trim().contains(' ') {
+        return Some(Presented {
+            token: value.trim().to_owned(),
+            user: None,
+        });
+    }
     let (scheme, credentials) = value.trim().split_once(' ')?;
     let credentials = credentials.trim();
     if scheme.eq_ignore_ascii_case("bearer") {
@@ -156,6 +162,10 @@ mod tests {
             presented(&headers(&[(TOKEN_HEADER, " byrle_c ")])),
             token("byrle_c")
         );
+        assert_eq!(
+            presented(&headers(&[(header::AUTHORIZATION, " byrle_d ")])),
+            token("byrle_d")
+        );
     }
 
     /// [`TOKEN_HEADER`] is read first, so `Authorization` is not read beside it.
@@ -176,6 +186,9 @@ mod tests {
             "Basic !!!",
             "Basic bm9jb2xvbg==",
             "Basic /w==",
+            "byrle_d extra",
+            "notbyrle_d",
+            "token",
         ] {
             assert_eq!(
                 presented(&headers(&[(header::AUTHORIZATION, value)])),

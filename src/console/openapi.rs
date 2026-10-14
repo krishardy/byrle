@@ -59,7 +59,8 @@ impl utoipa::Modify for Credentials {
                     .scheme(HttpAuthScheme::Bearer)
                     .description(Some(
                         "A proxy token from `byrle token create`, in any form the proxy \
-                         takes: Bearer, Basic with the token as the password, or X-Byrle-Token",
+                         takes: Bearer, Basic with the token as the password, the token alone, or \
+                         X-Byrle-Token",
                     ))
                     .build(),
             ),

@@ -106,6 +106,7 @@ these it finds, and only that one:
 | 1 | `X-Byrle-Token: <token>` | a client that sets a custom header; `byrle warm` with `BYRLE_TOKEN` |
 | 2 | `Authorization: Bearer <token>` | npm, pnpm, yarn 1 and bun with `_authToken` or `token` |
 | 3 | `Authorization: Basic`, the account as username and the token as password | pip and uv with `account:token@` in the index URL |
+| 4 | `Authorization: <token>`, the token alone, starting `byrle_` | cargo, with `auth-required` in the proxy's `config.json` |
 
 Each request asks the account store, and keeps no answer: a revoked token or a disabled
 account is refused from the next request. Neither header is sent upstream: only

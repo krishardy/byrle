@@ -98,6 +98,7 @@ each user has their own. The proxy accepts it in the forms JFrog Artifactory acc
 | `Authorization: Bearer <token>` | npm, pnpm, yarn 1, bun |
 | `Authorization: Basic`, the token as the password | pip, uv. The username has to be the token's account |
 | `X-Byrle-Token: <token>` | a client that sets a custom header, such as Maven's `httpHeaders` |
+| `Authorization: <token>`, starting `byrle_` | cargo. Added 2026-10-14, [cargo-plan](../cargo-plan.md) Q3 |
 
 A request with none of them, or a token that is unknown, revoked or of a disabled account,
 is answered 401.

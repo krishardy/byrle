@@ -636,7 +636,7 @@
         "type": "apiKey"
       },
       "token": {
-        "description": "A proxy token from `byrle token create`, in any form the proxy takes: Bearer, Basic with the token as the password, or X-Byrle-Token",
+        "description": "A proxy token from `byrle token create`, in any form the proxy takes: Bearer, Basic with the token as the password, the token alone, or X-Byrle-Token",
         "scheme": "bearer",
         "type": "http"
       }
