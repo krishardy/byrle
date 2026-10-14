@@ -19,7 +19,7 @@ sampler_pid=""
 . "$repo_root/scripts/make/lib/deployed.sh"
 
 cleanup() {
-    [[ -n "$sampler_pid" ]] && kill "$sampler_pid" 2>/dev/null || true
+    if [[ -n "$sampler_pid" ]]; then kill "$sampler_pid" 2>/dev/null || true; fi
     stop_proxy
     stop_postgres
     rm -rf "$workdir"
