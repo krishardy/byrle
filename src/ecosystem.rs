@@ -437,12 +437,19 @@ pub fn of(ecosystem: Ecosystem) -> &'static Registry {
         .expect("every ecosystem has a row in ecosystem::TABLE")
 }
 
-/// The row that answers `path`: the one whose prefixes claim it, else [`ROOT`]'s.
+/// The row that answers `path`: the one whose prefixes claim it, else [`ROOT`]'s. A path
+/// the claiming row does not recognise and the root reads as an artifact is the root's:
+/// npm's `cargo` package's tarball is `/cargo/-/cargo-0.8.0.tgz`.
 pub fn serving(path: &str) -> &'static Registry {
+    let root = of(ROOT);
     TABLE
         .iter()
-        .find(|registry| registry.serves(path))
-        .unwrap_or_else(|| of(ROOT))
+        .find(|registry| {
+            registry.serves(path)
+                && !(registry.classify(path) == RequestTarget::Other
+                    && matches!(root.classify(path), RequestTarget::Artifact { .. }))
+        })
+        .unwrap_or(root)
 }
 
 #[cfg(test)]
@@ -574,8 +581,18 @@ mod table {
             "/packages",
             "/-/v1/search?text=lodash",
             "/",
+            "/cargo/-/cargo-0.8.0.tgz",
+            "/simple/-/simple-1.0.0.tgz",
+            "/packages/-/packages-1.0.0.tgz",
         ] {
             assert_eq!(serving(path).ecosystem, ROOT, "{path}");
+        }
+        for path in [
+            "/cargo/config.json",
+            "/cargo/crates/itoa/1.0.18/download",
+            "/cargo/it/oa/itoa",
+        ] {
+            assert_eq!(serving(path).ecosystem, Ecosystem::Cargo, "{path}");
         }
     }
 
