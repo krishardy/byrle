@@ -44,6 +44,12 @@ pub trait Document: Send + Sync {
     /// The body with refused versions removed and artifacts pointed at the proxy, or
     /// `None` to forward it as it came.
     fn rewrite(&self, rewriting: &Rewriting<'_>) -> Option<Vec<u8>>;
+
+    /// Whether removing `refused` leaves a document that names one version naming none,
+    /// answered 404 as an absent one is.
+    fn names_none(&self, _refused: &std::collections::HashSet<String>) -> bool {
+        false
+    }
 }
 
 /// What an adapter's [`Registry::read`] is given: a metadata body on its way to the client.
@@ -422,7 +428,7 @@ impl Registry {
 }
 
 /// Every ecosystem the proxy routes, one row each, for which intel coverage is reported.
-pub const TABLE: &[Registry] = &[npm::REGISTRY, pypi::REGISTRY, cargo::REGISTRY];
+pub const TABLE: &[Registry] = &[npm::REGISTRY, pypi::REGISTRY, cargo::REGISTRY, go::REGISTRY];
 
 /// The row for `ecosystem`.
 ///
@@ -496,14 +502,19 @@ mod table {
         assert_eq!(TABLE.len(), Ecosystem::EXPRESSIBLE.len());
     }
 
-    /// Each row's prefix is its ecosystem's name, so no path can be two rows'.
+    /// The directory of a row's adapter, under `src/ecosystem/`: its prefix's name.
+    fn adapter(registry: &Registry) -> &'static str {
+        registry.prefix.trim_matches('/')
+    }
+
+    /// Each row's prefix names its adapter, so no path can be two rows'. Go's is `go`, not
+    /// its purl type `golang`.
     #[test]
-    fn each_row_claims_its_ecosystem_s_name() {
+    fn each_row_claims_its_adapter_s_name() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ecosystem");
         for registry in TABLE {
-            assert_eq!(
-                registry.prefix,
-                format!("/{}/", registry.ecosystem.as_str().to_lowercase())
-            );
+            assert_eq!(registry.prefix, format!("/{}/", adapter(registry)));
+            assert!(root.join(adapter(registry)).is_dir(), "{}", registry.prefix);
         }
         let mut claimed: Vec<&str> = TABLE.iter().map(|registry| registry.prefix).collect();
         let before = claimed.len();
@@ -526,6 +537,8 @@ mod table {
             ),
             ("/cargo/config.json", Ecosystem::Cargo),
             ("/cargo/crates/itoa/1.0.18/download", Ecosystem::Cargo),
+            ("/go/golang.org/x/text/@v/list", Ecosystem::Go),
+            ("/go/sumdb/sum.golang.org/latest", Ecosystem::Go),
         ] {
             assert_eq!(
                 serving(path).map(|r| r.ecosystem),
@@ -538,7 +551,13 @@ mod table {
     /// No row answers a path outside every prefix, npm's old root paths among them.
     #[test]
     fn an_unclaimed_path_is_no_row_s() {
-        for path in ["/lodash", "/simple/requests/", "/npm", "/", "/go/x/@v/list"] {
+        for path in [
+            "/lodash",
+            "/simple/requests/",
+            "/npm",
+            "/",
+            "/golang/x/@v/list",
+        ] {
             assert!(serving(path).is_none(), "{path}");
         }
     }
@@ -567,6 +586,7 @@ mod table {
                 "npm config set registry http://127.0.0.1:8080/npm/",
                 "pip config set global.index-url http://127.0.0.1:8080/pypi/simple/",
                 &cargo::REGISTRY.setup.command_line("http://127.0.0.1:8080"),
+                "go env -w GOPROXY=http://127.0.0.1:8080/go",
             ]
         );
         assert_eq!(
@@ -842,13 +862,13 @@ mod table {
         crate::util::test_support::rust_files(&root.join("src"), &mut files);
         let adapters: Vec<_> = TABLE
             .iter()
-            .map(|row| root.join("src/ecosystem").join(row.ecosystem.as_str()))
+            .map(|row| root.join("src/ecosystem").join(adapter(row)))
             .collect();
         let spellings: Vec<String> = TABLE
             .iter()
             .flat_map(|row| {
                 [
-                    format!("{}::", row.ecosystem.as_str()),
+                    format!("{}::", adapter(row)),
                     format!("Ecosystem::{:?}", row.ecosystem),
                 ]
             })
@@ -888,8 +908,8 @@ mod table {
     fn only_the_adapters_name_an_ecosystem() {
         let allowed: std::collections::BTreeMap<String, usize> = [
             ("src/ecosystem.rs", 1),
-            ("src/env.rs", 5),
-            ("src/identity.rs", 7),
+            ("src/env.rs", 6),
+            ("src/identity.rs", 12),
         ]
         .into_iter()
         .map(|(file, count): (&str, usize)| (file.to_owned(), count))

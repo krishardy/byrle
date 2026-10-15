@@ -114,6 +114,7 @@ variable at both is not expressible.
 | `BYRLE_UPSTREAM_NPM` | `https://registry.npmjs.org` | the proxy, `policy diff`, `explain` |
 | `BYRLE_UPSTREAM_PYPI` | `https://pypi.org/simple` | the proxy |
 | `BYRLE_UPSTREAM_CARGO` | `https://index.crates.io` | the proxy. Added 2026-10-14 |
+| `BYRLE_UPSTREAM_GO` | `https://proxy.golang.org` | the proxy. Added 2026-10-15 |
 
 `BYRLE_UPSTREAM` is gone rather than kept as an alias. Nothing has been released, and a
 variable that silently means one of two ecosystems is the thing the split exists to remove.
@@ -129,5 +130,9 @@ is read from the document the way `npm::origin_of_url` already reads `dist.tarba
 cargo's downloads come from `static.crates.io`, `cargo::FILES`, also not a variable. The
 proxy writes cargo's `config.json` with `dl` at itself, so the upstream's `config.json`
 and its `dl` are not read: a mirror set as `BYRLE_UPSTREAM_CARGO` serves index files only.
+
+Go's checksum database is relayed from `https://sum.golang.org`, `go::sumdb::DEFAULT`, not
+from `BYRLE_UPSTREAM_GO`: its notes are signed by sum.golang.org's key, which a mirror of
+the module proxy does not hold.
 
 The rows above that name `BYRLE_UPSTREAM` record measurements taken before the split.

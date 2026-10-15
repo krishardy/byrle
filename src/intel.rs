@@ -431,8 +431,9 @@ mod tests {
             recorded("datadog/npm"),
             recorded("osv/pypi"),
             recorded("osv/cargo"),
+            recorded("osv/go"),
         ]);
-        assert_eq!(served(), ["npm", "pypi", "cargo"]);
+        assert_eq!(served(), ["npm", "pypi", "cargo", "golang"]);
         assert_eq!(
             caps.providers("npm", Capability::Match),
             ["datadog/npm", "osv/npm"]
@@ -459,6 +460,7 @@ mod tests {
         assert!(listing("cisa/kev").is_empty());
         assert_eq!(listing("osv/pypi"), ["pypi"]);
         assert_eq!(listing("osv/cargo"), ["cargo"]);
+        assert_eq!(listing("osv/go"), ["golang"]);
     }
 
     /// PyPI is served and the snapshot records none of its streams, so both gaps are reported
@@ -470,6 +472,7 @@ mod tests {
             recorded("cisa/kev"),
             recorded("datadog/npm"),
             recorded("osv/cargo"),
+            recorded("osv/go"),
         ]);
         let pypi_without = |capability| Gap {
             ecosystem: "pypi".to_owned(),

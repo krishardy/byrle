@@ -30,6 +30,10 @@ pub enum DocumentKind {
     SimpleIndex(IndexFormat),
     /// A cargo index file: one JSON line per version.
     IndexLines,
+    /// A Go module's `@v/list`: one version per line.
+    VersionList,
+    /// A Go module's `@latest`: one version's JSON.
+    Latest,
 }
 
 /// Which of the two simple-index forms a body is.

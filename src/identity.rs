@@ -15,11 +15,18 @@ pub enum Ecosystem {
     PyPI,
     /// crates.io's sparse index. `crate::ecosystem::cargo` reads it.
     Cargo,
+    /// The Go module proxy. `crate::ecosystem::go` reads it.
+    Go,
 }
 
 impl Ecosystem {
     /// Every ecosystem a package can be named in. `ecosystem::TABLE` has a row for each.
-    pub const EXPRESSIBLE: [Ecosystem; 3] = [Ecosystem::Npm, Ecosystem::PyPI, Ecosystem::Cargo];
+    pub const EXPRESSIBLE: [Ecosystem; 4] = [
+        Ecosystem::Npm,
+        Ecosystem::PyPI,
+        Ecosystem::Cargo,
+        Ecosystem::Go,
+    ];
 
     /// The purl `type` component, and the string OSV keys on.
     pub const fn as_str(self) -> &'static str {
@@ -27,6 +34,7 @@ impl Ecosystem {
             Ecosystem::Npm => "npm",
             Ecosystem::PyPI => "pypi",
             Ecosystem::Cargo => "cargo",
+            Ecosystem::Go => "golang",
         }
     }
 }
@@ -45,6 +53,7 @@ impl FromStr for Ecosystem {
             "npm" => Ok(Ecosystem::Npm),
             "pypi" => Ok(Ecosystem::PyPI),
             "cargo" => Ok(Ecosystem::Cargo),
+            "golang" => Ok(Ecosystem::Go),
             other => Err(IdentityError::UnsupportedEcosystem(other.to_string())),
         }
     }

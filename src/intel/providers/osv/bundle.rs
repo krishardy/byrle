@@ -24,6 +24,12 @@ pub const CARGO_BUNDLE: &str =
 /// The name a snapshot records the crates.io bundle under.
 pub const CARGO_STREAM: &str = "osv/cargo";
 
+/// 12,337,458 bytes on 2026-10-15: 4,632 `GO-`, 4,965 `GHSA-` and 20 `MAL-` records.
+pub const GO_BUNDLE: &str = "https://osv-vulnerabilities.storage.googleapis.com/Go/all.zip";
+
+/// The name a snapshot records the Go bundle under.
+pub const GO_STREAM: &str = "osv/go";
+
 /// 2.5 times the bundle on 2026-09-13.
 pub const MAX_BUNDLE_BYTES: usize = 512 << 20;
 

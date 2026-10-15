@@ -58,6 +58,7 @@ fn adapter(registry: &Registry, upstreams: &Upstreams) -> String {
         match registry.versions {
             crate::intel::range::VersionOrder::SemVer => "SemVer 2.0".to_owned(),
             crate::intel::range::VersionOrder::Pep440 => "PEP 440".to_owned(),
+            crate::intel::range::VersionOrder::Go => "SemVer 2.0 after a `v`".to_owned(),
         },
     );
     let not_applicable: Vec<&str> = Rule::ALL

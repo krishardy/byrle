@@ -16,6 +16,8 @@ pub enum VersionOrder {
     SemVer,
     /// PEP 440, as pip orders versions.
     Pep440,
+    /// SemVer 2.0 after a `v`, as Go writes a module version. OSV writes it without the `v`.
+    Go,
 }
 
 /// A version as its ecosystem orders it. Only versions of one ecosystem are compared.
@@ -38,6 +40,7 @@ impl VersionOrder {
         match self {
             Self::SemVer => version(s).map(Ordered::SemVer),
             Self::Pep440 => Pep440::parse(s).map(Ordered::Pep440),
+            Self::Go => version(&padded(unprefixed(s))?).map(Ordered::SemVer),
         }
     }
 
@@ -47,8 +50,14 @@ impl VersionOrder {
         match self {
             Self::SemVer => padded(s),
             Self::Pep440 => Pep440::parse(s).map(|v| v.to_string()),
+            Self::Go => padded(unprefixed(s)),
         }
     }
+}
+
+/// A Go version without its `v`, which OSV leaves off: `v1.2.3` is `1.2.3`.
+fn unprefixed(s: &str) -> &str {
+    s.strip_prefix('v').unwrap_or(s)
 }
 
 /// A version as SemVer 2.0 orders it, or `None` when it is not SemVer.
@@ -652,6 +661,7 @@ mod tests {
     fn each_ecosystem_has_its_own_order() {
         assert_eq!(VersionOrder::of("npm"), Some(VersionOrder::SemVer));
         assert_eq!(VersionOrder::of("pypi"), Some(VersionOrder::Pep440));
+        assert_eq!(VersionOrder::of("golang"), Some(VersionOrder::Go));
         assert_eq!(VersionOrder::of("gem"), None);
         assert_eq!(stored(VersionOrder::Pep440, "1.0-1"), "1.0.post1");
         assert_eq!(stored(VersionOrder::SemVer, "13.0"), "13.0.0");
@@ -659,6 +669,34 @@ mod tests {
             stored(VersionOrder::Pep440, "not a version"),
             "not a version"
         );
+    }
+
+    /// OSV's Go ranges leave off the `v` the module versions carry, as GO-2021-0113 for
+    /// golang.org/x/text does: fixed in `0.3.7`.
+    #[test]
+    fn a_go_version_compares_with_or_without_its_v() {
+        let go = VersionOrder::Go;
+        assert_eq!(go.parse("v0.3.7"), go.parse("0.3.7"));
+        assert!(go.parse("v0.3.6") < go.parse("0.3.7"));
+        assert_eq!(stored(go, "v0.46"), "0.46.0");
+        assert_eq!(
+            go.parse("v2.0.0+incompatible"),
+            go.parse("2.0.0"),
+            "build metadata does not order"
+        );
+        assert_eq!(go.parse("vx"), None);
+        let stored = intervals(
+            go,
+            Some("SEMVER"),
+            &events(&[("introduced", "0"), ("fixed", "0.3.7")]),
+        )
+        .expect("storable");
+        assert_eq!(stored[0].end, End::Fixed("0.3.7".to_owned()));
+        let fixed =
+            Interval::from_columns(go, None, false, Some("0.3.7"), None).expect("an interval");
+        let v = |s: &str| go.parse(s).expect("a version");
+        assert!(fixed.contains(&v("v0.3.6")));
+        assert!(!fixed.contains(&v("v0.3.7")));
     }
 
     /// An excluded start that does not parse is no interval.

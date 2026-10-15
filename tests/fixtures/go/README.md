@@ -9,3 +9,6 @@ rsc.io/quote v1.5.2/go.mod h1:LzX7hefJvL54yjefDEDHNONDjII0t9xZLPXsUe+TKr0=
 ```
 
 BSD-3-Clause, copyright The Go Authors; the licence is the zip's `LICENSE`.
+
+`text.list` and `text.latest` are `golang.org/x/text`'s `@v/list`, 51 versions, and its
+`@latest`, v0.43.0, as proxy.golang.org served them on 2026-10-15.

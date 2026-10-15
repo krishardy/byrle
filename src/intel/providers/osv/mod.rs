@@ -13,12 +13,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::identity::Ecosystem;
 
 /// The publishers whose records are read, by id prefix, and whether each publishes malware.
-const PUBLISHERS: [(&str, bool); 5] = [
+const PUBLISHERS: [(&str, bool); 6] = [
     ("MAL-", true),
     ("GHSA-", false),
     ("PYSEC-", false),
     ("OSV-", false),
     ("RUSTSEC-", false),
+    ("GO-", false),
 ];
 
 /// The name OSV gives `ecosystem`, in `affected[].package.ecosystem` and in its bundle's

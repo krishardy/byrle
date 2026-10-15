@@ -1123,6 +1123,9 @@ async fn filtered_document(
         ),
         None => Refused::default(),
     };
+    if read.names_none(&refused_by_policy.versions) {
+        return DocumentStep::Answer(names_refused(path, &refused_by_policy));
+    }
     let base = negotiation
         .rewriting
         .then_some(negotiation.rewrite_base.as_deref())
@@ -1140,6 +1143,24 @@ async fn filtered_document(
         body,
         refused: refused_by_policy,
     }
+}
+
+/// 404 for a document whose one version the policy refuses, naming the checks.
+fn names_refused(path: &str, refused: &Refused) -> Response {
+    info!(
+        url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
+        byrle.policy.checks = ?refused.checks,
+        "the one version this document names is refused: 404"
+    );
+    (
+        StatusCode::NOT_FOUND,
+        format!(
+            "byrle: {} names a version the policy refuses: {}\n",
+            crate::http::url_path(path),
+            refused.checks.join(", ")
+        ),
+    )
+        .into_response()
 }
 
 /// How a request's metadata document is asked for and read, decided before going upstream.
@@ -4853,6 +4874,7 @@ mod tests {
             .with_upstream(Ecosystem::Npm, NO_UPSTREAM)
             .with_upstream(Ecosystem::PyPI, NO_UPSTREAM)
             .with_upstream(Ecosystem::Cargo, NO_UPSTREAM)
+            .with_upstream(Ecosystem::Go, NO_UPSTREAM)
             .with_intel(intel)
             .with_refuse_unservable(false)
             .with_policy(yaml.map(policy))
@@ -5982,6 +6004,68 @@ mod tests {
         assert!(!versions.contains(&"\"1.0.18\"".to_owned()), "{versions:?}");
         let (status, _) = refused(pinned(&proxy, ITOA_DOWNLOAD).await).await;
         assert_eq!(status, 403);
+    }
+
+    const TEXT_LIST: &str = "/go/golang.org/x/text/@v/list";
+    const TEXT_LATEST: &str = "/go/golang.org/x/text/@latest";
+    const DENY_TEXT: &str = "version: 1\ncooldown_days: 0\n\
+                             denials:\n  - purl: pkg:golang/golang.org/x/text@v0.43.0\n    \
+                             reason: test\n";
+
+    /// A refused version's line is removed, so go resolves to another. Its zip is refused
+    /// too, and until sum.golang.org is asked so is every zip: no digest is published.
+    #[tokio::test]
+    async fn a_go_version_the_policy_refuses_loses_its_line() {
+        let proxy = offline(None, Some(DENY_TEXT));
+        let fixture = crate::ecosystem::go::fixture("text.list");
+        let DocumentStep::Forward {
+            body: Some(body),
+            refused: removed,
+        } = resolve(&proxy, TEXT_LIST, "text/plain; charset=UTF-8", &fixture).await
+        else {
+            panic!("the list is forwarded rewritten");
+        };
+        let lines = String::from_utf8(body).unwrap();
+        assert_eq!(lines.lines().count(), 50);
+        assert!(!lines.lines().any(|line| line == "v0.43.0"), "{lines}");
+        assert!(removed.versions.contains("v0.43.0"));
+        let (status, _) =
+            refused(pinned(&proxy, "/go/golang.org/x/text/@v/v0.43.0.zip").await).await;
+        assert_eq!(status, 403);
+        let (status, body) =
+            refused(pinned(&proxy, "/go/golang.org/x/text/@v/v0.42.0.zip").await).await;
+        assert_eq!(status, 403);
+        assert!(body.contains("no strong digest"), "{body}");
+    }
+
+    /// go asks `@latest` when the list leaves it nothing, and fails on a 404.
+    #[tokio::test]
+    async fn latest_naming_a_refused_version_is_404() {
+        let fixture = crate::ecosystem::go::fixture("text.latest");
+        let refusing = offline(None, Some(DENY_TEXT));
+        let (status, body) =
+            answered(resolve(&refusing, TEXT_LATEST, "application/json", &fixture).await).await;
+        assert_eq!(status, 404);
+        assert!(
+            body.contains("names a version the policy refuses: denials"),
+            "{body}"
+        );
+        let allowing = offline(None, Some(NO_POLICY));
+        assert!(matches!(
+            resolve(&allowing, TEXT_LATEST, "application/json", &fixture).await,
+            DocumentStep::Forward { body: None, .. }
+        ));
+    }
+
+    /// go 1.27.2 asked `<GOPROXY>/sumdb/sum.golang.org/supported` before any lookup.
+    #[tokio::test]
+    async fn the_proxy_says_it_relays_the_checksum_database() {
+        let base = serve(offline(None, None).router()).await;
+        let response = reqwest::get(format!("{base}/go/sumdb/sum.golang.org/supported"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        assert!(response.bytes().await.unwrap().is_empty());
     }
 
     /// cargo 1.99.0 asked for `config.json` without a token, then with it alone once
@@ -7523,7 +7607,7 @@ mod tests {
         assert_eq!(
             proxy.upstreams().to_string(),
             "npm=https://registry.npmjs.org pypi=https://mirror.example/simple \
-             cargo=https://index.crates.io"
+             cargo=https://index.crates.io golang=https://proxy.golang.org"
         );
         let both = Proxy::new(reqwest::Client::new()).with_upstreams(proxy.upstreams().clone());
         assert_eq!(both.upstreams(), proxy.upstreams());

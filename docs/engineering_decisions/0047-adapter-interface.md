@@ -42,6 +42,18 @@ Four questions cargo asks that npm and PyPI did not became fields:
 | A check with no meaning | `policy::merge::applies`, matching `"npm"` and `"pypi"` as strings, which the guard did not count | `Registry::meaningless`. A name with no row keeps Go's `install_scripts` |
 | An index file | `DocumentKind` had a variant per ecosystem's documents | `DocumentKind::IndexLines` beside them |
 
+## Amended 2026-10-15: Go, the second new row
+
+Go's purl type is `golang` and its prefix and module are `go`. The tests that read a row's
+module directory and its `go::` spelling take them from the prefix, not from `as_str`.
+
+| Question | Was | Now |
+|---|---|---|
+| A version list and `@latest` | `DocumentKind` had cargo's `IndexLines` | `DocumentKind::VersionList` and `DocumentKind::Latest` |
+| A document naming one refused version | rewritten, never refused | `Document::names_none`: `@latest` naming a refused version is answered 404, as go reads an absent one |
+| Versions written `v1.2.3`, which OSV writes `1.2.3` | `VersionOrder::SemVer` | `VersionOrder::Go`, SemVer 2.0 after a `v` |
+| A path the proxy answers from another host | none | `go::upstream_url` sends `/go/sumdb/sum.golang.org/` to sum.golang.org |
+
 ## Decision
 
 No `trait Adapter`. Four modules hold what both ecosystems answer the same way. Of those,

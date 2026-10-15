@@ -5,6 +5,7 @@
 use std::sync::Mutex;
 
 use super::note::{Tree, Verifier};
+use super::paths::escape;
 use super::tlog::{self, Fetching, HEIGHT, Hash, Tiles};
 use crate::util::lru::Lru;
 
@@ -31,21 +32,6 @@ pub struct Client {
     /// The largest tree verified so far. Every later one has to extend it.
     latest: tokio::sync::Mutex<Option<Tree>>,
     tiles: Mutex<Lru<(u32, u64), Vec<Hash>>>,
-}
-
-/// A path element as the module proxy and the checksum database spell it: each upper-case
-/// letter as `!` and its lower case, since some file systems ignore case.
-pub fn escape(element: &str) -> String {
-    let mut out = String::with_capacity(element.len());
-    for c in element.chars() {
-        if c.is_ascii_uppercase() {
-            out.push('!');
-            out.push(c.to_ascii_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
 }
 
 /// A tile's path: its index in groups of three digits, all but the last after an `x`.
@@ -550,10 +536,6 @@ mod tests {
 
     #[test]
     fn paths_are_spelled_as_the_go_command_spells_them() {
-        assert_eq!(
-            escape("github.com/BurntSushi/toml"),
-            "github.com/!burnt!sushi/toml"
-        );
         assert_eq!(tile_path(0, 5, 256), "tile/8/0/005");
         assert_eq!(tile_path(2, 1_234_567, 17), "tile/8/2/x001/x234/567.p/17");
         assert_eq!(tile_path(1, 1000, 256), "tile/8/1/x001/000");

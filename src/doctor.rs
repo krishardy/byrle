@@ -1981,13 +1981,15 @@ mod tests {
         assert!(
             finding.detail.starts_with(&format!(
                 "not ready, using intel snapshot sha256:ab, taken 2026-09-13T01:02:03Z: {}; {}; \
-                 {}; {}; {}; {}; ",
+                 {}; {}; {}; {}; {}; {}; ",
                 gap("npm", MATCH),
                 gap("pypi", MATCH),
                 gap("cargo", MATCH),
+                gap("golang", MATCH),
                 gap("npm", MALWARE),
                 gap("pypi", MALWARE),
                 gap("cargo", MALWARE),
+                gap("golang", MALWARE),
             )),
             "{}",
             finding.detail

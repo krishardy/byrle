@@ -663,7 +663,13 @@ mod tests {
                 })
                 .collect()
         };
-        let without_osv = recording(&["datadog/npm", "datadog/pypi", "osv/pypi", "osv/cargo"]);
+        let without_osv = recording(&[
+            "datadog/npm",
+            "datadog/pypi",
+            "osv/pypi",
+            "osv/cargo",
+            "osv/go",
+        ]);
         assert_eq!(
             stream_gaps(&without_osv),
             [
@@ -718,14 +724,16 @@ mod tests {
             crate::intel::Capability::Malware,
         );
         assert_eq!(
-            capability_gaps(&recording(&["cisa/kev", "osv/npm", "osv/cargo"])),
+            capability_gaps(&recording(&["cisa/kev", "osv/npm", "osv/cargo", "osv/go"])),
             [without("pypi", matching), without("pypi", malware)]
         );
         assert_eq!(
-            capability_gaps(&recording(&["osv/pypi", "osv/cargo"])),
+            capability_gaps(&recording(&["osv/pypi", "osv/cargo", "osv/go"])),
             [without("npm", matching), without("npm", malware)]
         );
-        assert!(capability_gaps(&recording(&["osv/npm", "osv/pypi", "osv/cargo"])).is_empty());
+        assert!(
+            capability_gaps(&recording(&["osv/npm", "osv/pypi", "osv/cargo", "osv/go"])).is_empty()
+        );
         for streams in [&[][..], &["cisa/kev"]] {
             assert_eq!(
                 capability_gaps(&recording(streams)),
@@ -733,9 +741,11 @@ mod tests {
                     without("npm", matching),
                     without("pypi", matching),
                     without("cargo", matching),
+                    without("golang", matching),
                     without("npm", malware),
                     without("pypi", malware),
                     without("cargo", malware),
+                    without("golang", malware),
                 ],
                 "{streams:?}"
             );

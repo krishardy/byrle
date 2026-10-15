@@ -129,7 +129,15 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
    filtered, `.info` read for times, the claim asked before the fetch, the zip's `h1:` in
    the analysis job, `.mod` checked in the request, the checksum database relay (Q4),
    `osv/go` with toolchain matching (Q6),
-   `BYRLE_UPSTREAM_GO`. npm, PyPI and cargo unchanged.
+   `BYRLE_UPSTREAM_GO`. npm, PyPI and cargo unchanged. In five parts, each refusing what
+   it cannot yet check:
+   1. The row, `/go/` paths, `@v/list` and `@latest` filtered, `supported` written, the
+      relay, `osv/go` and `BYRLE_UPSTREAM_GO`. Every zip is refused as publishing no
+      strong digest. Done 2026-10-15.
+   2. The claim from sum.golang.org, and `.mod` checked against it.
+   3. The zip's `h1:` in the analysis job, its sha256 kept by the analysis store.
+   4. Cooldown from `.info`, newest first, and a pinned version's own `.info`.
+   5. `toolchain` advisories matched to `golang.org/toolchain`.
 4. `go.sum` for `warm`, `policy diff` and `lockfile verify`.
 5. `byrle doctor` for `go env`: `GOPROXY`, `GOSUMDB`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`.
 6. `make smoke-go`: `go build` of a real module through the proxy over https, with a token,
