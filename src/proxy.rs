@@ -1070,7 +1070,7 @@ async fn filtered_document(
         }
     };
 
-    let registry = ecosystem::serving(path);
+    let registry = ecosystem::of(negotiation.ecosystem);
     let page = upstream_url(proxy, registry.ecosystem, path, None);
     let read = (registry.read)(ecosystem::Reading {
         decoded: &decoded,
@@ -1145,11 +1145,13 @@ async fn filtered_document(
 /// How a request's metadata document is asked for and read, decided before going upstream.
 #[derive(Debug, PartialEq, Eq)]
 struct Negotiation {
+    /// The ecosystem whose prefix the path is under.
+    ecosystem: Ecosystem,
     /// The encoding asked of upstream on a document the proxy reads.
     encoding: RequestedEncoding,
     /// The body is read: a metadata GET, in an encoding this build can decode.
     read_metadata: bool,
-    /// The address artifact URLs are pointed at. See [`public_base`].
+    /// The address artifact URLs are pointed at: [`public_base`] and the row's prefix.
     rewrite_base: Option<String>,
     /// Artifact URLs are pointed at the proxy.
     rewriting: bool,
@@ -1172,13 +1174,19 @@ fn negotiate(
     let read_metadata = method == Method::GET
         && matches!(target, RequestTarget::Metadata(_))
         && encoding != RequestedEncoding::Unreadable;
-    let rewrite_base = public_base(headers, proxy.config.public_base.as_deref());
+    let rewrite_base = public_base(headers, proxy.config.public_base.as_deref()).map(|base| {
+        format!(
+            "{base}{}",
+            ecosystem::of(ecosystem).prefix.trim_end_matches('/')
+        )
+    });
     let rewriting = read_metadata && proxy.config.rewrite_artifacts && rewrite_base.is_some();
     let full_document = ecosystem::of(ecosystem)
         .publish_times
         .full_accept
         .filter(|_| read_metadata);
     Negotiation {
+        ecosystem,
         encoding,
         read_metadata,
         rewrite_base,
@@ -1882,7 +1890,10 @@ impl<'a> Deciding<'a> {
                     .as_ref()
                     .expect("a pending job has an analyser")
                     .start(job);
-                (audit::Answered::Deferred, self.defer(digest, &[]))
+                (
+                    audit::Answered::Deferred,
+                    self.defer(digest, &held.awaiting),
+                )
             }
             AnalysisState::Decided if !held.awaiting.is_empty() => (
                 audit::Answered::Deferred,
@@ -2537,7 +2548,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     if let Some(response) = own_endpoint(&proxy, &path).await {
         return response;
     }
-    let (ecosystem, target) = crate::route::classify(&path);
+    let Some((ecosystem, target)) = crate::route::classify(&path) else {
+        return unrouted(&path);
+    };
     let account = match admit(&proxy, req.headers(), &path, &client, &target).await {
         Ok(account) => account,
         Err(refused) => return *refused,
@@ -2617,6 +2630,21 @@ fn outside_mount(mount: &Mount, requested: &str) -> Response {
         format!(
             "byrle: {} is outside the proxy's path, {mount}\n",
             crate::http::url_path(requested)
+        ),
+    )
+        .into_response()
+}
+
+/// 404 for a path under no ecosystem's prefix, naming each prefix.
+fn unrouted(path: &str) -> Response {
+    let prefixes: Vec<&str> = ecosystem::TABLE.iter().map(|row| row.prefix).collect();
+    info!(url.path = %crate::http::url_path(path), "under no ecosystem's prefix: 404");
+    (
+        StatusCode::NOT_FOUND,
+        format!(
+            "byrle: {} is under no ecosystem's path; each is served under its own: {}\n",
+            crate::http::url_path(path),
+            prefixes.join(", ")
         ),
     )
         .into_response()
@@ -3766,7 +3794,7 @@ mod tests {
         .await;
 
         let response = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
+            .get(format!("{base}/npm/lodash"))
             .send()
             .await
             .unwrap();
@@ -3782,7 +3810,7 @@ mod tests {
             pypi_proxy_serving(StatusCode::NOT_FOUND, pypi::SIMPLE_JSON, body.clone()).await;
 
         let response = reqwest::Client::new()
-            .get(format!("{base}/simple/x/"))
+            .get(format!("{base}/pypi/simple/x/"))
             .send()
             .await
             .unwrap();
@@ -3800,7 +3828,7 @@ mod tests {
         let (base, seen) = pypi_proxy_serving(StatusCode::OK, pypi::SIMPLE_JSON, index).await;
 
         let response = reqwest::Client::new()
-            .get(format!("{base}/simple/x/"))
+            .get(format!("{base}/pypi/simple/x/"))
             .send()
             .await
             .unwrap();
@@ -3810,7 +3838,7 @@ mod tests {
         let url = document["files"][0]["url"].as_str().unwrap();
         assert_eq!(
             url,
-            format!("{base}/packages/ab/cd/x-1.0-py3-none-any.whl"),
+            format!("{base}/pypi/packages/ab/cd/x-1.0-py3-none-any.whl"),
             "the file now points at this proxy"
         );
 
@@ -3820,7 +3848,7 @@ mod tests {
         assert!(
             matches!(
                 crate::route::classify(path),
-                (Ecosystem::PyPI, RequestTarget::Artifact { .. })
+                Some((Ecosystem::PyPI, RequestTarget::Artifact { .. }))
             ),
             "{path}"
         );
@@ -3866,7 +3894,7 @@ mod tests {
         .await;
 
         let response = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
+            .get(format!("{base}/npm/lodash"))
             .header(header::ACCEPT_ENCODING, "gzip")
             .send()
             .await
@@ -3886,7 +3914,7 @@ mod tests {
         let host = base.trim_start_matches("http://");
         assert_eq!(
             served["versions"]["4.17.21"]["dist"]["tarball"],
-            serde_json::json!(format!("http://{host}/lodash/-/lodash-4.17.21.tgz")),
+            serde_json::json!(format!("http://{host}/npm/lodash/-/lodash-4.17.21.tgz")),
             "the artifact has to point at the proxy"
         );
 
@@ -3914,12 +3942,12 @@ mod tests {
         )
         .await;
 
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()[header::RETRY_AFTER], "1");
         assert!(response.text().await.unwrap().contains("deferred"));
 
-        let other = reqwest::get(format!("{base}/-/ping")).await.unwrap();
+        let other = reqwest::get(format!("{base}/npm/-/ping")).await.unwrap();
         assert_eq!(other.status(), StatusCode::OK);
         assert_eq!(
             seen.lock().unwrap().paths,
@@ -3947,7 +3975,7 @@ mod tests {
         )
         .await;
 
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(!response.headers().contains_key(header::RETRY_AFTER));
     }
@@ -3971,7 +3999,7 @@ mod tests {
         )
         .await;
 
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
 
@@ -4026,13 +4054,17 @@ mod tests {
         .await;
         let client = reqwest::Client::new();
 
-        let first = client.get(format!("{base}/lodash")).send().await.unwrap();
+        let first = client
+            .get(format!("{base}/npm/lodash"))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(first.status(), StatusCode::OK);
         let issued = first.headers()[header::ETAG].to_str().unwrap().to_owned();
         assert!(issued.contains("byrle."), "not marked: {issued}");
 
         let second = client
-            .get(format!("{base}/lodash"))
+            .get(format!("{base}/npm/lodash"))
             .header(header::IF_NONE_MATCH, &issued)
             .send()
             .await
@@ -4071,7 +4103,7 @@ mod tests {
             .with_max_metadata_bytes(16);
         let base = serve(proxy.clone().router()).await;
 
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), 200);
         assert_eq!(
             response.bytes().await.unwrap().as_ref(),
@@ -4104,7 +4136,7 @@ mod tests {
         )
         .await;
 
-        let response = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
+        let response = reqwest::get(format!("{base}/npm/lodash/-/lodash-4.17.21.tgz"))
             .await
             .unwrap();
         assert_eq!(response.status(), 403);
@@ -4203,7 +4235,7 @@ mod tests {
         let (base, seen) = proxy_with_intel(malware_everywhere(), true).await;
         let tarball = "/lodash/-/lodash-4.17.21.tgz";
         reqwest::Client::new()
-            .head(format!("{base}{tarball}"))
+            .head(format!("{base}/npm{tarball}"))
             .send()
             .await
             .unwrap();
@@ -4228,7 +4260,7 @@ mod tests {
         accept_encoding: &str,
     ) -> Negotiation {
         let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
-        let (ecosystem, target) = crate::route::classify(path);
+        let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
         negotiate(
             &proxy,
             ecosystem,
@@ -4245,16 +4277,22 @@ mod tests {
         let cooldown = Some("version: 1\ncooldown_days: 7\nprovenance: allow\n");
         let none = Some("version: 1\ncooldown_days: 0\nprovenance: allow\n");
         let cases = [
-            (cooldown, Method::GET, "/lodash", "gzip", true),
-            (none, Method::GET, "/lodash", "gzip", true),
-            (None, Method::GET, "/lodash", "gzip", true),
-            (cooldown, Method::HEAD, "/lodash", "gzip", false),
-            (cooldown, Method::GET, "/lodash", UNREADABLE, false),
-            (cooldown, Method::GET, "/simple/requests/", "gzip", false),
+            (cooldown, Method::GET, "/npm/lodash", "gzip", true),
+            (none, Method::GET, "/npm/lodash", "gzip", true),
+            (None, Method::GET, "/npm/lodash", "gzip", true),
+            (cooldown, Method::HEAD, "/npm/lodash", "gzip", false),
+            (cooldown, Method::GET, "/npm/lodash", UNREADABLE, false),
             (
                 cooldown,
                 Method::GET,
-                "/lodash/-/lodash-4.17.21.tgz",
+                "/pypi/simple/requests/",
+                "gzip",
+                false,
+            ),
+            (
+                cooldown,
+                Method::GET,
+                "/npm/lodash/-/lodash-4.17.21.tgz",
                 "gzip",
                 false,
             ),
@@ -4271,18 +4309,19 @@ mod tests {
 
     #[test]
     fn a_read_document_is_rewritten_at_the_host_the_client_used() {
-        let negotiation = negotiated(None, Method::GET, "/lodash", "gzip");
+        let negotiation = negotiated(None, Method::GET, "/npm/lodash", "gzip");
         assert_eq!(
             negotiation,
             Negotiation {
+                ecosystem: Ecosystem::Npm,
                 encoding: RequestedEncoding::Gzip,
                 read_metadata: true,
-                rewrite_base: Some("http://proxy.test".to_owned()),
+                rewrite_base: Some("http://proxy.test/npm".to_owned()),
                 rewriting: true,
                 full_document: Some(npm::FULL_ACCEPT),
             }
         );
-        let unread = negotiated(None, Method::GET, "/lodash", UNREADABLE);
+        let unread = negotiated(None, Method::GET, "/npm/lodash", UNREADABLE);
         assert!(!unread.read_metadata && !unread.rewriting, "{unread:?}");
     }
 
@@ -4294,7 +4333,7 @@ mod tests {
         client: &[(header::HeaderName, &'static str)],
     ) -> HeaderMap {
         let proxy = Proxy::new(reqwest::Client::new()).with_policy(yaml.map(policy));
-        let (ecosystem, target) = crate::route::classify(path);
+        let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("proxy.test"));
         for (name, value) in client {
@@ -4308,8 +4347,8 @@ mod tests {
     #[test]
     fn what_each_request_sends_upstream() {
         const COOLDOWN: Option<&str> = Some("version: 1\ncooldown_days: 7\n");
-        const PACKUMENT: &str = "/lodash";
-        const TARBALL: &str = "/lodash/-/lodash-4.17.21.tgz";
+        const PACKUMENT: &str = "/npm/lodash";
+        const TARBALL: &str = "/npm/lodash/-/lodash-4.17.21.tgz";
         type Case<'a> = (
             &'a str,
             Option<&'a str>,
@@ -4515,10 +4554,11 @@ mod tests {
     #[test]
     fn a_tag_is_turned_back_only_at_the_address_that_issued_it() {
         let proxy = Proxy::new(reqwest::Client::new());
-        let (ecosystem, target) = crate::route::classify("/lodash");
+        let (ecosystem, target) = crate::route::classify("/npm/lodash").expect("a routed path");
         for (issued_at, expected) in [
-            ("http://proxy.test", Some("W/\"abc123\"")),
-            ("http://some-old-address:9999", None),
+            ("http://proxy.test/npm", Some("W/\"abc123\"")),
+            ("http://proxy.test", None),
+            ("http://some-old-address:9999/npm", None),
         ] {
             let mut headers = client_headers("gzip");
             let issued = mark_etag("W/\"abc123\"", issued_at);
@@ -4527,7 +4567,7 @@ mod tests {
                 HeaderValue::from_str(&issued).unwrap(),
             );
             let negotiation = negotiate(&proxy, ecosystem, &target, &Method::GET, &headers);
-            let sent = upstream_headers(&headers, &negotiation, "/lodash");
+            let sent = upstream_headers(&headers, &negotiation, "/npm/lodash");
             assert_eq!(
                 sent.get(header::IF_NONE_MATCH).map(|v| v.to_str().unwrap()),
                 expected,
@@ -4543,12 +4583,12 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("npm.corp.example"));
         headers.insert("x-forwarded-proto", HeaderValue::from_static("https"));
-        let (ecosystem, target) = crate::route::classify("/lodash");
+        let (ecosystem, target) = crate::route::classify("/npm/lodash").expect("a routed path");
         for (configured, expected) in [
-            (None, "https://npm.corp.example"),
+            (None, "https://npm.corp.example/npm"),
             (
                 Some("https://registry.example/"),
-                "https://registry.example",
+                "https://registry.example/npm",
             ),
         ] {
             let proxy =
@@ -4571,7 +4611,7 @@ mod tests {
             kept[1].clone(),
             (header::USER_AGENT, "npm/11"),
         ];
-        let sent = sent_upstream(None, "/lodash/-/lodash-4.17.21.tgz", &client);
+        let sent = sent_upstream(None, "/npm/lodash/-/lodash-4.17.21.tgz", &client);
         let mut expected = HeaderMap::new();
         for (name, value) in kept {
             expected.insert(name, HeaderValue::from_static(value));
@@ -4592,10 +4632,10 @@ mod tests {
     #[tokio::test]
     async fn an_artifact_request_logs_the_answer_for_the_file_it_names() {
         let proxy = offline(None, Some(NO_POLICY));
-        resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, PYPI_YANKED).await;
+        resolve(&proxy, "/pypi/simple/x/", pypi::SIMPLE_JSON, PYPI_YANKED).await;
         for (file, expected) in [
             (
-                "/packages/ef/01/25/x-3.0-py3-none-any.whl",
+                "/pypi/packages/ef/01/25/x-3.0-py3-none-any.whl",
                 "has_install_scripts=false",
             ),
             (YANKED_SDIST, "has_install_scripts=true"),
@@ -4618,7 +4658,7 @@ mod tests {
         async fn said(yaml: &str) -> String {
             let proxy = offline(None, Some(yaml));
             let (guard, buf) = capture(tracing::Level::WARN);
-            resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, INDEX).await;
+            resolve(&proxy, "/pypi/simple/x/", pypi::SIMPLE_JSON, INDEX).await;
             drop(guard);
             text(&buf)
         }
@@ -4682,8 +4722,14 @@ mod tests {
                 r#"{{"name":"x","files":[{{"filename":"x-1.0.tar.gz","url":"{host}/x-1.0.tar.gz","hashes":{{"sha256":"{}"}}}}]}}"#,
                 "a".repeat(64)
             );
-            resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, index.as_bytes()).await;
-            let step = pinned(&proxy, "/packages/x-1.0.tar.gz").await;
+            resolve(
+                &proxy,
+                "/pypi/simple/x/",
+                pypi::SIMPLE_JSON,
+                index.as_bytes(),
+            )
+            .await;
+            let step = pinned(&proxy, "/pypi/packages/x-1.0.tar.gz").await;
             assert_eq!(matches!(step, ArtifactStep::Answer(_)), refused, "{label}");
         }
     }
@@ -4694,7 +4740,7 @@ mod tests {
         let proxy = offline(None, Some(NO_POLICY));
         hold(&proxy, "rimraf-1.0.0.abbrev.json");
         let (_guard, buf) = capture(tracing::Level::INFO);
-        let step = pinned(&proxy, "/rimraf/-/rimraf-1.0.0.tgz").await;
+        let step = pinned(&proxy, "/npm/rimraf/-/rimraf-1.0.0.tgz").await;
         drop(_guard);
         assert!(fetched(&step), "a deprecated version is served");
         let log = text(&buf);
@@ -4729,7 +4775,7 @@ mod tests {
         let proxy = Proxy::new(reqwest::Client::new()).with_max_concurrent_documents(0);
         let slot = tokio::time::timeout(
             std::time::Duration::from_secs(1),
-            metadata_slot(&proxy, "/lodash"),
+            metadata_slot(&proxy, "/npm/lodash"),
         );
         assert!(slot.await.is_ok(), "no slot was ever free");
     }
@@ -4739,18 +4785,18 @@ mod tests {
     async fn only_a_wait_for_a_metadata_slot_is_logged() {
         let proxy = Proxy::new(reqwest::Client::new()).with_max_concurrent_documents(1);
         let (_guard, buf) = capture(tracing::Level::DEBUG);
-        let held = metadata_slot(&proxy, "/first").await;
+        let held = metadata_slot(&proxy, "/npm/first").await;
         assert_eq!(text(&buf), "", "nothing was waited for");
 
         let release = tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
             drop(held);
         });
-        let _second = metadata_slot(&proxy, "/second").await;
+        let _second = metadata_slot(&proxy, "/npm/second").await;
         release.await.unwrap();
         let log = text(&buf);
         assert!(log.contains("waited for a metadata slot"), "{log}");
-        assert!(log.contains("/second"), "{log}");
+        assert!(log.contains("/npm/second"), "{log}");
     }
 
     /// `make smoke-clients` greps for `UNINSPECTED`, so the line is part of the interface.
@@ -4758,8 +4804,8 @@ mod tests {
     fn a_document_the_proxy_cannot_read_is_logged_as_uninspected() {
         let proxy = offline(None, None);
         let report = |encoding: &str| {
-            let negotiation = negotiated(None, Method::GET, "/lodash", encoding);
-            let (_, target) = crate::route::classify("/lodash");
+            let negotiation = negotiated(None, Method::GET, "/npm/lodash", encoding);
+            let (_, target) = crate::route::classify("/npm/lodash").expect("a routed path");
             let mut headers = HeaderMap::new();
             headers.insert(
                 header::ACCEPT_ENCODING,
@@ -4772,7 +4818,7 @@ mod tests {
                     &Method::GET,
                     &negotiation,
                     &headers,
-                    "/lodash",
+                    "/npm/lodash",
                 )
             })
         };
@@ -4785,7 +4831,7 @@ mod tests {
 
     /// Whether the packument the client receives offers `version`.
     async fn offered(base: &str, name: &str, version: &str) -> bool {
-        let response = reqwest::get(format!("{base}/{name}")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/{name}")).await.unwrap();
         assert_eq!(
             response.status(),
             200,
@@ -4798,7 +4844,7 @@ mod tests {
     const NO_POLICY: &str = "version: 1\ncooldown_days: 0\n";
     const DENY_LODASH: &str = "version: 1\ncooldown_days: 0\n\
                                denials:\n  - purl: pkg:npm/lodash@4.17.21\n    reason: test\n";
-    const LODASH_TARBALL: &str = "/lodash/-/lodash-4.17.21.tgz";
+    const LODASH_TARBALL: &str = "/npm/lodash/-/lodash-4.17.21.tgz";
 
     /// A proxy with no upstream to reach. The origin check is off, so a 403 can only be the
     /// policy's.
@@ -4847,7 +4893,7 @@ mod tests {
                 claimed_version,
                 filename,
             },
-        ) = crate::route::classify(path)
+        ) = crate::route::classify(path).expect("a routed path")
         else {
             panic!("{path} is not an artifact");
         };
@@ -4894,7 +4940,7 @@ mod tests {
 
     /// The proxy's handling of a metadata GET of `path` that upstream answers with `body`.
     async fn resolve(proxy: &Proxy, path: &str, content_type: &str, body: &[u8]) -> DocumentStep {
-        let (ecosystem, target) = crate::route::classify(path);
+        let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
         let document = ecosystem::of(ecosystem)
             .document(Some(content_type))
             .expect("a metadata document");
@@ -4912,7 +4958,7 @@ mod tests {
         };
         resolve(
             proxy,
-            &format!("/{name}"),
+            &format!("/npm/{name}"),
             content_type,
             &fixture(packument),
         )
@@ -5034,7 +5080,7 @@ mod tests {
             let label = check.as_str();
             let proxy = offline(intel, Some(&yaml));
             hold(&proxy, packument);
-            let tarball = format!("/{name}/-/{name}-{version}.tgz");
+            let tarball = format!("/npm/{name}/-/{name}-{version}.tgz");
             let (status, body) = refused(pinned(&proxy, &tarball).await).await;
             assert_eq!(status, 403, "{label}");
             assert!(body.contains(label), "{label}: {body}");
@@ -5111,13 +5157,13 @@ mod tests {
     #[tokio::test]
     async fn a_client_is_told_its_packument_was_filtered() {
         let (base, _) = proxy_for(LODASH, None, Some(DENY_LODASH)).await;
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), 200);
         assert_eq!(response.headers()[FILTERED_VERSIONS], "1");
         assert_eq!(response.headers()[FILTERED_CHECKS], "denials");
 
         let (base, _) = proxy_for(LODASH, None, Some(NO_POLICY)).await;
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert!(
             !response.headers().contains_key(FILTERED_VERSIONS),
             "nothing was removed from this one"
@@ -5155,7 +5201,7 @@ mod tests {
     async fn a_packument_the_proxy_cannot_decide_on_is_answered_with_a_503() {
         let down = Arc::new(crate::intel::store::testing::FixedIntel(Err(())));
         let (base, _) = proxy_with_intel(down, true).await;
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), 503);
     }
 
@@ -5305,7 +5351,7 @@ mod tests {
             body: Some(body), ..
         } = resolve(
             &unservable,
-            "/widget",
+            "/npm/widget",
             npm::ABBREVIATED_ACCEPT,
             OFFSITE_PACKUMENT.as_bytes(),
         )
@@ -5315,7 +5361,8 @@ mod tests {
         };
         let served: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(served["versions"].as_object().unwrap().is_empty());
-        let (status, _) = refused(pinned(&unservable, "/widget/-/widget-1.0.0.tgz").await).await;
+        let (status, _) =
+            refused(pinned(&unservable, "/npm/widget/-/widget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
         let undigested = offline(None, Some(ALLOW_ALL)).with_mode(Mode::Observe);
@@ -5325,7 +5372,8 @@ mod tests {
                 "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}}"#,
             crate::record::DocumentDetail::Abbreviated,
         );
-        let (status, _) = refused(pinned(&undigested, "/widget/-/widget-1.0.0.tgz").await).await;
+        let (status, _) =
+            refused(pinned(&undigested, "/npm/widget/-/widget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
         let tarball =
@@ -5388,7 +5436,7 @@ mod tests {
             &two_versions(),
             Some(&policy),
             None,
-            "/pkg",
+            "/npm/pkg",
             Some((&log, Some("ci"))),
             Mode::Enforce,
         );
@@ -5415,7 +5463,7 @@ mod tests {
                     &two_versions(),
                     Some(&policy),
                     None,
-                    "/pkg",
+                    "/npm/pkg",
                     None,
                     Mode::Enforce,
                 );
@@ -5449,7 +5497,7 @@ mod tests {
             body: Some(body), ..
         } = resolve(
             &refusing,
-            "/widget",
+            "/npm/widget",
             npm::ABBREVIATED_ACCEPT,
             OFFSITE_PACKUMENT.as_bytes(),
         )
@@ -5467,7 +5515,7 @@ mod tests {
         let forwarding = offline(None, None);
         let forwarded = resolve(
             &forwarding,
-            "/widget",
+            "/npm/widget",
             npm::ABBREVIATED_ACCEPT,
             OFFSITE_PACKUMENT.as_bytes(),
         )
@@ -5496,7 +5544,7 @@ mod tests {
             ("npm/9.9.4 node/v16.20.1 linux x64", 403),
             ("yarn/1.22.22 npm/? node/v16.20.1 linux x64", 403),
         ] {
-            let step = pinned_by(&proxy, "/widget/-/widget-1.0.0.tgz", agent).await;
+            let step = pinned_by(&proxy, "/npm/widget/-/widget-1.0.0.tgz", agent).await;
             let (status, body) = refused(step).await;
             assert_eq!(status.as_u16(), expected, "{agent}");
             assert!(body.contains("elsewhere.example"), "{agent}: {body}");
@@ -5520,14 +5568,14 @@ mod tests {
         let proxy = offline(None, None);
         let junk = resolve(
             &proxy,
-            "/lodash",
+            "/npm/lodash",
             npm::ABBREVIATED_ACCEPT,
             b"<html>maintenance</html>",
         )
         .await;
         assert!(matches!(junk, DocumentStep::Forward { body: None, .. }));
 
-        let (ecosystem, target) = crate::route::classify("/lodash");
+        let (ecosystem, target) = crate::route::classify("/npm/lodash").expect("a routed path");
         let negotiation = negotiate(
             &proxy,
             ecosystem,
@@ -5541,7 +5589,7 @@ mod tests {
             &Bytes::from_static(b"\x1b[brotli bytes]"),
             Some("br"),
             &negotiation,
-            "/lodash",
+            "/npm/lodash",
             None,
         )
         .await;
@@ -5622,8 +5670,8 @@ mod tests {
             let proxy = offline(None, Some(&yaml));
             hold(&proxy, "@babel_traverse-8.0.5.abbrev.json");
             for path in [
-                "/@babel%2ftraverse/-/traverse-8.0.5.tgz",
-                "/@babel/traverse/-/traverse-8.0.5.tgz",
+                "/npm/@babel%2ftraverse/-/traverse-8.0.5.tgz",
+                "/npm/@babel/traverse/-/traverse-8.0.5.tgz",
             ] {
                 let (status, _) = refused(pinned(&proxy, path).await).await;
                 assert_eq!(status, 403, "{spelling} did not reach {path}");
@@ -5663,7 +5711,7 @@ mod tests {
             .with_policy(Some(policy("version: 1\ncooldown_days: 36500\n")));
         let base = serve(proxy.router()).await;
 
-        let tarball = "/lodash/-/lodash-4.17.21.tgz";
+        let tarball = "/npm/lodash/-/lodash-4.17.21.tgz";
         assert_refused_pinned(&base, &seen, tarball, "cooldown_days").await;
         assert!(!offered(&base, "lodash", "4.17.21").await);
     }
@@ -5749,9 +5797,10 @@ mod tests {
     #[tokio::test]
     async fn a_file_in_an_ecosystem_no_stream_covers_is_a_503() {
         let proxy = offline(Some(malware_everywhere()), Some(NO_POLICY));
-        let index = resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, PYPI_INDEX).await;
+        let index = resolve(&proxy, "/pypi/simple/x/", pypi::SIMPLE_JSON, PYPI_INDEX).await;
         assert!(matches!(index, DocumentStep::Forward { body: Some(_), .. }));
-        let (status, body) = refused(pinned(&proxy, "/packages/ef/01/23/x-1.0.tar.gz").await).await;
+        let (status, body) =
+            refused(pinned(&proxy, "/pypi/packages/ef/01/23/x-1.0.tar.gz").await).await;
         assert_eq!(status, 503);
         assert!(
             body.contains("no advisory stream for pypi"),
@@ -5773,11 +5822,11 @@ mod tests {
         {"filename":"x-4.0.tar.gz","url":"https://files.pythonhosted.org/packages/ef/01/27/x-4.0.tar.gz","hashes":{"sha256":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"},"yanked":true}
     ]}"#;
 
-    const YANKED_FILE: &str = "/packages/ef/01/23/x-1.0.tar.gz";
+    const YANKED_FILE: &str = "/pypi/packages/ef/01/23/x-1.0.tar.gz";
     /// 3.0's sdist, yanked, beside a wheel that is not.
-    const YANKED_SDIST: &str = "/packages/ef/01/26/x-3.0.tar.gz";
+    const YANKED_SDIST: &str = "/pypi/packages/ef/01/26/x-3.0.tar.gz";
     /// 4.0, yanked with `true` and no reason.
-    const YANKED_NO_REASON: &str = "/packages/ef/01/27/x-4.0.tar.gz";
+    const YANKED_NO_REASON: &str = "/pypi/packages/ef/01/27/x-4.0.tar.gz";
 
     /// A yanked version is removed from the index and refused on a pinned fetch, unless the
     /// policy allows yanked files.
@@ -5809,7 +5858,7 @@ mod tests {
             );
         }
         assert!(
-            fetched(&pinned(&refusing, "/packages/ef/01/25/x-3.0-py3-none-any.whl").await),
+            fetched(&pinned(&refusing, "/pypi/packages/ef/01/25/x-3.0-py3-none-any.whl").await),
             "the wheel beside the yanked sdist is served"
         );
 
@@ -5839,7 +5888,7 @@ mod tests {
     async fn served_filenames(proxy: &Proxy, index: &[u8]) -> Vec<String> {
         let DocumentStep::Forward {
             body: Some(body), ..
-        } = resolve(proxy, "/simple/x/", pypi::SIMPLE_JSON, index).await
+        } = resolve(proxy, "/pypi/simple/x/", pypi::SIMPLE_JSON, index).await
         else {
             panic!("the index is read and rewritten");
         };
@@ -6199,7 +6248,7 @@ mod tests {
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         for _ in 0..3 {
             assert!(matches!(
-                intel_for(&proxy, &key, "/lodash").await,
+                intel_for(&proxy, &key, "/npm/lodash").await,
                 Ok(Some(_))
             ));
         }
@@ -6310,7 +6359,7 @@ mod tests {
                 .router(),
         )
         .await;
-        let response = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         assert_eq!(response.status(), 502);
         assert!(
             response
@@ -6332,7 +6381,11 @@ mod tests {
         )
         .await;
 
-        for path in ["/lodash", "/lodash/-/lodash-4.17.21.tgz", "/-/ping"] {
+        for path in [
+            "/npm/lodash",
+            "/npm/lodash/-/lodash-4.17.21.tgz",
+            "/npm/-/ping",
+        ] {
             let status = reqwest::get(format!("{dead}{path}"))
                 .await
                 .unwrap()
@@ -6358,7 +6411,7 @@ mod tests {
                 .router(),
         )
         .await;
-        let refused = reqwest::get(format!("{live}/lodash/-/lodash-4.17.21.tgz"))
+        let refused = reqwest::get(format!("{live}/npm/lodash/-/lodash-4.17.21.tgz"))
             .await
             .unwrap();
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
@@ -6378,7 +6431,7 @@ mod tests {
         for status in [StatusCode::NOT_FOUND, StatusCode::SERVICE_UNAVAILABLE] {
             let (base, _) = proxy_serving(status, "application/json", None, b"{}".to_vec()).await;
             assert_eq!(
-                reqwest::get(format!("{base}/lodash"))
+                reqwest::get(format!("{base}/npm/lodash"))
                     .await
                     .unwrap()
                     .status(),
@@ -6424,16 +6477,16 @@ mod tests {
         )
         .await;
 
-        let ours = crate::http::mark_etag("W/\"abc123\"", &base);
+        let ours = crate::http::mark_etag("W/\"abc123\"", &format!("{base}/npm"));
         let response = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
+            .get(format!("{base}/npm/lodash"))
             .header(header::IF_NONE_MATCH, ours)
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), 304);
 
-        let response = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
+        let response = reqwest::get(format!("{base}/npm/lodash/-/lodash-4.17.21.tgz"))
             .await
             .unwrap();
         assert_eq!(
@@ -6496,7 +6549,7 @@ mod tests {
         )
         .await;
 
-        let first = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let first = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         let ours = first
             .headers()
             .get(header::ETAG)
@@ -6507,7 +6560,7 @@ mod tests {
         first.bytes().await.unwrap();
 
         let second = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
+            .get(format!("{base}/npm/lodash"))
             .header(header::IF_NONE_MATCH, ours)
             .send()
             .await
@@ -6529,7 +6582,7 @@ mod tests {
         .await;
 
         let response = reqwest::Client::new()
-            .get(format!("{base}/-/v1/search?text=lodash"))
+            .get(format!("{base}/npm/-/v1/search?text=lodash"))
             .header(header::ACCEPT_ENCODING, "gzip, deflate, br")
             .send()
             .await
@@ -6560,7 +6613,7 @@ mod tests {
         .await;
 
         let response = reqwest::Client::new()
-            .put(format!("{base}/lodash"))
+            .put(format!("{base}/npm/lodash"))
             .header(header::ACCEPT_ENCODING, "gzip, deflate, br")
             .body("{}")
             .send()
@@ -6672,13 +6725,13 @@ mod tests {
     #[tokio::test]
     async fn a_request_without_a_token_is_401_and_one_with_a_token_is_served() {
         let (base, issued) = token_proxy(held(), Mode::Enforce, None).await;
-        for path in ["/widget", "/widget/-/widget-1.0.0.tgz"] {
+        for path in ["/npm/widget", "/npm/widget/-/widget-1.0.0.tgz"] {
             let refused = reqwest::get(format!("{base}{path}")).await.unwrap();
             assert_eq!(refused.status(), 401, "{path}");
             assert_eq!(refused.headers()[header::WWW_AUTHENTICATE], gate::CHALLENGE);
         }
         let wrong = get_with(
-            &format!("{base}/widget"),
+            &format!("{base}/npm/widget"),
             &[(header::AUTHORIZATION, "Bearer byrle_wrong".into())],
         )
         .await;
@@ -6691,7 +6744,7 @@ mod tests {
             (header::AUTHORIZATION, format!("Basic {basic}")),
             (TOKEN_HEADER, issued.clone()),
         ] {
-            for path in ["/widget", "/widget/-/widget-1.0.0.tgz"] {
+            for path in ["/npm/widget", "/npm/widget/-/widget-1.0.0.tgz"] {
                 let served = get_with(&format!("{base}{path}"), std::slice::from_ref(&sent)).await;
                 assert_eq!(served.status(), 200, "{path} {sent:?}");
             }
@@ -6711,11 +6764,13 @@ mod tests {
         let (dir, path, log) = audit_log("audit-account");
         let (base, issued) = token_proxy(held(), Mode::Enforce, Some(log.clone())).await;
         let bearer = [(header::AUTHORIZATION, format!("Bearer {issued}"))];
-        let served = get_with(&format!("{base}/widget/-/widget-1.0.0.tgz"), &bearer).await;
+        let served = get_with(&format!("{base}/npm/widget/-/widget-1.0.0.tgz"), &bearer).await;
         assert_eq!(served.status(), 200);
         served.bytes().await.unwrap();
         assert_eq!(
-            get_with(&format!("{base}/gadget"), &bearer).await.status(),
+            get_with(&format!("{base}/npm/gadget"), &bearer)
+                .await
+                .status(),
             404
         );
 
@@ -6727,7 +6782,7 @@ mod tests {
         );
 
         let proxy = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log));
-        let (status, _) = refused(pinned(&proxy, "/gadget/-/gadget-1.0.0.tgz").await).await;
+        let (status, _) = refused(pinned(&proxy, "/npm/gadget/-/gadget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY);
         assert_eq!(audited(&path)[2].account, None);
         let _ = std::fs::remove_dir_all(&dir);
@@ -6737,7 +6792,7 @@ mod tests {
     #[tokio::test]
     async fn observe_mode_still_answers_401_without_a_token() {
         let (base, _) = token_proxy(held(), Mode::Observe, None).await;
-        let refused = reqwest::get(format!("{base}/widget")).await.unwrap();
+        let refused = reqwest::get(format!("{base}/npm/widget")).await.unwrap();
         assert_eq!(refused.status(), 401);
     }
 
@@ -6747,7 +6802,7 @@ mod tests {
         let (base, _) =
             token_proxy(Arc::new(crate::account::testing::Down), Mode::Enforce, None).await;
         let response = get_with(
-            &format!("{base}/widget"),
+            &format!("{base}/npm/widget"),
             &[(TOKEN_HEADER, "byrle_x".into())],
         )
         .await;
@@ -6764,9 +6819,9 @@ mod tests {
         let (dir, path, log) = audit_log("audit-gate");
         let (base, _) = token_proxy(held(), Mode::Enforce, Some(log.clone())).await;
         for target in [
-            "/widget",
-            "/widget/-/widget-1.0.0.tgz",
-            "/-/v1/search?text=w",
+            "/npm/widget",
+            "/npm/widget/-/widget-1.0.0.tgz",
+            "/npm/-/v1/search?text=w",
         ] {
             assert_eq!(
                 reqwest::get(format!("{base}{target}"))
@@ -6783,7 +6838,7 @@ mod tests {
         )
         .await;
         let tokened = [(TOKEN_HEADER, "byrle_x".to_owned())];
-        let response = get_with(&format!("{down}/widget/-/widget-1.0.0.tgz"), &tokened).await;
+        let response = get_with(&format!("{down}/npm/widget/-/widget-1.0.0.tgz"), &tokened).await;
         assert_eq!(response.status(), 503);
 
         let lines = audited(&path);
@@ -6861,7 +6916,7 @@ mod tests {
         })
         .await;
 
-        let body = reqwest::get(format!("{base}/registry/widget"))
+        let body = reqwest::get(format!("{base}/registry/npm/widget"))
             .await
             .unwrap()
             .text()
@@ -6874,7 +6929,7 @@ mod tests {
             .to_owned();
         assert_eq!(
             written,
-            format!("{base}/registry/widget/-/widget-1.0.0.tgz")
+            format!("{base}/registry/npm/widget/-/widget-1.0.0.tgz")
         );
 
         let artifact = reqwest::get(&written).await.unwrap();
@@ -6886,7 +6941,7 @@ mod tests {
             .unwrap();
         assert_eq!(health.status(), 200);
 
-        for outside in ["/widget", "/registryx/widget", HEALTH_PATH] {
+        for outside in ["/npm/widget", "/registryx/widget", HEALTH_PATH] {
             let response = reqwest::get(format!("{base}{outside}")).await.unwrap();
             assert_eq!(response.status(), 404, "{outside}");
             let body = response.text().await.unwrap();
@@ -6904,9 +6959,9 @@ mod tests {
         let tarball: Vec<u8> = (0..50_000u32).map(|i| (i % 251) as u8).collect();
         let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
 
-        reqwest::get(format!("{base}/widget")).await.unwrap();
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
 
-        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
@@ -6949,8 +7004,8 @@ mod tests {
         let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
         assert_eq!(artifacts_verified(&base).await, 0);
 
-        reqwest::get(format!("{base}/widget")).await.unwrap();
-        reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
+        reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap()
             .bytes()
@@ -6958,7 +7013,7 @@ mod tests {
             .unwrap();
         assert_eq!(artifacts_verified(&base).await, 1);
 
-        let again = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        let again = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
         assert_eq!(again.bytes().await.unwrap().as_ref(), tarball.as_slice());
@@ -6977,8 +7032,8 @@ mod tests {
         tampered[25_000] ^= 0xFF;
 
         let base = registry_with(&sri_of(&honest), tampered).await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
-        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
+        assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
 
         assert_eq!(artifacts_verified(&base).await, 0);
     }
@@ -6991,9 +7046,9 @@ mod tests {
         tampered[25_000] ^= 0xFF;
 
         let base = registry_with(&sri_of(&honest), tampered).await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
 
-        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+        assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
     }
 
     /// A tarball request with no packument behind it still gets verified, because the proxy fetches
@@ -7005,7 +7060,7 @@ mod tests {
         tampered[500] ^= 0xFF;
         let base = registry_with(&sri_of(&honest), tampered).await;
 
-        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+        assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
     }
 
     /// A failed digest must not deliver a whole artifact.
@@ -7047,7 +7102,7 @@ mod tests {
         let (guard, log) = capture(tracing::Level::INFO);
 
         let response = reqwest::Client::new()
-            .get(format!("{base}/-/v1/search?text=x"))
+            .get(format!("{base}/npm/-/v1/search?text=x"))
             .header(header::USER_AGENT, "npm/10.0.0")
             .send()
             .await
@@ -7069,7 +7124,7 @@ mod tests {
             proxied[0]
         );
         assert!(
-            proxied[0].contains("url.path=/-/v1/search url.query=\"text=x\""),
+            proxied[0].contains("url.path=/npm/-/v1/search url.query=\"text=x\""),
             "{}",
             proxied[0]
         );
@@ -7091,7 +7146,7 @@ mod tests {
             let base = base.clone();
             async move {
                 let (guard, log) = capture(level);
-                reqwest::get(format!("{base}/simple/")).await.unwrap();
+                reqwest::get(format!("{base}/pypi/simple/")).await.unwrap();
                 drop(guard);
                 text(&log).lines().filter(|l| l.contains("proxied")).count()
             }
@@ -7118,7 +7173,7 @@ mod tests {
         )
         .await;
 
-        let response = reqwest::get(format!("{base}/widget")).await.unwrap();
+        let response = reqwest::get(format!("{base}/npm/widget")).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let body = response.text().await.unwrap();
@@ -7134,10 +7189,16 @@ mod tests {
             r#"{{"name":"x","files":[{{"filename":"x-1.0.tar.gz","url":"https://files.pythonhosted.org/x-1.0.tar.gz","hashes":{{"sha256":"{}"}}}}]}}"#,
             "a".repeat(64)
         );
-        resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, index.as_bytes()).await;
+        resolve(
+            &proxy,
+            "/pypi/simple/x/",
+            pypi::SIMPLE_JSON,
+            index.as_bytes(),
+        )
+        .await;
         let (guard, log) = capture(tracing::Level::WARN);
 
-        let step = pinned(&proxy, "/packages/x-1.0.zip").await;
+        let step = pinned(&proxy, "/pypi/packages/x-1.0.zip").await;
         drop(guard);
 
         assert!(fetched(&step));
@@ -7165,7 +7226,7 @@ mod tests {
 
         let response = tokio::time::timeout(
             std::time::Duration::from_secs(5),
-            reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz")),
+            reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz")),
         )
         .await
         .expect("the read timeout ends it well inside 5 s")
@@ -7194,7 +7255,7 @@ mod tests {
         )
         .await;
 
-        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
@@ -7207,9 +7268,9 @@ mod tests {
     #[tokio::test]
     async fn an_empty_tarball_is_verified_rather_than_hanging() {
         let base = registry_with(&sri_of(b""), Vec::new()).await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
 
-        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
         assert_eq!(response.status(), 200);
@@ -7221,9 +7282,9 @@ mod tests {
     async fn a_version_with_only_a_sha1_digest_is_refused() {
         let tarball = vec![3u8; 500];
         let base = registry_with("sha1-2KoFEwbCVDvbCxC5dXgvFkSlpwc=", tarball.clone()).await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
 
-        let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -7238,9 +7299,9 @@ mod tests {
         let tarball = vec![1u8; 100];
         let base = registry_with(&sri_of(&tarball), tarball.clone()).await;
 
-        reqwest::get(format!("{base}/widget")).await.unwrap();
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
         for _ in 0..3 {
-            let response = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            let response = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
                 .await
                 .unwrap();
             assert_eq!(response.bytes().await.unwrap().len(), 100);
@@ -7289,7 +7350,7 @@ mod tests {
         )
         .await;
 
-        let first = reqwest::get(format!("{base}/lodash")).await.unwrap();
+        let first = reqwest::get(format!("{base}/npm/lodash")).await.unwrap();
         let tag = first
             .headers()
             .get(header::ETAG)
@@ -7304,7 +7365,7 @@ mod tests {
         first.bytes().await.unwrap();
 
         let second = reqwest::Client::new()
-            .get(format!("{base}/lodash"))
+            .get(format!("{base}/npm/lodash"))
             .header(header::IF_NONE_MATCH, &tag)
             .send()
             .await
@@ -7348,7 +7409,7 @@ mod tests {
 
         let mut requests = Vec::new();
         for _ in 0..8 {
-            let url = format!("{base}/lodash");
+            let url = format!("{base}/npm/lodash");
             requests.push(tokio::spawn(async move {
                 let response = reqwest::get(url).await.expect("request should complete");
                 assert_eq!(response.status(), 200);
@@ -7359,7 +7420,7 @@ mod tests {
         for request in requests {
             let body = request.await.expect("task should not panic");
             assert!(
-                body.contains("/lodash/-/lodash-4.17.21.tgz"),
+                body.contains("/npm/lodash/-/lodash-4.17.21.tgz"),
                 "every queued request still gets a rewritten body"
             );
         }
@@ -7377,11 +7438,26 @@ mod tests {
         )
         .await;
 
-        for path in ["/-/v1/search?text=lodash", "/-/whoami", "/-/byrle/other"] {
+        for path in ["/npm/-/v1/search?text=lodash", "/npm/-/whoami"] {
             let response = reqwest::get(format!("{base}{path}")).await.unwrap();
             assert_eq!(response.status(), 200, "{path}");
         }
-        assert_eq!(seen.lock().unwrap().paths.len(), 3);
+        assert_eq!(seen.lock().unwrap().paths.len(), 2);
+        let unrouted = reqwest::get(format!("{base}/-/byrle/other")).await.unwrap();
+        assert_eq!(unrouted.status(), 404, "under no ecosystem's prefix");
+        assert!(
+            unrouted
+                .text()
+                .await
+                .unwrap()
+                .contains("/npm/, /pypi/, /cargo/"),
+            "the answer names each prefix"
+        );
+        assert_eq!(
+            seen.lock().unwrap().paths.len(),
+            2,
+            "nothing asked upstream"
+        );
     }
 
     /// An upstream set after the origin policy keeps the origins the operator added, and
@@ -7464,39 +7540,53 @@ mod tests {
 
         fn upstream_of(path: &str) -> String {
             let proxy = proxy();
-            upstream_url(&proxy, crate::route::classify(path).0, path, None)
+            upstream_url(
+                &proxy,
+                crate::route::classify(path).expect("a routed path").0,
+                path,
+                None,
+            )
         }
 
-        /// npm at the root, PyPI under the two prefixes it reserves.
+        /// npm under `/npm/`, PyPI under `/pypi/`.
         #[test]
         fn the_path_decides_which_registry_answers() {
             for (path, ecosystem) in [
-                ("/lodash", Ecosystem::Npm),
-                ("/@babel%2fcore", Ecosystem::Npm),
-                ("/lodash/-/lodash-4.17.21.tgz", Ecosystem::Npm),
-                ("/-/v1/search?text=lodash", Ecosystem::Npm),
-                ("/simple", Ecosystem::Npm),
-                ("/packages", Ecosystem::Npm),
-                ("/simple/", Ecosystem::PyPI),
-                ("/simple/requests/", Ecosystem::PyPI),
-                ("/packages/a/b/c/requests-2.32.3.tar.gz", Ecosystem::PyPI),
-                ("/packages/nonsense", Ecosystem::PyPI),
+                ("/npm/lodash", Ecosystem::Npm),
+                ("/npm/@babel%2fcore", Ecosystem::Npm),
+                ("/npm/lodash/-/lodash-4.17.21.tgz", Ecosystem::Npm),
+                ("/npm/-/v1/search?text=lodash", Ecosystem::Npm),
+                ("/npm/simple", Ecosystem::Npm),
+                ("/pypi/simple/", Ecosystem::PyPI),
+                ("/pypi/simple/requests/", Ecosystem::PyPI),
+                (
+                    "/pypi/packages/a/b/c/requests-2.32.3.tar.gz",
+                    Ecosystem::PyPI,
+                ),
+                ("/pypi/packages/nonsense", Ecosystem::PyPI),
             ] {
-                assert_eq!(crate::route::classify(path).0, ecosystem, "{path}");
+                assert_eq!(
+                    crate::route::classify(path).expect("a routed path").0,
+                    ecosystem,
+                    "{path}"
+                );
             }
         }
 
-        /// npm's own paths are untouched: the configured registry with the client's path
-        /// appended, which is what every Stage 1 and Stage 2 test measures.
+        /// npm's paths lose `/npm` and nothing else: the configured registry with the rest
+        /// of the client's path appended.
         #[test]
         fn an_npm_request_goes_where_it_always_did() {
-            assert_eq!(upstream_of("/lodash"), "https://registry.npmjs.org/lodash");
             assert_eq!(
-                upstream_of("/lodash/-/lodash-4.17.21.tgz"),
+                upstream_of("/npm/lodash"),
+                "https://registry.npmjs.org/lodash"
+            );
+            assert_eq!(
+                upstream_of("/npm/lodash/-/lodash-4.17.21.tgz"),
                 "https://registry.npmjs.org/lodash/-/lodash-4.17.21.tgz"
             );
             assert_eq!(
-                upstream_of("/-/v1/search?text=lodash"),
+                upstream_of("/npm/-/v1/search?text=lodash"),
                 "https://registry.npmjs.org/-/v1/search?text=lodash"
             );
         }
@@ -7506,14 +7596,14 @@ mod tests {
         #[test]
         fn the_index_prefix_is_not_sent_twice() {
             assert_eq!(
-                upstream_of("/simple/requests/"),
+                upstream_of("/pypi/simple/requests/"),
                 "https://pypi.org/simple/requests/"
             );
-            assert_eq!(upstream_of("/simple/"), "https://pypi.org/simple/");
+            assert_eq!(upstream_of("/pypi/simple/"), "https://pypi.org/simple/");
             let proxy =
                 proxy().with_upstream(Ecosystem::PyPI, "https://mirror.example/pypi/simple");
             assert_eq!(
-                upstream_url(&proxy, Ecosystem::PyPI, "/simple/requests/", None),
+                upstream_url(&proxy, Ecosystem::PyPI, "/pypi/simple/requests/", None),
                 "https://mirror.example/pypi/simple/requests/"
             );
         }
@@ -7524,11 +7614,11 @@ mod tests {
         fn a_file_goes_to_the_files_host_with_its_hash_path_kept() {
             let path = "/packages/f9/9b/335f/requests-2.32.3-py3-none-any.whl";
             assert_eq!(
-                upstream_of(path),
+                upstream_of(&format!("/pypi{path}")),
                 format!("https://files.pythonhosted.org{path}")
             );
             assert_eq!(
-                upstream_of("/packages/nonsense"),
+                upstream_of("/pypi/packages/nonsense"),
                 "https://files.pythonhosted.org/packages/nonsense",
                 "a path under the prefix that names no file was still aimed here"
             );
@@ -7540,10 +7630,10 @@ mod tests {
         fn an_added_artifact_origin_wins() {
             let proxy = proxy();
             for path in [
-                "/lodash/-/lodash-4.17.21.tgz",
-                "/packages/a/b/c/requests-2.32.3.tar.gz",
+                "/npm/lodash/-/lodash-4.17.21.tgz",
+                "/pypi/packages/a/b/c/requests-2.32.3.tar.gz",
             ] {
-                let ecosystem = crate::route::classify(path).0;
+                let ecosystem = crate::route::classify(path).expect("a routed path").0;
                 assert_eq!(
                     upstream_url(&proxy, ecosystem, path, Some("https://cdn.example")),
                     format!("https://cdn.example{path}"),
@@ -7558,7 +7648,7 @@ mod tests {
             base: Option<&str>,
             rewriting: bool,
         ) -> Option<Uninspected> {
-            let target = crate::route::classify(path).1;
+            let target = crate::route::classify(path).expect("a routed path").1;
             uninspected(&target, &Method::GET, encoding, base, rewriting)
         }
 
@@ -7567,11 +7657,21 @@ mod tests {
         #[test]
         fn a_rewritten_packument_is_not_reported() {
             assert_eq!(
-                uninspected_for("/lodash", RequestedEncoding::Gzip, Some("http://p"), true),
+                uninspected_for(
+                    "/npm/lodash",
+                    RequestedEncoding::Gzip,
+                    Some("http://p"),
+                    true
+                ),
                 None
             );
             assert_eq!(
-                uninspected_for("/lodash", RequestedEncoding::Gzip, Some("http://p"), false),
+                uninspected_for(
+                    "/npm/lodash",
+                    RequestedEncoding::Gzip,
+                    Some("http://p"),
+                    false
+                ),
                 None,
                 "rewriting is off, which the operator asked for"
             );
@@ -7582,7 +7682,7 @@ mod tests {
         fn a_packument_that_cannot_be_rewritten_says_which_reason() {
             assert_eq!(
                 uninspected_for(
-                    "/lodash",
+                    "/npm/lodash",
                     RequestedEncoding::Unreadable,
                     Some("http://p"),
                     false
@@ -7590,12 +7690,12 @@ mod tests {
                 Some(Uninspected::Unreadable)
             );
             assert_eq!(
-                uninspected_for("/lodash", RequestedEncoding::Unreadable, None, false),
+                uninspected_for("/npm/lodash", RequestedEncoding::Unreadable, None, false),
                 Some(Uninspected::Unreadable),
                 "an unreadable body is reported before a missing base"
             );
             assert_eq!(
-                uninspected_for("/lodash", RequestedEncoding::Gzip, None, false),
+                uninspected_for("/npm/lodash", RequestedEncoding::Gzip, None, false),
                 Some(Uninspected::NoBase)
             );
         }
@@ -7606,7 +7706,7 @@ mod tests {
         fn a_simple_index_answers_the_same_reasons() {
             assert_eq!(
                 uninspected_for(
-                    "/simple/requests/",
+                    "/pypi/simple/requests/",
                     RequestedEncoding::Gzip,
                     Some("http://p"),
                     true
@@ -7615,7 +7715,7 @@ mod tests {
             );
             assert_eq!(
                 uninspected_for(
-                    "/simple/requests/",
+                    "/pypi/simple/requests/",
                     RequestedEncoding::Unreadable,
                     Some("http://p"),
                     false
@@ -7623,7 +7723,12 @@ mod tests {
                 Some(Uninspected::Unreadable)
             );
             assert_eq!(
-                uninspected_for("/simple/requests/", RequestedEncoding::Gzip, None, false),
+                uninspected_for(
+                    "/pypi/simple/requests/",
+                    RequestedEncoding::Gzip,
+                    None,
+                    false
+                ),
                 Some(Uninspected::NoBase)
             );
         }
@@ -7633,10 +7738,10 @@ mod tests {
         #[test]
         fn nothing_else_is_reported() {
             for path in [
-                "/lodash/-/lodash-4.17.21.tgz",
-                "/packages/a/b/c/requests-2.32.3.tar.gz",
-                "/-/v1/search",
-                "/simple/",
+                "/npm/lodash/-/lodash-4.17.21.tgz",
+                "/pypi/packages/a/b/c/requests-2.32.3.tar.gz",
+                "/npm/-/v1/search",
+                "/pypi/simple/",
             ] {
                 assert_eq!(
                     uninspected_for(path, RequestedEncoding::Gzip, None, false),
@@ -7644,7 +7749,9 @@ mod tests {
                     "{path}"
                 );
             }
-            let target = crate::route::classify("/lodash").1;
+            let target = crate::route::classify("/npm/lodash")
+                .expect("a routed path")
+                .1;
             assert_eq!(
                 uninspected(&target, &Method::HEAD, RequestedEncoding::Gzip, None, false),
                 None
@@ -7719,16 +7826,16 @@ mod tests {
         #[test]
         fn a_pep_658_probe_is_the_resolver_looking() {
             for (path, expected) in [
-                ("/packages/ab/cd/x-1.0-py3-none-any.whl.metadata", true),
-                ("/simple/", true),
-                ("/packages/nonsense", true),
-                ("/simple/requests/", false),
-                ("/packages/ab/cd/x-1.0-py3-none-any.whl", false),
-                ("/-/v1/search?text=lodash", false),
-                ("/lodash", false),
-                ("/lodash/-/lodash-4.17.21.tgz", false),
+                ("/pypi/packages/ab/cd/x-1.0-py3-none-any.whl.metadata", true),
+                ("/pypi/simple/", true),
+                ("/pypi/packages/nonsense", true),
+                ("/pypi/simple/requests/", false),
+                ("/pypi/packages/ab/cd/x-1.0-py3-none-any.whl", false),
+                ("/npm/-/v1/search?text=lodash", false),
+                ("/npm/lodash", false),
+                ("/npm/lodash/-/lodash-4.17.21.tgz", false),
             ] {
-                let (ecosystem, target) = crate::route::classify(path);
+                let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
                 assert_eq!(resolver_probe(ecosystem, &target), expected, "{path}");
             }
         }
@@ -7791,7 +7898,7 @@ mod tests {
     /// rather than hanging it.
     async fn tarball_request(base: &str) -> reqwest::Response {
         reqwest::Client::new()
-            .get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .timeout(std::time::Duration::from_secs(10))
             .send()
             .await
@@ -8056,7 +8163,7 @@ mod tests {
         };
         let said = |scripts: Scripts| {
             let (guard, buf) = capture(tracing::Level::INFO);
-            report_claim(record, &scripts, "/pkg/-/pkg-1.0.0.tgz");
+            report_claim(record, &scripts, "/npm/pkg/-/pkg-1.0.0.tgz");
             drop(guard);
             text(&buf)
         };
@@ -8185,7 +8292,7 @@ mod tests {
         }
     }
 
-    const WIDGET_2: &str = "/widget/-/widget-2.0.0.tgz";
+    const WIDGET_2: &str = "/npm/widget/-/widget-2.0.0.tgz";
 
     /// Each case `docs/engineering_decisions/provenance-check.md` refuses, on a pinned
     /// fetch, with the case named in the body.
@@ -8291,13 +8398,19 @@ mod tests {
     async fn dropped_provenance_is_decided_from_metadata_alone() {
         let packument = widget_versions(&["1.0.0"]);
         let proxy = offline(None, Some(PROVENANCE));
-        let document =
-            match resolve(&proxy, "/widget", npm::FULL_ACCEPT, packument.as_bytes()).await {
-                DocumentStep::Forward {
-                    body: Some(body), ..
-                } => serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-                _ => panic!("the document is read and filtered"),
-            };
+        let document = match resolve(
+            &proxy,
+            "/npm/widget",
+            npm::FULL_ACCEPT,
+            packument.as_bytes(),
+        )
+        .await
+        {
+            DocumentStep::Forward {
+                body: Some(body), ..
+            } => serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            _ => panic!("the document is read and filtered"),
+        };
         assert!(offers(&document, "1.0.0"));
         assert!(!offers(&document, "2.0.0"));
 
@@ -8421,7 +8534,7 @@ mod tests {
         .expect("parses")
     }
 
-    const X_WHEEL_2: &str = "/packages/aa/bb/x-2.0-py3-none-any.whl";
+    const X_WHEEL_2: &str = "/pypi/packages/aa/bb/x-2.0-py3-none-any.whl";
 
     /// A wheel is checked against its own attestation, and against the previous version as
     /// a whole, whose identity is read from its sdist.
@@ -8541,7 +8654,7 @@ mod tests {
                 .router(),
         )
         .await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
         (base, tarball)
     }
 
@@ -8553,7 +8666,7 @@ mod tests {
         let (guard, log) = capture(tracing::Level::INFO);
 
         let fresh = client
-            .get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .send()
             .await
             .unwrap();
@@ -8562,7 +8675,7 @@ mod tests {
         assert_eq!(artifacts_verified(&base).await, 1);
 
         let revalidated = client
-            .get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+            .get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .header(header::IF_NONE_MATCH, "\"t1\"")
             .send()
             .await
@@ -8572,7 +8685,7 @@ mod tests {
         assert_eq!(revalidations(&base).await, 1);
 
         let gone = client
-            .get(format!("{base}/widget/-/widget-2.0.0.tgz"))
+            .get(format!("{base}/npm/widget/-/widget-2.0.0.tgz"))
             .send()
             .await
             .unwrap();
@@ -8608,7 +8721,7 @@ mod tests {
             crate::record::DocumentDetail::Abbreviated,
         );
 
-        let (status, body) = refused(pinned(&proxy, "/widget/-/widget-2.0.0.tgz").await).await;
+        let (status, body) = refused(pinned(&proxy, "/npm/widget/-/widget-2.0.0.tgz").await).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_eq!(
@@ -8633,7 +8746,7 @@ mod tests {
             crate::record::DocumentDetail::Abbreviated,
         );
         let (guard, log) = capture(tracing::Level::WARN);
-        let step = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+        let step = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
         assert!(matches!(step, ArtifactStep::Fetch(_)));
         drop(guard);
         let log = text(&log);
@@ -8653,8 +8766,9 @@ mod tests {
     #[tokio::test]
     async fn a_client_reading_documents_and_no_artifacts_is_reported() {
         let proxy = offline(None, None);
-        let (_, packument) = crate::route::classify("/lodash");
-        let (_, tarball) = crate::route::classify("/lodash/-/lodash-4.17.21.tgz");
+        let (_, packument) = crate::route::classify("/npm/lodash").expect("a routed path");
+        let (_, tarball) =
+            crate::route::classify("/npm/lodash/-/lodash-4.17.21.tgz").expect("a routed path");
         {
             let mut traffic = proxy.traffic.lock().unwrap();
             for _ in 0..3 {
@@ -8684,7 +8798,7 @@ mod tests {
     fn traffic_keeps_a_bounded_number_of_client_names() {
         let proxy = offline(None, None).with_max_traffic_clients(4);
         let mut traffic = proxy.traffic.lock().unwrap();
-        let (_, packument) = crate::route::classify("/lodash");
+        let (_, packument) = crate::route::classify("/npm/lodash").expect("a routed path");
         for i in 0..4 + 5 {
             traffic.count(&format!("client{i}/1"), &packument);
         }
@@ -8710,13 +8824,13 @@ mod tests {
         let base = serve(proxy.clone().router()).await;
         let client = reqwest::Client::new();
         client
-            .get(format!("{base}/lodash"))
+            .get(format!("{base}/npm/lodash"))
             .header(header::USER_AGENT, "pnpm/10.0.0")
             .send()
             .await
             .unwrap();
         client
-            .head(format!("{base}/lodash"))
+            .head(format!("{base}/npm/lodash"))
             .header(header::USER_AGENT, "yarn/1.22.22")
             .send()
             .await
@@ -8926,7 +9040,8 @@ mod tests {
             OFFSITE_PACKUMENT.as_bytes(),
             crate::record::DocumentDetail::Abbreviated,
         );
-        let (status, _) = refused(pinned(&unservable, "/widget/-/widget-1.0.0.tgz").await).await;
+        let (status, _) =
+            refused(pinned(&unservable, "/npm/widget/-/widget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
 
         let undigested = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log.clone()));
@@ -8936,12 +9051,15 @@ mod tests {
                 "dist":{"tarball":"https://registry.npmjs.org/widget/-/widget-1.0.0.tgz"}}}}"#,
             crate::record::DocumentDetail::Abbreviated,
         );
-        let (status, _) = refused(pinned(&undigested, "/widget/-/widget-1.0.0.tgz").await).await;
+        let (status, _) =
+            refused(pinned(&undigested, "/npm/widget/-/widget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        let (status, _) = refused(pinned(&undigested, "/widget/-/widget-2.0.0.tgz").await).await;
+        let (status, _) =
+            refused(pinned(&undigested, "/npm/widget/-/widget-2.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "not listed");
         let unfetchable = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log.clone()));
-        let (status, _) = refused(pinned(&unfetchable, "/gadget/-/gadget-1.0.0.tgz").await).await;
+        let (status, _) =
+            refused(pinned(&unfetchable, "/npm/gadget/-/gadget-1.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::BAD_GATEWAY, "no metadata");
 
         let tarball = crate::util::test_support::tarball(&[("package/package.json", RUNS_NOTHING)]);
@@ -9026,7 +9144,8 @@ mod tests {
             let (status, _) = answered(resolve_npm(&proxy, "lodash", LODASH).await).await;
             assert_eq!(status, 503);
             hold(&proxy, LODASH);
-            let (status, _) = refused(pinned(&proxy, "/lodash/-/lodash-4.17.21.tgz").await).await;
+            let (status, _) =
+                refused(pinned(&proxy, "/npm/lodash/-/lodash-4.17.21.tgz").await).await;
             assert_eq!(status, 503);
         }
 
@@ -9128,25 +9247,25 @@ mod tests {
         .await;
 
         assert_eq!(
-            reqwest::get(format!("{base}/widget"))
+            reqwest::get(format!("{base}/npm/widget"))
                 .await
                 .unwrap()
                 .status(),
             200
         );
-        let tarball = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        let tarball = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
         assert_eq!(tarball.status(), 404);
         assert_eq!(
-            reqwest::get(format!("{base}/gadget"))
+            reqwest::get(format!("{base}/npm/gadget"))
                 .await
                 .unwrap()
                 .status(),
             404
         );
         assert_eq!(
-            reqwest::get(format!("{base}/fresh"))
+            reqwest::get(format!("{base}/npm/fresh"))
                 .await
                 .unwrap()
                 .status(),
@@ -9189,12 +9308,12 @@ mod tests {
         let proxy = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log.clone()));
         hold(&proxy, LODASH);
         let base = serve(proxy.router()).await;
-        let artifact = reqwest::get(format!("{base}/lodash/-/lodash-4.17.21.tgz"))
+        let artifact = reqwest::get(format!("{base}/npm/lodash/-/lodash-4.17.21.tgz"))
             .await
             .unwrap();
         assert_eq!(artifact.status(), 502);
         assert_eq!(
-            reqwest::get(format!("{base}/lodash"))
+            reqwest::get(format!("{base}/npm/lodash"))
                 .await
                 .unwrap()
                 .status(),
@@ -9211,7 +9330,7 @@ mod tests {
         )
         .await;
         assert_eq!(
-            reqwest::get(format!("{base}/widget"))
+            reqwest::get(format!("{base}/npm/widget"))
                 .await
                 .unwrap()
                 .status(),
@@ -9266,8 +9385,8 @@ mod tests {
                 .router(),
         )
         .await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
-        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
+        assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
 
         let short = scripted(vec![Answer::cut_short()]).await;
         let proxy = Proxy::new(reqwest::Client::new())
@@ -9277,7 +9396,7 @@ mod tests {
             .with_audit_log(Some(log));
         hold(&proxy, LODASH);
         let base = serve(proxy.router()).await;
-        assert_no_complete_body(&format!("{base}/lodash/-/lodash-4.17.21.tgz")).await;
+        assert_no_complete_body(&format!("{base}/npm/lodash/-/lodash-4.17.21.tgz")).await;
 
         let lines = audited(&path);
         assert_eq!(
@@ -9355,8 +9474,8 @@ mod tests {
             .with_policy(Some(policy(ALLOW_ALL)))
             .with_usage(Some(usage.clone()));
         let base = serve(proxy.clone().router()).await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
-        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
+        assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
         usage.written(2).await;
         let rows = kept.0.lock().unwrap().clone();
         assert!(
@@ -9407,8 +9526,8 @@ mod tests {
             );
         let (proxy, analyser) = recording("record-404", serve(missing).await, &digest);
         let base = serve(proxy.router()).await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
-        let tarball = reqwest::get(format!("{base}/widget/-/widget-1.0.0.tgz"))
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
+        let tarball = reqwest::get(format!("{base}/npm/widget/-/widget-1.0.0.tgz"))
             .await
             .unwrap();
         assert_eq!(tarball.status(), 404);
@@ -9426,8 +9545,8 @@ mod tests {
         let upstream = serve(widget_registry(&digest, tampered)).await;
         let (proxy, analyser) = recording("record-cut-short", upstream, &digest);
         let base = serve(proxy.router()).await;
-        reqwest::get(format!("{base}/widget")).await.unwrap();
-        assert_no_complete_body(&format!("{base}/widget/-/widget-1.0.0.tgz")).await;
+        reqwest::get(format!("{base}/npm/widget")).await.unwrap();
+        assert_no_complete_body(&format!("{base}/npm/widget/-/widget-1.0.0.tgz")).await;
         analyser.decisions_written(2).await;
         let answered: Vec<Answered> = recorded(&analyser)
             .await
@@ -9469,7 +9588,7 @@ mod tests {
             packument.to_string().as_bytes(),
             crate::record::DocumentDetail::Full,
         );
-        let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+        let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
         let within = std::time::Duration::from_secs(10);
         tokio::time::timeout(within, analyser.scans_ended(1))
             .await
@@ -9477,7 +9596,7 @@ mod tests {
         tokio::time::timeout(within, analyser.detections_ended(1))
             .await
             .expect("the detector ends");
-        let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+        let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
         tokio::time::timeout(within, analyser.decisions_written(2))
             .await
             .expect("both are written");
@@ -9523,7 +9642,7 @@ mod tests {
     async fn a_proxy_with_neither_sink_builds_no_decision_line() {
         let proxy = offline(None, Some(ALLOW_ALL));
         hold(&proxy, LODASH);
-        let ArtifactStep::Fetch(fetch) = pinned(&proxy, "/lodash/-/lodash-4.17.21.tgz").await
+        let ArtifactStep::Fetch(fetch) = pinned(&proxy, "/npm/lodash/-/lodash-4.17.21.tgz").await
         else {
             panic!("an allowed version is fetched");
         };
@@ -9576,9 +9695,16 @@ mod tests {
             packument.to_string().as_bytes(),
             crate::record::DocumentDetail::Full,
         );
-        const TARBALL: &str = "/widget/-/widget-1.0.0.tgz";
-        let (status, _) = refused(pinned(&proxy, TARBALL).await).await;
-        assert_eq!(status, 503, "the analysis has started");
+        const TARBALL: &str = "/npm/widget/-/widget-1.0.0.tgz";
+        let ArtifactStep::Answer(analysing) = pinned(&proxy, TARBALL).await else {
+            panic!("the analysis has started");
+        };
+        assert_eq!(analysing.status(), 503);
+        assert_eq!(
+            analysing.headers()[header::RETRY_AFTER],
+            "2",
+            "the analysis's 503 asks for the detector's wait too"
+        );
         tokio::time::timeout(std::time::Duration::from_secs(10), analyser.ended(1))
             .await
             .expect("the analysis ends");
@@ -9633,7 +9759,7 @@ mod tests {
                 packument.to_string().as_bytes(),
                 crate::record::DocumentDetail::Full,
             );
-            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
             assert_eq!(analyser.detections_started(), started, "{label}");
             if started == 0 {
                 continue;
@@ -9644,7 +9770,7 @@ mod tests {
             )
             .await
             .expect("the detector ends");
-            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
             assert_eq!(analyser.detections_started(), 1, "read back, not run again");
             let lines: Vec<audit::Event> = std::fs::read_to_string(&path)
                 .unwrap()
@@ -9726,7 +9852,7 @@ mod tests {
                 packument.to_string().as_bytes(),
                 crate::record::DocumentDetail::Full,
             );
-            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
             assert_eq!(
                 analyser.sources_started(),
                 compared,
@@ -9869,7 +9995,7 @@ mod tests {
                 packument.to_string().as_bytes(),
                 crate::record::DocumentDetail::Full,
             );
-            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
             assert_eq!(analyser.scans_started(), started, "{label}");
             if started == 0 {
                 continue;
@@ -9877,7 +10003,7 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(10), analyser.scans_ended(1))
                 .await
                 .expect("the lookup ends");
-            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
             assert_eq!(analyser.scans_started(), 1, "read back, not asked again");
             let lines: Vec<audit::Event> = std::fs::read_to_string(&path)
                 .unwrap()
@@ -9939,7 +10065,7 @@ mod tests {
             }
             hold_document(&proxy, held.to_string().as_bytes(), detail);
 
-            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
             tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 analyser.sources_ended(1),
@@ -9947,7 +10073,7 @@ mod tests {
             .await
             .expect("the comparison ends");
             let (guard, buf) = crate::util::test_support::capture(tracing::Level::WARN);
-            let _ = pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await;
+            let _ = pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await;
             drop(guard);
             let log = crate::util::test_support::text(&buf);
             assert!(log.contains("byrle.risk_score=3"), "{detail:?}: {log}");
@@ -10044,10 +10170,10 @@ mod tests {
             version("2.0.0", r#""scripts":{"install":5},"#)
         );
         hold_document(&proxy, body.as_bytes(), crate::record::DocumentDetail::Full);
-        let (status, said) = refused(pinned(&proxy, "/widget/-/widget-2.0.0.tgz").await).await;
+        let (status, said) = refused(pinned(&proxy, "/npm/widget/-/widget-2.0.0.tgz").await).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
         assert!(said.contains("does not list this version"), "{said}");
-        match pinned(&proxy, "/widget/-/widget-1.0.0.tgz").await {
+        match pinned(&proxy, "/npm/widget/-/widget-1.0.0.tgz").await {
             ArtifactStep::Answer(answer) => {
                 let (_, said) = refused(ArtifactStep::Answer(answer)).await;
                 assert!(!said.contains("does not list"), "{said}");
@@ -10134,7 +10260,7 @@ mod tests {
                     AuditLog::open(&path, crate::env::DEFAULT_LOG_RETENTION_DAYS).expect("opens"),
                 )));
             hold_document(&proxy, held.to_string().as_bytes(), detail);
-            let _ = pinned(&proxy, "/pkg/-/pkg-1.0.0.tgz").await;
+            let _ = pinned(&proxy, "/npm/pkg/-/pkg-1.0.0.tgz").await;
 
             let line: audit::Event =
                 serde_json::from_str(std::fs::read_to_string(&path).unwrap().trim()).unwrap();
@@ -10231,7 +10357,7 @@ mod tests {
         let mut stream = VerifyingStream::new(
             body,
             &sri,
-            "/a".to_owned(),
+            "/npm/a".to_owned(),
             "pkg:npm/a@1.0.0".to_owned(),
             Arc::new(Mutex::new(VerifiedArtifacts::new(8))),
         );
@@ -10343,7 +10469,7 @@ mod tests {
         use crate::intel::store::testing::Unsnapshotted;
         let proxy = offline(Some(Arc::new(Unsnapshotted)), Some(ALLOW_ALL));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
-        assert!(intel_for(&proxy, &key, "/lodash").await.is_err());
+        assert!(intel_for(&proxy, &key, "/npm/lodash").await.is_err());
     }
 
     /// With no `Host` and no public base, a document the proxy would read is uninspected
@@ -10351,10 +10477,10 @@ mod tests {
     #[test]
     fn a_document_with_no_address_to_point_at_is_uninspected() {
         let proxy = offline(None, None);
-        let mut negotiation = negotiated(None, Method::GET, "/lodash", "gzip");
+        let mut negotiation = negotiated(None, Method::GET, "/npm/lodash", "gzip");
         negotiation.rewrite_base = None;
         negotiation.rewriting = false;
-        let (_, target) = crate::route::classify("/lodash");
+        let (_, target) = crate::route::classify("/npm/lodash").expect("a routed path");
         let log = logged(|| {
             report_uninspected(
                 &proxy,
@@ -10362,7 +10488,7 @@ mod tests {
                 &Method::GET,
                 &negotiation,
                 &HeaderMap::new(),
-                "/lodash",
+                "/npm/lodash",
             )
         });
         assert!(
@@ -10380,7 +10506,7 @@ mod tests {
             "url":"https://files.pythonhosted.org/packages/aa/bb/x-1.0.tar.gz","hashes":{}}]}"#;
         for yaml in [None, Some("version: 1\ncooldown_days: 3\n")] {
             let proxy = offline(None, yaml);
-            let step = resolve(&proxy, "/simple/x/", pypi::SIMPLE_JSON, nameless).await;
+            let step = resolve(&proxy, "/pypi/simple/x/", pypi::SIMPLE_JSON, nameless).await;
             assert!(
                 matches!(&step, DocumentStep::Forward { refused, .. } if refused.versions.is_empty()),
                 "{yaml:?}"
@@ -10401,7 +10527,7 @@ mod tests {
                 key: &key,
                 claimed_version: " ",
                 filename: "lodash-.tgz",
-                path: "/lodash/-/lodash-.tgz",
+                path: "/npm/lodash/-/lodash-.tgz",
                 client: "-",
                 account: None,
             },
@@ -10415,7 +10541,7 @@ mod tests {
         let proxy = offline(None, None);
         let closed = crate::util::test_support::closing_server().await;
         assert_eq!(
-            head_last_modified(&proxy, &format!("http://{closed}/x.tar.gz"), "/x").await,
+            head_last_modified(&proxy, &format!("http://{closed}/x.tar.gz"), "/npm/x").await,
             None
         );
     }
@@ -10430,7 +10556,7 @@ mod tests {
             .with_policy(Some(policy(ALLOW_ALL)));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         let (guard, buf) = capture(tracing::Level::WARN);
-        fetch_and_store(&proxy, &key, "/lodash/-/lodash-4.17.21.tgz").await;
+        fetch_and_store(&proxy, &key, "/npm/lodash/-/lodash-4.17.21.tgz").await;
         drop(guard);
         let log = text(&buf);
         assert!(

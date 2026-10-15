@@ -32,7 +32,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 byrle_use_latest_node
 
 port="${BYRLE_PORT:-8731}"
-registry="http://127.0.0.1:${port}/"
+registry="http://127.0.0.1:${port}/npm/"
 workdir="$(mktemp -d)"
 log="$workdir/proxy.log"
 proxy_pid=""
@@ -101,7 +101,7 @@ on_disk="$(find "$workdir/deps/node_modules" -maxdepth 1 -mindepth 1 -not -name 
 scoped="$(find "$workdir/deps/node_modules" -maxdepth 2 -mindepth 2 -path '*/@*' -printf '%P\n' 2>/dev/null | sort)"
 on_disk="$(printf '%s\n%s\n' "$on_disk" "$scoped" | grep -v '^$' | sort)"
 fetched="$(sed -E 's/\x1b\[[0-9;]*m//g' "$log" \
-    | grep -oE 'url.path=/[^ ]+\.tgz' | sed -E 's|url.path=/||; s|/-/.*||' | sort -u)"
+    | grep -oE 'url.path=/npm/[^ ]+\.tgz' | sed -E 's|url.path=/npm/||; s|/-/.*||' | sort -u)"
 missed="$(comm -23 <(echo "$on_disk") <(echo "$fetched") || true)"
 [[ -z "$missed" ]] || fail "these packages never came through the proxy: $(echo "$missed" | tr '\n' ' ')"
 echo "    ok ($(echo "$on_disk" | wc -l) packages, all intercepted)"
@@ -145,7 +145,7 @@ echo "==> 4/10  every tarball digest was known before the fetch and verified"
 known="$(grep -c 'digest known' "$clean_log" || true)"
 deferred="$(grep -c 'deferred: the artifact has not been analysed' "$clean_log" || true)"
 verified="$(grep -c 'artifact digest verified' "$clean_log" || true)"
-tarballs="$(grep -coE 'proxied .*url.path=/[^ ]+\.tgz' "$clean_log" || true)"
+tarballs="$(grep -coE 'proxied .*url.path=/npm/[^ ]+\.tgz' "$clean_log" || true)"
 
 [[ "$((known - deferred))" -eq "$tarballs" ]] \
     || fail "$tarballs tarballs fetched but only $((known - deferred)) had a digest from their packument"
@@ -182,7 +182,7 @@ start_proxy ""
     --no-audit --no-fund --loglevel=error) >/dev/null 2>&1 || fail "npm ci failed"
 
 sed -E 's/\x1b\[[0-9;]*m//g' "$log" >"$clean_log"
-ci_tarballs="$(grep -coE 'proxied .*url.path=/[^ ]+\.tgz' "$clean_log" || true)"
+ci_tarballs="$(grep -coE 'proxied .*url.path=/npm/[^ ]+\.tgz' "$clean_log" || true)"
 ci_verified="$(grep -c 'artifact digest verified' "$clean_log" || true)"
 ci_fetched="$(grep -c 'on our own behalf' "$clean_log" || true)"
 [[ "$ci_tarballs" -gt 0 ]] || fail "npm ci fetched no tarballs through the proxy"
@@ -206,7 +206,7 @@ start_proxy "$workdir/deny.yaml"
 
 # On resolution: the version is gone from the document, and the answer is still a 200.
 # A 4xx here would read as a broken registry to every client.
-packument_status=$(curl -s -o "$workdir/ms.json" -w '%{http_code}' "http://127.0.0.1:${port}/ms")
+packument_status=$(curl -s -o "$workdir/ms.json" -w '%{http_code}' "http://127.0.0.1:${port}/npm/ms")
 [[ "$packument_status" == "200" ]] \
     || fail "filtering answered $packument_status; it has to be a 200 with fewer versions"
 if python3 -c "import json,sys; sys.exit(0 if '2.1.3' in json.load(open(sys.argv[1]))['versions'] else 1)" \
@@ -218,13 +218,13 @@ python3 -c "import json,sys; d=json.load(open(sys.argv[1])); sys.exit(0 if len(d
 
 # On a pinned fetch: there is no resolution left to influence, so it refuses.
 tarball_status=$(curl -s -o "$workdir/ms.out" -w '%{http_code}' \
-    "http://127.0.0.1:${port}/ms/-/ms-2.1.3.tgz")
+    "http://127.0.0.1:${port}/npm/ms/-/ms-2.1.3.tgz")
 [[ "$tarball_status" == "403" ]] || fail "pinned fetch of a denied version answered $tarball_status"
 grep -q 'pkg:npm/ms@2.1.3' "$workdir/ms.out" \
     || fail "the refusal does not name the package it refused"
 grep -q 'denials' "$workdir/ms.out" || fail "the refusal does not say which check fired"
 
-if grep -qE 'proxied.*url.path=/ms/-/ms-2\.1\.3\.tgz' < <(sed -E 's/\x1b\[[0-9;]*m//g' "$log"); then
+if grep -qE 'proxied.*url.path=/npm/ms/-/ms-2\.1\.3\.tgz' < <(sed -E 's/\x1b\[[0-9;]*m//g' "$log"); then
     fail "the denied artifact was fetched upstream; the refusal came too late"
 fi
 echo "    ok (filtered on resolution, 403 on the pinned fetch, artifact never fetched)"
@@ -244,16 +244,16 @@ proxy_curl() {
 refused_both_ways() {
     local package="$1" version="$2" tarball="$3" check="$4"
     local status
-    status=$(proxy_curl -s -o "$workdir/$package.json" -w '%{http_code}' "http://127.0.0.1:${port}/$package")
+    status=$(proxy_curl -s -o "$workdir/$package.json" -w '%{http_code}' "http://127.0.0.1:${port}/npm/$package")
     [[ "$status" == "200" ]] || fail "the $package document answered $status; it has to be a 200"
     if python3 -c "import json,sys; sys.exit(0 if sys.argv[2] in json.load(open(sys.argv[1]))['versions'] else 1)" \
         "$workdir/$package.json" "$version"; then
         fail "$package@$version is still offered, so a resolver can still pick it"
     fi
-    status=$(proxy_curl -s -o "$workdir/$package.out" -w '%{http_code}' "http://127.0.0.1:${port}$tarball")
+    status=$(proxy_curl -s -o "$workdir/$package.out" -w '%{http_code}' "http://127.0.0.1:${port}/npm$tarball")
     [[ "$status" == "403" ]] || fail "a pinned fetch of $package@$version answered $status"
     grep -q "$check" "$workdir/$package.out" || fail "the refusal of $package does not name $check"
-    if grep -qE "proxied.*url.path=$tarball" < <(sed -E 's/\x1b\[[0-9;]*m//g' "$log"); then
+    if grep -qE "proxied.*url.path=/npm$tarball" < <(sed -E 's/\x1b\[[0-9;]*m//g' "$log"); then
         fail "the refused $package tarball was fetched upstream"
     fi
 }
@@ -315,9 +315,9 @@ $(tail -20 "$workdir/refresh.out")"
     echo "    ok (filtered and 403 against the loaded snapshot)"
 
     echo "==> 10/10  a token is required, and npm sends it from .npmrc"
-    assert_unauthorized "http://127.0.0.1:${port}/is-number"
+    assert_unauthorized "http://127.0.0.1:${port}/npm/is-number"
     mkdir -p "$workdir/token" "$workdir/no-token"
-    printf '//127.0.0.1:%s/:_authToken=%s\n' "$port" "$proxy_token" >"$workdir/token/.npmrc"
+    printf '//127.0.0.1:%s/npm/:_authToken=%s\n' "$port" "$proxy_token" >"$workdir/token/.npmrc"
     npm_install "$workdir/token" is-number@7.0.0 >/dev/null 2>&1 \
         || fail "npm install with _authToken failed"
     [[ -d "$workdir/token/node_modules/is-number" ]] || fail "is-number was not installed"

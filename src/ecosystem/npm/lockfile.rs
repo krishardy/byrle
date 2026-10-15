@@ -6,6 +6,7 @@ use serde::Deserialize;
 use serde::de::IgnoredAny;
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::PREFIX;
 use crate::identity::Ecosystem;
 use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Platform, Unread, own_source};
 
@@ -84,22 +85,23 @@ fn locked_set(artifacts: Vec<LockedArtifact>) -> BTreeSet<Locked> {
     artifacts.into_iter().map(|a| a.locked).collect()
 }
 
-/// One registry artifact: fetched from `resolved`'s path when it is an HTTP URL, otherwise
-/// from the registry's own path for the package.
+/// One registry artifact, at the proxy's path for the package and the file `resolved`
+/// names when it is an HTTP URL, otherwise the registry's own file name for the version.
 fn artifact(
     name: &str,
     version: &str,
     resolved: Option<&str>,
     platform: Platform,
 ) -> LockedArtifact {
-    let path = resolved
+    let file = resolved
         .and_then(|r| reqwest::Url::parse(r).ok())
         .filter(|url| matches!(url.scheme(), "http" | "https"))
-        .map(|url| url.path().to_owned())
+        .and_then(|url| url.path().rsplit('/').next().map(str::to_owned))
         .unwrap_or_else(|| {
             let file = name.rsplit('/').next().unwrap_or(name);
-            format!("/{name}/-/{file}-{version}.tgz")
+            format!("{file}-{version}.tgz")
         });
+    let path = format!("{PREFIX}{name}/-/{file}");
     LockedArtifact {
         locked: locked(name, version),
         path,
@@ -497,8 +499,8 @@ mod tests {
                 "node_modules/c": {"version": "2.0.0", "os": ["darwin"], "cpu": ["arm64"]}}}"#,
         )
         .unwrap();
-        assert_eq!(npm[0].path, "/@s/b/-/b-1.0.0.tgz");
-        assert_eq!(npm[1].path, "/c/-/c-2.0.0.tgz");
+        assert_eq!(npm[0].path, "/npm/@s/b/-/b-1.0.0.tgz");
+        assert_eq!(npm[1].path, "/npm/c/-/c-2.0.0.tgz");
         assert_eq!(npm[1].platform.os, ["darwin"]);
         assert_eq!(npm[1].platform.cpu, ["arm64"]);
 
@@ -507,7 +509,7 @@ mod tests {
              \"https://registry.yarnpkg.com/ms/-/ms-2.1.3.tgz#abc\"\n",
         )
         .unwrap();
-        assert_eq!(yarn[0].path, "/ms/-/ms-2.1.3.tgz");
+        assert_eq!(yarn[0].path, "/npm/ms/-/ms-2.1.3.tgz");
         assert_eq!(yarn[0].platform, Platform::default());
 
         let pnpm = pnpm_artifacts(
@@ -516,7 +518,10 @@ mod tests {
              ms@2.1.3:\n    resolution: {integrity: sha512-y}\n",
         )
         .unwrap();
-        assert_eq!(pnpm[0].path, "/@esbuild/linux-x64/-/linux-x64-0.25.0.tgz");
+        assert_eq!(
+            pnpm[0].path,
+            "/npm/@esbuild/linux-x64/-/linux-x64-0.25.0.tgz"
+        );
         assert_eq!(pnpm[0].platform.os, ["linux"]);
         assert_eq!(pnpm[1].platform, Platform::default());
 
@@ -529,7 +534,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             bun[0].path,
-            "/@esbuild/darwin-arm64/-/darwin-arm64-0.25.0.tgz"
+            "/npm/@esbuild/darwin-arm64/-/darwin-arm64-0.25.0.tgz"
         );
         assert_eq!(bun[0].platform.os, ["darwin"]);
         assert_eq!(bun[0].platform.cpu, ["arm64"]);

@@ -17,12 +17,14 @@
 #
 # --disable-pip-version-check because the check asks the index for `/simple/pip/`, a
 # request that is not the install's.
+#
+# --no-input because pip asks for a username on a 401, and waited on stdin for one.
 
 byrle_pip_command() {
     local venv="$1" index="$2"; shift 2
     printf '%s\n' env PIP_CONFIG_FILE=/dev/null "$venv/bin/pip" install \
         --index-url "$index" --trusted-host 127.0.0.1 \
-        --no-cache-dir --disable-pip-version-check "$@"
+        --no-cache-dir --disable-pip-version-check --no-input "$@"
 }
 
 byrle_uv_command() {

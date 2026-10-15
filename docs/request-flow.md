@@ -1,8 +1,10 @@
 # Request flow
 
 How the proxy answers one request, and where each status code comes from. Every path
-below is read from below `BYRLE_PROXY_URL`'s path: `/registry/lodash` is `/lodash` under
-`https://h/registry/`. Read from
+below is read from below `BYRLE_PROXY_URL`'s path: `/registry/npm/lodash` is `/npm/lodash`
+under `https://h/registry/`. Each ecosystem is served under its own prefix, `/npm/`,
+`/pypi/` and `/cargo/` ([ecosystem-path-prefixes](engineering_decisions/ecosystem-path-prefixes.md)).
+Read from
 `handle`, `admit` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document`
 in `src/proxy.rs`, on 2026-09-28, and `admit` on 2026-10-11.
 
@@ -25,7 +27,9 @@ flowchart TD
     OWN -->|/-/byrle/ready| READY{intel store configured<br/>and not loaded?}
     READY -->|no| R200[200]
     READY -->|yes| R503[503]
-    OWN -->|anything else| TOKEN{token required?<br/>BYRLE_REQUIRE_TOKEN}
+    OWN -->|anything else| PREFIX{under /npm/, /pypi/<br/>or /cargo/?}
+    PREFIX -->|no| P404[404: under no<br/>ecosystem's prefix]
+    PREFIX -->|yes| TOKEN{token required?<br/>BYRLE_REQUIRE_TOKEN}
     TOKEN -->|no| KIND{what the path names}
     TOKEN -->|yes| HELD{account store}
     HELD -->|cannot answer| T503[503 account-store]
@@ -83,7 +87,7 @@ flowchart TD
 |---|---|---|
 | 200 | proxy | health; ready; a verified artifact; a filtered and rewritten metadata document |
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
-| 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path |
+| 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
 | refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest; the metadata names neither the version nor the file |
 | 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest |

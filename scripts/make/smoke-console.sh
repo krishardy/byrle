@@ -27,7 +27,8 @@ dex_port="${BYRLE_DEX_PORT:-5592}"
 mirror_port="${BYRLE_MIRROR_PORT:-8791}"
 workdir="$(mktemp -d)"
 console="http://127.0.0.1:${port}/admin"
-registry="http://127.0.0.1:${port}/registry/"
+proxy_url="http://127.0.0.1:${port}/registry/"
+registry="${proxy_url}npm/"
 issuer="http://127.0.0.1:${dex_port}/dex"
 password="correct horse battery staple"
 proxy_pid=""
@@ -112,7 +113,7 @@ alice_token="$("$binary" token create alice laptop 2>/dev/null)"
 bob_token="$("$binary" token create bob laptop 2>/dev/null)"
 
 printf 'version: 1\ncooldown_days: 0\n' >"$workdir/policy.yaml"
-BYRLE_LISTEN="127.0.0.1:${port}" BYRLE_PROXY_URL="$registry" BYRLE_CONSOLE_URL="${console}/" \
+BYRLE_LISTEN="127.0.0.1:${port}" BYRLE_PROXY_URL="$proxy_url" BYRLE_CONSOLE_URL="${console}/" \
 BYRLE_POLICY="$workdir/policy.yaml" BYRLE_AUDIT_LOG="$workdir/audit.jsonl" \
 BYRLE_SPOOL_DIR="$workdir/spool" BYRLE_OIDC_ISSUER="$issuer" \
 BYRLE_OIDC_CLIENT_ID=byrle-console BYRLE_OIDC_CLIENT_SECRET="$secret" \
@@ -150,13 +151,13 @@ step "3/8  npm with alice's token, pip with bob's"
 since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 assert_unauthorized "${registry}is-number"
 mkdir -p "$workdir/npm"
-printf '//127.0.0.1:%s/registry/:_authToken=%s\n' "$port" "$alice_token" >"$workdir/npm/.npmrc"
+printf '//127.0.0.1:%s/registry/npm/:_authToken=%s\n' "$port" "$alice_token" >"$workdir/npm/.npmrc"
 (cd "$workdir/npm" && npm install --no-audit --no-fund --loglevel=error \
     --registry "$registry" --cache "$workdir/npm-cache" is-number@7.0.0 >"$workdir/npm.out" 2>&1) \
     || fail "npm install with alice's token failed: $(tail -15 "$workdir/npm.out")"
 python3 -m venv "$workdir/venv"
 "$workdir/venv/bin/pip" install --quiet --no-cache-dir \
-    --index-url "http://bob:${bob_token}@127.0.0.1:${port}/registry/simple/" six==1.17.0 \
+    --index-url "http://bob:${bob_token}@127.0.0.1:${port}/registry/pypi/simple/" six==1.17.0 \
     || fail "pip install with bob's token failed"
 sleep 2
 echo "    ok (401 without a token; is-number installed by alice, six by bob)"

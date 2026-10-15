@@ -56,9 +56,9 @@ pub fn media_type(content_type: Option<&str>) -> Option<String> {
     })
 }
 
-/// Which ecosystem answers this request path, and what the path refers to.
-/// A path under an ecosystem's prefix is that ecosystem's. npm has the rest.
-pub fn classify(path: &str) -> (Ecosystem, RequestTarget) {
-    let registry = crate::ecosystem::serving(path);
-    (registry.ecosystem, registry.classify(path))
+/// Which ecosystem answers this request path, and what the path refers to. `None` for a
+/// path under no ecosystem's prefix.
+pub fn classify(path: &str) -> Option<(Ecosystem, RequestTarget)> {
+    let registry = crate::ecosystem::serving(path)?;
+    Some((registry.ecosystem, registry.classify(path)))
 }

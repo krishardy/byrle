@@ -233,8 +233,8 @@ pub struct Registry {
     /// The ecosystem this row is for.
     pub ecosystem: Ecosystem,
 
-    /// Path prefixes this registry claims, whatever the path names. Empty for [`ROOT`].
-    pub prefixes: &'static [&'static str],
+    /// The path prefix this registry claims, whatever the path names, such as `/npm/`.
+    pub prefix: &'static str,
 
     /// Origins the proxy may fetch from for this ecosystem whatever the operator configured.
     pub always_reachable: &'static [&'static str],
@@ -406,7 +406,7 @@ impl Registry {
     /// without the trailing slash are npm packages by those names.
     pub fn serves(&self, path: &str) -> bool {
         let path = path.split('?').next().unwrap_or(path);
-        self.prefixes.iter().any(|prefix| path.starts_with(prefix))
+        path.starts_with(self.prefix)
     }
 
     /// What `path` refers to, in this registry's spelling.
@@ -419,9 +419,6 @@ impl Registry {
         (self.read_media_type)(content_type)
     }
 }
-
-/// The registry that answers a path no other registry claimed: npm, which asks for `/lodash`.
-pub const ROOT: Ecosystem = Ecosystem::Npm;
 
 /// Every ecosystem the proxy routes, one row each, for which intel coverage is reported.
 pub const TABLE: &[Registry] = &[npm::REGISTRY, pypi::REGISTRY, cargo::REGISTRY];
@@ -437,19 +434,16 @@ pub fn of(ecosystem: Ecosystem) -> &'static Registry {
         .expect("every ecosystem has a row in ecosystem::TABLE")
 }
 
-/// The row that answers `path`: the one whose prefixes claim it, else [`ROOT`]'s. A path
-/// the claiming row does not recognise and the root reads as an artifact is the root's:
-/// npm's `cargo` package's tarball is `/cargo/-/cargo-0.8.0.tgz`.
-pub fn serving(path: &str) -> &'static Registry {
-    let root = of(ROOT);
-    TABLE
-        .iter()
-        .find(|registry| {
-            registry.serves(path)
-                && !(registry.classify(path) == RequestTarget::Other
-                    && matches!(root.classify(path), RequestTarget::Artifact { .. }))
-        })
-        .unwrap_or(root)
+/// `path` without `prefix`'s final segment, keeping its leading `/`: `/npm/lodash` under
+/// `/npm/` is `/lodash`. `None` when the path is not under it.
+pub fn within<'a>(prefix: &str, path: &'a str) -> Option<&'a str> {
+    path.strip_prefix(prefix.trim_end_matches('/'))
+        .filter(|rest| rest.starts_with('/'))
+}
+
+/// The row whose prefix claims `path`. `None` when no row does.
+pub fn serving(path: &str) -> Option<&'static Registry> {
+    TABLE.iter().find(|registry| registry.serves(path))
 }
 
 #[cfg(test)]
@@ -501,24 +495,16 @@ mod table {
         assert_eq!(TABLE.len(), Ecosystem::EXPRESSIBLE.len());
     }
 
-    /// Exactly one row may fall through, or a path with no prefix has two answers.
+    /// Each row's prefix is its ecosystem's name, so no path can be two rows'.
     #[test]
-    fn one_row_claims_no_prefix_and_it_is_the_root() {
-        let rootless: Vec<_> = TABLE
-            .iter()
-            .filter(|registry| registry.prefixes.is_empty())
-            .map(|registry| registry.ecosystem)
-            .collect();
-        assert_eq!(rootless, vec![ROOT]);
-    }
-
-    /// Two rows claiming the same prefix would make `serving` depend on table order.
-    #[test]
-    fn no_prefix_is_claimed_twice() {
-        let mut claimed: Vec<&str> = TABLE
-            .iter()
-            .flat_map(|registry| registry.prefixes.iter().copied())
-            .collect();
+    fn each_row_claims_its_ecosystem_s_name() {
+        for registry in TABLE {
+            assert_eq!(
+                registry.prefix,
+                format!("/{}/", registry.ecosystem.as_str().to_lowercase())
+            );
+        }
+        let mut claimed: Vec<&str> = TABLE.iter().map(|registry| registry.prefix).collect();
         let before = claimed.len();
         claimed.sort_unstable();
         claimed.dedup();
@@ -527,15 +513,32 @@ mod table {
 
     #[test]
     fn a_prefixed_path_goes_to_the_row_that_claims_it() {
-        for path in [
-            "/simple/",
-            "/simple/requests/",
-            "/simple/nonsense",
-            "/packages/a/b/c/requests-2.32.3-py3-none-any.whl",
-            "/packages/nonsense",
-            "/simple/requests/?foo=1",
+        for (path, ecosystem) in [
+            ("/npm/lodash", Ecosystem::Npm),
+            ("/npm/cargo/-/cargo-0.8.0.tgz", Ecosystem::Npm),
+            ("/npm/-/v1/search?text=lodash", Ecosystem::Npm),
+            ("/pypi/simple/", Ecosystem::PyPI),
+            ("/pypi/simple/requests/?foo=1", Ecosystem::PyPI),
+            (
+                "/pypi/packages/a/b/c/requests-2.32.3-py3-none-any.whl",
+                Ecosystem::PyPI,
+            ),
+            ("/cargo/config.json", Ecosystem::Cargo),
+            ("/cargo/crates/itoa/1.0.18/download", Ecosystem::Cargo),
         ] {
-            assert_eq!(serving(path).ecosystem, Ecosystem::PyPI, "{path}");
+            assert_eq!(
+                serving(path).map(|r| r.ecosystem),
+                Some(ecosystem),
+                "{path}"
+            );
+        }
+    }
+
+    /// No row answers a path outside every prefix, npm's old root paths among them.
+    #[test]
+    fn an_unclaimed_path_is_no_row_s() {
+        for path in ["/lodash", "/simple/requests/", "/npm", "/", "/go/x/@v/list"] {
+            assert!(serving(path).is_none(), "{path}");
         }
     }
 
@@ -560,40 +563,15 @@ mod table {
         assert_eq!(
             lines,
             [
-                "npm config set registry http://127.0.0.1:8080/",
-                "pip config set global.index-url http://127.0.0.1:8080/simple/",
+                "npm config set registry http://127.0.0.1:8080/npm/",
+                "pip config set global.index-url http://127.0.0.1:8080/pypi/simple/",
                 &cargo::REGISTRY.setup.command_line("http://127.0.0.1:8080"),
             ]
         );
         assert_eq!(
             TABLE[0].setup.command_line("https://h/registry"),
-            "npm config set registry https://h/registry/"
+            "npm config set registry https://h/registry/npm/"
         );
-    }
-
-    #[test]
-    fn an_unclaimed_path_goes_to_the_root() {
-        for path in [
-            "/lodash",
-            "/@babel%2fcore",
-            "/lodash/-/lodash-4.17.21.tgz",
-            "/simple",
-            "/packages",
-            "/-/v1/search?text=lodash",
-            "/",
-            "/cargo/-/cargo-0.8.0.tgz",
-            "/simple/-/simple-1.0.0.tgz",
-            "/packages/-/packages-1.0.0.tgz",
-        ] {
-            assert_eq!(serving(path).ecosystem, ROOT, "{path}");
-        }
-        for path in [
-            "/cargo/config.json",
-            "/cargo/crates/itoa/1.0.18/download",
-            "/cargo/it/oa/itoa",
-        ] {
-            assert_eq!(serving(path).ecosystem, Ecosystem::Cargo, "{path}");
-        }
     }
 
     #[test]
@@ -908,7 +886,7 @@ mod table {
     #[test]
     fn only_the_adapters_name_an_ecosystem() {
         let allowed: std::collections::BTreeMap<String, usize> = [
-            ("src/ecosystem.rs", 2),
+            ("src/ecosystem.rs", 1),
             ("src/env.rs", 5),
             ("src/identity.rs", 7),
         ]

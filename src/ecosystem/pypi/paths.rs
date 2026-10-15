@@ -91,6 +91,8 @@ pub(super) fn filename_parts(filename: &str) -> Option<(String, String, Kind)> {
 /// `index` ends in the index path, such as `https://pypi.org/simple`, whose prefix the path
 /// loses.
 pub fn upstream_url(index: &str, path_and_query: &str) -> String {
+    let path_and_query =
+        crate::ecosystem::within(super::PREFIX, path_and_query).unwrap_or(path_and_query);
     if path_and_query.starts_with("/integrity/") {
         let host = index.strip_suffix("/simple").unwrap_or(index);
         return format!("{host}{path_and_query}");
@@ -113,6 +115,9 @@ pub fn document_from_content_type(content_type: Option<&str>) -> Option<Document
 
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
+    let Some(path) = crate::ecosystem::within(super::PREFIX, path) else {
+        return RequestTarget::Other;
+    };
     let path = path.trim_start_matches('/');
 
     if let Some(rest) = path.strip_prefix("simple/") {
@@ -224,11 +229,11 @@ mod tests {
     #[test]
     fn a_simple_index_path_is_the_projects_metadata() {
         assert_eq!(
-            classify_path("/simple/requests/"),
+            classify_path("/pypi/simple/requests/"),
             RequestTarget::Metadata(key("requests"))
         );
         assert_eq!(
-            classify_path("/simple/requests"),
+            classify_path("/pypi/simple/requests"),
             RequestTarget::Metadata(key("requests")),
             "pip sends the trailing slash; a client that omits it names the same page"
         );
@@ -240,7 +245,7 @@ mod tests {
     fn the_index_name_is_normalised_into_the_key() {
         for spelling in ["Zope.Interface", "zope_interface", "ZOPE--INTERFACE"] {
             assert_eq!(
-                classify_path(&format!("/simple/{spelling}/")),
+                classify_path(&format!("/pypi/simple/{spelling}/")),
                 RequestTarget::Metadata(key("zope-interface")),
                 "{spelling}"
             );
@@ -251,7 +256,7 @@ mod tests {
     fn a_packages_path_is_the_file_it_names() {
         assert_eq!(
             classify_path(
-                "/packages/f9/9b/335f9764261e915ed497fcdeb11df5dfe6f7/\
+                "/pypi/packages/f9/9b/335f9764261e915ed497fcdeb11df5dfe6f7/\
                  requests-2.32.3-py3-none-any.whl"
             ),
             RequestTarget::Artifact {
@@ -261,7 +266,7 @@ mod tests {
             }
         );
         assert_eq!(
-            classify_path("/packages/source/z/zope-interface/zope.interface-5.4.0.tar.gz"),
+            classify_path("/pypi/packages/source/z/zope-interface/zope.interface-5.4.0.tar.gz"),
             RequestTarget::Artifact {
                 key: key("zope-interface"),
                 claimed_version: "5.4.0".into(),
@@ -274,8 +279,8 @@ mod tests {
     /// what separates them. npm has no path that does this.
     #[test]
     fn two_files_of_one_version_differ_only_in_the_filename() {
-        let wheel = classify_path("/packages/a/b/c/requests-2.32.3-py3-none-any.whl");
-        let sdist = classify_path("/packages/a/b/c/requests-2.32.3.tar.gz");
+        let wheel = classify_path("/pypi/packages/a/b/c/requests-2.32.3-py3-none-any.whl");
+        let sdist = classify_path("/pypi/packages/a/b/c/requests-2.32.3.tar.gz");
         assert_ne!(wheel, sdist);
         let (
             RequestTarget::Artifact {
@@ -299,7 +304,7 @@ mod tests {
     #[test]
     fn a_query_string_is_not_part_of_the_path() {
         assert_eq!(
-            classify_path("/simple/requests/?foo=1"),
+            classify_path("/pypi/simple/requests/?foo=1"),
             RequestTarget::Metadata(key("requests"))
         );
     }
@@ -309,15 +314,15 @@ mod tests {
         for path in [
             "",
             "/",
-            "/simple/",
-            "/simple",
-            "/simple/a/b/",
-            "/simple/./",
-            "/packages/",
-            "/packages/a/b/c/",
-            "/packages/a/b/c/notadistribution.txt",
-            "/packages/a/b/c/x-py3-none-any.whl",
-            "/packages/a/b/c/-1.0.tar.gz",
+            "/pypi/simple/",
+            "/pypi/simple",
+            "/pypi/simple/a/b/",
+            "/pypi/simple/./",
+            "/pypi/packages/",
+            "/pypi/packages/a/b/c/",
+            "/pypi/packages/a/b/c/notadistribution.txt",
+            "/pypi/packages/a/b/c/x-py3-none-any.whl",
+            "/pypi/packages/a/b/c/-1.0.tar.gz",
             "/pypi/requests/json",
         ] {
             assert_eq!(classify_path(path), RequestTarget::Other, "{path}");

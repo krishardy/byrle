@@ -223,7 +223,7 @@ mod tests {
             reachable: &reachable(),
             base,
             refused_by_policy: &refused,
-            path: "/simple/x/",
+            path: "/pypi/simple/x/",
         })
     }
 
@@ -256,7 +256,7 @@ mod tests {
             reachable: &reachable(),
             base: Some("http://127.0.0.1:8080"),
             refused_by_policy: &refused,
-            path: "/simple/x/",
+            path: "/pypi/simple/x/",
         })
         .expect("a version was refused, so the body changes");
         let out = String::from_utf8(out).expect("utf-8");
@@ -322,7 +322,8 @@ mod tests {
         let url = document["files"][0]["url"].as_str().expect("a url");
         let path = url.strip_prefix("http://127.0.0.1:8080").expect("our base");
 
-        let (ecosystem, target) = crate::route::classify(path);
+        let (ecosystem, target) =
+            crate::route::classify(&format!("/pypi{path}")).expect("a routed path");
         assert_eq!(ecosystem, Ecosystem::PyPI);
         assert!(
             matches!(target, RequestTarget::Artifact { .. }),

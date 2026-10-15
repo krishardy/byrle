@@ -39,6 +39,9 @@ pub fn split_name(name: &str) -> Result<(Option<String>, String), IdentityError>
 /// Returns [`RequestTarget::Other`] for a path that names no package.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
+    let Some(path) = crate::ecosystem::within(super::PREFIX, path) else {
+        return RequestTarget::Other;
+    };
     let path = path.trim_start_matches('/');
     if path.is_empty() {
         return RequestTarget::Other;
@@ -96,7 +99,8 @@ pub fn detail_from_content_type(content_type: Option<&str>) -> Option<DocumentDe
 /// reason the proxy was pointed at it, so the URL in the document is deliberately not what
 /// decides.
 pub fn upstream_url(registry: &str, path_and_query: &str) -> String {
-    format!("{registry}{path_and_query}")
+    let path = crate::ecosystem::within(super::PREFIX, path_and_query).unwrap_or(path_and_query);
+    format!("{registry}{path}")
 }
 
 /// npm's row of [`crate::ecosystem::TABLE`] reads media types through this.
@@ -127,28 +131,41 @@ mod tests {
         PackageKey::from_registry_name(Ecosystem::Npm, name).unwrap()
     }
 
+    /// A path outside `/npm/`, such as the root npm was served at before, names nothing.
+    #[test]
+    fn a_path_outside_the_prefix_names_no_package() {
+        for path in [
+            "/lodash",
+            "/lodash/-/lodash-4.17.21.tgz",
+            "/npmx/lodash",
+            "/npm/",
+        ] {
+            assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
+        }
+    }
+
     #[test]
     fn packument_paths_resolve_to_a_key() {
         assert_eq!(
-            classify_path("/lodash"),
+            classify_path("/npm/lodash"),
             RequestTarget::Metadata(key("lodash"))
         );
         assert_eq!(
-            classify_path("/@babel%2fcore"),
+            classify_path("/npm/@babel%2fcore"),
             RequestTarget::Metadata(key("@babel/core")),
             "npm percent-encodes the scope separator"
         );
         assert_eq!(
-            classify_path("/@babel%2Fcore"),
+            classify_path("/npm/@babel%2Fcore"),
             RequestTarget::Metadata(key("@babel/core"))
         );
         assert_eq!(
-            classify_path("/@babel/core"),
+            classify_path("/npm/@babel/core"),
             RequestTarget::Metadata(key("@babel/core")),
             "the bare form resolves too"
         );
         assert_eq!(
-            classify_path("/lodash?write=true"),
+            classify_path("/npm/lodash?write=true"),
             RequestTarget::Metadata(key("lodash")),
             "a query string is not part of the name"
         );
@@ -157,7 +174,7 @@ mod tests {
     #[test]
     fn tarball_paths_carry_the_filename_version() {
         assert_eq!(
-            classify_path("/lodash/-/lodash-4.17.21.tgz"),
+            classify_path("/npm/lodash/-/lodash-4.17.21.tgz"),
             RequestTarget::Artifact {
                 key: key("lodash"),
                 claimed_version: "4.17.21".into(),
@@ -165,7 +182,7 @@ mod tests {
             }
         );
         assert_eq!(
-            classify_path("/@babel/core/-/core-7.0.0.tgz"),
+            classify_path("/npm/@babel/core/-/core-7.0.0.tgz"),
             RequestTarget::Artifact {
                 key: key("@babel/core"),
                 claimed_version: "7.0.0".into(),
@@ -180,7 +197,7 @@ mod tests {
     #[test]
     fn prerelease_versions_survive_the_filename_split() {
         assert_eq!(
-            classify_path("/react/-/react-18.3.0-canary-a1b2c3.tgz"),
+            classify_path("/npm/react/-/react-18.3.0-canary-a1b2c3.tgz"),
             RequestTarget::Artifact {
                 key: key("react"),
                 claimed_version: "18.3.0-canary-a1b2c3".into(),
@@ -188,7 +205,7 @@ mod tests {
             }
         );
         assert_eq!(
-            classify_path("/is-odd/-/is-odd-3.0.1.tgz"),
+            classify_path("/npm/is-odd/-/is-odd-3.0.1.tgz"),
             RequestTarget::Artifact {
                 key: key("is-odd"),
                 claimed_version: "3.0.1".into(),
@@ -203,7 +220,7 @@ mod tests {
     fn the_filename_version_is_what_the_filename_says() {
         let RequestTarget::Artifact {
             claimed_version, ..
-        } = classify_path("/express/-/express-3.0.0rc1.tgz")
+        } = classify_path("/npm/express/-/express-3.0.0rc1.tgz")
         else {
             panic!("should classify as a tarball");
         };
@@ -219,14 +236,14 @@ mod tests {
         for path in [
             "/",
             "",
-            "/-/v1/search?text=lodash",
-            "/-/whoami",
-            "/-/npm/v1/attestations/sigstore@5.0.0",
-            "/-",
-            "/lodash/-/lodash-4.17.21.tar.gz",
-            "/lodash/-/something-else.tgz",
-            "/lodash/-/lodash-.tgz",
-            "/@scope/",
+            "/npm/-/v1/search?text=lodash",
+            "/npm/-/whoami",
+            "/npm/-/npm/v1/attestations/sigstore@5.0.0",
+            "/npm/-",
+            "/npm/lodash/-/lodash-4.17.21.tar.gz",
+            "/npm/lodash/-/something-else.tgz",
+            "/npm/lodash/-/lodash-.tgz",
+            "/npm/@scope/",
         ] {
             assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
         }
@@ -237,15 +254,15 @@ mod tests {
     #[test]
     fn a_slash_without_an_at_is_not_a_scoped_package() {
         for path in [
-            "/foo/bar",
-            "/simple/requests",
-            "/packages/x",
-            "/foo/bar/-/bar-1.0.0.tgz",
+            "/npm/foo/bar",
+            "/pypi/simple/requests",
+            "/pypi/packages/x",
+            "/npm/foo/bar/-/bar-1.0.0.tgz",
         ] {
             assert_eq!(classify_path(path), RequestTarget::Other, "{path}");
         }
         assert_eq!(
-            classify_path("/@foo/bar"),
+            classify_path("/npm/@foo/bar"),
             RequestTarget::Metadata(key("@foo/bar")),
             "the scoped spelling is still a package"
         );
@@ -260,7 +277,7 @@ mod tests {
         let artifact = record.artifact().expect("one file");
         assert_eq!(artifact.filename, "lodash-4.17.21.tgz");
         assert_eq!(
-            classify_path("/lodash/-/lodash-4.17.21.tgz"),
+            classify_path("/npm/lodash/-/lodash-4.17.21.tgz"),
             RequestTarget::Artifact {
                 key: key("lodash"),
                 claimed_version: "4.17.21".into(),

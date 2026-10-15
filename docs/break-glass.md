@@ -30,7 +30,7 @@ Rewriting the lockfile, for yarn 1 and bun, with the proxy's address as the lock
 records it:
 
 ```
-sed -i 's#https://byrle.example.com/#https://registry.npmjs.org/#g' yarn.lock
+sed -i 's#https://byrle.example.com/npm/#https://registry.npmjs.org/#g' yarn.lock
 ```
 
 The lockfile's integrity hash still checks the bytes: yarn 1's `#sha1` fragment and bun's

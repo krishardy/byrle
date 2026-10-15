@@ -108,9 +108,9 @@ stay stuck in observe mode forever.
 
 | Ecosystem | Interception mechanism | Tier |
 |---|---|---|
-| npm | registry URL; artifact URLs rewritten to the proxy | enforcing |
-| PyPI | `--index-url`, PEP 691 and PEP 503 | enforcing |
-| cargo | source replacement, sparse index; `config.json`'s `dl` points at the proxy | enforcing |
+| npm | registry URL, under `/npm/`; artifact URLs rewritten to the proxy | enforcing |
+| PyPI | `--index-url`, under `/pypi/simple/`, PEP 691 and PEP 503 | enforcing |
+| cargo | source replacement, sparse index under `/cargo/`; `config.json`'s `dl` points at the proxy | enforcing |
 | Go | `GOPROXY` | not built |
 | Maven | mirror in `settings.xml` | not built |
 

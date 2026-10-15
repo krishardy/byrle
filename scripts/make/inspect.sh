@@ -99,7 +99,7 @@ inspect_client() {
     local head="$workdir/$name.head" body="$workdir/$name.json"
     curl -sS -D "$head" -o "$body" --compressed \
         -A "$agent" -H "Accept: $accept" -H "Accept-Encoding: $encoding" \
-        "$proxy/$encoded"
+        "$proxy/npm/$encoded"
 
     header() {
         grep -i "^$1:" "$head" | tail -1 | cut -d: -f2- | tr -d '\r' | sed 's/^ *//'

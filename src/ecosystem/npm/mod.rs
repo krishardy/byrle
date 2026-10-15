@@ -49,10 +49,13 @@ pub const GITHUB: stream::Stream = stream::github(github::NPM_STREAM, github::NP
     stream::github_advisories(Ecosystem::Npm, bytes)
 });
 
+/// The path the proxy serves npm's registry under.
+pub const PREFIX: &str = "/npm/";
+
 /// This ecosystem's row of [`crate::ecosystem::TABLE`].
 pub const REGISTRY: Registry = Registry {
     ecosystem: Ecosystem::Npm,
-    prefixes: &[],
+    prefix: PREFIX,
     always_reachable: &[DEFAULT_REGISTRY],
     classify_path,
     read_media_type: document_from_content_type,
@@ -74,7 +77,7 @@ pub const REGISTRY: Registry = Registry {
     setup: Setup {
         client: clients::NPM.name,
         command: |url| format!("{} {url}", clients::NPM.set_registry),
-        path: "/",
+        path: PREFIX,
     },
     uncovered_metadata: UncoveredMetadata::Refuse,
     versions: VersionOrder::SemVer,

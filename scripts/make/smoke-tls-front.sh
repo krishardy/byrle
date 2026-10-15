@@ -91,7 +91,7 @@ check() {
     [[ "$status" == 200 ]] || fail "$name: health answered $status"
 
     local headers
-    headers="$("${curl[@]}" -o /dev/null -D - "$front/ms/-/ms-2.1.3.tgz" | tr -d '\r')"
+    headers="$("${curl[@]}" -o /dev/null -D - "$front/npm/ms/-/ms-2.1.3.tgz" | tr -d '\r')"
     grep -qE '^HTTP/[0-9.]+ 503' <<<"$headers" || fail "$name: an unanalysed artifact was not a 503"
     grep -qi '^retry-after: 1' <<<"$headers" || fail "$name: Retry-After did not pass through"
     grep -qi '^x-byrle-not-ready: artifact-analysis' <<<"$headers" \
@@ -99,14 +99,14 @@ check() {
 
     printf '{"name":"a","version":"1.0.0","private":true}\n' >"$dir/app/package.json"
     (cd "$dir/app" && NODE_EXTRA_CA_CERTS="$workdir/ca.pem" npm install debug@4.4.1 \
-        --registry="$front/" --cache "$dir/npm-cache" --no-audit --no-fund --loglevel=error) \
+        --registry="$front/npm/" --cache "$dir/npm-cache" --no-audit --no-fund --loglevel=error) \
         >"$dir/npm.out" 2>&1 || fail "$name: npm install failed: $(tail -3 "$dir/npm.out")"
-    grep -q "\"resolved\": \"$front/debug/-/debug-4.4.1.tgz\"" "$dir/app/package-lock.json" \
+    grep -q "\"resolved\": \"$front/npm/debug/-/debug-4.4.1.tgz\"" "$dir/app/package-lock.json" \
         || fail "$name: the lockfile does not record $front"
 
     python3 -m venv "$dir/venv"
     "$dir/venv/bin/pip" install --no-cache-dir --cert "$workdir/ca.pem" \
-        --index-url "$front/simple/" six==1.17.0 >"$dir/pip.out" 2>&1 \
+        --index-url "$front/pypi/simple/" six==1.17.0 >"$dir/pip.out" 2>&1 \
         || fail "$name: pip install failed: $(tail -3 "$dir/pip.out")"
 
     kill "$front_pid" "$proxy" 2>/dev/null || true

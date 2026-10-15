@@ -119,14 +119,14 @@ deployed_sets() {
         && npm install "${npm_packages[@]}" --package-lock-only --before "$before" \
             --no-audit --no-fund --loglevel=error)
     # Scoped to the proxy, so the direct installs send nothing.
-    printf '//127.0.0.1:%s/:_authToken=%s\n' "$port" "$token" >"$workdir/npm/.npmrc"
+    printf '//127.0.0.1:%s/npm/:_authToken=%s\n' "$port" "$token" >"$workdir/npm/.npmrc"
     npm_count="$(grep -c '"node_modules/' "$workdir/npm/package-lock.json")"
     (cd "$workdir/pypi" && printf '%s\n' "${pypi_packages[@]}" >requirements.in \
         && uv pip compile -q requirements.in -o requirements.txt --python-version 3.12 \
             --exclude-newer "$before")
     pypi_count="$(grep -cE '^[a-z0-9]' "$workdir/pypi/requirements.txt")"
-    npm_through="$proxy/"
-    pypi_through="http://${account}:${token}@127.0.0.1:${port}/simple/"
+    npm_through="$proxy/npm/"
+    pypi_through="http://${account}:${token}@127.0.0.1:${port}/pypi/simple/"
 }
 
 # Install both sets through the proxy until neither is refused, adding an exception for

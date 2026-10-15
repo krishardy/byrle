@@ -90,8 +90,8 @@ it:
 ```
 WARN observe mode: what the policy refuses is served and logged, not refused byrle.config.variable=BYRLE_MODE
 WARN ENFORCED: known_malware and max_cvss, from the intel store, and kev once the store has loaded the KEV catalogue. ...
-INFO point a client at the proxy byrle.client.name="npm" byrle.client.command=npm config set registry http://127.0.0.1:18990/
-INFO point a client at the proxy byrle.client.name="pip" byrle.client.command=pip config set global.index-url http://127.0.0.1:18990/simple/
+INFO point a client at the proxy byrle.client.name="npm" byrle.client.command=npm config set registry http://127.0.0.1:18990/npm/
+INFO point a client at the proxy byrle.client.name="pip" byrle.client.command=pip config set global.index-url http://127.0.0.1:18990/pypi/simple/
 ```
 
 and cargo's, from a run on 2026-10-14:
@@ -109,13 +109,13 @@ With the proxy at `https://byrle.example.com`:
 
 | Client | Configuration |
 |---|---|
-| npm | `npm config set registry https://byrle.example.com/` |
-| pnpm | `pnpm config set registry https://byrle.example.com/` |
-| yarn 1 | `yarn config set registry https://byrle.example.com/` |
+| npm | `npm config set registry https://byrle.example.com/npm/` |
+| pnpm | `pnpm config set registry https://byrle.example.com/npm/` |
+| yarn 1 | `yarn config set registry https://byrle.example.com/npm/` |
 | yarn 4 | `npmRegistryServer: "https://byrle.example.com"` in `.yarnrc.yml` |
-| bun | `registry = "https://byrle.example.com/"` under `[install]` in `bunfig.toml` |
-| pip | `pip config set global.index-url https://byrle.example.com/simple/` |
-| uv | `UV_DEFAULT_INDEX=https://byrle.example.com/simple`, or `index-url` in `uv.toml` |
+| bun | `registry = "https://byrle.example.com/npm/"` under `[install]` in `bunfig.toml` |
+| pip | `pip config set global.index-url https://byrle.example.com/pypi/simple/` |
+| uv | `UV_DEFAULT_INDEX=https://byrle.example.com/pypi/simple`, or `index-url` in `uv.toml` |
 | cargo | in `~/.cargo/config.toml`, below |
 
 ```toml
@@ -158,10 +158,10 @@ Each client also sends the token. `<token>` is the output of `byrle token create
 
 | Client | Token |
 |---|---|
-| npm, pnpm, yarn 1 | `//byrle.example.com/:_authToken=<token>` in `~/.npmrc` |
-| bun | `registry = { url = "https://byrle.example.com/", token = "<token>" }` under `[install]` in `bunfig.toml`, in place of the `registry` line above |
-| pip | `https://alice:<token>@byrle.example.com/simple/` as the index URL |
-| uv | `https://alice:<token>@byrle.example.com/simple` as the index URL |
+| npm, pnpm, yarn 1 | `//byrle.example.com/npm/:_authToken=<token>` in `~/.npmrc` |
+| bun | `registry = { url = "https://byrle.example.com/npm/", token = "<token>" }` under `[install]` in `bunfig.toml`, in place of the `registry` line above |
+| pip | `https://alice:<token>@byrle.example.com/pypi/simple/` as the index URL |
+| uv | `https://alice:<token>@byrle.example.com/pypi/simple` as the index URL |
 | cargo | `CARGO_REGISTRIES_BYRLE_TOKEN=<token>`, or `cargo login --registry byrle`. cargo sends it alone in `Authorization` |
 | `byrle warm` | `BYRLE_TOKEN=<token>` |
 
@@ -192,10 +192,10 @@ the run, before uv and the caches were set up:
 
 ```
      ok  proxy readiness: ready, using intel snapshot sha256:918d1ac1…, taken 2026-09-29T00:15:33Z
-     ok  npm registry: http://127.0.0.1:18990/
-     ok  pip registry: http://127.0.0.1:18990/simple/
+     ok  npm registry: http://127.0.0.1:18990/npm/
+     ok  pip registry: http://127.0.0.1:18990/pypi/simple/
 PROBLEM  uv registry: points at https://pypi.org/simple, not the proxy at http://127.0.0.1:18990
-         fix: set UV_DEFAULT_INDEX to http://127.0.0.1:18990/simple, or `index-url` in uv.toml
+         fix: set UV_DEFAULT_INDEX to http://127.0.0.1:18990/pypi/simple/, or `index-url` in uv.toml
    WARN  npm cache: /home/portacot/.npm/_cacache/index-v5 holds cached packages. A warm cache supplies the whole install, so those packages never reach the proxy
          fix: npm cache clean --force
 ```

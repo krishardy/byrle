@@ -33,8 +33,9 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 byrle_use_latest_node
 
 port="${BYRLE_PORT:-8733}"
-registry="http://127.0.0.1:${port}/"
-index="http://127.0.0.1:${port}/simple/"
+base="http://127.0.0.1:${port}/"
+registry="${base}npm/"
+index="${base}pypi/simple/"
 package="${BYRLE_RETRY_PACKAGE:-lodash}"
 # One wheel and no dependencies, so every deferred request is the one being measured.
 pypi_package="${BYRLE_RETRY_PYPI_PACKAGE:-idna}"
@@ -124,7 +125,7 @@ prepare_cargo() {
         "$crate" >"$dir/Cargo.toml"
     : >"$dir/src/main.rs"
     printf '[source.crates-io]\nreplace-with = "byrle"\n[registries.byrle]\nindex = "sparse+%scargo/"\n' \
-        "$registry" >"$dir/home/config.toml"
+        "$base" >"$dir/home/config.toml"
 }
 
 # The install command for one client, into a cache directory nothing else shares.

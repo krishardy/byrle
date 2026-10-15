@@ -515,7 +515,7 @@ mod tests {
             origins,
             refused_by_policy,
             refuse_unservable,
-            path: "/w",
+            path: "/npm/w",
         })
         .map(|body| serde_json::from_slice(&body).expect("json"))
     }
@@ -1008,7 +1008,7 @@ mod tests {
         let path = url.strip_prefix(PROXY).unwrap();
 
         assert_eq!(
-            classify_path(path),
+            classify_path(&format!("/npm{path}")),
             RequestTarget::Artifact {
                 key: PackageKey::from_registry_name(Ecosystem::Npm, "@babel/core").unwrap(),
                 claimed_version: "7.0.0".into(),
@@ -1036,7 +1036,7 @@ mod tests {
                 origins: &origins,
                 refused_by_policy,
                 refuse_unservable: true,
-                path: "/w",
+                path: "/npm/w",
             })
         };
         assert!(
@@ -1063,7 +1063,7 @@ mod tests {
             origins: &origins,
             refused_by_policy: &HashSet::new(),
             refuse_unservable: true,
-            path: "/w",
+            path: "/npm/w",
         });
         assert_eq!(rewritten, None, "not UTF-8");
     }

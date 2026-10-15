@@ -196,8 +196,8 @@ pub fn recorded_origins(key: &str, contents: &str) -> BTreeSet<String> {
     origins
 }
 
-/// Whether a package manager is pointed at the proxy. A credential in the configured URL
-/// is not printed.
+/// Whether a package manager is pointed at the proxy's path for its ecosystem, such as
+/// `/npm/`. A credential in the configured URL is not printed.
 pub fn check_registry(client: &Client, configured: Option<&str>, proxy: &str) -> Finding {
     let title = format!("{} registry", client.name);
     let Some(configured) = configured.map(str::trim).filter(|s| !s.is_empty()) else {
@@ -208,17 +208,17 @@ pub fn check_registry(client: &Client, configured: Option<&str>, proxy: &str) ->
         );
     };
     let shown = crate::origin::without_credentials(configured);
-
-    if same_origin(configured, proxy) {
+    let expected = format!("{}{}", proxy.trim_end_matches('/'), index_path(client));
+    if same_origin(configured, proxy) && same_path(configured, &expected) {
         return Finding::new(Severity::Ok, title, shown);
     }
     Finding::new(
         Severity::Problem,
         title,
-        format!("points at {shown}, not the proxy at {proxy}"),
+        format!("points at {shown}, not the proxy at {expected}"),
     )
     .with_fix({
-        let url = format!("{proxy}{}", index_path(client).trim_end_matches('/'));
+        let url = expected.clone();
         match &client.registry {
             Some(RegistrySource::Read { set_index, .. }) => set_index(&url),
             _ => format!("{} {url}", client.set_registry),
@@ -769,6 +769,16 @@ pub fn check_policy(path: &str, loaded: Result<&Report, &str>) -> Vec<Finding> {
         ));
     }
     findings
+}
+
+/// Whether two URLs name the same path, ignoring a trailing `/` and the query.
+fn same_path(a: &str, b: &str) -> bool {
+    let path = |url: &str| {
+        reqwest::Url::parse(url)
+            .ok()
+            .map(|url| url.path().trim_end_matches('/').to_owned())
+    };
+    path(a) == path(b)
 }
 
 fn same_origin(a: &str, b: &str) -> bool {
@@ -1455,13 +1465,25 @@ mod tests {
     #[test]
     fn a_client_pointed_at_the_proxy_is_ok() {
         assert_eq!(
-            check_registry(named("npm"), Some(PROXY), PROXY).severity,
+            check_registry(named("npm"), Some("http://127.0.0.1:8080/npm/"), PROXY).severity,
             Severity::Ok
         );
         assert_eq!(
-            check_registry(named("npm"), Some("http://127.0.0.1:8080/"), PROXY).severity,
+            check_registry(named("npm"), Some("http://127.0.0.1:8080/npm"), PROXY).severity,
             Severity::Ok,
             "a trailing slash is the same registry"
+        );
+    }
+
+    /// The proxy's root served npm before every ecosystem had a path of its own.
+    #[test]
+    fn a_client_pointed_at_the_proxy_s_root_is_a_problem() {
+        let finding = check_registry(named("npm"), Some("http://127.0.0.1:8080/"), PROXY);
+        assert_eq!(finding.severity, Severity::Problem);
+        assert!(
+            finding.detail.contains("http://127.0.0.1:8080/npm/"),
+            "{}",
+            finding.detail
         );
     }
 
@@ -1473,7 +1495,7 @@ mod tests {
         assert!(finding.detail.contains("registry.npmjs.org"));
         assert_eq!(
             finding.fix.as_deref(),
-            Some("npm config set registry http://127.0.0.1:8080")
+            Some("npm config set registry http://127.0.0.1:8080/npm/")
         );
     }
 
@@ -2172,7 +2194,7 @@ mod tests {
         );
     }
 
-    /// pip and uv are told how to point at the proxy's index, `/simple` included, and a
+    /// pip and uv are told how to point at the proxy's index, `/pypi/simple/`, and a
     /// credential in the URL they use now is not printed.
     #[test]
     fn a_misdirected_pypi_client_is_told_the_index_and_no_credential_is_printed() {
@@ -2187,19 +2209,16 @@ mod tests {
         assert!(finding.detail.contains("https://example.jfrog.io/simple/"));
         assert_eq!(
             finding.fix.as_deref(),
-            Some("pip config set global.index-url http://127.0.0.1:8080/simple")
+            Some("pip config set global.index-url http://127.0.0.1:8080/pypi/simple/")
         );
         let finding = check_registry(&UV, Some("https://pypi.org/simple"), PROXY);
         assert!(
-            finding
-                .fix
-                .as_deref()
-                .is_some_and(|fix| fix
-                    .contains("to http://127.0.0.1:8080/simple, or `index-url` in uv.toml")),
+            finding.fix.as_deref().is_some_and(|fix| fix
+                .contains("to http://127.0.0.1:8080/pypi/simple/, or `index-url` in uv.toml")),
             "{finding}"
         );
         assert_eq!(
-            check_registry(&PIP, Some("http://127.0.0.1:8080/simple/"), PROXY).severity,
+            check_registry(&PIP, Some("http://127.0.0.1:8080/pypi/simple/"), PROXY).severity,
             Severity::Ok
         );
     }
@@ -2255,7 +2274,7 @@ mod tests {
         let finding = check_registry(named("pnpm"), Some("https://registry.npmjs.org"), PROXY);
         assert_eq!(
             finding.fix.as_deref(),
-            Some("pnpm config set registry http://127.0.0.1:8080")
+            Some("pnpm config set registry http://127.0.0.1:8080/npm/")
         );
     }
 
@@ -2337,10 +2356,10 @@ mod tests {
             gaps: Vec::new(),
         };
         let url = fake_proxy(true, ready).await;
-        let index = format!("{url}/simple/");
+        let index = format!("{url}/pypi/simple/");
         let at_proxy = |program: &str, args: &[&str]| match (program, args) {
             (_, ["--version"]) => Some("1.0".to_owned()),
-            ("npm" | "pnpm" | "yarn", ["config", "get", "registry"]) => Some(format!("{url}/")),
+            ("npm" | "pnpm" | "yarn", ["config", "get", "registry"]) => Some(format!("{url}/npm/")),
             ("pip", ["config", "list"]) => Some(format!("global.index-url='{index}'")),
             _ => None,
         };

@@ -49,7 +49,7 @@ pub const GITHUB: stream::Stream =
 /// This ecosystem's row of [`crate::ecosystem::TABLE`].
 pub const REGISTRY: Registry = Registry {
     ecosystem: Ecosystem::PyPI,
-    prefixes: &[SIMPLE, "/packages/"],
+    prefix: PREFIX,
     always_reachable: &[INDEX, FILES],
     classify_path,
     read_media_type: document_from_content_type,
@@ -67,7 +67,7 @@ pub const REGISTRY: Registry = Registry {
     setup: Setup {
         client: "pip",
         command: clients::pip_set_index,
-        path: SIMPLE,
+        path: "/pypi/simple/",
     },
     uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
     versions: VersionOrder::Pep440,
@@ -128,8 +128,8 @@ pub const SIMPLE_JSON: &str = "application/vnd.pypi.simple.v1+json";
 /// PEP 691's name for the HTML form, read as `text/html` is.
 pub const SIMPLE_HTML: &str = "application/vnd.pypi.simple.v1+html";
 
-/// The path prefix PEP 503 puts a project's index under.
-pub const SIMPLE: &str = "/simple/";
+/// The path the proxy serves PyPI under: the index at `simple/`, files at `packages/`.
+pub const PREFIX: &str = "/pypi/";
 
 /// The index this build reads.
 pub const INDEX: &str = "https://pypi.org/simple";

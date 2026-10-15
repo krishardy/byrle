@@ -19,7 +19,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 byrle_use_latest_node
 
 port="${BYRLE_PORT:-8732}"
-registry="http://127.0.0.1:${port}/"
+registry="http://127.0.0.1:${port}/npm/"
 package="${BYRLE_SMOKE_PACKAGE:-lodash}"
 workdir="$(mktemp -d)"
 proxy_pid=""
@@ -130,7 +130,7 @@ measure() {
 
     local packuments artifacts verified
     packuments="$(count 'packument normalized' "$log")"
-    artifacts="$(grep -coE 'proxied .*url.path=/[^ ]+\.tgz' "$log" 2>/dev/null || true)"
+    artifacts="$(grep -coE 'proxied .*url.path=/npm/[^ ]+\.tgz' "$log" 2>/dev/null || true)"
     verified="$(count 'artifact digest verified' "$log")"
 
     printf '  %-10s exit=%-2s packuments=%-4s artifacts=%-4s verified=%-4s failed-on-503=%s\n' \

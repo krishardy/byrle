@@ -30,7 +30,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$repo_root/scripts/make/lib/token.sh"
 
 port="${BYRLE_PORT:-8734}"
-index="http://127.0.0.1:${port}/simple/"
+index="http://127.0.0.1:${port}/pypi/simple/"
 workdir="$(mktemp -d)"
 log="$workdir/proxy.log"
 clean_log="$workdir/clean.log"
@@ -125,7 +125,7 @@ on_disk="$(installed_purls "$workdir/basic" | sed 's|^pkg:pypi/||; s|@.*||' | so
 # The index page the resolver read, which is the normalised project name in the path.
 # `|| true` on every one of these: under `set -e` a grep that matches nothing exits 1
 # and kills the script with no diagnosis, which is the case each check exists to report.
-indexed="$(grep -oE 'simple index normalized url.path=/simple/[^/ ]+' "$clean_log" \
+indexed="$(grep -oE 'simple index normalized url.path=/pypi/simple/[^/ ]+' "$clean_log" \
     | sed -E 's|.*/simple/||' | sort -u || true)"
 missed="$(comm -23 <(echo "$on_disk") <(echo "$indexed") || true)"
 [[ -z "$missed" ]] || fail "these projects never had an index read: $(echo "$missed" | tr '\n' ' ')"
@@ -250,7 +250,7 @@ else
 fi
 
 echo "==> 7/9  install_scripts refuses a version offering only an sdist, and allow installs it"
-docopt_file="/packages/a2/55/8f8cab2afd404cf578136ef2cc5dfb50baa1761b68c9da1fb1e4eed343c9/docopt-0.6.2.tar.gz"
+docopt_file="/pypi/packages/a2/55/8f8cab2afd404cf578136ef2cc5dfb50baa1761b68c9da1fb1e4eed343c9/docopt-0.6.2.tar.gz"
 printf 'version: 1\ncooldown_days: 0\ninstall_scripts: %s\n' block >"$workdir/block.yaml"
 printf 'version: 1\ncooldown_days: 0\ninstall_scripts: %s\n' allow >"$workdir/allow.yaml"
 start_proxy "$workdir/block.yaml"
@@ -300,7 +300,7 @@ else
     require_token=1
     start_proxy ""
     assert_unauthorized "${index}six/"
-    with_token="http://smoke-python:${proxy_token}@127.0.0.1:${port}/simple/"
+    with_token="http://smoke-python:${proxy_token}@127.0.0.1:${port}/pypi/simple/"
     make_venv "$workdir/token"
     mapfile -t cmd < <(byrle_pip_command "$workdir/token/venv" "$with_token" --quiet "six==1.17.0")
     "${cmd[@]}" || fail "pip install with a token failed"

@@ -6,6 +6,7 @@ use std::collections::BTreeSet;
 
 use serde::Deserialize;
 
+use super::PREFIX;
 use crate::identity::Ecosystem;
 use crate::lockfile::{Locked, LockedArtifact, Lockfile, Pins, Unread, own_source};
 
@@ -138,6 +139,13 @@ fn uv_urls(text: &str) -> Result<Vec<LockedArtifact>, String> {
         .collect())
 }
 
+/// Where the proxy serves a file whose URL has `path`: its `packages/...` under [`PREFIX`],
+/// whichever host the URL names.
+fn proxy_path(path: &str) -> String {
+    let files = path.find("/packages/").map_or(path, |at| &path[at..]);
+    format!("{}{files}", PREFIX.trim_end_matches('/'))
+}
+
 /// A registry package's sdist and wheels, each with the URL it records.
 fn uv_files(locked: Locked, package: TomlPackage) -> Vec<LockedArtifact> {
     package
@@ -150,7 +158,7 @@ fn uv_files(locked: Locked, package: TomlPackage) -> Vec<LockedArtifact> {
                 .url
                 .as_deref()
                 .and_then(|url| reqwest::Url::parse(url).ok())
-                .map(|url| url.path().to_owned())
+                .map(|url| proxy_path(url.path()))
                 .unwrap_or_default(),
             platform: Default::default(),
             url: file.url,

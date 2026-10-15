@@ -49,7 +49,7 @@ ask() {
         sleep 0.5
     done
     status="$(curl -s -o /dev/null -w "%{http_code}" --max-time 30 --noproxy '*' \
-        "http://127.0.0.1:${port}/widget")"
+        "http://127.0.0.1:${port}/npm/widget")"
     kill "$pid"; wait "$pid" 2>/dev/null || true
 }
 

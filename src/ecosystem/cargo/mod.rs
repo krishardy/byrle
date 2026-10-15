@@ -28,7 +28,7 @@ pub const OSV: stream::Stream = stream::osv(bundle::CARGO_STREAM, bundle::CARGO_
 /// This ecosystem's row of [`crate::ecosystem::TABLE`].
 pub const REGISTRY: Registry = Registry {
     ecosystem: Ecosystem::Cargo,
-    prefixes: &[PREFIX],
+    prefix: PREFIX,
     always_reachable: &[INDEX, FILES],
     classify_path,
     read_media_type: document_from_content_type,

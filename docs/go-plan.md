@@ -71,7 +71,7 @@ Go's column of [cargo-plan](cargo-plan.md)'s table, with what was measured since
 
 | | Question | Recommended |
 |---|---|---|
-| Q1 | Where Go is served | Under `/go/`: `GOPROXY=https://byrle.example.com/go`. npm has a package named `go`; its tarball, `/go/-/go-<version>.tgz`, stays npm's, as npm's `cargo` does under `/cargo/` since `b21be4b` |
+| Q1 | Where Go is served | Under `/go/`: `GOPROXY=https://byrle.example.com/go`, as each ecosystem is under its own name ([ecosystem-path-prefixes](engineering_decisions/ecosystem-path-prefixes.md)) |
 | Q2 | How a download is held while it is checked | Held open, not 503: go fails on the first 503 and waited 90 s for an answer. The zip is fetched, spooled, its `h1:` checked and its decision made in the request, then streamed from the spool. `BYRLE_GO_HOLD_SECONDS`, 120 by default, bounds it; past it, 504 |
 | Q3 | Where the `h1:` comes from | sum.golang.org's `lookup`, its note's signature checked with the Go team's published key. Inclusion proofs are left to the go command, which checks them unless `GOSUMDB=off`, `GONOSUMDB` or `GOFLAGS=-insecure`, each of which `doctor` reports. A module sum.golang.org does not know is refused, as an artifact with no strong digest is |
 | Q4 | The checksum database, for the go command | Relayed: `/go/sumdb/sum.golang.org/*` answered from sum.golang.org, so a network that reaches only the proxy still builds. The note is signed, so a relay cannot change it |

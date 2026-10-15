@@ -593,7 +593,7 @@ mod tests {
             .iter()
             .map(|file| {
                 format!(
-                    r#"{{"filename":"{file}","url":"https://byrle.example/packages/{file}",
+                    r#"{{"filename":"{file}","url":"https://byrle.example/pypi/packages/{file}",
                         "hashes":{{"sha256":"{}"}}}}"#,
                     "a".repeat(64)
                 )
@@ -605,7 +605,7 @@ mod tests {
         );
         let router = Router::new()
             .route(
-                "/simple/x/",
+                "/pypi/simple/x/",
                 get(move || {
                     let index = index.clone();
                     async move {
@@ -620,7 +620,7 @@ mod tests {
                 }),
             )
             .route(
-                "/packages/{file}",
+                "/pypi/packages/{file}",
                 get(
                     move |axum::extract::Path(file): axum::extract::Path<String>| async move {
                         if missing.contains(&file) {
@@ -715,7 +715,7 @@ mod tests {
             plan.direct,
             [(
                 "pkg:npm/a@1.0.0 a-1.0.0.tgz".to_owned(),
-                "/a/-/a-1.0.0.tgz".to_owned()
+                "/npm/a/-/a-1.0.0.tgz".to_owned()
             )]
         );
         assert_eq!(plan.skipped, 2);
