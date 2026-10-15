@@ -353,6 +353,24 @@ mod tests {
         );
     }
 
+    /// The client keeps the largest tree it proved: a larger one replaces it, a smaller one
+    /// does not.
+    #[tokio::test]
+    async fn the_largest_tree_proved_is_the_one_kept() {
+        let db = database(60_000);
+        let base = serve(db.clone()).await;
+        let client = Client::new(reqwest::Client::new(), &base, &key(&db.pair)).unwrap();
+        let kept = || async { client.latest.lock().await.map(|tree| tree.size) };
+        client.lookup("example.com/m", "v1").await.unwrap();
+        assert_eq!(kept().await, Some(60_000));
+        *db.size.lock().unwrap() = 70_000;
+        client.lookup("example.com/m", "v1").await.unwrap();
+        assert_eq!(kept().await, Some(70_000));
+        *db.size.lock().unwrap() = 65_536;
+        client.lookup("example.com/m", "v1").await.unwrap();
+        assert_eq!(kept().await, Some(70_000));
+    }
+
     /// Trees that grow are each checked against the last; a tree that does not extend it,
     /// or a second root for one size, is refused, and so is a root the record is not under.
     #[tokio::test]
