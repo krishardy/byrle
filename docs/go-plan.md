@@ -114,7 +114,10 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
 ## Steps
 
 1. The `h1:` dirhash over a module zip and over a `go.mod`, in `src/ecosystem/go/`, checked
-   against sum.golang.org's lines for real modules.
+   against sum.golang.org's lines for real modules. Done 2026-10-15: `ecosystem::go::dirhash`, `zip_h1` and
+   `go_mod_h1`, matching sum.golang.org's lines for `rsc.io/quote` v1.5.2. A zip entry's
+   name is hashed as its bytes, and one that is not UTF-8 is refused, as Go's module zips
+   require.
 2. The checksum database client: lookup, note signature, tiles and inclusion proof (Q3),
    and the relay (Q4).
 3. The Go adapter, with the hooks of "How the hooks are built": paths, `@v/list` and `@latest`

@@ -4,6 +4,7 @@
 //! See docs/engineering_decisions/0047-adapter-interface.md.
 
 pub mod cargo;
+pub mod go;
 pub mod npm;
 pub mod pypi;
 
