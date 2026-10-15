@@ -97,7 +97,7 @@ pub struct TrustPub {
     http: reqwest::Client,
     api: String,
     interval: Duration,
-    /// When the next request may be made. Held across the wait, so requests go one at a time.
+    /// When the next request may start, an interval after the last one started.
     next: tokio::sync::Mutex<Instant>,
 }
 
@@ -116,15 +116,15 @@ impl TrustPub {
     async fn page(&self, url: &str) -> Result<Page, String> {
         let mut next = self.next.lock().await;
         tokio::time::sleep_until(*next).await;
-        let answered = self
+        *next = Instant::now() + self.interval;
+        drop(next);
+        let response = self
             .http
             .get(url)
             .header(reqwest::header::USER_AGENT, USER_AGENT)
             .send()
-            .await;
-        *next = Instant::now() + self.interval;
-        drop(next);
-        let response = answered.map_err(|e| format!("{url}: {e}"))?;
+            .await
+            .map_err(|e| format!("{url}: {e}"))?;
         if !response.status().is_success() {
             return Err(format!("{url} answered {}", response.status().as_u16()));
         }
@@ -165,6 +165,11 @@ impl Detector for TrustPub {
 
     fn reads(&self, ecosystem: Ecosystem) -> bool {
         ecosystem == Ecosystem::Cargo
+    }
+
+    /// One interval: most crates need one page.
+    fn awaited(&self) -> Option<Duration> {
+        Some(self.interval)
     }
 
     /// A version the pages do not list is older than [`OPENED`] when they reached it, and
@@ -393,6 +398,7 @@ mod tests {
         );
         assert!(x.is_ok() && y.is_ok() && z.is_ok());
         assert!(started.elapsed() >= Duration::from_millis(400));
+        assert_eq!(detector.awaited(), Some(Duration::from_millis(200)));
     }
 
     #[test]
@@ -402,5 +408,6 @@ mod tests {
         assert!(detector.reads(Ecosystem::Cargo));
         assert!(!detector.reads(Ecosystem::Npm));
         assert!(!detector.reads(Ecosystem::PyPI));
+        assert_eq!(detector.awaited(), Some(Duration::ZERO));
     }
 }

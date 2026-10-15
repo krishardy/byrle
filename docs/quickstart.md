@@ -97,7 +97,7 @@ INFO point a client at the proxy byrle.client.name="pip" byrle.client.command=pi
 and cargo's, from a run on 2026-10-14:
 
 ```
-INFO point a client at the proxy byrle.client.name="cargo" byrle.client.command=in ~/.cargo/config.toml: [registries.byrle] index = "sparse+http://127.0.0.1:18081/cargo/" and credential-provider = "cargo:token", and [source.crates-io] replace-with = "byrle"
+INFO point a client at the proxy byrle.client.name="cargo" byrle.client.command=in ~/.cargo/config.toml: [registries.byrle] index = "sparse+http://127.0.0.1:18081/cargo/" and credential-provider = "cargo:token", [source.crates-io] replace-with = "byrle", and [net] retry = 30
 ```
 
 `GET /-/byrle/ready` answers 200 once the store holds a snapshot. Point a readiness probe
@@ -125,12 +125,21 @@ replace-with = "byrle"
 [registries.byrle]
 index = "sparse+https://byrle.example.com/cargo/"
 credential-provider = "cargo:token"
+
+[net]
+retry = 30
 ```
 
 cargo reads the replacement only from a file: cargo 1.99.0 ignored
 `CARGO_SOURCE_CRATES_IO_REPLACE_WITH` and fetched from crates.io. Without
 `credential-provider`, it refused a registry asking for a token: "authenticated registries
 require a credential-provider to be configured".
+
+A download answers 503 until crates.io's API says who published the version, one crate a
+second ([cargo-provenance](engineering_decisions/cargo-provenance.md)). cargo 1.99.0 waited
+at most 10 s for each retry, whatever `Retry-After` asked, and retries 3 times by default.
+A cold `cargo fetch` of 161 crates through the proxy failed after 23 s with the default,
+and completed in 164 s with `retry = 20`. `retry = 30` covers about 300 crates.
 
 Each line was run on 2026-09-29, in a home directory of its own and against a fresh proxy
 at `http://127.0.0.1:18995`, then used to install one package:

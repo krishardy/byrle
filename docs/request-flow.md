@@ -12,8 +12,9 @@ other answer is the same in both modes
 ([observe-mode](engineering_decisions/observe-mode.md)).
 
 "Refusal status" is `BYRLE_REFUSAL_STATUS`: 403 by default, settable per ecosystem and
-client to any code from 400 to 599. Every 503 carries `Retry-After: 1` and
-`x-byrle-not-ready` naming the case.
+client to any code from 400 to 599. Every 503 carries `Retry-After` and
+`x-byrle-not-ready` naming the case. `Retry-After` is 1, except for a download waiting on
+an awaited detector: then it is that detector's runs in flight times one run's time.
 
 ```mermaid
 flowchart TD
@@ -52,7 +53,9 @@ flowchart TD
 
     ANALYSIS -->|last fetch did not<br/>match the digest| A502X[502: bytes the metadata<br/>does not describe]
     ANALYSIS -->|not finished, or never<br/>stored: upstream 404,<br/>fetch failed, past deadline| A503A[503 artifact-analysis<br/>job started]
-    ANALYSIS -->|stored, or nothing to read| FWD
+    ANALYSIS -->|stored, or nothing to read| AWAITED{awaited detector<br/>result stored?}
+    AWAITED -->|no: cargo's trustpub| A503D[503 artifact-analysis<br/>lookup started]
+    AWAITED -->|yes, or none| FWD
 
     FWD[fetch from upstream] --> SENT{upstream answered?}
     SENT -->|connect failed, or 10 s<br/>without connecting| U502[502]

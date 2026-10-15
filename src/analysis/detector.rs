@@ -133,6 +133,12 @@ pub trait Detector<S: ?Sized = Target>: Send + Sync {
         true
     }
 
+    /// How long one run takes, when a version's download answers 503 until this detector's
+    /// result is stored. `None` when it is not waited for.
+    fn awaited(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Run it on `subject`: a [`Target`] for a command, what the proxy holds for one built
     /// in. Each caller decides when it runs and whether its result is stored.
     /// Errors when it could not run at all, which stores nothing.
@@ -499,6 +505,34 @@ esac
         assert!(knows("virustotal_detected"));
         assert!(knows("trustpub_dropped"));
         assert_eq!(joined::<3>(&["a"], &["b", "c"]), ["a", "b", "c"]);
+    }
+
+    /// A detector reads every ecosystem and holds no download unless it says otherwise.
+    #[test]
+    fn a_detector_reads_every_ecosystem_and_is_not_awaited_by_default() {
+        struct Plain;
+        impl Detector for Plain {
+            fn name(&self) -> &str {
+                "plain"
+            }
+            fn version(&self) -> &str {
+                "1"
+            }
+            fn detect<'a>(&'a self, _: &'a Target) -> Detecting<'a> {
+                Box::pin(std::future::ready(Ok(Detection::default())))
+            }
+        }
+        assert!(Plain.reads(Ecosystem::Npm) && Plain.reads(Ecosystem::Cargo));
+        assert_eq!(Plain.awaited(), None);
+        let target = Target {
+            ecosystem: Ecosystem::Npm,
+            name: "x".to_owned(),
+            version: "1".to_owned(),
+        };
+        assert_eq!(
+            at_once(Plain.detect(&target)),
+            Some(Ok(Detection::default()))
+        );
     }
 
     /// A detector built in answers on the first poll. One that would wait gives `None`.

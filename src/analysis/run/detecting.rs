@@ -4,6 +4,7 @@
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use tokio::sync::{Semaphore, watch};
 use tracing::{info, warn};
@@ -163,6 +164,35 @@ impl Analyser {
         None
     }
 
+    /// The detectors a download of `target` waits on, each awaited one reading its ecosystem
+    /// that is not in `done`, with a run's time for each of its runs in flight, at least one.
+    pub fn awaiting(
+        &self,
+        target: &Target,
+        done: &[(String, Detection)],
+    ) -> Vec<(String, Duration)> {
+        let Some(detectors) = &self.detectors else {
+            return Vec::new();
+        };
+        let in_flight = detectors.in_flight.lock().expect("detector in-flight lock");
+        detectors
+            .reading(target.ecosystem)
+            .filter(|detector| !done.iter().any(|(name, _)| name == detector.name()))
+            .filter_map(|detector| {
+                let per_run = detector.awaited()?;
+                let runs = in_flight
+                    .iter()
+                    .filter(|key| key.detector == detector.name())
+                    .count()
+                    .max(1);
+                Some((
+                    detector.name().to_owned(),
+                    std::iter::repeat_n(per_run, runs).sum(),
+                ))
+            })
+            .collect()
+    }
+
     /// How many detectors are set that read versions of `ecosystem`.
     pub fn detector_count(&self, ecosystem: Ecosystem) -> usize {
         self.detectors
@@ -210,6 +240,7 @@ pub(crate) mod tests {
         pub(crate) answer: Result<Detection, String>,
         pub(crate) delay: Duration,
         pub(crate) runs: AtomicU64,
+        pub(crate) awaited: bool,
     }
 
     impl Fake {
@@ -230,6 +261,7 @@ pub(crate) mod tests {
                 }),
                 delay: Duration::ZERO,
                 runs: AtomicU64::new(0),
+                awaited: false,
             })
         }
     }
@@ -240,6 +272,9 @@ pub(crate) mod tests {
         }
         fn version(&self) -> &str {
             "3.2.0"
+        }
+        fn awaited(&self) -> Option<Duration> {
+            self.awaited.then_some(self.delay)
         }
         fn detect<'a>(&'a self, _: &'a Target) -> Detecting<'a> {
             Box::pin(async move {
@@ -319,6 +354,51 @@ pub(crate) mod tests {
         assert_eq!(analyser.detections_started(), 0);
     }
 
+    /// A download waits on each awaited detector reading its ecosystem until its result is
+    /// stored, and on no other.
+    #[tokio::test]
+    async fn a_download_awaits_only_an_awaited_detector_with_no_result() {
+        use crate::ecosystem::cargo::trustpub::TrustPub;
+        let trustpub = TrustPub::new(reqwest::Client::new(), "http://127.0.0.1:9", Duration::ZERO);
+        let analyser = made("detect-awaited", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_detectors(vec![Arc::new(trustpub), Fake::firing(&[])]);
+        let cargo = Target {
+            ecosystem: Ecosystem::Cargo,
+            ..target()
+        };
+        assert_eq!(
+            analyser.awaiting(&cargo, &[]),
+            [("trustpub".to_owned(), Duration::ZERO)]
+        );
+        let stored = [("trustpub".to_owned(), Detection::default())];
+        assert!(analyser.awaiting(&cargo, &stored).is_empty());
+        assert!(analyser.awaiting(&target(), &[]).is_empty());
+        let off = made("detect-awaited-off", 1 << 20, Arc::new(InProcess::new(8)));
+        assert!(off.awaiting(&cargo, &[]).is_empty());
+
+        let slow = Arc::new(Fake {
+            delay: Duration::from_millis(300),
+            awaited: true,
+            ..Arc::try_unwrap(Fake::firing(&[])).ok().expect("one owner")
+        });
+        let busy = made("detect-awaited-busy", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_detectors(vec![slow]);
+        let version = |version: &str| Target {
+            version: version.to_owned(),
+            ..target()
+        };
+        let mut runs = busy.start_detecting(&version("1.0.0"), &[]);
+        runs.extend(busy.start_detecting(&version("2.0.0"), &[]));
+        assert_eq!(
+            busy.awaiting(&version("3.0.0"), &[]),
+            [("guarddog".to_owned(), Duration::from_millis(600))],
+            "a run's time for each of the two in flight"
+        );
+        for run in runs {
+            run.await.expect("finishes");
+        }
+    }
+
     /// Off, nothing runs. A detector that fails, or outlasts the deadline, stores nothing, and
     /// a store that cannot answer is logged.
     #[tokio::test]
@@ -337,6 +417,7 @@ pub(crate) mod tests {
             answer: Err("no".to_owned()),
             delay: Duration::ZERO,
             runs: AtomicU64::new(0),
+            awaited: false,
         });
         let slow = Arc::new(Fake {
             delay: Duration::from_secs(30),

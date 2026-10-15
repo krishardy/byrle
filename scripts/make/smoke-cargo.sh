@@ -11,9 +11,9 @@
 #   4. under `install_scripts: block`, serde, which has a build script, and serde_derive,
 #      a proc-macro, are refused once their .crate files are read, and cargo fetch fails;
 #      under `allow` it fetches
-#   5. crates.io's API is asked who published cpufeatures: 0.3.1, published by hand after
-#      0.3.0 was published by trusted publishing, reports a `trustpub_dropped` signal, and
-#      0.3.0 none
+#   5. a cpufeatures download answers 503 until crates.io's API says who published it: 0.3.1,
+#      published by hand after 0.3.0 was published by trusted publishing, is served with a
+#      `trustpub_dropped` signal, and 0.3.0 with none
 #   6. with Postgres, after a refresh: rustls 0.23.45, whose four RUSTSEC advisories score
 #      2.3 to 4.0, is refused under `max_cvss: 3.9`, and 0.23.46, which fixes them, resolves
 #   7. under the default `max_cvss` and `install_scripts: allow`, rustls 0.23.45 is served
@@ -200,25 +200,19 @@ client "$workdir/allowed" fetch --quiet || fail "cargo fetch failed under instal
 echo "    ok (serde and serde_derive 403 naming install_scripts; fetched under allow)"
 stop_proxy
 
-echo "==> 5/8  a version published by hand after trusted publishing is a signal"
-# The lookup runs beside the decision, so the second download reports what it found.
+echo "==> 5/8  a download waits for crates.io's API, and a version published by hand is a signal"
 start_proxy "$workdir/default.yaml"
 for version in 0.3.0 0.3.1; do
     [[ "$(download cpufeatures "$version")" == "200" ]] || fail "cpufeatures $version was not served"
-    for _ in $(seq 1 30); do
-        logged "detector ran.*trustpub.*cpufeatures.*$version" && break
-        sleep 1
-    done
-    logged "detector ran.*trustpub.*cpufeatures.*$version" \
-        || fail "crates.io was not asked about cpufeatures $version"
-    [[ "$(download cpufeatures "$version")" == "200" ]] || fail "cpufeatures $version was not served"
+    logged "deferred.*pkg:cargo/cpufeatures@$version.*trustpub" \
+        || fail "cpufeatures $version was served before crates.io was asked"
 done
 logged "signals reported.*pkg:cargo/cpufeatures@0.3.1.*trustpub dropped" \
     || fail "cpufeatures 0.3.1 reported no trustpub_dropped signal"
 if logged "signals reported.*pkg:cargo/cpufeatures@0.3.0"; then
     fail "cpufeatures 0.3.0 reported a signal"
 fi
-echo "    ok (cpufeatures 0.3.1 reported trustpub_dropped; 0.3.0 nothing)"
+echo "    ok (each held until crates.io answered; 0.3.1 served with trustpub_dropped, 0.3.0 with none)"
 stop_proxy
 
 echo "==> 6/8  an osv/cargo advisory over max_cvss is refused, and the fix resolves"

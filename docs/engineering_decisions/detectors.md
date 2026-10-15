@@ -16,7 +16,7 @@ Decided with the user 2026-09-30.
 |---|---|
 | `Detector` | a trait: a name, a version, and `detect`, which reports the rules that fired on a package version |
 | role | report only. A detector's rules are signals in the risk score and refuse nothing. The install-script reader and attestation verification decide verdicts and defer the client; they are not detectors |
-| running | in the background, never deferring a request: 2 slots of their own, one run per version and detector at a time. A decision reads the stored results, and starts the detectors that have none unless the policy blocks the version. The watcher does the same for a new version |
+| running | in the background, deferring no request except for an awaited detector, `trustpub`, below: 2 slots of their own, one run per version and detector at a time. A decision reads the stored results, and starts the detectors that have none unless the policy blocks the version. The watcher does the same for a new version |
 | result | kept by detector, ecosystem, registry name and version, and read back only for the detector version that wrote it. A run that could not be made stores nothing, and runs again on the next decision |
 | weight | each rule fired is a signal, weighing 1 unless `signal_weights` says otherwise under `detector.rule`, or the rule alone for a detector built in. A key naming a rule the detector does not have is refused at load |
 
@@ -30,7 +30,7 @@ result is stored.
 | `metadata` | `Listing`: the held records, the full document, the names served, the time | on each decision, before the verdict | nothing: its answer changes with the clock and the packages served | `metadata 1` |
 | `source` | `Sourced`: the comparison of one artifact with its source | on each decision with a stored comparison. The comparison runs in the analyser, per artifact digest, with its own slots and deadline | the comparison, by digest and `COMPARER` | `source 1`, `COMPARER` |
 | `virustotal` | `Scanned`: VirusTotal's answer about one artifact | on each decision with a stored answer. The lookup runs in the analyser, per artifact digest, one at a time behind a rate limiter: [virustotal](virustotal.md) | the answer, by digest | `virustotal 1` |
-| `trustpub` | `Target`, cargo versions only: crates.io's API asked who published each version of the crate | in the background, as a command does, one request each `BYRLE_CRATES_API_INTERVAL_MS`: [cargo-provenance](cargo-provenance.md) | its detection, by detector version | `trustpub 1` |
+| `trustpub` | `Target`, cargo versions only: crates.io's API asked who published each version of the crate | in the background, as a command does, one request each `BYRLE_CRATES_API_INTERVAL_MS`. Awaited: the download answers 503 until its result is stored: [cargo-provenance](cargo-provenance.md) | its detection, by detector version | `trustpub 1` |
 | a command | `Target`: ecosystem, name and version | in the background, on 2 slots | its detection, by detector version | what `program --version` prints last |
 
 `metadata`, `source` and `virustotal` answer on the first poll of `detect`. `at_once` reads

@@ -56,7 +56,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Semaphore;
 use tracing::{debug, error, info, warn};
 
@@ -1369,7 +1369,13 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     }
     deciding.scan(&fetch, scanned, refusal.as_ref());
     deciding.detect(&record, &detected, refusal.as_ref());
-    let (answered, step) = deciding.answer(refusal.as_ref(), unservable, fetch, state);
+    let awaiting = deciding.awaiting(&record, &detected, refusal.as_ref());
+    let (answered, step) = deciding.answer(
+        refusal.as_ref(),
+        unservable,
+        fetch,
+        Held { state, awaiting },
+    );
     let written = pinned_line(
         proxy,
         &Pinned {
@@ -1540,6 +1546,19 @@ impl<'a> Deciding<'a> {
     ) {
         if let (false, Some(analyser)) = (blocks(refusal), self.proxy.config.analyser.as_deref()) {
             analyser.start_detecting(&target(record), detected);
+        }
+    }
+
+    /// The detectors whose result the download waits on, none when `refusal` blocks it.
+    fn awaiting(
+        &self,
+        record: &PackageRecord,
+        detected: &[(String, crate::analysis::detector::Detection)],
+        refusal: Option<&enforce::Refusal>,
+    ) -> Vec<(String, Duration)> {
+        match (blocks(refusal), self.proxy.config.analyser.as_deref()) {
+            (false, Some(analyser)) => analyser.awaiting(&target(record), detected),
+            _ => Vec::new(),
         }
     }
 
@@ -1823,14 +1842,14 @@ impl<'a> Deciding<'a> {
     }
 
     /// What to answer, in order: the policy's refusal, unless observing, an origin the
-    /// proxy does not serve, no strong digest, then the analysis.
+    /// proxy does not serve, no strong digest, the analysis, then the awaited detectors.
     /// Returns what the audit line records, and the answer.
     fn answer(
         &self,
         refusal: Option<&enforce::Refusal>,
         unservable: Option<String>,
         fetch: ArtifactFetch,
-        state: AnalysisState,
+        held: Held,
     ) -> (audit::Answered, ArtifactStep) {
         if let Some(refusal) = refusal {
             if self.proxy.config.mode == Mode::Enforce {
@@ -1841,7 +1860,7 @@ impl<'a> Deciding<'a> {
         if let Some(origin) = unservable.filter(|_| self.proxy.config.refuse_unservable) {
             return (audit::Answered::Unservable, self.unservable(&origin));
         }
-        if fetch.digest.is_none() {
+        let Some(digest) = fetch.digest.clone() else {
             return (
                 audit::Answered::NoStrongDigest,
                 self.unassessable(
@@ -1850,13 +1869,25 @@ impl<'a> Deciding<'a> {
                      verified nor analysed",
                 ),
             );
-        }
-        match state {
+        };
+        match held.state {
             AnalysisState::Mismatched(mismatch) => (
                 audit::Answered::UpstreamMismatch,
                 self.mismatched(&mismatch),
             ),
-            AnalysisState::Pending(job) => (audit::Answered::Deferred, self.defer(job)),
+            AnalysisState::Pending(job) => {
+                self.proxy
+                    .config
+                    .analyser
+                    .as_ref()
+                    .expect("a pending job has an analyser")
+                    .start(job);
+                (audit::Answered::Deferred, self.defer(digest, &[]))
+            }
+            AnalysisState::Decided if !held.awaiting.is_empty() => (
+                audit::Answered::Deferred,
+                self.defer(digest, &held.awaiting),
+            ),
             AnalysisState::Decided => (audit::Answered::Served, ArtifactStep::Fetch(fetch)),
         }
     }
@@ -1946,15 +1977,8 @@ impl<'a> Deciding<'a> {
         )
     }
 
-    /// 503 until `job`, started here, has analysed the artifact.
-    fn defer(&self, job: Job) -> ArtifactStep {
-        let digest = job.digest.clone();
-        self.proxy
-            .config
-            .analyser
-            .as_ref()
-            .expect("a pending job has an analyser")
-            .start(job);
+    /// 503 for the artifact with `digest` until its analysis, and each of `awaiting`, is stored.
+    fn defer(&self, digest: Sri, awaiting: &[(String, Duration)]) -> ArtifactStep {
         let deferrals = self
             .proxy
             .deferred
@@ -1967,13 +1991,16 @@ impl<'a> Deciding<'a> {
             byrle.package.claimed_purl = %self.purl,
             byrle.artifact.digest = %digest,
             byrle.deferral.count = deferrals,
+            byrle.deferral.detectors = ?awaiting,
             user_agent.original = %self.request.client,
             "deferred: the artifact has not been analysed"
         );
+        let wait = awaiting.iter().map(|(_, wait)| *wait).max();
         ArtifactStep::Answer(
             NotReady::Analysing {
                 purl: self.purl.clone(),
                 digest,
+                retry_after: wait.map_or(1, |wait| wait.as_secs_f64().ceil().max(1.0) as u64),
             }
             .response(),
         )
@@ -3346,6 +3373,13 @@ impl Proxy {
     }
 }
 
+/// What a download waits on: the artifact's analysis, then the detectors named.
+struct Held {
+    state: AnalysisState,
+    /// Each detector waited on, and how long it is expected to take.
+    awaiting: Vec<(String, Duration)>,
+}
+
 /// What the analyser found beside the artifact's own analysis, weighed as signals.
 struct Beside<'a> {
     sourced: Option<&'a Sourced>,
@@ -3371,7 +3405,12 @@ enum NotReady {
     /// The snapshot has no stream that can report a finding or malware for this ecosystem.
     Uncovered(Ecosystem),
     /// The artifact's analysis has started, and the client's retry is decided on it.
-    Analysing { purl: String, digest: Sri },
+    Analysing {
+        purl: String,
+        digest: Sri,
+        /// The seconds to wait: the awaited detectors' expected time, else 1.
+        retry_after: u64,
+    },
 }
 
 impl NotReady {
@@ -3410,16 +3449,20 @@ impl NotReady {
                 "byrle: the intel snapshot has no advisory stream for {ecosystem}, so no \
                  {ecosystem} package is served unchecked\n"
             ),
-            Self::Analysing { purl, digest } => format!(
+            Self::Analysing { purl, digest, .. } => format!(
                 "byrle: {purl}, {digest}, has not been analysed yet; the analysis has \
                  started, ask again shortly\n"
             ),
         };
+        let retry_after = match &self {
+            Self::Analysing { retry_after, .. } => retry_after.to_string(),
+            _ => RETRY_AFTER_SECONDS.to_owned(),
+        };
         let mut response = (
             StatusCode::SERVICE_UNAVAILABLE,
             [
-                (header::RETRY_AFTER, RETRY_AFTER_SECONDS),
-                (NOT_READY, self.reason()),
+                (header::RETRY_AFTER, retry_after),
+                (NOT_READY, self.reason().to_owned()),
             ],
             body,
         )
@@ -5094,6 +5137,7 @@ mod tests {
                 NotReady::Analysing {
                     purl: "pkg:npm/widget@1.0.0".to_owned(),
                     digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+                    retry_after: 1,
                 },
                 "artifact-analysis",
             ),
@@ -6789,6 +6833,7 @@ mod tests {
         let analysing = NotReady::Analysing {
             purl: "pkg:npm/widget@1.0.0".to_owned(),
             digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+            retry_after: 1,
         };
         let policed = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log));
         audit_not_ready(&policed, &key, Some("1.0.0"), &analysing, None);
@@ -9034,6 +9079,7 @@ mod tests {
         let analysing = NotReady::Analysing {
             purl: "pkg:npm/widget@1.0.0".to_owned(),
             digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+            retry_after: 1,
         };
         assert_eq!(analysing.answered(), None, "its decision line records it");
     }
@@ -9511,6 +9557,63 @@ mod tests {
     const SOURCE_POLICY: &str =
         "version: 1\ncooldown_days: 0\ninstall_scripts: allow\nprovenance: allow\n";
 
+    /// An awaited detector holds the download with 503, asking for its expected wait, until
+    /// its result is stored. A denied version answers 403 instead.
+    #[tokio::test]
+    async fn a_download_waits_for_an_awaited_detector() {
+        use crate::analysis::run::detecting::tests::Fake;
+        let awaited = || {
+            Arc::new(Fake {
+                delay: std::time::Duration::from_millis(1500),
+                awaited: true,
+                ..Arc::try_unwrap(Fake::firing(&[])).ok().expect("one owner")
+            })
+        };
+        let (proxy, analyser, _, packument) =
+            sourcing("detect-awaited", SOURCE_POLICY, vec![awaited()]).await;
+        hold_document(
+            &proxy,
+            packument.to_string().as_bytes(),
+            crate::record::DocumentDetail::Full,
+        );
+        const TARBALL: &str = "/widget/-/widget-1.0.0.tgz";
+        let (status, _) = refused(pinned(&proxy, TARBALL).await).await;
+        assert_eq!(status, 503, "the analysis has started");
+        tokio::time::timeout(std::time::Duration::from_secs(10), analyser.ended(1))
+            .await
+            .expect("the analysis ends");
+        let ArtifactStep::Answer(held) = pinned(&proxy, TARBALL).await else {
+            panic!("the detector has not answered");
+        };
+        assert_eq!(held.status(), 503);
+        assert_eq!(held.headers()[NOT_READY], "artifact-analysis");
+        assert_eq!(
+            held.headers()[header::RETRY_AFTER],
+            "2",
+            "the detector's 1.5 s, in whole seconds"
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            analyser.detections_ended(1),
+        )
+        .await
+        .expect("the detector ends");
+        assert!(fetched(&pinned(&proxy, TARBALL).await));
+
+        let denied =
+            format!("{SOURCE_POLICY}denials:\n  - purl: pkg:npm/widget@1.0.0\n    reason: r\n");
+        let (proxy, analyser, _, packument) =
+            sourcing("detect-awaited-denied", &denied, vec![awaited()]).await;
+        hold_document(
+            &proxy,
+            packument.to_string().as_bytes(),
+            crate::record::DocumentDetail::Full,
+        );
+        let (status, _) = refused(pinned(&proxy, TARBALL).await).await;
+        assert_eq!(status, 403);
+        assert_eq!(analyser.detections_started(), 0);
+    }
+
     /// A decision starts the detectors without waiting for them, and a later one reports
     /// each rule that fired. A blocked version starts none, and the watcher starts them.
     #[tokio::test]
@@ -9576,6 +9679,7 @@ mod tests {
             answer: Err("no".to_owned()),
             delay: std::time::Duration::ZERO,
             runs: std::sync::atomic::AtomicU64::new(0),
+            awaited: false,
         });
         let (proxy, analyser, _, _) =
             sourcing("detect-watched-failing", SOURCE_POLICY, vec![failing]).await;

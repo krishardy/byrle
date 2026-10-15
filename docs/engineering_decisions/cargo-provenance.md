@@ -24,11 +24,28 @@ not set.
 |---|---|
 | asked | `/api/v1/crates/{name}/versions?per_page=100&sort=date`, following `meta.next_page` until a page reaches before 2025-07, at most 20 pages |
 | when | in the background, as a command detector runs, on each cargo version a decision serves and has no stored result for. A version the policy blocks is not asked about |
-| pace | one request each `BYRLE_CRATES_API_INTERVAL_MS`, 1000 by default, per proxy process: two replicas make two requests a second |
+| held | decided by the user 2026-10-15: the download answers 503, `x-byrle-not-ready: artifact-analysis`, until the result is stored, so the first answer served carries the signal. In observe mode too, as the artifact's own analysis is |
+| `Retry-After` | the `trustpub` runs in flight, this one included, times `BYRLE_CRATES_API_INTERVAL_MS`, in whole seconds |
+| pace | a request starts each `BYRLE_CRATES_API_INTERVAL_MS`, 1000 by default, per proxy process: two replicas make two requests a second |
 | which API | `BYRLE_CRATES_API`. Unset, `https://crates.io` when `BYRLE_UPSTREAM_CARGO` is crates.io's index, else none: a mirror's crates are not looked up on crates.io under the same names. `off` asks nothing |
 | stored | the detection, by detector version, as a command's is. A version listed nowhere since 2025-07 is stored with nothing fired when the pages reached before it, and not stored otherwise |
-| failure | a 429, a 5xx, a 404 or a page that does not parse stores nothing, and the next decision asks again |
+| failure | a 429, a 5xx, a 404 or a page that does not parse stores nothing, the download stays 503, and the next decision asks again: fail closed, as provenance verification is |
 | User-Agent | `byrle/<version> (https://github.com/krishardy/byrle)` |
+
+### What the hold costs a cold build, measured 2026-10-15
+
+cargo 1.99.0, against a stub answering 503: it waited `Retry-After` up to 10 s and no
+longer (asked for 30, it retried 10.1 s and 10.0 s later), 3 retries by default, and
+`net.retry` more.
+
+| Cold `cargo fetch` through the proxy | Crates | Result |
+|---|---|---|
+| `smoke-cargo` step 1, default retries | 8 | built |
+| `reqwest`, `tokio` and `serde_json`, default retries | 161 | failed after 23 s, 20 looked up |
+| the same, `net.retry = 20` | 161 | fetched in 164 s, 160 looked up; `getrandom` 0.2.17 reported `trustpub_dropped` |
+
+The holds asked `Retry-After: 140` to `160`. The cargo line the proxy prints sets
+`[net] retry = 30`, about 300 crates' lookups.
 
 npm publishes signed attestations, which the `provenance` check verifies and refuses on, so
 npm's `_npmUser.trustedPublisher` is not read as a signal.

@@ -91,10 +91,14 @@ pub const REGISTRY: Registry = Registry {
 pub fn config_line(url: &str) -> String {
     format!(
         "in ~/.cargo/config.toml: [registries.byrle] index = \"sparse+{}/\" and \
-         credential-provider = \"cargo:token\", and [source.crates-io] replace-with = \"byrle\"",
+         credential-provider = \"cargo:token\", [source.crates-io] replace-with = \"byrle\", \
+         and [net] retry = {NET_RETRY}",
         url.trim_end_matches('/')
     )
 }
+
+/// cargo's retries, at most 10 s each: about 300 crates' lookups at one a second.
+pub const NET_RETRY: u32 = 30;
 
 /// The path the proxy serves cargo's registry under.
 pub const PREFIX: &str = "/cargo/";
@@ -203,6 +207,7 @@ mod tests {
             "index = \"sparse+http://127.0.0.1:8080/cargo/\"",
             "credential-provider = \"cargo:token\"",
             "replace-with = \"byrle\"",
+            "[net] retry = 30",
         ] {
             assert!(line.contains(needed), "{line}");
         }
