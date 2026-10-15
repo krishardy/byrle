@@ -46,6 +46,7 @@ tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 # reads it through flate2, already in the tree. `deflate` would add zopfli, which only compresses,
 # and the default features add aes-crypto, bzip2, lzma, ppmd, xz and zstd.
 tar = { version = "0.4.46", default-features = false }
+aws-lc-rs = "1.18.1"
 zip = { version = "9.0.2", default-features = false, features = ["deflate-flate2"] }
 toml = { version = "1.1.6", default-features = false, features = ["parse", "serde"] }
 # Verifies npm and PyPI attestations against Sigstore's production root, embedded in the
@@ -76,7 +77,6 @@ libc = "0.2.189"
 tracing = { version = "0.1.44", features = ["log-always"] }
 log = "0.4.34"
 ctor = "1.0.13"
-aws-lc-rs = "1.18.1"
 
 # `make mutants` builds one copy of the crate per mutant. No debug information: a mutant is
 # caught or missed by its tests, and nobody attaches a debugger to it.

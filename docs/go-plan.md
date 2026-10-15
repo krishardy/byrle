@@ -118,11 +118,17 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
    `go_mod_h1`, matching sum.golang.org's lines for `rsc.io/quote` v1.5.2. A zip entry's
    name is hashed as its bytes, and one that is not UTF-8 is refused, as Go's module zips
    require.
-2. The checksum database client: lookup, note signature, tiles and inclusion proof (Q3),
-   and the relay (Q4).
+2. The checksum database client: lookup, note signature, tiles and inclusion proof (Q3).
+   Done 2026-10-15: `ecosystem::go::note`, `tlog` and `sumdb`. A lookup is believed when
+   sum.golang.org's key signs its tree head, the record is proved in that tree, and the
+   tree is proved consistent with the largest one seen before, by RFC 9162's proofs read
+   from the log's tiles. Against sum.golang.org, `rsc.io/quote` v1.5.2 was proved in a
+   tree of 69,104,914 records, and a second lookup's tree consistent with it, in 5.4 s.
+   The relay (Q4) needs the `/go/` row, and comes with it in step 3.
 3. The Go adapter, with the hooks of "How the hooks are built": paths, `@v/list` and `@latest`
    filtered, `.info` read for times, the claim asked before the fetch, the zip's `h1:` in
-   the analysis job, `.mod` checked in the request, `osv/go` with toolchain matching (Q6),
+   the analysis job, `.mod` checked in the request, the checksum database relay (Q4),
+   `osv/go` with toolchain matching (Q6),
    `BYRLE_UPSTREAM_GO`. npm, PyPI and cargo unchanged.
 4. `go.sum` for `warm`, `policy diff` and `lockfile verify`.
 5. `byrle doctor` for `go env`: `GOPROXY`, `GOSUMDB`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`.
