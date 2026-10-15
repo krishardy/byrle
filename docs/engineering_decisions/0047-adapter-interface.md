@@ -57,6 +57,7 @@ module directory and its `go::` spelling take them from the prefix, not from `as
 | A file checked whole in the request | none | `RequestTarget::Manifest`, checked by `Claim::check_manifest`: Go's `go.mod` |
 | A version its document does not list | refused as not listed | `Fetch::version`: Go reads it from its own `.info` |
 | Publish times read one version at a time | `Fetch::full`, one document for every version | `Fetch::dated`: Go's `.info`, in the go command's order of preference, until one is older than the longest cooldown |
+| An advisory naming no package, or another's | every name a package | `Registry::advisory_package`: Go's `toolchain` is `golang.org/toolchain`, and `stdlib` none |
 | An artifact digest only its whole file gives | none: every digest was over the bytes as they stream | `Claim::artifact_digest`, computed by a claim job over the spooled file. The sha256 of the bytes that matched is kept, and the artifact is served checked against it |
 
 ## Decision

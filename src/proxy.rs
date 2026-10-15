@@ -6652,19 +6652,27 @@ mod tests {
             .checked_sub(jiff::SignedDuration::from_hours(24))
             .unwrap()
             .to_string();
-        for (newest, kept) in [
+        for (cooldown, newest, kept) in [
             (
+                7,
                 format!(r#"{{"Version":"v1.5.2","Time":"{young}"}}"#),
                 Some("v1.5.0\nv1.5.1\n".to_owned()),
             ),
-            ("not json".to_owned(), None),
+            (7, "not json".to_owned(), None),
+            (0, "never asked".to_owned(), None),
         ] {
+            let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let asked_newest = asked.clone();
             let router = axum::Router::new()
                 .route(
                     "/rsc.io/quote/@v/v1.5.2.info",
                     axum::routing::get(move || {
                         let newest = newest.clone();
-                        async move { newest }
+                        let asked = asked_newest.clone();
+                        async move {
+                            asked.fetch_add(1, Ordering::Relaxed);
+                            newest
+                        }
                     }),
                 )
                 .route(
@@ -6675,9 +6683,12 @@ mod tests {
                 );
             let upstream = crate::proxy::testing::serve(router).await;
             let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20);
-            let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
-                .with_upstream(Ecosystem::Go, &upstream)
-                .with_client(Ecosystem::Go, Arc::new(go));
+            let proxy = offline(
+                None,
+                Some(&format!("version: 1\ncooldown_days: {cooldown}\n")),
+            )
+            .with_upstream(Ecosystem::Go, &upstream)
+            .with_client(Ecosystem::Go, Arc::new(go));
             let list = b"v1.5.0\nv1.5.2\nv1.5.1\n";
             let DocumentStep::Forward { body, .. } =
                 resolve(&proxy, "/go/rsc.io/quote/@v/list", "text/plain", list).await
@@ -6685,6 +6696,11 @@ mod tests {
                 panic!("the list is forwarded");
             };
             assert_eq!(body.map(|b| String::from_utf8(b).unwrap()), kept);
+            assert_eq!(
+                asked.load(Ordering::Relaxed) > 0,
+                cooldown > 0,
+                "no .info is asked without a cooldown"
+            );
         }
     }
 

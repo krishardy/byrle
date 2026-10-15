@@ -77,6 +77,7 @@ pub const REGISTRY: Registry = Registry {
     keep_for_platforms: |_, _| {},
     provenance_bundle: |_| Err("crates.io serves no attestations".to_owned()),
     osv_name: "crates.io",
+    advisory_package: crate::ecosystem::as_named,
     metadata_names_repository: |_| false,
     client: |http, upstream, max_bytes| std::sync::Arc::new(Client::new(http, upstream, max_bytes)),
     write,

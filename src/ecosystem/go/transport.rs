@@ -395,6 +395,13 @@ pub(crate) mod tests {
             ]),
             "v1.3.0 has no .info and v1.1.0 no time; v1.0.0's is never asked"
         );
+        let at_the_cutoff = list(&toml(), b"v1.0.1\nv0.9.5\n", "x");
+        let cutoff: jiff::Timestamp = "2020-01-01T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            client.dated(&at_the_cutoff, cutoff).await.unwrap(),
+            PublishTimes::from([("v1.0.1".to_owned(), cutoff)]),
+            "a version published at the cutoff is not older than it, so v0.9.5 is asked"
+        );
         for failing in ["v1.0.0", "v0.9.0"] {
             let failing = list(&toml(), failing.as_bytes(), "x");
             assert!(client.dated(&failing, before).await.is_err());

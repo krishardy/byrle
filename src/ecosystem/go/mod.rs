@@ -67,6 +67,7 @@ pub const REGISTRY: Registry = Registry {
     keep_for_platforms: |_, _| {},
     provenance_bundle: |_| Err("the Go module proxy serves no attestations".to_owned()),
     osv_name: "Go",
+    advisory_package,
     metadata_names_repository: |_| false,
     client: |http, upstream, max_bytes| std::sync::Arc::new(Client::new(http, upstream, max_bytes)),
     write,
@@ -74,6 +75,19 @@ pub const REGISTRY: Registry = Registry {
     install_scripts_unread: None,
     publishers: None,
 };
+
+/// The module an OSV record's name stands for: `toolchain` is `golang.org/toolchain`, the
+/// module go downloads a Go release as, and `stdlib` is in every Go release and no module.
+fn advisory_package(name: &str) -> Option<String> {
+    match name {
+        "stdlib" => None,
+        "toolchain" => Some(TOOLCHAIN.to_owned()),
+        module => Some(module.to_owned()),
+    }
+}
+
+/// The module a Go release is downloaded as when `go.mod` asks for a newer go.
+pub const TOOLCHAIN: &str = "golang.org/toolchain";
 
 /// The path the proxy serves Go modules under.
 pub const PREFIX: &str = "/go/";

@@ -112,6 +112,7 @@ pub const REGISTRY: Registry = Registry {
     keep_for_platforms: wheel::keep_for_platforms,
     provenance_bundle: attestation::provenance_bundle,
     osv_name: "PyPI",
+    advisory_package: crate::ecosystem::as_named,
     metadata_names_repository: |_| false,
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))

@@ -40,7 +40,7 @@ impl VersionOrder {
         match self {
             Self::SemVer => version(s).map(Ordered::SemVer),
             Self::Pep440 => Pep440::parse(s).map(Ordered::Pep440),
-            Self::Go => version(&padded(unprefixed(s))?).map(Ordered::SemVer),
+            Self::Go => version(&Self::Go.normalised(s)?).map(Ordered::SemVer),
         }
     }
 
@@ -50,9 +50,25 @@ impl VersionOrder {
         match self {
             Self::SemVer => padded(s),
             Self::Pep440 => Pep440::parse(s).map(|v| v.to_string()),
-            Self::Go => padded(unprefixed(s)),
+            Self::Go => toolchain(s).or_else(|| padded(unprefixed(s))),
         }
     }
+}
+
+/// The Go release a `golang.org/toolchain` version holds, as OSV writes Go's: the version of
+/// `go1.24rc2` for linux-amd64, `v0.0.1-go1.24rc2.linux-amd64`, is `1.24.0-rc.2`.
+fn toolchain(s: &str) -> Option<String> {
+    let (tag, _platform) = s.strip_prefix("v0.0.1-go")?.rsplit_once('.')?;
+    let at = tag
+        .find(|c: char| c.is_ascii_alphabetic())
+        .unwrap_or(tag.len());
+    let (numbers, pre) = tag.split_at(at);
+    let pre = match pre.find(|c: char| c.is_ascii_digit()) {
+        None if pre.is_empty() => String::new(),
+        Some(digit) if digit > 0 => format!("-{}.{}", &pre[..digit], &pre[digit..]),
+        _ => return None,
+    };
+    padded(&format!("{numbers}{pre}"))
 }
 
 /// A Go version without its `v`, which OSV leaves off: `v1.2.3` is `1.2.3`.
@@ -697,6 +713,35 @@ mod tests {
         let v = |s: &str| go.parse(s).expect("a version");
         assert!(fixed.contains(&v("v0.3.6")));
         assert!(!fixed.contains(&v("v0.3.7")));
+    }
+
+    /// A toolchain orders as the Go release it holds, so GO-2025-3383, fixed in
+    /// `1.24.0-rc.2`, is against go1.24rc1 and not go1.24rc2 or go1.24.0.
+    #[test]
+    fn a_toolchain_orders_as_the_go_release_it_holds() {
+        let go = VersionOrder::Go;
+        let v = |s: &str| go.parse(s).unwrap_or_else(|| panic!("{s}"));
+        for (toolchain, release) in [
+            ("v0.0.1-go1.27.1.linux-amd64", "1.27.1"),
+            ("v0.0.1-go1.21.darwin-arm64", "1.21.0"),
+            ("v0.0.1-go1.24rc2.windows-386", "1.24.0-rc.2"),
+            ("v0.0.1-go1.22beta1.linux-amd64", "1.22.0-beta.1"),
+        ] {
+            assert_eq!(v(toolchain), v(release), "{toolchain}");
+        }
+        let fixed = Interval::from_columns(go, Some("1.24.0-0"), false, Some("1.24.0-rc.2"), None)
+            .expect("an interval");
+        assert!(fixed.contains(&v("v0.0.1-go1.24rc1.linux-amd64")));
+        assert!(!fixed.contains(&v("v0.0.1-go1.24rc2.linux-amd64")));
+        assert!(!fixed.contains(&v("v0.0.1-go1.24.0.linux-amd64")));
+        for other in [
+            "v0.0.1-go1.24rc.linux-amd64",
+            "v0.0.1-gox.linux-amd64",
+            "v0.0.1-go1",
+        ] {
+            assert_eq!(toolchain(other), None, "{other}");
+        }
+        assert_eq!(v("v0.0.1-gopher"), v("0.0.1-gopher"), "not a toolchain's");
     }
 
     /// An excluded start that does not parse is no interval.

@@ -199,14 +199,15 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, serde_json::E
         return Ok(Parsed::Skipped(Skipped::OtherPublisher));
     };
     let (osv, purl_type) = (osv_name(ecosystem), ecosystem.as_str());
-    let order = crate::ecosystem::of(ecosystem).versions;
+    let registry = crate::ecosystem::of(ecosystem);
+    let order = registry.versions;
 
     let entries: Vec<_> = record
         .affected
         .iter()
         .filter_map(|entry| {
             let package = entry.package.as_ref().filter(|p| p.ecosystem == osv)?;
-            Some((entry, package))
+            Some((entry, (registry.advisory_package)(&package.name)?))
         })
         .collect();
     if entries.is_empty() {
@@ -233,8 +234,7 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, serde_json::E
             }
         }
 
-        let row =
-            |version: Option<&String>| Affected::new(purl_type, &package.name, version.cloned());
+        let row = |version: Option<&String>| Affected::new(purl_type, &package, version.cloned());
         if every {
             affected.insert(row(None));
             continue;
@@ -247,7 +247,7 @@ pub fn parse(ecosystem: Ecosystem, bytes: &[u8]) -> Result<Parsed, serde_json::E
         ranges.extend(
             intervals
                 .into_iter()
-                .map(|interval| Ranged::new(purl_type, &package.name, interval)),
+                .map(|interval| Ranged::new(purl_type, &package, interval)),
         );
     }
 
@@ -734,6 +734,42 @@ mod tests {
         }
         assert_eq!(osv_name(Ecosystem::PyPI), "PyPI");
         assert_eq!(osv_name(Ecosystem::Npm), "npm");
+    }
+
+    /// GO-2025-3383 names `stdlib` and `toolchain`: `toolchain` is stored as the module a Go
+    /// release downloads as, and `stdlib`, in every release and no module, is not stored.
+    #[test]
+    fn a_go_toolchain_record_names_the_toolchain_module_and_stdlib_is_dropped() {
+        let affected = |name: &str| {
+            format!(
+                r#"{{"package": {{"ecosystem": "Go", "name": "{name}"}},
+                    "ranges": [{{"type": "SEMVER", "events": [{{"introduced": "1.24.0-0"}},
+                                {{"fixed": "1.24.0-rc.2"}}]}}]}}"#
+            )
+        };
+        let record = |names: &[&str]| {
+            let entries: Vec<String> = names.iter().map(|n| affected(n)).collect();
+            format!(
+                r#"{{"id": "GO-2025-3383", "affected": [{}]}}"#,
+                entries.join(",")
+            )
+        };
+        let rows = stored(
+            parse(Ecosystem::Go, record(&["stdlib", "toolchain"]).as_bytes()).expect("parses"),
+        );
+        let names: Vec<&str> = rows.ranges.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["golang.org/toolchain"]);
+        assert!(rows.ranges.iter().all(|r| r.ecosystem == "golang"));
+        assert_eq!(
+            parse(Ecosystem::Go, record(&["stdlib"]).as_bytes()).expect("parses"),
+            Parsed::Skipped(Skipped::NoPackage)
+        );
+        let module =
+            stored(parse(Ecosystem::Go, record(&["golang.org/x/net"]).as_bytes()).expect("parses"));
+        assert_eq!(
+            module.ranges.iter().next().unwrap().name,
+            "golang.org/x/net"
+        );
     }
 
     /// RustSec writes a record's kind in `affected[].database_specific`, as OSV served

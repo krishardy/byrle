@@ -417,6 +417,8 @@ pub struct Registry {
     pub provenance_bundle: fn(&[u8]) -> Result<sigstore_verify::types::Bundle, String>,
     /// The name OSV gives this ecosystem, in `affected[].package.ecosystem` and its bundle's path.
     pub osv_name: &'static str,
+    /// The package an OSV record's name stands for, `None` for one that is no package here.
+    pub advisory_package: fn(&str) -> Option<String>,
     /// Whether a record's metadata would name a repository, so that naming none is a signal.
     pub metadata_names_repository: fn(&crate::record::PackageRecord) -> bool,
     /// Why `install_scripts` is not analyzed until the artifact is read; `None` if metadata says.
@@ -544,6 +546,11 @@ pub fn of(ecosystem: Ecosystem) -> &'static Registry {
 pub fn within<'a>(prefix: &str, path: &'a str) -> Option<&'a str> {
     path.strip_prefix(prefix.trim_end_matches('/'))
         .filter(|rest| rest.starts_with('/'))
+}
+
+/// `name` itself, for [`Registry::advisory_package`] where an advisory names its package.
+pub fn as_named(name: &str) -> Option<String> {
+    Some(name.to_owned())
 }
 
 /// The row whose prefix claims `path`. `None` when no row does.

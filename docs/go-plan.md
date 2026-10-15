@@ -154,7 +154,12 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
       the versions after it are kept. A list whose `.info` cannot be read is forwarded
       undated, as `cooldown_days` is not enforced on a version with no time, and each zip
       is decided on its own `.info`.
-   5. `toolchain` advisories matched to `golang.org/toolchain`.
+   5. `toolchain` advisories matched to `golang.org/toolchain`. Done 2026-10-15: OSV's
+      `toolchain` is stored as `golang.org/toolchain`, and `stdlib` is not stored.
+      `VersionOrder::Go` orders a toolchain version as the Go release it holds:
+      `v0.0.1-go1.24rc2.linux-amd64` is `1.24.0-rc.2`, so GO-2025-3383, fixed in
+      `1.24.0-rc.2`, is against go1.24rc1 and not go1.24rc2. Six of the 34 toolchain
+      records end a range at an rc, and 1,141 of the toolchain's versions are rcs.
 4. `go.sum` for `warm`, `policy diff` and `lockfile verify`.
 5. `byrle doctor` for `go env`: `GOPROXY`, `GOSUMDB`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`.
 6. `make smoke-go`: `go build` of a real module through the proxy over https, with a token,

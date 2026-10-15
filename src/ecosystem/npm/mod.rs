@@ -119,6 +119,7 @@ pub const REGISTRY: Registry = Registry {
     keep_for_platforms: |_, _| {},
     provenance_bundle: attestation::provenance_bundle,
     osv_name: "npm",
+    advisory_package: crate::ecosystem::as_named,
     metadata_names_repository: |record| record.detail == crate::record::DocumentDetail::Full,
     client: |http, upstream, max_bytes| {
         std::sync::Arc::new(Client::new(http, upstream).with_max_bytes(max_bytes))
