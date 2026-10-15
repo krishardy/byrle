@@ -1147,6 +1147,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "advisory_range",
         "artifact_analysis",
         "artifact_attestation",
+        "artifact_claim",
         "artifact_decision",
         "artifact_install_script",
         "artifact_source",
@@ -1932,6 +1933,21 @@ async fn a_source_comparison_is_kept_under_its_digest() {
             "{column}"
         );
     }
+}
+
+/// The digest of bytes found to be what a claim names is kept under the claim, and a
+/// second check replaces it.
+#[tokio::test]
+async fn a_claim_s_digest_is_kept_under_the_claim() {
+    let intel = skip_without_database!("t_claim");
+    let store = analyses(&intel);
+    let claim = "h1:w5fcysjrx7yqtD/aO+QwRjYZOKnaM9Uh2b40tElTs3Y=";
+    assert_eq!(store.claimed(claim).await.expect("answers"), None);
+    store.put_claimed(claim, &sri(1)).await.expect("writes");
+    assert_eq!(store.claimed(claim).await.expect("answers"), Some(sri(1)));
+    store.put_claimed(claim, &sri(2)).await.expect("replaces");
+    assert_eq!(store.claimed(claim).await.expect("answers"), Some(sri(2)));
+    assert_eq!(store.claimed("h1:other=").await.expect("answers"), None);
 }
 
 /// What VirusTotal said is kept under the artifact's digest, each state round-trips, and a

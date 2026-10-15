@@ -1367,10 +1367,11 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Ok(record) => record,
         Err(answer) => return *answer,
     };
-    let _claim = match deciding.claimed().await {
+    let claim = match deciding.claimed().await {
         Ok(claim) => claim,
         Err(answer) => return *answer,
     };
+    let (record, claiming) = deciding.checked(record, claim).await;
     let (fetch, unservable) = deciding.fetch_plan(&record);
     let dated = deciding.dated(&record).await;
     let sourced = deciding.sourced(&fetch).await;
@@ -1422,7 +1423,11 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         refusal.as_ref(),
         unservable,
         fetch,
-        Held { state, awaiting },
+        Held {
+            state,
+            awaiting,
+            claiming,
+        },
     );
     let written = pinned_line(
         proxy,
@@ -1793,6 +1798,38 @@ impl<'a> Deciding<'a> {
         }
     }
 
+    /// `record` with its artifact's digest the sha256 of the bytes found to be what `claim`
+    /// names, once they were. Otherwise how the claim stands: to be checked, or failed.
+    async fn checked(
+        &self,
+        mut record: PackageRecord,
+        claim: Option<ecosystem::Claim>,
+    ) -> (PackageRecord, Option<Claiming>) {
+        let (Some(claim), Some(analyser)) = (claim, self.proxy.config.analyser.as_deref()) else {
+            return (record, None);
+        };
+        match analyser.claim_known(&claim.artifact).await {
+            crate::analysis::run::ClaimKnown::Checked(digest) => {
+                for artifact in &mut record.artifacts {
+                    artifact.integrity = Some(digest.to_string());
+                }
+                (record, None)
+            }
+            crate::analysis::run::ClaimKnown::Failed(why) => (record, Some(Claiming::Failed(why))),
+            crate::analysis::run::ClaimKnown::Unknown => {
+                let ArtifactRequest {
+                    ecosystem, path, ..
+                } = self.request;
+                let job = crate::analysis::run::ClaimJob {
+                    claim: claim.artifact,
+                    url: upstream_url(self.proxy, ecosystem, path, None),
+                    digest: claim.artifact_digest,
+                };
+                (record, Some(Claiming::Pending(job)))
+            }
+        }
+    }
+
     /// Write a pinned line for a request answered before anything was decided, when there
     /// is a log and a policy. `answered` is what the request got.
     fn audit_undecided(&self, answered: audit::Answered) {
@@ -1940,6 +1977,22 @@ impl<'a> Deciding<'a> {
         if let Some(origin) = unservable.filter(|_| self.proxy.config.refuse_unservable) {
             return (audit::Answered::Unservable, self.unservable(&origin));
         }
+        match held.claiming {
+            Some(Claiming::Failed(why)) => {
+                return (audit::Answered::UpstreamMismatch, self.claim_failed(&why));
+            }
+            Some(Claiming::Pending(job)) => {
+                let claim = job.claim.clone();
+                self.proxy
+                    .config
+                    .analyser
+                    .as_ref()
+                    .expect("a pending claim has an analyser")
+                    .start_claim(job);
+                return (audit::Answered::Deferred, self.defer(claim, &held.awaiting));
+            }
+            None => {}
+        }
         let Some(digest) = fetch.digest.clone() else {
             return (
                 audit::Answered::NoStrongDigest,
@@ -1964,12 +2017,12 @@ impl<'a> Deciding<'a> {
                     .start(job);
                 (
                     audit::Answered::Deferred,
-                    self.defer(digest, &held.awaiting),
+                    self.defer(digest.to_string(), &held.awaiting),
                 )
             }
             AnalysisState::Decided if !held.awaiting.is_empty() => (
                 audit::Answered::Deferred,
-                self.defer(digest, &held.awaiting),
+                self.defer(digest.to_string(), &held.awaiting),
             ),
             AnalysisState::Decided => (audit::Answered::Served, ArtifactStep::Fetch(fetch)),
         }
@@ -2038,6 +2091,27 @@ impl<'a> Deciding<'a> {
         )
     }
 
+    /// 502 for an artifact whose bytes are not what its claim names, `why`.
+    fn claim_failed(&self, why: &str) -> ArtifactStep {
+        warn!(
+            url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
+            byrle.package.claimed_purl = %self.purl,
+            byrle.reason = %why,
+            "refused: the upstream serves bytes the checksum database does not describe"
+        );
+        let purl = &self.purl;
+        ArtifactStep::Answer(
+            (
+                StatusCode::BAD_GATEWAY,
+                format!(
+                    "byrle: the upstream served {purl} as bytes the checksum database does \
+                     not describe: {why}\n"
+                ),
+            )
+                .into_response(),
+        )
+    }
+
     /// 502 for bytes that did not match their digest when the analysis fetched them.
     fn mismatched(&self, mismatch: &crate::integrity::Mismatch) -> ArtifactStep {
         warn!(
@@ -2060,8 +2134,9 @@ impl<'a> Deciding<'a> {
         )
     }
 
-    /// 503 for the artifact with `digest` until its analysis, and each of `awaiting`, is stored.
-    fn defer(&self, digest: Sri, awaiting: &[(String, Duration)]) -> ArtifactStep {
+    /// 503 for the artifact with `digest`, an SRI string or a claim, until its analysis, and
+    /// each of `awaiting`, is stored.
+    fn defer(&self, digest: String, awaiting: &[(String, Duration)]) -> ArtifactStep {
         let deferrals = self
             .proxy
             .deferred
@@ -2107,7 +2182,7 @@ impl<'a> Deciding<'a> {
 }
 
 /// The artifacts answered 503 while their analysis ran, by digest, for the deferral logs.
-struct Deferred(Lru<Sri, Deferral>);
+struct Deferred(Lru<String, Deferral>);
 
 struct Deferral {
     first: Instant,
@@ -2115,13 +2190,14 @@ struct Deferral {
 }
 
 impl Deferred {
-    /// Count a deferral of `digest`, and return how many there have been.
-    fn defer(&mut self, digest: &Sri) -> u32 {
-        let (first, count) = match self.0.get(digest) {
+    /// Count a deferral of `digest`, an SRI string or a claim, and return how many there
+    /// have been.
+    fn defer(&mut self, digest: &str) -> u32 {
+        let (first, count) = match self.0.get(&digest.to_owned()) {
             Some(held) => (held.first, held.count + 1),
             None => (Instant::now(), 1),
         };
-        self.0.insert(digest.clone(), Deferral { first, count });
+        self.0.insert(digest.to_owned(), Deferral { first, count });
         count
     }
 }
@@ -2207,7 +2283,7 @@ fn returned(proxy: &Proxy, digest: &Sri, path: &str, client: &str) {
         .lock()
         .expect("deferred lock")
         .0
-        .remove(digest)
+        .remove(&digest.to_string())
     else {
         return;
     };
@@ -3569,6 +3645,16 @@ struct Held {
     state: AnalysisState,
     /// Each detector waited on, and how long it is expected to take.
     awaiting: Vec<(String, Duration)>,
+    /// The artifact's claim, while it is checked against its bytes or after that failed.
+    claiming: Option<Claiming>,
+}
+
+/// A claim not yet checked against the artifact's bytes, or one that failed.
+enum Claiming {
+    /// Checked by this job, and the request answered 503 until it is.
+    Pending(crate::analysis::run::ClaimJob),
+    /// The upstream's bytes are not what the claim names. Answered 502.
+    Failed(String),
 }
 
 /// What the analyser found beside the artifact's own analysis, weighed as signals.
@@ -3600,7 +3686,8 @@ enum NotReady {
     /// The artifact's analysis has started, and the client's retry is decided on it.
     Analysing {
         purl: String,
-        digest: Sri,
+        /// The SRI string, or the claim, the analysis is of.
+        digest: String,
         /// The seconds to wait: the awaited detectors' expected time, else 1.
         retry_after: u64,
     },
@@ -3667,7 +3754,7 @@ impl NotReady {
         )
             .into_response();
         if let Self::Analysing { digest, .. } = &self
-            && let Ok(value) = HeaderValue::from_str(&digest.to_string())
+            && let Ok(value) = HeaderValue::from_str(digest)
         {
             response.headers_mut().insert(DEFERRED_DIGEST, value);
         }
@@ -5354,7 +5441,7 @@ mod tests {
             (
                 NotReady::Analysing {
                     purl: "pkg:npm/widget@1.0.0".to_owned(),
-                    digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+                    digest: sri_of(b"widget"),
                     retry_after: 1,
                 },
                 "artifact-analysis",
@@ -6222,9 +6309,30 @@ mod tests {
     const QUOTE_ZIP: &str = "/go/rsc.io/quote/@v/v1.5.2.zip";
 
     /// A module proxy on loopback answering rsc.io/quote v1.5.2's `go.mod` with `go_mod`,
-    /// encoded as `encoding` says, and its list.
+    /// encoded as `encoding` says, and its zip from the fixture.
     async fn module_proxy(go_mod: Vec<u8>, encoding: Option<&'static str>) -> String {
+        module_proxy_zip(
+            go_mod,
+            encoding,
+            crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.zip"),
+        )
+        .await
+    }
+
+    /// The same, answering the zip with `zip`.
+    async fn module_proxy_zip(
+        go_mod: Vec<u8>,
+        encoding: Option<&'static str>,
+        zip: Vec<u8>,
+    ) -> String {
         let router = axum::Router::new()
+            .route(
+                "/rsc.io/quote/@v/v1.5.2.zip",
+                axum::routing::get(move || {
+                    let zip = zip.clone();
+                    async move { zip }
+                }),
+            )
             .route(
                 "/rsc.io/quote/@v/v1.5.2.mod",
                 axum::routing::get(move || {
@@ -6362,9 +6470,9 @@ mod tests {
                 .contains("gave no proved answer")
         );
 
-        for answer in [
-            crate::util::test_support::Answer::Status(404),
-            crate::util::test_support::Answer::cut_short(),
+        for (answer, expected) in [
+            (crate::util::test_support::Answer::Status(404), 404),
+            (crate::util::test_support::Answer::cut_short(), 502),
         ] {
             let addr = crate::util::test_support::scripted(vec![answer]).await;
             let failing = format!("http://{addr}");
@@ -6373,7 +6481,7 @@ mod tests {
                 .await
                 .unwrap()
                 .status();
-            assert!([404, 502].contains(&status.as_u16()), "{status}");
+            assert_eq!(status.as_u16(), expected, "a 404 is passed on unread");
         }
     }
 
@@ -6409,6 +6517,56 @@ mod tests {
             "{written}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A zip is deferred while its `h1:` is checked against its bytes, then fetched checked
+    /// against the sha256 of the bytes that matched. A zip not the one claimed is 502.
+    #[tokio::test]
+    async fn a_go_zip_is_served_against_the_sha256_of_the_bytes_its_claim_names() {
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        let zip = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.zip");
+        for (served, label) in [
+            (zip.clone(), "go-zip"),
+            (b"not a zip".to_vec(), "go-zip-bad"),
+        ] {
+            let upstream = module_proxy_zip(go_mod.clone(), None, served.clone()).await;
+            let analyser = Arc::new(crate::analysis::run::tests::analyser(
+                label,
+                1 << 20,
+                Arc::new(crate::analysis::store::InProcess::new(8)),
+            ));
+            let proxy =
+                go_proxy(&upstream, quote_sumdb().await).with_analyser(Some(analyser.clone()));
+            let ArtifactStep::Answer(deferred) = pinned(&proxy, QUOTE_ZIP).await else {
+                panic!("deferred while the claim is checked");
+            };
+            assert_eq!(deferred.status(), 503);
+            assert_eq!(deferred.headers()[NOT_READY], "artifact-analysis");
+            assert_eq!(
+                deferred.headers()[DEFERRED_DIGEST],
+                "h1:w5fcysjrx7yqtD/aO+QwRjYZOKnaM9Uh2b40tElTs3Y="
+            );
+            analyser.ended(1).await;
+            let step = pinned(&proxy, QUOTE_ZIP).await;
+            if served == zip {
+                let ArtifactStep::Fetch(fetch) = step else {
+                    panic!("served once checked");
+                };
+                assert_eq!(
+                    fetch.digest,
+                    Some(Sri::from_sha256(&<sha2::Sha256 as sha2::Digest>::digest(
+                        &zip
+                    )))
+                );
+            } else {
+                let (status, body) = refused(step).await;
+                assert_eq!(status, 502);
+                assert!(
+                    body.contains("checksum database does not describe"),
+                    "{body}"
+                );
+            }
+        }
     }
 
     /// cargo 1.99.0 asked for `config.json` without a token, then with it alone once
@@ -7314,7 +7472,7 @@ mod tests {
         );
         let analysing = NotReady::Analysing {
             purl: "pkg:npm/widget@1.0.0".to_owned(),
-            digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+            digest: sri_of(b"widget"),
             retry_after: 1,
         };
         let policed = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log));
@@ -8398,8 +8556,7 @@ mod tests {
     /// Each deferral of a digest is counted from the first, and a return takes the record away.
     #[test]
     fn deferrals_of_one_digest_are_counted_until_it_returns() {
-        let digest = Sri::parse(&sri_of(b"widget")).expect("parses");
-        let other = Sri::parse(&sri_of(b"other")).expect("parses");
+        let (digest, other) = (sri_of(b"widget"), sri_of(b"other"));
         let mut deferred = Deferred(Lru::new(8));
         assert_eq!(deferred.defer(&digest), 1);
         assert_eq!(deferred.defer(&digest), 2);
@@ -9624,7 +9781,7 @@ mod tests {
         }
         let analysing = NotReady::Analysing {
             purl: "pkg:npm/widget@1.0.0".to_owned(),
-            digest: Sri::parse(&sri_of(b"widget")).expect("parses"),
+            digest: sri_of(b"widget"),
             retry_after: 1,
         };
         assert_eq!(analysing.answered(), None, "its decision line records it");

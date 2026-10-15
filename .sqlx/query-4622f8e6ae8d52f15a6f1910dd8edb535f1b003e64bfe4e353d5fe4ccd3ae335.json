@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_claim (claim, digest) VALUES ($1, $2)\n            ON CONFLICT (claim) DO UPDATE SET digest = EXCLUDED.digest, checked_at = now()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "4622f8e6ae8d52f15a6f1910dd8edb535f1b003e64bfe4e353d5fe4ccd3ae335"
+}

@@ -19,11 +19,13 @@ use crate::integrity::{Mismatch, Sri};
 use crate::spool::{Spool, Spooled, WriteError};
 use crate::util::lru::Lru;
 
+mod claiming;
 pub(crate) mod detecting;
 mod recording;
 mod sourcing;
 mod virustotal;
 
+pub use claiming::{ClaimJob, ClaimKnown};
 pub use virustotal::ScanJob;
 
 pub use crate::util::batched::{BATCH, QUEUE};
@@ -95,6 +97,8 @@ pub struct Analyser {
     scans: Option<virustotal::Scans>,
     /// Where each decision is queued to be written.
     recorder: crate::util::batched::Batched<crate::analysis::decision::Decided>,
+    /// The claims being checked, and those whose last check failed.
+    claims: claiming::Claims,
 }
 
 impl Analyser {
@@ -113,6 +117,7 @@ impl Analyser {
             slots: Arc::new(Semaphore::new(max_concurrent.max(1))),
             in_flight: Arc::default(),
             mismatched: Arc::new(Mutex::new(Lru::new(max_mismatches))),
+            claims: claiming::Claims::new(max_mismatches),
             ended: Arc::new(watch::Sender::new(0)),
             deadline: DEADLINE,
             sources: None,

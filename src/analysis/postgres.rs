@@ -371,9 +371,41 @@ impl Analyses for PgAnalyses {
     fn forget_decisions<'a>(&'a self, day: &'a str) -> Stored<'a, u64> {
         Box::pin(self.delete_decisions(day))
     }
+
+    fn claimed<'a>(&'a self, claim: &'a str) -> Stored<'a, Option<Sri>> {
+        Box::pin(self.read_claimed(claim))
+    }
+
+    fn put_claimed<'a>(&'a self, claim: &'a str, digest: &'a Sri) -> Stored<'a, ()> {
+        Box::pin(self.write_claimed(claim, digest))
+    }
 }
 
 impl PgAnalyses {
+    async fn write_claimed(&self, claim: &str, digest: &Sri) -> Result<(), AnalysisError> {
+        sqlx::query!(
+            r#"
+            INSERT INTO artifact_claim (claim, digest) VALUES ($1, $2)
+            ON CONFLICT (claim) DO UPDATE SET digest = EXCLUDED.digest, checked_at = now()
+            "#,
+            claim,
+            digest.to_string(),
+        )
+        .execute(&self.pool)
+        .await
+        .map(drop)
+        .map_err(AnalysisError::Backend)
+    }
+
+    /// The digest kept for `claim`. One that no longer parses is not checked yet.
+    async fn read_claimed(&self, claim: &str) -> Result<Option<Sri>, AnalysisError> {
+        let row = sqlx::query_scalar!("SELECT digest FROM artifact_claim WHERE claim = $1", claim,)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(AnalysisError::Backend)?;
+        Ok(row.and_then(|digest: String| Sri::parse(&digest).ok()))
+    }
+
     async fn write_scanned(&self, digest: &Sri, scanned: &Scanned) -> Result<(), AnalysisError> {
         let (state, analysis, counts) = match &scanned.verdict {
             Verdict::Known(counts) => ("known", None, Some(counts)),

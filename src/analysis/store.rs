@@ -143,6 +143,13 @@ pub trait Analyses: Send + Sync {
 
     /// Delete each decision made before `day`, YYYY-MM-DD in UTC. Returns how many.
     fn forget_decisions<'a>(&'a self, day: &'a str) -> Stored<'a, u64>;
+
+    /// The digest of the bytes found to be what `claim` names, such as a Go zip's `h1:`.
+    /// `Ok(None)` is a claim not checked yet.
+    fn claimed<'a>(&'a self, claim: &'a str) -> Stored<'a, Option<Sri>>;
+
+    /// Record that the bytes with `digest` are what `claim` names.
+    fn put_claimed<'a>(&'a self, claim: &'a str, digest: &'a Sri) -> Stored<'a, ()>;
 }
 
 /// The decisions this process has recorded, the oldest dropped past its budget.
@@ -162,6 +169,7 @@ pub struct InProcess(
     Mutex<Lru<Sri, Scanned>>,
     Mutex<Vec<i64>>,
     Mutex<Decisions>,
+    Mutex<Lru<String, Sri>>,
 );
 
 impl InProcess {
@@ -180,6 +188,7 @@ impl InProcess {
                 held: std::collections::VecDeque::new(),
                 max_entries,
             }),
+            Mutex::new(Lru::new(max_entries)),
         )
     }
 
@@ -364,6 +373,27 @@ impl Analyses for InProcess {
             Ok((before - held.held.len()) as u64)
         })
     }
+
+    fn claimed<'a>(&'a self, claim: &'a str) -> Stored<'a, Option<Sri>> {
+        Box::pin(async move {
+            Ok(self
+                .7
+                .lock()
+                .expect("claim store lock")
+                .get(&claim.to_owned())
+                .cloned())
+        })
+    }
+
+    fn put_claimed<'a>(&'a self, claim: &'a str, digest: &'a Sri) -> Stored<'a, ()> {
+        Box::pin(async move {
+            self.7
+                .lock()
+                .expect("claim store lock")
+                .insert(claim.to_owned(), digest.clone());
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -425,6 +455,12 @@ pub(crate) mod tests {
             broken()
         }
         fn forget_decisions<'a>(&'a self, _: &'a str) -> Stored<'a, u64> {
+            broken()
+        }
+        fn claimed<'a>(&'a self, _: &'a str) -> Stored<'a, Option<Sri>> {
+            broken()
+        }
+        fn put_claimed<'a>(&'a self, _: &'a str, _: &'a Sri) -> Stored<'a, ()> {
             broken()
         }
     }

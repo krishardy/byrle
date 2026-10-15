@@ -72,6 +72,7 @@ impl Client {
         };
         let claim = Claim {
             artifact: zip,
+            artifact_digest: super::dirhash::zip_h1::<std::fs::File>,
             manifest: go_mod,
             manifest_digest: super::dirhash::go_mod_h1,
         };

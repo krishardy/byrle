@@ -33,7 +33,7 @@ fn hash1<'a>(files: impl IntoIterator<Item = (String, &'a [u8])>) -> Result<Stri
 
 /// The `h1:` of a module zip, every file under the bytes of the name the zip gives it, as
 /// `dirhash.HashZip` computes it. Errors when the zip cannot be read, or a name is not UTF-8.
-pub fn zip_h1(zip: impl Read + Seek) -> Result<String, String> {
+pub fn zip_h1<R: Read + Seek>(zip: R) -> Result<String, String> {
     let mut archive = zip::ZipArchive::new(zip).map_err(|e| format!("not a zip: {e}"))?;
     let mut files = Vec::with_capacity(archive.len());
     for index in 0..archive.len() {

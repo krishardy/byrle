@@ -55,6 +55,7 @@ module directory and its `go::` spelling take them from the prefix, not from `as
 | A path the proxy answers from another host | none | `go::upstream_url` sends `/go/sumdb/sum.golang.org/` to sum.golang.org |
 | A digest from a database beside the registry | none: each document published its own | `Fetch::claim`, answering `Claimed`: `NotAsked` for npm, PyPI and cargo |
 | A file checked whole in the request | none | `RequestTarget::Manifest`, checked by `Claim::check_manifest`: Go's `go.mod` |
+| An artifact digest only its whole file gives | none: every digest was over the bytes as they stream | `Claim::artifact_digest`, computed by a claim job over the spooled file. The sha256 of the bytes that matched is kept, and the artifact is served checked against it |
 
 ## Decision
 

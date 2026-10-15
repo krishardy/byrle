@@ -139,7 +139,12 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
       policy, as go reads it for versions it does not build; it is 403 when sum.golang.org
       holds no record of it, 502 when its `h1:` differs, and 503 `checksum-database` when
       no proved answer comes. A zip's claim is asked before its fetch is planned.
-   3. The zip's `h1:` in the analysis job, its sha256 kept by the analysis store.
+   3. The zip's `h1:` in the analysis job, its sha256 kept by the analysis store. Done
+      2026-10-15: the first request for a zip is 503 while a claim job fetches and spools
+      it, hashing it with sha256 as it is written, then computes its `h1:`. A match is kept
+      in `artifact_claim`, migration 0025; the retry is served checked against that
+      sha256. A zip that is not the one claimed, is no zip, or is over the spool's ceiling
+      is 502 until the process restarts.
    4. Cooldown from `.info`, newest first, and a pinned version's own `.info`.
    5. `toolchain` advisories matched to `golang.org/toolchain`.
 4. `go.sum` for `warm`, `policy diff` and `lockfile verify`.

@@ -62,6 +62,8 @@ pub enum Claimed {
 pub struct Claim {
     /// The artifact's digest, in the database's own form, such as Go's `h1:`.
     pub artifact: String,
+    /// The digest of an artifact's file, in that form.
+    pub artifact_digest: fn(std::fs::File) -> Result<String, String>,
     /// The manifest's digest, in the same form: Go's `go.mod`.
     pub manifest: String,
     /// The digest of a manifest's bytes, in that form.

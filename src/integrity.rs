@@ -106,6 +106,14 @@ impl Sri {
         }
     }
 
+    /// The sha256 claim of bytes whose sha256 is `digest`.
+    pub fn from_sha256(digest: &[u8]) -> Self {
+        Sri {
+            algorithm: Algorithm::Sha256,
+            digest: digest.to_vec(),
+        }
+    }
+
     /// The digest the claim expects, as bytes.
     pub fn digest(&self) -> &[u8] {
         &self.digest
