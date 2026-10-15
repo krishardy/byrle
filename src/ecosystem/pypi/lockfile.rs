@@ -264,6 +264,23 @@ mod tests {
     }
 
     /// uv 0.12.5, with a git dependency and the project itself in the file.
+    /// A file's path at the proxy is its `packages/...` under `/pypi/`, whichever host the
+    /// lockfile's URL names: PyPI's file host, the proxy at the root before prefixes, or now.
+    #[test]
+    fn a_file_is_asked_for_under_the_pypi_prefix() {
+        for url in [
+            "/packages/a/b/x-1.0.tar.gz",
+            "/pypi/packages/a/b/x-1.0.tar.gz",
+            "/registry/pypi/packages/a/b/x-1.0.tar.gz",
+        ] {
+            assert_eq!(proxy_path(url), "/pypi/packages/a/b/x-1.0.tar.gz", "{url}");
+        }
+        assert_eq!(
+            proxy_path("/files/x-1.0.tar.gz"),
+            "/pypi/files/x-1.0.tar.gz"
+        );
+    }
+
     #[test]
     fn uv_keeps_the_packages_a_registry_published() {
         let locked = uv(&fixture("uv.lock")).expect("the lockfile reads");
