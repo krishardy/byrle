@@ -51,6 +51,8 @@ pub enum Answered {
     Unauthorized,
     /// 503: the account store did not answer, so the token was not checked. Nothing decided.
     AccountStore,
+    /// 503: the checksum database gave no proved answer. Nothing decided.
+    ChecksumDatabase,
 }
 
 impl Answered {
@@ -413,7 +415,8 @@ impl Event {
                 | Answered::NoStreamForEcosystem
                 | Answered::CutShort
                 | Answered::Unauthorized
-                | Answered::AccountStore,
+                | Answered::AccountStore
+                | Answered::ChecksumDatabase,
             ) => false,
             Some(Answered::UpstreamUnreachable | Answered::UpstreamStatus) => {
                 !self.action.is_empty()
@@ -1253,6 +1256,7 @@ not json
             (Answered::CutShort, "cut-short"),
             (Answered::Unauthorized, "unauthorized"),
             (Answered::AccountStore, "account-store"),
+            (Answered::ChecksumDatabase, "checksum-database"),
         ] {
             for version in [Some("2.0.0"), None] {
                 let event = Event::undecided("npm", "widget", version, answered);

@@ -279,6 +279,19 @@ impl Proxy {
         proxy.rebuilt()
     }
 
+    /// This proxy with `ecosystem`'s client replaced by `client`, until a builder rebuilds
+    /// the clients: called last.
+    #[cfg(test)]
+    pub(crate) fn with_client(
+        mut self,
+        ecosystem: Ecosystem,
+        client: Arc<dyn crate::ecosystem::Fetch>,
+    ) -> Self {
+        let clients = self.config.clients.clone().with(ecosystem, client);
+        self.config_mut().clients = clients;
+        self
+    }
+
     /// Where `ecosystem`'s requests are forwarded. Defaults to its public registry.
     ///
     /// Panics on an address that is not a URL with a host. `env::Env::upstreams` refuses
@@ -1340,6 +1353,8 @@ struct ArtifactFetch {
     origin: Option<String>,
     /// The audit line of a decision to serve, written once the upstream answers.
     audit: Option<Box<Written>>,
+    /// The claim a manifest's body is checked against, for a manifest GET.
+    manifest: Option<ecosystem::Claim>,
 }
 
 /// Look up the record for an artifact GET, decide on it before a byte is fetched, and
@@ -1350,6 +1365,10 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
     let deciding = Deciding::new(proxy, request);
     let record = match deciding.locate().await {
         Ok(record) => record,
+        Err(answer) => return *answer,
+    };
+    let _claim = match deciding.claimed().await {
+        Ok(claim) => claim,
         Err(answer) => return *answer,
     };
     let (fetch, unservable) = deciding.fetch_plan(&record);
@@ -1468,6 +1487,13 @@ impl Dated {
     }
 }
 
+/// The purl of `key` at `version`, as log lines and answers name it.
+fn purl_of(key: &PackageKey, version: &str) -> String {
+    key.at_version(version)
+        .map(|r| r.to_string())
+        .unwrap_or_else(|_| format!("{key}@{version}"))
+}
+
 /// One artifact GET while [`decide_artifact`] decides it.
 struct Deciding<'a> {
     proxy: &'a Proxy,
@@ -1478,12 +1504,7 @@ struct Deciding<'a> {
 
 impl<'a> Deciding<'a> {
     fn new(proxy: &'a Proxy, request: ArtifactRequest<'a>) -> Self {
-        let key = request.key;
-        let version = request.claimed_version;
-        let purl = key
-            .at_version(version)
-            .map(|r| r.to_string())
-            .unwrap_or_else(|_| format!("{key}@{version}"));
+        let purl = purl_of(request.key, request.claimed_version);
         Self {
             proxy,
             request,
@@ -1743,6 +1764,35 @@ impl<'a> Deciding<'a> {
         Ok(record)
     }
 
+    /// What a database beside the registry claims of the requested version's files: `None`
+    /// when it is not asked or holds no record, which leaves no strong digest. Errors with
+    /// 503 when it does not answer or prove its answer.
+    async fn claimed(&self) -> Result<Option<ecosystem::Claim>, Box<ArtifactStep>> {
+        let ArtifactRequest {
+            key,
+            claimed_version,
+            path,
+            account,
+            ..
+        } = self.request;
+        match self.proxy.config.clients.claim(key, claimed_version).await {
+            Ok(ecosystem::Claimed::Known(claim)) => {
+                info!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %self.purl, byrle.artifact.claim = %claim.artifact, "claimed by the checksum database");
+                Ok(Some(claim))
+            }
+            Ok(ecosystem::Claimed::NotAsked | ecosystem::Claimed::Unknown) => Ok(None),
+            Err(why) => {
+                warn!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %self.purl, error.message = %why, "the checksum database gave no proved answer: 503");
+                let unanswered = NotReady::Claim {
+                    purl: self.purl.clone(),
+                    why,
+                };
+                audit_not_ready(self.proxy, key, Some(claimed_version), &unanswered, account);
+                Err(Box::new(ArtifactStep::Answer(unanswered.response())))
+            }
+        }
+    }
+
     /// Write a pinned line for a request answered before anything was decided, when there
     /// is a log and a policy. `answered` is what the request got.
     fn audit_undecided(&self, answered: audit::Answered) {
@@ -1774,6 +1824,7 @@ impl<'a> Deciding<'a> {
             origin: crate::origin::origin_of_url(url)
                 .filter(|origin| origins.reachable().routes_directly(origin)),
             audit: None,
+            manifest: None,
         };
         (fetch, unservable)
     }
@@ -2108,7 +2159,7 @@ impl Traffic {
         };
         let counts = self.clients.entry(name).or_default();
         match target {
-            RequestTarget::Metadata(_) => counts.documents += 1,
+            RequestTarget::Metadata(_) | RequestTarget::Manifest { .. } => counts.documents += 1,
             RequestTarget::Artifact { .. } => counts.artifacts += 1,
             RequestTarget::Other => {}
         }
@@ -2720,7 +2771,7 @@ fn audit_refused(proxy: &Proxy, target: &RequestTarget, answered: audit::Answere
             claimed_version,
             ..
         } => (key, Some(claimed_version.as_str())),
-        RequestTarget::Other => return,
+        RequestTarget::Manifest { .. } | RequestTarget::Other => return,
     };
     if let Some(line) = undecided_line(proxy, key, version, answered, None) {
         write_audit(proxy, &line);
@@ -2795,31 +2846,67 @@ impl Exchange<'_> {
         }
     }
 
-    /// [`decide_artifact`] for an artifact GET. Any other request is fetched with no
-    /// digest.
+    /// [`decide_artifact`] for an artifact GET, and the claim a manifest GET is checked
+    /// against. Any other request is fetched with no digest.
     async fn artifact_fetch(&self) -> ArtifactStep {
-        let RequestTarget::Artifact {
-            key,
-            claimed_version,
-            filename,
-        } = &self.target
-        else {
-            return ArtifactStep::Fetch(ArtifactFetch::default());
-        };
         if self.method != Method::GET {
             return ArtifactStep::Fetch(ArtifactFetch::default());
         }
-        let request = ArtifactRequest {
-            ecosystem: self.ecosystem,
-            method: &self.method,
-            key,
-            claimed_version,
-            filename,
-            path: &self.path,
-            client: &self.client,
-            account: self.account.as_deref(),
-        };
-        decide_artifact(self.proxy, request).await
+        match &self.target {
+            RequestTarget::Artifact {
+                key,
+                claimed_version,
+                filename,
+            } => {
+                let request = ArtifactRequest {
+                    ecosystem: self.ecosystem,
+                    method: &self.method,
+                    key,
+                    claimed_version,
+                    filename,
+                    path: &self.path,
+                    client: &self.client,
+                    account: self.account.as_deref(),
+                };
+                decide_artifact(self.proxy, request).await
+            }
+            RequestTarget::Manifest { key, version } => self.manifest_claim(key, version).await,
+            RequestTarget::Metadata(_) | RequestTarget::Other => {
+                ArtifactStep::Fetch(ArtifactFetch::default())
+            }
+        }
+    }
+
+    /// The claim a manifest's body is checked against. Answers 503 when the database does
+    /// not answer, and the refusal status when it holds no record of the version.
+    async fn manifest_claim(&self, key: &PackageKey, version: &str) -> ArtifactStep {
+        let purl = purl_of(key, version);
+        let path = &self.path;
+        match self.proxy.config.clients.claim(key, version).await {
+            Ok(ecosystem::Claimed::Known(claim)) => ArtifactStep::Fetch(ArtifactFetch {
+                purl,
+                manifest: Some(claim),
+                ..ArtifactFetch::default()
+            }),
+            Ok(_) => {
+                let status = refusal_status(self.proxy, self.ecosystem, Some(&self.client));
+                warn!(url.path = %crate::http::url_path(path), http.response.status_code = status.as_u16(), byrle.package.claimed_purl = %purl, "not served: the checksum database holds no record of this version");
+                ArtifactStep::Answer(
+                    (
+                        status,
+                        format!(
+                            "byrle: {purl} cannot be assessed: the checksum database holds no \
+                             record of it\n"
+                        ),
+                    )
+                        .into_response(),
+                )
+            }
+            Err(why) => {
+                warn!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %purl, error.message = %why, "the checksum database gave no proved answer: 503");
+                ArtifactStep::Answer(NotReady::Claim { purl, why }.response())
+            }
+        }
     }
 
     /// Send the request upstream with the client's headers, less those that stop here.
@@ -2889,9 +2976,64 @@ impl Exchange<'_> {
             .await;
         }
         let read = self.negotiation.read_metadata && upstream.status.is_success();
-        match upstream.document.filter(|_| read) {
-            Some(document) => self.forward_document(document, upstream).await,
-            None => self.forward_artifact(upstream, artifact),
+        match (
+            upstream.document.filter(|_| read),
+            artifact.manifest.clone(),
+        ) {
+            (Some(document), _) => self.forward_document(document, upstream).await,
+            (None, Some(claim)) if upstream.status == reqwest::StatusCode::OK => {
+                self.forward_manifest(upstream, &claim, &artifact.purl)
+                    .await
+            }
+            (None, _) => self.forward_artifact(upstream, artifact),
+        }
+    }
+
+    /// A manifest's body, read whole and sent on only when it is the one `claim` names.
+    /// 502 when it is not, or cannot be read to check.
+    async fn forward_manifest(
+        &self,
+        upstream: Upstream,
+        claim: &ecosystem::Claim,
+        purl: &str,
+    ) -> Response {
+        let Upstream {
+            status,
+            forward_status,
+            headers,
+            content_encoding,
+            body,
+            ..
+        } = upstream;
+        let limit = self.proxy.config.max_metadata_bytes;
+        let checked = match buffer_to_limit(body, limit).await {
+            Buffered::Complete(body) => {
+                decode_for_parsing(&body, content_encoding.as_deref(), limit)
+                    .map_err(|e| format!("it could not be decoded: {e}"))
+                    .and_then(|decoded| claim.check_manifest(&decoded))
+                    .map(|()| body)
+            }
+            Buffered::Oversized { .. } => Err(format!("it is over {limit} bytes")),
+            Buffered::Failed(e) => Err(format!("its body failed: {e}")),
+        };
+        let path = &self.path;
+        match checked {
+            Ok(body) => {
+                info!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, byrle.artifact.claim = %claim.manifest, "manifest verified");
+                self.log_proxied(status, body.len() as u64);
+                (forward_status, headers, Body::from(body)).into_response()
+            }
+            Err(why) => {
+                warn!(url.path = %crate::http::url_path(path), byrle.package.purl = %purl, byrle.reason = %why, "refused: the upstream's manifest is not the one claimed");
+                (
+                    StatusCode::BAD_GATEWAY,
+                    format!(
+                        "byrle: the upstream served {purl}'s manifest as bytes the checksum \
+                         database does not describe: {why}\n"
+                    ),
+                )
+                    .into_response()
+            }
         }
     }
 
@@ -3453,6 +3595,8 @@ enum NotReady {
     AccountStore,
     /// The snapshot has no stream that can report a finding or malware for this ecosystem.
     Uncovered(Ecosystem),
+    /// The checksum database did not answer for the version, or did not prove its answer.
+    Claim { purl: String, why: String },
     /// The artifact's analysis has started, and the client's retry is decided on it.
     Analysing {
         purl: String,
@@ -3470,6 +3614,7 @@ impl NotReady {
             Self::Unanswered => Some(audit::Answered::IntelStore),
             Self::AccountStore => Some(audit::Answered::AccountStore),
             Self::Uncovered(_) => Some(audit::Answered::NoStreamForEcosystem),
+            Self::Claim { .. } => Some(audit::Answered::ChecksumDatabase),
             Self::Analysing { .. } => None,
         }
     }
@@ -3480,6 +3625,7 @@ impl NotReady {
             Self::Unanswered => "intel-store",
             Self::AccountStore => "account-store",
             Self::Uncovered(_) => "no-stream-for-ecosystem",
+            Self::Claim { .. } => "checksum-database",
             Self::Analysing { .. } => "artifact-analysis",
         }
     }
@@ -3497,6 +3643,10 @@ impl NotReady {
             Self::Uncovered(ecosystem) => format!(
                 "byrle: the intel snapshot has no advisory stream for {ecosystem}, so no \
                  {ecosystem} package is served unchecked\n"
+            ),
+            Self::Claim { purl, why } => format!(
+                "byrle: the checksum database gave no proved answer for {purl}, so its \
+                 bytes cannot be checked: {why}\n"
             ),
             Self::Analysing { purl, digest, .. } => format!(
                 "byrle: {purl}, {digest}, has not been analysed yet; the analysis has \
@@ -6066,6 +6216,199 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), 200);
         assert!(response.bytes().await.unwrap().is_empty());
+    }
+
+    const QUOTE_MOD: &str = "/go/rsc.io/quote/@v/v1.5.2.mod";
+    const QUOTE_ZIP: &str = "/go/rsc.io/quote/@v/v1.5.2.zip";
+
+    /// A module proxy on loopback answering rsc.io/quote v1.5.2's `go.mod` with `go_mod`,
+    /// encoded as `encoding` says, and its list.
+    async fn module_proxy(go_mod: Vec<u8>, encoding: Option<&'static str>) -> String {
+        let router = axum::Router::new()
+            .route(
+                "/rsc.io/quote/@v/v1.5.2.mod",
+                axum::routing::get(move || {
+                    let go_mod = go_mod.clone();
+                    async move {
+                        let mut headers = HeaderMap::new();
+                        if let Some(encoding) = encoding {
+                            headers.insert(
+                                header::CONTENT_ENCODING,
+                                HeaderValue::from_static(encoding),
+                            );
+                        }
+                        (headers, go_mod)
+                    }
+                }),
+            )
+            .route(
+                "/rsc.io/quote/@v/list",
+                axum::routing::get(|| async { "v1.5.2\n" }),
+            );
+        crate::proxy::testing::serve(router).await
+    }
+
+    /// An offline proxy whose Go upstream is `upstream`, asking `sumdb` for claims.
+    fn go_proxy(upstream: &str, sumdb: crate::ecosystem::go::sumdb::Client) -> Proxy {
+        let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), upstream, 1 << 20)
+            .with_sumdb(sumdb);
+        offline(None, Some(NO_POLICY))
+            .with_upstream(Ecosystem::Go, upstream)
+            .with_client(Ecosystem::Go, Arc::new(go))
+    }
+
+    /// The checksum database holding rsc.io/quote v1.5.2, served on loopback.
+    async fn quote_sumdb() -> crate::ecosystem::go::sumdb::Client {
+        use crate::ecosystem::go::sumdb::testing::{Database, client};
+        client(Database::new(vec![
+            crate::ecosystem::go::transport::tests::quote_record(),
+        ]))
+        .await
+    }
+
+    /// A checksum database that closes every connection.
+    async fn unreachable_sumdb() -> crate::ecosystem::go::sumdb::Client {
+        let closed = crate::util::test_support::closing_server().await;
+        crate::ecosystem::go::sumdb::Client::new(
+            reqwest::Client::new(),
+            &format!("http://{closed}"),
+            crate::ecosystem::go::note::SUM_GOLANG_ORG,
+        )
+        .unwrap()
+    }
+
+    /// go reads `go.mod` for versions it never builds, so it is checked against
+    /// sum.golang.org's `h1:`, never refused by policy, and 502 when it is not that one.
+    #[tokio::test]
+    async fn a_go_mod_is_served_only_as_the_checksum_database_claims_it() {
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        let gzipped = gzip(&go_mod);
+        for (body, encoding) in [(go_mod.clone(), None), (gzipped, Some("gzip"))] {
+            let upstream = module_proxy(body.clone(), encoding).await;
+            let base = serve(go_proxy(&upstream, quote_sumdb().await).router()).await;
+            let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
+            assert_eq!(response.status(), 200);
+            assert_eq!(
+                response.bytes().await.unwrap(),
+                body,
+                "forwarded as sent, {encoding:?}"
+            );
+        }
+        for (body, encoding, why) in [
+            (
+                b"module rsc.io/quote\n".to_vec(),
+                None,
+                "and the claim is h1:LzX7",
+            ),
+            (go_mod.clone(), Some("br"), "could not be decoded"),
+        ] {
+            let upstream = module_proxy(body, encoding).await;
+            let base = serve(go_proxy(&upstream, quote_sumdb().await).router()).await;
+            let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
+            assert_eq!(response.status(), 502);
+            let text = response.text().await.unwrap();
+            assert!(
+                text.contains("checksum database does not describe"),
+                "{text}"
+            );
+            assert!(text.contains(why), "{text}");
+        }
+        let upstream = module_proxy(go_mod.clone(), None).await;
+        let small = go_proxy(&upstream, quote_sumdb().await)
+            .with_max_metadata_bytes(8)
+            .with_client(Ecosystem::Go, {
+                let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 8)
+                    .with_sumdb(quote_sumdb().await);
+                Arc::new(go)
+            });
+        let base = serve(small.router()).await;
+        let text = reqwest::get(format!("{base}{QUOTE_MOD}"))
+            .await
+            .unwrap()
+            .text()
+            .await
+            .unwrap();
+        assert!(text.contains("it is over 8 bytes"), "{text}");
+    }
+
+    /// A version sum.golang.org does not know is refused, one it cannot prove is 503, and a
+    /// body that fails or an answer other than 200 is passed on as it came.
+    #[tokio::test]
+    async fn a_go_mod_with_no_proved_claim_is_not_served() {
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        let upstream = module_proxy(go_mod, None).await;
+        let base = serve(go_proxy(&upstream, quote_sumdb().await).router()).await;
+        let unknown = reqwest::get(format!("{base}/go/rsc.io/quote/@v/v9.0.0.mod"))
+            .await
+            .unwrap();
+        assert_eq!(unknown.status(), 403);
+        assert!(
+            unknown
+                .text()
+                .await
+                .unwrap()
+                .contains("holds no record of it")
+        );
+
+        let base = serve(go_proxy(&upstream, unreachable_sumdb().await).router()).await;
+        let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
+        assert_eq!(response.status(), 503);
+        assert_eq!(response.headers()[NOT_READY], "checksum-database");
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("gave no proved answer")
+        );
+
+        for answer in [
+            crate::util::test_support::Answer::Status(404),
+            crate::util::test_support::Answer::cut_short(),
+        ] {
+            let addr = crate::util::test_support::scripted(vec![answer]).await;
+            let failing = format!("http://{addr}");
+            let base = serve(go_proxy(&failing, quote_sumdb().await).router()).await;
+            let status = reqwest::get(format!("{base}{QUOTE_MOD}"))
+                .await
+                .unwrap()
+                .status();
+            assert!([404, 502].contains(&status.as_u16()), "{status}");
+        }
+    }
+
+    /// A zip's claim is asked before its fetch is planned. Until its `h1:` is checked
+    /// against its bytes it has no strong digest; a claim that cannot be proved is 503.
+    #[tokio::test]
+    async fn a_go_zip_asks_the_checksum_database_first() {
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        let upstream = module_proxy(go_mod, None).await;
+        let proxy = go_proxy(&upstream, quote_sumdb().await);
+        let (status, body) = refused(pinned(&proxy, QUOTE_ZIP).await).await;
+        assert_eq!(status, 403);
+        assert!(body.contains("no strong digest"), "{body}");
+
+        let (dir, path, log) = audit_log("go-claim");
+        let proxy = offline(None, Some(NO_POLICY))
+            .with_upstream(Ecosystem::Go, &upstream)
+            .with_audit_log(Some(log))
+            .with_client(Ecosystem::Go, {
+                let go =
+                    crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20)
+                        .with_sumdb(unreachable_sumdb().await);
+                Arc::new(go)
+            });
+        let ArtifactStep::Answer(response) = pinned(&proxy, QUOTE_ZIP).await else {
+            panic!("503");
+        };
+        assert_eq!(response.status(), 503);
+        assert_eq!(response.headers()[NOT_READY], "checksum-database");
+        let written = std::fs::read_to_string(path).unwrap();
+        assert!(
+            written.contains(r#""answered":"checksum-database""#),
+            "{written}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// cargo 1.99.0 asked for `config.json` without a token, then with it alone once

@@ -175,11 +175,12 @@ impl Tiles for Client {
     }
 }
 
+/// A checksum database on loopback, signing with a key made for it.
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
+pub(crate) mod testing {
     use super::*;
-    use crate::ecosystem::go::tlog::tests::{Log, data};
+    use crate::ecosystem::go::tlog::tests::Log;
     use aws_lc_rs::signature::{Ed25519KeyPair, KeyPair as _};
     use axum::extract::{Path, State};
     use axum::http::StatusCode;
@@ -187,19 +188,20 @@ mod tests {
     use base64::Engine as _;
     use std::sync::Arc;
 
-    /// A checksum database of `log` signing with `pair`, answering `example.com/m@v<i>`.
-    struct Database {
-        log: Log,
-        pair: Ed25519KeyPair,
-        size: Mutex<u64>,
-        root: Mutex<Option<Hash>>,
+    /// A database of `records`, the first `size` of them in its tree, signing with `pair`.
+    pub(crate) struct Database {
+        pub(crate) log: Log,
+        pub(crate) pair: Ed25519KeyPair,
+        records: Vec<String>,
+        pub(crate) size: Mutex<u64>,
+        pub(crate) root: Mutex<Option<Hash>>,
         /// Text signed in place of the tree head, when set.
-        head: Mutex<Option<String>>,
+        pub(crate) head: Mutex<Option<String>>,
         /// A tile answered 500.
-        refused: Mutex<Option<(u32, u64, u64)>>,
+        pub(crate) refused: Mutex<Option<(u32, u64, u64)>>,
     }
 
-    const NAME: &str = "sum.test";
+    pub(crate) const NAME: &str = "sum.test";
 
     /// `pair`'s public key with its algorithm byte, and the first four bytes of its hash.
     fn key_parts(pair: &Ed25519KeyPair) -> (Vec<u8>, Vec<u8>) {
@@ -212,7 +214,8 @@ mod tests {
         (public, hash)
     }
 
-    fn key(pair: &Ed25519KeyPair) -> String {
+    /// `pair` written as the go command writes a key.
+    pub(crate) fn key(pair: &Ed25519KeyPair) -> String {
         let (public, hash) = key_parts(pair);
         format!(
             "{NAME}+{}+{}",
@@ -221,15 +224,33 @@ mod tests {
         )
     }
 
-    /// Record `i`, which for 13 has no `go.mod` line.
-    fn record(i: u64) -> String {
-        match i {
-            13 => "example.com/m v13 h1:zip13=\n".to_owned(),
-            _ => format!("example.com/m v{i} h1:zip{i}=\nexample.com/m v{i}/go.mod h1:mod{i}=\n"),
-        }
-    }
-
     impl Database {
+        /// A database of `records`, all of them in its tree.
+        pub(crate) fn new(records: Vec<String>) -> Arc<Self> {
+            Self::sized(records.len() as u64, records)
+        }
+
+        /// A database of `records`, the first `size` of them in its tree.
+        pub(crate) fn sized(size: u64, records: Vec<String>) -> Arc<Self> {
+            let log = Log::from_data(records.len() as u64, |i| {
+                records[i as usize].clone().into_bytes()
+            });
+            Arc::new(Self {
+                log,
+                pair: Ed25519KeyPair::generate().unwrap(),
+                records,
+                size: Mutex::new(size),
+                root: Mutex::new(None),
+                head: Mutex::new(None),
+                refused: Mutex::new(None),
+            })
+        }
+
+        /// The key its notes are signed with.
+        pub(crate) fn key(&self) -> String {
+            key(&self.pair)
+        }
+
         fn note(&self) -> String {
             let size = *self.size.lock().unwrap();
             let root = self
@@ -250,18 +271,17 @@ mod tests {
                 base64::engine::general_purpose::STANDARD.encode(signed)
             )
         }
-    }
 
-    /// The log's records are [`record`]s here, so the leaves are rebuilt from them.
-    fn database(size: u64) -> Arc<Database> {
-        Arc::new(Database {
-            log: Log::from_data(70_000, |i| record(i).into_bytes()),
-            pair: Ed25519KeyPair::generate().unwrap(),
-            size: Mutex::new(size),
-            root: Mutex::new(None),
-            head: Mutex::new(None),
-            refused: Mutex::new(None),
-        })
+        /// The record a lookup of `module` at `version` answers with: the one whose first
+        /// line names them, or for `example.com/m` at `v<i>`, record `i`.
+        fn index(&self, module: &str, version: &str) -> Option<u64> {
+            let named = format!("{module} {version} ");
+            let found = self.records.iter().position(|r| r.starts_with(&named));
+            let numbered = (module == "example.com/m")
+                .then(|| version.strip_prefix('v')?.parse().ok())
+                .flatten();
+            found.map(|i| i as u64).or(numbered)
+        }
     }
 
     async fn lookup(
@@ -269,14 +289,14 @@ mod tests {
         Path(at): Path<String>,
     ) -> Result<String, StatusCode> {
         let (module, version) = at.split_once('@').ok_or(StatusCode::BAD_REQUEST)?;
-        let i: u64 = version
-            .strip_prefix('v')
-            .and_then(|v| v.parse().ok())
-            .ok_or(StatusCode::GONE)?;
-        if module != "example.com/m" || i >= *db.size.lock().unwrap() {
-            return Err(StatusCode::NOT_FOUND);
+        if module.starts_with("gone.") {
+            return Err(StatusCode::GONE);
         }
-        Ok(format!("{i}\n{}\n{}", record(i), db.note()))
+        let i = db
+            .index(module, version)
+            .filter(|i| *i < *db.size.lock().unwrap())
+            .ok_or(StatusCode::NOT_FOUND)?;
+        Ok(format!("{i}\n{}\n{}", db.records[i as usize], db.note()))
     }
 
     async fn tile(
@@ -299,12 +319,43 @@ mod tests {
         Ok(hashes.concat())
     }
 
-    async fn serve(db: Arc<Database>) -> String {
+    /// `db` served on loopback. Returns its base URL.
+    pub(crate) async fn serve(db: Arc<Database>) -> String {
         let router = axum::Router::new()
             .route("/lookup/{*at}", get(lookup))
             .route("/tile/8/{level}/{*rest}", get(tile))
             .with_state(db);
         crate::proxy::testing::serve(router).await
+    }
+
+    /// A client of `db`, served on loopback.
+    pub(crate) async fn client(db: Arc<Database>) -> Client {
+        let key = db.key();
+        let base = serve(db).await;
+        Client::new(reqwest::Client::new(), &base, &key).unwrap()
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::testing::{Database, key, serve};
+    use super::*;
+    use crate::ecosystem::go::tlog::tests::data;
+    use aws_lc_rs::signature::Ed25519KeyPair;
+    use std::sync::Arc;
+
+    /// Record `i`, which for 13 has no `go.mod` line.
+    fn record(i: u64) -> String {
+        match i {
+            13 => "example.com/m v13 h1:zip13=\n".to_owned(),
+            _ => format!("example.com/m v{i} h1:zip{i}=\nexample.com/m v{i}/go.mod h1:mod{i}=\n"),
+        }
+    }
+
+    /// A database of 70,000 [`record`]s, the first `size` in its tree.
+    fn database(size: u64) -> Arc<Database> {
+        Database::sized(size, (0..70_000).map(record).collect())
     }
 
     fn known(i: u64) -> Answer {
@@ -333,7 +384,7 @@ mod tests {
             "404"
         );
         assert_eq!(
-            client.lookup("example.com/m", "latest").await,
+            client.lookup("gone.example/m", "v1").await,
             Ok(Answer::Unknown),
             "410"
         );

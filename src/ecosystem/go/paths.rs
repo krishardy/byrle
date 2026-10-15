@@ -103,8 +103,9 @@ fn key(escaped: &str) -> Option<PackageKey> {
     PackageKey::from_registry_name(Ecosystem::Go, &unescape(escaped)?).ok()
 }
 
-/// `@v/list` and `@latest` are a module's metadata, a `.zip` its artifact, and anything else
-/// under [`PREFIX`], `.info`, `.mod` and the checksum database among them, neither.
+/// `@v/list` and `@latest` are a module's metadata, a `.zip` its artifact and a `.mod` its
+/// manifest. Anything else under [`PREFIX`], `.info` and the checksum database among them,
+/// is none of those.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let Some(rest) = path.strip_prefix(PREFIX) else {
@@ -116,17 +117,23 @@ pub fn classify_path(path: &str) -> RequestTarget {
     let Some((module, file)) = rest.split_once(FILES) else {
         return RequestTarget::Other;
     };
-    let version = file.strip_suffix(".zip").and_then(unescape);
-    match (key(module), version) {
-        (Some(key), Some(version)) if !version.is_empty() && !version.contains('/') => {
-            RequestTarget::Artifact {
-                filename: filename(&version),
-                claimed_version: version,
-                key,
-            }
-        }
+    let (Some(key), Some((version, kind))) = (key(module), file.rsplit_once('.')) else {
+        return RequestTarget::Other;
+    };
+    match (unescape(version), kind) {
+        (Some(version), "zip") if is_version(&version) => RequestTarget::Artifact {
+            filename: filename(&version),
+            claimed_version: version,
+            key,
+        },
+        (Some(version), "mod") if is_version(&version) => RequestTarget::Manifest { key, version },
         _ => RequestTarget::Other,
     }
+}
+
+/// Whether a path's version can be one: not empty, and no path of its own.
+fn is_version(version: &str) -> bool {
+    !version.is_empty() && !version.contains('/')
 }
 
 /// The checksum database's path goes to sum.golang.org, which go asks through the proxy
@@ -227,9 +234,17 @@ mod tests {
                 filename: "v0.20.0-RC1.zip".into(),
             }
         );
+        assert_eq!(
+            classify_path("/go/golang.org/x/text/@v/v0.20.0.mod"),
+            RequestTarget::Manifest {
+                key: key("golang.org/x/text"),
+                version: "v0.20.0".into(),
+            }
+        );
         for other in [
             "/go/golang.org/x/text/@v/v0.20.0.info",
-            "/go/golang.org/x/text/@v/v0.20.0.mod",
+            "/go/golang.org/x/text/@v/.mod",
+            "/go/golang.org/x/text/@v/v1",
             "/go/sumdb/sum.golang.org/supported",
             "/go/sumdb/sum.golang.org/lookup/golang.org/x/text@v0.20.0",
             "/go/golang.org/x/text/@v/.zip",

@@ -53,6 +53,8 @@ module directory and its `go::` spelling take them from the prefix, not from `as
 | A document naming one refused version | rewritten, never refused | `Document::names_none`: `@latest` naming a refused version is answered 404, as go reads an absent one |
 | Versions written `v1.2.3`, which OSV writes `1.2.3` | `VersionOrder::SemVer` | `VersionOrder::Go`, SemVer 2.0 after a `v` |
 | A path the proxy answers from another host | none | `go::upstream_url` sends `/go/sumdb/sum.golang.org/` to sum.golang.org |
+| A digest from a database beside the registry | none: each document published its own | `Fetch::claim`, answering `Claimed`: `NotAsked` for npm, PyPI and cargo |
+| A file checked whole in the request | none | `RequestTarget::Manifest`, checked by `Claim::check_manifest`: Go's `go.mod` |
 
 ## Decision
 

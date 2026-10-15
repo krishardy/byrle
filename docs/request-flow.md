@@ -87,11 +87,11 @@ flowchart TD
 |---|---|---|
 | 200 | proxy | health; ready; a verified artifact; a filtered and rewritten metadata document |
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
-| 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix |
+| 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
-| refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest; the metadata names neither the version nor the file |
-| 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest |
-| 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
+| refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version |
+| 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims |
+| 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
 
 An artifact whose bytes do not match the digest has already been sent a 200. The last
 chunk is held back, so the body ends short and the client's install fails. The 502 for a

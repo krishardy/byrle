@@ -34,6 +34,52 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
         &'a self,
         key: &'a PackageKey,
     ) -> BoxFuture<'a, Result<Option<FullDocument>, String>>;
+
+    /// What a database beside the registry says of `version`'s files, for an ecosystem whose
+    /// documents publish no digest. Errors when it cannot be asked or does not prove itself.
+    fn claim<'a>(
+        &'a self,
+        _key: &'a PackageKey,
+        _version: &'a str,
+    ) -> BoxFuture<'a, Result<Claimed, String>> {
+        Box::pin(async { Ok(Claimed::NotAsked) })
+    }
+}
+
+/// What [`Fetch::claim`] found.
+#[derive(Debug, Clone)]
+pub enum Claimed {
+    /// The registry's own documents publish the digests: nothing is asked.
+    NotAsked,
+    /// The database holds no record of the version, so its files cannot be checked.
+    Unknown,
+    /// The database's digests for the version's files.
+    Known(Claim),
+}
+
+/// The digests a database publishes for a version's artifact and its manifest.
+#[derive(Debug, Clone)]
+pub struct Claim {
+    /// The artifact's digest, in the database's own form, such as Go's `h1:`.
+    pub artifact: String,
+    /// The manifest's digest, in the same form: Go's `go.mod`.
+    pub manifest: String,
+    /// The digest of a manifest's bytes, in that form.
+    pub manifest_digest: fn(&[u8]) -> String,
+}
+
+impl Claim {
+    /// Whether `manifest` is the manifest this claims. Errors naming both digests when not.
+    pub fn check_manifest(&self, manifest: &[u8]) -> Result<(), String> {
+        let found = (self.manifest_digest)(manifest);
+        if found == self.manifest {
+            return Ok(());
+        }
+        Err(format!(
+            "its digest is {found}, and the claim is {}",
+            self.manifest
+        ))
+    }
 }
 
 /// A metadata document the proxy read on its way to the client.
@@ -140,6 +186,13 @@ impl Clients {
         ))
     }
 
+    /// These clients with `ecosystem`'s replaced by `client`.
+    #[cfg(test)]
+    pub fn with(mut self, ecosystem: Ecosystem, client: std::sync::Arc<dyn Fetch>) -> Self {
+        self.0.insert(ecosystem, client);
+        self
+    }
+
     fn of(&self, key: &PackageKey) -> &dyn Fetch {
         self.0[&key.ecosystem()].as_ref()
     }
@@ -164,6 +217,11 @@ impl Clients {
     /// whose records carry `published_at`, which asks nothing.
     pub async fn publish_times(&self, key: &PackageKey) -> Result<Option<PublishTimes>, String> {
         Ok(self.full_document(key).await?.map(|full| full.times))
+    }
+
+    /// What a database beside the registry says of `version`'s files: [`Fetch::claim`].
+    pub async fn claim(&self, key: &PackageKey, version: &str) -> Result<Claimed, String> {
+        self.of(key).claim(key, version).await
     }
 
     /// The full document, for an ecosystem whose client asks for less: [`Fetch::full`].

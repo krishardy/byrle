@@ -134,7 +134,11 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
    1. The row, `/go/` paths, `@v/list` and `@latest` filtered, `supported` written, the
       relay, `osv/go` and `BYRLE_UPSTREAM_GO`. Every zip is refused as publishing no
       strong digest. Done 2026-10-15.
-   2. The claim from sum.golang.org, and `.mod` checked against it.
+   2. The claim from sum.golang.org, and `.mod` checked against it. Done 2026-10-15:
+      `Fetch::claim`, kept per module version once known. A `go.mod` is never refused by
+      policy, as go reads it for versions it does not build; it is 403 when sum.golang.org
+      holds no record of it, 502 when its `h1:` differs, and 503 `checksum-database` when
+      no proved answer comes. A zip's claim is asked before its fetch is planned.
    3. The zip's `h1:` in the analysis job, its sha256 kept by the analysis store.
    4. Cooldown from `.info`, newest first, and a pinned version's own `.info`.
    5. `toolchain` advisories matched to `golang.org/toolchain`.

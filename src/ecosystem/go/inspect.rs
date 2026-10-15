@@ -218,7 +218,7 @@ mod tests {
                 "/go/golang.org/x/text/@v/list",
                 "https://proxy.golang.org/golang.org/x/text/@v/list",
                 DocumentKind::Latest,
-                b"{}",
+                br#"{"Version":"v1.0.0"}"#,
             ),
             (
                 "/go/golang.org/x/text/@latest",

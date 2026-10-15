@@ -50,6 +50,7 @@ reasoning per version. A version offered and not removed is not in the log.
 | `cut-short` | a served artifact's body ended early: its bytes did not match their digest, or the upstream stopped part way. Written after the `served` line for the same request | no |
 | `unauthorized` | 401: no token, or one not held by an enabled account | no |
 | `account-store` | 503: the account store did not answer, so the token was not checked | no |
+| `checksum-database` | 503: Go's checksum database did not answer for the version, or its answer did not prove itself | no |
 
 A line with nothing decided has no `action` and no `inputs`. `audit verify` and `policy diff`
 skip it.
