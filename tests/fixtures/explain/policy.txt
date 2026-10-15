@@ -12,20 +12,22 @@ settings
   advisory_scores  0
 
 signal weights, for the risk score
-  new_package             1
-  new_publisher           1
-  no_repository           1
-  near_name               1
-  source_install_scripts  1
-  source_dependencies     1
-  source_install_files    1
-  source_differing        1
-  virustotal_detected     1
-  advisory_malware        8
-  advisory_vulnerability  4
-  advisory_unsound        3
-  advisory_unmaintained   2
-  advisory_notice         1
+  new_package                  1
+  new_publisher                1
+  no_repository                1
+  near_name                    1
+  source_install_scripts       1
+  source_dependencies          1
+  source_install_files         1
+  source_differing             1
+  virustotal_detected          1
+  trustpub_dropped             1
+  trustpub_repository_changed  1
+  advisory_malware             8
+  advisory_vulnerability       4
+  advisory_unsound             3
+  advisory_unmaintained        2
+  advisory_notice              1
 
 checks
   denials           enforced
@@ -52,20 +54,22 @@ settings
   advisory_scores  0
 
 signal weights, for the risk score
-  new_package             1
-  new_publisher           1
-  no_repository           1
-  near_name               2
-  source_install_scripts  1
-  source_dependencies     1
-  source_install_files    1
-  source_differing        1
-  virustotal_detected     1
-  advisory_malware        8
-  advisory_vulnerability  4
-  advisory_unsound        3
-  advisory_unmaintained   2
-  advisory_notice         1
+  new_package                  1
+  new_publisher                1
+  no_repository                1
+  near_name                    2
+  source_install_scripts       1
+  source_dependencies          1
+  source_install_files         1
+  source_differing             1
+  virustotal_detected          1
+  trustpub_dropped             1
+  trustpub_repository_changed  1
+  advisory_malware             8
+  advisory_vulnerability       4
+  advisory_unsound             3
+  advisory_unmaintained        2
+  advisory_notice              1
 
 checks
   denials           enforced
@@ -92,20 +96,22 @@ settings
   advisory_scores  0
 
 signal weights, for the risk score
-  new_package             1
-  new_publisher           1
-  no_repository           1
-  near_name               1
-  source_install_scripts  1
-  source_dependencies     1
-  source_install_files    1
-  source_differing        1
-  virustotal_detected     1
-  advisory_malware        8
-  advisory_vulnerability  4
-  advisory_unsound        3
-  advisory_unmaintained   2
-  advisory_notice         1
+  new_package                  1
+  new_publisher                1
+  no_repository                1
+  near_name                    1
+  source_install_scripts       1
+  source_dependencies          1
+  source_install_files         1
+  source_differing             1
+  virustotal_detected          1
+  trustpub_dropped             1
+  trustpub_repository_changed  1
+  advisory_malware             8
+  advisory_vulnerability       4
+  advisory_unsound             3
+  advisory_unmaintained        2
+  advisory_notice              1
 
 checks
   denials           enforced
@@ -138,20 +144,22 @@ settings
   advisory_scores  0
 
 signal weights, for the risk score
-  new_package             1
-  new_publisher           1
-  no_repository           1
-  near_name               1
-  source_install_scripts  1
-  source_dependencies     1
-  source_install_files    1
-  source_differing        1
-  virustotal_detected     1
-  advisory_malware        8
-  advisory_vulnerability  4
-  advisory_unsound        3
-  advisory_unmaintained   2
-  advisory_notice         1
+  new_package                  1
+  new_publisher                1
+  no_repository                1
+  near_name                    1
+  source_install_scripts       1
+  source_dependencies          1
+  source_install_files         1
+  source_differing             1
+  virustotal_detected          1
+  trustpub_dropped             1
+  trustpub_repository_changed  1
+  advisory_malware             8
+  advisory_vulnerability       4
+  advisory_unsound             3
+  advisory_unmaintained        2
+  advisory_notice              1
 
 checks
   denials           enforced

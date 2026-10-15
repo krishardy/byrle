@@ -119,6 +119,7 @@ pub const REGISTRY: Registry = Registry {
     write: |_| None,
     meaningless: &[crate::policy::merge::Rule::Deprecated],
     install_scripts_unread: None,
+    publishers: None,
 };
 
 /// What `byrle` sends to ask for JSON rather than HTML. PEP 691.

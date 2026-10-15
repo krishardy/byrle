@@ -1,11 +1,12 @@
 //! Detectors that report findings about a package version, which become signals in its risk
-//! score and refuse nothing. Two are built in, the metadata heuristics and the source
-//! comparison. Others are commands run on the version by name, GuardDog first.
+//! score and refuse nothing. Built in: the metadata heuristics, the source comparison,
+//! VirusTotal and `trustpub`. Others are commands run on the version by name, GuardDog first.
 //! See docs/engineering_decisions/detectors.md.
 
 pub mod guarddog;
 pub mod metadata;
 pub mod source;
+pub mod trustpub;
 pub mod virustotal;
 
 use std::collections::BTreeMap;
@@ -24,27 +25,32 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::identity::Ecosystem;
 
 /// The detectors whose rules a policy may weight, and those rules.
-pub const KNOWN: [(&str, &[&str]); 5] = [
+pub const KNOWN: [(&str, &[&str]); 6] = [
     (metadata::NAME, &metadata::RULES),
     (crate::signal::ADVISORY, &crate::signal::ADVISORY_RULES),
     (source::NAME, &source::RULES),
     (virustotal::NAME, &virustotal::RULES),
+    (trustpub::NAME, &trustpub::RULES),
     ("guarddog", &guarddog::RULES),
 ];
 
 /// The detectors built in, whose rules a policy names without the detector's name.
-pub const BUILT_IN: [&str; 4] = [
+pub const BUILT_IN: [&str; 5] = [
     metadata::NAME,
     source::NAME,
     virustotal::NAME,
+    trustpub::NAME,
     crate::signal::ADVISORY,
 ];
 
 /// The rules of the detectors built in, as a policy names them.
-pub const BUILT_IN_RULES: [&str; 14] = joined(
-    &joined::<9>(
-        &joined::<8>(&metadata::RULES, &source::RULES),
-        &virustotal::RULES,
+pub const BUILT_IN_RULES: [&str; 16] = joined(
+    &joined::<11>(
+        &joined::<9>(
+            &joined::<8>(&metadata::RULES, &source::RULES),
+            &virustotal::RULES,
+        ),
+        &trustpub::RULES,
     ),
     &crate::signal::ADVISORY_RULES,
 );
@@ -121,6 +127,11 @@ pub trait Detector<S: ?Sized = Target>: Send + Sync {
 
     /// Its version. A result another version wrote is not read back.
     fn version(&self) -> &str;
+
+    /// Whether it is run on versions of `ecosystem`.
+    fn reads(&self, _ecosystem: Ecosystem) -> bool {
+        true
+    }
 
     /// Run it on `subject`: a [`Target`] for a command, what the proxy holds for one built
     /// in. Each caller decides when it runs and whether its result is stored.
@@ -483,8 +494,10 @@ esac
         assert_eq!(BUILT_IN_RULES[..4], metadata::RULES);
         assert_eq!(BUILT_IN_RULES[4..8], source::RULES);
         assert_eq!(BUILT_IN_RULES[8..9], virustotal::RULES);
-        assert_eq!(BUILT_IN_RULES[9..], crate::signal::ADVISORY_RULES);
+        assert_eq!(BUILT_IN_RULES[9..11], trustpub::RULES);
+        assert_eq!(BUILT_IN_RULES[11..], crate::signal::ADVISORY_RULES);
         assert!(knows("virustotal_detected"));
+        assert!(knows("trustpub_dropped"));
         assert_eq!(joined::<3>(&["a"], &["b", "c"]), ["a", "b", "c"]);
     }
 

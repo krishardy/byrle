@@ -100,7 +100,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         max_verified,
     )
     .with_sources(environment.source_archives()?)
-    .with_detectors(detectors(environment).await?)
+    .with_detectors(detectors(environment, &client, &upstreams).await?)
     .with_virustotal(virustotal(environment)?.as_ref());
     analyser.forget_decisions_daily(environment.decision_retention_days()?);
 
@@ -433,12 +433,15 @@ async fn warn_enforcement(store: Option<&dyn Intel>) {
     }
 }
 
-/// The detectors [`env::DETECTORS`] names, each asked its version.
-/// Errors when one does not parse or does not print a version.
+/// Each registry's detector asking its API who published a version, when that API is
+/// asked, then the detectors [`env::DETECTORS`] names, each asked its version. Errors when
+/// one does not parse or does not print a version.
 async fn detectors<L: Fn(&str) -> Option<OsString>>(
     environment: &Env<L>,
+    client: &reqwest::Client,
+    upstreams: &crate::ecosystem::Upstreams,
 ) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
-    let mut configured: Vec<Arc<dyn Detector>> = Vec::new();
+    let mut configured = publishers(environment, client, upstreams)?;
     for spec in environment.detectors()? {
         let detector = Command::configured(&spec, environment.detector_environment())
             .await
@@ -451,6 +454,39 @@ async fn detectors<L: Fn(&str) -> Option<OsString>>(
         configured.push(Arc::new(detector));
     }
     Ok(configured)
+}
+
+/// Each registry's detector asking its API who published a version, logged on or off.
+fn publishers<L: Fn(&str) -> Option<OsString>>(
+    environment: &Env<L>,
+    client: &reqwest::Client,
+    upstreams: &crate::ecosystem::Upstreams,
+) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
+    let (setting, interval) = environment.crates_api()?;
+    let mut made = Vec::new();
+    for (ecosystem, upstream) in upstreams.iter() {
+        let Some(publishers) = crate::ecosystem::of(ecosystem).publishers else {
+            continue;
+        };
+        match publishers(client, upstream, &setting, interval) {
+            Some(detector) => {
+                info!(
+                    byrle.config.variable = %env::CRATES_API,
+                    byrle.detector = detector.name(),
+                    "publisher lookup on: each {ecosystem} version served is looked up on the registry's \
+                     API, one request each {} ms, and a version published without trusted \
+                     publishing after one published with it is a signal",
+                    interval.as_millis()
+                );
+                made.push(detector);
+            }
+            None => info!(
+                byrle.config.variable = %env::CRATES_API,
+                "publisher lookup off: no API is asked who published each {ecosystem} version"
+            ),
+        }
+    }
+    Ok(made)
 }
 
 /// The spool at [`env::SPOOL_DIR`], with the files an earlier process left removed.
@@ -920,6 +956,24 @@ mod tests {
         };
         assert!(why.starts_with(&env::DETECTORS.to_string()), "{why}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// crates.io's API is asked in front of crates.io's index, and not in front of another
+    /// unless named; an interval that does not parse refuses the start.
+    #[tokio::test]
+    async fn the_publisher_lookup_is_reported_on_or_off_at_startup() {
+        let (started, log) = logged("startup-trustpub-on", &[]).await;
+        assert!(started && log.contains("publisher lookup on"), "{log}");
+        assert!(log.contains("one request each 1000 ms"), "{log}");
+        let mirror = [(env::UPSTREAM_CARGO, "https://mirror.example/index/")];
+        let (started, log) = logged("startup-trustpub-off", &mirror).await;
+        assert!(started && log.contains("publisher lookup off"), "{log}");
+        let (started, log) = logged(
+            "startup-trustpub-bad",
+            &[(env::CRATES_API_INTERVAL_MS, "soon")],
+        )
+        .await;
+        assert!(!started, "{log}");
     }
 
     #[tokio::test]

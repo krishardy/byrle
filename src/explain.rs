@@ -205,9 +205,15 @@ pub fn policy_report(policy: &Policy, intel: Intel) -> String {
     ));
 
     out.push_str("\nsignal weights, for the risk score\n");
-    for rule in crate::analysis::detector::BUILT_IN_RULES {
+    let rules = crate::analysis::detector::BUILT_IN_RULES;
+    let width = rules
+        .iter()
+        .map(|rule| rule.len())
+        .max()
+        .unwrap_or_default();
+    for rule in rules {
         out.push_str(&format!(
-            "  {rule:22}  {}\n",
+            "  {rule:width$}  {}\n",
             policy.signal_weights.of(rule)
         ));
     }

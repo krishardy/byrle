@@ -11,6 +11,7 @@ use tracing::{info, warn};
 use super::{Analyser, InFlight};
 use crate::analysis::detector::{Detection, Detector, Target};
 use crate::analysis::store::DetectionKey;
+use crate::identity::Ecosystem;
 
 /// How many detector runs go at once, apart from the analyses a client waits on.
 pub const DETECTOR_SLOTS: usize = 2;
@@ -24,6 +25,15 @@ pub(super) struct Detectors {
     /// How many runs have started.
     started: Arc<AtomicU64>,
     ended: Arc<watch::Sender<u64>>,
+}
+
+impl Detectors {
+    /// The detectors run on versions of `ecosystem`.
+    fn reading(&self, ecosystem: Ecosystem) -> impl Iterator<Item = &Arc<dyn Detector>> {
+        self.detectors
+            .iter()
+            .filter(move |detector| detector.reads(ecosystem))
+    }
 }
 
 /// Which run of `detector` on `target` a result is kept under.
@@ -57,7 +67,7 @@ impl Analyser {
             return Vec::new();
         };
         let mut found = Vec::new();
-        for detector in &detectors.detectors {
+        for detector in detectors.reading(target.ecosystem) {
             let key = key(detector.as_ref(), target);
             match self.store.detected(&key).await {
                 Ok(Some(detection)) => found.push((key.detector, detection)),
@@ -82,7 +92,7 @@ impl Analyser {
             return Vec::new();
         };
         let mut started = Vec::new();
-        for detector in &detectors.detectors {
+        for detector in detectors.reading(target.ecosystem) {
             if done.iter().any(|(name, _)| name == detector.name()) {
                 continue;
             }
@@ -153,11 +163,11 @@ impl Analyser {
         None
     }
 
-    /// How many detectors are set.
-    pub fn detector_count(&self) -> usize {
+    /// How many detectors are set that read versions of `ecosystem`.
+    pub fn detector_count(&self, ecosystem: Ecosystem) -> usize {
         self.detectors
             .as_ref()
-            .map_or(0, |detectors| detectors.detectors.len())
+            .map_or(0, |detectors| detectors.reading(ecosystem).count())
     }
 
     /// How many detector runs have started since this analyser was made. 0 when none is set.
@@ -193,7 +203,6 @@ pub(crate) mod tests {
     use crate::analysis::detector::{Detecting, Finding};
     use crate::analysis::run::tests::analyser as made;
     use crate::analysis::store::InProcess;
-    use crate::identity::Ecosystem;
     use std::time::Duration;
 
     /// A detector that answers each version with `answer`, after `delay`, counting its runs.
@@ -262,7 +271,7 @@ pub(crate) mod tests {
         let fake = Fake::firing(&["threat-process-hooks"]);
         let analyser = made("detect-once", 1 << 20, Arc::new(InProcess::new(8)))
             .with_detectors(vec![fake.clone()]);
-        assert_eq!(analyser.detector_count(), 1);
+        assert_eq!(analyser.detector_count(Ecosystem::Npm), 1);
         assert_eq!(analyser.detected(&target()).await, []);
         run_all(&analyser, &[]).await;
         let detected = analyser.detected(&target()).await;
@@ -295,6 +304,21 @@ pub(crate) mod tests {
             .expect("the run ends");
     }
 
+    /// A detector that reads cargo alone is neither counted, started nor read on an npm
+    /// version.
+    #[tokio::test]
+    async fn a_detector_runs_only_on_the_ecosystems_it_reads() {
+        use crate::ecosystem::cargo::trustpub::TrustPub;
+        let trustpub = TrustPub::new(reqwest::Client::new(), "http://127.0.0.1:9", Duration::ZERO);
+        let analyser = made("detect-reads", 1 << 20, Arc::new(InProcess::new(8)))
+            .with_detectors(vec![Arc::new(trustpub)]);
+        assert_eq!(analyser.detector_count(Ecosystem::Npm), 0);
+        assert_eq!(analyser.detector_count(Ecosystem::Cargo), 1);
+        assert!(analyser.start_detecting(&target(), &[]).is_empty());
+        assert_eq!(analyser.detected(&target()).await, []);
+        assert_eq!(analyser.detections_started(), 0);
+    }
+
     /// Off, nothing runs. A detector that fails, or outlasts the deadline, stores nothing, and
     /// a store that cannot answer is logged.
     #[tokio::test]
@@ -302,7 +326,10 @@ pub(crate) mod tests {
         let off = made("detect-off", 1 << 20, Arc::new(InProcess::new(8)));
         let off = off.with_detectors(Vec::new());
         assert!(off.start_detecting(&target(), &[]).is_empty());
-        assert_eq!((off.detector_count(), off.detections_started()), (0, 0));
+        assert_eq!(
+            (off.detector_count(Ecosystem::Npm), off.detections_started()),
+            (0, 0)
+        );
         assert_eq!(off.detected(&target()).await, []);
         off.detections_ended(1).await;
 

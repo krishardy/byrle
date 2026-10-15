@@ -220,6 +220,14 @@ impl Setup {
     }
 }
 
+/// Makes a [`Registry::publishers`] detector, `None` when its API is not asked.
+pub type Publishers = fn(
+    &reqwest::Client,
+    &str,
+    &crate::env::ApiSetting,
+    std::time::Duration,
+) -> Option<std::sync::Arc<dyn crate::analysis::detector::Detector>>;
+
 /// What one ecosystem answers.
 pub struct Registry {
     /// The ecosystem this row is for.
@@ -308,6 +316,9 @@ pub struct Registry {
     pub metadata_names_repository: fn(&crate::record::PackageRecord) -> bool,
     /// Why `install_scripts` is not analyzed until the artifact is read; `None` if metadata says.
     pub install_scripts_unread: Option<&'static str>,
+
+    /// The detector asking the registry's API who published each version, where there is one.
+    pub publishers: Option<Publishers>,
     /// The checks this ecosystem's registry gives no meaning to, such as npm's `yanked`.
     pub meaningless: &'static [crate::policy::merge::Rule],
     /// A document the proxy writes for this path rather than fetching; `None` to fetch it.

@@ -24,6 +24,17 @@ pub struct Var {
     secret: Secret,
 }
 
+/// What a registry API variable such as [`CRATES_API`] says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApiSetting {
+    /// Unset: the registry's own API, when the upstream is the registry's own index.
+    Unset,
+    /// `off`: no API is asked.
+    Off,
+    /// The API at this URL.
+    At(String),
+}
+
 /// How much of a value the console's `GET config` shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Secret {
@@ -589,6 +600,22 @@ pub const VIRUSTOTAL_PER_DAY: Var = runtime(
 .with_default(Default::Number(
     crate::analysis::virustotal::PUBLIC_PER_DAY as u64,
 ));
+pub const CRATES_API: Var = runtime(
+    "BYRLE_CRATES_API",
+    "",
+    &[
+        "crates.io's API, asked who published each cargo version, a report-only signal.",
+        "Unset, crates.io's when the cargo upstream is crates.io's index; off asks nothing",
+    ],
+);
+pub const CRATES_API_INTERVAL_MS: Var = runtime(
+    "BYRLE_CRATES_API_INTERVAL_MS",
+    "",
+    &["milliseconds between requests to the crates API; crates.io asks for 1000"],
+)
+.with_default(Default::Number(
+    crate::analysis::detector::trustpub::DEFAULT_INTERVAL_MS,
+));
 pub const LOG_FORMAT: Var = runtime(
     "BYRLE_LOG_FORMAT",
     "",
@@ -684,7 +711,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 82] = [
+pub const ALL: [Var; 84] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -741,6 +768,8 @@ pub const ALL: [Var; 82] = [
     VIRUSTOTAL_URL,
     VIRUSTOTAL_PER_MINUTE,
     VIRUSTOTAL_PER_DAY,
+    CRATES_API,
+    CRATES_API_INTERVAL_MS,
     REFUSAL_STATUS,
     REFUSE_UNSERVABLE,
     MODE,
@@ -1333,6 +1362,22 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
             per_day: self.parsed(VIRUSTOTAL_PER_DAY, PUBLIC_PER_DAY, positive, above_0)?,
             uploads_from: PUBLIC_ORIGINS.map(str::to_owned).to_vec(),
         }))
+    }
+
+    /// What [`CRATES_API`] says, and the gap between requests to the API.
+    pub fn crates_api(&self) -> Result<(ApiSetting, std::time::Duration), EnvError> {
+        let setting = match self.text(CRATES_API)? {
+            None => ApiSetting::Unset,
+            Some(off) if off == "off" => ApiSetting::Off,
+            Some(api) => ApiSetting::At(api),
+        };
+        let interval = self.parsed(
+            CRATES_API_INTERVAL_MS,
+            crate::analysis::detector::trustpub::DEFAULT_INTERVAL_MS,
+            |v| v.parse().ok(),
+            "is not a whole number of milliseconds",
+        )?;
+        Ok((setting, std::time::Duration::from_millis(interval)))
     }
 
     pub fn snapshot_dir(&self) -> Result<Option<PathBuf>, EnvError> {
@@ -2085,6 +2130,40 @@ mod tests {
 
     /// No key leaves VirusTotal off; with one, each setting has the public API's default
     /// and refuses what does not parse.
+    #[test]
+    fn the_crates_api_setting_and_interval_parse() {
+        use std::time::Duration;
+        for (vars, read) in [
+            (vec![], (ApiSetting::Unset, Duration::from_millis(1000))),
+            (
+                vec![(CRATES_API, "off")],
+                (ApiSetting::Off, Duration::from_millis(1000)),
+            ),
+            (
+                vec![
+                    (CRATES_API, "https://api.mirror.example"),
+                    (CRATES_API_INTERVAL_MS, "250"),
+                ],
+                (
+                    ApiSetting::At("https://api.mirror.example".to_owned()),
+                    Duration::from_millis(250),
+                ),
+            ),
+        ] {
+            assert_eq!(testing::with(&vars).crates_api().unwrap(), read);
+        }
+        assert!(
+            testing::with(&[(CRATES_API_INTERVAL_MS, "soon")])
+                .crates_api()
+                .is_err()
+        );
+        assert!(
+            testing::with_unreadable(&[], CRATES_API)
+                .crates_api()
+                .is_err()
+        );
+    }
+
     #[test]
     fn virustotal_is_off_without_a_key_and_its_settings_parse() {
         use crate::analysis::virustotal::{API, Mode, PUBLIC_ORIGINS};

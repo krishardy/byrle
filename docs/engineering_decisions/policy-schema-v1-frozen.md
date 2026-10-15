@@ -26,6 +26,11 @@ Amended 2026-10-14, asked for by the user: `advisory_malware`, `advisory_vulnera
 written for it still parses and means the same; a file setting one of these keys does not
 parse under v0.1.0.
 
+Amended 2026-10-15, asked for by the user: `trustpub_dropped` and
+`trustpub_repository_changed` were added to `signal_weights`, for
+[cargo-provenance](cargo-provenance.md). A file setting one of them does not parse under a
+release before it.
+
 ## The keys
 
 | Level | Keys |
@@ -35,7 +40,7 @@ parse under v0.1.0.
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
-| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
+| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `trustpub_dropped`, `trustpub_repository_changed`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
 | `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `vuln_advisory_ids` |
 
 | Key | Value | Default |

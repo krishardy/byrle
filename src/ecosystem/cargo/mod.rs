@@ -7,6 +7,7 @@ pub mod inspect;
 pub mod lockfile;
 pub mod paths;
 pub mod transport;
+pub mod trustpub;
 pub mod wire;
 
 pub use inspect::{IndexFile, read_index};
@@ -83,6 +84,7 @@ pub const REGISTRY: Registry = Registry {
     install_scripts_unread: Some(
         "crates.io's index does not say; the .crate is read when it is downloaded",
     ),
+    publishers: Some(trustpub::made),
 };
 
 /// What points cargo at `url`, the proxy's cargo registry, with or without a trailing `/`.

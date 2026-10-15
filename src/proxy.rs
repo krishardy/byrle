@@ -3314,7 +3314,7 @@ impl Proxy {
             .config
             .analyser
             .as_deref()
-            .is_some_and(|analyser| detected.len() < analyser.detector_count());
+            .is_some_and(|analyser| detected.len() < analyser.detector_count(key.ecosystem()));
         let unscanned = self.config.analyser.as_deref().is_some_and(|analyser| {
             analyser.scanning()
                 && scanned

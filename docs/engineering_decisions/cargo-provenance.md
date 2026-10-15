@@ -1,9 +1,37 @@
 # cargo provenance: what crates.io publishes about who published a version
 
-- **Status:** Measured 2026-10-15. Decision pending. Until it is made, `provenance` is
-  reported unenforced for cargo, as `cargo-plan.md` Q5 says.
+- **Status:** Measured 2026-10-15. Decided by the user 2026-10-15: `trustpub_data` is read
+  as a risk signal. Implemented as the `trustpub` detector:
+  `src/analysis/detector/trustpub.rs`, `src/ecosystem/cargo/trustpub.rs`.
 - **Related:** [provenance-check](provenance-check.md),
-  [pypi-provenance](pypi-provenance.md), [advisory-kinds](advisory-kinds.md)
+  [pypi-provenance](pypi-provenance.md), [advisory-kinds](advisory-kinds.md),
+  [detectors](detectors.md)
+
+## Decision
+
+`provenance` stays reported unenforced for cargo. The `trustpub` detector, built in, reads
+`trustpub_data` and refuses nothing:
+
+| Rule | Fires on a cargo version when | Detail |
+|---|---|---|
+| `trustpub_dropped` | it has no `trustpub_data`, and an earlier version has | `published by <login>; 0.3.0 was published from github RustCrypto/utils`, for cpufeatures 0.3.1 |
+| `trustpub_repository_changed` | its provider and repository differ from the latest earlier version with `trustpub_data` | `published from github rust-random/rand_core; 0.10.0-rc-2 was from github rust-random/core` |
+
+Earlier is by `created_at`. Each rule weighs 1, the default for a rule `signal_weights` does
+not set.
+
+| Part | What it is |
+|---|---|
+| asked | `/api/v1/crates/{name}/versions?per_page=100&sort=date`, following `meta.next_page` until a page reaches before 2025-07, at most 20 pages |
+| when | in the background, as a command detector runs, on each cargo version a decision serves and has no stored result for. A version the policy blocks is not asked about |
+| pace | one request each `BYRLE_CRATES_API_INTERVAL_MS`, 1000 by default, across all runs |
+| which API | `BYRLE_CRATES_API`. Unset, `https://crates.io` when `BYRLE_UPSTREAM_CARGO` is crates.io's index, else none: a mirror's crates are not looked up on crates.io under the same names. `off` asks nothing |
+| stored | the detection, by detector version, as a command's is. A version listed nowhere since 2025-07 is stored with nothing fired when the pages reached before it, and not stored otherwise |
+| failure | a 429, a 5xx, a 404 or a page that does not parse stores nothing, and the next decision asks again |
+| User-Agent | `byrle/<version> (https://github.com/krishardy/byrle)` |
+
+npm publishes signed attestations, which the `provenance` check verifies and refuses on, so
+npm's `_npmUser.trustedPublisher` is not read as a signal.
 
 ## Where it is published
 

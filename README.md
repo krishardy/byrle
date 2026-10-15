@@ -33,7 +33,7 @@ crates.io is on `main`, after it. Build with `cargo build --release` and follow
 |---|---|---|
 | npm | **enforcing** | npm, pnpm, yarn 1, yarn 4, bun |
 | PyPI | **enforcing** | pip, uv |
-| crates.io | **enforcing**, provenance not checked: crates.io serves no attestations | cargo |
+| crates.io | **enforcing**, provenance not checked: crates.io serves no attestations; its unsigned `trustpub_data` is a signal | cargo |
 | Go, Maven | not built | |
 
 A tier is what the proxy does for the ecosystem today:

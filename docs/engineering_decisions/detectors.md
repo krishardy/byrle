@@ -30,14 +30,16 @@ result is stored.
 | `metadata` | `Listing`: the held records, the full document, the names served, the time | on each decision, before the verdict | nothing: its answer changes with the clock and the packages served | `metadata 1` |
 | `source` | `Sourced`: the comparison of one artifact with its source | on each decision with a stored comparison. The comparison runs in the analyser, per artifact digest, with its own slots and deadline | the comparison, by digest and `COMPARER` | `source 1`, `COMPARER` |
 | `virustotal` | `Scanned`: VirusTotal's answer about one artifact | on each decision with a stored answer. The lookup runs in the analyser, per artifact digest, one at a time behind a rate limiter: [virustotal](virustotal.md) | the answer, by digest | `virustotal 1` |
+| `trustpub` | `Target`, cargo versions only: crates.io's API asked who published each version of the crate | in the background, as a command does, one request each `BYRLE_CRATES_API_INTERVAL_MS`: [cargo-provenance](cargo-provenance.md) | its detection, by detector version | `trustpub 1` |
 | a command | `Target`: ecosystem, name and version | in the background, on 2 slots | its detection, by detector version | what `program --version` prints last |
 
-Both built in answer on the first poll of `detect`. `at_once` reads them, so the record
-store's lock is not held across a wait.
+`metadata`, `source` and `virustotal` answer on the first poll of `detect`. `at_once` reads
+them, so the record store's lock is not held across a wait. `trustpub` waits on the API, so
+it runs in the background, on the commands' slots.
 
 Their rules keep the keys they had before 2026-10-01: `new_package`, not
 `metadata.new_package`. A policy written before then loads unchanged. A command named
-`metadata` or `source` is refused at startup.
+`metadata`, `source`, `virustotal` or `trustpub` is refused at startup.
 
 A signal prints as `rule in words: detail` for a detector built in, and `detector: rule`
 for a command. The source comparison's text changed with the move:

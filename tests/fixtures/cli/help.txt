@@ -117,6 +117,9 @@ Proxy configuration, all through the environment:
   BYRLE_VIRUSTOTAL_URL              VirusTotal's API (default https://www.virustotal.com/api/v3)
   BYRLE_VIRUSTOTAL_PER_MINUTE       requests to VirusTotal a minute; the public API allows 4 (default 4)
   BYRLE_VIRUSTOTAL_PER_DAY          requests to VirusTotal a day; the public API allows 500 (default 500)
+  BYRLE_CRATES_API                  crates.io's API, asked who published each cargo version, a report-only signal.
+                                    Unset, crates.io's when the cargo upstream is crates.io's index; off asks nothing
+  BYRLE_CRATES_API_INTERVAL_MS      milliseconds between requests to the crates API; crates.io asks for 1000 (default 1000)
   BYRLE_REFUSAL_STATUS              status a refusal answers with, per client, e.g.
                                     "default=403,npm/pnpm=451" (default 403)
   BYRLE_REFUSE_UNSERVABLE=0         forward versions whose artifacts this proxy cannot

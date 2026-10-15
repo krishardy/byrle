@@ -175,14 +175,16 @@ and tightens nothing.
 | `source_install_files` | install files the source lacks or has otherwise | 1 |
 | `source_differing` | files that differ from the source | 1 |
 | `virustotal_detected` | a VirusTotal engine called the artifact malicious or suspicious | 1 |
+| `trustpub_dropped` | a cargo version was published without trusted publishing after one published with it | 1 |
+| `trustpub_repository_changed` | trusted publishing published a cargo version from another repository than the version before that it published | 1 |
 | `advisory_malware` | an advisory reports the version as malware | 8 |
 | `advisory_vulnerability` | an advisory reports a vulnerability in it | 4 |
 | `advisory_unsound` | RustSec reports unsound code in it | 3 |
 | `advisory_unmaintained` | RustSec reports the crate unmaintained | 2 |
 | `advisory_notice` | RustSec published a notice about it, or a kind this build does not know | 1 |
 
-The keys above are the rules of the three detectors built in, `metadata`, `source` and
-`virustotal`, and of the advisories the intel store holds, which
+The keys above are the rules of the four detectors built in, `metadata`, `source`,
+`virustotal` and `trustpub`, and of the advisories the intel store holds, which
 are named without the detector. An unsound, unmaintained or notice advisory refuses
 nothing: it is a signal only. A vulnerability or malware advisory is also refused by
 `max_cvss` or `known_malware`. Another detector's rule is weighed as `detector.rule`, such

@@ -94,7 +94,8 @@ today's sites on an allow-list that each commit shortens. Step 1 is done when it
 
 Answered by the user 2026-10-14: Q1 yes; Q3 yes, on any path; Q4 as `install_scripts`, not
 the check of its own recommended; Q5 deferred until there are measurements and a reliable
-source of attestation data. Q2 and Q6 are taken as recommended.
+source of attestation data; on 2026-10-15, after the measurements, `trustpub_data` read as
+a risk signal. Q2 and Q6 are taken as recommended.
 
 | | Question | Recommended |
 |---|---|---|
@@ -102,7 +103,7 @@ source of attestation data. Q2 and Q6 are taken as recommended.
 | Q2 | Where cargo is served | Under `/cargo/`: `sparse+https://byrle.example.com/cargo/` as the registry, the index at `/cargo/config.json` and `/cargo/se/rd/serde`. Index paths such as `/1/a` and `/se/` would otherwise meet npm's names at the root |
 | Q3 | How cargo sends a token | With `"auth-required": true` in the proxy's `config.json`, cargo sends the token in `Authorization` with no scheme. Accept that form, `Authorization: byrle_…`, beside `Bearer`, `Basic` and `X-Byrle-Token` |
 | Q4 | Build scripts and proc-macros | A check of their own, `build_scripts: allow`, read from the `.crate`'s `Cargo.toml`, reported as a signal. Not `install_scripts`, whose default `block` would refuse 21 of the top 100 crates |
-| Q5 | Provenance | Unenforced for cargo, and said so, until crates.io serves attestations. `trustpub_data` is unsigned, in the API only, one request per crate at 1 a second ([cargo-provenance](engineering_decisions/cargo-provenance.md)) |
+| Q5 | Provenance | Unenforced for cargo, and said so, until crates.io serves attestations. `trustpub_data` is unsigned, in the API only, one request per crate at 1 a second ([cargo-provenance](engineering_decisions/cargo-provenance.md)). Decided: read as a signal |
 | Q6 | Advisories | `osv/cargo`, from OSV's crates.io bundle |
 
 ## Steps
@@ -135,7 +136,7 @@ source of attestation data. Q2 and Q6 are taken as recommended.
 8. Q5: measured 2026-10-15 ([cargo-provenance](engineering_decisions/cargo-provenance.md)).
    486 of 2,500 versions since 2025-07 in the top 500 crates carry `trustpub_data`. The
    dropped-provenance rule would refuse 21 versions in 9 of 70 crates, each published by
-   an owner. Decision pending.
+   an owner. Read as the `trustpub` detector's signals, done 2026-10-15.
 
 ## Exit
 
