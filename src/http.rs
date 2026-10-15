@@ -1,7 +1,7 @@
 //! HTTP mechanics the proxy needs, testable without a server: which headers cross a hop,
 //! and turning an encoded response body into bytes something can parse.
 //!
-//! See docs/engineering_decisions/packument-body-inspection.md.
+//! See docs/engineering_decisions/0016-packument-body-inspection.md.
 
 use std::io::{Read, Write};
 use std::time::Duration;
@@ -271,7 +271,7 @@ pub fn gzip(data: &[u8]) -> Vec<u8> {
 const ETAG_PREFIX: &str = "byrle.";
 
 /// Label an upstream `ETag` as describing this proxy's version of the body.
-/// See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+/// See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
 /// `etag` keeps a `W/` outside its quotes. `base` is the proxy's address, mixed in.
 pub fn mark_etag(etag: &str, base: &str) -> String {
     let etag = etag.trim();
@@ -287,7 +287,7 @@ pub fn mark_etag(etag: &str, base: &str) -> String {
 
 /// Turn an `If-None-Match` the client got from us back into what upstream issued, keeping
 /// only the tags this proxy issued at `base`, and never `*`.
-/// See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+/// See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
 /// Returns `None` when nothing is left to send.
 pub fn unmark_if_none_match(header: &str, base: &str) -> Option<String> {
     let ours = format!("{ETAG_PREFIX}{}.", base_tag(base));

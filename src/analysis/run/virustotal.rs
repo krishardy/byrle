@@ -1,5 +1,5 @@
 //! Asking VirusTotal about an artifact, beside the analysis and never in front of it: no
-//! request is deferred for it. See docs/engineering_decisions/virustotal.md.
+//! request is deferred for it. See docs/engineering_decisions/0104-virustotal.md.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

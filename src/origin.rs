@@ -1,7 +1,7 @@
 //! Which origins the proxy fronts, and what happens to an artifact published elsewhere.
 //! The set is per deployment, never per ecosystem.
 //!
-//! See docs/engineering_decisions/enforcement-tiers.md.
+//! See docs/engineering_decisions/0019-enforcement-tiers.md.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -206,7 +206,7 @@ impl OriginPolicy {
 }
 
 /// Where a client will actually fetch an artifact from, when that is not the proxy.
-/// See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+/// See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
 /// Returns the origin, or `None` when the request will arrive at the proxy.
 pub fn bypassing_origin(artifact_url: &str, reachable: &ReachableOrigins) -> Option<String> {
     let artifact = reqwest::Url::parse(artifact_url).ok()?;
@@ -275,7 +275,7 @@ impl std::error::Error for RewriteError {}
 
 /// Point every artifact URL on a reachable origin at the proxy, keeping its path, by
 /// replacing each wherever it is a complete quoted string. Fails whole, never half done.
-/// See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+/// See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
 /// `artifacts` are the URLs normalisation found, so the document is not parsed again.
 /// `public_base` is the proxy's address the URLs are pointed at.
 pub fn rewrite_artifact_origins<'a>(

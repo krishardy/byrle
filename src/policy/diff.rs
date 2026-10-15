@@ -1,6 +1,6 @@
 //! `byrle policy diff`: what changes if this policy replaces that one, compared per check.
 //!
-//! See docs/engineering_decisions/policy-diff-dates-and-exit-bits.md.
+//! See docs/engineering_decisions/0038-policy-diff-dates-and-exit-bits.md.
 
 use std::ffi::OsString;
 

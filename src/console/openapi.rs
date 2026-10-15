@@ -1,6 +1,6 @@
 //! The console API's OpenAPI document, generated from the handlers' annotations and the
 //! types their bodies are. Served at [`OPENAPI_PATH`]; a test checks it against
-//! [`super::routes::ROUTES`]. See docs/engineering_decisions/console-openapi.md.
+//! [`super::routes::ROUTES`]. See docs/engineering_decisions/0107-console-openapi.md.
 
 use std::sync::Arc;
 

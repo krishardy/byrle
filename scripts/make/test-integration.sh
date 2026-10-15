@@ -3,7 +3,7 @@
 #
 # Postgres is the only backend, so it is the one the tests have to run against. The
 # alternative was keeping SQLite for tests, which would have meant covering the backend
-# nobody deploys; see docs/engineering_decisions/storage-sqlx-postgres.md.
+# nobody deploys; see docs/engineering_decisions/0025-storage-sqlx-postgres.md.
 #
 # The server is torn down on exit, including on failure. The database it holds is
 # disposable: every test creates its own schema and drops it first, so a test cannot see

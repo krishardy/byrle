@@ -1,6 +1,6 @@
 //! Reading Datadog's malicious software packages dataset, one ecosystem's manifest at a time.
 //! An entry gives no id, so each package is one malware record, `DATADOG-<purl type>-<name>`.
-//! See docs/engineering_decisions/datadog-stream.md.
+//! See docs/engineering_decisions/0041-datadog-stream.md.
 
 use crate::identity::Ecosystem;
 use crate::intel::range;

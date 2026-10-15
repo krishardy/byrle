@@ -1,5 +1,5 @@
 //! pip and uv, as `byrle doctor` checks them. Neither prints the index it uses, so each is
-//! read: see docs/engineering_decisions/doctor-python-clients.md. `pip config list` prints
+//! read: see docs/engineering_decisions/0053-doctor-python-clients.md. `pip config list` prints
 //! credentials, so a URL is printed only through [`crate::origin::without_credentials`].
 
 use std::path::{Path, PathBuf};
@@ -255,7 +255,7 @@ pub fn uv_config(vars: &UvVars, files: &[&str]) -> Indexes {
 
 /// Which form the configured PyPI index serves, and so where a cooldown is answered: the
 /// index, or a PEP 503 file's `Last-Modified`.
-/// See docs/engineering_decisions/pep-503-html-index.md.
+/// See docs/engineering_decisions/0060-pep-503-html-index.md.
 pub fn check_index_format(
     index: &str,
     content_type: Option<&str>,

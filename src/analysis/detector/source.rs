@@ -1,6 +1,6 @@
 //! The source comparison read as a detector built in: the rules a stored comparison of an
 //! artifact with its source fires. The comparison itself runs in the analyser, keyed by the
-//! artifact's digest. See docs/engineering_decisions/source-diff.md.
+//! artifact's digest. See docs/engineering_decisions/0091-source-diff.md.
 
 use super::{Detecting, Detection, Detector, Finding};
 use crate::analysis::source::{COMPARER, Sourced};
@@ -38,7 +38,7 @@ impl Detector<Sourced> for Source {
 
 /// The rules `sourced` fires: install scripts, dependencies and install files the source
 /// lacks, and files that differ. Optional dependencies, Markdown and files only in the
-/// package are kept by the store and fire none: see source-diff.md. Nothing compared fires
+/// package are kept by the store and fire none: see 0091-source-diff.md. Nothing compared fires
 /// nothing.
 fn detection(sourced: &Sourced) -> Detection {
     let Sourced::Compared {

@@ -1,6 +1,6 @@
 //! Measure a detector on the versions lockfiles lock, through the adapter the proxy runs: how
 //! often each rule fires, and how long a run takes.
-//! See docs/engineering_decisions/detectors.md for the corpus and the results.
+//! See docs/engineering_decisions/0092-detectors.md for the corpus and the results.
 //! Run: `cargo run --release --example detector_rates -- '<name=command ...>' <lockfile>...`
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;

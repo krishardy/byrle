@@ -112,7 +112,7 @@ pub fn page(
 /// A page of lines, as served.
 #[derive(Serialize, ToSchema)]
 pub struct Lines {
-    /// Each line as the log holds it: docs/engineering_decisions/audit-log.md.
+    /// Each line as the log holds it: docs/engineering_decisions/0087-audit-log.md.
     #[schema(value_type = Vec<Object>)]
     pub lines: Vec<serde_json::Value>,
     /// `after` for the next page; absent on the last.

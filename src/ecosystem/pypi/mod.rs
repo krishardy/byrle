@@ -1,6 +1,6 @@
 //! PyPI's simple index, as PEP 691 JSON or a PEP 503 page. An index is keyed by file, not
 //! by version, and serves its files from another host: see
-//! docs/engineering_decisions/pypi-simple-index.md.
+//! docs/engineering_decisions/0046-pypi-simple-index.md.
 
 pub mod attestation;
 pub mod clients;

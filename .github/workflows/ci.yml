@@ -4,7 +4,7 @@
 # lives in `scripts/make/`, per CLAUDE.md; nothing here is more than an invocation.
 #
 # `make coverage`, `make verify` and `make test-integration` are deliberately not here.
-# See docs/engineering_decisions/ci-gates.md.
+# See docs/engineering_decisions/0044-ci-gates.md.
 name: CI
 
 on:

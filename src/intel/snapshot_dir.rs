@@ -1,7 +1,7 @@
 //! Snapshots kept as files, each named by the digest of what it contains, so one can be
 //! read after Postgres has replaced it. [`SnapshotDir::open`] locks the directory.
 //!
-//! See docs/engineering_decisions/snapshot-identity.md.
+//! See docs/engineering_decisions/0036-snapshot-identity.md.
 
 use super::load::{self, Decoder, Encoded, Row};
 use std::collections::HashSet;

@@ -1,6 +1,6 @@
 //! PEP 440 versions: what a PyPI version is, and how two of them order.
 //!
-//! Follows the `packaging` library. See docs/engineering_decisions/pep440-version-order.md.
+//! Follows the `packaging` library. See docs/engineering_decisions/0051-pep440-version-order.md.
 
 use std::cmp::Ordering;
 use std::fmt;

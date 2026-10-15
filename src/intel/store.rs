@@ -1,7 +1,7 @@
 //! Where advisories are kept, and the seam that lets everything above be tested without
 //! them. One lookup per package answers every check that reads advisories.
 //!
-//! See docs/engineering_decisions/intel-in-decisions.md.
+//! See docs/engineering_decisions/0026-intel-in-decisions.md.
 
 use crate::intel::range::{Interval, Ordered, VersionOrder};
 use crate::intel::refresh::StreamDigest;

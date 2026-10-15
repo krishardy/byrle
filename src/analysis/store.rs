@@ -1,6 +1,6 @@
 //! What analysing an artifact found, kept under the digest of the bytes that were read.
 //!
-//! See `docs/engineering_decisions/artifact-analysis-store.md`.
+//! See `docs/engineering_decisions/0063-artifact-analysis-store.md`.
 
 use crate::analysis::attestation::Attested;
 use crate::analysis::decision::{Artifact, Decided, Page};

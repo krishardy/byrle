@@ -1,7 +1,7 @@
 //! The common package record: registry metadata normalised into one shape, the contract
 //! between the per-ecosystem normalisers and everything above them (plan §4).
 //!
-//! See docs/engineering_decisions/npm-packument-shapes.md for what each document carries.
+//! See docs/engineering_decisions/0079-npm-packument-shapes.md for what each document carries.
 
 use crate::identity::{PackageKey, PackageRef};
 use std::collections::BTreeMap;

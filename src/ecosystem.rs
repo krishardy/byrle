@@ -1,7 +1,7 @@
 //! Which registry answers a request, and what that registry does differently: one
 //! [`Registry`] row per ecosystem in [`TABLE`], so a field must be filled in for every one.
 //!
-//! See docs/engineering_decisions/adapter-interface.md.
+//! See docs/engineering_decisions/0047-adapter-interface.md.
 
 pub mod cargo;
 pub mod npm;

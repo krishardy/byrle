@@ -136,7 +136,7 @@ cargo reads the replacement only from a file: cargo 1.99.0 ignored
 require a credential-provider to be configured".
 
 A download answers 503 until crates.io's API says who published the version, one crate a
-second ([cargo-provenance](engineering_decisions/cargo-provenance.md)). cargo 1.99.0 waited
+second ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)). cargo 1.99.0 waited
 at most 10 s for each retry, whatever `Retry-After` asked, and retries 3 times by default.
 A cold `cargo fetch` of 161 crates through the proxy failed after 23 s with the default,
 and completed in 164 s with `retry = 20`. `retry = 30` covers about 300 crates.
@@ -169,7 +169,7 @@ The username in pip's and uv's URL is the account name, not `__token__`: any oth
 answered 401. `make smoke-npm` and `make smoke-python` installed with npm's `_authToken`,
 and pip and uv with `<account>:<token>@`, on 2026-10-11, and bun installed with the line
 above. The forms for pnpm and yarn 1 were measured on a stub registry
-([account-identification](engineering_decisions/account-identification.md)). No lockfile
+([account-identification](engineering_decisions/0054-account-identification.md)). No lockfile
 checked records the token.
 
 yarn 4 refuses a registry on plain HTTP unless its host is listed, as it was for this
@@ -233,7 +233,7 @@ package-lock.json: 66 artifacts, 66 through the proxy
 ```
 
 It exits 1 for an artifact from elsewhere, and 2 for one the lockfile records no URL for,
-as pnpm does for its configured registry ([lockfile-verify](engineering_decisions/lockfile-verify.md)).
+as pnpm does for its configured registry ([lockfile-verify](engineering_decisions/0093-lockfile-verify.md)).
 `Cargo.lock` records none for any crates.io crate, so it exits 2 for each.
 
 cargo retries a 503 three times, a second apart, so it waits about 3 seconds for an

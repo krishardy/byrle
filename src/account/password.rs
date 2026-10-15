@@ -1,5 +1,5 @@
 //! Console passwords: checked for length, hashed with Argon2id to a PHC string, and
-//! verified against one. See docs/engineering_decisions/console-login.md.
+//! verified against one. See docs/engineering_decisions/0106-console-login.md.
 
 use argon2::password_hash::phc::PasswordHash;
 use argon2::password_hash::{PasswordHasher as _, PasswordVerifier as _};

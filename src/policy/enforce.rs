@@ -1,7 +1,7 @@
 //! Where a decision becomes a response on a pinned fetch, which refuses a quarantined
 //! version as it does a blocked one and says when it lapses.
 //!
-//! See docs/engineering_decisions/quarantine-filter-metadata.md.
+//! See docs/engineering_decisions/0013-quarantine-filter-metadata.md.
 
 use super::decide::{Check, Decision, Intel, Outcome, Provenance};
 use super::{Action, Policy};
@@ -168,7 +168,7 @@ fn unenforceable_given(
 }
 
 /// The decision with the checks this build cannot answer taken out: what the proxy acts
-/// on. See docs/engineering_decisions/policy-tier-resolution.md.
+/// on. See docs/engineering_decisions/0023-policy-tier-resolution.md.
 pub fn enforced(decision: &Decision, unenforceable: &[Unenforceable]) -> Decision {
     let mut kept = decision.clone();
     kept.results

@@ -1,7 +1,7 @@
 //! `byrle doctor`: whether this machine is actually installing through the proxy, from
 //! the client side. The checks are pure; [`probe`] runs the package managers.
 //!
-//! See docs/engineering_decisions/enforcement-tiers.md.
+//! See docs/engineering_decisions/0019-enforcement-tiers.md.
 
 use crate::env;
 use crate::lockfile::{Lockfile, Pins};
@@ -176,7 +176,7 @@ pub fn clients() -> impl Iterator<Item = &'static Client> {
 }
 
 /// Artifact origins a lockfile records, read as text from each line holding `key`.
-/// See docs/engineering_decisions/doctor-lockfile-urls.md.
+/// See docs/engineering_decisions/0082-doctor-lockfile-urls.md.
 /// `contents` is the lockfile. Returns nothing when it pins no absolute URL.
 pub fn recorded_origins(key: &str, contents: &str) -> BTreeSet<String> {
     let mut origins = BTreeSet::new();
@@ -368,7 +368,7 @@ pub enum CacheBypass {
 }
 
 /// A warm client cache serves without the registry, so what it supplies is never examined.
-/// See docs/engineering_decisions/client-caches.md.
+/// See docs/engineering_decisions/0080-client-caches.md.
 /// `cache` is where the client would look from this directory, `None` when nothing is there.
 pub fn check_cache(client: &Client, cache: Option<&std::path::Path>) -> Finding {
     let title = format!("{} cache", client.name);

@@ -1,6 +1,6 @@
 //! Lockfiles npm, yarn 1, pnpm and bun write, read for `byrle policy diff`.
 //!
-//! See docs/engineering_decisions/policy-diff-lockfiles.md.
+//! See docs/engineering_decisions/0037-policy-diff-lockfiles.md.
 
 use serde::Deserialize;
 use serde::de::IgnoredAny;

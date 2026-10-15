@@ -1,5 +1,5 @@
 //! Comparing an artifact with the source its metadata names, beside the analysis and never
-//! in front of it: no request is deferred for it. See docs/engineering_decisions/source-diff.md.
+//! in front of it: no request is deferred for it. See docs/engineering_decisions/0091-source-diff.md.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

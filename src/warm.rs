@@ -1,7 +1,7 @@
 //! `byrle warm`: ask a running proxy for every artifact a lockfile locks, so each is
 //! analysed before a client asks for it.
 //!
-//! See `docs/engineering_decisions/warm.md`.
+//! See `docs/engineering_decisions/0074-warm.md`.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

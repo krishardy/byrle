@@ -1,6 +1,6 @@
 //! Whether one policy value is stricter than another.
 //!
-//! See docs/engineering_decisions/strictness-comparison.md.
+//! See docs/engineering_decisions/0086-strictness-comparison.md.
 
 use super::Action;
 

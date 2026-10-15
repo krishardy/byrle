@@ -1,6 +1,6 @@
 //! Subresource Integrity: parsing what a registry claims, and checking what arrives.
 //!
-//! SHA-1 is not verifiable here. See docs/engineering_decisions/artifact-digest-verification.md.
+//! SHA-1 is not verifiable here. See docs/engineering_decisions/0017-artifact-digest-verification.md.
 
 use sha2::{Digest, Sha256, Sha384, Sha512};
 use std::fmt;

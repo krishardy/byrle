@@ -4,7 +4,7 @@
 # Sourced, not executed. On nightly, cargo-llvm-cov sets `--cfg coverage_nightly`, and each
 # `#[cfg(test)]` item carries `#[cfg_attr(coverage_nightly, coverage(off))]`, so the floor
 # counts library code and not the tests. `coverage(off)` is not stable on 1.98. See
-# docs/engineering_decisions/coverage-counts-library-code-only.md.
+# docs/engineering_decisions/0077-coverage-counts-library-code-only.md.
 #
 # Pinned, so a nightly that stops building this crate is chosen by editing this line rather
 # than met on the next run. Builds, tests, lint and release stay on stable.

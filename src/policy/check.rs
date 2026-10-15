@@ -1,7 +1,7 @@
 //! `byrle policy check`: whether a policy loads, and which of its package entries do
 //! nothing.
 //!
-//! See docs/engineering_decisions/policy-check.md.
+//! See docs/engineering_decisions/0034-policy-check.md.
 
 use super::packages::{self, PackageError};
 use super::selector::Canonical;

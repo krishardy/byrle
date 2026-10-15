@@ -1,6 +1,6 @@
 //! `byrle lockfile verify`: whether every artifact a lockfile locks is fetched through the
 //! proxy, for a CI job to catch an install that went around it.
-//! See docs/engineering_decisions/lockfile-verify.md.
+//! See docs/engineering_decisions/0093-lockfile-verify.md.
 
 use std::path::PathBuf;
 

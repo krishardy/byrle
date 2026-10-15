@@ -43,7 +43,7 @@ impl Rule {
 
 /// Whether a check means anything for an ecosystem: its row's [`crate::ecosystem::Registry::
 /// meaningless`] says, and one with no row has every check but Go's install scripts.
-/// See docs/engineering_decisions/policy-tier-resolution.md.
+/// See docs/engineering_decisions/0023-policy-tier-resolution.md.
 pub fn applies(ecosystem: &str, rule: Rule) -> bool {
     match ecosystem.parse::<crate::identity::Ecosystem>() {
         Ok(served) => !crate::ecosystem::of(served).meaningless.contains(&rule),

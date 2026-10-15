@@ -3,7 +3,7 @@
 How the proxy answers one request, and where each status code comes from. Every path
 below is read from below `BYRLE_PROXY_URL`'s path: `/registry/npm/lodash` is `/npm/lodash`
 under `https://h/registry/`. Each ecosystem is served under its own prefix, `/npm/`,
-`/pypi/` and `/cargo/` ([ecosystem-path-prefixes](engineering_decisions/ecosystem-path-prefixes.md)).
+`/pypi/` and `/cargo/` ([ecosystem-path-prefixes](engineering_decisions/0111-ecosystem-path-prefixes.md)).
 Read from
 `handle`, `admit` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document`
 in `src/proxy.rs`, on 2026-09-28, and `admit` on 2026-10-11.
@@ -11,7 +11,7 @@ in `src/proxy.rs`, on 2026-09-28, and `admit` on 2026-10-11.
 With `BYRLE_MODE=observe`, a refusal by policy is logged at WARN and the request goes on
 to the next check, and a metadata document keeps the versions the policy refuses. Every
 other answer is the same in both modes
-([observe-mode](engineering_decisions/observe-mode.md)).
+([observe-mode](engineering_decisions/0071-observe-mode.md)).
 
 "Refusal status" is `BYRLE_REFUSAL_STATUS`: 403 by default, settable per ecosystem and
 client to any code from 400 to 599. Every 503 carries `Retry-After` and
@@ -100,7 +100,7 @@ in process.
 
 With no stream covering PyPI, a simple index is filtered without intel rather than
 answered 503, because pip reports an index 503 as `No matching distribution found`. Its
-files are answered 503 ([pypi-index-filtering](engineering_decisions/pypi-index-filtering.md)).
+files are answered 503 ([pypi-index-filtering](engineering_decisions/0050-pypi-index-filtering.md)).
 
 ## Tokens
 
@@ -128,4 +128,4 @@ and never asks for it.
 
 Debug builds also answer `BYRLE_DEFER_TEST`'s scripted deferrals, after the token check
 and before anything else. See
-[deferral-status-codes](engineering_decisions/deferral-status-codes.md).
+[deferral-status-codes](engineering_decisions/0021-deferral-status-codes.md).

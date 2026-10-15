@@ -1,7 +1,7 @@
 //! What a version's attestations say, verified offline, and what that makes of the version
 //! against the versions before it. Nothing here is specific to an ecosystem.
-//! See docs/engineering_decisions/provenance-check.md and
-//! docs/engineering_decisions/sigstore-verifier.md.
+//! See docs/engineering_decisions/0066-provenance-check.md and
+//! docs/engineering_decisions/0065-sigstore-verifier.md.
 
 use std::sync::OnceLock;
 
@@ -656,7 +656,7 @@ mod tests {
         }
     }
 
-    /// Every state `docs/engineering_decisions/provenance-check.md` names. 3.0.2 is
+    /// Every state `docs/engineering_decisions/0066-provenance-check.md` names. 3.0.2 is
     /// compared with 3.0.1 and 3.0.0 in the window, and 1.0.1, 2.0.0 and 1.0.0 before it.
     #[test]
     fn an_identity_is_decided_against_the_established_versions() {

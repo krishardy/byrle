@@ -361,7 +361,7 @@
             "type": "integer"
           },
           "lines": {
-            "description": "Each line as the log holds it: docs/engineering_decisions/audit-log.md.",
+            "description": "Each line as the log holds it: docs/engineering_decisions/0087-audit-log.md.",
             "items": {
               "type": "object"
             },

@@ -19,7 +19,7 @@
 #  10. with tokens required, a request without one is 401, npm installs with `_authToken`,
 #      and the lockfile contains no token, when Postgres is available
 # Steps 1 to 8 run with no Postgres, and so with BYRLE_REQUIRE_TOKEN=0.
-# The packages in 7 to 9 are in docs/engineering_decisions/live-test-packages.md.
+# The packages in 7 to 9 are in docs/engineering_decisions/0088-live-test-packages.md.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"

@@ -1,7 +1,7 @@
 //! Where an artifact being analysed is written while the request that fetched it is open.
 //!
 //! The file is deleted when the [`Spooled`] holding it is dropped. [`Spool::open`] locks the
-//! directory. See `docs/engineering_decisions/artifact-spool.md`.
+//! directory. See `docs/engineering_decisions/0064-artifact-spool.md`.
 
 use std::fs::{self, File, TryLockError};
 use std::io;

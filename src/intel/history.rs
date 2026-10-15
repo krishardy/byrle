@@ -1,7 +1,7 @@
 //! The ingestion history: every stream a refresh loaded or did not, as `intel_ingestion`
 //! records it and `byrle intel history` prints it.
 //!
-//! See docs/engineering_decisions/ingestion-history.md.
+//! See docs/engineering_decisions/0042-ingestion-history.md.
 
 use super::refresh::StreamDigest;
 use std::fmt::Write;

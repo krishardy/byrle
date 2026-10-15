@@ -759,7 +759,7 @@ mod tests {
         ));
     }
     /// Whole real packuments normalise without a skipped version. Ignored by default; see
-    /// docs/engineering_decisions/npm-packument-shapes.md for the corpus it needs.
+    /// docs/engineering_decisions/0079-npm-packument-shapes.md for the corpus it needs.
     #[cfg(not(coverage))]
     #[test]
     #[ignore = "needs a corpus directory of packuments; see the doc comment"]

@@ -1,6 +1,6 @@
 //! The `packages` tier: what each entry does to the settings above it. An entry may only
 //! loosen, needs a reason and an expiry or `permanent: true`, and warns about nothing. See
-//! docs/engineering_decisions/package-override-tier.md and policy-tier-resolution.md.
+//! docs/engineering_decisions/0009-package-override-tier.md and 0023-policy-tier-resolution.md.
 
 use super::merge::{self, Rule, RuleValues};
 use super::strictness::Strictness;

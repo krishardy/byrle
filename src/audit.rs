@@ -1,6 +1,6 @@
 //! One line per policy decision, in JSON Lines.
 //!
-//! See docs/engineering_decisions/audit-log.md.
+//! See docs/engineering_decisions/0087-audit-log.md.
 
 use crate::policy::decide::{Advisory, Decision, Facts, Intel, Outcome, Provenance};
 use crate::policy::enforce::{Unanswered, Unenforceable};

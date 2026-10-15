@@ -115,7 +115,7 @@ measure() {
     # Every novel artifact is answered 503 until its analysis has finished. yarn 1 and bun
     # give up on a 503 artifact, so their first install fails and a second one, once the
     # analysis is stored, is what shows the proxy serves them. See
-    # docs/engineering_decisions/deferral-status-codes.md.
+    # docs/engineering_decisions/0021-deferral-status-codes.md.
     if [[ "$rc" -ne 0 ]] && grep -q 'deferred: the artifact has not been analysed' "$log"; then
         retried="yes"
         for _ in 1 2 3 4 5; do
@@ -213,5 +213,5 @@ Every client also has a cache that skips the proxy entirely, and this script poi
 one at a disposable directory. Without that, bun and yarn 4 both installed successfully
 having asked the proxy for nothing.
 
-See docs/engineering_decisions/packument-tarball-url-rewriting.md.
+See docs/engineering_decisions/0018-packument-tarball-url-rewriting.md.
 NOTE

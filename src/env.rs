@@ -1,7 +1,7 @@
 //! Every environment variable byrle reads: its name, default, help text and parsing.
 //!
 //! No variable name appears anywhere else in the Rust code. An empty value is unset.
-//! See environment-variables.md and default-ceilings.md in docs/engineering_decisions.
+//! See 0033-environment-variables.md and 0085-default-ceilings.md in docs/engineering_decisions.
 
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;

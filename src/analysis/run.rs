@@ -1,7 +1,7 @@
 //! Analysing an artifact in the background, so no request waits for it: fetch it, spool
 //! it, check its digest, read it, and store what was read under the digest.
 //!
-//! See `docs/engineering_decisions/artifact-spool.md`.
+//! See `docs/engineering_decisions/0064-artifact-spool.md`.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};

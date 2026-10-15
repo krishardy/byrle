@@ -4,7 +4,7 @@
 # ecosystem, not something you set: `install_scripts` is asked of npm and not of Go,
 # because Go has no install step.
 #
-# See docs/engineering_decisions/policy-tier-resolution.md for the decision flow chart
+# See docs/engineering_decisions/0023-policy-tier-resolution.md for the decision flow chart
 # these settings serve.
 
 version: 1

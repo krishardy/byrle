@@ -1,7 +1,7 @@
 //! What an artifact's own bytes say, as opposed to what its metadata claims.
 //!
-//! See docs/engineering_decisions/install-scripts-from-the-artifact.md and
-//! docs/engineering_decisions/artifact-spool.md.
+//! See docs/engineering_decisions/0062-install-scripts-from-the-artifact.md and
+//! docs/engineering_decisions/0064-artifact-spool.md.
 
 pub mod attestation;
 pub mod decision;

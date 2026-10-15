@@ -1,5 +1,5 @@
 //! A packument as npm serves it: the deserialisation targets `normalize` reads, visible no
-//! further than this ecosystem. See docs/engineering_decisions/npm-packument-shapes.md.
+//! further than this ecosystem. See docs/engineering_decisions/0079-npm-packument-shapes.md.
 
 use std::collections::BTreeMap;
 
@@ -105,7 +105,7 @@ impl<'de> Deserialize<'de> for DirectSpecs {
 }
 
 /// Whether a dependency specifier names where to fetch from rather than a version range,
-/// as npm-package-arg classifies them. See docs/engineering_decisions/bypass-self-detection.md.
+/// as npm-package-arg classifies them. See docs/engineering_decisions/0069-bypass-self-detection.md.
 pub fn is_direct(spec: &str) -> bool {
     const PREFIXES: [&str; 13] = [
         "git+",

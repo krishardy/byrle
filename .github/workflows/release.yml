@@ -5,7 +5,7 @@
 # image `make release-binary` starts, and attested with SLSA build provenance through
 # Sigstore. The GitHub release carries the
 # tarballs; the image on ghcr.io is built from the same attested binaries, not a second
-# build, and is attested by digest. See docs/engineering_decisions/release-provenance.md.
+# build, and is attested by digest. See docs/engineering_decisions/0108-release-provenance.md.
 #
 # Actions are pinned by commit, with the release each commit is in a comment.
 name: Release

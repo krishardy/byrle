@@ -1,7 +1,7 @@
 //! OSV records, as rows for the intel store, one ecosystem's bundle at a time.
 //!
-//! See docs/engineering_decisions/osv-ranges-and-scores.md and
-//! docs/engineering_decisions/advisory-stream-licences.md.
+//! See docs/engineering_decisions/0029-osv-ranges-and-scores.md and
+//! docs/engineering_decisions/0024-advisory-stream-licences.md.
 
 pub mod bundle;
 
@@ -95,7 +95,7 @@ struct Range {
 }
 
 /// The base score of the newest CVSS version in `severity`, or with no vector at all, the
-/// top of `band`. See docs/engineering_decisions/osv-ranges-and-scores.md.
+/// top of `band`. See docs/engineering_decisions/0029-osv-ranges-and-scores.md.
 /// Returns the score, the band it was read from, and how many vectors did not parse.
 fn score(severity: &[Severity], band: Option<&str>) -> (Option<f64>, Option<String>, usize) {
     let (cvss, unread) = vector_score(severity);

@@ -1,6 +1,6 @@
 //! OIDC login's parts that ask no one: the settings, the provider's discovery document,
 //! the pending login a browser carries, the authorization URL, and the ID token's checks.
-//! See docs/engineering_decisions/console-login.md and admin-plan.md §4.1.
+//! See docs/engineering_decisions/0106-console-login.md and admin-plan.md §4.1.
 
 use base64::Engine as _;
 use jsonwebtoken::jwk::{AlgorithmParameters, JwkSet};

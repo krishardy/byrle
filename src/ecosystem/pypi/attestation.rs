@@ -1,7 +1,7 @@
 //! PyPI's PEP 740 provenance object, rebuilt as a Sigstore bundle to be verified.
 //!
 //! Its certificate and log entries become the bundle's verification material, and its
-//! statement and signature a DSSE envelope: see docs/engineering_decisions/provenance-check.md.
+//! statement and signature a DSSE envelope: see docs/engineering_decisions/0066-provenance-check.md.
 
 use sigstore_verify::types::Bundle;
 

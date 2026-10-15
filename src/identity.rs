@@ -1,7 +1,7 @@
 //! Package identity as purls: [`PackageKey`] is versionless, the lookup key, and
 //! [`PackageRef`] is a key and a version. npm names keep their case, against purl-spec.
 //!
-//! See docs/engineering_decisions/purl-identity-rules.md.
+//! See docs/engineering_decisions/0012-purl-identity-rules.md.
 
 use purl::GenericPurl;
 use std::fmt;

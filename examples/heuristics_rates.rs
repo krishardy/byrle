@@ -1,7 +1,7 @@
 //! Measure how often each metadata heuristic fires on the versions lockfiles lock: npm from
 //! the full packument, PyPI from the index, and near names against every other package name
 //! the lockfiles lock in the same ecosystem, as a proxy serving those projects would hold.
-//! Needs registry.npmjs.org and pypi.org. See docs/engineering_decisions/metadata-heuristics.md.
+//! Needs registry.npmjs.org and pypi.org. See docs/engineering_decisions/0090-metadata-heuristics.md.
 //! Run: `cargo run --release --example heuristics_rates -- <lockfile>...`
 use std::collections::{BTreeMap, BTreeSet};
 

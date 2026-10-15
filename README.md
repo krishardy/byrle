@@ -226,7 +226,7 @@ something CI depends on being reachable.
 ## Verifying a release
 
 Each release's binaries and image carry SLSA build provenance, signed through Sigstore by
-the workflow that built them ([release-provenance](docs/engineering_decisions/release-provenance.md)):
+the workflow that built them ([release-provenance](docs/engineering_decisions/0108-release-provenance.md)):
 
 ```
 gh attestation verify byrle-<version>-x86_64-unknown-linux-musl.tar.gz --repo krishardy/byrle

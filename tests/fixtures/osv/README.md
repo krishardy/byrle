@@ -6,7 +6,7 @@ Real records from OSV's npm bundle,
 as it sits in the bundle. They are the input for `src/intel/osv.rs`.
 
 Every record here is an OSSF Malicious Packages record, Apache-2.0. GHSA records are
-CC-BY-4.0 and are not kept here; see `docs/engineering_decisions/advisory-stream-licences.md`.
+CC-BY-4.0 and are not kept here; see `docs/engineering_decisions/0024-advisory-stream-licences.md`.
 
 Each record is here for the shape of its npm `affected` entry:
 

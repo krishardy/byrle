@@ -7,7 +7,7 @@ token in any form the proxy takes. A session request that changes something send
 
 The OpenAPI 3.1 document, generated from the code that answers each request, is served at
 `api/v1/openapi.json` and kept in `tests/fixtures/console/openapi.json`; it gives each
-parameter and body ([console-openapi](engineering_decisions/console-openapi.md)). A test
+parameter and body ([console-openapi](engineering_decisions/0107-console-openapi.md)). A test
 holds this table to the routes the console answers.
 
 | Method | Path | Needs | Answers |

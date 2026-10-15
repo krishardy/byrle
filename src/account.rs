@@ -1,7 +1,7 @@
 //! Accounts, and the proxy tokens that identify them on each request. The tokens are stored as
 //! their SHA-256, so the store never contains one that works.
 //!
-//! See docs/engineering_decisions/account-identification.md and docs/admin-plan.md §4.1.
+//! See docs/engineering_decisions/0054-account-identification.md and docs/admin-plan.md §4.1.
 
 pub mod command;
 pub mod events;

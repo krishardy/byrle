@@ -1,6 +1,6 @@
 //! GitHub's Advisory Database, read through the GraphQL API, as a signal stream beside OSV.
 //!
-//! See `docs/engineering_decisions/github-advisory-signal-stream.md`.
+//! See `docs/engineering_decisions/0045-github-advisory-signal-stream.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 

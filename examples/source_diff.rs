@@ -1,7 +1,7 @@
 //! Measure the analyser's source comparison on real packages: each npm tarball, and each PyPI
 //! version's first wheel and its sdist, a lockfile locks, against GitHub's archive of its source.
 //! Needs registry.npmjs.org, pypi.org and codeload.github.com. See
-//! docs/engineering_decisions/source-diff.md. Run: `cargo run --release --example source_diff -- <lockfile>...`
+//! docs/engineering_decisions/0091-source-diff.md. Run: `cargo run --release --example source_diff -- <lockfile>...`
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 

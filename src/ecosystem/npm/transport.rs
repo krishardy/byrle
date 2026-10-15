@@ -53,7 +53,7 @@ impl Client {
     }
 
     /// Fetch and normalise a packument, asking for gzip and decoding it here.
-    /// See docs/engineering_decisions/packument-body-inspection.md.
+    /// See docs/engineering_decisions/0016-packument-body-inspection.md.
     pub async fn packument(
         &self,
         key: &PackageKey,

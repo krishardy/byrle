@@ -1,6 +1,6 @@
 //! Records from metadata documents the proxy has seen, for the artifact request that follows.
 //! One store for every ecosystem, bounded by record count, and never used to answer a
-//! metadata request: see docs/engineering_decisions/no-metadata-cache.md.
+//! metadata request: see docs/engineering_decisions/0056-no-metadata-cache.md.
 
 use crate::analysis::attestation::{Previous, previous};
 use crate::analysis::detector::metadata::{Listing, Metadata};

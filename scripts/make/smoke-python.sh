@@ -17,7 +17,7 @@
 #   9. with tokens required, a request without one is 401, and pip and uv install with
 #      `account:token@` in the index URL, when Postgres is available
 # Steps 1 to 8 run with no Postgres, and so with BYRLE_REQUIRE_TOKEN=0.
-# The packages in 7 and 8 are in docs/engineering_decisions/live-test-packages.md. No PyPI
+# The packages in 7 and 8 are in docs/engineering_decisions/0088-live-test-packages.md. No PyPI
 # project still exists that a MAL record covers, so `known_malware` is not run here.
 set -euo pipefail
 

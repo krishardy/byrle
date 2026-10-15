@@ -1,5 +1,5 @@
 //! Writing each decision to the analysis store through a bounded queue, in batches, so a
-//! request never waits on the write. See docs/engineering_decisions/artifact-decisions.md.
+//! request never waits on the write. See docs/engineering_decisions/0105-artifact-decisions.md.
 
 use std::sync::Arc;
 

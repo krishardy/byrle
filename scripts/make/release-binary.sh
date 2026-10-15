@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A static release binary for this machine's architecture, packaged for a GitHub release:
 # dist/byrle-<version>-<arch>-unknown-linux-musl.tar.gz, holding the binary, LICENSE and
-# README.md, and its .sha256 beside it. See docs/engineering_decisions/release-provenance.md.
+# README.md, and its .sha256 beside it. See docs/engineering_decisions/0108-release-provenance.md.
 #
 # Built in the pinned rust:1-alpine image below, where the host target is musl and links
 # statically, with --locked and the offline query cache. Run outside that image, this

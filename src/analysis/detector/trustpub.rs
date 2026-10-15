@@ -1,7 +1,7 @@
 //! Whether trusted publishing published a version, and from which repository, read as a
 //! detector built in. crates.io's `trustpub_data` is the record read: nothing signs it, and
 //! only its API serves it, so the adapter asks. Report only: see
-//! docs/engineering_decisions/cargo-provenance.md.
+//! docs/engineering_decisions/0110-cargo-provenance.md.
 
 use super::{Detection, Finding};
 
@@ -113,7 +113,7 @@ mod tests {
         ]
     }
 
-    /// The counts of docs/engineering_decisions/cargo-provenance.md for `rand_core`: 8 drops
+    /// The counts of docs/engineering_decisions/0110-cargo-provenance.md for `rand_core`: 8 drops
     /// and 1 change, in whatever order the versions are listed.
     #[test]
     fn rand_core_has_eight_drops_and_one_change() {

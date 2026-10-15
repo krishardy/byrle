@@ -1,7 +1,7 @@
 //! Signals about a package version: each rule a detector fired, reported in the log, the
 //! audit line and `explain`, and never refused on. Their weights sum to the risk score.
 //!
-//! See docs/engineering_decisions/detectors.md.
+//! See docs/engineering_decisions/0092-detectors.md.
 
 use crate::analysis::detector::{self, Detection};
 use crate::policy::SignalWeights;

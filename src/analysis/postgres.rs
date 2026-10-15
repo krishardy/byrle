@@ -1,6 +1,6 @@
 //! [`Analyses`] over Postgres, in the pool and database the intel store already uses.
 //!
-//! Tested by `tests/postgres.rs`. See docs/engineering_decisions/artifact-analysis-store.md.
+//! Tested by `tests/postgres.rs`. See docs/engineering_decisions/0063-artifact-analysis-store.md.
 
 use crate::analysis::InstallScripts;
 use crate::analysis::attestation::{Attested, verifier_id};

@@ -22,7 +22,7 @@ pub const NPM: Client = Client {
     clear_cache: "npm cache clean --force",
 };
 
-/// The npm clients doctor checks. See docs/engineering_decisions/client-caches.md.
+/// The npm clients doctor checks. See docs/engineering_decisions/0080-client-caches.md.
 pub const CLIENTS: &[Client] = &[
     NPM,
     Client {

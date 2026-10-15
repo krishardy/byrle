@@ -1,5 +1,5 @@
 //! Trust for the upstream connection: the platform's roots, and a CA bundle merged with them
-//! or trusted alone. See docs/engineering_decisions/upstream-ca-bundle.md.
+//! or trusted alone. See docs/engineering_decisions/0081-upstream-ca-bundle.md.
 
 use reqwest::Certificate;
 use std::fmt;

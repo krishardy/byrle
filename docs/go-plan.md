@@ -50,7 +50,7 @@ withdrawn. Ranges are `SEMVER` (14,730) and `ECOSYSTEM` (145).
 
 `stdlib` and `toolchain` name the Go distribution, not a module: 187 and 34 records name
 them. The other 191 unscored records name modules, and `max_cvss` refuses an unscored
-advisory, as with 105 RustSec records ([advisory-kinds](engineering_decisions/advisory-kinds.md)).
+advisory, as with 105 RustSec records ([advisory-kinds](engineering_decisions/0109-advisory-kinds.md)).
 
 ## The adapter, checked again
 
@@ -71,7 +71,7 @@ Go's column of [cargo-plan](cargo-plan.md)'s table, with what was measured since
 
 | | Question | Recommended |
 |---|---|---|
-| Q1 | Where Go is served | Under `/go/`: `GOPROXY=https://byrle.example.com/go`, as each ecosystem is under its own name ([ecosystem-path-prefixes](engineering_decisions/ecosystem-path-prefixes.md)) |
+| Q1 | Where Go is served | Under `/go/`: `GOPROXY=https://byrle.example.com/go`, as each ecosystem is under its own name ([ecosystem-path-prefixes](engineering_decisions/0111-ecosystem-path-prefixes.md)) |
 | Q2 | How a download is held while it is checked | Held open, not 503: go fails on the first 503 and waited 90 s for an answer. The zip is fetched, spooled, its `h1:` checked and its decision made in the request, then streamed from the spool. `BYRLE_GO_HOLD_SECONDS`, 120 by default, bounds it; past it, 504 |
 | Q3 | Where the `h1:` comes from | sum.golang.org's `lookup`, its note's signature checked with the Go team's published key. Inclusion proofs are left to the go command, which checks them unless `GOSUMDB=off`, `GONOSUMDB` or `GOFLAGS=-insecure`, each of which `doctor` reports. A module sum.golang.org does not know is refused, as an artifact with no strong digest is |
 | Q4 | The checksum database, for the go command | Relayed: `/go/sumdb/sum.golang.org/*` answered from sum.golang.org, so a network that reaches only the proxy still builds. The note is signed, so a relay cannot change it |

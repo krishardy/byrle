@@ -1,6 +1,6 @@
 //! VirusTotal's answer about an artifact, by the SHA-256 of its verified bytes: the client,
 //! what is stored, and the limiter that keeps every request within the quota. Report only.
-//! See docs/engineering_decisions/virustotal.md.
+//! See docs/engineering_decisions/0104-virustotal.md.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};

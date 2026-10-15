@@ -1,5 +1,5 @@
 //! Console login: a password checked against its Argon2id hash, a limit on failures, and
-//! the session a success starts. See docs/engineering_decisions/console-login.md.
+//! the session a success starts. See docs/engineering_decisions/0106-console-login.md.
 
 use std::net::IpAddr;
 use std::sync::{Arc, Mutex};

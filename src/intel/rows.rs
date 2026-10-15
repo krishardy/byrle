@@ -67,7 +67,7 @@ impl Ranged {
 }
 
 /// Give each unscored vulnerability the highest score among the records it lists by id,
-/// or that list its id. See docs/engineering_decisions/alias-matching.md.
+/// or that list its id. See docs/engineering_decisions/0039-alias-matching.md.
 /// `rows` is one load's records, and the scores are written into it.
 /// Returns how many took a score.
 pub fn score_from_aliases(rows: &mut [Rows]) -> u64 {

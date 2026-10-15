@@ -1,7 +1,7 @@
 //! npm: fetching packuments and normalising them into [`crate::record::PackageRecord`].
 //!
 //! Wire types accept keys they do not model, and a version that cannot be normalised is kept
-//! in `skipped`: see docs/engineering_decisions/npm-packument-shapes.md.
+//! in `skipped`: see docs/engineering_decisions/0079-npm-packument-shapes.md.
 
 pub mod attestation;
 pub mod clients;

@@ -1,7 +1,7 @@
 //! Each pinned decision on an artifact, kept with the features it was decided on and its
 //! disposition, so they can be looked up and exported without reading the audit log.
 //!
-//! See docs/engineering_decisions/artifact-decisions.md.
+//! See docs/engineering_decisions/0105-artifact-decisions.md.
 
 pub mod command;
 

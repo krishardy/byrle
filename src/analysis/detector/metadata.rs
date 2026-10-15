@@ -1,7 +1,7 @@
 //! The metadata heuristics: a detector built in, reading the document the proxy holds for a
 //! package. It runs on each decision and stores nothing, since its answer moves with the
 //! clock and with the packages served.
-//! See docs/engineering_decisions/metadata-heuristics.md.
+//! See docs/engineering_decisions/0090-metadata-heuristics.md.
 
 use super::{Detecting, Detection, Detector, Finding};
 use crate::record::{PackageMetadata, PackageRecord};

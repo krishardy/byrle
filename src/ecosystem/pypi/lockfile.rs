@@ -1,6 +1,6 @@
 //! Lockfiles uv, poetry, pip and pipenv write, read for `byrle policy diff`.
 //!
-//! See docs/engineering_decisions/policy-diff-lockfiles.md.
+//! See docs/engineering_decisions/0037-policy-diff-lockfiles.md.
 
 use std::collections::BTreeSet;
 

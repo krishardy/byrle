@@ -1,7 +1,7 @@
 //! The console's pages, rendered with `maud` from the data the API serves. Every page is
 //! sent with a `Content-Security-Policy` that allows only this origin and no framing, and
 //! a form that changes something carries the session's CSRF token. See
-//! docs/engineering_decisions/console-web-interface.md and docs/admin-plan.md §4.7.
+//! docs/engineering_decisions/0098-console-web-interface.md and docs/admin-plan.md §4.7.
 
 use std::sync::Arc;
 

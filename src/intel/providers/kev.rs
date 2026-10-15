@@ -1,5 +1,5 @@
 //! Reading CISA's Known Exploited Vulnerabilities catalogue, which lists CVE ids and no
-//! packages. See docs/engineering_decisions/kev-stream.md.
+//! packages. See docs/engineering_decisions/0040-kev-stream.md.
 
 use serde::Deserialize;
 use std::collections::BTreeSet;

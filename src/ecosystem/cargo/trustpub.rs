@@ -1,6 +1,6 @@
 //! Asking crates.io's API who published each version of a crate, for the `trustpub`
 //! detector: `/api/v1/crates/{name}/versions`, 100 versions a page, newest first, one
-//! request each interval. See docs/engineering_decisions/cargo-provenance.md.
+//! request each interval. See docs/engineering_decisions/0110-cargo-provenance.md.
 
 use std::sync::Arc;
 use std::time::Duration;

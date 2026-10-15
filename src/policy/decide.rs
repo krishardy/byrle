@@ -1,7 +1,7 @@
 //! Judging one package against a policy. Every check runs and appends one result to a
 //! decision vector, and the disposition is the strongest action in it.
 //!
-//! See docs/engineering_decisions/policy-tier-resolution.md.
+//! See docs/engineering_decisions/0023-policy-tier-resolution.md.
 
 use super::merge::{self, Rule};
 use super::selector::Canonical;

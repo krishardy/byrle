@@ -1,5 +1,5 @@
 //! Reading one ecosystem's OSV bundle, `npm/all.zip` or `PyPI/all.zip`, from memory, within
-//! the two ceilings below. See docs/engineering_decisions/osv-malware-load.md.
+//! the two ceilings below. See docs/engineering_decisions/0027-osv-malware-load.md.
 
 use crate::identity::Ecosystem;
 use crate::intel::providers::osv::{self, Parsed, Skipped};

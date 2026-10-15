@@ -178,7 +178,7 @@ Items that I've added that are not stage-bound.
     - Done 2026-09-13: every table is keyed by a `BIGINT` identity; `advisory.publisher_id`
       and `intel_snapshot.digest` are sized unique columns; timestamps are `TIMESTAMPTZ`;
       `advisory.summary` is the only `TEXT`. See
-      [intel-schema-keys-and-types](docs/engineering_decisions/intel-schema-keys-and-types.md).
+      [intel-schema-keys-and-types](docs/engineering_decisions/0031-intel-schema-keys-and-types.md).
       A database that applied the old migrations has to be dropped and refreshed.
 15. [x] Evaluate command line parsers for Rust, and migrate to the selected one.
     - Decided 2026-09-13: clap 4.6.6, default features off, derive. 4 crates added, against
@@ -187,14 +187,14 @@ Items that I've added that are not stage-bound.
       `tests/fixtures/cli/`. Fixed in passing: `--as-of 2026-01-01` was a usage error, a
       repeated `--as-of` and unknown flags were ignored, `explain --help` was read as a purl,
       `--version` was an unknown command. See
-      [cli-parser-clap](docs/engineering_decisions/cli-parser-clap.md).
+      [cli-parser-clap](docs/engineering_decisions/0032-cli-parser-clap.md).
 16. [x] The environment variables, defaults, usage info, loading and parsing should be extracted into a central environment variable module. You should not have any environment variable name in more than one place in the application.
     - Decided 2026-09-13: every mention counts, messages and doc comments included; a value
       that does not parse refuses to start; test-only variables are covered; defaults move
       into the module.
     - Done 2026-09-13: `src/env.rs`. `a_variable_name_appears_only_in_this_module` fails on a
       name anywhere else in `src/`, `tests/` or `examples/`. `--help` renders from the same
-      constants. See [environment-variables](docs/engineering_decisions/environment-variables.md).
+      constants. See [environment-variables](docs/engineering_decisions/0033-environment-variables.md).
 17. [x] Search for duplicate code or duplicate strings throughout the application and catalog them for later consolidation.
     - Added a rule to CLAUDE.md
     - Done 2026-09-13: [duplication-catalogue](docs/duplication-catalogue.md), 14 production
@@ -226,7 +226,7 @@ Items that I've added that are not stage-bound.
     Yes. Neither subsumes the other, and the overlap is one row out of five.
     `smoke-clients` is the only check covering pnpm, yarn 1, yarn 4 and bun. Four clients
     with no coverage anywhere else, and the only live check on
-    `docs/engineering_decisions/packument-tarball-url-rewriting.md`: every one of them
+    `docs/engineering_decisions/0018-packument-tarball-url-rewriting.md`: every one of them
     except npm fetches `dist.tarball` from the host the packument names, so an artifact
     count of zero for any of them means the rewrite stopped working.
     `smoke-npm` is the only check on the purl at the version on disk, the scoped name's
@@ -262,7 +262,7 @@ Items that I've added that are not stage-bound.
     A `filter_fn` was tried first and failed 6 tests on every run: it is cacheable, and
     caches "never" the same way. 50 of 50 full-suite runs passed after the fix.
 23. [x] Keep only three kinds of source comment. Raised 2026-09-28. Done 2026-09-29: see
-    `docs/engineering_decisions/source-comments.md`.
+    `docs/engineering_decisions/0078-source-comments.md`.
     - Function signature documentation: up to 2 lines on what the function does, 1 line
       per parameter, 1 line per error type, and 1 line for the return value.
     - Environment variable documentation, 1 line each.
@@ -303,7 +303,7 @@ Items that I've added that are not stage-bound.
     is the same signal.
 
 25. [x] Make every log line structured. Raised 2026-09-28, done the same day
-    ([structured-logs](docs/engineering_decisions/structured-logs.md)).
+    ([structured-logs](docs/engineering_decisions/0076-structured-logs.md)).
     - `BYRLE_LOG_FORMAT=json` writes JSON Lines, every field a key.
     - Every message is a fixed string. 19 of 114 log calls with a message had put a value
       into it, 11 of them in `startup.rs`; none do now. The first count, 13 of 93, missed
@@ -315,7 +315,7 @@ Items that I've added that are not stage-bound.
     `doctor.rs`, `startup.rs`, `policy/diff.rs` and `env.rs`. `doctor::run` had no test.
     Test code is not counted from 2026-09-29: `make coverage` runs on a pinned nightly with
     `coverage(off)` on every `#[cfg(test)]` item
-    ([coverage-counts-library-code-only](docs/engineering_decisions/coverage-counts-library-code-only.md)).
+    ([coverage-counts-library-code-only](docs/engineering_decisions/0077-coverage-counts-library-code-only.md)).
     Counting library code only, after `doctor`, `env`, `explain` and `policy diff` reached
     100%: 92.53% of regions (962 missed), 96.99% of functions (55), 95.46% of lines (553).
     Done 2026-09-29: 12,855 regions, 1,855 functions and 12,268 lines, none missed. Two
@@ -327,13 +327,13 @@ Items that I've added that are not stage-bound.
     2026-09-29. Done 2026-09-29: bun 1.4.2 writes the artifact URL for every registry but
     registry.npmjs.org, where it writes `""`. `doctor` now reads `bun.lock`, and warns when
     it records no URL, since that means it was resolved from npmjs.org. See
-    [doctor-lockfile-urls](docs/engineering_decisions/doctor-lockfile-urls.md).
+    [doctor-lockfile-urls](docs/engineering_decisions/0082-doctor-lockfile-urls.md).
 
 28. [x] Read `bun.lock` `lockfileVersion` 2. Raised 2026-09-29. bun 1.4.2 writes version 2,
     or 3 while `overrides` holds a scoped rule, and `npm::lockfile::bun` refused anything
     above 1. Done 2026-09-29: versions 2 and 3 change no `packages` entry, per bun's own
     source, so 0 to 3 are read. Fixtures `bun-1.4` and `bun-1.4-overrides` hold one of each.
-    See [policy-diff-lockfiles](docs/engineering_decisions/policy-diff-lockfiles.md).
+    See [policy-diff-lockfiles](docs/engineering_decisions/0037-policy-diff-lockfiles.md).
 
 29. [x] Say when a stream an ecosystem lists did not load. Raised 2026-09-29. With
     `MAL-2026-16369` past the 1 MiB record ceiling, `byrle refresh` did not load `osv/npm`
@@ -345,7 +345,7 @@ Items that I've added that are not stage-bound.
     Done 2026-09-29: a listed stream the snapshot does not hold is a gap, unless its latest
     refresh recorded it as not configured. A gap answers the ecosystem's packages 503 and
     makes readiness 503 with the gaps listed; `doctor` reports it as a problem. See
-    [uncovered-ecosystem-fails-closed](docs/engineering_decisions/uncovered-ecosystem-fails-closed.md).
+    [uncovered-ecosystem-fails-closed](docs/engineering_decisions/0048-uncovered-ecosystem-fails-closed.md).
 
 30. [x] Find why `make smoke-npm` step 4 failed once. Raised 2026-10-12: `FAIL: 69 tarballs
     fetched but only 70 had a digest from their packument`, so one tarball request logged
@@ -364,20 +364,20 @@ Items that I've added that are not stage-bound.
     built-in `virustotal` detector's rule `virustotal_detected`, a report-only signal rather
     than a flag, decided with the user. `hash` by default, `upload` from public registries
     only, off without `BYRLE_VIRUSTOTAL_API_KEY`
-    ([virustotal](docs/engineering_decisions/virustotal.md)).
+    ([virustotal](docs/engineering_decisions/0104-virustotal.md)).
 32. [x] Artifact analysis: store the analysis feature vector and the disposition. Raised
     2026-10-12. Done 2026-10-13: `artifact_decision`, a row per pinned artifact decision
     with its features and disposition, and the view `artifact_disposition`, the latest per
     digest. Read by `byrle artifact show` and `byrle artifact export`. Decided with the
-    user ([artifact-decisions](docs/engineering_decisions/artifact-decisions.md)).
+    user ([artifact-decisions](docs/engineering_decisions/0105-artifact-decisions.md)).
 33. [x] Delete `artifact_decision` rows older than a retention period. Raised 2026-10-12.
     Done 2026-10-13: `BYRLE_DECISION_RETENTION_DAYS`, 365 by default, a variable apart from
     `BYRLE_LOG_RETENTION_DAYS`, decided by the user. Deleted at startup and daily
-    ([artifact-decisions](docs/engineering_decisions/artifact-decisions.md)).
+    ([artifact-decisions](docs/engineering_decisions/0105-artifact-decisions.md)).
 34. [x] Audit a 401 and a 503 `account-store`. Raised 2026-10-12 from admin-plan §3, decided
     by the user 2026-10-13. Done 2026-10-13: `unauthorized` and `account-store` lines, with
     no account, on a metadata or artifact request
-    ([audit-log](docs/engineering_decisions/audit-log.md)).
+    ([audit-log](docs/engineering_decisions/0087-audit-log.md)).
 35. [x] A detector run past its timeout leaves its own children running. `kill_on_drop`
     kills the process byrle started, not what it started: in
     `a_command_past_its_timeout_is_killed` the fake's `sleep 30` outlives the kill. A
@@ -439,7 +439,7 @@ That is the failure mode every item below should be brought to.
 
       - [x] Fail closed. A package whose ecosystem has no `match` or no `malware` stream in
             the snapshot is answered 503 and no decision is written.
-            [uncovered-ecosystem-fails-closed](docs/engineering_decisions/uncovered-ecosystem-fails-closed.md).
+            [uncovered-ecosystem-fails-closed](docs/engineering_decisions/0048-uncovered-ecosystem-fails-closed.md).
       - [x] Load PyPI's streams: step 4 below. Done 2026-09-19.
 
 - [x] **`Ecosystem::ALL` is still `[Npm]`, so nothing reports the gap above.**
@@ -459,7 +459,7 @@ That is the failure mode every item below should be brought to.
       Closed by step 2 below: the row's `publish_times` is `Record` for PyPI and
       `FullPackument` for npm, and `ecosystem::Clients::publish_times` fetches only for
       the second.
-      `adapter-interface.md` lists this as the one per-ecosystem question that does not
+      `0047-adapter-interface.md` lists this as the one per-ecosystem question that does not
       dispatch at all. `proxy.rs` calls `proxy.registry.publish_times(key)`
       unconditionally, and `npm::Client::packument_url` builds `{npm registry}/{name}` from
       the name alone.
@@ -502,7 +502,7 @@ That is the failure mode every item below should be brought to.
       `scripts/make/smoke-python.sh` works around both with `PIP_CONFIG_FILE=/dev/null` and
       `--no-cache-dir`, which is a test making up for a check that does not exist.
       Fixed 2026-09-19: `doctor` checks pip's and uv's index, extra indexes and cache:
-      [doctor-python-clients](docs/engineering_decisions/doctor-python-clients.md).
+      [doctor-python-clients](docs/engineering_decisions/0053-doctor-python-clients.md).
 
 - [x] **Two smaller ecosystem assumptions.**
       Fixed: `doctor::looks_like_a_registry` was
@@ -523,7 +523,7 @@ That is the failure mode every item below should be brought to.
       `osv/npm` is `Required`.
       Fixed: `refresh::http_client` sets a 10 s connect timeout and a 30 s read timeout,
       and `fetch_stream` fetches a stream three times, 2 s apart, when the failure is one
-      another attempt could get past. `stream-descriptor-table.md` holds the values and
+      another attempt could get past. `0043-stream-descriptor-table.md` holds the values and
       why each is what it is.
 
 ### Structure
@@ -543,7 +543,7 @@ That is the failure mode every item below should be brought to.
       | 5 | split `npm.rs` and `pypi.rs` into directories with matching file names | `[x]` |
 
       Steps 2 to 4 are what close the **Wrong answers** items above; step 1 only makes the
-      omissions visible, which is why `adapter-interface.md` lists the questions that still
+      omissions visible, which is why `0047-adapter-interface.md` lists the questions that still
       match on `Ecosystem` and why each does. Three remain after step 2.
 
       Step 4's parts:
@@ -553,9 +553,9 @@ That is the failure mode every item below should be brought to.
             held 7,253 non-withdrawn `PYSEC-` records, 491 of them with no `GHSA-`
             counterpart in either direction, 428 of those with a CVE alias. Keep `PYSEC-`
             as non-malware, and treat a `PYSEC-`/`GHSA-` pair as
-            [alias-matching](docs/engineering_decisions/alias-matching.md) treats one. The
+            [alias-matching](docs/engineering_decisions/0039-alias-matching.md) treats one. The
             PyPA Advisory Database is CC-BY-4.0, attribution owed, as `GHSA-` is:
-            [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
+            [advisory-stream-licences](docs/engineering_decisions/0024-advisory-stream-licences.md).
             The 7 `OSV-` (OSS-Fuzz) records need their own decision.
       - [x] Datadog `samples/pypi/manifest.json`: 1,834 names, 7 not in PEP 503 form, which
             `Affected::new` now normalises.
@@ -563,7 +563,7 @@ That is the failure mode every item below should be brought to.
             `jupyter_server`, also normalised by `Affected::new`.
 
       Done 2026-09-19. Each stream is its own source, and a stream that does not load keeps
-      its last load while the others load: `stream-descriptor-table.md`. A live
+      its last load while the others load: `0043-stream-descriptor-table.md`. A live
       `byrle refresh` against Postgres with no `BYRLE_GITHUB_TOKEN`:
 
       | Stream | Result |
@@ -608,10 +608,10 @@ That is the failure mode every item below should be brought to.
 
       | Found | Now |
       |---|---|
-      | a simple index was not filtered by policy or intel | filtered like a packument, by `pypi::rewrite::rewrite_index` ([pypi-index-filtering](docs/engineering_decisions/pypi-index-filtering.md)) |
-      | versions and ranges read as SemVer for every ecosystem | read by the ecosystem's `VersionOrder`, PEP 440 for PyPI ([pep440-version-order](docs/engineering_decisions/pep440-version-order.md)) |
+      | a simple index was not filtered by policy or intel | filtered like a packument, by `pypi::rewrite::rewrite_index` ([pypi-index-filtering](docs/engineering_decisions/0050-pypi-index-filtering.md)) |
+      | versions and ranges read as SemVer for every ecosystem | read by the ecosystem's `VersionOrder`, PEP 440 for PyPI ([pep440-version-order](docs/engineering_decisions/0051-pep440-version-order.md)) |
       | npm's `@scope/name` split applied to every ecosystem's names and purls | each row's `split_name`; `split_encoded_scope` is gone |
-      | selectors and denials compared names and versions as strings | read the ecosystem's way, and take a VERS range ([policy-version-ranges](docs/engineering_decisions/policy-version-ranges.md)) |
+      | selectors and denials compared names and versions as strings | read the ecosystem's way, and take a VERS range ([policy-version-ranges](docs/engineering_decisions/0052-policy-version-ranges.md)) |
       | a policy purl no package can have loaded and matched nothing | refused at load, by `identity::key_from_purl` |
       | intel rows stored names as each source wrote them | stored as the ecosystem compares names, by `Affected::new` and `Ranged::new` |
       | npm and PyPI upstreams passed around as a pair | `Upstreams`, one base per row, and `upstreams` in `/-/byrle/health` |
@@ -622,13 +622,13 @@ That is the failure mode every item below should be brought to.
 
       Kept as they are: `HOME`, `BUN_INSTALL_CACHE_DIR`, `NPM_CORPUS` and `NPM_CORPUS_FULL`
       in `env.rs`, because
-      [environment-variables](docs/engineering_decisions/environment-variables.md) puts
+      [environment-variables](docs/engineering_decisions/0033-environment-variables.md) puts
       every variable there; `record.rs`, because `DocumentDetail` holds for both and
       `Provenance`'s PyPI shape waits for PEP 740 in the provenance item below.
 
 - [x] **An unscored `PYSEC-` record blocks a version its scored `GHSA-` alias allows.**
       `max_cvss` refuses a non-malware advisory with no score, and aliases are matched, not
-      merged ([alias-matching](docs/engineering_decisions/alias-matching.md)). In the
+      merged ([alias-matching](docs/engineering_decisions/0039-alias-matching.md)). In the
       `osv/pypi` load of 2026-09-19, 2,731 `PYSEC-` records have no score, and 2,583 of them
       have a scored `GHSA-` alias in the same stream. `PYSEC-2018-28` and
       `GHSA-x84v-xcm2-53pg` are CVE-2018-18074 twice; only the second carries 7.5. A version
@@ -637,7 +637,7 @@ That is the failure mode every item below should be brought to.
       unscored beside `GHSA-x84v-xcm2-53pg` 7.5.
       Fixed 2026-09-19: an unscored vulnerability takes the highest score of a direct alias
       in the same stream at load. In the PyPI bundle, 2,583 take one and 153 stay unscored:
-      [alias-matching](docs/engineering_decisions/alias-matching.md).
+      [alias-matching](docs/engineering_decisions/0039-alias-matching.md).
 
 - [x] **`handle` was 644 lines, 12 returns and 8 mutable locals.** Now 225, 10 and 1.
 
@@ -718,17 +718,17 @@ That is the failure mode every item below should be brought to.
       Measured per record with `examples/record_memory.rs`: 906 to 959 bytes for npm, 1,115
       to 1,397 for PyPI. `DEFAULT_MAX_RECORDS = 50_000` is 45 to 70 MB, and `env.rs` says so.
       The `publish_times` cache is removed
-      ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
+      ([no-metadata-cache](docs/engineering_decisions/0056-no-metadata-cache.md)).
 
 - [x] **A deprecated npm version is logged, and `deprecated: block` refuses one.** Default
-      `allow` ([yanked-files](docs/engineering_decisions/yanked-files.md)). The audit log
+      `allow` ([yanked-files](docs/engineering_decisions/0057-yanked-files.md)). The audit log
       says which checks removed a version, so a deprecation reaches it through the check;
       a version nothing refuses is not recorded as deprecated.
 
 - [x] **A yanked PyPI file is not a policy input.** Closed 2026-09-20: `yanked: block` is a
       policy setting, a version whose every file is yanked is removed from the index, and a
       pinned fetch of a yanked file answers 403
-      ([yanked-files](docs/engineering_decisions/yanked-files.md)).
+      ([yanked-files](docs/engineering_decisions/0057-yanked-files.md)).
       `wire::Entry::yanked` read an absent key as a yank, which nothing had noticed because
       nothing read the field.
 
@@ -1037,7 +1037,7 @@ implementations.
 - [x] Conditional requests (ETag / If-None-Match) so pass-through stays cheap. A
       rewritten packument gets an `ETag` marked with the proxy's own address, and only a
       tag issued here revalidates. See
-      `docs/engineering_decisions/packument-tarball-url-rewriting.md`.
+      `docs/engineering_decisions/0018-packument-tarball-url-rewriting.md`.
       - [x] The 304 response carries the marked tag, not the upstream's one it relays.
             Four requests for lodash before: 200 (68,970 bytes), 304, 200, 304, because
             the client stored the upstream tag off the 304 and it was dropped next time.
@@ -1105,7 +1105,7 @@ implementations.
       the stage for a cost that does not arrive until launch.
 - [x] Shipped policy template must declare a floor for **every** supported ecosystem.
       Moot: there is no floor tier, and no per-ecosystem configuration at all. See
-      `docs/engineering_decisions/policy-tier-resolution.md`. `examples/policy.yaml` is
+      `docs/engineering_decisions/0023-policy-tier-resolution.md`. `examples/policy.yaml` is
       the config-format spike's artifact and is rewritten against the new shape as part
       of the Stage 2 deletions.
 
@@ -1240,7 +1240,7 @@ implementations.
 - [x] `[!]` Test real client retry behavior early. Done: `make retry-matrix`, five
       clients against a deferral the proxy is told to produce (`BYRLE_DEFER_TEST`, debug
       builds only). Full tables in
-      `docs/engineering_decisions/deferral-status-codes.md`.
+      `docs/engineering_decisions/0021-deferral-status-codes.md`.
       - [x] **429 is terminal for yarn 1 and bun; 503 is not.** Both stop after one 429
             and retry a 503. npm, pnpm and yarn 4 make no distinction between the codes.
             Five clients out of five retry 503; three retry 429. This is the evidence for
@@ -1306,12 +1306,12 @@ implementations.
             - [x] `make smoke-clients` asserts every client fetches and verifies
                   artifacts. Checked that it bites with `BYRLE_REWRITE_ARTIFACTS=0`.
 - [x] **Refuse artifacts whose origin is not in the proxy configuration.** Tier 3 in
-      `docs/engineering_decisions/enforcement-tiers.md`, built before any network-level
+      `docs/engineering_decisions/0019-enforcement-tiers.md`, built before any network-level
       interception: it closes the gap those tiers are wanted for and needs no CA, no root,
       no trust-store changes and nothing per machine. On by default;
       `BYRLE_REFUSE_UNSERVABLE=0` forwards them instead.
       - [x] Filter, do not block the document, per decision #4
-            (`quarantine-filter-metadata.md`). A package can have one old version on
+            (`0013-quarantine-filter-metadata.md`). A package can have one old version on
             another origin and every current version on the registry; refusing the
             document would break an install that filtering leaves working.
       - [x] **Filtering is the only control that works here.** The client fetches
@@ -1521,19 +1521,19 @@ The spec gets frozen here.
 - [x] `[!]` Pick `serde_yaml` replacement before writing the loader (it is archived).
       Decided by the Stage 1 spike: **`serde-saphyr`**, `default-features = false`,
       `features = ["deserialize"]`, `include`/`include_fs` permanently off, fallback
-      `serde_norway`. See `docs/engineering_decisions/config-format-yaml-serde-saphyr.md`.
+      `serde_norway`. See `docs/engineering_decisions/0001-config-format-yaml-serde-saphyr.md`.
 
 ### Policy engine
 
 The design changed after most of this was built. See
-`docs/engineering_decisions/policy-tier-resolution.md`, which supersedes plan §5 and §5.5.
+`docs/engineering_decisions/0023-policy-tier-resolution.md`, which supersedes plan §5 and §5.5.
 What the old design called tiers is now: global settings, per-package exceptions, and a
 decision vector. What was built and then removed is listed at the end of this section, so
 the record of why it went survives the deletion.
 
 - [x] `[!]` Pick `serde_yaml` replacement. `serde-saphyr`, `default-features = false`,
       `features = ["deserialize"]`, `include`/`include_fs` permanently off, fallback
-      `serde_norway`. See `docs/engineering_decisions/config-format-yaml-serde-saphyr.md`.
+      `serde_norway`. See `docs/engineering_decisions/0001-config-format-yaml-serde-saphyr.md`.
 - [x] `[!]` YAML loader with **hard error on unknown keys**. `src/policy.rs`,
       `deny_unknown_fields` on every struct, refused at four depths.
       - [x] Never `#[serde(untagged)]` on a polymorphic field. It refuses a typo'd key but
@@ -1649,7 +1649,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       Read from the intel store (`Facts::with_intel`). Verified live against
       registry.npmjs.org: `--hiljson` filtered from its packument and its tarball refused
       403 with `known_malware: reported as malware`, `lodash` served.
-      `docs/engineering_decisions/intel-in-decisions.md`.
+      `docs/engineering_decisions/0026-intel-in-decisions.md`.
 - [x] `[!]` `cooldown_days`, the age threshold. Produces `quarantine`, which lapses on its
       own, and is a **packument filter** rather than an artifact refusal: Stage 1's
       `npm::filter_unservable_versions` is the mechanism.
@@ -1682,7 +1682,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             per version is the part worth not doing. Cached per package, bounded at 1,024.
             The cache is removed: a version published after it was filled had no time, and
             the cooldown was dropped for it. A cooldown policy now asks for the full
-            packument on the client's request ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
+            packument on the client's request ([no-metadata-cache](docs/engineering_decisions/0056-no-metadata-cache.md)).
       - [x] **There is no cheaper source.** `?fields=time` returns the whole document
             unchanged and `/<package>/time` is a 404, both checked against
             registry.npmjs.org. Full against abbreviated, measured on eight packages:
@@ -1691,12 +1691,12 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             ceiling already allows for that.
       - [x] **Policy filtering was coupled to `BYRLE_REWRITE_ARTIFACTS`.** Filtering a
             refused version is a policy question and repointing artifact URLs is a
-            transport one. `enforcement-tiers.md` says rewriting is correctly turned off
+            transport one. `0019-enforcement-tiers.md` says rewriting is correctly turned off
             once the proxy terminates TLS, which silently stopped the filtering with it.
             Verified in both modes: 11 of ms's 32 versions survive a 10-year cooldown
             either way.
 - [x] `[!]` `kev`. `block` or `allow`. Logic in `decide.rs`; the source is CISA's catalogue,
-      loaded as `cisa/kev` ([kev-stream](docs/engineering_decisions/kev-stream.md)).
+      loaded as `cisa/kev` ([kev-stream](docs/engineering_decisions/0040-kev-stream.md)).
       CISA's catalogue is ecosystem-agnostic because it has no package identifier at all,
       so `kev` is a property of an **advisory**, not of a package, and the engine reads it
       off `Advisory`.
@@ -1711,7 +1711,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             never had an exploited advisory to excuse is not recorded as having worked.
       - [x] The source itself: a set lookup over CVE ids the advisory stream produced.
             CISA's catalogue, loaded as `cisa/kev`, marks 13 stored npm records exploited.
-            [kev-stream](docs/engineering_decisions/kev-stream.md).
+            [kev-stream](docs/engineering_decisions/0040-kev-stream.md).
 - [x] `[!]` `max_cvss`. A number, not a severity band: bands are not stable across CVSS
       versions, where the same score falls in different ones under v2 and v3. Exceptions
       are per CVE id (`cve_ids`), not per package, which is the only exception keyed by
@@ -1777,7 +1777,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       and unordered overlaps, one shape is left: `has_install_scripts: true` and `false`
       entries below an entry that sets neither. Reported as "never wins" when neither
       expires, and "shadowed through <date>" when one does. See
-      [policy-check](docs/engineering_decisions/policy-check.md).
+      [policy-check](docs/engineering_decisions/0034-policy-check.md).
 - [x] `policy check` lists `permanent: true` entries separately
 - [x] `policy check` and `doctor` flag entries that change nothing. `--strict` exits 1 on
       an entry that changes nothing or never wins.
@@ -1796,23 +1796,23 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       (`src/intel/snapshot_dir.rs`, `BYRLE_SNAPSHOT_LIMIT` 30 by default), and
       `policy diff --snapshot <id>` reads one through `SnapshotIntel`
       (`src/intel/snapshot_intel.rs`) instead of Postgres. See
-      `docs/engineering_decisions/snapshot-identity.md`.
+      `docs/engineering_decisions/0036-snapshot-identity.md`.
 - [x] `policy diff --snapshot` peaked at 468 MB for npm, where Postgres took 28 MB. Rows are
       now decoded one at a time and only the audit log's packages are kept: 103 MB. See
-      docs/engineering_decisions/snapshot-identity.md.
+      docs/engineering_decisions/0036-snapshot-identity.md.
 - [x] `[!]` Package set from lockfiles **and** from the audit log. The audit log is read
       (`audit::packages`): a `pinned` line lists one version, a `resolution` line lists
       every version it removed. `--lockfile <path>`, repeatable, adds each lockfile's
       registry versions (`src/lockfile.rs`): `package-lock.json`, `npm-shrinkwrap.json`,
       `yarn.lock` v1, `pnpm-lock.yaml` 9 and `bun.lock`. See
-      `docs/engineering_decisions/policy-diff-lockfiles.md`.
+      `docs/engineering_decisions/0037-policy-diff-lockfiles.md`.
 - [x] `[!]` Report transitions both directions, grouped with counts. **Compares decision
       vectors, not verdicts.** Two policies can both answer `block` for different reasons,
       and comparing verdicts reports no change there. Held by
       `two_policies_that_both_block_for_different_reasons_still_show_the_move`.
 - [x] `[!]` Nonzero exit on any loosening transition (CI gate). The exit code is the OR of
       1 for a loosening and 2 for a tightening, and 4 alone for an error. Verified: 0, 1, 2,
-      3 and 4 live. See `docs/engineering_decisions/policy-diff-dates-and-exit-bits.md`.
+      3 and 4 live. See `docs/engineering_decisions/0038-policy-diff-dates-and-exit-bits.md`.
       - [x] **A check that stops being enforced is a loosening.** The written policy did
             not loosen, but the package now installs. The gate exists to stop a change
             slipping something through, so that is what it reports.
@@ -1840,7 +1840,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` **Verify each stream's data license before implementing it.** Done for every
       stream in the plan, and for Datadog, which is Apache-2.0. Aikido needs a commercial
       account and is deferred to post-v1.
-      `docs/engineering_decisions/advisory-stream-licences.md`.
+      `docs/engineering_decisions/0024-advisory-stream-licences.md`.
       - [x] **OSV's per-source licences read, 2026-09-13**, at
             <https://google.github.io/osv.dev/data/>. All 17 native sources are permissive.
             Four reach npm. OpenSSF Malicious Packages (Apache-2.0, `MAL-`) and GitHub
@@ -1914,7 +1914,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `intel::capabilities_of` declares `osv/npm` (match, malware) and `cisa/kev` (enrich),
       keyed by the stream a snapshot records, and `LoadedSnapshot::gaps` checks every
       served ecosystem (now each row of `ecosystem::TABLE`). Warned at startup and by `doctor`. No refresh writes a snapshot with
-      a gap today. [nvd-role-and-stream-capabilities](docs/engineering_decisions/nvd-role-and-stream-capabilities.md).
+      a gap today. [nvd-role-and-stream-capabilities](docs/engineering_decisions/0008-nvd-role-and-stream-capabilities.md).
 - [x] `[?]` Decide whether an ecosystem with `match` but no `malware` stream is also a
       startup warning. Decided 2026-09-15: yes. `LoadedSnapshot::gaps` reports `match` gaps
       then `malware` gaps, at startup and in `doctor`. `known_malware` is the one check with
@@ -1940,14 +1940,14 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       aliases, source, score, band, exploited, malware. OSV's `MAL-` and `GHSA-` records and
       Datadog's records are stored in it. KEV marks a row exploited by its id or an alias
       (`migrations/0003_exploited.sql`).
-      [osv-malware-load](docs/engineering_decisions/osv-malware-load.md),
-      [alias-matching](docs/engineering_decisions/alias-matching.md).
+      [osv-malware-load](docs/engineering_decisions/0027-osv-malware-load.md),
+      [alias-matching](docs/engineering_decisions/0039-alias-matching.md).
 - [x] `[!]` OSV.dev stream, lookup by PURL. npm `MAL-` and `GHSA-` records parse
       (`src/intel/osv.rs`) and load (`PgIntel::replace_source`): all 221,217 non-withdrawn
       `MAL-` and all 7,052 `GHSA-`, with 10,357 range rows evaluated at lookup
       (`src/intel/range.rs`). `byrle refresh` fetches and loads them.
-      `docs/engineering_decisions/osv-malware-load.md`,
-      `docs/engineering_decisions/osv-ranges-and-scores.md`.
+      `docs/engineering_decisions/0027-osv-malware-load.md`,
+      `docs/engineering_decisions/0029-osv-ranges-and-scores.md`.
       - [x] 24 `GHSA-` records stored nothing and 4 stored part: their ranges held versions
             such as `13.0` and `2026.04.1`. `range::padded` reads them as osv.dev does,
             `13.0.0` and `2026.4.1`, and they are stored padded: nothing storable 24 to 0,
@@ -1970,7 +1970,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             records, none in the KEV catalogue. The band is stored (`advisory.severity_band`,
             rows format 2) and `explain` prints `8.9 from band HIGH`. A vector that does not
             parse is not replaced by the band.
-            [osv-ranges-and-scores](docs/engineering_decisions/osv-ranges-and-scores.md).
+            [osv-ranges-and-scores](docs/engineering_decisions/0029-osv-ranges-and-scores.md).
       - [x] A non-malware advisory with no score at all is ingested with `cvss` NULL and
             refused by `max_cvss` until a policy entry gives it a score. The override key is
             added to policy `version: 1`, which the user unfroze for it since nothing is
@@ -1978,7 +1978,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
             `Advisory::cvss` is `Option<f64>`. The key is `advisory_scores`, matched by id or
             alias, used only while the advisory has no stored score, and lapsed on `expires`.
             `explain` prints `GHSA-... unscored` and `7.5 from advisory_scores[0]`.
-            [osv-ranges-and-scores](docs/engineering_decisions/osv-ranges-and-scores.md).
+            [osv-ranges-and-scores](docs/engineering_decisions/0029-osv-ranges-and-scores.md).
 - [x] `explain --policy` reported `kev` and `max_cvss` as enforced once the store answered.
       `max_cvss` now has 6,340 scored records to read. `kev` is reported
       `unenforced, no exploitation stream`, in `explain --policy` and in every decision.
@@ -1997,7 +1997,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       The id is now a hash over every source's stored rows (`load::encode`,
       `load::snapshot_id`, `intel_source`). Live: two refreshes of one bundle recorded
       `sha256:225131ada035512e110d0c18f027cb1832a200dfc231df294931e518d36c40b9` and one
-      `intel_snapshot` row. See `docs/engineering_decisions/snapshot-identity.md`.
+      `intel_snapshot` row. See `docs/engineering_decisions/0036-snapshot-identity.md`.
 - [x] `[!]` Alias reconciliation. Aliases are matched, and records are not merged.
       `Finding` carries its aliases and `enriched_by` applies an enrichment naming the id or
       any alias, so a KEV entry keyed on a CVE reaches the `GHSA-` record carrying it:
@@ -2007,7 +2007,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       GitHub links a fix bypass to the advisory it bypasses that way, as separate bugs with
       separate fixed versions (lodash `GHSA-xxjr-mmjv-4gpg` and `GHSA-f23m-r3pf-42rh`). One
       vulnerability never fires three rules: `decide` gives each check one result.
-      [alias-matching](docs/engineering_decisions/alias-matching.md).
+      [alias-matching](docs/engineering_decisions/0039-alias-matching.md).
 - [x] `[!]` GitHub Advisory stream (GraphQL, token auth), loaded as `github/npm`. OSV and
       GitHub are both **signal streams**: each is checked independently, each records what it holds, and the full set
       is judged once at `Evaluate_Decision_Vector`. Two streams reporting one vulnerability is
@@ -2017,7 +2017,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       GitHub and live in OSV's bundle.
       Live: all 7,056 stored under source `github`, beside 228,330 `osv` and 48,316
       `datadog` rows, and all three advisories OSV lacks are among them.
-      [github-advisory-signal-stream](docs/engineering_decisions/github-advisory-signal-stream.md).
+      [github-advisory-signal-stream](docs/engineering_decisions/0045-github-advisory-signal-stream.md).
       - [x] `UNIQUE (source, publisher_id)` in place of the global unique on `publisher_id`,
             migration 0006. GitHub publishes the same `GHSA-` ids OSV imports, so the second
             stream to load one failed. `PgIntel::replace` already read keys back per source,
@@ -2045,26 +2045,26 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       (2026-09-13) give it as `affected[].database_specific.source`, such as
       `https://github.com/ossf/malicious-packages/blob/main/osv/malicious/npm/cxp-jquery/MAL-2021-1.json`.
       The repository's copy of `MAL-2021-1` has the same id, origins and `modified`; OSV adds
-      `purl` and `source`. No separate stream. [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
+      `purl` and `source`. No separate stream. [advisory-stream-licences](docs/engineering_decisions/0024-advisory-stream-licences.md).
 - [x] Datadog malicious-packages (licence-cleared: Apache-2.0). Not ingested by OSSF: no
       `MAL-` record lists it as an origin. Every npm manifest entry is loaded as one
       `DATADOG-npm-<name>` malware record, source `datadog`, stream `datadog/npm` (`match`,
       `malware` for npm), beside OSV's records. `byrle refresh` prints each package Datadog
       flags at every version and OSV's malware records only at some. A failed fetch keeps the
-      last Datadog load and exits 1. [datadog-stream](docs/engineering_decisions/datadog-stream.md),
-      [advisory-stream-licences](docs/engineering_decisions/advisory-stream-licences.md).
+      last Datadog load and exits 1. [datadog-stream](docs/engineering_decisions/0041-datadog-stream.md),
+      [advisory-stream-licences](docs/engineering_decisions/0024-advisory-stream-licences.md).
 - [x] CISA KEV stream (licence-cleared: CC0 1.0, nothing owed). `enrich`-only, joined on
       exact CVE ID or an alias. Source `cisa/kev` in `exploited_cve`, loaded by `byrle
       refresh` in the same transaction as OSV; a failed fetch keeps the last KEV load and
       exits 1; kept snapshot files carry the rows as `byrle intel exploited 1`. Loaded
       2026-09-15: 1,710 CVE ids mark 13 stored npm `GHSA-` records exploited, all 13 scored.
-      [kev-stream](docs/engineering_decisions/kev-stream.md).
+      [kev-stream](docs/engineering_decisions/0040-kev-stream.md).
       - [x] `explain --policy` reads whether `cisa/kev` is loaded from the newest snapshot's
             streams, and `PgIntel::package` from `intel_source`. A refresh records a stream
             for every source it loads, so both agree today. Read one of them for both.
             Sources: `LoadedSnapshot` carries them (`/-/byrle/ready` too) and
             `exploitation_loaded` reads them for `explain --policy` and `SnapshotIntel`. A
-            kept snapshot records no streams. [kev-stream](docs/engineering_decisions/kev-stream.md).
+            kept snapshot records no streams. [kev-stream](docs/engineering_decisions/0040-kev-stream.md).
 - [x] Withdrawal propagation. A full load replaces every row a source held, so a withdrawn
       or deleted record is gone after the next load (`a_refresh_replaces_what_the_source_held`).
       Every stream loads in full and none loads incrementally, so there is nothing further to
@@ -2076,7 +2076,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 
 ### Intel storage
 - [x] **Decided: sqlx over Postgres, no ORM.**
-      `docs/engineering_decisions/storage-sqlx-postgres.md`. SeaORM's stated justification
+      `docs/engineering_decisions/0025-storage-sqlx-postgres.md`. SeaORM's stated justification
       was one codebase for two backends and there is one backend; it is built on sqlx, so
       dropping it removes a dependency rather than swapping one.
 - [x] `[!]` Lookup path as `sqlx::query_as!`, checked against the real schema at compile
@@ -2092,11 +2092,11 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `sqlx-cli`'s pin moved to `scripts/make/lib/sqlx-cli.sh`, which `dev-setup.sh` and the
       workflow both call, rather than being written a second time in the YAML.
       `make coverage`, `make verify`, `make test-integration`, `make mutants` and `make sast`
-      are not gated; [ci-gates](docs/engineering_decisions/ci-gates.md) says why, and says
+      are not gated; [ci-gates](docs/engineering_decisions/0044-ci-gates.md) says why, and says
       what is still unproven until the first push.
 - [x] Add sqlx to `Cargo.toml` and run it through `make check-deps`. Held at 0.8, with
       RUSTSEC-2023-0071 ignored only while `rsa` is not compiled:
-      `docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md`.
+      `docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md`.
 - [x] `sqlx-cli` goes in `scripts/make/dev-setup.sh`, not an ad-hoc `cargo install`.
       Pinned to 0.8. An installed CLI of another minor is replaced.
 - [x] `[!]` Repository trait in front of storage. Justified by test isolation now, not
@@ -2129,7 +2129,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
 - [x] `[!]` Tests that do not need a database must not require the container. Without
       `BYRLE_TEST_DATABASE_URL`, `tests/postgres.rs` returns early from every test.
 - [x] `[!]` Bulk refresh via `COPY FROM STDIN` (`PgCopyIn`). CSV rather than binary; see
-      `docs/engineering_decisions/osv-malware-load.md`.
+      `docs/engineering_decisions/0027-osv-malware-load.md`.
 - [x] `[!]` Atomic refresh. One source's rows are deleted and copied in one transaction
       rather than a temp-table swap. `a_failed_refresh_leaves_the_previous_load_in_place`,
       mutation-tested.
@@ -2138,7 +2138,7 @@ Each is a setting, an exception shape, and an intel source. None exists yet.
       `GET /-/byrle/ready` answers 503 in exactly those cases and reports the snapshot and
       each stream's digest. No percentage: a refresh is one transaction, so there is no
       partial load to measure. See
-      [readiness-endpoint](docs/engineering_decisions/readiness-endpoint.md).
+      [readiness-endpoint](docs/engineering_decisions/0035-readiness-endpoint.md).
 
 ### Carried from Stage 1
 
@@ -2160,7 +2160,7 @@ where they get resolved.
       unserializable, and per-version artifacts on another origin. Stage 1 forwards
       in all of them. **Stage 2 has to decide whether that stays acceptable.**
       Decided 2026-09-16: it stays, and rewriting is not the mechanism that fixes it.
-      `enforcement-tiers.md` already records that URL rewriting is turned off once the
+      `0019-enforcement-tiers.md` already records that URL rewriting is turned off once the
       proxy terminates TLS, which is the recommended deployment, so a decision layer
       resting on rewriting would rest on the tier nobody is told to run. Tier 4 and 5 in
       Stage 5 are where an artifact is reached whatever the document says.
@@ -2171,7 +2171,7 @@ where they get resolved.
 
 Moved from Stage 1, where the client behaviour was measured but nothing could produce
 a deferral: there was no mirror to warm and nothing analysing. See
-`docs/engineering_decisions/deferral-status-codes.md`.
+`docs/engineering_decisions/0021-deferral-status-codes.md`.
 
 503 is the only one of the three this stage could give a cause, and it has one. Everything
 that shapes a **429** moved to Stage 4 with the code itself: which code each client is
@@ -2189,7 +2189,7 @@ defers.
             artifact path, with nothing fetched:
             `a_store_that_cannot_answer_is_a_503_on_both_paths_and_nothing_is_fetched`. The
             body is plain text and there is no `Retry-After`.
-            [intel-in-decisions](docs/engineering_decisions/intel-in-decisions.md).
+            [intel-in-decisions](docs/engineering_decisions/0026-intel-in-decisions.md).
 ### Observability
 - [x] `[!]` Ingestion history log for auditing: every time a vulnerability or malware feed is
       ingested, append an entry. Requested 2026-09-15. `intel_ingestion` (migration 0004)
@@ -2197,7 +2197,7 @@ defers.
       sha256, etag and `last-modified`, rows digest, snapshot, when, and the error for a
       stream that did not load. Loaded streams are written in the load's transaction; a
       refresh that loaded nothing writes its streams in their own. `byrle intel history
-      [--limit N]` prints them newest first. [ingestion-history](docs/engineering_decisions/ingestion-history.md).
+      [--limit N]` prints them newest first. [ingestion-history](docs/engineering_decisions/0042-ingestion-history.md).
 - [x] `[!]` JSON Lines audit log: `src/audit.rs`, `BYRLE_AUDIT_LOG`. A separate sink,
       not a tracing layer: tracing output is diagnostic and free to change shape, this is
       what `policy diff` parses.
@@ -2243,7 +2243,7 @@ merge and loosening case in all tiers; policy schema declared frozen.
 | a real package blocked for a real reason, `explain` naming the rule | done: `lodash@4.17.21` refused on `max_cvss`, `--hiljson@0.0.1-security` on `known_malware`, both live |
 | npm enforcing against OSV with a real policy file | done: live against the full `npm/all.zip` load |
 | `explain` correct across every merge and loosening case | done: `tests/fixtures/explain/decisions.txt`, 22 cases. "Merge" now means global settings and the narrowest matching `packages` entry: there is no per-ecosystem tier |
-| policy schema declared frozen | done: `docs/engineering_decisions/policy-schema-v1-frozen.md`, held by `the_version_1_key_set_is_closed` |
+| policy schema declared frozen | done: `docs/engineering_decisions/0030-policy-schema-v1-frozen.md`, held by `the_version_1_key_set_is_closed` |
 
 **Met, 2026-09-16.** Re-verified live against the store as it stands, four streams and
 migrations 0006 and 0007, rather than on the 2026-09-13 table above:
@@ -2281,7 +2281,7 @@ design against. The interface is an output of this stage, not an input. If PyPI 
 changes to the core, that is the finding — make it now, not after five adapters exist.
 
 - [x] Defer: single binary vs. workspace crates. Decided 2026-09-20: one library crate and
-      one binary ([one-crate](docs/engineering_decisions/one-crate.md)). The adapter
+      one binary ([one-crate](docs/engineering_decisions/0058-one-crate.md)). The adapter
       interface is four exhaustive `match`es over `Ecosystem`, so a crate per ecosystem
       would need dependency edges in both directions, and an incremental rebuild is 2.8s,
       so there is no build time to buy back.
@@ -2291,14 +2291,14 @@ changes to the core, that is the finding — make it now, not after five adapter
       `record::Provenance::attestation_url`, the field npm's `dist.attestations.url`
       fills, and the proxy counts them per document: `provenance_files_listed=12` for
       `attrs` on a real run
-      ([pypi-provenance](docs/engineering_decisions/pypi-provenance.md)).
+      ([pypi-provenance](docs/engineering_decisions/0061-pypi-provenance.md)).
       Fetching the bundle is Stage 4's provenance item: the publisher identity and the
       predicate type are inside it, and it needs sigstore to mean anything.
 - [x] `[!]` PEP 503 simple-index transport, written concretely first. `src/ecosystem/pypi/` reads
       PEP 691 JSON: name normalisation, the index URL, and one project's files with version,
       kind, hash, upload time and yank state. Standalone on purpose, sharing nothing with
       `src/ecosystem/npm/`: the interface is an output of this stage.
-      [pypi-simple-index](docs/engineering_decisions/pypi-simple-index.md).
+      [pypi-simple-index](docs/engineering_decisions/0046-pypi-simple-index.md).
       - [x] Read the shape from the live index rather than the PEPs alone, 2026-09-16.
       - [x] Parse checked against nine real projects, 12,164 files, not fixtures alone:
             `examples/pypi_index.rs`.
@@ -2314,7 +2314,7 @@ changes to the core, that is the finding — make it now, not after five adapter
       - [x] HTML fallback for an index that does not serve PEP 691 JSON. `pypi::html`
             reads the PEP 503 page into the same `Project`, so it is filtered, rewritten
             and stored like the JSON one
-            ([pep-503-html-index](docs/engineering_decisions/pep-503-html-index.md)).
+            ([pep-503-html-index](docs/engineering_decisions/0060-pep-503-html-index.md)).
             Measured: before, a policy refusing every version removed nothing from an
             HTML index and no `/packages/` request reached the proxy; after, pip is told
             `No matching distribution found` and an allowed file is fetched through the
@@ -2336,7 +2336,7 @@ changes to the core, that is the finding — make it now, not after five adapter
 - [x] `[!]` Extract the adapter interface (transport + normalizer) from the two working
       implementations — refactor, not upfront design. It is three shared modules (`route`,
       `origin`, `record::PackageMetadata`) and four exhaustive matches, not a trait. See
-      `docs/engineering_decisions/adapter-interface.md`.
+      `docs/engineering_decisions/0047-adapter-interface.md`.
 - [x] `[!]` Reimplement npm and PyPI on the extracted interface, behavior unchanged. The
       extraction was the reimplementation: each piece moved out of `npm` as PyPI needed it,
       with `make smoke-npm` and `make smoke-clients` green at every step.
@@ -2347,7 +2347,7 @@ changes to the core, that is the finding — make it now, not after five adapter
       proves it: 679 probes, 7 record lookups, 7 policy decisions. Two things read as intent
       and no longer do: the two per-document counts are now named `..._listed`, and a probe
       logs at DEBUG, which took that install from 731 log lines to 52 with every index and
-      artifact line kept. See `docs/engineering_decisions/adapter-interface.md`.
+      artifact line kept. See `docs/engineering_decisions/0047-adapter-interface.md`.
 - [x] `[!]` PyPI normalizer to the common record. `pypi::normalize` gives a
       `PackageMetadata`, one `PackageRecord` per version, each holding every file that
       version offers. The proxy stores it, so an artifact request finds its digest and the
@@ -2424,7 +2424,7 @@ changes to the core, that is the finding — make it now, not after five adapter
       packages for the fixture project. No Python lockfile is listed as unread now.
 - [x] **Range resolution, and the install-script count that waits on it.** Decided
       2026-09-20: nothing in byrle resolves a range or a tag
-      ([no-range-resolution](docs/engineering_decisions/no-range-resolution.md)).
+      ([no-range-resolution](docs/engineering_decisions/0059-no-range-resolution.md)).
       - [x] Range resolution lives in the normalizer, never in the engine. It lives in
             neither: every caller is given a version already. A resolver in the proxy is
             the substitution decision #4 refuses, because it would pick a version the
@@ -2438,8 +2438,8 @@ changes to the core, that is the finding — make it now, not after five adapter
             `an_artifact_request_logs_the_answer_for_the_file_it_names`. The document's
             count is `install_script_versions_listed`, the rename PyPI got and npm missed.
 - [x] Document every core change this stage forced.
-      `docs/engineering_decisions/pypi-simple-index.md` holds the five candidates and what
-      each turned out to be; `adapter-interface.md` holds what the two implementations
+      `docs/engineering_decisions/0046-pypi-simple-index.md` holds the five candidates and what
+      each turned out to be; `0047-adapter-interface.md` holds what the two implementations
       turned out to share.
 
 **Exit:** PyPI enforcing; adapter interface extracted from two working implementations
@@ -2465,34 +2465,34 @@ positives measured over 311 versions. Every item closed or moved.
 - [x] `[!]` Surface filtering in response header, audit log, and `explain`.
       `x-byrle-filtered-versions` and `x-byrle-filtered-checks` on the response, a
       `resolution` event in the audit log, and `explain`'s per-check reasons
-      ([quarantine-filter-metadata](docs/engineering_decisions/quarantine-filter-metadata.md)).
+      ([quarantine-filter-metadata](docs/engineering_decisions/0013-quarantine-filter-metadata.md)).
 - [x] `policy check` flags cooldown waivers whose underlying cooldown already elapsed.
       `byrle policy check --fetch` dates each waiver's version at its registry and lists
       the ones the global wait now admits anyway. Offline without the flag
-      ([policy-check](docs/engineering_decisions/policy-check.md)).
+      ([policy-check](docs/engineering_decisions/0034-policy-check.md)).
 - [x] `[!]` **Lifecycle script policy** — npm pre/postinstall, Python sdist `setup.py`
       — cheap tier, buffers inline.
       - [x] The reader: `src/analysis.rs` takes `package.json` out of a tarball and looks
             for a `setup.py` at the root of an sdist, bounded at 4 MiB a member, with
             `Claim` naming whether the artifact keeps the metadata's claim
-            ([install-scripts-from-the-artifact](docs/engineering_decisions/install-scripts-from-the-artifact.md)).
+            ([install-scripts-from-the-artifact](docs/engineering_decisions/0062-install-scripts-from-the-artifact.md)).
             Verified against the published `bufferutil` 4.1.0, `node-gyp-build` 4.8.4 and
             `six` 1.17.0.
       - [x] The spool: `src/spool.rs` writes an artifact to a file deleted when the
             request ends, bounded by `BYRLE_MAX_ARTIFACT_BYTES`. The proxy locks
             `BYRLE_SPOOL_DIR` at startup and removes the spool files left in it
-            ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
+            ([artifact-spool](docs/engineering_decisions/0064-artifact-spool.md)).
       - [x] Wire it into the artifact path. An npm tarball or PyPI sdist with no stored
             analysis is analysed in the background (`src/analysis/run.rs`), and answered
             503 `artifact-analysis` only when the answer depends on it. A script the
             artifact declares is added to the claim, and never removed from it; an
             unreadable archive, or one with no strong digest, counts as running scripts;
             a digest mismatch is a 502. An `undeclared` claim is logged whatever the
-            policy says ([artifact-spool](docs/engineering_decisions/artifact-spool.md)).
+            policy says ([artifact-spool](docs/engineering_decisions/0064-artifact-spool.md)).
 - [x] `[!]` **Provenance enforcement** — sigstore / npm provenance verification.
       `provenance: block` refuses a failed verification, dropped provenance, or a changed
       repository or workflow, against the version published before
-      ([provenance-check](docs/engineering_decisions/provenance-check.md)).
+      ([provenance-check](docs/engineering_decisions/0066-provenance-check.md)).
   - [x] The policy engine: `provenance` in `version: 1`, `Check::Provenance`,
         `decide::Provenance`. Reported unenforced until something supplies the fact.
   - [x] Verify attestations in the analysis job with `sigstore-verify`, this version's and
@@ -2507,14 +2507,14 @@ positives measured over 311 versions. Every item closed or moved.
         `sigstore` 0.14.0 verified none of npm's two attestations or a PEP 740 one, and
         skips the log's inclusion proof. `sigstore-verify` 0.13.0, from
         `sigstore/sigstore-rust`, verified all three
-        ([sigstore-verifier](docs/engineering_decisions/sigstore-verifier.md)). No cosign.
+        ([sigstore-verifier](docs/engineering_decisions/0065-sigstore-verifier.md)). No cosign.
 - [x] `[!]` **Declare an analysis cost tier for every content detector.** Deleted instead,
       2026-09-26: `analysis::Tier` decided whether a request waited for a detector, and
       none does since every detector runs in the background. The short circuit in front
       of expensive analysis moves to source diffing, the first expensive detector.
   - [x] The not-ready half is decided and implemented: 503 always, with `Retry-After: 1`
         and `x-byrle-not-ready` naming the case
-        ([deferral-status-codes](docs/engineering_decisions/deferral-status-codes.md)).
+        ([deferral-status-codes](docs/engineering_decisions/0021-deferral-status-codes.md)).
         Of seven clients measured, all seven retry a 503 and two stop on a 429.
   - [x] An artifact under analysis is 503 too, `x-byrle-not-ready: artifact-analysis`,
         decided 2026-09-26. Since 2026-09-27 under any policy: nothing is served until
@@ -2528,16 +2528,16 @@ positives measured over 311 versions. Every item closed or moved.
         registry gave none, has no audit line. Settle with observe mode's audit field.
         Done 2026-09-29: `answered` names each: `unservable`, `no-strong-digest`,
         `not-listed`, `no-metadata`. The last two have no `action`, and `audit verify` and
-        `policy diff` skip them ([audit-log](docs/engineering_decisions/audit-log.md)).
+        `policy diff` skip them ([audit-log](docs/engineering_decisions/0087-audit-log.md)).
   - [x] `byrle warm --lockfile` asks a running proxy for every artifact a lockfile
         locks, so bun and yarn 1 install them on the first try. Done 2026-09-28
-        ([warm](docs/engineering_decisions/warm.md)).
+        ([warm](docs/engineering_decisions/0074-warm.md)).
   - [x] A separate process watches each upstream registry for newly published versions
         and starts their analysis, so the artifact is analysed before a client asks for
         it. The artifact analysis is the slowest step, and every novel artifact is
         deferred until it finishes. Raised 2026-09-27. Done 2026-09-29, in the daemon
         rather than a separate process, for the packages it has served
-        ([watcher](docs/engineering_decisions/watcher.md)).
+        ([watcher](docs/engineering_decisions/0089-watcher.md)).
   - [x] The artifact digest in the deferral's header and body: `x-byrle-digest`.
   - [x] Log every deferral, with a count per digest, and `returned after a deferral` with
         `after_ms` when a request finds the analysis stored, which turns the compatibility
@@ -2546,10 +2546,10 @@ positives measured over 311 versions. Every item closed or moved.
   - [x] Short circuit, moved from the cost tier: the job diffs only when the cheap checks
         have not already refused the version. A `block` is not compared; a `quarantine`
         is, since it lapses. See
-        `docs/engineering_decisions/policy-tier-resolution.md`, "Where the short circuit
+        `docs/engineering_decisions/0023-policy-tier-resolution.md`, "Where the short circuit
         survives".
   - [x] Resolve repo URL and matching tag from package metadata: `gitHead`, then tags,
-        from GitHub's archive ([source-diff](docs/engineering_decisions/source-diff.md)).
+        from GitHub's archive ([source-diff](docs/engineering_decisions/0091-source-diff.md)).
         Tier-1 set: 182 of 271 versions by `gitHead`, 25 by tag.
   - [x] Normalize for expected build artifacts and packaging noise: the package's own
         publishable `package.json` in a monorepo, line endings, Markdown and optional
@@ -2562,7 +2562,7 @@ positives measured over 311 versions. Every item closed or moved.
   - [x] PyPI: wheels and sdists, the repository from their own metadata. 33 of 34 of
         each compared; differing files 9 of 33 sdists, 1 of 33 wheels.
 - [x] Metadata heuristics, report only
-      ([metadata-heuristics](docs/engineering_decisions/metadata-heuristics.md)): new
+      ([metadata-heuristics](docs/engineering_decisions/0090-metadata-heuristics.md)): new
       package, new publisher, no repository, and a name one edit from a served package.
       Logged, audited as `signals` and printed by `explain`.
   - [x] Measure each signal's rate on packages intel never marks malicious: new publisher
@@ -2575,7 +2575,7 @@ positives measured over 311 versions. Every item closed or moved.
       unless the policy's `signal_weights` says otherwise; logged, audited as
       `risk_score`, printed by `explain`.
 - [x] Pluggable detector interface for third-party/commercial feeds
-      ([detectors](docs/engineering_decisions/detectors.md)): a `Detector` trait, report
+      ([detectors](docs/engineering_decisions/0092-detectors.md)): a `Detector` trait, report
       only, and a command adapter configured by `BYRLE_DETECTORS`.
   - [x] Evaluate **GuardDog** (Datadog, OSS heuristic scanner) as a first-party detector:
         by name, every rule a signal of weight 1. On 694 npm versions a rule fired on 400,
@@ -2587,10 +2587,10 @@ positives measured over 311 versions. Every item closed or moved.
         stores nothing; `source` reads the comparison the analyser stored by artifact
         digest. Every signal is a detector's rule, and `signal_weights` is one map keyed by
         rule, with the built-in rules named alone as before
-        ([detectors](docs/engineering_decisions/detectors.md#the-detectors-built-in)).
+        ([detectors](docs/engineering_decisions/0092-detectors.md#the-detectors-built-in)).
 - [x] Benchmark each control against known 2025–26 incidents (shai-hulud, tinycolor,
       chalk, nx, eslint-config-prettier) and publish the results
-      ([incident-benchmark](docs/engineering_decisions/incident-benchmark.md)). A 7-day
+      ([incident-benchmark](docs/engineering_decisions/0068-incident-benchmark.md)). A 7-day
       cooldown covers every incident, whose versions were live for hours.
       `install_scripts: block` covers Shai-Hulud, Nx and eslint-config-prettier, not chalk
       or xrpl, which ran on import. `provenance: block` fires only where earlier versions
@@ -2601,7 +2601,7 @@ positives measured over 311 versions. Every item closed or moved.
 
 **Exit:** all Tier 1 controls shipped with measured false-positive rates.
 Measured 2026-09-26 over 311 versions in five dependency sets
-([tier-1-false-positives](docs/engineering_decisions/tier-1-false-positives.md)):
+([tier-1-false-positives](docs/engineering_decisions/0067-tier-1-false-positives.md)):
 `cooldown_days: 7` refused 35 (11%), `install_scripts: block` 1, `provenance: block` 1.
 `vite`'s 38.9 MB full packument exceeds `BYRLE_MAX_METADATA_BYTES`, so its cooldown and
 dropped-provenance checks were unenforceable until the default was raised to 64 MiB.
@@ -2614,12 +2614,12 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       from Stage 7 on 2026-10-11. It makes the Stage 7 cultural consultation moot. The name
       is in the crate and binary, the `WAHAROA_*` environment variables, the `x-waharoa-*`
       headers, the `waharoa.*` log fields, `/-/waharoa/` paths, the `waharoa-detector-`
-      scratch directories, the docs and `docs/engineering_decisions/project-name-waharoa.md`.
+      scratch directories, the docs and `docs/engineering_decisions/0011-project-name-waharoa.md`.
       Done 2026-10-11. Migrations and the record of the old name keep `waharoa`
-      ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md#rename)).
+      ([project-name-byrle](docs/engineering_decisions/0094-project-name-byrle.md#rename)).
   - [x] Registry check on `byrle`, 2026-10-11: crates.io, npm and PyPI return 404. The
         GitHub handle is a user account created 2021-11-11 with no public repositories
-        ([project-name-byrle](docs/engineering_decisions/project-name-byrle.md)).
+        ([project-name-byrle](docs/engineering_decisions/0094-project-name-byrle.md)).
   - [x] Choose the GitHub home, since the `byrle` handle is taken. Decided by the user
         2026-10-11: `github.com/krishardy/byrle`.
 - [x] Make each ecosystem an optional module, pluggable through Cargo features in
@@ -2627,7 +2627,7 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
       `ecosystem::npm::attestation` was added: each adapter now owns an attestation reader as
       well as its metadata formats. Moved from Ad-hoc #21 on 2026-10-11.
       Closed 2026-10-11 without doing it: every build keeps every ecosystem
-      ([no-ecosystem-features](docs/engineering_decisions/no-ecosystem-features.md)).
+      ([no-ecosystem-features](docs/engineering_decisions/0095-no-ecosystem-features.md)).
 
 **Exit:** every item in this stage is done.
 
@@ -2641,7 +2641,7 @@ dropped-provenance checks were unenforceable until the default was raised to 64 
 2. [x] Smoke test the proxy against live workloads. Done 2026-10-12: `smoke-proxy`,
        `smoke-npm`, `smoke-python`, `smoke-clients` and `smoke-tls-front` pass. Fixed on
        the way: nginx temp paths when not root, and `lib/token.sh` under shellcheck.
-       Caddy removed ([tls-front-nginx](docs/engineering_decisions/tls-front-nginx.md)).
+       Caddy removed ([tls-front-nginx](docs/engineering_decisions/0100-tls-front-nginx.md)).
        `smoke-npm` failed once in 7 runs (Ad-hoc #30).
 3. [x] Git push. Done 2026-10-12: `main` at `9c79f0c` on `github.com/krishardy/byrle`.
 
@@ -2657,18 +2657,18 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
 ### Decisions (do these first)
 
 - [x] Q1: the proxy requires a token by default, one per user, in Artifactory's forms.
-      Decided 2026-10-11 ([account-identification](docs/engineering_decisions/account-identification.md#required-by-default)).
+      Decided 2026-10-11 ([account-identification](docs/engineering_decisions/0054-account-identification.md#required-by-default)).
 - [x] Q2: at `BYRLE_CONSOLE_URL`'s path, on the proxy's listener or `BYRLE_CONSOLE_LISTEN`.
       Decided 2026-10-11, revised the same day
-      ([console-listener](docs/engineering_decisions/console-listener.md)).
+      ([console-listener](docs/engineering_decisions/0096-console-listener.md)).
 - [x] Q3: Rust, HTML from `maud`, for now. Decided 2026-10-11
-      ([console-web-interface](docs/engineering_decisions/console-web-interface.md)).
+      ([console-web-interface](docs/engineering_decisions/0098-console-web-interface.md)).
 - [x] Q4: `argon2` 0.6.0, and `jsonwebtoken` 11.1.0 on `aws_lc_rs` with the OIDC flow
       written here. Decided 2026-10-11
-      ([console-login-crates](docs/engineering_decisions/console-login-crates.md)).
+      ([console-login-crates](docs/engineering_decisions/0097-console-login-crates.md)).
 - [x] Q5: logs are files, rotated daily, bzip2 from 3 days old, 365 days. Decided
       2026-10-11, revised by the user 2026-10-12: bzip2 rather than gzip, and the 3 newest
-      days uncompressed ([log-rotation](docs/engineering_decisions/log-rotation.md)).
+      days uncompressed ([log-rotation](docs/engineering_decisions/0099-log-rotation.md)).
 
 ### Build
 
@@ -2677,7 +2677,7 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       host and port, and are never at the same path. `BYRLE_PUBLIC_URL` renamed
       `BYRLE_PROXY_URL`. Done 2026-10-11: `src/mount.rs`, `src/console.rs`; the console
       answers `api/v1/health` so far
-      ([console-listener](docs/engineering_decisions/console-listener.md)).
+      ([console-listener](docs/engineering_decisions/0096-console-listener.md)).
 - [x] `[!]` Accounts and proxy tokens: migration `0015_accounts.sql`; `byrle account
       create|disable|list` and `byrle token create|revoke|list`. A token is `byrle_` and 32
       random bytes, base64url, printed once; the store keeps its SHA-256. Done 2026-10-11:
@@ -2692,17 +2692,17 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       `BYRLE_REQUIRE_TOKEN=0`
 - [x] `[!]` Measure npm's `_auth` (Basic) on metadata and artifact requests. Done
       2026-10-11, under a path, with bun, pip and uv beside it: every request carried the
-      token ([account-identification](docs/engineering_decisions/account-identification.md#through-the-proxy-under-a-path-measured))
+      token ([account-identification](docs/engineering_decisions/0054-account-identification.md#through-the-proxy-under-a-path-measured))
 - [x] `[!]` The audit log gains `account`, and the five failure cases nothing records today:
       503 `intel-store`, 503 `no-stream-for-ecosystem`, upstream unreachable, upstream
       non-2xx, and a body cut short on a digest mismatch (plan §3). Done 2026-10-12:
       `intel-store`, `no-stream-for-ecosystem`, `upstream-unreachable`, `upstream-status`
       with `upstream_status`, and `cut-short`. A decision to serve is written once the
-      upstream answers ([audit-log](docs/engineering_decisions/audit-log.md))
+      upstream answers ([audit-log](docs/engineering_decisions/0087-audit-log.md))
 - [x] `[!]` Rotation at UTC midnight, bzip2 from 3 days old, `BYRLE_LOG_RETENTION_DAYS`;
       `policy diff` and `audit verify` read the compressed files. Done 2026-10-12:
       `src/rotation.rs`, for the audit log. `audit verify` names each line `<file>:<line>`
-      ([log-rotation](docs/engineering_decisions/log-rotation.md))
+      ([log-rotation](docs/engineering_decisions/0099-log-rotation.md))
 - [x] `[!]` Migrations for the plan §4.3 index tables, `served_version` and
       `failure_count`. Done 2026-10-13: `migrations/0019_usage.sql`. `served_version` is a
       table of its own, not read from `artifact_decision`, and is not deleted, decided by
@@ -2723,7 +2723,7 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       `account_password` and `session`. Done 2026-10-13: `byrle account password`;
       `POST api/v1/login` and `logout`, `GET api/v1/session`; 8-hour sessions; 5 failures
       per account and 20 per address in 15 minutes, the address through `BYRLE_RP_KEY`
-      as the user decided ([console-login](docs/engineering_decisions/console-login.md)).
+      as the user decided ([console-login](docs/engineering_decisions/0106-console-login.md)).
       Values confirmed by the user, each a `BYRLE_*` variable
 - [x] `[!]` The account event log (plan §4.5). Done 2026-10-13: `src/account/events.rs`,
       `BYRLE_ACCOUNT_EVENT_LOG`; `byrle account` and `byrle token` append their changes,
@@ -2731,7 +2731,7 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
 - [x] `[!]` `byrle account create --role admin`, for the first admin. Done 2026-10-13;
       `--role` repeats
 - [x] `[!]` Accounts identified on requests by proxy token, per
-      [account-identification](docs/engineering_decisions/account-identification.md).
+      [account-identification](docs/engineering_decisions/0054-account-identification.md).
       Moved from Stage 8 on 2026-10-11. Done: `src/account/gate.rs` reads `Bearer`,
       `Basic` with the token's own account as the username, and `X-Byrle-Token`;
       `make smoke-console` installs with each account's token, 2026-10-13
@@ -2739,7 +2739,7 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       `served_version` a page at a time
 - [x] `[!]` The API described by an OpenAPI document. Asked for by the user 2026-10-13.
       Done 2026-10-13: generated by `utoipa` 6.0.0, served at `GET api/v1/openapi.json`
-      ([console-openapi](docs/engineering_decisions/console-openapi.md))
+      ([console-openapi](docs/engineering_decisions/0107-console-openapi.md))
 - [x] `[!]` API: alerts for versions served before a malware advisory was loaded (R4).
       Done 2026-10-13: `GET api/v1/alerts`, when the console asks; first loaded is the
       advisory's `cached`. Nothing runs after each refresh until Stage 8's email
@@ -2767,7 +2767,7 @@ for it, and how it is configured. Plan: [admin-plan](docs/admin-plan.md).
       `account_oidc`. Done 2026-10-13: `src/console/oidc.rs`, through `oidc/login` and
       `oidc/callback`, tested against a provider served in the tests. An identity logs in
       as the account `byrle account link` links it to, the user's choice A, which may
-      change ([console-login](docs/engineering_decisions/console-login.md))
+      change ([console-login](docs/engineering_decisions/0106-console-login.md))
 - [x] `[!]` `docs/threat-model.md` console section (plan §5). Done 2026-10-13: "The
       console", and "Default exposure" now says a token is required
 - [x] Docs: the console in `docs/quickstart.md`, and an endpoint reference. Done
@@ -2794,7 +2794,7 @@ role gets 403 from every endpoint except `GET health`.
 **Goal:** make it something a real team will run in blocking mode.
 
 - [ ] Enforcement tiers 4 and 5, recorded in
-      `docs/engineering_decisions/enforcement-tiers.md`. Both are later than tier 3.
+      `docs/engineering_decisions/0019-enforcement-tiers.md`. Both are later than tier 3.
       - [ ] A hosts-file or DNS override needs TLS termination, so it is decision #3
             wearing different clothes rather than a separate option. `dist.tarball` is
             always https, so anything intercepting the URL as written needs a CA.
@@ -2804,7 +2804,7 @@ role gets 403 from every endpoint except `GET health`.
             leaves and their keys go on the proxy. A leaf key signs nothing, and
             ordinary chain validation is all any client has to do, so nothing on the
             recommended path rests on an untested assumption.
-            See `docs/engineering_decisions/terminating-tls-certificates.md`.
+            See `docs/engineering_decisions/0020-terminating-tls-certificates.md`.
       - [ ] Implement it. Per-ecosystem configuration naming the certificate and key
             files, with the domains read from each certificate's SANs rather than
             configured separately, so the two cannot disagree and startup can report
@@ -2842,7 +2842,7 @@ role gets 403 from every endpoint except `GET health`.
       looking. Noisy, since a client may already hold the artifact or resolve a version it
       does not install, so a heuristic rather than a check. Counted per client over
       10-minute windows, logged at INFO and kept in `/-/byrle/health`, beside the
-      certain signals ([bypass-self-detection](docs/engineering_decisions/bypass-self-detection.md)).
+      certain signals ([bypass-self-detection](docs/engineering_decisions/0069-bypass-self-detection.md)).
       - [x] A tarball answered 304 is never hashed, because `VerifyingStream` runs over
             a body and a 304 has none. Safe when the client cached those bytes through
             this proxy, which is the only way it holds a copy it did not fetch directly.
@@ -2896,7 +2896,7 @@ role gets 403 from every endpoint except `GET health`.
       packument through a `serde_json::Value` tree, 1,181 MB on 24 large documents. Now
       read as slices, 700 MB, idle 499 MB. `MALLOC_ARENA_MAX=2` cut idle by about 40%
       before the change; not set
-      ([default-ceilings](docs/engineering_decisions/default-ceilings.md#as-deployed-2026-10-14)).
+      ([default-ceilings](docs/engineering_decisions/0085-default-ceilings.md#as-deployed-2026-10-14)).
 - [ ] The store is per-process and dies with the proxy. It also holds the whole
       `NormalizedPackument`, not just what the fetch path needs, which makes the
       concurrency-memory item worse rather than better. Measured RSS after an
@@ -2904,7 +2904,7 @@ role gets 403 from every endpoint except `GET health`.
       records: 25 MB.
 - [x] The publish-time store is per-process too. Removed 2026-09-19: a cooldown policy asks
       npm for the full packument on each metadata request, and nothing is kept
-      ([no-metadata-cache](docs/engineering_decisions/no-metadata-cache.md)).
+      ([no-metadata-cache](docs/engineering_decisions/0056-no-metadata-cache.md)).
 - [x] `byrle doctor` should check that the configured public URL resolves
       and matches what lockfiles in the project record. This is the failure
       an operator will actually hit. The lockfile comparison was already
@@ -2912,7 +2912,7 @@ role gets 403 from every endpoint except `GET health`.
       resolves on this machine, and to what, with the error's causes.
 - [x] CI lockfile verification: every resolved URL in a project's lockfile points at the
       proxy. `byrle lockfile verify`
-      ([lockfile-verify](docs/engineering_decisions/lockfile-verify.md)): npm, yarn, pnpm,
+      ([lockfile-verify](docs/engineering_decisions/0093-lockfile-verify.md)): npm, yarn, pnpm,
       bun and uv lockfiles; exit 1 for an artifact from elsewhere, 2 for one with no URL.
   - [x] Git and file dependencies, which bypass the proxy and the readers leave out. Done
       2026-10-01: from elsewhere, unless a path inside the project. Moved from Stage 2, where it predated any CI. The parser is built
@@ -2924,13 +2924,13 @@ role gets 403 from every endpoint except `GET health`.
       needed to make a decision, and it is a deployment property of a team running the
       proxy in blocking mode. Begun 2026-10-13: `BYRLE_STREAM_URLS` fetches any stream from
       a mirror instead of its origin; running one is left to the operator
-      ([intel-distribution-fetch-from-origin](docs/engineering_decisions/intel-distribution-fetch-from-origin.md)).
+      ([intel-distribution-fetch-from-origin](docs/engineering_decisions/0005-intel-distribution-fetch-from-origin.md)).
   - [ ] Query-on-clean live OSV fallback, opt-in, default fail-open, is the same tradeoff
         from the other side: asking OSV about one package leaks that package. It stays
         opt-in and documented, and a mirror is the answer for anyone who cannot accept it.
 - [ ] Move to sqlx 0.9 once a kani release bundles rustc 1.94 or later. kani 0.67.0 bundles
       1.93.0-nightly and sqlx 0.9 requires 1.94. Steps are in
-      `docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md`. Moved from Stage 2: it
+      `docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md`. Moved from Stage 2: it
       waits on an upstream release, and RUSTSEC-2023-0071 is accepted meanwhile only while
       `rsa` is not compiled.
 
@@ -2945,27 +2945,27 @@ role gets 403 from every endpoint except `GET health`.
       `artifact_attestation` the verified identity, both by digest, in Postgres with
       `BYRLE_DATABASE_URL` and shared between proxies; without it, in process. Each row
       is read back only by the reader or verifier that wrote it, so "permanently valid"
-      holds per reader ([artifact-analysis-store](docs/engineering_decisions/artifact-analysis-store.md)).
+      holds per reader ([artifact-analysis-store](docs/engineering_decisions/0063-artifact-analysis-store.md)).
       Source diff and capability analysis will be stored the same way when they exist.
 - [x] `[!]` Reproducible verdicts: same policy + same intel snapshot = same result
       Done 2026-09-27. Each pinned audit line records the date, the policy digest, the
       build, the reader, the verifier and every fact the engine read. `byrle audit verify`
       decides each line again and exits 1 when one differs. Resolution lines are not
-      replayed ([reproducible-verdicts](docs/engineering_decisions/reproducible-verdicts.md)).
+      replayed ([reproducible-verdicts](docs/engineering_decisions/0070-reproducible-verdicts.md)).
 - [x] `[!]` `byrle policy check --strict`: nonzero exit on unacknowledged loosening
       Closed 2026-09-27 without new code. Schema v1 refuses a loosening entry with neither
       `expires` nor `permanent: true`, so none is unacknowledged. `policy diff` sets exit
       bit 1 on a loosening, which is the CI gate for a weakening change. `--strict` exits 1
-      on dead entries ([policy-check](docs/engineering_decisions/policy-check.md)).
+      on dead entries ([policy-check](docs/engineering_decisions/0034-policy-check.md)).
 - [x] `[!]` Observe mode: one environment variable switches the whole proxy between enforce
       and observe. Enforce is the default. Decided 2026-09-27, replacing "warn mode as the
-      shipped default" ([observe-mode](docs/engineering_decisions/observe-mode.md)).
+      shipped default" ([observe-mode](docs/engineering_decisions/0071-observe-mode.md)).
       Done 2026-09-28: `BYRLE_MODE=observe` serves what the policy refuses, logs it at
       WARN, and audits it with `answered: served`.
 - [x] Latency budget and benchmarks on a large lockfile (cold and warm cache)
   - [x] Benchmarks: `make bench`. Measured 2026-09-28: through an analysed proxy, npm
         207 packages 9.7 s against 9.4 s direct, PyPI 18 packages 11.6 s against 9.0 s
-        ([latency-benchmarks](docs/engineering_decisions/latency-benchmarks.md)).
+        ([latency-benchmarks](docs/engineering_decisions/0075-latency-benchmarks.md)).
   - [x] Set a latency budget: how much an install through the proxy may add over the
         same install direct, for an analysed proxy and for a cold one, and whether
         `make bench` fails over it. Set by the user 2026-10-13: analysed at most 1.5
@@ -2973,38 +2973,38 @@ role gets 403 from every endpoint except `GET health`.
         since 2026-10-14 the first two may instead be 3 s over direct, whichever is larger;
         `make bench` exits 1 over it. Measured as deployed: analysed npm 1.25 times and
         PyPI 1.38; cold npm 1.64 and PyPI 1.45
-        ([latency-benchmarks](docs/engineering_decisions/latency-benchmarks.md#budget)).
+        ([latency-benchmarks](docs/engineering_decisions/0075-latency-benchmarks.md#budget)).
   - [x] `byrle warm` took 100.8 s where a cold `npm ci` took 20.1 s: it warmed every
         platform's optional packages, and fetched every metadata document through the
         client path. Done 2026-09-28: npm artifacts are asked for by the lockfile's path,
         for this machine's platform by default, in 16.9 s
-        ([warm](docs/engineering_decisions/warm.md)).
+        ([warm](docs/engineering_decisions/0074-warm.md)).
 - [x] Provenance identity refusals of release channels and moved repositories. Found
       2026-10-13 by `make bench`: the defaults refused `@rolldown/pluginutils@1.0.1` and
       `scikit-learn@1.9.1`. Done 2026-10-13: an identity passes once an attested version
       from it is `provenance_window_days` old, searched through `BYRLE_PROVENANCE_HISTORY`
       established versions; 382 of 30,261 npm versions refused, from 2,339
-      ([provenance-check](docs/engineering_decisions/provenance-check.md))
+      ([provenance-check](docs/engineering_decisions/0066-provenance-check.md))
 - [ ] ACME / Let's Encrypt support; document fronting with nginx
   - [x] Fronting with nginx: `docs/fronting-tls.md`, run against the proxy by `make
         smoke-tls-front`, 2026-09-29. Caddy was removed 2026-10-12
-        ([tls-front-nginx](docs/engineering_decisions/tls-front-nginx.md)).
+        ([tls-front-nginx](docs/engineering_decisions/0100-tls-front-nginx.md)).
   - [ ] ACME: the nginx configuration reads certbot's certificate paths. certbot is not
         run: the test has no public name. Nothing in byrle itself speaks ACME.
 - [x] Honor `HTTPS_PROXY` for upstream traffic
       Done 2026-09-28. reqwest already read it, and `HTTP_PROXY` and `NO_PROXY`. Added:
       the variables in `--help`, the proxy in effect in the startup log, and `make
-      smoke-proxy` ([upstream-forward-proxy](docs/engineering_decisions/upstream-forward-proxy.md)).
+      smoke-proxy` ([upstream-forward-proxy](docs/engineering_decisions/0072-upstream-forward-proxy.md)).
 - [x] Proxy-unavailable behavior + documented break-glass path
       Done 2026-09-28. `docs/break-glass.md`: per-client commands for installing past a
       proxy that is down, measured for npm and uv, and releasing a refused package with a
       policy exception and `SIGHUP`, which now reloads the policy
-      ([policy-reload](docs/engineering_decisions/policy-reload.md)).
+      ([policy-reload](docs/engineering_decisions/0073-policy-reload.md)).
 - [x] Our own releases published with provenance attestations. Workflow done 2026-10-14:
       `.github/workflows/release.yml` builds static musl x86_64 and aarch64 binaries and an image
       on ghcr.io from them, each attested with `actions/attest-build-provenance`, on a `v*`
       tag matching `Cargo.toml`
-      ([release-provenance](docs/engineering_decisions/release-provenance.md)). Left: push
+      ([release-provenance](docs/engineering_decisions/0108-release-provenance.md)). Left: push
       the first tag, and check its attestations with `gh attestation verify`. Done 2026-10-14:
       v0.1.0, static musl x86_64 and aarch64, and `ghcr.io/krishardy/byrle:0.1.0`; the
       user checked the attestations
@@ -3069,7 +3069,7 @@ Plan for cargo and the adapter interface before it: [cargo-plan](docs/cargo-plan
       heavily overloaded. A te reo Māori name would have to be asked for; that may be
       revisited if the project gains support and local Māori engineers become involved.
       The project is renamed to `byrle`, the rename item in Stage 4.5
-      ([project-name-waharoa](docs/engineering_decisions/project-name-waharoa.md#consultation-result)).
+      ([project-name-waharoa](docs/engineering_decisions/0011-project-name-waharoa.md#consultation-result)).
       Original item: a human conversation, not a
       lookup, and the remaining gate on the name. Moved here from Stage 1 because it
       blocks release rather than development: until then the name appears only in a binary
@@ -3082,7 +3082,7 @@ Plan for cargo and the adapter interface before it: [cargo-plan](docs/cargo-plan
       authoring guide for third-party advisory sources. The last moved from Stage 2: it
       documents `intel::stream::Stream` and the capability grants for someone outside this
       repository, which is a launch concern rather than a decision-layer one.
-      [stream-descriptor-table](docs/engineering_decisions/stream-descriptor-table.md)
+      [stream-descriptor-table](docs/engineering_decisions/0043-stream-descriptor-table.md)
 - [ ] OSV mirror distribution plan (plan §10.6)
 - [ ] Announce: OpenSSF slack, HN, relevant ecosystem security channels
 
@@ -3106,7 +3106,7 @@ told by email when something they installed turns out to be malicious or vulnera
       way.
 
 Decided 2026-09-19:
-[reporting-accounts-and-notifications](docs/engineering_decisions/reporting-accounts-and-notifications.md).
+[reporting-accounts-and-notifications](docs/engineering_decisions/0055-reporting-accounts-and-notifications.md).
 
 | Question | Decided |
 |---|---|
@@ -3126,7 +3126,7 @@ Decided 2026-09-19:
 - [ ] File upstream issues asking npm / pip / uv / cargo to honor `429` + `Retry-After`.
       Moved from Ad-hoc item 10 on 2026-09-29. Four of five npm-ecosystem clients ignore
       `Retry-After`, and two treat 429 as terminal: see
-      `docs/engineering_decisions/deferral-status-codes.md`. A proxy rate-limiting is a
+      `docs/engineering_decisions/0021-deferral-status-codes.md`. A proxy rate-limiting is a
       real scenario on its own, so the patch stands without byrle.
 
 **Exit:** a user who installed a package through the proxy is emailed within one refresh of
@@ -3139,12 +3139,12 @@ a malware or critical/high advisory for the version they installed.
 - [ ] `[!]` Offline / air-gapped mode with pinnable intel snapshots. Moved from Stage 5 on
       2026-09-27. A pinned verdict already records every advisory it read, so
       `byrle audit verify` does not need a kept snapshot
-      ([reproducible-verdicts](docs/engineering_decisions/reproducible-verdicts.md)).
+      ([reproducible-verdicts](docs/engineering_decisions/0070-reproducible-verdicts.md)).
 
 - [ ] **Everything that needs a policy surface beyond schema v1.** Five Stage 2 items with
       one cause: the v1 key set is closed and held by `the_version_1_key_set_is_closed`, so
       none of them can be configured without a v2.
-      [policy-schema-v1-frozen](docs/engineering_decisions/policy-schema-v1-frozen.md).
+      [policy-schema-v1-frozen](docs/engineering_decisions/0030-policy-schema-v1-frozen.md).
   - [ ] Per-stream enable/disable.
   - [ ] Per-stream refresh scheduling, rate limits and API key config. `byrle refresh`
         loads every stream in `intel::stream::ALL` on each run and reads one token from the
@@ -3159,7 +3159,7 @@ a malware or critical/high advisory for the version they installed.
 - [ ] **NVD stream**, three Stage 2 items with one subject. Licence-cleared: public domain,
       nothing owed. `enrich`-only for npm and PyPI, joined on exact CVE id, because NVD is
       keyed by CPE and cannot be asked about a package.
-      [nvd-role-and-stream-capabilities](docs/engineering_decisions/nvd-role-and-stream-capabilities.md).
+      [nvd-role-and-stream-capabilities](docs/engineering_decisions/0008-nvd-role-and-stream-capabilities.md).
   - [ ] Its enrichment runs as a background job, never on the hot path.
   - [ ] Revisit the `match` capability when the Stage 6 Maven adapter is scoped, where CPE
         coverage is stronger.

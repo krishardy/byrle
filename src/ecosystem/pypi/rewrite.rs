@@ -1,6 +1,6 @@
 //! Removing refused versions from a simple index, and pointing the rest at the proxy. A
 //! version is removed with every file that carries it: see
-//! docs/engineering_decisions/pypi-index-filtering.md.
+//! docs/engineering_decisions/0050-pypi-index-filtering.md.
 
 use std::collections::HashSet;
 
@@ -30,7 +30,7 @@ pub struct Rewrite<'a> {
 
 /// Remove refused versions and point the remaining files at the proxy, keeping each path.
 /// `r`: the index, its project, and what is refused.
-/// Returns `None` to forward the body as it came, which is logged: see pypi-simple-index.md.
+/// Returns `None` to forward the body as it came, which is logged: see 0046-pypi-simple-index.md.
 pub fn rewrite_index(r: Rewrite<'_>) -> Option<Vec<u8>> {
     let kept: Vec<&str> = r
         .project

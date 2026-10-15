@@ -25,7 +25,7 @@ fn artifact(file: &File) -> crate::record::Artifact {
 
 /// One [`crate::record::PackageRecord`] per version, holding every file, wheels first, each
 /// with its own digest and install-scripts answer. Yanked files are kept.
-/// See docs/engineering_decisions/pypi-simple-index.md.
+/// See docs/engineering_decisions/0046-pypi-simple-index.md.
 pub fn normalize(project: &Project) -> Result<PackageMetadata, PypiError> {
     use crate::identity::{Ecosystem, PackageKey};
     use crate::record::{Artifact, DocumentDetail, PackageRecord, Provenance};

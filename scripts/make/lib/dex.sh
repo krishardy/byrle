@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Dex, the OIDC provider `make smoke-console` logs in through. See
-# docs/engineering_decisions/console-login.md.
+# docs/engineering_decisions/0106-console-login.md.
 #
 # Sourced, not executed. `start_dex CONFIG PORT` starts it, `stop_dex` stops it. It runs in a
 # docker container when docker answers, and otherwise as a binary built from Dex's tag with

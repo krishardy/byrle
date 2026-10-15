@@ -838,7 +838,7 @@ fn public_base(headers: &HeaderMap, configured: Option<&str>) -> Option<String> 
 
 /// Find the record for an artifact, fetching its metadata document if the client never
 /// asked for one, as `npm ci` never does. The digest must be in hand before the artifact
-/// is forwarded. See docs/engineering_decisions/artifact-digest-verification.md.
+/// is forwarded. See docs/engineering_decisions/0017-artifact-digest-verification.md.
 async fn lookup_or_fetch(
     proxy: &Proxy,
     key: &PackageKey,
@@ -939,7 +939,7 @@ fn uninspected(
 }
 
 /// Whether this request is the resolver looking rather than the client installing, such
-/// as a PEP 658 `.metadata` request. See docs/engineering_decisions/adapter-interface.md.
+/// as a PEP 658 `.metadata` request. See docs/engineering_decisions/0047-adapter-interface.md.
 fn resolver_probe(ecosystem: Ecosystem, target: &RequestTarget) -> bool {
     crate::ecosystem::of(ecosystem).other_is_probe && matches!(target, RequestTarget::Other)
 }
@@ -1006,7 +1006,7 @@ async fn revalidated(
 }
 
 /// Wait for a slot to decode, read and rewrite a metadata document in, after its body is
-/// read. See docs/engineering_decisions/default-ceilings.md.
+/// read. See docs/engineering_decisions/0085-default-ceilings.md.
 async fn metadata_slot(proxy: &Proxy, path: &str) -> tokio::sync::OwnedSemaphorePermit {
     let queued = Instant::now();
     let slot = proxy
@@ -1473,7 +1473,7 @@ impl<'a> Deciding<'a> {
     /// What each detector found about `record`, by detector name: the metadata heuristics,
     /// the source comparison when `sourced`, VirusTotal when `scanned`, then `detected`,
     /// what each other detector found about the version.
-    /// See docs/engineering_decisions/detectors.md.
+    /// See docs/engineering_decisions/0092-detectors.md.
     /// `full` is the full document, when one was fetched for this request.
     fn detections(
         &self,
@@ -1533,7 +1533,7 @@ impl<'a> Deciding<'a> {
     }
 
     /// What each detector found about `record`'s version when it ran before, by detector name.
-    /// See docs/engineering_decisions/detectors.md.
+    /// See docs/engineering_decisions/0092-detectors.md.
     async fn detected(
         &self,
         record: &PackageRecord,
@@ -1571,7 +1571,7 @@ impl<'a> Deciding<'a> {
     }
 
     /// What VirusTotal said about the artifact, when it was asked before.
-    /// See docs/engineering_decisions/virustotal.md.
+    /// See docs/engineering_decisions/0104-virustotal.md.
     async fn scanned(&self, fetch: &ArtifactFetch) -> Option<Scanned> {
         let analyser = self.proxy.config.analyser.as_deref()?;
         analyser.scanned(fetch.digest.as_ref()?).await
@@ -1610,7 +1610,7 @@ impl<'a> Deciding<'a> {
     }
 
     /// What comparing the artifact with its source found, when it was compared before.
-    /// See docs/engineering_decisions/source-diff.md.
+    /// See docs/engineering_decisions/0091-source-diff.md.
     async fn sourced(&self, fetch: &ArtifactFetch) -> Option<Sourced> {
         let analyser = self.proxy.config.analyser.as_deref()?;
         analyser.sourced(fetch.digest.as_ref()?).await
@@ -2107,7 +2107,7 @@ impl Traffic {
 ///
 /// Once per artifact request rather than per version of a packument, which would repeat it
 /// for every version a document lists. A warning, not a refusal: see
-/// `docs/engineering_decisions/bypass-self-detection.md`.
+/// `docs/engineering_decisions/0069-bypass-self-detection.md`.
 fn report_direct_dependencies(proxy: &Proxy, record: &PackageRecord, path: &str, client: &str) {
     if record.direct_dependencies.is_empty() {
         return;
@@ -2169,7 +2169,7 @@ enum AnalysisState {
 /// What the artifact's own bytes say about install scripts, where a reader reads it. A
 /// stored analysis adds to the metadata's claim and never removes it; an unreadable
 /// archive counts as running scripts; an artifact not analysed yet keeps the claim.
-/// See docs/engineering_decisions/artifact-spool.md.
+/// See docs/engineering_decisions/0064-artifact-spool.md.
 async fn analysed(
     proxy: &Proxy,
     record: &PackageRecord,
@@ -2274,7 +2274,7 @@ fn attestation_url(
 
 /// What the version's attestations say against the version published before it, and the
 /// attestations still to verify before that can be said. See
-/// `docs/engineering_decisions/provenance-check.md`.
+/// `docs/engineering_decisions/0066-provenance-check.md`.
 async fn attested(
     proxy: &Proxy,
     analyser: Option<&Analyser>,
@@ -3144,7 +3144,7 @@ fn defer_response(
 }
 
 /// The full packument for a package whose client asked for less, logged either way.
-/// Fetched now and never kept: see docs/engineering_decisions/no-metadata-cache.md.
+/// Fetched now and never kept: see docs/engineering_decisions/0056-no-metadata-cache.md.
 /// `None` for an ecosystem whose records carry publish times, or when it cannot be read.
 async fn full_document(proxy: &Proxy, key: &PackageKey) -> Option<FullDocument> {
     let started = Instant::now();
@@ -3201,7 +3201,7 @@ fn report_undated(proxy: &Proxy, read: &dyn ecosystem::Document, path: &str) {
 
 /// The publish time from the file host's `Last-Modified`, for a record whose index gave
 /// none. One `HEAD`, on the pinned path only.
-/// See docs/engineering_decisions/pep-503-html-index.md.
+/// See docs/engineering_decisions/0060-pep-503-html-index.md.
 /// Returns `None` when the host gives no date.
 async fn dated_by_host(
     proxy: &Proxy,
@@ -3263,7 +3263,7 @@ fn uncached_json(status: StatusCode, body: impl Serialize) -> Response {
         .into_response()
 }
 
-/// `Retry-After` on a 503. See docs/engineering_decisions/deferral-status-codes.md.
+/// `Retry-After` on a 503. See docs/engineering_decisions/0021-deferral-status-codes.md.
 const RETRY_AFTER_SECONDS: &str = "1";
 
 /// The client name the watcher's requests are logged under.
@@ -3283,7 +3283,7 @@ pub struct Watched {
 impl Proxy {
     /// One pass of the watcher: read each held package's metadata, and start analysing the
     /// preferred file of every version the proxy did not hold, before a client asks for it.
-    /// See docs/engineering_decisions/watcher.md. Returns what it did.
+    /// See docs/engineering_decisions/0089-watcher.md. Returns what it did.
     pub async fn watch(&self) -> Watched {
         let mut watched = Watched::default();
         if self.config.analyser.is_none() {
@@ -3464,7 +3464,7 @@ impl NotReady {
     }
 
     /// 503 with a wait and a reason, since a 429 is terminal for yarn 1 and bun.
-    /// See docs/engineering_decisions/deferral-status-codes.md.
+    /// See docs/engineering_decisions/0021-deferral-status-codes.md.
     fn response(self) -> Response {
         let body = match &self {
             Self::Unanswered => {
@@ -3532,7 +3532,7 @@ async fn snapshot_named(
 }
 
 /// What the intel store knows about a package, when a policy and a store are both
-/// configured. `Ok(None)` without either. See docs/engineering_decisions/intel-in-decisions.md.
+/// configured. `Ok(None)` without either. See docs/engineering_decisions/0026-intel-in-decisions.md.
 /// Returns [`NotReady`] when the store errors, has no snapshot, does not cover the
 /// ecosystem, or was replaced mid-read, so the request is answered 503, never served.
 async fn intel_for(
@@ -8294,7 +8294,7 @@ mod tests {
 
     const WIDGET_2: &str = "/npm/widget/-/widget-2.0.0.tgz";
 
-    /// Each case `docs/engineering_decisions/provenance-check.md` refuses, on a pinned
+    /// Each case `docs/engineering_decisions/0066-provenance-check.md` refuses, on a pinned
     /// fetch, with the case named in the body.
     #[tokio::test]
     async fn the_provenance_check_refuses_on_a_pinned_fetch() {

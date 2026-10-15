@@ -1,7 +1,7 @@
 //! The policy document: its schema, and loading it. Every struct refuses unknown fields,
 //! and no field is `#[serde(untagged)]`.
 //!
-//! See docs/engineering_decisions/policy-schema-v1-frozen.md.
+//! See docs/engineering_decisions/0030-policy-schema-v1-frozen.md.
 
 pub mod check;
 pub mod decide;
@@ -866,7 +866,7 @@ mod tests {
     }
 
     /// The key set at each level is pinned by serde's list of the keys it accepts.
-    /// See docs/engineering_decisions/policy-schema-v1-frozen.md.
+    /// See docs/engineering_decisions/0030-policy-schema-v1-frozen.md.
     #[test]
     fn the_version_1_key_set_is_closed() {
         let cases: [(&str, &str, &[&str]); 7] = [

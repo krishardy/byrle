@@ -1,7 +1,7 @@
 //! The Postgres implementation of [`Intel`], with queries checked against the schema at
 //! compile time by `sqlx::query_as!`.
 //!
-//! See `docs/engineering_decisions/storage-sqlx-postgres.md`.
+//! See `docs/engineering_decisions/0025-storage-sqlx-postgres.md`.
 
 use super::history::{Ingestion, NotLoaded};
 use super::load::{self, Encoded, Fetch, Kind};
@@ -163,7 +163,7 @@ impl PgIntel {
     }
 
     /// Replace everything each source supplied with its rows, in one transaction, and record
-    /// the snapshot the store then holds. See docs/engineering_decisions/snapshot-identity.md.
+    /// the snapshot the store then holds. See docs/engineering_decisions/0036-snapshot-identity.md.
     pub async fn replace(
         &self,
         sources: &[Replacement<'_>],
@@ -255,7 +255,7 @@ struct Written {
 }
 
 /// Delete the rows `replacement`'s source supplied before, copy its new rows, and store its
-/// digest and streams in `intel_source`. Keeps each advisory's `cached`: see advisory-cached.md.
+/// digest and streams in `intel_source`. Keeps each advisory's `cached`: see 0102-advisory-cached.md.
 async fn write_source(
     conn: &mut PgConnection,
     replacement: &Replacement<'_>,

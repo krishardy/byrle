@@ -1,6 +1,6 @@
 //! What the proxy knows about a package, as the policy engine wants it: the join of a
 //! [`crate::record::PackageRecord`], its publish times and the intel store's answer into
-//! [`Facts`]. See docs/engineering_decisions/intel-in-decisions.md.
+//! [`Facts`]. See docs/engineering_decisions/0026-intel-in-decisions.md.
 
 use super::decide::{Advisory, Facts, Intel};
 use crate::intel::store::PackageIntel;

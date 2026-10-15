@@ -55,7 +55,7 @@ fi
 
 note "rust (comments)"
 # Only the three kinds of source comment TODO item 23 keeps, at their lengths. See
-# docs/engineering_decisions/source-comments.md.
+# docs/engineering_decisions/0078-source-comments.md.
 if ! "$repo_root/scripts/make/comments.py"; then
     failed=1
 fi
@@ -83,6 +83,13 @@ fi
 # Only that the file parses. This is not a python linter and does not pretend to be one:
 # it is the check that would have caught a helper whose quoting was mangled on the way
 # into the repository, which is the failure these scripts actually have.
+note "docs (engineering decisions)"
+# Numbered files, each listed once in index.md with what supersedes it, and every link to
+# one naming a file that exists.
+if ! "$repo_root/scripts/make/decisions.py"; then
+    failed=1
+fi
+
 note "python (syntax)"
 mapfile -t pyfiles < <(git -C "$repo_root" ls-files '*.py')
 if [[ ${#pyfiles[@]} -eq 0 ]]; then

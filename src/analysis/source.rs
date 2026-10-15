@@ -1,7 +1,7 @@
 //! The published npm tarball against the source its metadata names: the commit in `gitHead`,
 //! else a release tag, as GitHub's archive of it. Report only, measured by
 //! `examples/source_diff.rs`.
-//! See docs/engineering_decisions/source-diff.md.
+//! See docs/engineering_decisions/0091-source-diff.md.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;

@@ -9,8 +9,8 @@ what to run, in what order, and what to send back. Written 2026-10-14.
 
 | Piece | From | Sizing, measured 2026-10-14 |
 |---|---|---|
-| `byrle daemon` | the v0.1.0 binary or image, below | 1 GiB of memory: 597 MB peak with 24 of the largest npm documents at once, 776 MB with 8 of vite's 38.9 MB document, 395 MB for a 207-package `npm ci` ([default-ceilings](engineering_decisions/default-ceilings.md)). Spool disk: up to 8 GiB, 8 analyses at the 1 GiB artifact ceiling |
-| Postgres 18 | your own | intel is about 98 MB ([snapshot-identity](engineering_decisions/snapshot-identity.md)); accounts, usage and analyses grow with use, decisions kept 365 days |
+| `byrle daemon` | the v0.1.0 binary or image, below | 1 GiB of memory: 597 MB peak with 24 of the largest npm documents at once, 776 MB with 8 of vite's 38.9 MB document, 395 MB for a 207-package `npm ci` ([default-ceilings](engineering_decisions/0085-default-ceilings.md)). Spool disk: up to 8 GiB, 8 analyses at the 1 GiB artifact ceiling |
+| Postgres 18 | your own | intel is about 98 MB ([snapshot-identity](engineering_decisions/0036-snapshot-identity.md)); accounts, usage and analyses grow with use, decisions kept 365 days |
 | `byrle refresh` | the same binary or image, on a schedule | about a minute; once a day at least |
 | TLS in front | nginx, as [fronting-tls](fronting-tls.md) | |
 
@@ -29,7 +29,7 @@ docker run --rm ghcr.io/krishardy/byrle:0.1.0 --version
 ```
 
 Each attestation names `.github/workflows/release.yml` and the commit it built
-([release-provenance](engineering_decisions/release-provenance.md)).
+([release-provenance](engineering_decisions/0108-release-provenance.md)).
 
 ## 2. Configure
 
@@ -76,7 +76,7 @@ typescript, vite, vitest; pandas, scikit-learn, matplotlib):
 | Check | Refuses | Seen |
 |---|---|---|
 | `cooldown_days: 7` | a version published in the last 7 days. A resolver picks an older one; a lockfile pinned to the new one fails | `vitest@5.0.4`, published 2026-10-12 |
-| `provenance` | a version built by a repository or workflow no version from 7 or more days before it used: a project moving its release, until 7 days after | `scikit-learn@1.9.1` (to `scikit-learn-release`), `@rolldown/pluginutils@1.0.1` (to `rolldown/plugins`); 382 of 30,261 npm versions across whole histories ([provenance-check](engineering_decisions/provenance-check.md)) |
+| `provenance` | a version built by a repository or workflow no version from 7 or more days before it used: a project moving its release, until 7 days after | `scikit-learn@1.9.1` (to `scikit-learn-release`), `@rolldown/pluginutils@1.0.1` (to `rolldown/plugins`); 382 of 30,261 npm versions across whole histories ([provenance-check](engineering_decisions/0066-provenance-check.md)) |
 | `install_scripts` | a PyPI sdist, which runs code to build. An install that has a wheel for its platform does not fetch the sdist | 18 sdists of the PyPI set, none fetched by `uv pip install` |
 
 bun and yarn 1 give up on the 503 a not-yet-analysed artifact answers; `byrle warm`
@@ -105,5 +105,5 @@ Each of these, with the audit line or the command and its output:
 - an install that failed or hung, with the client and its version
 - install times through the proxy against direct; `make bench` measured npm 3.7 s
   against 3.6 s and PyPI 1.6 s against 2.5 s, analysed, on 2026-10-14
-  ([latency-benchmarks](engineering_decisions/latency-benchmarks.md))
+  ([latency-benchmarks](engineering_decisions/0075-latency-benchmarks.md))
 - the proxy's peak memory, and anything you had to change to keep it up

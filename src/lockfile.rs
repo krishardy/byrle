@@ -1,6 +1,6 @@
 //! Package versions from a lockfile, for `byrle policy diff`. The file name chooses the
 //! reader from [`crate::ecosystem::TABLE`], and a name no row lists is refused. See
-//! docs/engineering_decisions/policy-diff-lockfiles.md.
+//! docs/engineering_decisions/0037-policy-diff-lockfiles.md.
 
 use std::collections::BTreeSet;
 use std::fmt;

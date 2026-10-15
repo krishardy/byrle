@@ -1,7 +1,7 @@
 //! The repository traits against a real Postgres: the advisory mirror and the analyses.
 //!
 //! `make test-integration` sets `byrle::env::TEST_DATABASE_URL`; without it each test is
-//! skipped. See `docs/engineering_decisions/storage-sqlx-postgres.md`.
+//! skipped. See `docs/engineering_decisions/0025-storage-sqlx-postgres.md`.
 
 #![cfg(not(coverage))]
 
@@ -1088,7 +1088,7 @@ async fn a_range_row_with_both_ends_or_neither_is_refused_by_the_schema() {
 }
 
 /// Every table is keyed by a `BIGINT` identity, and a string column is `TEXT` only where
-/// a value has no bound. See docs/engineering_decisions/intel-schema-keys-and-types.md.
+/// a value has no bound. See docs/engineering_decisions/0031-intel-schema-keys-and-types.md.
 #[tokio::test]
 async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_text() {
     let intel = skip_without_database!("t_schema_types");

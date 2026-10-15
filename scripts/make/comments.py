@@ -8,7 +8,7 @@
   1 line. An environment variable is a constant, so it gets 1 line too.
 - No `//` comments, except `// nosemgrep:` directives, which semgrep reads.
 
-Blank `///` lines count. See docs/engineering_decisions/source-comments.md.
+Blank `///` lines count. See docs/engineering_decisions/0078-source-comments.md.
 """
 import pathlib
 import re

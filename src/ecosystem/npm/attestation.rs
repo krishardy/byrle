@@ -1,6 +1,6 @@
 //! npm's attestations document, as served at `dist.attestations.url`. Of its two entries,
 //! only the build's SLSA provenance names who built the artifact, so it is the one verified.
-//! See docs/engineering_decisions/provenance-check.md.
+//! See docs/engineering_decisions/0066-provenance-check.md.
 
 use sigstore_verify::types::Bundle;
 

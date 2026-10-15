@@ -1,0 +1,194 @@
+# Every advisory stream is declared in one table
+
+- **Number:** 0043
+- **Status:** Implemented. `src/intel/stream.rs`, `intel::capabilities_of`, `byrle refresh`.
+- **Related:** [nvd-role-and-stream-capabilities](0008-nvd-role-and-stream-capabilities.md),
+  [kev-stream](0040-kev-stream.md),
+  [datadog-stream](0041-datadog-stream.md),
+  [osv-malware-load](0027-osv-malware-load.md),
+  [ingestion-history](0042-ingestion-history.md)
+
+## Decision
+
+One `Stream` per advisory stream, in `intel::stream::ALL`. A descriptor holds what a refresh
+needs to know before it fetches, and how to read the bundle once it has one:
+
+| Field | Holds |
+|---|---|
+| `stream` | the name a snapshot records the bundle under, and the source its rows are stored under |
+| `url` | where the bundle is fetched from |
+| `ceiling` | bytes past which the fetch is refused |
+| `grants` | what the stream may say, and for which ecosystems: `Listed` (the rows of `ecosystem::TABLE` whose `streams` list it) or `Served` (every row) |
+| `parse` | the bundle's bytes as `Parsed { payload, tally }` |
+
+`byrle refresh` loops over `ALL` in order. `intel::capabilities_of` reads `grants`. Neither
+holds a branch naming a stream.
+
+A stream that does not fetch or parse keeps its last load, the others load, and the refresh
+exits 1. When no stream loads, nothing is written.
+
+Until 2026-09-19 `osv/npm` was `Required`: a refresh that could not load it loaded nothing,
+and the streams after it were not fetched. Each stream was stored under its provider's name,
+`osv`, `datadog` or `github`, and a load replaces a source whole, so `osv/pypi` under `osv`
+would have deleted `osv/npm`'s rows on every load. Each stream is now its own source and
+every stream loads or fails alone: `osv/pypi` failing does not hold back `osv/npm`.
+Migration `0008` deletes the rows stored under the old names; the next refresh reloads them.
+An ecosystem whose stream has never loaded is uncovered and fails closed:
+[uncovered-ecosystem-fails-closed](0048-uncovered-ecosystem-fails-closed.md).
+
+`Payload` is the two shapes a load encodes:
+
+| Payload | Encoded by | Child tables |
+|---|---|---|
+| `Advisories(Vec<Rows>)` | `load::encode` | `advisory_alias`, `advisory_affected`, `advisory_range` |
+| `Exploited(BTreeSet<String>)` | `load::encode_exploited` | none |
+
+`Payload::rows` is empty for `Exploited`, which is what `PgIntel::replace` already expected of
+a catalogue.
+
+## Fetching stays in `byrle refresh`
+
+Everything a descriptor holds is decidable from the bytes, so `src/intel/stream.rs` is at
+100% lines with no network.
+
+The requests are `src/intel/fetch.rs`, tested against a local server rather than the real
+one: `util::test_support::scripted` answers with a status, a body, a body whose `Content-Length`
+lies, a chunked body with no length at all, or a closed connection, which is every case the
+ceilings and the retries branch on. What needs the real network and Postgres stays in the
+binary: which streams to fetch, the transaction and the printing.
+
+What a fetch does about a connection that stops is `src/intel/refresh.rs`:
+
+| | Value | Why |
+|---|---|---|
+| `CONNECT_TIMEOUT` | 10 s | past this the host is not answering |
+| `READ_TIMEOUT` | 30 s | per read, reset by each one. OSV's 215 MB npm bundle took 9 s on 2026-09-17 and would take 36 minutes at 100 kB/s, neither with a 30 s gap. A total timeout would have to exceed that 36 minutes to allow it, and would then let a stall run as long |
+| `ATTEMPTS` | 3 | a stream a refresh gives up on keeps its last load until the next refresh |
+| `RETRY_WAIT` | 2 s | between attempts |
+
+`refresh::retried` decides whether a failure gets another attempt: a status the host chose
+and a bundle over its ceiling do not, a refused connection, a timed-out read and a body
+that stopped mid-stream do. Each attempt starts the request over, because the bundle is one
+GET with no range request.
+
+Before this, a refresh with a stalled connection ran until the host closed it. Measured
+2026-09-17: 12 minutes with the connection established, nothing queued and no bytes read,
+while `curl` fetched the same bundle in 9 s.
+
+`byrle refresh` also keeps the reporting that no single stream can produce.
+`datadog::disagreements` compares OSV's rows to Datadog's, so it belongs to neither
+descriptor. `Parsed::tally` is `Some` only for OSV, which counts records as it reads them;
+`None` for a catalogue and a manifest, which count nothing. A stream that counts nothing
+prints nothing rather than a row of zeros.
+
+## Mirroring is not here
+
+The item this closed read "fetch / mirror / refresh / normalize". Serving a stream from a
+local copy is tracked separately, under "Local mirrors for all streams" in `TODO.md`, and no
+descriptor field names a mirror.
+
+## Consequences
+
+Adding a stream is a descriptor and a `parse` shim. `capabilities_of` picks up its grants with
+no edit, because it reads the same table the refresh loops over. Before this, a stream name
+appeared in a `match` arm in `intel::capabilities_of` and again in a hand-written branch in
+`run_refresh`, and the two could disagree.
+
+A stream this build does not declare is granted nothing: `by_stream` returns `None` and
+`capabilities_of` adds no grant. That is what a snapshot recording `osv/pypi` gets from an npm
+build, held by
+`each_stream_this_build_loads_is_granted_what_it_may_say_and_no_other_stream_is`.
+
+`source` and `stream` are separate fields because they differ for OSV (`osv` and `osv/npm`) and
+for Datadog (`datadog` and `datadog/npm`). They are the same string for KEV, `cisa/kev`, which
+snapshots and the ingestion history already record.
+
+## Tests
+
+| Test | Covers |
+|---|---|
+| `exactly_one_stream_is_required_and_it_is_the_first` | the invariant the refresh loop relies on |
+| `a_stream_this_build_does_not_declare_is_not_found` | `ALL` in order, an undeclared stream |
+| `kev_stores_and_records_under_the_same_name` | `source` and `stream` both `cisa/kev` |
+| `each_stream_declares_the_url_and_ceiling_its_module_gives` | no URL or ceiling restated in the table |
+| `the_osv_bundle_parses_to_advisories_and_a_tally` | the OSV shim, 7 records, 1 withdrawn, 6 rows |
+| `advisories_encode_as_advisories_and_carry_the_rows_the_child_tables_are_built_from` | the Datadog shim, `Kind::Advisories` |
+| `exploited_ids_encode_as_exploited_and_have_no_rows` | the KEV shim, `Kind::Exploited`, no rows |
+| `a_bundle_that_does_not_read_gives_the_error_as_a_string` | each shim's error as `NotLoaded::error` |
+
+## Evidence
+
+Three refreshes against one Postgres 17, 2026-09-16, OSV's npm bundle 215,055,714 bytes.
+
+All three streams load:
+
+```text
+byrle refresh: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip
+byrle refresh: fetching https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+byrle refresh: fetching https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json
+advisories written                 276639
+aliases written                     37988
+affected rows written              284811
+ranges written                      10359
+exploited CVE ids written            1710
+datadog every version, osv some      3080
+snapshot sha256:1f05d26920e43ef2124e0ad4d5cf990a8d5b603747cd25bb1e36bfbdaebd99a9
+took 62.6s
+refresh exit 0
+```
+
+The three fetch lines are in `ALL`'s order. `advisory` held 228,323 `osv` rows and 48,316
+`datadog` rows, and `exploited_cve` held 1,710.
+
+`HTTPS_PROXY` at a closed port, so the OSV fetch fails:
+
+```text
+byrle refresh: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip
+byrle refresh: nothing loaded: fetching https://osv-vulnerabilities.storage.googleapis.com/npm/all.zip: error sending request for url (...)
+refresh exit 1
+```
+
+One fetch line. The KEV catalogue and the Datadog manifest were not fetched, which is what
+`Requirement::Required` was for until 2026-09-19: the refresh stopped rather than downloading
+bundles it would not load. Every stream now loads or fails alone. `advisory` still held 228,323 `osv` and 48,316 `datadog` rows, and `exploited_cve` 1,710.
+
+The same proxy with OSV's and CISA's hosts in `NO_PROXY`, so only the manifest fetch fails:
+
+```text
+byrle refresh: datadog/npm is not loaded, and its last load stays: fetching https://raw.githubusercontent.com/DataDog/malicious-software-packages-dataset/main/samples/npm/manifest.json: error sending request for url (...)
+advisories written                 228323
+aliases written                     37988
+affected rows written              233313
+ranges written                      10359
+exploited CVE ids written            1710
+snapshot sha256:1f05d26920e43ef2124e0ad4d5cf990a8d5b603747cd25bb1e36bfbdaebd99a9
+took 60.1s
+refresh exit 1
+```
+
+OSV and KEV loaded, 228,323 advisories rather than 276,639. `advisory` still held 48,316
+`datadog` rows, so Datadog's last load stayed, and the snapshot id matched the first refresh:
+the manifest that was not fetched was the one already stored. No disagreement line was
+printed, because `datadog::disagreements` needs both streams' rows.
+
+| Refresh | OSV | KEV | Datadog | Fetches | Exit |
+|---|---|---|---|---|---|
+| none fails | loaded | loaded | loaded | 3 | 0 |
+| OSV fetch fails | last load stays | last load stays | last load stays | 1 | 1 |
+| Datadog fetch fails | loaded | loaded | last load stays | 3 | 1 |
+
+The first two rows restate [datadog-stream](0041-datadog-stream.md)'s refresh table, measured
+again after the loop replaced the hand-written branches.
+
+## Mutants
+
+`make mutants` over the change: 9 mutants, 4 caught, 3 unviable, 2 missed. Both missed are in
+`src/main.rs`, which has no unit tests; `scripts/make/coverage.sh` says why.
+
+| Missed | What it changes | What showed it |
+|---|---|---|
+| `main.rs:710` `run_refresh` returns `Default::default()` | every refresh exits 0 | the two refreshes above exit 1 |
+| `main.rs:877` `l.source == source` becomes `!=` | `rows_of` returns another stream's rows | `datadog every version, osv some` printed 3080, and is 0 when the rows are swapped |
+
+The three unviable mutants are `Payload::encode`, `Payload::rows` and `by_stream` replaced with
+`Default::default()`, which does not compile: `Encoded`, `Rows` and `Stream` have no `Default`.

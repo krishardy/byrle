@@ -1,7 +1,7 @@
 //! Detectors that report findings about a package version, which become signals in its risk
 //! score and refuse nothing. Built in: the metadata heuristics, the source comparison,
 //! VirusTotal and `trustpub`. Others are commands run on the version by name, GuardDog first.
-//! See docs/engineering_decisions/detectors.md.
+//! See docs/engineering_decisions/0092-detectors.md.
 
 pub mod guarddog;
 pub mod metadata;
@@ -166,7 +166,7 @@ pub fn built_in<S: ?Sized>(detector: &dyn Detector<S>, subject: &S) -> (String, 
     (detector.name().to_owned(), detection)
 }
 
-/// A detector that is a command printing GuardDog's JSON, run as detectors.md says.
+/// A detector that is a command printing GuardDog's JSON, run as 0092-detectors.md says.
 #[derive(Debug, Clone)]
 pub struct Command {
     name: String,

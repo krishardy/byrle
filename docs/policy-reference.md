@@ -1,7 +1,7 @@
 # Policy reference
 
 Every key a policy file takes, what each does, and which way it loosens. The reasoning is in
-[policy-tier-resolution](engineering_decisions/policy-tier-resolution.md).
+[policy-tier-resolution](engineering_decisions/0023-policy-tier-resolution.md).
 
 The file is YAML, named by `BYRLE_POLICY`. The proxy loads it at startup and again on
 `SIGHUP` ([break-glass](break-glass.md)). `byrle policy check <file>` loads it as the proxy
@@ -73,7 +73,7 @@ One value each for the whole deployment.
 | `kev` | `block` or `allow` | `block` | a version with an advisory in CISA's known-exploited catalogue | `allow` |
 | `yanked` | `block` or `allow` | `block` | a PyPI file its publisher yanked; npm has no yank | `allow` |
 | `deprecated` | `block` or `allow` | `allow` | an npm version its publisher deprecated; PyPI has no marker | `allow` |
-| `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a repository and workflow no version from before the window used ([provenance-check](engineering_decisions/provenance-check.md)) | `allow` |
+| `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a repository and workflow no version from before the window used ([provenance-check](engineering_decisions/0066-provenance-check.md)) | `allow` |
 | `provenance_window_days` | a whole number of days | 7 | | a shorter window establishes a new repository or workflow sooner |
 
 - **`max_cvss`:** a score at or below it is allowed. A value above 10.0 loads, and allows
@@ -189,16 +189,16 @@ are named without the detector. An unsound, unmaintained or notice advisory refu
 nothing: it is a signal only. A vulnerability or malware advisory is also refused by
 `max_cvss` or `known_malware`. Another detector's rule is weighed as `detector.rule`, such
 as `guarddog.threat-process-hooks: 3`, 1 unless set. A rule the detector does not have is refused, as an unknown key is. The rules
-are in [detectors](engineering_decisions/detectors.md).
+are in [detectors](engineering_decisions/0092-detectors.md).
 
 Each weight is a whole number, 0 or more. The signals are in
-[metadata-heuristics](engineering_decisions/metadata-heuristics.md),
-[source-diff](engineering_decisions/source-diff.md) and
-[virustotal](engineering_decisions/virustotal.md).
+[metadata-heuristics](engineering_decisions/0090-metadata-heuristics.md),
+[source-diff](engineering_decisions/0091-source-diff.md) and
+[virustotal](engineering_decisions/0104-virustotal.md).
 
 ## Actions
 
 A decision is `allow`, `quarantine` or `block`, in that order of strictness.
 `quarantine` comes only from `cooldown_days` and lapses as the version ages. A version
 refused either way is removed from the metadata document, and a pinned fetch of it is
-refused ([quarantine-filter-metadata](engineering_decisions/quarantine-filter-metadata.md)).
+refused ([quarantine-filter-metadata](engineering_decisions/0013-quarantine-filter-metadata.md)).

@@ -10,7 +10,7 @@ use serde_json::value::RawValue;
 
 /// Remove the versions the policy refuses and those whose artifact is on an origin the proxy
 /// does not front, and point the rest at the proxy when `public_base` is given.
-/// See docs/engineering_decisions/enforcement-tiers.md.
+/// See docs/engineering_decisions/0019-enforcement-tiers.md.
 /// `policy` says which origins are served, allowed or refused.
 /// `refuse_unservable` removes a refused origin's versions; false keeps them as published.
 pub fn filter_unservable_versions(

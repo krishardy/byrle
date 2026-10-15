@@ -1,7 +1,7 @@
 //! A simple index as PyPI serves it, and the cleaned form the normaliser reads. The
 //! intermediate [`Project`] exists because an index is file-keyed and
 //! [`crate::record::PackageMetadata`] is version-keyed.
-//! See docs/engineering_decisions/pypi-simple-index.md.
+//! See docs/engineering_decisions/0046-pypi-simple-index.md.
 
 use std::collections::BTreeMap;
 

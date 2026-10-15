@@ -1,6 +1,6 @@
 //! Artifacts this proxy has fetched and verified, keyed by content digest. Every artifact is
 //! hashed on every fetch, a hit included: this says only whether it has been past before.
-//! See docs/engineering_decisions/verified-artifact-cache.md.
+//! See docs/engineering_decisions/0022-verified-artifact-cache.md.
 
 use crate::integrity::Sri;
 use crate::util::lru::Lru;

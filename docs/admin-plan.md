@@ -59,7 +59,7 @@ From [request-flow](request-flow.md). R6 needs each one counted.
 | account store cannot answer | 503 `account-store` | yes, `account-store`, with no account |
 
 Recorded 2026-10-12, with the account on each line
-([audit-log](engineering_decisions/audit-log.md)). An older build cannot read a line with an
+([audit-log](engineering_decisions/0087-audit-log.md)). An older build cannot read a line with an
 `answered` value it does not know, and `audit verify` on it reports that line as not
 replayable.
 
@@ -86,7 +86,7 @@ Implemented 2026-10-11 in `src/account/gate.rs`. The proxy does not start with t
 requirement on and no `BYRLE_DATABASE_URL`. Which form is read first, and the 503 when the
 store cannot answer, are in [request-flow](request-flow.md#tokens).
 
-[account-identification](engineering_decisions/account-identification.md) measured which
+[account-identification](engineering_decisions/0054-account-identification.md) measured which
 form each client sends on metadata and artifact requests, and on 2026-10-11 npm's `_auth`
 (Basic, the form Artifactory documents for npm) through the proxy under a path: it sent
 the token on every metadata and artifact request.
@@ -145,7 +145,7 @@ default.
 byrle rotates each log itself, at UTC midnight: the day's file is renamed with its date.
 Files 3 days old and older are compressed with bzip2, and files older than
 `BYRLE_LOG_RETENTION_DAYS` (365) are deleted
-([log-rotation](engineering_decisions/log-rotation.md)). No `logrotate` configuration is
+([log-rotation](engineering_decisions/0099-log-rotation.md)). No `logrotate` configuration is
 needed, and a rotation never loses a line written during it. `policy diff`, `audit
 verify` and the console read the current file and the rotated ones.
 
@@ -163,7 +163,7 @@ scanned. The console requires it: with no database set, the console does not sta
 | `served_version` | account, purl and version served: first and last time. Answers R3 and R4 |
 | `failure_count` | hour, ecosystem and `answered` case: a count. Answers R6 |
 
-`artifact_decision` (Ad-hoc #32, [artifact-decisions](engineering_decisions/artifact-decisions.md))
+`artifact_decision` (Ad-hoc #32, [artifact-decisions](engineering_decisions/0105-artifact-decisions.md))
 holds a row per pinned artifact decision, with its account, purl and version, and is deleted
 after `BYRLE_DECISION_RETENTION_DAYS`. `served_version` is a table of its own, decided by the
 user 2026-10-13, and is not deleted, so R3 and R4 keep a version served before that period.
@@ -201,7 +201,7 @@ Built 2026-10-13 for when the console asks: `GET api/v1/alerts`, needing `alerts
 (`src/console/alerts.rs`). It reads `served_version` by row id, up to 10,000 rows a
 request, and looks each package up once with `Intel::package`, matching versions as
 `Intel::lookup` does. "First loaded" is the advisory's `cached`
-([advisory-cached](engineering_decisions/advisory-cached.md)), the time byrle first stored
+([advisory-cached](engineering_decisions/0102-advisory-cached.md)), the time byrle first stored
 it, which is per advisory where `intel_ingestion` is per refresh. An advisory whose
 `cached` the store does not give is reported as an alert, since a version served after it
 is still served with malware. The answer says how many rows it read in `scanned` and where
@@ -236,7 +236,7 @@ A change made and not appended exits 1 and says so.
 
 A command only appends. The proxy rotates the file and writes `login`, `login-failed` and
 `logout` to it, with the client's address as `source`
-([console-login](engineering_decisions/console-login.md)). A line a command appends after
+([console-login](engineering_decisions/0106-console-login.md)). A line a command appends after
 midnight and before the proxy's first write of the day is filed with the day before.
 
 ### 4.6 API
@@ -258,8 +258,8 @@ ecosystem, purl, account and `answered`.
 | `GET`, `POST`, `DELETE` under `accounts` | R1, R2. `GET accounts`, needing `accounts.read`, built 2026-10-13 |
 | `GET status` | R10 |
 | `GET health`, with no session or token | R10, for an external monitor |
-| `GET openapi.json`, with no session or token | this API's OpenAPI document ([console-openapi](engineering_decisions/console-openapi.md)) |
-| `POST login`, `POST logout`, `GET session` | R1. Built 2026-10-13 ([console-login](engineering_decisions/console-login.md)) |
+| `GET openapi.json`, with no session or token | this API's OpenAPI document ([console-openapi](engineering_decisions/0107-console-openapi.md)) |
+| `POST login`, `POST logout`, `GET session` | R1. Built 2026-10-13 ([console-login](engineering_decisions/0106-console-login.md)) |
 
 `GET config` returns `proxy::Health` and the policy as `explain --policy` loads it.
 `BYRLE_GITHUB_TOKEN`, `BYRLE_VIRUSTOTAL_API_KEY`, `BYRLE_TOKEN` and `BYRLE_RP_KEY` are
@@ -294,7 +294,7 @@ from a registry or a log is escaped: a name `<script>` is shown as text.
 ### 4.8 Where it listens
 
 Decided 2026-10-11 (Q2), revised the same day:
-[console-listener](engineering_decisions/console-listener.md). `BYRLE_CONSOLE_URL` turns
+[console-listener](engineering_decisions/0096-console-listener.md). `BYRLE_CONSOLE_URL` turns
 the console on, and its path is where the console answers. `BYRLE_PROXY_URL`'s path is
 where the proxy answers. The two may share a host and port, and are never at the same path.
 `BYRLE_CONSOLE_LISTEN` gives the console a listener of its own; unset, it shares the
@@ -377,8 +377,8 @@ with the web interface.
 |---|---|---|
 | Q1 | Does the proxy require a token? | Yes, by default; one per user; Artifactory's forms (§4.1) |
 | Q2 | Where does the console listen? | At `BYRLE_CONSOLE_URL`'s path, on the proxy's listener or `BYRLE_CONSOLE_LISTEN`; revised 2026-10-11 (§4.8) |
-| Q3 | Is the web interface Rust or TypeScript? | Rust, HTML from `maud`, for now ([console-web-interface](engineering_decisions/console-web-interface.md)) |
-| Q4 | Which crates for passwords and OIDC? | `argon2` 0.6.0; `jsonwebtoken` 11.1.0 on `aws_lc_rs`, with the OIDC flow written here ([console-login-crates](engineering_decisions/console-login-crates.md)) |
+| Q3 | Is the web interface Rust or TypeScript? | Rust, HTML from `maud`, for now ([console-web-interface](engineering_decisions/0098-console-web-interface.md)) |
+| Q4 | Which crates for passwords and OIDC? | `argon2` 0.6.0; `jsonwebtoken` 11.1.0 on `aws_lc_rs`, with the OIDC flow written here ([console-login-crates](engineering_decisions/0097-console-login-crates.md)) |
 | Q5 | How long are logs kept? | Files on disk, rotated daily, bzip2 from 3 days old, 365 days by default |
 
 ### Q3: Rust or TypeScript

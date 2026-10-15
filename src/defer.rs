@@ -1,7 +1,7 @@
 //! A deferral this proxy can be told to return, so clients can be measured against it.
 //!
 //! Debug builds only. `make retry-matrix` is the harness.
-//! See docs/engineering_decisions/deferral-status-codes.md.
+//! See docs/engineering_decisions/0021-deferral-status-codes.md.
 
 use crate::route::RequestTarget;
 use std::time::Duration;

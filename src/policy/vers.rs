@@ -1,6 +1,6 @@
 //! The versions a selector or a denial covers: one exact version, or a VERS range, held as a
 //! sorted union of disjoint intervals so containment is decided rather than estimated. See
-//! docs/engineering_decisions/policy-version-ranges.md.
+//! docs/engineering_decisions/0052-policy-version-ranges.md.
 
 use std::cmp::Ordering;
 use std::fmt;

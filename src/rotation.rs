@@ -1,6 +1,6 @@
 //! A log file renamed with its date at UTC midnight. Files 3 days old and older are
 //! compressed with bzip2, and files older than the retention period are deleted. See
-//! docs/engineering_decisions/log-rotation.md.
+//! docs/engineering_decisions/0099-log-rotation.md.
 
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};

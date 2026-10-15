@@ -1,5 +1,5 @@
 //! Running each configured detector on a version, beside the analysis and never in front of
-//! it: no request is deferred for it. See docs/engineering_decisions/detectors.md.
+//! it: no request is deferred for it. See docs/engineering_decisions/0092-detectors.md.
 
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};

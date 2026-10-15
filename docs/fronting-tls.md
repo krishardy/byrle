@@ -6,7 +6,7 @@ everything through. It ran on 2026-10-12 with nginx 1.28.3. The configuration he
 one it runs, with the name and certificate paths changed.
 
 Caddy is not a supported front. Decided 2026-10-12
-([tls-front-nginx](engineering_decisions/tls-front-nginx.md)).
+([tls-front-nginx](engineering_decisions/0100-tls-front-nginx.md)).
 
 ## The proxy
 
@@ -27,7 +27,7 @@ path after the port. The configuration below uses the root, `/`.
 The admin console, when `BYRLE_CONSOLE_URL` is set, answers under that URL's path. On the
 proxy's listener the two paths may not contain each other, so the proxy at `/` and a
 console beside it need `BYRLE_CONSOLE_LISTEN`
-([console-listener](engineering_decisions/console-listener.md)).
+([console-listener](engineering_decisions/0096-console-listener.md)).
 
 ## nginx
 
@@ -55,7 +55,7 @@ server {
 | Directive | Why |
 |---|---|
 | `proxy_buffering off` | streams an artifact through as the proxy verifies it, rather than nginx holding the whole response |
-| `proxy_read_timeout 300s` | the proxy reads, filters and rewrites a metadata document before its first byte, and a large one takes longer than nginx's default 60 s. `next`'s 4.4 MB packument took 21 s in [latency-benchmarks](engineering_decisions/latency-benchmarks.md) |
+| `proxy_read_timeout 300s` | the proxy reads, filters and rewrites a metadata document before its first byte, and a large one takes longer than nginx's default 60 s. `next`'s 4.4 MB packument took 21 s in [latency-benchmarks](engineering_decisions/0075-latency-benchmarks.md) |
 | `proxy_set_header Host $http_host` | passes the name the client used. The proxy writes `BYRLE_PROXY_URL` into documents when it is set, and the `Host` otherwise |
 | `proxy_http_version 1.1` | keeps upstream connections open between requests |
 | `proxy_set_header X-Forwarded-For $remote_addr` | the client's address, replacing any the client sent. byrle reads the last entry |

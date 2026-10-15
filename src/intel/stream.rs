@@ -1,7 +1,7 @@
 //! What a refresh knows about each advisory stream before it fetches anything.
 //!
 //! One [`Stream`] per stream, in [`all`]. `byrle refresh` does the fetching.
-//! See docs/engineering_decisions/stream-descriptor-table.md.
+//! See docs/engineering_decisions/0043-stream-descriptor-table.md.
 
 use std::collections::BTreeSet;
 

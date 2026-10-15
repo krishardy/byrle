@@ -1,7 +1,7 @@
 //! PEP 503's HTML simple index, read into the same [`Project`] PEP 691 JSON reads into.
 //!
 //! A scanner over `<a>` elements, not an HTML parser.
-//! See docs/engineering_decisions/pep-503-html-index.md.
+//! See docs/engineering_decisions/0060-pep-503-html-index.md.
 
 use super::error::PypiError;
 use super::paths::{filename_parts, normalise};

@@ -1,6 +1,6 @@
 //! What a policy refusal looks like on the wire.
 //!
-//! See docs/engineering_decisions/refusal-status.md.
+//! See docs/engineering_decisions/0083-refusal-status.md.
 
 use crate::identity::Ecosystem;
 use std::collections::BTreeMap;

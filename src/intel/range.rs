@@ -1,7 +1,7 @@
 //! OSV version ranges, ordered by each ecosystem's own rules: SemVer 2.0 for npm, PEP 440
 //! for PyPI. Events are evaluated into intervals once, at load.
 //!
-//! See docs/engineering_decisions/osv-ranges-and-scores.md.
+//! See docs/engineering_decisions/0029-osv-ranges-and-scores.md.
 
 use semver::{BuildMetadata, Version};
 use std::collections::BTreeMap;

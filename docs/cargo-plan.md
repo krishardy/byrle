@@ -103,14 +103,14 @@ a risk signal. Q2 and Q6 are taken as recommended.
 | Q2 | Where cargo is served | Under `/cargo/`: `sparse+https://byrle.example.com/cargo/` as the registry, the index at `/cargo/config.json` and `/cargo/se/rd/serde`. Index paths such as `/1/a` and `/se/` would otherwise meet npm's names at the root |
 | Q3 | How cargo sends a token | With `"auth-required": true` in the proxy's `config.json`, cargo sends the token in `Authorization` with no scheme. Accept that form, `Authorization: byrle_…`, beside `Bearer`, `Basic` and `X-Byrle-Token` |
 | Q4 | Build scripts and proc-macros | A check of their own, `build_scripts: allow`, read from the `.crate`'s `Cargo.toml`, reported as a signal. Not `install_scripts`, whose default `block` would refuse 21 of the top 100 crates |
-| Q5 | Provenance | Unenforced for cargo, and said so, until crates.io serves attestations. `trustpub_data` is unsigned, in the API only, one request per crate at 1 a second ([cargo-provenance](engineering_decisions/cargo-provenance.md)). Decided: read as a signal |
+| Q5 | Provenance | Unenforced for cargo, and said so, until crates.io serves attestations. `trustpub_data` is unsigned, in the API only, one request per crate at 1 a second ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)). Decided: read as a signal |
 | Q6 | Advisories | `osv/cargo`, from OSV's crates.io bundle |
 
 ## Steps
 
 1. The adapter interface (Q1): each branch point above becomes a question the adapter
    answers. npm and PyPI move onto it with no change in behaviour. Done 2026-10-14
-   ([adapter-interface](engineering_decisions/adapter-interface.md)).
+   ([adapter-interface](engineering_decisions/0047-adapter-interface.md)).
 2. The cargo adapter: `config.json` with `dl` pointed at the proxy and `auth-required`,
    index files read into records and filtered by removing refused versions' lines,
    downloads verified against `cksum`. Done 2026-10-14. `osv/cargo` came with it, because
@@ -118,7 +118,7 @@ a risk signal. Q2 and Q6 are taken as recommended.
    stream.
 3. The `.crate` reader: its `Cargo.toml` for a build script and `proc-macro`, which
    `install_scripts` refuses under the default `block` (Q4). Done 2026-10-14
-   ([install-scripts-from-the-artifact](engineering_decisions/install-scripts-from-the-artifact.md)).
+   ([install-scripts-from-the-artifact](engineering_decisions/0062-install-scripts-from-the-artifact.md)).
 4. `RUSTSEC-` records in `osv/cargo` (Q6): done 2026-10-14, all kinds, as the user asked.
    A vulnerability is refused as any other. `unmaintained`, `unsound` and `notice` refuse
    nothing, and each is a signal of its own weight, beside `advisory_vulnerability` and
@@ -133,7 +133,7 @@ a risk signal. Q2 and Q6 are taken as recommended.
    `hello-cli` 0.2.2. Done 2026-10-14.
 7. Docs: quickstart, policy-reference, threat-model, runbook. Done 2026-10-14; the
    runbook is for v0.1.0, which has no cargo, and is unchanged.
-8. Q5: measured 2026-10-15 ([cargo-provenance](engineering_decisions/cargo-provenance.md)).
+8. Q5: measured 2026-10-15 ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)).
    486 of 2,500 versions since 2025-07 in the top 500 crates carry `trustpub_data`. The
    dropped-provenance rule would refuse 21 versions in 9 of 70 crates, each published by
    an owner. Read as the `trustpub` detector's signals, done 2026-10-15.

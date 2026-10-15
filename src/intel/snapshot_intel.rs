@@ -1,7 +1,7 @@
 //! An intel store read from a kept snapshot, for `byrle policy diff --snapshot`.
 //!
 //! Keeps only the records of the packages given up front; any other is an error.
-//! See docs/engineering_decisions/snapshot-identity.md.
+//! See docs/engineering_decisions/0036-snapshot-identity.md.
 
 use super::ids;
 use super::load::Row;

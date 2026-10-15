@@ -1,7 +1,7 @@
 //! What a `packages` selector matches, and which of two selectors is more specific, by
 //! strict subset containment over a closed vocabulary.
 //!
-//! See docs/engineering_decisions/policy-tier-resolution.md.
+//! See docs/engineering_decisions/0023-policy-tier-resolution.md.
 
 use super::Selector;
 use super::vers::{VersError, Versions};

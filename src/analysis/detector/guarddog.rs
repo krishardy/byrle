@@ -1,6 +1,6 @@
 //! GuardDog, Datadog's open-source scanner: the version byrle runs, and every rule it
 //! reports, so a policy weighting a rule it does not have is refused at load.
-//! See docs/engineering_decisions/detectors.md.
+//! See docs/engineering_decisions/0092-detectors.md.
 
 /// The release whose rules are listed here.
 pub const VERSION: &str = "3.2.0";

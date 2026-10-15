@@ -1,6 +1,6 @@
 //! `byrle explain`: the whole decision vector, not just the verdict.
 //!
-//! See docs/engineering_decisions/explain-output.md.
+//! See docs/engineering_decisions/0084-explain-output.md.
 
 use std::ffi::OsString;
 

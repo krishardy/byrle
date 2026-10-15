@@ -1,6 +1,6 @@
 //! VirusTotal's stored answer about an artifact read as a detector built in. The lookup runs
 //! in the analyser, keyed by the artifact's digest. Report only: see
-//! docs/engineering_decisions/virustotal.md.
+//! docs/engineering_decisions/0104-virustotal.md.
 
 use super::{Detecting, Detection, Detector, Finding};
 use crate::analysis::virustotal::{Counts, Scanned, Verdict};

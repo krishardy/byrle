@@ -49,7 +49,7 @@ pub struct Score {
 
 impl Score {
     /// A score from `source`, refused rather than clamped so enrichment order cannot matter.
-    /// See docs/engineering_decisions/advisory-stream-licences.md.
+    /// See docs/engineering_decisions/0024-advisory-stream-licences.md.
     /// `cvss` must be 0.0 to 10.0, so NaN is refused. Returns `None` otherwise.
     pub fn new(source: &str, cvss: f64) -> Option<Self> {
         Self::in_range(cvss).then(|| Self {
@@ -81,7 +81,7 @@ impl Score {
 ///
 /// OSV stores a GitHub advisory under its `GHSA-` id with the CVE id as an alias, and an
 /// exception, a KEV entry or NVD gives the CVE. See
-/// docs/engineering_decisions/alias-matching.md.
+/// docs/engineering_decisions/0039-alias-matching.md.
 pub fn is_named(advisory_id: &str, aliases: &[String], wanted: &str) -> bool {
     ids(advisory_id, aliases).any(|id| id == wanted)
 }

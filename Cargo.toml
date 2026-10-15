@@ -13,7 +13,7 @@ axum = "0.8.9"
 base64 = "0.23.1"
 bytes = "1.12.1"
 # Parses the command line. Default features off: no colour and no typo suggestions, which
-# adds four crates rather than eleven. See docs/engineering_decisions/cli-parser-clap.md.
+# adds four crates rather than eleven. See docs/engineering_decisions/0032-cli-parser-clap.md.
 clap = { version = "4.6.7", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 # Turns the CVSS vectors OSV records carry into the numbers `max_cvss` compares. v3 and v4.
 cvss = { version = "3.0.0", default-features = false, features = ["std", "v3", "v4"] }
@@ -35,9 +35,9 @@ sha2 = "0.11.0"
 semver = "1.0.28"
 # Postgres only, and rustls rather than native-tls so there is one TLS stack in the tree.
 # `macros` is what checks SQL against the real schema at compile time; see
-# docs/engineering_decisions/storage-sqlx-postgres.md.
+# docs/engineering_decisions/0025-storage-sqlx-postgres.md.
 # Held at 0.8: sqlx 0.9 requires rustc 1.94 and kani 0.67 compiles with 1.93. See
-# docs/engineering_decisions/sqlx-0-8-and-rsa-advisory.md.
+# docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md.
 sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls-ring", "macros", "migrate"] }
 tokio = { version = "1.53.1", features = ["full"] }
 tracing = "0.1.44"
@@ -52,7 +52,7 @@ toml = { version = "1.1.6", default-features = false, features = ["parse", "serd
 # crate. Pinned exactly: 0.12.0 and 0.13.0 shipped on one day. Default features off: no TLS
 # stack and no TUF client, since nothing here fetches. `sigstore` 0.14.0 verified none of
 # three real attestations and compiles `rsa`; see
-# docs/engineering_decisions/sigstore-verifier.md.
+# docs/engineering_decisions/0065-sigstore-verifier.md.
 sigstore-verify = { version = "=0.14.0", default-features = false }
 argon2 = { version = "0.6.0", default-features = false, features = ["alloc", "password-hash"] }
 utoipa = { version = "6.0.0", features = ["preserve_order"] }
@@ -60,7 +60,7 @@ maud = "0.27.0"
 serde_urlencoded = "0.7.1"
 jsonwebtoken = { version = "11.1.0", default-features = false, features = ["aws_lc_rs"] }
 # The binary's allocator. A release is a static musl binary, and musl's own allocator is
-# slow under many threads; see docs/engineering_decisions/release-provenance.md.
+# slow under many threads; see docs/engineering_decisions/0108-release-provenance.md.
 mimalloc = "0.1.52"
 # killpg, to end a detector with the processes it started. Already in the tree through
 # tokio and others.
@@ -72,7 +72,7 @@ libc = "0.2.189"
 # subscriber, `log-always` takes that branch, and `test_support` installs the `log` logger,
 # with `ctor`, before any test runs; a test captures logs from it. Without all three no test
 # reaches the branch, and `make coverage` counts it against every log call. See
-# docs/engineering_decisions/coverage-counts-library-code-only.md.
+# docs/engineering_decisions/0077-coverage-counts-library-code-only.md.
 tracing = { version = "0.1.44", features = ["log-always"] }
 log = "0.4.34"
 ctor = "1.0.13"

@@ -1,6 +1,6 @@
 //! The command line: which command runs, and its arguments.
 //!
-//! See `docs/engineering_decisions/cli-parser-clap.md`.
+//! See `docs/engineering_decisions/0032-cli-parser-clap.md`.
 
 use clap::{Args, Parser, Subcommand};
 use std::path::PathBuf;
