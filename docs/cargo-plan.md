@@ -102,7 +102,7 @@ source of attestation data. Q2 and Q6 are taken as recommended.
 | Q2 | Where cargo is served | Under `/cargo/`: `sparse+https://byrle.example.com/cargo/` as the registry, the index at `/cargo/config.json` and `/cargo/se/rd/serde`. Index paths such as `/1/a` and `/se/` would otherwise meet npm's names at the root |
 | Q3 | How cargo sends a token | With `"auth-required": true` in the proxy's `config.json`, cargo sends the token in `Authorization` with no scheme. Accept that form, `Authorization: byrle_…`, beside `Bearer`, `Basic` and `X-Byrle-Token` |
 | Q4 | Build scripts and proc-macros | A check of their own, `build_scripts: allow`, read from the `.crate`'s `Cargo.toml`, reported as a signal. Not `install_scripts`, whose default `block` would refuse 21 of the top 100 crates |
-| Q5 | Provenance | Unenforced for cargo, and said so, until crates.io serves attestations. Comparing `trustpub_data` would need an API request per version |
+| Q5 | Provenance | Unenforced for cargo, and said so, until crates.io serves attestations. `trustpub_data` is unsigned, in the API only, one request per crate at 1 a second ([cargo-provenance](engineering_decisions/cargo-provenance.md)) |
 | Q6 | Advisories | `osv/cargo`, from OSV's crates.io bundle |
 
 ## Steps
@@ -132,8 +132,10 @@ source of attestation data. Q2 and Q6 are taken as recommended.
    `hello-cli` 0.2.2. Done 2026-10-14.
 7. Docs: quickstart, policy-reference, threat-model, runbook. Done 2026-10-14; the
    runbook is for v0.1.0, which has no cargo, and is unchanged.
-8. Q5, later: measure how many versions carry `trustpub_data`, and whether it can be read
-   reliably without a request per version, before deciding.
+8. Q5: measured 2026-10-15 ([cargo-provenance](engineering_decisions/cargo-provenance.md)).
+   486 of 2,500 versions since 2025-07 in the top 500 crates carry `trustpub_data`. The
+   dropped-provenance rule would refuse 21 versions in 9 of 70 crates, each published by
+   an owner. Decision pending.
 
 ## Exit
 
