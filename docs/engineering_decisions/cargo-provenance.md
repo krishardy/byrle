@@ -17,8 +17,8 @@
 | `trustpub_dropped` | it has no `trustpub_data`, and an earlier version has | `published by <login>; 0.3.0 was published from github RustCrypto/utils`, for cpufeatures 0.3.1 |
 | `trustpub_repository_changed` | its provider and repository differ from the latest earlier version with `trustpub_data` | `published from github rust-random/rand_core; 0.10.0-rc-2 was from github rust-random/core` |
 
-Earlier is by `created_at`. Each rule weighs 1, the default for a rule `signal_weights` does
-not set.
+Earlier is by `created_at`. Each rule weighs 1, decided by the user 2026-10-15: the default
+for a rule `signal_weights` does not set.
 
 | Part | What it is |
 |---|---|
