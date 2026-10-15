@@ -79,21 +79,48 @@ Q7 and Q8 as recommended; Q2, Q3 and Q6 otherwise.
 | Q2 | How a download is held while it is checked | 503, as npm, PyPI and cargo are, with `Retry-After` and `x-byrle-not-ready`. go 1.27.2 failed on the first 503 in 409 ms, so a module not analysed yet fails the go command until it is run again. Held open was recommended |
 | Q3 | Where the `h1:` comes from | sum.golang.org, verified in full by byrle: the note's signature with the Go team's key, and the record's inclusion proof against the signed tree head, from the log's tiles. A module sum.golang.org does not know is refused, as an artifact with no strong digest is. The lookup alone, with proofs left to the go command, was recommended |
 | Q4 | The checksum database, for the go command | Relayed: `/go/sumdb/sum.golang.org/*` answered from sum.golang.org, so a network that reaches only the proxy still builds. The note is signed, so a relay cannot change it |
-| Q5 | Publish times and cooldown | `.info` asked newest version first, until one is older than `cooldown_days`. `@v/list` and `@latest` lose what the policy refuses; `@latest` names the newest version left, or answers 404 |
+| Q5 | Publish times and cooldown | `.info` asked newest version first, in the go command's order of preference (below), until one is older than `cooldown_days`. `@v/list` and `@latest` lose what the policy refuses; `@latest` names the newest version left, or answers 404 |
 | Q6 | Advisories | `osv/go`, from OSV's `Go/all.zip`. `stdlib` records are not matched to modules. `toolchain` records are matched to `golang.org/toolchain` downloads by the Go version in the module version, `v0.0.1-go1.27.1.linux-amd64` being go 1.27.1. Skipping both was recommended |
 | Q7 | Toolchains | Served as any module, from proxy.golang.org with `storage.googleapis.com` as an artifact origin. Its zip's `h1:` is in sum.golang.org |
 | Q8 | Tokens | `Basic` over https. The setup line puts the token in `GOPROXY`'s userinfo; `.netrc` needs `machine host:port` when the port is not 443 |
 
+## Version order and publish times, measured 2026-10-15
+
+Every version's `.info` read, `+incompatible` versions left out:
+
+| Module | Versions | Published after a higher version |
+|---|---|---|
+| `golang.org/x/text` | 51 | 0 |
+| `github.com/stretchr/testify` | 31 | 1: v1.2.3 on 2026-05-15, after v1.11.1 |
+| `google.golang.org/grpc` | 247 | 126: backports such as v1.83.2 after v1.84.0, and releases after `-dev` pre-releases |
+| `k8s.io/client-go` | 656, and 15 `+incompatible` | 652: v1.5.2, from 2017, is the highest version, and every v0.x came after it |
+
+So Q5's newest first is the go command's own order of preference, the one `@latest`
+follows: the highest release, a pre-release only when there is no release, `+incompatible`
+last. `k8s.io/client-go@latest` is v1.5.2 by that order. A backport below a newer release
+is left in `@v/list` unchecked: go picks it only when a `go.mod` names it, and then the
+pinned fetch asks that version's own `.info`, never a date read from the list.
+
+## How the hooks are built
+
+| Part | How |
+|---|---|
+| The `h1:` of a zip | computed in the analysis job, over the spooled zip, and the sha256 of the same bytes kept with it. The retry is served with the existing streaming check against that sha256, so the proxy never holds a whole zip in memory |
+| The `h1:` of a `go.mod` | checked in the request: the body is small, and `.mod` and `.info` are metadata, never deferred. go reads both for versions whose zips it never fetches, and fails on the first 503 |
+| The claim | asked of sum.golang.org before the fetch is planned, once per `module@version` and kept: one lookup holds both `h1:` lines. Unreachable is 503; unknown to sum.golang.org is refused, as no strong digest is |
+| A pinned version's time | its own `.info`. One that cannot be read is 503, as a cold intel store is |
+| Code | the dirhash and the sum.golang.org client in `src/ecosystem/go/`; `integrity.rs` and `proxy.rs` stay ecosystem-neutral. The hooks land with the Go row, so each is covered by its tests |
+
 ## Steps
 
-1. The interface: a digest the adapter fetches and checks after the artifact is spooled
-   (Q3), and a publish time asked per version newest first (Q5). npm, PyPI and cargo
-   unchanged.
+1. The `h1:` dirhash over a module zip and over a `go.mod`, in `src/ecosystem/go/`, checked
+   against sum.golang.org's lines for real modules.
 2. The checksum database client: lookup, note signature, tiles and inclusion proof (Q3),
    and the relay (Q4).
-3. The Go adapter: paths, `@v/list` and `@latest` filtered, `.info` read for times, the
-   zip's and `go.mod`'s `h1:` checked, `osv/go` with toolchain matching (Q6),
-   `BYRLE_UPSTREAM_GO`.
+3. The Go adapter, with the hooks of "How the hooks are built": paths, `@v/list` and `@latest`
+   filtered, `.info` read for times, the claim asked before the fetch, the zip's `h1:` in
+   the analysis job, `.mod` checked in the request, `osv/go` with toolchain matching (Q6),
+   `BYRLE_UPSTREAM_GO`. npm, PyPI and cargo unchanged.
 4. `go.sum` for `warm`, `policy diff` and `lockfile verify`.
 5. `byrle doctor` for `go env`: `GOPROXY`, `GOSUMDB`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`.
 6. `make smoke-go`: `go build` of a real module through the proxy over https, with a token,
