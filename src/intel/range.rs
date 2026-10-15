@@ -65,8 +65,8 @@ fn toolchain(s: &str) -> Option<String> {
     let (numbers, pre) = tag.split_at(at);
     let pre = match pre.find(|c: char| c.is_ascii_digit()) {
         None if pre.is_empty() => String::new(),
-        Some(digit) if digit > 0 => format!("-{}.{}", &pre[..digit], &pre[digit..]),
-        _ => return None,
+        Some(digit) => format!("-{}.{}", &pre[..digit], &pre[digit..]),
+        None => return None,
     };
     padded(&format!("{numbers}{pre}"))
 }

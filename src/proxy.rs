@@ -1406,7 +1406,8 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Err(answer) => return *answer,
     };
     let (record, claiming) = deciding.checked(record, claim).await;
-    let (fetch, unservable) = deciding.fetch_plan(&record);
+    let pending = matches!(claiming, Some(Claiming::Pending(_)));
+    let (fetch, unservable) = deciding.fetch_plan(&record, pending);
     let dated = deciding.dated(&record).await;
     let sourced = deciding.sourced(&fetch).await;
     let scanned = deciding.scanned(&fetch).await;
@@ -1892,10 +1893,9 @@ impl<'a> Deciding<'a> {
         }
     }
 
-    /// Where to fetch the artifact and the digest to verify it against.
-    /// Returns the fetch, and the origin it is published on when the proxy does not serve
-    /// that origin.
-    fn fetch_plan(&self, record: &PackageRecord) -> (ArtifactFetch, Option<String>) {
+    /// Where to fetch the artifact and the digest to verify it against, `pending` when its
+    /// claim is still being checked. Returns the fetch, and an origin the proxy does not serve.
+    fn fetch_plan(&self, record: &PackageRecord, pending: bool) -> (ArtifactFetch, Option<String>) {
         let artifact = record.artifact();
         let url = artifact.map(|a| a.url.as_str()).unwrap_or("");
         let origins = &self.proxy.config.origins;
@@ -1905,7 +1905,7 @@ impl<'a> Deciding<'a> {
         };
         let fetch = ArtifactFetch {
             purl: self.purl.clone(),
-            digest: self.digest(artifact.and_then(|a| a.integrity.as_deref())),
+            digest: self.digest(artifact.and_then(|a| a.integrity.as_deref()), pending),
             origin: crate::origin::origin_of_url(url)
                 .filter(|origin| origins.reachable().routes_directly(origin)),
             audit: None,
@@ -1915,8 +1915,8 @@ impl<'a> Deciding<'a> {
     }
 
     /// The strong digest `integrity` publishes, logged with whether it was verified before.
-    /// Returns `None` for no integrity, SHA-1 only, or one that does not parse.
-    fn digest(&self, integrity: Option<&str>) -> Option<Sri> {
+    /// `None` for no integrity, SHA-1 only, one that does not parse, or a claim `pending`.
+    fn digest(&self, integrity: Option<&str>, pending: bool) -> Option<Sri> {
         let path = self.request.path;
         match integrity.map(Sri::parse) {
             Some(Ok(sri)) => {
@@ -1945,13 +1945,19 @@ impl<'a> Deciding<'a> {
                 None
             }
             None => {
-                warn!(
-                    url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
-                    byrle.package.claimed_purl = %self.purl,
-                    "metadata publishes no strong digest; not verifying"
-                );
+                self.no_digest(pending);
                 None
             }
+        }
+    }
+
+    /// Log why there is no digest to verify against: a claim `pending`, or none published.
+    fn no_digest(&self, pending: bool) {
+        let path = self.request.path;
+        if pending {
+            info!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.package.claimed_purl = %self.purl, "no digest until the claim is checked against the artifact's bytes");
+        } else {
+            warn!(url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path), byrle.package.claimed_purl = %self.purl, "metadata publishes no strong digest; not verifying");
         }
     }
 
@@ -3644,7 +3650,7 @@ impl Proxy {
                 account: None,
             },
         );
-        let (fetch, _) = deciding.fetch_plan(record);
+        let (fetch, _) = deciding.fetch_plan(record, false);
         let dated = deciding.dated(record).await;
         let analysed = deciding
             .analysed(record, &fetch, dated.times.as_ref())

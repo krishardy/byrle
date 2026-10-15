@@ -48,7 +48,7 @@ pub const REGISTRY: Registry = Registry {
     clients: &[],
     setup: Setup {
         client: "go",
-        command: |url| format!("go env -w GOPROXY={url}"),
+        command: setup_line,
         path: "/go",
     },
     uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
@@ -75,6 +75,16 @@ pub const REGISTRY: Registry = Registry {
     install_scripts_unread: None,
     publishers: None,
 };
+
+/// What points go at `url`. go sends `GOPROXY`'s userinfo as Basic credentials, and only
+/// over https: the account is the username and the token the password.
+fn setup_line(url: &str) -> String {
+    let with_token = match url.split_once("://") {
+        Some((scheme, rest)) => format!("{scheme}://<account>:<token>@{rest}"),
+        None => format!("<account>:<token>@{url}"),
+    };
+    format!("go env -w GOPROXY={url}, or with a token GOPROXY={with_token}")
+}
 
 /// The module an OSV record's name stands for: `toolchain` is `golang.org/toolchain`, the
 /// module go downloads a Go release as, and `stdlib` is in every Go release and no module.
@@ -163,7 +173,12 @@ mod tests {
         assert!(!(REGISTRY.metadata_names_repository)(&metadata.records[0]));
         assert_eq!(
             REGISTRY.setup.command_line("https://h"),
-            "go env -w GOPROXY=https://h/go"
+            "go env -w GOPROXY=https://h/go, or with a token \
+             GOPROXY=https://<account>:<token>@h/go"
+        );
+        assert_eq!(
+            setup_line("h/go"),
+            "go env -w GOPROXY=h/go, or with a token GOPROXY=<account>:<token>@h/go"
         );
     }
 }

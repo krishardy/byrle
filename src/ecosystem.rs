@@ -692,7 +692,7 @@ mod table {
                 "npm config set registry http://127.0.0.1:8080/npm/",
                 "pip config set global.index-url http://127.0.0.1:8080/pypi/simple/",
                 &cargo::REGISTRY.setup.command_line("http://127.0.0.1:8080"),
-                "go env -w GOPROXY=http://127.0.0.1:8080/go",
+                &go::REGISTRY.setup.command_line("http://127.0.0.1:8080"),
             ]
         );
         assert_eq!(
