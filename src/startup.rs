@@ -474,8 +474,8 @@ fn publishers<L: Fn(&str) -> Option<OsString>>(
                     byrle.config.variable = %env::CRATES_API,
                     byrle.detector = detector.name(),
                     "publisher lookup on: each {ecosystem} version served is looked up on the registry's \
-                     API, one request each {} ms, and a version published without trusted \
-                     publishing after one published with it is a signal",
+                     API, one request each {} ms, for the trustpub_dropped and \
+                     trustpub_repository_changed signals",
                     interval.as_millis()
                 );
                 made.push(detector);

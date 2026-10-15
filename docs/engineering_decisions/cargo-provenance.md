@@ -24,7 +24,7 @@ not set.
 |---|---|
 | asked | `/api/v1/crates/{name}/versions?per_page=100&sort=date`, following `meta.next_page` until a page reaches before 2025-07, at most 20 pages |
 | when | in the background, as a command detector runs, on each cargo version a decision serves and has no stored result for. A version the policy blocks is not asked about |
-| pace | one request each `BYRLE_CRATES_API_INTERVAL_MS`, 1000 by default, across all runs |
+| pace | one request each `BYRLE_CRATES_API_INTERVAL_MS`, 1000 by default, per proxy process: two replicas make two requests a second |
 | which API | `BYRLE_CRATES_API`. Unset, `https://crates.io` when `BYRLE_UPSTREAM_CARGO` is crates.io's index, else none: a mirror's crates are not looked up on crates.io under the same names. `off` asks nothing |
 | stored | the detection, by detector version, as a command's is. A version listed nowhere since 2025-07 is stored with nothing fired when the pages reached before it, and not stored otherwise |
 | failure | a 429, a 5xx, a 404 or a page that does not parse stores nothing, and the next decision asks again |

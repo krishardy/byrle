@@ -176,7 +176,7 @@ and tightens nothing.
 | `source_differing` | files that differ from the source | 1 |
 | `virustotal_detected` | a VirusTotal engine called the artifact malicious or suspicious | 1 |
 | `trustpub_dropped` | a cargo version was published without trusted publishing after one published with it | 1 |
-| `trustpub_repository_changed` | trusted publishing published a cargo version from another repository than the version before that it published | 1 |
+| `trustpub_repository_changed` | trusted publishing published a cargo version from another provider or repository than the latest earlier version it published | 1 |
 | `advisory_malware` | an advisory reports the version as malware | 8 |
 | `advisory_vulnerability` | an advisory reports a vulnerability in it | 4 |
 | `advisory_unsound` | RustSec reports unsound code in it | 3 |
