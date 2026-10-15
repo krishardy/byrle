@@ -67,31 +67,38 @@ Go's column of [cargo-plan](cargo-plan.md)'s table, with what was measured since
 | Lockfile | `go.sum` | none |
 | Client configuration | `GOPROXY`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`, `~/.netrc` | `doctor` reads `go env` |
 
-## Questions
+## Decisions
 
-| | Question | Recommended |
+Answered by the user 2026-10-15. Q1 follows from
+[ecosystem-path-prefixes](engineering_decisions/0111-ecosystem-path-prefixes.md); Q4, Q5,
+Q7 and Q8 as recommended; Q2, Q3 and Q6 otherwise.
+
+| | Question | Decided |
 |---|---|---|
-| Q1 | Where Go is served | Under `/go/`: `GOPROXY=https://byrle.example.com/go`, as each ecosystem is under its own name ([ecosystem-path-prefixes](engineering_decisions/0111-ecosystem-path-prefixes.md)) |
-| Q2 | How a download is held while it is checked | Held open, not 503: go fails on the first 503 and waited 90 s for an answer. The zip is fetched, spooled, its `h1:` checked and its decision made in the request, then streamed from the spool. `BYRLE_GO_HOLD_SECONDS`, 120 by default, bounds it; past it, 504 |
-| Q3 | Where the `h1:` comes from | sum.golang.org's `lookup`, its note's signature checked with the Go team's published key. Inclusion proofs are left to the go command, which checks them unless `GOSUMDB=off`, `GONOSUMDB` or `GOFLAGS=-insecure`, each of which `doctor` reports. A module sum.golang.org does not know is refused, as an artifact with no strong digest is |
+| Q1 | Where Go is served | Under `/go/`: `GOPROXY=https://byrle.example.com/go` |
+| Q2 | How a download is held while it is checked | 503, as npm, PyPI and cargo are, with `Retry-After` and `x-byrle-not-ready`. go 1.27.2 failed on the first 503 in 409 ms, so a module not analysed yet fails the go command until it is run again. Held open was recommended |
+| Q3 | Where the `h1:` comes from | sum.golang.org, verified in full by byrle: the note's signature with the Go team's key, and the record's inclusion proof against the signed tree head, from the log's tiles. A module sum.golang.org does not know is refused, as an artifact with no strong digest is. The lookup alone, with proofs left to the go command, was recommended |
 | Q4 | The checksum database, for the go command | Relayed: `/go/sumdb/sum.golang.org/*` answered from sum.golang.org, so a network that reaches only the proxy still builds. The note is signed, so a relay cannot change it |
-| Q5 | Publish times and cooldown | `.info` asked newest version first, until one is older than `cooldown_days`: one or two requests for most modules, not one per version. `@v/list` and `@latest` lose what the policy refuses; `@latest` names the newest version left, or answers 404 |
-| Q6 | Advisories | `osv/go`, from OSV's `Go/all.zip`. `stdlib` and `toolchain` records are not matched to modules |
+| Q5 | Publish times and cooldown | `.info` asked newest version first, until one is older than `cooldown_days`. `@v/list` and `@latest` lose what the policy refuses; `@latest` names the newest version left, or answers 404 |
+| Q6 | Advisories | `osv/go`, from OSV's `Go/all.zip`. `stdlib` records are not matched to modules. `toolchain` records are matched to `golang.org/toolchain` downloads by the Go version in the module version, `v0.0.1-go1.27.1.linux-amd64` being go 1.27.1. Skipping both was recommended |
 | Q7 | Toolchains | Served as any module, from proxy.golang.org with `storage.googleapis.com` as an artifact origin. Its zip's `h1:` is in sum.golang.org |
-| Q8 | Tokens | `Basic` over https, as now. The setup line puts the token in `GOPROXY`'s userinfo; `.netrc` needs `machine host:port` when the port is not 443 |
+| Q8 | Tokens | `Basic` over https. The setup line puts the token in `GOPROXY`'s userinfo; `.netrc` needs `machine host:port` when the port is not 443 |
 
 ## Steps
 
-1. The interface: an answer held open while the artifact is checked (Q2), a digest the
-   adapter fetches and checks after spooling (Q3), and a publish time asked per version
-   newest first (Q5). npm, PyPI and cargo unchanged.
-2. The Go adapter: paths, `@v/list` and `@latest` filtered, `.info` read for times,
-   `h1:` from sum.golang.org, `osv/go`, `BYRLE_UPSTREAM_GO`.
-3. The checksum database relay (Q4).
+1. The interface: a digest the adapter fetches and checks after the artifact is spooled
+   (Q3), and a publish time asked per version newest first (Q5). npm, PyPI and cargo
+   unchanged.
+2. The checksum database client: lookup, note signature, tiles and inclusion proof (Q3),
+   and the relay (Q4).
+3. The Go adapter: paths, `@v/list` and `@latest` filtered, `.info` read for times, the
+   zip's and `go.mod`'s `h1:` checked, `osv/go` with toolchain matching (Q6),
+   `BYRLE_UPSTREAM_GO`.
 4. `go.sum` for `warm`, `policy diff` and `lockfile verify`.
 5. `byrle doctor` for `go env`: `GOPROXY`, `GOSUMDB`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`.
 6. `make smoke-go`: `go build` of a real module through the proxy over https, with a token,
-   a refused version, a cooldown, an advisory, and a toolchain download.
+   a refused version, a cooldown, an advisory, and a toolchain download. A first fetch
+   answered 503 is run again, as Q2 leaves it.
 7. Docs: quickstart, policy-reference, threat-model, request-flow.
 
 ## Exit
