@@ -351,6 +351,14 @@ impl Policy {
         window_of(self.provenance_window_days)
     }
 
+    /// The longest cooldown in force, globally or in a package entry, in days.
+    pub fn longest_cooldown(&self) -> u32 {
+        self.packages
+            .iter()
+            .filter_map(|entry| entry.set.cooldown_days)
+            .fold(self.cooldown_days, u32::max)
+    }
+
     /// Whether any cooldown is in force, globally or in a package entry.
     pub fn uses_cooldown(&self) -> bool {
         self.cooldown_days > 0
@@ -1400,6 +1408,11 @@ mod tests {
         )
         .expect("loads");
         assert!(policy.uses_cooldown());
+        assert_eq!(
+            policy.longest_cooldown(),
+            5,
+            "the entry's, past the global 0"
+        );
         let refused = parse(
             "packages:\n  - match: { ecosystem: npm, name: lodash }\n    \
              set: { deprecated: quarantine }\n    reason: reviewed\n    expires: \"2026-12-01\"\n",

@@ -1102,7 +1102,8 @@ async fn filtered_document(
         };
     };
     report_undated(proxy, read.as_ref(), path);
-    let normalized = read.metadata();
+    let dated = dated_versions(proxy, read.metadata(), path).await;
+    let normalized = dated.as_ref().or(read.metadata());
 
     let intel = match normalized {
         Some(metadata) => match intel_for(proxy, &metadata.key, path).await {
@@ -1156,6 +1157,39 @@ async fn filtered_document(
         body,
         refused: refused_by_policy,
     }
+}
+
+/// A cooldown longer than this, a century, dates a document as this one does.
+const MAX_COOLDOWN_DAYS: u32 = 36_500;
+
+/// `metadata` with a publish time on each version its client dated, for an ecosystem whose
+/// documents carry none, when the policy waits on any: [`ecosystem::Fetch::dated`]. `None`
+/// when nothing was asked, or when the times could not be read: undated, `cooldown_days` is
+/// not enforced on the document, and each artifact is decided on its own time.
+async fn dated_versions(
+    proxy: &Proxy,
+    metadata: Option<&PackageMetadata>,
+    path: &str,
+) -> Option<PackageMetadata> {
+    let metadata = metadata?;
+    let days = Some(proxy.config.policy.as_deref()?.longest_cooldown()).filter(|days| *days > 0)?;
+    let wait = jiff::SignedDuration::from_hours(24 * i64::from(days.min(MAX_COOLDOWN_DAYS)));
+    let before = jiff::Timestamp::now() - wait;
+    let times = match proxy.config.clients.dated(metadata, before).await {
+        Ok(times) => times?,
+        Err(e) => {
+            warn!(url.path = %crate::http::url_path(path), error.message = %e, "publish times could not be read; the document's versions are left undated");
+            return None;
+        }
+    };
+    let mut dated = metadata.clone();
+    for record in &mut dated.records {
+        record.published_at = record
+            .published_at
+            .or_else(|| times.get(record.package.version()).copied());
+    }
+    info!(url.path = %crate::http::url_path(path), byrle.package.versions = dated.records.len(), byrle.package.dated = times.len(), "versions dated for the cooldown");
+    Some(dated)
 }
 
 /// 404 for a document whose one version the policy refuses, naming the checks.
@@ -1728,7 +1762,21 @@ impl<'a> Deciding<'a> {
             client,
             ..
         } = self.request;
-        let found = match lookup_or_fetch(self.proxy, key, claimed_version, filename, path).await {
+        let found = match self
+            .proxy
+            .config
+            .clients
+            .version(key, claimed_version)
+            .await
+        {
+            Ok(Some(alone)) => Lookup::Found(Box::new(alone)),
+            Ok(None) => lookup_or_fetch(self.proxy, key, claimed_version, filename, path).await,
+            Err(e) => {
+                warn!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %self.purl, error.message = %e, "the version could not be read on its own");
+                Lookup::Unknown
+            }
+        };
+        let found = match found {
             Lookup::Found(found) => found,
             Lookup::NoSuchVersion => {
                 self.audit_undecided(audit::Answered::NotListed);
@@ -6249,8 +6297,7 @@ mod tests {
                              denials:\n  - purl: pkg:golang/golang.org/x/text@v0.43.0\n    \
                              reason: test\n";
 
-    /// A refused version's line is removed, so go resolves to another. Its zip is refused
-    /// too, and until sum.golang.org is asked so is every zip: no digest is published.
+    /// A refused version's line is removed, so go resolves to another.
     #[tokio::test]
     async fn a_go_version_the_policy_refuses_loses_its_line() {
         let proxy = offline(None, Some(DENY_TEXT));
@@ -6266,13 +6313,6 @@ mod tests {
         assert_eq!(lines.lines().count(), 50);
         assert!(!lines.lines().any(|line| line == "v0.43.0"), "{lines}");
         assert!(removed.versions.contains("v0.43.0"));
-        let (status, _) =
-            refused(pinned(&proxy, "/go/golang.org/x/text/@v/v0.43.0.zip").await).await;
-        assert_eq!(status, 403);
-        let (status, body) =
-            refused(pinned(&proxy, "/go/golang.org/x/text/@v/v0.42.0.zip").await).await;
-        assert_eq!(status, 403);
-        assert!(body.contains("no strong digest"), "{body}");
     }
 
     /// go asks `@latest` when the list leaves it nothing, and fails on a 404.
@@ -6350,9 +6390,12 @@ mod tests {
                 }),
             )
             .route(
-                "/rsc.io/quote/@v/list",
-                axum::routing::get(|| async { "v1.5.2\n" }),
-            );
+                "/rsc.io/quote/@v/v1.5.2.info",
+                axum::routing::get(|| async {
+                    r#"{"Version":"v1.5.2","Time":"2018-02-14T00:54:53Z"}"#
+                }),
+            )
+            .route("/rsc.io/quote/@v/list", axum::routing::get(|| async { "" }));
         crate::proxy::testing::serve(router).await
     }
 
@@ -6566,6 +6609,82 @@ mod tests {
                     "{body}"
                 );
             }
+        }
+    }
+
+    /// go fetches versions its list leaves out, pseudo-versions among them: the zip's record
+    /// is read from its own `.info`. One that cannot be read is 502.
+    #[tokio::test]
+    async fn a_go_version_the_list_leaves_out_is_read_from_its_info() {
+        let go_mod = crate::ecosystem::go::fixture("rsc.io-quote-v1.5.2.mod");
+        let upstream = module_proxy(go_mod, None).await;
+        let proxy = go_proxy(&upstream, quote_sumdb().await);
+        let (_, body) = refused(pinned(&proxy, QUOTE_ZIP).await).await;
+        assert!(!body.contains("does not list"), "{body}");
+        assert!(
+            body.contains("no strong digest"),
+            "no analyser checks the claim: {body}"
+        );
+        let denying = go_proxy(&upstream, quote_sumdb().await).with_policy(Some(policy(
+            "version: 1\ncooldown_days: 0\n\
+             denials:\n  - purl: pkg:golang/rsc.io/quote@v1.5.2\n    reason: test\n",
+        )));
+        let (status, body) = refused(pinned(&denying, QUOTE_ZIP).await).await;
+        assert_eq!(status, 403);
+        assert!(body.contains("denials"), "{body}");
+
+        let addr =
+            crate::util::test_support::scripted(vec![crate::util::test_support::Answer::Status(
+                500,
+            )])
+            .await;
+        let failing = go_proxy(&format!("http://{addr}"), quote_sumdb().await);
+        let (status, body) = refused(pinned(&failing, QUOTE_ZIP).await).await;
+        assert_eq!(status, 502);
+        assert!(body.contains("gave no metadata"), "{body}");
+    }
+
+    /// Under a cooldown, a list's versions are dated from their `.info`, newest first, until
+    /// one is old enough; the versions after it are kept. Undated, the list is forwarded.
+    #[tokio::test]
+    async fn a_go_list_is_dated_newest_first_for_the_cooldown() {
+        let young = jiff::Timestamp::now()
+            .checked_sub(jiff::SignedDuration::from_hours(24))
+            .unwrap()
+            .to_string();
+        for (newest, kept) in [
+            (
+                format!(r#"{{"Version":"v1.5.2","Time":"{young}"}}"#),
+                Some("v1.5.0\nv1.5.1\n".to_owned()),
+            ),
+            ("not json".to_owned(), None),
+        ] {
+            let router = axum::Router::new()
+                .route(
+                    "/rsc.io/quote/@v/v1.5.2.info",
+                    axum::routing::get(move || {
+                        let newest = newest.clone();
+                        async move { newest }
+                    }),
+                )
+                .route(
+                    "/rsc.io/quote/@v/v1.5.1.info",
+                    axum::routing::get(|| async {
+                        r#"{"Version":"v1.5.1","Time":"2018-02-13T00:00:00Z"}"#
+                    }),
+                );
+            let upstream = crate::proxy::testing::serve(router).await;
+            let go = crate::ecosystem::go::Client::new(reqwest::Client::new(), &upstream, 1 << 20);
+            let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
+                .with_upstream(Ecosystem::Go, &upstream)
+                .with_client(Ecosystem::Go, Arc::new(go));
+            let list = b"v1.5.0\nv1.5.2\nv1.5.1\n";
+            let DocumentStep::Forward { body, .. } =
+                resolve(&proxy, "/go/rsc.io/quote/@v/list", "text/plain", list).await
+            else {
+                panic!("the list is forwarded");
+            };
+            assert_eq!(body.map(|b| String::from_utf8(b).unwrap()), kept);
         }
     }
 

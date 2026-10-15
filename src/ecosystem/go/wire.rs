@@ -5,7 +5,7 @@
 use serde::Deserialize;
 
 use crate::identity::PackageKey;
-use crate::intel::range::VersionOrder;
+use crate::intel::range::{Ordered, VersionOrder};
 use crate::record::{
     Artifact, DocumentDetail, PackageMetadata, PackageRecord, Provenance, SkippedVersion,
 };
@@ -26,6 +26,22 @@ pub struct Info {
 pub fn listed(line: &[u8]) -> Option<&str> {
     let word = std::str::from_utf8(line).ok()?.split_whitespace().next()?;
     (word.starts_with('v') && VersionOrder::Go.parse(word).is_some()).then_some(word)
+}
+
+/// `versions` in the order the go command prefers them, as `@latest` does: releases newest
+/// first, then pre-releases and pseudo-versions, then `+incompatible` versions.
+pub fn preferred<'a>(versions: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut sorted: Vec<&str> = versions.collect();
+    sorted.sort_by_cached_key(|version| {
+        let parsed = VersionOrder::Go.parse(version);
+        let pre = matches!(&parsed, Some(Ordered::SemVer(v)) if !v.pre.is_empty());
+        (
+            version.ends_with("+incompatible"),
+            pre,
+            std::cmp::Reverse(parsed),
+        )
+    });
+    sorted
 }
 
 /// Each version a `@v/list` names as a record of `key`, its zip under `files`. A line that
@@ -59,14 +75,7 @@ pub fn latest(key: &PackageKey, decoded: &[u8], files: &str) -> Result<PackageMe
     if listed(info.version.as_bytes()) != Some(info.version.as_str()) {
         return Err(format!("`{}` is not a Go version", info.version));
     }
-    let published_at = info
-        .time
-        .as_deref()
-        .map(|time| {
-            time.parse::<jiff::Timestamp>()
-                .map_err(|e| format!("Time `{time}`: {e}"))
-        })
-        .transpose()?;
+    let published_at = published(&info)?;
     Ok(PackageMetadata {
         key: key.clone(),
         latest: Some(info.version.clone()),
@@ -75,8 +84,19 @@ pub fn latest(key: &PackageKey, decoded: &[u8], files: &str) -> Result<PackageMe
     })
 }
 
+/// When `info` says its version was published. Errors when its `Time` does not parse.
+pub fn published(info: &Info) -> Result<Option<jiff::Timestamp>, String> {
+    info.time
+        .as_deref()
+        .map(|time| {
+            time.parse::<jiff::Timestamp>()
+                .map_err(|e| format!("Time `{time}`: {e}"))
+        })
+        .transpose()
+}
+
 /// One version as the common record, its one file the zip.
-fn record(
+pub fn record(
     key: &PackageKey,
     version: &str,
     published_at: Option<jiff::Timestamp>,
@@ -156,6 +176,31 @@ mod tests {
         assert_eq!(skipped, ["line 3", "line 4"]);
         assert_eq!(listed(b"\xff"), None);
         assert_eq!(listed(b"1.0.0"), None, "no v");
+    }
+
+    /// k8s.io/client-go's v1.5.2 is its `@latest` though every v0.x came after it, and a
+    /// pre-release is chosen only when there is no release.
+    #[test]
+    fn versions_are_preferred_as_the_go_command_prefers_them() {
+        let listed = [
+            "v0.20.0",
+            "v1.5.2",
+            "v11.0.0+incompatible",
+            "v0.0.0-20170915032832-14c0d48ead0c",
+            "v1.6.0-rc.1",
+            "v0.34.1",
+        ];
+        assert_eq!(
+            preferred(listed.into_iter()),
+            [
+                "v1.5.2",
+                "v0.34.1",
+                "v0.20.0",
+                "v1.6.0-rc.1",
+                "v0.0.0-20170915032832-14c0d48ead0c",
+                "v11.0.0+incompatible",
+            ]
+        );
     }
 
     #[test]

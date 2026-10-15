@@ -145,7 +145,15 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
       in `artifact_claim`, migration 0025; the retry is served checked against that
       sha256. A zip that is not the one claimed, is no zip, or is over the spool's ceiling
       is 502 until the process restarts.
-   4. Cooldown from `.info`, newest first, and a pinned version's own `.info`.
+   4. Cooldown from `.info`, newest first, and a pinned version's own `.info`. Done
+      2026-10-15: a zip's record is read from its version's `.info`, so a pseudo-version
+      the list leaves out is decided, not refused as unlisted, which go 1.27.2 hit at once
+      building `rsc.io/quote`. An `.info` that cannot be read is 502, as metadata that
+      cannot be fetched is. Under a cooldown a list's versions are dated in the go
+      command's order of preference until one is older than the longest cooldown, and
+      the versions after it are kept. A list whose `.info` cannot be read is forwarded
+      undated, as `cooldown_days` is not enforced on a version with no time, and each zip
+      is decided on its own `.info`.
    5. `toolchain` advisories matched to `golang.org/toolchain`.
 4. `go.sum` for `warm`, `policy diff` and `lockfile verify`.
 5. `byrle doctor` for `go env`: `GOPROXY`, `GOSUMDB`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`.

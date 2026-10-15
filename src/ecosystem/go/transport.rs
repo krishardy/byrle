@@ -5,11 +5,13 @@ use std::sync::{Arc, Mutex};
 
 use crate::ecosystem::{Claim, Claimed, Fetch, Fetched, FullDocument};
 use crate::identity::PackageKey;
+use crate::policy::facts::PublishTimes;
+use crate::record::{PackageMetadata, PackageRecord};
 use crate::util::lru::Lru;
 
 use super::paths::{LIST, escape};
 use super::sumdb::{self, Answer};
-use super::wire::list;
+use super::wire::{Info, list, preferred, published, record};
 
 /// Claims kept, one per module version: a version sum.golang.org knows never changes.
 pub const MAX_CLAIMS: usize = 8192;
@@ -53,6 +55,73 @@ impl Client {
         self
     }
 
+    /// The URL of `key`'s files.
+    fn files(&self, key: &PackageKey) -> String {
+        format!("{}/{}/@v/", self.proxy, escape(&key.registry_name()))
+    }
+
+    /// `version`'s `.info`. `None` for 404 or 410: the proxy does not have it.
+    async fn info(&self, key: &PackageKey, version: &str) -> Result<Option<Info>, String> {
+        let url = format!("{}{}.info", self.files(key), escape(version));
+        let response = self
+            .http
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("{url}: {e}"))?;
+        match response.status().as_u16() {
+            404 | 410 => return Ok(None),
+            status if !(200..300).contains(&status) => {
+                return Err(format!("{url} answered {status}"));
+            }
+            _ => {}
+        }
+        let body = response.bytes().await.map_err(|e| format!("{url}: {e}"))?;
+        serde_json::from_slice(&body)
+            .map(Some)
+            .map_err(|e| format!("{url}: {e}"))
+    }
+
+    /// `version`'s record from its own `.info`, with its time: go fetches versions its list
+    /// leaves out, pseudo-versions among them. `None` when the proxy does not have it.
+    pub async fn version(
+        &self,
+        key: &PackageKey,
+        version: &str,
+    ) -> Result<Option<PackageRecord>, String> {
+        let Some(info) = self.info(key, version).await? else {
+            return Ok(None);
+        };
+        let published_at = published(&info)?;
+        Ok(Some(record(key, version, published_at, &self.files(key))))
+    }
+
+    /// A time for each of `metadata`'s versions: each `.info` in the go command's order of
+    /// preference, until one is older than `before`. Every version after that one is given
+    /// its time: go chooses one only when it is named, and then asks its own `.info`.
+    pub async fn dated(
+        &self,
+        metadata: &PackageMetadata,
+        before: jiff::Timestamp,
+    ) -> Result<PublishTimes, String> {
+        let versions = preferred(metadata.records.iter().map(|r| r.package.version()));
+        let mut times = PublishTimes::new();
+        let mut cutoff = None;
+        for version in versions {
+            if let Some(at) = cutoff {
+                times.insert(version.to_owned(), at);
+                continue;
+            }
+            let info = self.info(&metadata.key, version).await?;
+            let Some(at) = info.as_ref().map(published).transpose()?.flatten() else {
+                continue;
+            };
+            times.insert(version.to_owned(), at);
+            cutoff = (at < before).then_some(at);
+        }
+        Ok(times)
+    }
+
     /// What sum.golang.org says of `key` at `version`: its zip's and its `go.mod`'s `h1:`.
     /// A known version's claim is kept; an unknown one is asked again, as it may be
     /// published since. Errors when sum.golang.org does not answer or prove its answer.
@@ -85,8 +154,7 @@ impl Client {
 
     /// One module's `@v/list` as records.
     pub async fn metadata(&self, key: &PackageKey) -> Fetched {
-        let module = format!("{}/{}", self.proxy, escape(&key.registry_name()));
-        let url = format!("{module}{LIST}");
+        let url = format!("{}/{}{LIST}", self.proxy, escape(&key.registry_name()));
         let response = self
             .http
             .get(&url)
@@ -102,7 +170,7 @@ impl Client {
             .map_err(|e| format!("version list request failed: {e}"))?;
         let body = crate::http::decode_for_parsing(&body, None, self.max_bytes)
             .map_err(|e| format!("version list body could not be decoded: {e}"))?;
-        Ok(Ok(list(key, &body, &format!("{module}/@v/"))))
+        Ok(Ok(list(key, &body, &self.files(key))))
     }
 }
 
@@ -125,6 +193,22 @@ impl Fetch for Client {
         version: &'a str,
     ) -> futures_util::future::BoxFuture<'a, Result<Claimed, String>> {
         Box::pin(Client::claim(self, key, version))
+    }
+
+    fn version<'a>(
+        &'a self,
+        key: &'a PackageKey,
+        version: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<PackageRecord>, String>> {
+        Box::pin(Client::version(self, key, version))
+    }
+
+    fn dated<'a>(
+        &'a self,
+        metadata: &'a PackageMetadata,
+        before: jiff::Timestamp,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<PublishTimes>, String>> {
+        Box::pin(async move { Client::dated(self, metadata, before).await.map(Some) })
     }
 }
 
@@ -210,6 +294,111 @@ pub(crate) mod tests {
         let error = go.claim(&broken, "v1.0.0").await.unwrap_err();
         assert!(error.contains("go.mod"), "{error}");
         assert!(format!("{go:?}").contains("127.0.0.1:9"));
+    }
+
+    /// A module proxy answering `.info` for each of `infos`, by version, and 404 otherwise.
+    async fn infos(infos: Vec<(&'static str, &'static str)>) -> String {
+        let router = axum::Router::new().route(
+            "/github.com/!burnt!sushi/toml/@v/{file}",
+            axum::routing::get(
+                move |axum::extract::Path(file): axum::extract::Path<String>| {
+                    let infos = infos.clone();
+                    async move {
+                        let version = file.strip_suffix(".info").unwrap_or_default();
+                        match infos.iter().find(|(v, _)| *v == version) {
+                            Some((_, "500")) => Err(axum::http::StatusCode::INTERNAL_SERVER_ERROR),
+                            Some((_, body)) => Ok(body.to_string()),
+                            None => Err(axum::http::StatusCode::NOT_FOUND),
+                        }
+                    }
+                },
+            ),
+        );
+        crate::proxy::testing::serve(router).await
+    }
+
+    /// A version is read from its own `.info`, its `Time` its record's publish time.
+    #[tokio::test]
+    async fn a_version_is_read_from_its_own_info() {
+        let base = infos(vec![
+            (
+                "v1.0.0",
+                r#"{"Version":"v1.0.0","Time":"2020-01-02T03:04:05Z"}"#,
+            ),
+            ("v2.0.0", r#"{"Version":"v2.0.0","Time":"then"}"#),
+            ("v3.0.0", "not json"),
+            ("v4.0.0", "500"),
+        ])
+        .await;
+        let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
+        let record = Fetch::version(&client, &toml(), "v1.0.0")
+            .await
+            .unwrap()
+            .expect("found");
+        assert_eq!(
+            record.published_at,
+            Some("2020-01-02T03:04:05Z".parse().unwrap())
+        );
+        assert_eq!(
+            record.artifacts[0].url,
+            format!("{base}/github.com/!burnt!sushi/toml/@v/v1.0.0.zip")
+        );
+        assert_eq!(client.version(&toml(), "v9.0.0").await, Ok(None));
+        for (version, error) in [
+            ("v2.0.0", "Time `then`"),
+            ("v3.0.0", "expected"),
+            ("v4.0.0", "answered 500"),
+        ] {
+            let found = client.version(&toml(), version).await.unwrap_err();
+            assert!(found.contains(error), "{version}: {found}");
+        }
+        let addr = scripted(vec![Answer::cut_short()]).await;
+        let cut = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        assert!(cut.version(&toml(), "v1.0.0").await.is_err());
+        let closed = crate::util::test_support::closing_server().await;
+        let closed = Client::new(reqwest::Client::new(), &format!("http://{closed}"), 1 << 20);
+        assert!(closed.version(&toml(), "v1.0.0").await.is_err());
+    }
+
+    /// Versions are dated newest first until one is older than the cutoff; each after it is
+    /// given its time, and one whose `.info` has no time stays undated.
+    #[tokio::test]
+    async fn versions_are_dated_newest_first_until_one_is_old_enough() {
+        let base = infos(vec![
+            (
+                "v1.2.0",
+                r#"{"Version":"v1.2.0","Time":"2026-10-14T00:00:00Z"}"#,
+            ),
+            ("v1.1.0", r#"{"Version":"v1.1.0"}"#),
+            (
+                "v1.0.1",
+                r#"{"Version":"v1.0.1","Time":"2020-01-01T00:00:00Z"}"#,
+            ),
+            ("v1.0.0", "500"),
+            ("v0.9.0", r#"{"Version":"v0.9.0","Time":"then"}"#),
+        ])
+        .await;
+        let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
+        let metadata = list(&toml(), b"v1.0.0\nv1.2.0\nv1.0.1\nv1.1.0\nv1.3.0\n", "x");
+        let before: jiff::Timestamp = "2026-10-01T00:00:00Z".parse().unwrap();
+        let times = Fetch::dated(&client, &metadata, before)
+            .await
+            .unwrap()
+            .expect("dated");
+        let old: jiff::Timestamp = "2020-01-01T00:00:00Z".parse().unwrap();
+        assert_eq!(
+            times,
+            PublishTimes::from([
+                ("v1.2.0".to_owned(), "2026-10-14T00:00:00Z".parse().unwrap()),
+                ("v1.0.1".to_owned(), old),
+                ("v1.0.0".to_owned(), old),
+            ]),
+            "v1.3.0 has no .info and v1.1.0 no time; v1.0.0's is never asked"
+        );
+        for failing in ["v1.0.0", "v0.9.0"] {
+            let failing = list(&toml(), failing.as_bytes(), "x");
+            assert!(client.dated(&failing, before).await.is_err());
+        }
     }
 
     #[tokio::test]

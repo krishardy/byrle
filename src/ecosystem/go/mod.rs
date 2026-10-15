@@ -35,9 +35,12 @@ pub const REGISTRY: Registry = Registry {
     documents: &["text/plain", "application/json"],
     other_is_probe: false,
     publish_times: PublishTimeSource {
-        said: "`Time` in `@latest`; `@v/list` carries none",
+        said: "`Time` in each version's `.info`, and in `@latest`",
         full_accept: None,
-        cost: None,
+        cost: Some(
+            "an `.info` fetch per version of a `@v/list`, newest first, until one is older \
+             than the cooldown",
+        ),
     },
     streams: &[&OSV],
     lockfiles: &[],

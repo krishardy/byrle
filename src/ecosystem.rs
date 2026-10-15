@@ -35,6 +35,26 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
         key: &'a PackageKey,
     ) -> BoxFuture<'a, Result<Option<FullDocument>, String>>;
 
+    /// The record of `version` read on its own, for an ecosystem that serves versions its
+    /// document does not list. `Ok(None)` for one that does not, or a version it lacks.
+    fn version<'a>(
+        &'a self,
+        _key: &'a PackageKey,
+        _version: &'a str,
+    ) -> BoxFuture<'a, Result<Option<crate::record::PackageRecord>, String>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    /// A time for each of `metadata`'s versions, for an ecosystem whose document has none,
+    /// read one version at a time until one is older than `before`. `Ok(None)` for others.
+    fn dated<'a>(
+        &'a self,
+        _metadata: &'a PackageMetadata,
+        _before: jiff::Timestamp,
+    ) -> BoxFuture<'a, Result<Option<PublishTimes>, String>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// What a database beside the registry says of `version`'s files, for an ecosystem whose
     /// documents publish no digest. Errors when it cannot be asked or does not prove itself.
     fn claim<'a>(
@@ -219,6 +239,24 @@ impl Clients {
     /// whose records carry `published_at`, which asks nothing.
     pub async fn publish_times(&self, key: &PackageKey) -> Result<Option<PublishTimes>, String> {
         Ok(self.full_document(key).await?.map(|full| full.times))
+    }
+
+    /// The record of `version` read on its own: [`Fetch::version`].
+    pub async fn version(
+        &self,
+        key: &PackageKey,
+        version: &str,
+    ) -> Result<Option<crate::record::PackageRecord>, String> {
+        self.of(key).version(key, version).await
+    }
+
+    /// A time for each of `metadata`'s versions: [`Fetch::dated`].
+    pub async fn dated(
+        &self,
+        metadata: &PackageMetadata,
+        before: jiff::Timestamp,
+    ) -> Result<Option<PublishTimes>, String> {
+        self.of(&metadata.key).dated(metadata, before).await
     }
 
     /// What a database beside the registry says of `version`'s files: [`Fetch::claim`].
@@ -622,13 +660,14 @@ mod table {
         }
     }
 
-    /// PyPI's index carries each file's upload time, so only npm's cooldown costs a fetch.
+    /// PyPI's index and cargo's carry each version's time, so only npm's and Go's cooldowns
+    /// cost a fetch.
     #[test]
     fn only_an_ecosystem_that_fetches_publish_times_reports_a_cooldown_cost() {
         let costs = cooldown_costs();
         assert_eq!(
             costs.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
-            [Ecosystem::Npm]
+            [Ecosystem::Npm, Ecosystem::Go]
         );
         assert!(costs[0].1.contains("full-packument fetch"));
         assert_eq!(pypi::REGISTRY.publish_times.cost, None);

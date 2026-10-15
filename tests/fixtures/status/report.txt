@@ -40,7 +40,7 @@ cargo
 golang
   upstream         https://proxy.golang.org
   documents        text/plain, application/json
-  publish times    `Time` in `@latest`; `@v/list` carries none
+  publish times    `Time` in each version's `.info`, and in `@latest`
   versions         SemVer 2.0 after a `v`
   checks           no meaning here: install_scripts, yanked, deprecated
   clients          none checked by doctor
