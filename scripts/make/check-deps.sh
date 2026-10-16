@@ -159,16 +159,19 @@ report_pin() {
     fi
 }
 
+# A GitHub release's tag_name, from its JSON on one line or many.
+tag_name() { grep -oE '"tag_name": *"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/'; }
+
 # shellcheck source=scripts/make/lib/shellcheck.sh
 . "$repo_root/scripts/make/lib/shellcheck.sh"
 report_pin shellcheck "$(curl -sSf https://api.github.com/repos/koalaman/shellcheck/releases/latest \
-    | sed -n 's/^  "tag_name": "\(.*\)",$/\1/p' || true)" \
+    | tag_name || true)" \
     "$shellcheck_version" scripts/make/lib/shellcheck.sh
 
 # shellcheck source=scripts/make/lib/java.sh
 . "$repo_root/scripts/make/lib/java.sh"
 report_pin JDK "$(curl -sSf https://api.github.com/repos/adoptium/temurin21-binaries/releases/latest \
-    | sed -n 's/^  "tag_name": "\(.*\)",$/\1/p' || true)" \
+    | tag_name || true)" \
     "$jdk_release" scripts/make/lib/java.sh
 report_pin Maven "$(curl -sSf https://dlcdn.apache.org/maven/maven-3/ \
     | grep -oE '>3\.[0-9]+\.[0-9]+/<' | tr -d '<>/' | sort -V | tail -1 || true)" \
