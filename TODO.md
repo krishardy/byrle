@@ -3045,9 +3045,15 @@ role gets 403 from every endpoint except `GET health`.
 Plan for cargo and the adapter interface before it: [cargo-plan](docs/cargo-plan.md),
 2026-10-14. Its decisions Q1 to Q6 come first.
 
-- [ ] cargo: sparse index transport adapter
-- [ ] cargo: source replacement configuration + onboarding docs
-- [ ] cargo: `build.rs` mapped to install-script semantics
+- [x] cargo: sparse index transport adapter. Done 2026-10-14, [cargo-plan](docs/cargo-plan.md)
+      step 2: `src/ecosystem/cargo/`, `config.json`, index files filtered, downloads
+      verified against `cksum`.
+- [x] cargo: source replacement configuration + onboarding docs. Done 2026-10-14,
+      cargo-plan steps 5 and 7: `[source.crates-io] replace-with` in `docs/quickstart.md`, and
+      `byrle doctor` reads `~/.cargo/config.toml`.
+- [x] cargo: `build.rs` mapped to install-script semantics. Done 2026-10-14, cargo-plan
+      step 3: a build script or `proc-macro` read from the `.crate` is refused under
+      `install_scripts: block`. `make smoke-cargo` 8/8 on 2026-10-16.
 - [x] Go adapter (`GOPROXY`). Moved from Deferred / post-v1 on 2026-09-27. The checksum DB
       already covers tamper-evidence. Done 2026-10-16, [go-plan](docs/go-plan.md) steps 1
       to 7: `make smoke-go` 6/6, and smoke-npm, smoke-python and smoke-cargo pass.
@@ -3063,9 +3069,9 @@ Plan for cargo and the adapter interface before it: [cargo-plan](docs/cargo-plan
 - [x] `[!]` README with per-ecosystem maturity tiers stated prominently
       Done 2026-09-29: npm and PyPI `enforcing`, cargo, Go and Maven not built, each tier
       defined in the README.
-- [ ] `[!]` Quickstart per ecosystem (npm, PyPI, cargo)
+- [x] `[!]` Quickstart per ecosystem (npm, PyPI, cargo)
   - [x] npm and PyPI: `docs/quickstart.md`, 2026-09-29, each step run against the binary.
-  - [ ] cargo, with Stage 6.
+  - [x] cargo, with Stage 6. Done 2026-10-14, cargo-plan step 7.
 - [x] `[!]` Policy reference doc with every rule and its monotonicity direction
       Done 2026-09-28: `docs/policy-reference.md`, its example checked by `policy check`.
 - [x] License: **Apache-2.0** (decided)
