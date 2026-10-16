@@ -195,4 +195,66 @@ Answered 2026-10-16.
 
 ## Steps
 
-To be written once the questions are answered.
+1. `make install-gradle`: Gradle 9.8.1 pinned in `scripts/make/lib/gradle.sh` beside
+   `java.sh`, checked against `services.gradle.org`'s sha256, wired into `dev-setup` and
+   watched by `check-deps` (Q10).
+2. Two engineering decisions, written before the code they govern:
+   1. 0112, Maven digests (Q2): a `.sha256` or `.sha512` when published, otherwise the
+      `.sha1` checked against the bytes in the claim job and served against their sha256.
+      It names 0017, which keeps npm, PyPI and cargo.
+   2. 0113, Maven signatures (Q2): the `.asc` verified with a key from keys.openpgp.org
+      or keyserver.ubuntu.com; a bad signature refuses the file; no `.asc`, or a key not
+      found, expired or revoked, is decided by a new policy key, off by default. Which
+      key is trusted for a group is part of this decision.
+3. `VersionOrder::Maven`, Maven's `ComparableVersion` order, checked against Maven
+   3.10.0's own comparison over every version in OSV's `Maven` ranges.
+4. The Maven adapter, with the hooks of "The adapter, checked against today's
+   `Registry`". npm, PyPI, cargo and Go unchanged. In six parts, each refusing what it
+   cannot yet check:
+   1. The row, `/maven/` paths, `maven-metadata.xml` filtered (`<version>`s, `<latest>`,
+      `<release>`), `osv/maven`, and `BYRLE_UPSTREAM_MAVEN`. A `HEAD` is decided as a
+      `GET`, as Gradle reuses a cached jar after a `HEAD` alone. Every jar is refused as
+      publishing no strong digest.
+   2. The new hook: the `.sha1` and `.md5` of a filtered `maven-metadata.xml`, written by
+      the proxy from the filtered body. mvn warned on the unfiltered `.sha1`; Gradle asked
+      none.
+   3. The claim (0112). A `.pom` and a `.module` are checked in the request against their
+      sidecar and never refused by policy (Q3); a jar's first fetch is 503 while the claim
+      job checks it. mvn retried a 503 4 times at `Retry-After`; Gradle 3 times in 3 s,
+      ignoring it, so a claim job longer than that fails a Gradle build until it is run
+      again.
+   4. Cooldown from the `.pom`'s `Last-Modified` (Q6), a `HEAD` per version, newest first
+      in Maven's order until one is older than the longest cooldown; a pinned version's
+      own `.pom`.
+   5. Signatures (0113), and the new policy key.
+   6. Annotation processors (Q4): a jar holding
+      `META-INF/services/javax.annotation.processing.Processor` has install scripts.
+      A plugin jar is decided as any other (Q5).
+5. The plugin portal under `/gradle-plugins/` (Q8): a second upstream of the Maven row,
+   relaying `plugins.gradle.org/m2` and following its 303s. A 303 to
+   `plugins-artifacts.gradle.org` carries the file's sha256 in its path, which is the
+   claim; one to Central is decided as `/maven/` decides it. `BYRLE_UPSTREAM_GRADLE_PLUGINS`.
+6. `gradle.lockfile` for `warm`, `policy diff` and `lockfile verify`. mvn writes no
+   lockfile.
+7. `byrle doctor` for mvn and Gradle:
+
+   | Reads | Reports |
+   |---|---|
+   | `settings.xml` | a `<mirror>` not `mirrorOf` `*` or not the proxy, and no `<server>` with the mirror's id when tokens are required |
+   | `$GRADLE_USER_HOME/init.d/` | no init script sending repositories and `pluginManagement` to the proxy |
+   | `gradle-wrapper.properties` and `gradle-wrapper.jar` | Q9's four checks, against `services.gradle.org/versions/all` |
+   | `~/.m2/repository` and Gradle's `caches/modules-2` | a cached refused version, as Go's module cache |
+
+8. `make smoke-maven`: mvn and Gradle builds of a real project through the proxy over
+   https, with a token, a refused version, a cooldown, an advisory, an annotation
+   processor, a portal plugin, and the wrapper checks. A first fetch answered 503 is run
+   again.
+9. Docs: quickstart (Basic first, Bearer second, per Q7), policy-reference,
+   threat-model (the wrapper download as a bypass), request-flow, and the README.
+
+## Exit
+
+An mvn build and a Gradle build of a real project through the proxy with a token,
+enforcing the defaults: a refused version is not chosen by a range, a pinned one answers
+403, and an advisory from `osv/maven` refuses what it names. npm, PyPI, cargo and Go pass
+their smoke tests unchanged.
