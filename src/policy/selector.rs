@@ -113,8 +113,8 @@ pub enum SelectorError {
     PurlAndVersion,
     /// A version or a VERS range that does not read.
     Version(VersError),
-    /// A version for an ecosystem this build has no version order for.
-    UnorderedEcosystem(String),
+    /// An ecosystem this build serves no row for, so the entry would match nothing.
+    UnknownEcosystem(String),
     /// A denial with neither `@version` in its purl nor a `version`.
     NoVersion,
     /// A denial's `version` that is not a VERS range.
@@ -161,11 +161,18 @@ impl fmt::Display for SelectorError {
                  once",
             ),
             Self::Version(e) => write!(f, "{e}"),
-            Self::UnorderedEcosystem(ecosystem) => write!(
-                f,
-                "names a version for `{ecosystem}`, and this build has no version order for \
-                 it"
-            ),
+            Self::UnknownEcosystem(ecosystem) => {
+                let served: Vec<&str> = crate::identity::Ecosystem::EXPRESSIBLE
+                    .iter()
+                    .map(|served| served.as_str())
+                    .collect();
+                write!(
+                    f,
+                    "`{ecosystem}` is not an ecosystem this build serves, so the entry would \
+                     match nothing. It serves {}",
+                    served.join(", ")
+                )
+            }
             Self::NoVersion => f.write_str(
                 "names no version. A denial refuses one version, `@version` in its purl, or \
                  a VERS range in `version`",
@@ -216,6 +223,7 @@ impl Canonical {
             return Err(SelectorError::BothPurlAndName);
         }
         let ecosystem = selector.ecosystem.as_str();
+        order_of(ecosystem)?;
 
         let (name, version) = match &selector.purl {
             Some(purl) => {
@@ -354,8 +362,7 @@ pub(super) const VERS: &str = "vers:";
 
 /// The order `ecosystem`'s versions are read by.
 fn order_of(ecosystem: &str) -> Result<VersionOrder, SelectorError> {
-    VersionOrder::of(ecosystem)
-        .ok_or_else(|| SelectorError::UnorderedEcosystem(ecosystem.to_owned()))
+    VersionOrder::of(ecosystem).ok_or_else(|| SelectorError::UnknownEcosystem(ecosystem.to_owned()))
 }
 
 /// One exact version, refusing a range in an ecosystem's own notation by name.
@@ -1026,20 +1033,28 @@ mod tests {
         let post = canon("pypi", Some("x"), Some("vers:pypi/>=1.0|<1.0.post2"), None);
         assert!(post.matches("pypi", "x", "1.0-1", false));
         assert!(!post.matches("pypi", "x", "1.0.post2", false));
-
-        assert_eq!(
-            canon("gem", Some("Serde"), None, None).name,
-            NamePattern::Exact("Serde".to_owned())
-        );
     }
 
     #[test]
     fn a_version_that_cannot_be_read_is_refused_by_what_is_wrong_with_it() {
         let refused = |selector: Selector| Canonical::of(&selector).unwrap_err();
-        assert_eq!(
-            refused(sel("gem", Some("serde"), Some("1.0.0"), None)),
-            SelectorError::UnorderedEcosystem("gem".to_owned())
-        );
+        for version in [Some("1.0.0"), None] {
+            assert_eq!(
+                refused(sel("gem", Some("serde"), version, None)),
+                SelectorError::UnknownEcosystem("gem".to_owned()),
+                "an entry for an ecosystem this build does not serve matches nothing"
+            );
+        }
+        for (purl, version) in [
+            ("pkg:gem/rails@7.0.0", None),
+            ("pkg:gem/rails", Some("vers:gem/<7")),
+        ] {
+            assert_eq!(
+                Canonical::of_denial(purl, version),
+                Err(SelectorError::UnknownEcosystem("gem".to_owned())),
+                "{purl}"
+            );
+        }
         assert!(matches!(
             refused(sel("npm", Some("x"), Some("vers:pypi/>=1.0"), None)),
             SelectorError::Version(_)
@@ -1110,8 +1125,8 @@ mod tests {
             ),
             (SelectorError::PurlAndVersion, "Write it once"),
             (
-                SelectorError::UnorderedEcosystem("gem".to_owned()),
-                "no version order for it",
+                SelectorError::UnknownEcosystem("gem".to_owned()),
+                "It serves npm, pypi, cargo, golang",
             ),
             (SelectorError::NoVersion, "a VERS range in `version`"),
             (

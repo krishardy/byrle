@@ -111,7 +111,7 @@ Exceptions: a setting loosened for the packages a selector matches.
 
 | Key | Value |
 |---|---|
-| `ecosystem` | `npm`, `pypi`, `cargo` or `golang`. Required: npm `requests` and PyPI `requests` are different projects |
+| `ecosystem` | `npm`, `pypi`, `cargo` or `golang`. Required: npm `requests` and PyPI `requests` are different projects. Any other is refused, as it would match nothing |
 | `name` | a name, `prefix*`, or `*`. A `*` anywhere else is refused |
 | `purl` | the package as a purl, with `@version` for one version. Not with `name` |
 | `version` | an exact version, or a VERS range |
