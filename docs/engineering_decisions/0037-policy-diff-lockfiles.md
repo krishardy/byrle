@@ -36,6 +36,7 @@ The file name chooses the reader. A lockfile under any other name is refused.
 | `requirements.txt` | pip's requirement lines | a line pinned with `==`, its name normalised |
 | `Pipfile.lock` | JSON | each entry of `default` and `develop` whose `version` is an `==` pin |
 | `Cargo.lock` | TOML | each `[[package]]` whose `source` is crates.io's, by either protocol: `name` and `version` |
+| `go.sum`, `go.work.sum` | go's checksum lines, by hand | each `<module> <version> h1:` line of a zip; a `<version>/go.mod` line alone is left out, as go reads the `go.mod` of versions it never builds |
 
 In npm, yarn and bun an entry's key can be an alias. The fixtures lock `my-lodash` as
 `npm:lodash@4.17.21`:

@@ -36,6 +36,7 @@ that is not an HTTP URL. The exit code follows `warm` and `audit verify`.
 | `bun.lock` | each package's second element |
 | `uv.lock` | the `url` of each registry package's sdist and every wheel |
 | `Cargo.lock` | none for a crates.io package; a git or other registry's `source` |
+| `go.sum`, `go.work.sum` | none |
 
 - pnpm records no URL for the registry it was configured with, so a pnpm project that
   installs through the proxy sets bit 2 for every package. The registry is in its `.npmrc`,
@@ -54,6 +55,12 @@ that is not an HTTP URL. The exit code follows `warm` and `audit verify`.
   git dependency or another registry's crate is named by its `source`. Added 2026-10-14:
   the probe project's 8 crates read `8 artifacts, 0 through the proxy, 8 with no URL
   recorded`, and `warm` asked for each at `/cargo/crates/<name>/<version>/download`.
+- `go.sum` records a hash and no URL for every module, so every zip sets bit 2; `GOPROXY`
+  is in `go env`. A `GOPRIVATE` module is in the file as any other is, and `warm` asks the
+  proxy for it. Added 2026-10-16: a probe of 5 modules read `5 artifacts, 0 through the
+  proxy, 5 with no URL recorded`. `warm` asked for each at `/go/<module>/@v/<version>.zip`,
+  both escaped, and warmed 5. With `rsc.io/quote@v1.5.2` denied, the proxy answered its zip
+  403.
 
 ## Run on real lockfiles
 

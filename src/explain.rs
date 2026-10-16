@@ -365,12 +365,17 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
     let clients = Clients::from_env(environment).map_err(|e| stopped(2, e))?;
     let metadata = crate::ecosystem::fetched(clients.metadata(reference.key()).await)
         .map_err(|e| stopped(1, e))?;
-    let Some(package) = metadata.version(reference.version()) else {
+    let Some(package) = clients
+        .version_of(&metadata, reference.version())
+        .await
+        .map_err(|e| stopped(1, e))?
+    else {
         return Err(stopped(
             1,
             format!("the registry does not publish {argument}"),
         ));
     };
+    let package = &package;
 
     let full = clients.full_document(reference.key()).await;
     let times = match (full.as_ref(), policy.needs_publish_times()) {
@@ -664,6 +669,39 @@ mod run_tests {
             ["the registry does not publish pkg:npm/lodash@9.9.9"]
         );
     }
+    /// A Go version the list leaves out is judged on its own `.info`, and one whose
+    /// `.info` answers an error stops with exit 1.
+    #[tokio::test]
+    async fn a_go_version_is_read_from_its_own_info() {
+        let path = written("explain-go", "version: 1\ncooldown_days: 36500\n");
+        let purl = "pkg:golang/golang.org/x/text@v0.0.0-20170915032832-14c0d48ead0c";
+        let info = crate::ecosystem::go::fixture("text-pseudo.info");
+        let decided = scripted(vec![Answer::body("v0.3.0\n"), Answer::body(info)]).await;
+        let failed = scripted(vec![Answer::body("v0.3.0\n"), Answer::Status(500)]).await;
+        let asking = |addr: std::net::SocketAddr| {
+            with(&[
+                (crate::env::POLICY, &path.display().to_string()),
+                (crate::env::UPSTREAM_GO, &format!("http://{addr}")),
+            ])
+        };
+        let answered = run(&asked(Some(purl)), &asking(decided)).await;
+        assert_eq!(answered.code, 0, "{:?}", answered.notes);
+        assert!(
+            answered
+                .answer
+                .contains("published 2017-09-15, cooldown_days 36500"),
+            "{}",
+            answered.answer
+        );
+        let answered = run(&asked(Some(purl)), &asking(failed)).await;
+        assert_eq!(answered.code, 1);
+        assert!(
+            answered.notes[0].ends_with(".info answered 500"),
+            "{:?}",
+            answered.notes
+        );
+    }
+
     /// Each thing that stops `explain` before an answer, with the code it exits with.
     #[tokio::test]
     async fn each_stop_names_its_cause_and_exit_code() {

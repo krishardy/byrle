@@ -250,6 +250,20 @@ impl Clients {
         self.of(key).version(key, version).await
     }
 
+    /// The record of `version` of `metadata`'s package: read on its own where the
+    /// ecosystem serves versions its document does not list, else `metadata`'s.
+    /// `Ok(None)` when neither has it.
+    pub async fn version_of(
+        &self,
+        metadata: &PackageMetadata,
+        version: &str,
+    ) -> Result<Option<crate::record::PackageRecord>, String> {
+        Ok(match self.version(&metadata.key, version).await? {
+            Some(alone) => Some(alone),
+            None => metadata.version(version).cloned(),
+        })
+    }
+
     /// A time for each of `metadata`'s versions: [`Fetch::dated`].
     pub async fn dated(
         &self,

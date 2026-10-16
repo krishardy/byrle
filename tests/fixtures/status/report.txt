@@ -44,7 +44,7 @@ golang
   versions         SemVer 2.0 after a `v`
   checks           no meaning here: install_scripts, yanked, deprecated
   clients          none checked by doctor
-  client lockfiles none read
+  client lockfiles go.sum, go.work.sum
   streams          osv/go
   loaded           none of them
   not covered      match, malware

@@ -429,8 +429,10 @@ impl Comparison {
             Ok(metadata) => metadata,
             Err(e) => return Ok(Compared::Unread(e)),
         };
-        let Some(record) = metadata.version(version) else {
-            return Ok(Compared::Unpublished);
+        let record = match self.clients.version_of(&metadata, version).await {
+            Ok(Some(record)) => record,
+            Ok(None) => return Ok(Compared::Unpublished),
+            Err(e) => return Ok(Compared::Unread(e)),
         };
         let times = if self.needs_times {
             match self.clients.publish_times(reference.key()).await {
@@ -462,7 +464,7 @@ impl Comparison {
                         policy,
                         as_of,
                         &metadata.records,
-                        record,
+                        &record,
                         version,
                         times.as_ref(),
                         intel.as_ref(),
@@ -701,6 +703,48 @@ mod run_tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// A Go version the list leaves out is decided on its own `.info`, and one whose
+    /// `.info` answers an error is counted.
+    #[tokio::test]
+    async fn a_go_version_is_read_from_its_own_info() {
+        let (dir, mut args) = written(
+            "diff-go",
+            "version: 1\ncooldown_days: 0\n",
+            "version: 1\ncooldown_days: 36500\n",
+        );
+        let sum = dir.join("go.sum");
+        std::fs::write(
+            &sum,
+            "golang.org/x/text v0.0.0-20170915032832-14c0d48ead0c h1:x=\n",
+        )
+        .expect("writes");
+        args.lockfile = vec![sum];
+        let info = crate::ecosystem::go::fixture("text-pseudo.info");
+        let decided = scripted(vec![Answer::body("v0.3.0\n"), Answer::body(info)]).await;
+        let run_with = |addr: std::net::SocketAddr| {
+            with(&[(crate::env::UPSTREAM_GO, &format!("http://{addr}"))])
+        };
+        let decided = run(&args, &run_with(decided)).await;
+        assert_eq!(decided.code, TIGHTENED, "{:?}", decided.notes);
+        assert!(
+            decided.report.contains(
+                "pkg:golang/golang.org/x/text@v0.0.0-20170915032832-14c0d48ead0c  allow -> quarantine"
+            ),
+            "{}",
+            decided.report
+        );
+
+        let failed = scripted(vec![Answer::body("v0.3.0\n"), Answer::Status(500)]).await;
+        let failed = run(&args, &run_with(failed)).await;
+        assert_eq!(failed.code, ERROR, "{:?}", failed.notes);
+        assert!(
+            failed.notes[0].ends_with(".info answered 500"),
+            "{:?}",
+            failed.notes
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The registry the scripted lodash packument is served from, as an environment pair.
     async fn lodash_registry() -> String {
         let addr = scripted(vec![Answer::body(crate::ecosystem::npm::fixture(

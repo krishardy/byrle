@@ -3,6 +3,7 @@
 
 pub mod dirhash;
 pub mod inspect;
+pub mod lockfile;
 pub mod note;
 pub mod paths;
 pub mod sumdb;
@@ -43,8 +44,8 @@ pub const REGISTRY: Registry = Registry {
         ),
     },
     streams: &[&OSV],
-    lockfiles: &[],
-    unread_lockfiles: &[],
+    lockfiles: lockfile::LOCKFILES,
+    unread_lockfiles: lockfile::UNREAD,
     clients: &[],
     setup: Setup {
         client: "go",

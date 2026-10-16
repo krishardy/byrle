@@ -25,7 +25,12 @@ pub struct Info {
 /// that is not a Go version.
 pub fn listed(line: &[u8]) -> Option<&str> {
     let word = std::str::from_utf8(line).ok()?.split_whitespace().next()?;
-    (word.starts_with('v') && VersionOrder::Go.parse(word).is_some()).then_some(word)
+    is_version(word).then_some(word)
+}
+
+/// Whether `word` is a Go version: `v` and a semantic version, as go writes every one.
+pub fn is_version(word: &str) -> bool {
+    word.starts_with('v') && VersionOrder::Go.parse(word).is_some()
 }
 
 /// `versions` in the order the go command prefers them, as `@latest` does: releases newest

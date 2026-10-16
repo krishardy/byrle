@@ -160,7 +160,11 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
       `v0.0.1-go1.24rc2.linux-amd64` is `1.24.0-rc.2`, so GO-2025-3383, fixed in
       `1.24.0-rc.2`, is against go1.24rc1 and not go1.24rc2. Six of the 34 toolchain
       records end a range at an rc, and 1,141 of the toolchain's versions are rcs.
-4. `go.sum` for `warm`, `policy diff` and `lockfile verify`.
+4. `go.sum` for `warm`, `policy diff` and `lockfile verify`. Done 2026-10-16:
+   `ecosystem::go::lockfile` reads `go.sum` and `go.work.sum`. A version is locked by its
+   zip's line; a `/go.mod` line alone is not. `policy diff` and `explain` read a version
+   from its own `.info` before the list, as the proxy does: before, both answered
+   `golang.org/x/text@v0.0.0-20170915032832-14c0d48ead0c` as not published.
 5. `byrle doctor` for `go env`: `GOPROXY`, `GOSUMDB`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`.
 6. `make smoke-go`: `go build` of a real module through the proxy over https, with a token,
    a refused version, a cooldown, an advisory, and a toolchain download. A first fetch
