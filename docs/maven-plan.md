@@ -215,7 +215,18 @@ Q2, Q7 and Q9 otherwise.
       signature by a key since expired verifies when made before the expiry; a revocation
       is read as RFC 9580 reads it; a key no key server holds fails verification.
 3. `VersionOrder::Maven`, Maven's `ComparableVersion` order, checked against Maven
-   3.10.0's own comparison over every version in OSV's `Maven` ranges.
+   3.10.0's own comparison over every version in OSV's `Maven` ranges. Done 2026-10-16:
+   `intel::maven`, ported from `maven-artifact` 3.10.0's `ComparableVersion.java`. OSV's
+   `Maven/all.zip` names 40,883 distinct versions. Over 1,000,529 pairs of them, each
+   with its neighbour by text and the rest drawn at random, byrle and Maven gave the same
+   answer for every pair. Maven's order is not total. In Maven 3.10.0 and in byrle,
+   `1.0-dev-2.20021231.045254` < `1.0.0.beta.2` < `1.0.0` < `1.0-dev-2.20021231.045254`.
+   So the sorted lists differ by sort algorithm, and Rust's sort of the 40,492 versions
+   that start with a digit panicked: "user-provided comparison function does not
+   correctly implement a total order". A range's events are now sorted by insertion,
+   which ends whatever the order, and no Maven version is given to a std sort. Step
+   4.4's dating needs no sort; `<latest>` and `<release>` are a maximum.
+   `make mutants`: 88 mutants, 67 caught, 21 unviable.
 4. The Maven adapter, with the hooks of "The adapter, checked against today's
    `Registry`". npm, PyPI, cargo and Go unchanged. In six parts, each refusing what it
    cannot yet check:

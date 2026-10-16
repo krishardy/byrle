@@ -1,11 +1,12 @@
 //! OSV version ranges, ordered by each ecosystem's own rules: SemVer 2.0 for npm, PEP 440
-//! for PyPI. Events are evaluated into intervals once, at load.
+//! for PyPI, `ComparableVersion` for Maven. Events are evaluated into intervals once, at load.
 //!
 //! See docs/engineering_decisions/0029-osv-ranges-and-scores.md.
 
 use semver::{BuildMetadata, Version};
 use std::collections::BTreeMap;
 
+use super::maven::Version as Maven;
 use super::pep440::Version as Pep440;
 use crate::identity::Ecosystem;
 
@@ -18,6 +19,8 @@ pub enum VersionOrder {
     Pep440,
     /// SemVer 2.0 after a `v`, as Go writes a module version. OSV writes it without the `v`.
     Go,
+    /// Maven's `ComparableVersion`, under which any string is a version.
+    Maven,
 }
 
 /// A version as its ecosystem orders it. Only versions of one ecosystem are compared.
@@ -25,6 +28,7 @@ pub enum VersionOrder {
 pub enum Ordered {
     SemVer(Version),
     Pep440(Pep440),
+    Maven(Maven),
 }
 
 impl VersionOrder {
@@ -41,16 +45,29 @@ impl VersionOrder {
             Self::SemVer => version(s).map(Ordered::SemVer),
             Self::Pep440 => Pep440::parse(s).map(Ordered::Pep440),
             Self::Go => version(&Self::Go.normalised(s)?).map(Ordered::SemVer),
+            Self::Maven => Some(Ordered::Maven(Maven::parse(s))),
         }
     }
 
     /// The form a version is stored in: [`padded`] for SemVer, and PEP 440's normalised
-    /// form, so `1.0-1` is `1.0.post1`. `None` when it is not a version.
+    /// form, so `1.0-1` is `1.0.post1`. `None` when it is not a version. A Maven version
+    /// as written: `1.0` and `1.0.0` are equal in its order, and two directories on Central.
     pub fn normalised(self, s: &str) -> Option<String> {
         match self {
             Self::SemVer => padded(s),
             Self::Pep440 => Pep440::parse(s).map(|v| v.to_string()),
             Self::Go => toolchain(s).or_else(|| padded(unprefixed(s))),
+            Self::Maven => Some(s.to_owned()),
+        }
+    }
+
+    /// The order as `byrle status` names it.
+    pub fn said(self) -> &'static str {
+        match self {
+            Self::SemVer => "SemVer 2.0",
+            Self::Pep440 => "PEP 440",
+            Self::Go => "SemVer 2.0 after a `v`",
+            Self::Maven => "Maven's ComparableVersion",
         }
     }
 }
@@ -234,6 +251,7 @@ enum Kind {
 }
 
 /// The intervals a range's events describe, each version [`VersionOrder::normalised`].
+/// The events are sorted by insertion, which ends on an order that is not total, as Maven's.
 pub fn intervals(
     order: VersionOrder,
     kind: Option<&str>,
@@ -244,7 +262,7 @@ pub fn intervals(
         other => return Err(Unstorable::Type(other.unwrap_or_default().to_owned())),
     }
 
-    let mut sorted = Vec::with_capacity(events.len());
+    let mut sorted: Vec<(Option<Ordered>, Kind, String)> = Vec::with_capacity(events.len());
     for event in events {
         let [(key, value)] = event.iter().collect::<Vec<_>>()[..] else {
             return Err(Unstorable::Malformed);
@@ -264,9 +282,9 @@ pub fn intervals(
                 (order.parse(&written), written)
             }
         };
-        sorted.push((at, kind, written));
+        let after = sorted.iter().rposition(|(other, ..)| *other <= at);
+        sorted.insert(after.map_or(0, |i| i + 1), (at, kind, written));
     }
-    sorted.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut out = Vec::new();
     let mut open: Option<Option<String>> = None;
@@ -360,10 +378,13 @@ mod tests {
     }
 
     fn parsed(interval: &Interval<String>) -> Interval<Ordered> {
+        parsed_by(VersionOrder::SemVer, interval)
+    }
+
+    fn parsed_by(order: VersionOrder, interval: &Interval<String>) -> Interval<Ordered> {
         let (fixed, last) = interval.end.columns();
         let (introduced, excluded) = interval.start.columns();
-        Interval::from_columns(VersionOrder::SemVer, introduced, excluded, fixed, last)
-            .expect("parses")
+        Interval::from_columns(order, introduced, excluded, fixed, last).expect("parses")
     }
 
     /// Whether any interval of `pairs` holds `v`.
@@ -757,5 +778,57 @@ mod tests {
             ),
             None
         );
+    }
+
+    /// OSV writes a Maven range as `ECOSYSTEM`, compared in Maven's order: GHSA-qjw2-hr98-qgfh
+    /// is fixed in jackson-databind 2.12.7.1, which is above 2.12.7 and below 2.13.0.
+    #[test]
+    fn a_maven_range_is_compared_in_maven_s_order() {
+        let maven = VersionOrder::Maven;
+        let written = intervals(
+            maven,
+            Some("ECOSYSTEM"),
+            &events(&[("introduced", "2.12.0"), ("fixed", "2.12.7.1")]),
+        )
+        .expect("storable");
+        let range = parsed_by(maven, &written[0]);
+        let v = |s| maven.parse(s).expect("any string is a Maven version");
+        assert!(
+            !range.contains(&v("2.12.0-rc1")),
+            "a release candidate is below 2.12.0"
+        );
+        assert!(range.contains(&v("2.12.7")));
+        assert!(!range.contains(&v("2.12.7.1")));
+        assert!(!range.contains(&v("2.13.0")));
+        assert_eq!(
+            maven.normalised("1.0"),
+            Some("1.0".to_owned()),
+            "kept as written"
+        );
+        assert_eq!(stored(maven, "2.12.7.1"), "2.12.7.1");
+    }
+
+    /// Maven's order has a cycle, which std's sorts may panic on. A range's events are
+    /// sorted by insertion, which ends whatever the order.
+    #[test]
+    fn a_range_whose_versions_are_a_cycle_in_maven_s_order_is_read() {
+        let read = intervals(
+            VersionOrder::Maven,
+            Some("ECOSYSTEM"),
+            &events(&[
+                ("introduced", "1.0-dev-2.20021231.045254"),
+                ("fixed", "1.0.0.beta.2"),
+                ("introduced", "1.0.0"),
+            ]),
+        );
+        assert!(read.is_ok());
+    }
+
+    #[test]
+    fn each_order_names_itself() {
+        assert_eq!(VersionOrder::SemVer.said(), "SemVer 2.0");
+        assert_eq!(VersionOrder::Pep440.said(), "PEP 440");
+        assert_eq!(VersionOrder::Go.said(), "SemVer 2.0 after a `v`");
+        assert_eq!(VersionOrder::Maven.said(), "Maven's ComparableVersion");
     }
 }
