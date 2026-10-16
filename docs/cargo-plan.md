@@ -55,18 +55,19 @@ twice more.
 
 Each branch point is one of the questions below. A cell the adapter cannot answer would
 make the interface change again, so each is checked before any code. npm, PyPI, cargo and
-Go were measured 2026-10-14; Maven Central answers this machine's forward proxy with 403,
-so its column is from its documented repository layout, unmeasured.
+Go were measured 2026-10-14. Maven Central answered this machine's forward proxy with 403
+that day, so its column was written from the documented repository layout; it was measured
+on 2026-10-16 and corrected from [maven-plan](maven-plan.md).
 
 | Question | npm | PyPI | cargo | Go | Maven |
 |---|---|---|---|---|---|
 | Route a path to metadata or artifact | packument, tarball | simple page, file | index line file, `.crate` | `@v/list`, `.info`, `.mod`, `.zip` | `maven-metadata.xml`, `.pom`, `.jar` |
 | Read and filter a document | JSON object of versions | JSON or HTML list of files | JSON lines, one per version | text, one version per line | XML `<versions>` |
 | Publish time | full packument, a second request | the file's `upload-time`, or the host's `Last-Modified` | `pubtime` on each line | `Time` in `@v/<ver>.info`, a request per version | the artifact's `Last-Modified`, a request per version |
-| Artifact digest | SRI in the document, checked while streaming | sha256 in the document, streaming | `cksum`, sha256, streaming | `h1:`, a hash over the zip's files, from `sum.golang.org`: checked after the whole zip is read | `.sha1` or `.sha256` beside the file, a second request |
-| Code run at install or build | `package.json` scripts | an sdist's build | build script, proc-macro (Q4) | none | none: a dependency's plugins do not run |
+| Artifact digest | SRI in the document, checked while streaming | sha256 in the document, streaming | `cksum`, sha256, streaming | `h1:`, a hash over the zip's files, from `sum.golang.org`: checked after the whole zip is read | `.sha1` beside every file, `.sha256` beside 21 of 94 jars, a second request |
+| Code run at install or build | `package.json` scripts | an sdist's build | build script, proc-macro (Q4) | none | an annotation processor in a dependency's jar, run by javac on JDK 21, not on JDK 25 |
 | Source to compare with | `repository` | none today | `.cargo_vcs_info.json` names the commit | the zip is the repository at a tag | `-sources.jar` |
-| Attestations | Sigstore | Sigstore (PEP 740) | none; `trustpub_data` (Q5) | none; the checksum database | PGP `.asc` |
+| Attestations | Sigstore | Sigstore (PEP 740) | none; `trustpub_data` (Q5) | none; the checksum database | PGP `.asc`, beside 93 of 94 jars |
 | Lockfile | `package-lock.json` and others | `requirements.txt`, `uv.lock` | `Cargo.lock` | `go.sum` | none standard |
 | Client configuration | `.npmrc` | `pip.conf`, `uv.toml` | `~/.cargo/config.toml` source replacement | `GOPROXY` | `settings.xml` mirror |
 | Token sent as | `Bearer`, `Basic` | `Basic` | bare `Authorization` (Q3) | `Basic`, from `.netrc` | `Basic`, from `settings.xml` |
