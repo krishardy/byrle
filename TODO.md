@@ -403,6 +403,10 @@ Items that I've added that are not stage-bound.
     (`decide::most_specific_match`), and two entries that overlap and neither contains the
     other are refused at load, `PolicyError::Overlapping`
     ([policy-tier-resolution](docs/engineering_decisions/0023-policy-tier-resolution.md)).
+39. Terraform deployment scripts for dev, staging and prod. Raised 2026-10-16. Done in a
+    separate repository, `byrle-deploy`, not this one.
+40. End-to-end tests run against each environment after a deployment. Raised 2026-10-16.
+    Done in `byrle-deploy`, with #39.
 
 ## Architecture Refactor
 
