@@ -394,6 +394,15 @@ Items that I've added that are not stage-bound.
     `smoke-clients` skips a client that is not installed. Raised 2026-10-16. Touches
     `Makefile`, `dev-setup.sh`, `coverage.sh`, `inspect.sh`, `project_plan.md` and
     `duplication-catalogue.md`.
+37. In `policy.yaml`'s `packages`, rename `vuln_advisory_ids` to `ignored_vuln_advisory_ids`.
+    Raised 2026-10-16. [policy-schema-v1-frozen](docs/engineering_decisions/0030-policy-schema-v1-frozen.md)
+    closes `version: 1` to a renamed key, so the new name is `version: 2`'s.
+38. In `policy.yaml`'s `packages`, when more than one entry matches a package, apply the
+    union of their `set` blocks, in order from entry 0 to n. Raised 2026-10-16. Today one
+    whole entry applies, the most specific by strict subset containment
+    (`decide::most_specific_match`), and two entries that overlap and neither contains the
+    other are refused at load, `PolicyError::Overlapping`
+    ([policy-tier-resolution](docs/engineering_decisions/0023-policy-tier-resolution.md)).
 
 ## Architecture Refactor
 
