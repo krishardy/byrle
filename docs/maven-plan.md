@@ -190,7 +190,7 @@ Answered 2026-10-16.
 | Q6 | The `.pom`'s `Last-Modified` |
 | Q7 | The proxy reads Basic and Bearer already ([request-flow](request-flow.md), forms 2 and 3). The quickstart shows Basic first, from `settings.xml`'s `<server>` and the init script's `credentials { }`, and Bearer second, from `<httpHeaders>` and `HttpHeaderCredentials`, as Artifactory documents both |
 | Q8 | `/gradle-plugins/` |
-| Q9 | Served under `/gradle-dists/`, relaying `services.gradle.org/distributions`, checked against its `.sha256`, under a cooldown on Gradle releases |
+| Q9 | Not served: `./gradlew` fetches the distribution from `services.gradle.org` itself. `byrle doctor` reads the version from `gradle-wrapper.properties`'s `distributionUrl` and reports a missing `distributionSha256Sum`, one that differs from `services.gradle.org/versions/all`'s `checksum`, a `gradle-wrapper.jar` whose sha256 differs from its `wrapperChecksum`, and a version whose `buildTime` is inside the cooldown |
 | Q10 | Yes: Gradle 9.8.1 pinned beside `scripts/make/lib/java.sh`, checked against its sha256, watched by `check-deps` |
 
 ## Steps
