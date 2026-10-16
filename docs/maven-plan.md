@@ -190,7 +190,7 @@ Q2, Q7 and Q9 otherwise.
 | | Question | Decided |
 |---|---|---|
 | Q1 | Where Maven is served | `/maven/` |
-| Q2 | Where a jar's strong digest comes from | Both. The `.sha256` or `.sha512` when published, otherwise the `.sha1`, checked against the bytes in the claim job and served against their sha256, in a decision superseding 0017 for Maven. The `.asc` is also verified when its key is found: a bad signature refuses the file. A file with no `.asc`, or with a key not found, expired or revoked, is decided by a new policy key, off by default |
+| Q2 | Where a jar's strong digest comes from | Both. The `.sha256` or `.sha512` when published, otherwise the `.sha1`, checked against the bytes in the claim job and served against their sha256, in a decision superseding 0017 for Maven. The `.asc` is decided by `provenance`, extended to PGP: see step 2.2 |
 | Q3 | Whether a `.pom` is refused by policy | No. A `.pom` is checked against its sidecar and signature, and not refused by policy |
 | Q4 | Annotation processors | `install_scripts`, read from the jar's `META-INF/services/javax.annotation.processing.Processor` |
 | Q5 | Plugins | Decided as any artifact. A plugin jar holds `META-INF/maven/plugin.xml` or `META-INF/gradle-plugins/<id>.properties`; 9 of the 94 jars mvn fetched were plugins from Maven 3.10.0's default lifecycle, which the probe's `pom.xml` did not declare |
@@ -209,10 +209,21 @@ Q2, Q7 and Q9 otherwise.
    1. 0112, Maven digests (Q2): a `.sha256` or `.sha512` when published, otherwise the
       `.sha1` checked against the bytes in the claim job and served against their sha256.
       It names 0017, which keeps npm, PyPI and cargo.
-   2. 0113, Maven signatures (Q2): the `.asc` verified with a key from keys.openpgp.org
-      or keyserver.ubuntu.com; a bad signature refuses the file; no `.asc`, or a key not
-      found, expired or revoked, is decided by a new policy key, off by default. Which
-      key is trusted for a group is not yet decided.
+   2. 0113, Maven signatures (Q2): [provenance-check](engineering_decisions/0066-provenance-check.md)'s
+      three cases, with a PGP key's fingerprint as the identity in place of a repository
+      and workflow file. Decided by the user 2026-10-16. `provenance: block`, the default,
+      refuses a version when:
+
+      | Case | 0066's | Maven's |
+      |---|---|---|
+      | 1 | an attestation that fails verification | a jar's `.asc` that fails verification with its key from keys.openpgp.org or keyserver.ubuntu.com |
+      | 2 | none, after a version with one | no `.asc`, after a version with one |
+      | 3 | a repository and workflow file no attested version from `provenance_window_days` before used | a key no signed version of the artifact from `provenance_window_days` before used |
+
+      0113 also decides a key found on no key server, and the signatures of the 4 of 93
+      jars by a key expired since and the 1 by a key revoked since. Cases 2 and 3 need the
+      earlier versions' `.asc`s: their keys are kept per artifact, as times are in step 4.4.
+      `set: { provenance: allow }` releases all three, as for npm and PyPI.
 3. `VersionOrder::Maven`, Maven's `ComparableVersion` order, checked against Maven
    3.10.0's own comparison over every version in OSV's `Maven` ranges.
 4. The Maven adapter, with the hooks of "The adapter, checked against today's
