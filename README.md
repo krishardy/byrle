@@ -92,18 +92,14 @@ throughout the core.
 
 **Controls that need no threat intelligence at all.** Cooldown periods on newly
 published versions, lifecycle script policy, provenance enforcement, and
-registry-versus-source diffing all cover the publish-to-detection gap that feed-driven
-tools cannot see into.
+registry-versus-source diffing.
 
 **Pluggable advisory streams.** OSV (which carries the OSSF malicious-packages records),
 GitHub advisories, Datadog's malicious-packages dataset and CISA KEV are all free and
-public. `byrle refresh` loads them into a local Postgres store, and the proxy asks only
-that store, so a lookup never tells an upstream which packages you use. No commercial
-vendor will aggregate every free feed, because each is selling their own.
+public.
 
 **A policy engine you can read.** `byrle explain` shows the policy in force, and for a
-package, the verdict and each check that produced it. Policy engines nobody can inspect
-stay stuck in observe mode forever.
+package, the verdict and each check that produced it.
 
 ## Ecosystem support
 
