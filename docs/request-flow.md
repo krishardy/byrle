@@ -3,10 +3,10 @@
 How the proxy answers one request, and where each status code comes from. Every path
 below is read from below `BYRLE_PROXY_URL`'s path: `/registry/npm/lodash` is `/npm/lodash`
 under `https://h/registry/`. Each ecosystem is served under its own prefix, `/npm/`,
-`/pypi/` and `/cargo/` ([ecosystem-path-prefixes](engineering_decisions/0111-ecosystem-path-prefixes.md)).
+`/pypi/`, `/cargo/` and `/go/` ([ecosystem-path-prefixes](engineering_decisions/0111-ecosystem-path-prefixes.md)).
 Read from
 `handle`, `admit` and `Exchange`, `decide_artifact` and `Deciding`, and `filtered_document`
-in `src/proxy.rs`, on 2026-09-28, and `admit` on 2026-10-11.
+in `src/proxy.rs`, on 2026-09-28, `admit` on 2026-10-11, and Go's claim on 2026-10-16.
 
 With `BYRLE_MODE=observe`, a refusal by policy is logged at WARN and the request goes on
 to the next check, and a metadata document keeps the versions the policy refuses. Every
@@ -27,7 +27,7 @@ flowchart TD
     OWN -->|/-/byrle/ready| READY{intel store configured<br/>and not loaded?}
     READY -->|no| R200[200]
     READY -->|yes| R503[503]
-    OWN -->|anything else| PREFIX{under /npm/, /pypi/<br/>or /cargo/?}
+    OWN -->|anything else| PREFIX{under /npm/, /pypi/,<br/>/cargo/ or /go/?}
     PREFIX -->|no| P404[404: under no<br/>ecosystem's prefix]
     PREFIX -->|yes| TOKEN{token required?<br/>BYRLE_REQUIRE_TOKEN}
     TOKEN -->|no| KIND{what the path names}
@@ -38,11 +38,19 @@ flowchart TD
 
     KIND -->|artifact, GET| LOOKUP{metadata for the package<br/>held, or fetched now}
     KIND -->|metadata document| FWD
+    KIND -->|Go sumdb/sum.golang.org/supported| SUP[200, written by the proxy]
+    KIND -->|Go sumdb/sum.golang.org/ anything else| FWD
+    KIND -->|Go .mod| MOD{sum.golang.org's claim<br/>for the version}
+    MOD -->|no proved answer| M503[503 checksum-database]
+    MOD -->|no record| MREF[refusal status]
+    MOD -->|a record| MFWD[fetched; 502 when its h1:<br/>is not the one claimed]
     KIND -->|artifact HEAD, or anything else| FWD
 
     LOOKUP -->|registry gave none| A502M[502: the registry gave<br/>no metadata]
     LOOKUP -->|names neither the version<br/>nor the file| AREF1[refusal status:<br/>cannot be assessed]
-    LOOKUP -->|record found| INTEL{intel store, when a<br/>policy and a store are set}
+    LOOKUP -->|record found| CLAIM{Go: sum.golang.org's<br/>claim for the zip}
+    CLAIM -->|no proved answer| C503[503 checksum-database]
+    CLAIM -->|a record, no record,<br/>or not Go| INTEL{intel store, when a<br/>policy and a store are set}
 
     INTEL -->|cannot answer| A503I[503 intel-store]
     INTEL -->|no stream covers<br/>the ecosystem| A503E[503 no-stream-for-ecosystem]
@@ -51,11 +59,11 @@ flowchart TD
     POLICY -->|refuses: denial, cooldown,<br/>advisory, KEV, malware,<br/>install scripts, provenance,<br/>yanked, deprecated| AREF2[refusal status:<br/>refused by policy]
     POLICY -->|passes| ORIGIN{artifact on an origin<br/>the proxy does not serve?}
     ORIGIN -->|yes| AREF3[refusal status]
-    ORIGIN -->|no| DIGEST{strong digest<br/>published?}
+    ORIGIN -->|no| DIGEST{strong digest published,<br/>or for Go claimed?}
     DIGEST -->|no| AREF4[refusal status:<br/>cannot be assessed]
     DIGEST -->|yes| ANALYSIS{analysis of these bytes}
 
-    ANALYSIS -->|last fetch did not<br/>match the digest| A502X[502: bytes the metadata<br/>does not describe]
+    ANALYSIS -->|last fetch did not<br/>match the digest; a Go zip<br/>not the one claimed| A502X[502: bytes the metadata<br/>does not describe]
     ANALYSIS -->|not finished, or never<br/>stored: upstream 404,<br/>fetch failed, past deadline| A503A[503 artifact-analysis<br/>job started]
     ANALYSIS -->|stored, or nothing to read| AWAITED{awaited detector<br/>result stored?}
     AWAITED -->|no: cargo's trustpub| A503D[503 artifact-analysis<br/>lookup started]
@@ -85,12 +93,12 @@ flowchart TD
 
 | Code | Produced by | When |
 |---|---|---|
-| 200 | proxy | health; ready; a verified artifact; a filtered and rewritten metadata document |
+| 200 | proxy | health; ready; a verified artifact; a filtered and rewritten metadata document; Go's `sumdb/sum.golang.org/supported`, empty |
 | 401 | proxy | a token is required and the request has none in a form read; its token is unknown, revoked or of a disabled account; or its Basic username is not the token's account |
 | 404 | proxy | the path is outside `BYRLE_PROXY_URL`'s path, or under no ecosystem's prefix; a Go `@latest` naming a version the policy refuses |
 | 304 and every other upstream status | upstream | forwarded unchanged, including a 404 for a missing document or artifact |
 | refusal status, 403 by default | proxy | the policy refuses the version; its artifact is on an origin the proxy does not serve; no strong digest; the metadata names neither the version nor the file; Go's checksum database holds no record of a `go.mod`'s version |
-| 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims |
+| 502 | proxy | the upstream could not be reached or stalled; a metadata body failed; the registry gave no metadata for an artifact's package; the analysis job's fetch of the artifact did not match its digest; a Go `go.mod` is not the one the checksum database claims; a Go zip that is not the one claimed, is no zip, or is over the spool's ceiling, until the process restarts; a Go version's `.info` cannot be read |
 | 503 | proxy | not ready: `account-store`, `intel-store`, `no-stream-for-ecosystem`, `checksum-database`, `artifact-analysis`; `/-/byrle/ready` before intel has loaded |
 
 An artifact whose bytes do not match the digest has already been sent a 200. The last
@@ -112,7 +120,7 @@ these it finds, and only that one:
 |---|---|---|
 | 1 | `X-Byrle-Token: <token>` | a client that sets a custom header; `byrle warm` with `BYRLE_TOKEN` |
 | 2 | `Authorization: Bearer <token>` | npm, pnpm, yarn 1 and bun with `_authToken` or `token` |
-| 3 | `Authorization: Basic`, the account as username and the token as password | pip and uv with `account:token@` in the index URL |
+| 3 | `Authorization: Basic`, the account as username and the token as password | pip and uv with `account:token@` in the index URL; go with it in `GOPROXY`, over https only |
 | 4 | `Authorization: <token>`, the token alone, starting `byrle_` | cargo, with `auth-required` in the proxy's `config.json` |
 
 Each request asks the account store, and keeps no answer: a revoked token or a disabled

@@ -69,10 +69,10 @@ One value each for the whole deployment.
 | `version` | `1` | required | | |
 | `cooldown_days` | a whole number of days | 7 | a version published fewer days ago, with `quarantine` | lower |
 | `max_cvss` | a number | 6.9 | a version with an advisory scored above it, or scored by no stream and not in `advisory_scores` | higher |
-| `install_scripts` | `block` or `allow` | `block` | a version whose artifact runs an install script; for a crate, a build script or a proc-macro | `allow` |
+| `install_scripts` | `block` or `allow` | `block` | a version whose artifact runs an install script; for a crate, a build script or a proc-macro. No meaning for a Go module: a build runs none of its code | `allow` |
 | `kev` | `block` or `allow` | `block` | a version with an advisory in CISA's known-exploited catalogue | `allow` |
-| `yanked` | `block` or `allow` | `block` | a PyPI file its publisher yanked; npm has no yank | `allow` |
-| `deprecated` | `block` or `allow` | `allow` | an npm version its publisher deprecated; PyPI has no marker | `allow` |
+| `yanked` | `block` or `allow` | `block` | a PyPI file its publisher yanked; npm has no yank, and Go's `retract` is not read | `allow` |
+| `deprecated` | `block` or `allow` | `allow` | an npm version its publisher deprecated; PyPI has no marker, and Go's `// Deprecated:` is not read | `allow` |
 | `provenance` | `block` or `allow` | `block` | an attestation that does not verify, a version with none after one with one, or a repository and workflow no version from before the window used ([provenance-check](engineering_decisions/0066-provenance-check.md)) | `allow` |
 | `provenance_window_days` | a whole number of days | 7 | | a shorter window establishes a new repository or workflow sooner |
 
@@ -111,14 +111,17 @@ Exceptions: a setting loosened for the packages a selector matches.
 
 | Key | Value |
 |---|---|
-| `ecosystem` | `npm` or `pypi`. Required: npm `requests` and PyPI `requests` are different projects |
+| `ecosystem` | `npm`, `pypi`, `cargo` or `golang`. Required: npm `requests` and PyPI `requests` are different projects |
 | `name` | a name, `prefix*`, or `*`. A `*` anywhere else is refused |
 | `purl` | the package as a purl, with `@version` for one version. Not with `name` |
 | `version` | an exact version, or a VERS range |
 | `has_install_scripts` | `true` or `false` |
 
 Names and versions compare the ecosystem's way: a PyPI name by PEP 503, so `Django` is
-`django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`.
+`django`, and a PyPI version by PEP 440, so `1.0` is `1.0.0`. A Go module path compares as
+written, case included, and its purl is `pkg:golang/rsc.io/quote@v1.5.2`. A Go range may
+write its versions with or without the `v`: `vers:golang/>=v1.5.0|<v1.6.0` and
+`vers:golang/>=1.5.0|<1.6.0` both denied `rsc.io/quote@v1.5.2` on 2026-10-16.
 
 ### `set`
 

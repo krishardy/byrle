@@ -6,7 +6,7 @@ decided.
 
 ## What it protects
 
-A developer's or CI machine's installs from npm, PyPI and crates.io. byrle sits between the
+A developer's or CI machine's installs from npm, PyPI, crates.io and the Go module proxy. byrle sits between the
 package manager and the registry, and serves an artifact only after deciding on it:
 
 - a version the policy refuses is removed from the metadata document, so the resolver
@@ -20,7 +20,8 @@ package manager and the registry, and serves an artifact only after deciding on 
 | Party | Trusted for | Not trusted for |
 |---|---|---|
 | The operator | the policy file, the environment, the host | |
-| The registry (npm, PyPI, crates.io, or a mirror) | serving the metadata a publisher uploaded | the bytes: each artifact is checked against the digest the metadata published |
+| The registry (npm, PyPI, crates.io, the Go module proxy, or a mirror) | serving the metadata a publisher uploaded | the bytes: each artifact is checked against the digest the metadata published, or for Go the one sum.golang.org holds |
+| sum.golang.org | each Go module version's `h1:` for its zip and its `go.mod`, once its signed tree head verifies with the Go team's key and the record's inclusion and the tree's consistency are proved ([go-plan](go-plan.md) Q3) | a version it holds no record of: refused, as no strong digest is |
 | A package's publisher | nothing | everything: this is who the policy and the analysis are about |
 | The intel streams (OSV, GitHub advisories, CISA KEV, Datadog) | what they report | completeness: a package no stream reports is not known to be clean |
 | VirusTotal, when `BYRLE_VIRUSTOTAL_API_KEY` is set | its engines' counts, a signal that refuses nothing | anything else. It learns the SHA-256 of each artifact asked about, and with `BYRLE_VIRUSTOTAL_MODE=upload` it receives the bytes of an artifact it does not know from npm's or PyPI's public registry, which joins its dataset ([virustotal](engineering_decisions/0104-virustotal.md)) |
@@ -35,8 +36,8 @@ package manager and the registry, and serves an artifact only after deciding on 
 |---|---|---|
 | A known-malicious version | `known_malware` refuses it, with no exception | `policy::decide`, [intel-in-decisions](engineering_decisions/0026-intel-in-decisions.md) |
 | A version published minutes ago by a hijacked account | `cooldown_days` quarantines it | [quarantine-filter-metadata](engineering_decisions/0013-quarantine-filter-metadata.md) |
-| An install script, declared or not | `install_scripts: block`, decided from the artifact's own `package.json`, sdist, or a `.crate`'s `Cargo.toml`: a build script or a proc-macro. Before a `.crate` is read, cargo's is `not analyzed` | [install-scripts-from-the-artifact](engineering_decisions/0062-install-scripts-from-the-artifact.md) |
-| A release published outside the project's CI | `provenance: block` refuses a dropped attestation, a changed identity, and one that does not verify. crates.io serves no attestations, so it decides nothing for a crate. Its unsigned `trustpub_data` is read for the `trustpub_dropped` and `trustpub_repository_changed` signals ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)) | [provenance-check](engineering_decisions/0066-provenance-check.md) |
+| An install script, declared or not | `install_scripts: block`, decided from the artifact's own `package.json`, sdist, or a `.crate`'s `Cargo.toml`: a build script or a proc-macro. Before a `.crate` is read, cargo's is `not analyzed`. A Go build runs no module's code, so the check has no meaning for Go | [install-scripts-from-the-artifact](engineering_decisions/0062-install-scripts-from-the-artifact.md) |
+| A release published outside the project's CI | `provenance: block` refuses a dropped attestation, a changed identity, and one that does not verify. crates.io and the Go module proxy serve no attestations, so it decides nothing for a crate or a module. Its unsigned `trustpub_data` is read for the `trustpub_dropped` and `trustpub_repository_changed` signals ([cargo-provenance](engineering_decisions/0110-cargo-provenance.md)) | [provenance-check](engineering_decisions/0066-provenance-check.md) |
 | A known vulnerability, or one being exploited | `max_cvss`, `kev` | `policy::decide` |
 | A registry, mirror or network path serving other bytes than the metadata describes | the digest is checked on the way through; the last chunk is held until it matches | [artifact-digest-verification](engineering_decisions/0017-artifact-digest-verification.md) |
 | An artifact on an origin the proxy does not serve, which the client would fetch directly | the version is removed from the metadata, and a pinned fetch is refused | [enforcement-tiers](engineering_decisions/0019-enforcement-tiers.md), tier 3 |
@@ -109,7 +110,7 @@ Each of these is a way for a package to be installed without byrle deciding on i
 | Bypass | What happens | Mitigation |
 |---|---|---|
 | A client pointed back at the public registry | nothing reaches the proxy | `byrle doctor` checks the client configuration; an npm or yarn lockfile records the proxy's address, so CI can check it |
-| A client's own cache | npm, bun and yarn 4 install from their caches without asking | `byrle doctor` warns; clear the cache when onboarding |
+| A client's own cache | npm, bun, yarn 4 and go install from their caches without asking: go 1.27.2 added a version the proxy refused from its module cache | `byrle doctor` warns; clear the cache when onboarding |
 | Installs outside a package manager: IDE extensions, browser extensions, MCP servers | never pass through a configured registry | out of scope; only egress control, tier 5, covers them |
 | An origin in `BYRLE_ALLOW_DIRECT_ORIGINS` | the client fetches those artifacts directly, by the operator's choice | reported by `byrle doctor` and in `/-/byrle/health` |
 | `BYRLE_REFUSE_UNSERVABLE=0` | versions on origins the proxy does not serve are forwarded | a startup warning and `byrle doctor` |
@@ -118,6 +119,10 @@ Each of these is a way for a package to be installed without byrle deciding on i
 | pnpm's lockfile | records no artifact URL, so it cannot evidence that the proxy was used | none in the lockfile |
 | `Cargo.lock` | records crates.io as each crate's source whichever registry replaced it | `byrle doctor` reads `.cargo/config.toml` |
 | A cargo `[patch]`, git or path dependency | cargo fetches it from where it points | `byrle lockfile verify` names a git dependency's source |
+| `GOPROXY` with `\|direct` after the proxy | go asks the module's origin after any error, a refusal included: go 1.27.2 asked `https://rsc.io` for a version the proxy answered 403. After a `,` it asks only on a 404 or 410, and did not after any refusal measured | `byrle doctor` reports the entries after a `\|` as a PROBLEM |
+| `GONOPROXY`, which `GOPRIVATE` sets | go fetches the modules it matches from their origin | `byrle doctor` warns |
+| `-mod=vendor`, or a `vendor/` directory | go builds from the vendored copies and fetches no module | `byrle doctor` warns of `-mod=vendor` in `GOFLAGS` |
+| `go.sum` | records a hash and no URL, so it cannot evidence that the proxy was used | `byrle doctor` reads `go env` |
 | A dependency named by URL, git or path | npm fetches it from where it points | logged `BYPASS` and counted: [bypass-self-detection](engineering_decisions/0069-bypass-self-detection.md) |
 
 ## Out of scope
@@ -129,4 +134,4 @@ Each of these is a way for a package to be installed without byrle deciding on i
 - Code that runs when a package is imported rather than installed. The install-script
   check does not see it: of the 2025 npm incidents measured, chalk/debug and xrpl.js ran
   their payloads on import ([incident-benchmark](engineering_decisions/0068-incident-benchmark.md)).
-- Ecosystems other than npm, PyPI and crates.io.
+- Ecosystems other than npm, PyPI, crates.io and Go.

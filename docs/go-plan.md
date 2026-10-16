@@ -198,7 +198,9 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
    A cooldown counts UTC calendar days, so the cooldown that covers a version is one more
    than the calendar days since it was published, not its age in days rounded up.
    `lib/cooldown.sh` computes it for `smoke-go` and `smoke-cargo`.
-7. Docs: quickstart, policy-reference, threat-model, request-flow.
+7. Docs: quickstart, policy-reference, threat-model, request-flow. Done 2026-10-16, and
+   the README's ecosystem tables. A VERS range over Go versions was checked with `policy
+   diff`: with or without the `v`, `>=1.5.0|<1.6.0` denied `rsc.io/quote@v1.5.2`.
 
 ## Exit
 

@@ -3039,8 +3039,9 @@ Plan for cargo and the adapter interface before it: [cargo-plan](docs/cargo-plan
 - [ ] cargo: sparse index transport adapter
 - [ ] cargo: source replacement configuration + onboarding docs
 - [ ] cargo: `build.rs` mapped to install-script semantics
-- [ ] Go adapter (`GOPROXY`). Moved from Deferred / post-v1 on 2026-09-27. The checksum DB
-      already covers tamper-evidence.
+- [x] Go adapter (`GOPROXY`). Moved from Deferred / post-v1 on 2026-09-27. The checksum DB
+      already covers tamper-evidence. Done 2026-10-16, [go-plan](docs/go-plan.md) steps 1
+      to 7: `make smoke-go` 6/6, and smoke-npm, smoke-python and smoke-cargo pass.
 - [ ] Maven adapter (`settings.xml` mirror). Moved from Deferred / post-v1 on 2026-09-27.
 - [ ] Declare the adapter interface stable and document it for contributors
 

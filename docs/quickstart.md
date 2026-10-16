@@ -1,9 +1,9 @@
 # Quickstart
 
-From a checkout to installs through byrle in enforcing mode, for npm, PyPI and cargo. Every
-command here was run on 2026-09-29, and each excerpt below is that run's output, except
-for tokens: §3, the token table in §6 and `BYRLE_TOKEN` in §8 were run on 2026-10-11, and
-cargo's lines on 2026-10-14.
+From a checkout to installs through byrle in enforcing mode, for npm, PyPI, cargo and Go.
+Every command here was run on 2026-09-29, and each excerpt below is that run's output,
+except for tokens: §3, the token table in §6 and `BYRLE_TOKEN` in §8 were run on
+2026-10-11, cargo's lines on 2026-10-14, and Go's on 2026-10-16.
 
 The order is: run the proxy in observe mode, point clients at it, check with `doctor`,
 warm the lockfiles, then enforce.
@@ -94,10 +94,11 @@ INFO point a client at the proxy byrle.client.name="npm" byrle.client.command=np
 INFO point a client at the proxy byrle.client.name="pip" byrle.client.command=pip config set global.index-url http://127.0.0.1:18990/pypi/simple/
 ```
 
-and cargo's, from a run on 2026-10-14:
+and cargo's, from a run on 2026-10-14, and go's, on 2026-10-16:
 
 ```
 INFO point a client at the proxy byrle.client.name="cargo" byrle.client.command=in ~/.cargo/config.toml: [registries.byrle] index = "sparse+http://127.0.0.1:18081/cargo/" and credential-provider = "cargo:token", [source.crates-io] replace-with = "byrle", and [net] retry = 30
+INFO point a client at the proxy byrle.client.name="go" byrle.client.command=go env -w GOPROXY=http://127.0.0.1:18471/go, or with a token GOPROXY=http://<account>:<token>@127.0.0.1:18471/go
 ```
 
 `GET /-/byrle/ready` answers 200 once the store holds a snapshot. Point a readiness probe
@@ -117,6 +118,7 @@ With the proxy at `https://byrle.example.com`:
 | pip | `pip config set global.index-url https://byrle.example.com/pypi/simple/` |
 | uv | `UV_DEFAULT_INDEX=https://byrle.example.com/pypi/simple`, or `index-url` in `uv.toml` |
 | cargo | in `~/.cargo/config.toml`, below |
+| go | `go env -w GOPROXY=https://byrle.example.com/go`, with nothing after it |
 
 ```toml
 [source.crates-io]
@@ -141,6 +143,13 @@ at most 10 s for each retry, whatever `Retry-After` asked, and retries 3 times b
 A cold `cargo fetch` of 161 crates through the proxy failed after 23 s with the default,
 and completed in 164 s with `retry = 20`. `retry = 30` covers about 300 crates.
 
+go 1.27.2 asks the module's origin after a proxy entry followed by `|`, on any error, a
+refusal included; after `,` only on a 404 or 410. A `GOPROXY` ending `,direct`, go's
+default, did not reach the origin after any refusal measured. `GONOPROXY`, which
+`GOPRIVATE` sets, sends the modules it matches to their origin. sum.golang.org is asked
+through the proxy: `GOSUMDB` can stay as it is
+([go-plan](go-plan.md) step 5).
+
 Each line was run on 2026-09-29, in a home directory of its own and against a fresh proxy
 at `http://127.0.0.1:18995`, then used to install one package:
 
@@ -163,6 +172,7 @@ Each client also sends the token. `<token>` is the output of `byrle token create
 | pip | `https://alice:<token>@byrle.example.com/pypi/simple/` as the index URL |
 | uv | `https://alice:<token>@byrle.example.com/pypi/simple` as the index URL |
 | cargo | `CARGO_REGISTRIES_BYRLE_TOKEN=<token>`, or `cargo login --registry byrle`. cargo sends it alone in `Authorization` |
+| go | `GOPROXY=https://alice:<token>@byrle.example.com/go`. go sends it over https only: over http it refused, "refusing to pass credentials to insecure URL", to 127.0.0.1 too |
 | `byrle warm` | `BYRLE_TOKEN=<token>` |
 
 The username in pip's and uv's URL is the account name, not `__token__`: any other name is
@@ -178,7 +188,7 @@ nothing more.
 
 Then empty each client's cache once. An install supplied from the cache never asks the
 proxy: `npm cache clean --force`, `uv cache clean`, `bun pm cache rm`,
-`yarn cache clean`.
+`yarn cache clean`, `go clean -modcache`.
 
 ## 7. Check with `doctor`
 
@@ -239,6 +249,11 @@ as pnpm does for its configured registry ([lockfile-verify](engineering_decision
 cargo retries a 503 three times, a second apart, so it waits about 3 seconds for an
 analysis. Reading `rustls` 0.23.45's `.crate` took 79 ms. `byrle warm --lockfile
 Cargo.lock` asks for each crate first.
+
+go does not retry a 503: each zip's first fetch fails the go command until it is run
+again. `make smoke-go` built `rsc.io/quote` v1.5.2, 3 zips, in 6 runs, and downloaded the
+go1.26.0 toolchain in 8. `byrle warm --lockfile go.sum` asks for each zip first.
+`go.sum` records no URL, so `lockfile verify` exits 2 for each module.
 
 ## 9. Read what it would refuse
 
