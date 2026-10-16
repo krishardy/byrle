@@ -332,6 +332,16 @@ else
     echo "    NOT INSTALLED: install a JDK 21 and Maven 3.10 from your package manager."
 fi
 
+echo "==> Gradle (used by the Maven work)"
+if need gradle; then
+    echo "    found $(command -v gradle)"
+elif [[ "$(uname -s)" == Linux ]]; then
+    # The pinned release, checked against its sha256, into ~/.local.
+    "$repo_root/scripts/make/install-gradle.sh" | sed 's/^/    /'
+else
+    echo "    NOT INSTALLED: install Gradle 9.8 from your package manager."
+fi
+
 echo "==> ss (the smoke scripts check whether their port is already in use with it)"
 system_package ss iproute2 "The smoke scripts' port check finds nothing in use."
 

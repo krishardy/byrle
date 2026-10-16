@@ -1,4 +1,4 @@
-.PHONY: help dev-setup build clean lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck install-java ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-go smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck install-java install-gradle ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
@@ -43,6 +43,7 @@ help:
 	@echo "  strip-claude   list unpushed commits crediting Claude; STRIP=1 rewrites them, ALL=1 pushed too"
 	@echo "  install-shellcheck  the pinned shellcheck into ~/.local/bin, or SHELLCHECK_DEST"
 	@echo "  install-java   the pinned JDK and Maven into ~/.local, linked in ~/.local/bin"
+	@echo "  install-gradle the pinned Gradle into ~/.local, linked in ~/.local/bin"
 	@echo "  ci-setup       the tools CI job JOB=lint|test|sqlx needs"
 
 # The repository path as trufflehog sees it, which is the real path for a native
@@ -182,6 +183,9 @@ install-shellcheck:
 
 install-java:
 	@scripts/make/install-java.sh
+
+install-gradle:
+	@scripts/make/install-gradle.sh
 
 ci-setup:
 	@scripts/make/ci-setup.sh $(JOB)

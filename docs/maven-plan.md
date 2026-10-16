@@ -204,7 +204,8 @@ Q2, Q7 and Q9 otherwise.
 
 1. `make install-gradle`: Gradle 9.8.1 pinned in `scripts/make/lib/gradle.sh` beside
    `java.sh`, checked against `services.gradle.org`'s sha256, wired into `dev-setup` and
-   watched by `check-deps` (Q10).
+   watched by `check-deps` (Q10). Done 2026-10-16: `make install-gradle` installs it under
+   `~/.local/share/byrle` beside the JDK and links `gradle` in `~/.local/bin`.
 2. Two engineering decisions, written before the code they govern:
    1. 0112, Maven digests (Q2): a `.sha256` or `.sha512` when published, otherwise the
       `.sha1` checked against the bytes in the claim job and served against their sha256.

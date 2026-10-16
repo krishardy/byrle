@@ -145,41 +145,40 @@ else
 fi
 
 note "pinned tools"
+# The newest release $2 of tool $1 against its pin $3 in $4. An empty $2 is a release that
+# could not be read. Outdated is reported, not failed on.
+report_pin() {
+    local tool="$1" latest="$2" pinned="$3" file="$4"
+    if [[ -z "$latest" ]]; then
+        echo "$tool: the latest release could not be read; pinned $pinned"
+    elif [[ "$latest" != "$pinned" ]]; then
+        echo "$tool: $latest is out; $file pins $pinned"
+        echo "    (outdated, not failing)"
+    else
+        echo "$tool: $pinned is the latest release"
+    fi
+}
+
 # shellcheck source=scripts/make/lib/shellcheck.sh
 . "$repo_root/scripts/make/lib/shellcheck.sh"
-latest="$(curl -sSf https://api.github.com/repos/koalaman/shellcheck/releases/latest \
-    | sed -n 's/^  "tag_name": "\(.*\)",$/\1/p' || true)"
-if [[ -z "$latest" ]]; then
-    echo "shellcheck: the latest release could not be read; pinned $shellcheck_version"
-elif [[ "$latest" != "$shellcheck_version" ]]; then
-    echo "shellcheck: $latest is out; scripts/make/lib/shellcheck.sh pins $shellcheck_version"
-    echo "    (outdated, not failing)"
-else
-    echo "shellcheck: $shellcheck_version is the latest release"
-fi
+report_pin shellcheck "$(curl -sSf https://api.github.com/repos/koalaman/shellcheck/releases/latest \
+    | sed -n 's/^  "tag_name": "\(.*\)",$/\1/p' || true)" \
+    "$shellcheck_version" scripts/make/lib/shellcheck.sh
 
 # shellcheck source=scripts/make/lib/java.sh
 . "$repo_root/scripts/make/lib/java.sh"
-latest="$(curl -sSf https://api.github.com/repos/adoptium/temurin21-binaries/releases/latest \
-    | sed -n 's/^  "tag_name": "\(.*\)",$/\1/p' || true)"
-if [[ -z "$latest" ]]; then
-    echo "JDK: the latest release could not be read; pinned $jdk_release"
-elif [[ "$latest" != "$jdk_release" ]]; then
-    echo "JDK: $latest is out; scripts/make/lib/java.sh pins $jdk_release"
-    echo "    (outdated, not failing)"
-else
-    echo "JDK: $jdk_release is the latest release"
-fi
-latest="$(curl -sSf https://dlcdn.apache.org/maven/maven-3/ \
-    | grep -oE '>3\.[0-9]+\.[0-9]+/<' | tr -d '<>/' | sort -V | tail -1 || true)"
-if [[ -z "$latest" ]]; then
-    echo "Maven: the latest release could not be read; pinned $maven_version"
-elif [[ "$latest" != "$maven_version" ]]; then
-    echo "Maven: $latest is out; scripts/make/lib/java.sh pins $maven_version"
-    echo "    (outdated, not failing)"
-else
-    echo "Maven: $maven_version is the latest release"
-fi
+report_pin JDK "$(curl -sSf https://api.github.com/repos/adoptium/temurin21-binaries/releases/latest \
+    | sed -n 's/^  "tag_name": "\(.*\)",$/\1/p' || true)" \
+    "$jdk_release" scripts/make/lib/java.sh
+report_pin Maven "$(curl -sSf https://dlcdn.apache.org/maven/maven-3/ \
+    | grep -oE '>3\.[0-9]+\.[0-9]+/<' | tr -d '<>/' | sort -V | tail -1 || true)" \
+    "$maven_version" scripts/make/lib/java.sh
+
+# shellcheck source=scripts/make/lib/gradle.sh
+. "$repo_root/scripts/make/lib/gradle.sh"
+report_pin Gradle "$(curl -sSf https://services.gradle.org/versions/current \
+    | sed -n 's/^  "version" : "\(.*\)",$/\1/p' || true)" \
+    "$gradle_version" scripts/make/lib/gradle.sh
 
 note "result"
 if [[ "$failed" -ne 0 ]]; then
