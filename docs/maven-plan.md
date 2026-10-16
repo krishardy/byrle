@@ -165,6 +165,8 @@ is the sidecar, the signature, or both.
 
 ## Questions
 
+Answered 2026-10-16.
+
 | | Question | Recommended |
 |---|---|---|
 | Q1 | Where Maven is served | Under `/maven/`, as `/go/`: `<mirror><url>https://byrle.example.com/maven</url>` for mvn, and an init script in `$GRADLE_USER_HOME/init.d/` for Gradle |
@@ -177,6 +179,19 @@ is the sidecar, the signature, or both.
 | Q8 | Where the plugin portal is served | Under `/gradle-plugins/`, relaying `plugins.gradle.org/m2` and following its 303s, a separate upstream from `/maven/` |
 | Q9 | Whether the proxy serves wrapper distributions | No: `services.gradle.org` is not a repository. `byrle doctor` warns when `gradle-wrapper.properties` has no `distributionSha256Sum` |
 | Q10 | Whether `make dev-setup` installs Gradle | Yes, pinned in a script beside `scripts/make/lib/java.sh`, with its sha256 from `services.gradle.org` |
+
+| | Answer |
+|---|---|
+| Q1 | `/maven/` |
+| Q2 | Both. The `.sha256` or `.sha512` when published, otherwise the `.sha1`, checked against the bytes in the claim job and served against their sha256, in a decision superseding 0017 for Maven. The `.asc` is also verified when its key is found: a bad signature refuses the file. A file with no `.asc`, or with a key not found, expired or revoked, is decided by a new policy key, off by default |
+| Q3 | No. A `.pom` is checked against its sidecar and signature, and not refused by policy |
+| Q4 | `install_scripts`, read from the jar's `META-INF/services/javax.annotation.processing.Processor` |
+| Q5 | Decided as any artifact. A plugin jar holds `META-INF/maven/plugin.xml` or `META-INF/gradle-plugins/<id>.properties`; 9 of the 94 jars mvn fetched were plugins from Maven 3.10.0's default lifecycle, which the probe's `pom.xml` did not declare |
+| Q6 | The `.pom`'s `Last-Modified` |
+| Q7 | The proxy reads Basic and Bearer already ([request-flow](request-flow.md), forms 2 and 3). The quickstart shows Basic first, from `settings.xml`'s `<server>` and the init script's `credentials { }`, and Bearer second, from `<httpHeaders>` and `HttpHeaderCredentials`, as Artifactory documents both |
+| Q8 | `/gradle-plugins/` |
+| Q9 | Served under `/gradle-dists/`, relaying `services.gradle.org/distributions`, checked against its `.sha256`, under a cooldown on Gradle releases |
+| Q10 | Yes: Gradle 9.8.1 pinned beside `scripts/make/lib/java.sh`, checked against its sha256, watched by `check-deps` |
 
 ## Steps
 
