@@ -1,9 +1,10 @@
-.PHONY: help dev-setup build lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck ci-setup run-dev
+.PHONY: help dev-setup build clean lint semgrep trufflehog trivy sast test test-integration coverage mutants mutants-status release-check release-binary release-image-context verify sqlx-prepare check-deps update-deps run smoke-npm smoke-python smoke-cargo smoke-clients smoke-proxy smoke-tls-front smoke-console bench memory retry-matrix offsite-urls inspect spike-config duplicates unsigned strip-claude install-shellcheck ci-setup run-dev
 
 help:
 	@echo "byrle targets:"
 	@echo "  dev-setup      install development dependencies"
 	@echo "  build          build the byrle binary (release profile)"
+	@echo "  clean          remove target/, the spike's target/, dist/ and __pycache__"
 	@echo "  lint           rustfmt, clippy and shellcheck, warnings as errors"
 	@echo "  semgrep        pattern-based static analysis"
 	@echo "  trufflehog     credential scanning (working tree and git history)"
@@ -61,6 +62,9 @@ dev-setup:
 
 build:
 	@scripts/make/build.sh
+
+clean:
+	@scripts/make/clean.sh
 
 lint:
 	@scripts/make/lint.sh
