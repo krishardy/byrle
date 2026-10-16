@@ -388,6 +388,12 @@ Items that I've added that are not stage-bound.
     detector leads its own process group, and a run that ends without byrle reaping it, by
     timeout or output past the cap, is ended with `libc::killpg`, the user's choice of
     killpg. The test checks the fake's `sleep 30` is gone too
+36. Rename `make smoke-clients` to `make smoke-npm-clients`: it checks pnpm, yarn and bun,
+    the npm ecosystem's other clients, as `smoke-cargo`, `smoke-go` and `smoke-python` each
+    name their ecosystem. Kept apart from `smoke-npm`, which requires npm, where
+    `smoke-clients` skips a client that is not installed. Raised 2026-10-16. Touches
+    `Makefile`, `dev-setup.sh`, `coverage.sh`, `inspect.sh`, `project_plan.md` and
+    `duplication-catalogue.md`.
 
 ## Architecture Refactor
 
