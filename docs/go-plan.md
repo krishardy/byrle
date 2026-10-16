@@ -184,6 +184,20 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
 6. `make smoke-go`: `go build` of a real module through the proxy over https, with a token,
    a refused version, a cooldown, an advisory, and a toolchain download. A first fetch
    answered 503 is run again, as Q2 leaves it.
+   Done 2026-10-16, behind nginx on TLS, from `scripts/make/lib/tls_front.sh`:
+
+   | Step | Run on 2026-10-16 |
+   |---|---|
+   | `go build` of `rsc.io/quote` v1.5.2 | 3 zips verified, in 6 runs of go: each first fetch is 503 |
+   | x/text's newest, v0.43.0, denied | `@latest` resolved v0.42.0; v0.43.0's zip 403 |
+   | `cooldown_days: 8`, v0.43.0 published 2026-10-09 | resolved v0.42.0 |
+   | `GOTOOLCHAIN=go1.26.0` | `golang.org/toolchain` v0.0.1-go1.26.0.linux-amd64 verified, in 8 runs |
+   | `golang.org/x/crypto` v0.30.0, after a refresh | left out of `@v/list`; its zip 403 naming `max_cvss` |
+   | tokens required | 401 without one; go resolved with `<account>:<token>@` in `GOPROXY` |
+
+   A cooldown counts UTC calendar days, so the cooldown that covers a version is one more
+   than the calendar days since it was published, not its age in days rounded up.
+   `lib/cooldown.sh` computes it for `smoke-go` and `smoke-cargo`.
 7. Docs: quickstart, policy-reference, threat-model, request-flow.
 
 ## Exit

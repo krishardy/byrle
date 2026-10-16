@@ -29,6 +29,8 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 . "$repo_root/scripts/make/lib/postgres.sh"
 # shellcheck source=scripts/make/lib/token.sh
 . "$repo_root/scripts/make/lib/token.sh"
+# shellcheck source=scripts/make/lib/cooldown.sh
+. "$repo_root/scripts/make/lib/cooldown.sh"
 
 port="${BYRLE_PORT:-8736}"
 base="http://127.0.0.1:${port}"
@@ -163,12 +165,11 @@ stop_proxy
 
 echo "==> 3/8  a cooldown covering itoa's newest version resolves an older one"
 newest="$(curl -s https://index.crates.io/it/oa/itoa | python3 -I -c '
-import sys, json, datetime
-lines = [json.loads(l) for l in sys.stdin if l.strip()]
-last = lines[-1]
-age = datetime.datetime.now(datetime.UTC) - datetime.datetime.fromisoformat(last["pubtime"])
-print(last["vers"], age.days + 1)')"
-read -r newest_version cooldown <<<"$newest"
+import sys, json
+last = [json.loads(l) for l in sys.stdin if l.strip()][-1]
+print(last["vers"], last["pubtime"])')"
+read -r newest_version published <<<"$newest"
+cooldown="$(cooldown_covering "$published")"
 printf 'version: 1\ncooldown_days: %s\n' "$cooldown" >"$workdir/cooldown.yaml"
 start_proxy "$workdir/cooldown.yaml"
 project "$workdir/cooldown" 'itoa = "1"'

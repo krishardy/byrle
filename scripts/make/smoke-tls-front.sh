@@ -11,6 +11,8 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=scripts/make/lib/tls_front.sh
+. "$repo_root/scripts/make/lib/tls_front.sh"
 proxy_port="${BYRLE_PORT:-8771}"
 workdir="$(mktemp -d)"
 pids=()
@@ -33,38 +35,7 @@ cargo build --release --quiet --manifest-path "$repo_root/Cargo.toml"
 binary="$repo_root/target/release/byrle"
 rp_key="$(openssl rand -hex 32)"
 
-openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=byrle test CA" \
-    -keyout "$workdir/ca.key" -out "$workdir/ca.pem" 2>/dev/null
-openssl req -newkey rsa:2048 -nodes -subj "/CN=localhost" \
-    -keyout "$workdir/key.pem" -out "$workdir/cert.csr" 2>/dev/null
-printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\n' >"$workdir/san.ext"
-openssl x509 -req -in "$workdir/cert.csr" -CA "$workdir/ca.pem" -CAkey "$workdir/ca.key" \
-    -CAcreateserial -days 2 -extfile "$workdir/san.ext" -out "$workdir/cert.pem" 2>/dev/null
-
-# docs/fronting-tls.md's nginx server block, with this run's certificate, ports and paths.
-nginx_conf() {
-    local dir="$2"
-    printf 'pid %s/nginx.pid;\nerror_log %s/nginx-error.log;\nevents {}\nhttp {\n' "$dir" "$dir"
-    # Every temp path, not just the two the proxy uses: nginx creates each at startup, and
-    # the packaged defaults under /var/lib/nginx are not writable without root.
-    printf '    access_log off;\n    client_body_temp_path %s/body;\n    proxy_temp_path %s/proxy;\n' "$dir" "$dir"
-    printf '    fastcgi_temp_path %s/fastcgi;\n    uwsgi_temp_path %s/uwsgi;\n    scgi_temp_path %s/scgi;\n' "$dir" "$dir" "$dir"
-    printf '    server {\n        listen %s ssl;\n        server_name localhost;\n' "$1"
-    printf '        ssl_certificate %s;\n        ssl_certificate_key %s;\n' "$workdir/cert.pem" "$workdir/key.pem"
-    printf '        location / {\n            proxy_pass http://127.0.0.1:%s;\n' "$proxy_port"
-    printf '            proxy_http_version 1.1;\n'
-    # nginx's variable, written as it is.
-    # shellcheck disable=SC2016
-    printf '            proxy_set_header Host $http_host;\n'
-    printf '            proxy_set_header X-Forwarded-Proto https;\n'
-    # shellcheck disable=SC2016
-    printf '            proxy_set_header X-Forwarded-For $remote_addr;\n'
-    printf '            proxy_set_header X-Byrle-RP-Key %s;\n' "$rp_key"
-    printf '            proxy_buffering off;\n'
-    printf '            proxy_request_buffering off;\n'
-    printf '            proxy_read_timeout 300s;\n'
-    printf '        }\n    }\n}\n'
-}
+make_certificates "$workdir"
 
 # nginx on `port`: the proxy, nginx, then the four checks.
 check() {
@@ -75,7 +46,7 @@ check() {
     local proxy=$!
     pids+=("$proxy")
     for _ in $(seq 1 60); do grep -q "byrle listening" "$dir/proxy.log" && break; sleep 0.5; done
-    nginx_conf "$port" "$dir" >"$dir/nginx.conf"
+    nginx_conf "$port" "$dir" "$workdir" "$proxy_port" "$rp_key" >"$dir/nginx.conf"
     nginx -p "$dir" -c "$dir/nginx.conf" -g 'daemon off;' >"$dir/front.log" 2>&1 &
     local front_pid=$!
     pids+=("$front_pid")
