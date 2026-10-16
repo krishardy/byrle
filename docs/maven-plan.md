@@ -160,38 +160,45 @@ so they are compared in Maven's own version order. Every `Maven` package name is
 | `settings.xml`'s mirror and server, for `byrle doctor` | `clients` |
 | `osv/maven` | `streams` |
 
-One new hook, for the filtered metadata's sidecars. Q2's answer decides whether the claim
-is the sidecar, the signature, or both.
+One new hook, for the filtered metadata's sidecars.
 
-## Questions
+## Publish times against version order
 
-Answered 2026-10-16.
+Every version in `maven-metadata.xml`, each `.pom`'s `Last-Modified`, sorted by Maven
+3.10.0's `ComparableVersion`:
 
-| | Question | Recommended |
+| Artifact | Versions | No `Last-Modified` | Published after a higher version | First two |
+|---|---|---|---|---|
+| `org.springframework:spring-core` | 336 | 0 | 130 | 1.2.7 on 2006-05-10, after 2.0-m1; 1.2.8 on 2006-08-24, after 2.0-m1 |
+| `com.fasterxml.jackson.core:jackson-databind` | 235 | 0 | 86 | 2.1.5 on 2013-05-03, after 2.2.0-rc1; 2.2.4 on 2014-06-11, after 2.3.0-rc1 |
+| `org.apache.logging.log4j:log4j-core` | 78 | 0 | 23 | 2.3.1 on 2021-12-21, after 2.4; 2.3.2 on 2021-12-29, after 2.4 |
+| `com.google.guava:guava` | 160 | 0 | 13 | 12.0.1 on 2012-07-10, after 13.0-rc1; 22.0-rc1 on 2017-05-02, after 22.0-rc1-android |
+| `org.apache.commons:commons-lang3` | 27 | 0 | 0 | |
+
+spring-core 6.2.19 and 7.0.8 were both published 2026-06-08. A range `[6.2,7)` picks the
+highest version in it, 6.2.19, whatever 7.x holds. Under a cooldown covering 2026-06-08 and
+not 7.0.7's date, a list dated newest first until one version is older than the cooldown,
+as Go's is, stops at 7.0.7 and leaves 6.2.19 undated. The range then picks 6.2.19, whose
+jar is refused. HEAD of all 336 spring-core `.pom`s, 16 at
+a time, took 1.9 s.
+
+## Decisions
+
+Answered by the user 2026-10-16. Q1, Q3, Q4, Q5, Q6, Q8 and Q10 as recommended;
+Q2, Q7 and Q9 otherwise.
+
+| | Question | Decided |
 |---|---|---|
-| Q1 | Where Maven is served | Under `/maven/`, as `/go/`: `<mirror><url>https://byrle.example.com/maven</url>` for mvn, and an init script in `$GRADLE_USER_HOME/init.d/` for Gradle |
-| Q2 | Where a jar's strong digest comes from. 73 of the 94 jars mvn fetched have only `.sha1` and `.md5`; [artifact-digest-verification](engineering_decisions/0017-artifact-digest-verification.md) refuses SHA-1, which would refuse 78% of them. A `.module`'s sha256 covers Spring's 15, but each of those `.module`s has only a `.sha1` | `.sha256` or `.sha512` when published; otherwise the `.sha1`, checked against the bytes in the claim job and served against their sha256. The check is against a body changed on the way, which needs a second preimage of SHA-1, not a collision. A decision superseding 0017 for Maven. The other two: verify the `.asc`, 88 of 93 good with gpg and 34 of 34 with Gradle, which needs an OpenPGP crate and a key trusted per group on first use; or the sha256 of the first fetch, which no one else claims. A portal file at `plugins-artifacts.gradle.org` has its sha256 in its path |
-| Q3 | Whether a `.pom` is refused by policy | No, as Go's `go.mod`: 242 poms against 94 jars, most of them parents and BOMs no build compiles. A `.pom` is checked against its sidecar |
-| Q4 | Annotation processors | `install_scripts`, read from the jar's `META-INF/services/javax.annotation.processing.Processor`. 0 of 94 in the Spring Boot build. mvn on JDK 21 ran one unasked; on JDK 25 it did not; Gradle ran one only from `annotationProcessor` |
-| Q5 | Plugins | Decided as any artifact: refusing every plugin under `install_scripts` would refuse every build |
-| Q6 | Publish times | The `.pom`'s `Last-Modified`, a `HEAD` per version, newest first under a cooldown, as Go's `.info`. search.maven.org timed out on 5 of 8 versions |
-| Q7 | Tokens | `Basic`, after the 401's challenge: from `settings.xml`'s `<server>` with the mirror's id for mvn, and `credentials { }` in the init script for Gradle |
-| Q8 | Where the plugin portal is served | Under `/gradle-plugins/`, relaying `plugins.gradle.org/m2` and following its 303s, a separate upstream from `/maven/` |
-| Q9 | Whether the proxy serves wrapper distributions | No: `services.gradle.org` is not a repository. `byrle doctor` warns when `gradle-wrapper.properties` has no `distributionSha256Sum` |
-| Q10 | Whether `make dev-setup` installs Gradle | Yes, pinned in a script beside `scripts/make/lib/java.sh`, with its sha256 from `services.gradle.org` |
-
-| | Answer |
-|---|---|
-| Q1 | `/maven/` |
-| Q2 | Both. The `.sha256` or `.sha512` when published, otherwise the `.sha1`, checked against the bytes in the claim job and served against their sha256, in a decision superseding 0017 for Maven. The `.asc` is also verified when its key is found: a bad signature refuses the file. A file with no `.asc`, or with a key not found, expired or revoked, is decided by a new policy key, off by default |
-| Q3 | No. A `.pom` is checked against its sidecar and signature, and not refused by policy |
-| Q4 | `install_scripts`, read from the jar's `META-INF/services/javax.annotation.processing.Processor` |
-| Q5 | Decided as any artifact. A plugin jar holds `META-INF/maven/plugin.xml` or `META-INF/gradle-plugins/<id>.properties`; 9 of the 94 jars mvn fetched were plugins from Maven 3.10.0's default lifecycle, which the probe's `pom.xml` did not declare |
-| Q6 | The `.pom`'s `Last-Modified` |
-| Q7 | The proxy reads Basic and Bearer already ([request-flow](request-flow.md), forms 2 and 3). The quickstart shows Basic first, from `settings.xml`'s `<server>` and the init script's `credentials { }`, and Bearer second, from `<httpHeaders>` and `HttpHeaderCredentials`, as Artifactory documents both |
-| Q8 | `/gradle-plugins/` |
-| Q9 | Not served: `./gradlew` fetches the distribution from `services.gradle.org` itself. `byrle doctor` reads the version from `gradle-wrapper.properties`'s `distributionUrl` and reports a missing `distributionSha256Sum`, one that differs from `services.gradle.org/versions/all`'s `checksum`, a `gradle-wrapper.jar` whose sha256 differs from its `wrapperChecksum`, and a version whose `buildTime` is inside the cooldown |
-| Q10 | Yes: Gradle 9.8.1 pinned beside `scripts/make/lib/java.sh`, checked against its sha256, watched by `check-deps` |
+| Q1 | Where Maven is served | `/maven/` |
+| Q2 | Where a jar's strong digest comes from | Both. The `.sha256` or `.sha512` when published, otherwise the `.sha1`, checked against the bytes in the claim job and served against their sha256, in a decision superseding 0017 for Maven. The `.asc` is also verified when its key is found: a bad signature refuses the file. A file with no `.asc`, or with a key not found, expired or revoked, is decided by a new policy key, off by default |
+| Q3 | Whether a `.pom` is refused by policy | No. A `.pom` is checked against its sidecar and signature, and not refused by policy |
+| Q4 | Annotation processors | `install_scripts`, read from the jar's `META-INF/services/javax.annotation.processing.Processor` |
+| Q5 | Plugins | Decided as any artifact. A plugin jar holds `META-INF/maven/plugin.xml` or `META-INF/gradle-plugins/<id>.properties`; 9 of the 94 jars mvn fetched were plugins from Maven 3.10.0's default lifecycle, which the probe's `pom.xml` did not declare |
+| Q6 | Publish times | The `.pom`'s `Last-Modified` |
+| Q7 | Tokens | The proxy reads Basic and Bearer already ([request-flow](request-flow.md), forms 2 and 3). The quickstart shows Basic first, from `settings.xml`'s `<server>` and the init script's `credentials { }`, and Bearer second, from `<httpHeaders>` and `HttpHeaderCredentials`, as Artifactory documents both |
+| Q8 | Where the plugin portal is served | `/gradle-plugins/` |
+| Q9 | Whether the proxy serves wrapper distributions | Not served: `./gradlew` fetches the distribution from `services.gradle.org` itself. `byrle doctor` reads the version from `gradle-wrapper.properties`'s `distributionUrl` and reports a missing `distributionSha256Sum`, one that differs from `services.gradle.org/versions/all`'s `checksum`, a `gradle-wrapper.jar` whose sha256 differs from its `wrapperChecksum`, and a version whose `buildTime` is inside the cooldown |
+| Q10 | Whether `make dev-setup` installs Gradle | Yes: Gradle 9.8.1 pinned beside `scripts/make/lib/java.sh`, checked against its sha256, watched by `check-deps` |
 
 ## Steps
 
@@ -205,7 +212,7 @@ Answered 2026-10-16.
    2. 0113, Maven signatures (Q2): the `.asc` verified with a key from keys.openpgp.org
       or keyserver.ubuntu.com; a bad signature refuses the file; no `.asc`, or a key not
       found, expired or revoked, is decided by a new policy key, off by default. Which
-      key is trusted for a group is part of this decision.
+      key is trusted for a group is not yet decided.
 3. `VersionOrder::Maven`, Maven's `ComparableVersion` order, checked against Maven
    3.10.0's own comparison over every version in OSV's `Maven` ranges.
 4. The Maven adapter, with the hooks of "The adapter, checked against today's
@@ -223,9 +230,11 @@ Answered 2026-10-16.
       job checks it. mvn retried a 503 4 times at `Retry-After`; Gradle 3 times in 3 s,
       ignoring it, so a claim job longer than that fails a Gradle build until it is run
       again.
-   4. Cooldown from the `.pom`'s `Last-Modified` (Q6), a `HEAD` per version, newest first
-      in Maven's order until one is older than the longest cooldown; a pinned version's
-      own `.pom`.
+   4. Cooldown from the `.pom`'s `Last-Modified` (Q6): every version in the list dated,
+      by a `HEAD` per version, and each time kept, as a file on Central is never replaced.
+      Not newest first until one is older, as Go's: "Publish times against version order"
+      has 130 of spring-core's 336 versions published after a higher one. A pinned
+      version is dated by its own `.pom`.
    5. Signatures (0113), and the new policy key.
    6. Annotation processors (Q4): a jar holding
       `META-INF/services/javax.annotation.processing.Processor` has install scripts.
@@ -247,7 +256,8 @@ Answered 2026-10-16.
 
 8. `make smoke-maven`: mvn and Gradle builds of a real project through the proxy over
    https, with a token, a refused version, a cooldown, an advisory, an annotation
-   processor, a portal plugin, and the wrapper checks. A first fetch answered 503 is run
+   processor, a portal plugin, and the wrapper checks. Gradle run as `./gradlew` with the
+   init script, a case not measured in this plan. A first fetch answered 503 is run
    again.
 9. Docs: quickstart (Basic first, Bearer second, per Q7), policy-reference,
    threat-model (the wrapper download as a bypass), request-flow, and the README.
