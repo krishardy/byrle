@@ -91,8 +91,8 @@ settings
   yanked           block
   deprecated       allow
   provenance       block, over 7 days
-  denials          2
-  packages         3
+  denials          4
+  packages         5
   advisory_scores  0
 
 signal weights, for the risk score
@@ -130,6 +130,10 @@ packages[1]  not reachable from our call paths, reviewed by security
 
 packages[2]  vendored CUDA build steps, reviewed
 
+packages[3]  proc-macro, reviewed
+
+packages[4]  ours, published by our CI
+
 === examples/policy.yaml, a store with the KEV catalogue
 settings
   cooldown_days    7
@@ -139,8 +143,8 @@ settings
   yanked           block
   deprecated       allow
   provenance       block, over 7 days
-  denials          2
-  packages         3
+  denials          4
+  packages         5
   advisory_scores  0
 
 signal weights, for the risk score
@@ -177,4 +181,8 @@ packages[0]  internal, published by our CI
 packages[1]  not reachable from our call paths, reviewed by security
 
 packages[2]  vendored CUDA build steps, reviewed
+
+packages[3]  proc-macro, reviewed
+
+packages[4]  ours, published by our CI
 

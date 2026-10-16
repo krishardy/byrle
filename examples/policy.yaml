@@ -61,6 +61,11 @@ denials:
     reason: "compromised release, Sept 2025"
   - purl: "pkg:pypi/ctx@0.1.2"
     reason: "credential exfiltration, May 2022"
+  - purl: "pkg:cargo/rustdecimal@1.23.1"
+    reason: "typosquat of rust_decimal running a payload in CI, May 2022, RUSTSEC-2022-0042"
+  # A Go module path keeps its case, and its version its `v`.
+  - purl: "pkg:golang/github.com/boltdb-go/bolt@v1.3.1"
+    reason: "backdoored typosquat of github.com/boltdb/bolt, reported Feb 2025"
 
 # Exceptions. Every entry needs a reason, and either an expiry within 90 days or an
 # explicit `permanent: true`. An entry may only loosen: a setting that should be stricter
@@ -88,3 +93,19 @@ packages:
     reason: "vendored CUDA build steps, reviewed"
     expires: "2026-11-01"
     added_by: bob
+
+  # A crate's build script or proc-macro counts as an install script: serde_derive is a
+  # proc-macro, so `install_scripts: block` refuses it.
+  - match: { ecosystem: cargo, name: "serde_derive" }
+    set: { install_scripts: allow }
+    reason: "proc-macro, reviewed"
+    expires: "2026-11-01"
+    added_by: bob
+
+  # Our public Go modules. A private module is not fetched through the proxy, as
+  # sum.golang.org holds no record of it: list it in GOPRIVATE instead.
+  - match: { ecosystem: golang, name: "github.com/mycompany/*" }
+    set: { cooldown_days: 0 }
+    reason: "ours, published by our CI"
+    permanent: true
+    added_by: alice

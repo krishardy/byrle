@@ -780,8 +780,8 @@ mod tests {
     fn the_shipped_example_parses() {
         let policy = Policy::load(Path::new("examples/policy.yaml")).unwrap();
         assert_eq!(policy.version, SUPPORTED_VERSION);
-        assert_eq!(policy.denials.len(), 2);
-        assert_eq!(policy.packages.len(), 3);
+        assert_eq!(policy.denials.len(), 4);
+        assert_eq!(policy.packages.len(), 5);
     }
 
     /// `deny_unknown_fields` at every depth, which is what a typo'd key in a security

@@ -635,7 +635,7 @@ mod tests {
     }
 
     #[test]
-    fn the_shipped_example_lists_its_permanent_entry_and_nothing_else() {
+    fn the_shipped_example_lists_its_permanent_entries_and_nothing_else() {
         let (_, found) = load(
             Path::new(&format!(
                 "{}/examples/policy.yaml",
@@ -645,7 +645,7 @@ mod tests {
             DEFAULT_EXPIRY_CEILING_DAYS,
         )
         .expect("the shipped example should load");
-        assert_eq!(found.permanent, vec![0]);
+        assert_eq!(found.permanent, vec![0, 4]);
         assert!(found.unchanged.is_empty() && found.shadowed.is_empty());
         assert_eq!(found.strict_failure(), None);
     }
