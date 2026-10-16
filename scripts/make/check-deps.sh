@@ -158,6 +158,29 @@ else
     echo "shellcheck: $shellcheck_version is the latest release"
 fi
 
+# shellcheck source=scripts/make/lib/java.sh
+. "$repo_root/scripts/make/lib/java.sh"
+latest="$(curl -sSf https://api.github.com/repos/adoptium/temurin21-binaries/releases/latest \
+    | sed -n 's/^  "tag_name": "\(.*\)",$/\1/p' || true)"
+if [[ -z "$latest" ]]; then
+    echo "JDK: the latest release could not be read; pinned $jdk_release"
+elif [[ "$latest" != "$jdk_release" ]]; then
+    echo "JDK: $latest is out; scripts/make/lib/java.sh pins $jdk_release"
+    echo "    (outdated, not failing)"
+else
+    echo "JDK: $jdk_release is the latest release"
+fi
+latest="$(curl -sSf https://dlcdn.apache.org/maven/maven-3/ \
+    | grep -oE '>3\.[0-9]+\.[0-9]+/<' | tr -d '<>/' | sort -V | tail -1 || true)"
+if [[ -z "$latest" ]]; then
+    echo "Maven: the latest release could not be read; pinned $maven_version"
+elif [[ "$latest" != "$maven_version" ]]; then
+    echo "Maven: $latest is out; scripts/make/lib/java.sh pins $maven_version"
+    echo "    (outdated, not failing)"
+else
+    echo "Maven: $maven_version is the latest release"
+fi
+
 note "result"
 if [[ "$failed" -ne 0 ]]; then
     echo "FAIL: see above."

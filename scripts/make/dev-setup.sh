@@ -322,6 +322,16 @@ else
     echo "    or review https://docs.astral.sh/uv/getting-started/installation/ first."
 fi
 
+echo "==> JDK and Maven (used by the Maven work)"
+if need java && need mvn; then
+    echo "    found $(command -v java) and $(command -v mvn)"
+elif [[ "$(uname -s)" == Linux ]]; then
+    # The pinned releases, each checked against its checksum, into ~/.local.
+    "$repo_root/scripts/make/install-java.sh" | sed 's/^/    /'
+else
+    echo "    NOT INSTALLED: install a JDK 21 and Maven 3.10 from your package manager."
+fi
+
 echo "==> ss (the smoke scripts check whether their port is already in use with it)"
 system_package ss iproute2 "The smoke scripts' port check finds nothing in use."
 
