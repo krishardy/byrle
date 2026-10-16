@@ -206,25 +206,14 @@ Q2, Q7 and Q9 otherwise.
    `java.sh`, checked against `services.gradle.org`'s sha256, wired into `dev-setup` and
    watched by `check-deps` (Q10). Done 2026-10-16: `make install-gradle` installs it under
    `~/.local/share/byrle` beside the JDK and links `gradle` in `~/.local/bin`.
-2. Two engineering decisions, written before the code they govern:
-   1. 0112, Maven digests (Q2): a `.sha256` or `.sha512` when published, otherwise the
-      `.sha1` checked against the bytes in the claim job and served against their sha256.
-      It names 0017, which keeps npm, PyPI and cargo.
-   2. 0113, Maven signatures (Q2): [provenance-check](engineering_decisions/0066-provenance-check.md)'s
-      three cases, with a PGP key's fingerprint as the identity in place of a repository
-      and workflow file. Decided by the user 2026-10-16. `provenance: block`, the default,
-      refuses a version when:
-
-      | Case | 0066's | Maven's |
-      |---|---|---|
-      | 1 | an attestation that fails verification | a jar's `.asc` that fails verification with its key from keys.openpgp.org or keyserver.ubuntu.com |
-      | 2 | none, after a version with one | no `.asc`, after a version with one |
-      | 3 | a repository and workflow file no attested version from `provenance_window_days` before used | a key no signed version of the artifact from `provenance_window_days` before used |
-
-      0113 also decides a key found on no key server, and the signatures of the 4 of 93
-      jars by a key expired since and the 1 by a key revoked since. Cases 2 and 3 need the
-      earlier versions' `.asc`s: their keys are kept per artifact, as times are in step 4.4.
-      `set: { provenance: allow }` releases all three, as for npm and PyPI.
+2. Two engineering decisions, written before the code they govern. Done 2026-10-16:
+   1. [maven-digests](engineering_decisions/0112-maven-digests.md): the strongest of a
+      file's `.sha512`, `.sha256` and `.sha1`, a jar checked in the claim job and served
+      against its sha256. It supersedes 0017's refusal of SHA-1 for Maven only.
+   2. [maven-signatures](engineering_decisions/0113-maven-signatures.md): 0066's three
+      cases, with the signing primary key as the identity, under `provenance`. A
+      signature by a key since expired verifies when made before the expiry; a revocation
+      is read as RFC 9580 reads it; a key no key server holds fails verification.
 3. `VersionOrder::Maven`, Maven's `ComparableVersion` order, checked against Maven
    3.10.0's own comparison over every version in OSV's `Maven` ranges.
 4. The Maven adapter, with the hooks of "The adapter, checked against today's

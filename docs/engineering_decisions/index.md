@@ -28,7 +28,7 @@ Implemented means it is in the code, and the file names where.
 | 0014 | [Stage structure: split transport from policy](0014-stage-structure.md) | Staging |  |
 | 0015 | [TLS: reverse proxy first](0015-tls-reverse-proxy-first.md) | Decided |  |
 | 0016 | [Reading a packument without changing it](0016-packument-body-inspection.md) | Implemented |  |
-| 0017 | [Verifying the artifact digest on the way past](0017-artifact-digest-verification.md) | Implemented |  |
+| 0017 | [Verifying the artifact digest on the way past](0017-artifact-digest-verification.md) | Implemented | for Maven, the refusal of SHA-1, by [0112](0112-maven-digests.md) |
 | 0018 | [Rewriting `dist.tarball` to point at the proxy](0018-packument-tarball-url-rewriting.md) | Decided Sept 2026 |  |
 | 0019 | [Enforcement tiers: how requests are made to reach the proxy](0019-enforcement-tiers.md) | Open question |  |
 | 0020 | [Terminating TLS: pre-issued certificates, not a CA on the proxy](0020-terminating-tls-certificates.md) | Decided Sept 2026 |  |
@@ -123,3 +123,5 @@ Implemented means it is in the code, and the file names where.
 | 0109 | [Every advisory is read, and its kind is a signal of its own weight](0109-advisory-kinds.md) | Implemented |  |
 | 0110 | [cargo provenance: what crates.io publishes about who published a version](0110-cargo-provenance.md) | Measured 2026-10-15 |  |
 | 0111 | [Each ecosystem is served under a prefix of its own](0111-ecosystem-path-prefixes.md) | Decided by the user 2026-10-15 |  |
+| 0112 | [Maven: a jar's digest is its strongest sidecar, SHA-1 included](0112-maven-digests.md) | Decided by the user 2026-10-16 |  |
+| 0113 | [Maven: PGP signatures are decided by `provenance`, a key as the identity](0113-maven-signatures.md) | Decided by the user 2026-10-16 |  |

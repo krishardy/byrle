@@ -3,6 +3,7 @@
 - **Number:** 0017
 - **Status:** Implemented, Stage 1
 - **Code:** `src/integrity.rs`, `src/store.rs`, `proxy::VerifyingStream`
+- **Superseded by:** for Maven, the refusal of SHA-1, by [0112-maven-digests](0112-maven-digests.md)
 
 ## Decision
 
