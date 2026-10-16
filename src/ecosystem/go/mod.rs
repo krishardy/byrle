@@ -1,6 +1,7 @@
 //! The Go module proxy protocol under [`PREFIX`]: `@v/list` and `@latest` filtered by policy,
 //! zips fetched at the proxy, and sum.golang.org relayed. See docs/go-plan.md.
 
+pub mod clients;
 pub mod dirhash;
 pub mod inspect;
 pub mod lockfile;
@@ -46,7 +47,7 @@ pub const REGISTRY: Registry = Registry {
     streams: &[&OSV],
     lockfiles: lockfile::LOCKFILES,
     unread_lockfiles: lockfile::UNREAD,
-    clients: &[],
+    clients: clients::CLIENTS,
     setup: Setup {
         client: "go",
         command: setup_line,

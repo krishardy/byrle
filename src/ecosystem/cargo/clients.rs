@@ -11,6 +11,7 @@ use super::INDEX;
 
 pub const CARGO: Client = Client {
     name: "cargo",
+    version_args: &["version"],
     registry: Some(RegistrySource::Read {
         read: cargo_indexes,
         set_index: super::config_line,
@@ -23,6 +24,7 @@ pub const CARGO: Client = Client {
     },
     bypass: CacheBypass::PerRegistry,
     clear_cache: "remove ~/.cargo/registry/cache",
+    settings: None,
 };
 
 pub const CLIENTS: &[Client] = &[CARGO];

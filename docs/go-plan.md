@@ -166,6 +166,21 @@ pinned fetch asks that version's own `.info`, never a date read from the list.
    from its own `.info` before the list, as the proxy does: before, both answered
    `golang.org/x/text@v0.0.0-20170915032832-14c0d48ead0c` as not published.
 5. `byrle doctor` for `go env`: `GOPROXY`, `GOSUMDB`, `GONOSUMDB`, `GOPRIVATE`, `GOFLAGS`.
+   Done 2026-10-16: `ecosystem::go::clients` reads `go env -json GOPROXY GONOPROXY GOFLAGS`.
+   Measured with go 1.27.2 through the proxy:
+
+   | Setting | go did | doctor |
+   |---|---|---|
+   | `GOPROXY=<proxy>\|direct`, a version the proxy answered 403 | asked `https://rsc.io/quote?go-get=1` | PROBLEM, extra index `direct` |
+   | `GOPROXY=<proxy>,direct`, the same version | stopped at the 403 | ok |
+   | `GOPROXY=<proxy>,direct`, every version refused | `@v/list` answered 200 and empty, `@latest` 404, and go asked nothing else | ok |
+   | `GONOPROXY=rsc.io`, which `GOPRIVATE` sets by default | asked `https://rsc.io` | WARN |
+   | `GOFLAGS=-mod=vendor` | builds read `vendor/` | WARN |
+   | a module cache holding a refused version | added it; the proxy saw no `.mod` or `.zip` | WARN, `CacheBypass::Complete` |
+
+   `GOSUMDB` and `GONOSUMDB` are not checked: they change only what the go command checks,
+   and the proxy checks each zip and `go.mod` against sum.golang.org itself. A client's
+   installed check is `version_args`, as go has no `--version`.
 6. `make smoke-go`: `go build` of a real module through the proxy over https, with a token,
    a refused version, a cooldown, an advisory, and a toolchain download. A first fetch
    answered 503 is run again, as Q2 leaves it.

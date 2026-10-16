@@ -12,6 +12,7 @@ const CONFIG_GET_REGISTRY: RegistryQuery = RegistryQuery {
 /// npm itself. The startup log's setup line for npm reads this row.
 pub const NPM: Client = Client {
     name: "npm",
+    version_args: &["--version"],
     registry: Some(RegistrySource::Asked(CONFIG_GET_REGISTRY)),
     set_registry: "npm config set registry",
     cache: CacheLocation::Asked {
@@ -20,6 +21,7 @@ pub const NPM: Client = Client {
     },
     bypass: CacheBypass::Complete,
     clear_cache: "npm cache clean --force",
+    settings: None,
 };
 
 /// The npm clients doctor checks. See docs/engineering_decisions/0080-client-caches.md.
@@ -27,6 +29,7 @@ pub const CLIENTS: &[Client] = &[
     NPM,
     Client {
         name: "pnpm",
+        version_args: &["--version"],
         registry: Some(RegistrySource::Asked(CONFIG_GET_REGISTRY)),
         set_registry: "pnpm config set registry",
         cache: CacheLocation::Asked {
@@ -35,9 +38,11 @@ pub const CLIENTS: &[Client] = &[
         },
         bypass: CacheBypass::Complete,
         clear_cache: "pnpm store prune, or delete the store directory",
+        settings: None,
     },
     Client {
         name: "yarn",
+        version_args: &["--version"],
         registry: Some(RegistrySource::Asked(CONFIG_GET_REGISTRY)),
         set_registry: "yarn config set registry",
         cache: CacheLocation::Asked {
@@ -46,9 +51,11 @@ pub const CLIENTS: &[Client] = &[
         },
         bypass: CacheBypass::ArtifactsOnly,
         clear_cache: "yarn cache clean --force",
+        settings: None,
     },
     Client {
         name: "bun",
+        version_args: &["--version"],
         registry: None,
         set_registry: "",
         cache: CacheLocation::Configured {
@@ -57,6 +64,7 @@ pub const CLIENTS: &[Client] = &[
         },
         bypass: CacheBypass::Complete,
         clear_cache: "bun pm cache rm",
+        settings: None,
     },
 ];
 

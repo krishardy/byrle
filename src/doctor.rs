@@ -119,6 +119,8 @@ pub enum RegistrySource {
 pub struct Client {
     /// The program, and the name findings use.
     pub name: &'static str,
+    /// Arguments that succeed only when the client is installed, such as `--version`.
+    pub version_args: &'static [&'static str],
     /// How to learn the registry the client uses. `None` when it is not checked.
     pub registry: Option<RegistrySource>,
     /// The command that points the client at a registry, before the address.
@@ -127,6 +129,8 @@ pub struct Client {
     pub bypass: CacheBypass,
     /// The command that empties the cache.
     pub clear_cache: &'static str,
+    /// Findings on the client's other settings that send installs around the proxy.
+    pub settings: Option<fn(&Machine) -> Vec<Finding>>,
 }
 
 /// Where a client keeps its cache.
@@ -956,6 +960,9 @@ fn registry_findings(machine: &Machine, proxy: &str) -> Result<Vec<Finding>, env
                 }
             },
         }
+        if let Some(settings) = client.settings {
+            findings.extend(settings(machine));
+        }
     }
     Ok(findings)
 }
@@ -981,7 +988,7 @@ fn lockfile_findings(dir: &std::path::Path, public: Option<&str>, proxy: &str) -
 fn cache_findings(machine: &Machine) -> Result<Vec<Finding>, env::EnvError> {
     let mut findings = Vec::new();
     for client in clients() {
-        if (machine.run)(client.name, &["--version"]).is_some() {
+        if (machine.run)(client.name, client.version_args).is_some() {
             let warm = probe::warm_cache(machine, client)?;
             findings.push(check_cache(client, warm.as_deref()));
         }
@@ -1126,11 +1133,13 @@ pub mod probe {
         fn echoing(cache: CacheLocation) -> Client {
             Client {
                 name: "echo",
+                version_args: &["--version"],
                 registry: None,
                 set_registry: "",
                 cache,
                 bypass: CacheBypass::Complete,
                 clear_cache: "",
+                settings: None,
             }
         }
 
@@ -2191,7 +2200,8 @@ mod tests {
                 ("bun", false),
                 ("pip", true),
                 ("uv", true),
-                ("cargo", true)
+                ("cargo", true),
+                ("go", true),
             ]
         );
     }
@@ -2363,6 +2373,8 @@ mod tests {
             (_, ["--version"]) => Some("1.0".to_owned()),
             ("npm" | "pnpm" | "yarn", ["config", "get", "registry"]) => Some(format!("{url}/npm/")),
             ("pip", ["config", "list"]) => Some(format!("global.index-url='{index}'")),
+            ("go", ["env", "-json", ..]) => Some(format!(r#"{{"GOPROXY": "{url}/go"}}"#)),
+            ("go", ["version"]) => Some("go version go1.27.2 linux/amd64".to_owned()),
             _ => None,
         };
         let environment = crate::env::testing::with(&[

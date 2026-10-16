@@ -12,6 +12,7 @@ const DEFAULT_INDEX: &str = super::INDEX;
 
 pub const PIP: Client = Client {
     name: "pip",
+    version_args: &["--version"],
     registry: Some(RegistrySource::Read {
         read: pip_indexes,
         set_index: pip_set_index,
@@ -28,10 +29,12 @@ pub const PIP: Client = Client {
     },
     bypass: CacheBypass::None,
     clear_cache: "pip cache purge",
+    settings: None,
 };
 
 pub const UV: Client = Client {
     name: "uv",
+    version_args: &["--version"],
     registry: Some(RegistrySource::Read {
         read: uv_indexes,
         set_index: |url| {
@@ -56,6 +59,7 @@ pub const UV: Client = Client {
     },
     bypass: CacheBypass::Complete,
     clear_cache: "uv cache clean",
+    settings: None,
 };
 
 pub const CLIENTS: &[Client] = &[PIP, UV];
