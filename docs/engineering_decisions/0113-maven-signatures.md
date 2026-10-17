@@ -55,8 +55,15 @@ The 4 and the 1, dated:
 | `json-simple-3.0.2.jar` | 2018-01-24 | expired 2019-01-25 | verifies |
 | `maven-artifact-transfer-0.13.1.jar` | 2020-12-22 | expired 2026-06-05 | verifies |
 | `velocity-engine-core-2.4.1.jar` | 2024-10-14 | expired 2025-09-10 | verifies |
-| `plexus-component-annotations-2.0.0.jar` | 2019-01-28 | signing subkey expired 2017-03-03 | fails: case 1 |
+| `plexus-component-annotations-2.0.0.jar` | 2019-01-28 | primary key, which signed it, expired 2026-08-15 | verifies |
 | `plexus-build-api-0.0.7.jar` | 2011-02-11 | revoked 2024-01-04, reason `0x01` | verifies |
+
+Corrected 2026-10-17: `plexus-component-annotations-2.0.0.jar` was read on 2026-10-16 as
+signed by a subkey after it expired. Its signature names the primary key,
+`BF1518E0160788A2`; the subkey that expired 2017-03-03 is an encryption subkey and signed
+nothing. So each of the 4 was signed before its key expired. With `pgp` 0.21.0 and this
+decision's rules, 93 of 93 signatures verify: 81 with keys.openpgp.org's copy of the key,
+12 with keyserver.ubuntu.com's.
 
 Of the 27 good only with keyserver.ubuntu.com's copy, 12 are by a key keys.openpgp.org
 does not hold, and 15 by one whose copy there did not verify. So the second server is
@@ -83,7 +90,7 @@ after it. A compromised key is caught by its revocation, whatever the date.
 | Option | Why not |
 |---|---|
 | A new policy key, off by default | the user's first answer; replaced once case 3 was seen to need 0066's window |
-| Any expired key refuses | refuses 4 of 93, 3 of them signed while the key was valid |
+| Any expired key refuses | refuses 4 of 93, each signed while its key was valid |
 | Any revocation refuses | refuses `plexus-build-api-0.0.7.jar`, signed 13 years before its key was superseded |
 | A missing key as no signature | lets a version signed by a key no server holds pass case 2 |
 
