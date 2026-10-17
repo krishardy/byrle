@@ -1116,6 +1116,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
             "artifact_analysis.unreadable",
             "artifact_attestation.failure",
             "artifact_install_script.body",
+            "artifact_signature.detail",
             "artifact_source.result",
             "intel_ingestion.etag",
             "intel_ingestion.last_modified",
@@ -1150,6 +1151,7 @@ async fn every_table_is_keyed_by_an_identity_and_only_an_unbounded_column_is_tex
         "artifact_claim",
         "artifact_decision",
         "artifact_install_script",
+        "artifact_signature",
         "artifact_source",
         "artifact_virustotal",
         "exploited_cve",
@@ -1948,6 +1950,58 @@ async fn a_claim_s_digest_is_kept_under_the_claim() {
     store.put_claimed(claim, &sri(2)).await.expect("replaces");
     assert_eq!(store.claimed(claim).await.expect("answers"), Some(sri(2)));
     assert_eq!(store.claimed("h1:other=").await.expect("answers"), None);
+}
+
+/// A Maven claim of a SHA-512 sidecar, 135 characters, is kept.
+#[tokio::test]
+async fn a_sha512_claim_is_kept() {
+    let intel = skip_without_database!("t_claim_sha512");
+    let store = analyses(&intel);
+    let claim = format!("sha512:{}", "a".repeat(128));
+    store.put_claimed(&claim, &sri(1)).await.expect("writes");
+    assert_eq!(store.claimed(&claim).await.expect("answers"), Some(sri(1)));
+}
+
+/// What a signature says is kept under its bytes' digest and its verifier, each outcome
+/// round-trips, a second check replaces the first, and another verifier reads nothing.
+#[tokio::test]
+async fn a_signature_s_result_is_kept_under_its_digest_and_verifier() {
+    use byrle::ecosystem::Signature;
+    let intel = skip_without_database!("t_signature");
+    let store = analyses(&intel);
+    let verifier = "pgp 0.21.0; maven-signatures 1";
+    assert_eq!(
+        store.signature(&sri(1), verifier).await.expect("answers"),
+        None
+    );
+    for signature in [
+        Signature::Verified {
+            key: "AE9E53FC28FF2AB1012273D0BF1518E0160788A2".to_owned(),
+        },
+        Signature::Failed {
+            why: "the signature does not verify".to_owned(),
+        },
+        Signature::Dropped {
+            previous: "2.0".to_owned(),
+        },
+        Signature::Unsigned,
+    ] {
+        store
+            .put_signature(&sri(1), verifier, &signature)
+            .await
+            .expect("writes");
+        assert_eq!(
+            store.signature(&sri(1), verifier).await.expect("answers"),
+            Some(signature)
+        );
+    }
+    assert_eq!(
+        store
+            .signature(&sri(1), "pgp 0.22.0")
+            .await
+            .expect("answers"),
+        None
+    );
 }
 
 /// What VirusTotal said is kept under the artifact's digest, each state round-trips, and a

@@ -10,6 +10,7 @@ use crate::analysis::source::{COMPARER, Sourced};
 use crate::analysis::store::DetectionKey;
 use crate::analysis::store::{Analyses, Analysis, AnalysisError, Scripts, Stored};
 use crate::analysis::virustotal::{Counts, Scanned, Verdict};
+use crate::ecosystem::Signature;
 use crate::integrity::Sri;
 use sqlx::PgPool;
 
@@ -379,6 +380,23 @@ impl Analyses for PgAnalyses {
     fn put_claimed<'a>(&'a self, claim: &'a str, digest: &'a Sri) -> Stored<'a, ()> {
         Box::pin(self.write_claimed(claim, digest))
     }
+
+    fn signature<'a>(
+        &'a self,
+        digest: &'a Sri,
+        verifier: &'a str,
+    ) -> Stored<'a, Option<Signature>> {
+        Box::pin(self.read_signature(digest, verifier))
+    }
+
+    fn put_signature<'a>(
+        &'a self,
+        digest: &'a Sri,
+        verifier: &'a str,
+        signature: &'a Signature,
+    ) -> Stored<'a, ()> {
+        Box::pin(self.write_signature(digest, verifier, signature))
+    }
 }
 
 impl PgAnalyses {
@@ -395,6 +413,64 @@ impl PgAnalyses {
         .await
         .map(drop)
         .map_err(AnalysisError::Backend)
+    }
+
+    async fn write_signature(
+        &self,
+        digest: &Sri,
+        verifier: &str,
+        signature: &Signature,
+    ) -> Result<(), AnalysisError> {
+        let (outcome, detail) = match signature {
+            Signature::Verified { key } => ("verified", Some(key.as_str())),
+            Signature::Failed { why } => ("failed", Some(why.as_str())),
+            Signature::Dropped { previous } => ("dropped", Some(previous.as_str())),
+            Signature::Unsigned => ("unsigned", None),
+        };
+        sqlx::query!(
+            r#"
+            INSERT INTO artifact_signature (digest, outcome, detail, verifier)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (digest, verifier) DO UPDATE SET
+                outcome    = EXCLUDED.outcome,
+                detail     = EXCLUDED.detail,
+                checked_at = now()
+            "#,
+            digest.to_string(),
+            outcome,
+            detail,
+            verifier,
+        )
+        .execute(&self.pool)
+        .await
+        .map(drop)
+        .map_err(AnalysisError::Backend)
+    }
+
+    /// What `verifier` found of the bytes with `digest`. A row this build cannot read is
+    /// not checked yet.
+    async fn read_signature(
+        &self,
+        digest: &Sri,
+        verifier: &str,
+    ) -> Result<Option<Signature>, AnalysisError> {
+        let row = sqlx::query!(
+            "SELECT outcome, detail FROM artifact_signature WHERE digest = $1 AND verifier = $2",
+            digest.to_string(),
+            verifier,
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(AnalysisError::Backend)?;
+        Ok(
+            row.and_then(|row| match (row.outcome.as_str(), row.detail) {
+                ("verified", Some(key)) => Some(Signature::Verified { key }),
+                ("failed", Some(why)) => Some(Signature::Failed { why }),
+                ("dropped", Some(previous)) => Some(Signature::Dropped { previous }),
+                ("unsigned", None) => Some(Signature::Unsigned),
+                _ => None,
+            }),
+        )
     }
 
     /// The digest kept for `claim`. One that no longer parses is not checked yet.

@@ -4,7 +4,10 @@
 
 pub mod digest;
 pub mod inspect;
+pub mod keys;
 pub mod paths;
+pub mod signature;
+pub mod signer;
 pub mod transport;
 pub mod wire;
 
@@ -75,6 +78,7 @@ pub const REGISTRY: Registry = Registry {
     install_scripts_unread: None,
     publishers: None,
     decides_head: true,
+    signatures: Some(signature::VERIFIER),
     sidecar: paths::metadata_sidecar,
 };
 

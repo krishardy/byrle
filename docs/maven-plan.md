@@ -317,7 +317,33 @@ Q2, Q7 and Q9 otherwise.
       `cooldown_days: 30`: `[3.18,)` resolved 3.20.0, published 2025-11-12, with 3.21.0,
       published 2026-09-25, removed; all 27 versions dated.
       `make mutants`: 25 mutants, 5 caught, 20 unviable.
-   5. Signatures (0113), and the new policy key.
+   5. Signatures (0113), under `provenance`, as amended 2026-10-17. In three parts:
+      1. A jar's signature, cases 1 and 2. Done 2026-10-17. `pgp` 0.21.0, with `rsa`
+         accepted for verification ([sqlx-0-8-and-rsa-advisory](engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md)).
+         `Claim::signer`, a `Signer` the adapter makes, is handed to the claim job: the
+         `.asc` and its key are fetched as the jar spools, both key servers at once,
+         and the result is stored in `artifact_signature`, migration 0026, by the jar's
+         sha256 and the verifier, before the claim. Its provenance fact: verified or
+         unsigned is consistent, failed is unverified, and no `.asc` after an earlier
+         version's is dropped, the earlier versions asked newest first by their `.pom`
+         times. A key server that does not answer stores nothing, so the next request
+         checks again. Migration 0026 also widens `artifact_claim.claim` to 160: a
+         `sha512:` claim is 135 characters, which Postgres refused at 128.
+         Measured through the proxy, cold:
+
+         | Build | Result |
+         |---|---|
+         | mvn 3.10.0, Spring Boot 3.5.6 | BUILD SUCCESS in 95 s, 93 s before signatures. 93 jars verified, 1 unsigned with no signed version before it |
+         | Gradle 9.8.1, the same build | failed once, then succeeded, as before signatures. 4 of 34 jars checked more than 3 s after their first 503, against 3 before; with the key servers asked one after the other, 15 |
+
+         `make mutants`: 140 mutants, 50 caught, 82 unviable, 8 missed. Two were caught by
+         tests added after, each checked by applying the mutant by hand. Six are the
+         Postgres store's signature read and write, which only `make test-integration`
+         runs; two of them applied by hand failed its round trip.
+
+      2. A `.pom`'s and a `.module`'s signature, the first fetch 503 until checked.
+      3. Case 3 as the signal `signing_key_new`, weight 1, from the earlier versions'
+         `.asc`.
    6. Annotation processors (Q4): a jar holding
       `META-INF/services/javax.annotation.processing.Processor` has install scripts.
       A plugin jar is decided as any other (Q5).

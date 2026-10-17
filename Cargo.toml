@@ -79,6 +79,7 @@ libc = "0.2.189"
 # docs/engineering_decisions/0077-coverage-counts-library-code-only.md.
 tracing = { version = "0.1.44", features = ["log-always"] }
 log = "0.4.34"
+rand = "0.8.6"
 ctor = "1.0.13"
 
 # `make mutants` builds one copy of the crate per mutant. No debug information: a mutant is

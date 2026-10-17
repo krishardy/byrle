@@ -91,6 +91,65 @@ pub struct Claim {
     pub manifest: String,
     /// The digest of a manifest's bytes, in that form.
     pub manifest_digest: fn(&[u8]) -> String,
+    /// What checks the file's signature, where the registry signs files: Maven's `.asc`.
+    pub signer: Option<std::sync::Arc<dyn Signer>>,
+}
+
+/// What checks a file's detached signature, where the claim job holds the file's bytes.
+pub trait Signer: Send + Sync + std::fmt::Debug {
+    /// What checks the signature, and by which rules, as its stored results are named.
+    fn verifier(&self) -> &'static str;
+
+    /// The file's signature and each key server's copy of the key it names, `None` when the
+    /// file has no signature. Errors when the signature or a key server cannot be asked.
+    fn material(&self) -> BoxFuture<'_, Result<Option<Material>, String>>;
+
+    /// The most recent version before this one with a signature, for a file with none.
+    /// Errors when the versions or their signatures cannot be asked.
+    fn signed_before(&self) -> BoxFuture<'_, Result<Option<String>, String>>;
+
+    /// What `material` says of `file`. Errors when `file` cannot be read.
+    fn verify(&self, material: &Material, file: &mut dyn Source) -> std::io::Result<Signature>;
+}
+
+/// A file's bytes, read from any point: what a [`Signer`] checks.
+pub trait Source: std::io::Read + std::io::Seek {}
+
+impl<T: std::io::Read + std::io::Seek> Source for T {}
+
+/// A file's signature, and each key server's copy of the key it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Material {
+    pub signature: Vec<u8>,
+    pub keys: Vec<String>,
+}
+
+/// What a file's signature says, stored by the digest of the bytes it was checked against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Signature {
+    /// It verified, made by the primary key with this fingerprint or one of its subkeys.
+    Verified { key: String },
+    /// It did not verify, and why.
+    Failed { why: String },
+    /// The file has none, and this earlier version's file had one.
+    Dropped { previous: String },
+    /// The file has none, nor did the versions before it that were asked.
+    Unsigned,
+}
+
+impl Signature {
+    /// The provenance fact it is: a failure is an attestation that does not verify, and a
+    /// signature dropped is provenance dropped.
+    pub fn provenance(&self) -> crate::policy::decide::Provenance {
+        use crate::policy::decide::Provenance;
+        match self {
+            Self::Verified { .. } | Self::Unsigned => Provenance::Consistent,
+            Self::Failed { why } => Provenance::Unverified { why: why.clone() },
+            Self::Dropped { previous } => Provenance::Dropped {
+                previous: previous.clone(),
+            },
+        }
+    }
 }
 
 impl Claim {
@@ -454,6 +513,8 @@ pub struct Registry {
     pub write: fn(&Writing<'_>) -> Option<Result<Written, String>>,
     /// Whether an artifact's `HEAD` is refused as its `GET` is: Gradle reuses a file after one.
     pub decides_head: bool,
+    /// The verifier whose stored signature results decide `provenance`, where files are signed.
+    pub signatures: Option<&'static str>,
     /// The document a sidecar is the digest of, and that digest, where the proxy writes it.
     pub sidecar: fn(&str) -> Option<(String, Digest)>,
 }

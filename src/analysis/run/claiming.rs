@@ -11,6 +11,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use super::{Analyser, InFlight, ms};
+use crate::ecosystem::{Material, Signature, Signer};
 use crate::integrity::Sri;
 use crate::spool::{Spooled, WriteError};
 use crate::util::lru::Lru;
@@ -24,6 +25,8 @@ pub struct ClaimJob {
     pub url: String,
     /// The claim's form of the spooled artifact.
     pub digest: fn(std::fs::File) -> Result<String, String>,
+    /// What checks the artifact's signature, where its registry signs files.
+    pub signer: Option<Arc<dyn Signer>>,
 }
 
 /// What is known about a claim.
@@ -111,18 +114,29 @@ impl Analyser {
         }))
     }
 
-    /// Check `job`'s artifact against its claim. A match is stored; a mismatch, an artifact
-    /// over the spool's ceiling or one that does not read is remembered as failed. A fetch
-    /// or spool that failed stores nothing, so the next request tries again.
+    /// Check `job`'s artifact against its claim, and its signature as [`Self::store_signature`]
+    /// does. A match is stored; a mismatch or an artifact that does not read is remembered
+    /// as failed. One that could not be fetched or spooled stores nothing.
     async fn check_claim(&self, job: &ClaimJob) {
         let started = Instant::now();
-        let (spooled, digest) = match self.spool_hashed(job).await {
+        let material = async {
+            match &job.signer {
+                Some(signer) => Some(signer.material().await),
+                None => None,
+            }
+        };
+        let (spooled, material) = tokio::join!(self.spool_hashed(job), material);
+        let (spooled, digest) = match spooled {
             Some(Ok(spooled)) => spooled,
             Some(Err(why)) => return self.claim_failed(job, why),
             None => return,
         };
+        let file = spooled.reader();
         match digest_of(spooled, job.digest).await {
             Ok(found) if found == job.claim => {
+                if !self.store_signature(job, &digest, material, file).await {
+                    return;
+                }
                 if let Err(e) = self.store.put_claimed(&job.claim, &digest).await {
                     warn!(url.full = %job.url, error.message = %e, "claim check: not stored");
                     return;
@@ -132,6 +146,34 @@ impl Analyser {
             Ok(found) => self.claim_failed(job, format!("its files' digest is {found}")),
             Err(why) => self.claim_failed(job, why),
         }
+    }
+
+    /// Store what `job`'s signer makes of `material` against `file`, the bytes with `digest`.
+    /// Whether the claim may be stored after it: not when it could not be checked or kept.
+    async fn store_signature(
+        &self,
+        job: &ClaimJob,
+        digest: &Sri,
+        material: Option<Result<Option<Material>, String>>,
+        file: std::io::Result<std::fs::File>,
+    ) -> bool {
+        let (Some(signer), Some(material)) = (&job.signer, material) else {
+            return true;
+        };
+        let Some(signature) = signed(signer, material, file).await else {
+            warn!(url.full = %job.url, "claim check: the signature could not be checked, nothing stored");
+            return false;
+        };
+        if let Err(e) = self
+            .store
+            .put_signature(digest, signer.verifier(), &signature)
+            .await
+        {
+            warn!(url.full = %job.url, error.message = %e, "claim check: the signature's result not stored");
+            return false;
+        }
+        info!(url.full = %job.url, byrle.artifact.signature = ?signature, "signature checked against the artifact's bytes");
+        true
     }
 
     /// `job`'s artifact spooled, with the sha256 of its bytes, or why it is over the ceiling.
@@ -168,6 +210,42 @@ impl Analyser {
     }
 }
 
+/// What `signer` makes of `material`, a fetched signature, against `file`, the artifact's
+/// bytes, off the async threads; for a file with none, whether an earlier version had one.
+/// `None` when the signature or the versions could not be asked, or the file read.
+async fn signed(
+    signer: &Arc<dyn Signer>,
+    material: Result<Option<Material>, String>,
+    file: std::io::Result<std::fs::File>,
+) -> Option<Signature> {
+    let material = match material {
+        Ok(material) => material,
+        Err(why) => {
+            warn!(error.message = %why, "the signature or its key could not be fetched");
+            return None;
+        }
+    };
+    let Some(material) = material else {
+        return match signer.signed_before().await {
+            Ok(Some(previous)) => Some(Signature::Dropped { previous }),
+            Ok(None) => Some(Signature::Unsigned),
+            Err(why) => {
+                warn!(error.message = %why, "the earlier versions' signatures could not be asked");
+                None
+            }
+        };
+    };
+    let signer = Arc::clone(signer);
+    let checked = tokio::task::spawn_blocking(move || {
+        let mut file = file?;
+        signer.verify(&material, &mut file)
+    })
+    .await
+    .map_err(std::io::Error::other)
+    .and_then(|checked| checked);
+    checked.ok()
+}
+
 /// `check` over the spooled file, off the async threads. Errors with why it could not be
 /// computed, the file not being readable among them.
 async fn digest_of(
@@ -202,6 +280,7 @@ mod tests {
             claim: claim.to_owned(),
             url,
             digest: crate::ecosystem::go::dirhash::zip_h1::<std::fs::File>,
+            signer: None,
         }
     }
 
@@ -248,6 +327,195 @@ mod tests {
             panic!("over the ceiling");
         };
         assert!(found.contains("16-byte ceiling"), "{found}");
+    }
+
+    /// A signer answering as it is set: material, the version signed before, and a verdict.
+    #[derive(Debug)]
+    struct Fake {
+        material: Result<Option<Material>, String>,
+        before: Result<Option<String>, String>,
+        verdict: Option<Signature>,
+    }
+
+    impl Signer for Fake {
+        fn verifier(&self) -> &'static str {
+            "fake 1"
+        }
+        fn material(
+            &self,
+        ) -> futures_util::future::BoxFuture<'_, Result<Option<Material>, String>> {
+            let material = self.material.clone();
+            Box::pin(async move { material })
+        }
+        fn signed_before(
+            &self,
+        ) -> futures_util::future::BoxFuture<'_, Result<Option<String>, String>> {
+            let before = self.before.clone();
+            Box::pin(async move { before })
+        }
+        fn verify(
+            &self,
+            _: &Material,
+            _: &mut dyn crate::ecosystem::Source,
+        ) -> std::io::Result<Signature> {
+            self.verdict
+                .clone()
+                .ok_or_else(|| std::io::Error::other("unreadable"))
+        }
+    }
+
+    fn material() -> Material {
+        Material {
+            signature: b"sig".to_vec(),
+            keys: vec!["key".to_owned()],
+        }
+    }
+
+    /// The signature's result is stored before the claim, and with it whatever it says: a
+    /// signature that fails is a provenance fact, and the claim still matches.
+    #[tokio::test]
+    async fn a_signed_artifact_s_signature_is_stored_before_its_claim() {
+        let verified = Signature::Verified {
+            key: "K".to_owned(),
+        };
+        let failed = Signature::Failed {
+            why: "bad".to_owned(),
+        };
+        for (fake, stored) in [
+            (
+                Fake {
+                    material: Ok(Some(material())),
+                    before: Ok(None),
+                    verdict: Some(verified.clone()),
+                },
+                Some(verified),
+            ),
+            (
+                Fake {
+                    material: Ok(Some(material())),
+                    before: Ok(None),
+                    verdict: Some(failed.clone()),
+                },
+                Some(failed),
+            ),
+            (
+                Fake {
+                    material: Ok(None),
+                    before: Ok(Some("1.0".to_owned())),
+                    verdict: None,
+                },
+                Some(Signature::Dropped {
+                    previous: "1.0".to_owned(),
+                }),
+            ),
+            (
+                Fake {
+                    material: Ok(None),
+                    before: Ok(None),
+                    verdict: None,
+                },
+                Some(Signature::Unsigned),
+            ),
+            (
+                Fake {
+                    material: Err("down".to_owned()),
+                    before: Ok(None),
+                    verdict: None,
+                },
+                None,
+            ),
+            (
+                Fake {
+                    material: Ok(None),
+                    before: Err("down".to_owned()),
+                    verdict: None,
+                },
+                None,
+            ),
+            (
+                Fake {
+                    material: Ok(Some(material())),
+                    before: Ok(None),
+                    verdict: None,
+                },
+                None,
+            ),
+        ] {
+            let store = Arc::new(InProcess::new(8));
+            let analyser = analyser("claim-signed", 1 << 20, store.clone());
+            let addr = scripted(vec![Answer::body(zip())]).await;
+            let job = ClaimJob {
+                signer: Some(Arc::new(fake)),
+                ..job(QUOTE, format!("http://{addr}/v1.5.2.zip"))
+            };
+            analyser
+                .start_claim(job)
+                .expect("starts")
+                .await
+                .expect("finishes");
+            let digest = Sri::from_sha256(&Sha256::digest(zip()));
+            let found =
+                crate::analysis::store::Analyses::signature(store.as_ref(), &digest, "fake 1")
+                    .await
+                    .unwrap();
+            assert_eq!(found, stored);
+            let known = analyser.claim_known(QUOTE).await;
+            assert_eq!(
+                known == ClaimKnown::Checked(digest),
+                stored.is_some(),
+                "{known:?}"
+            );
+        }
+    }
+
+    /// A store that cannot answer has no signature to give.
+    #[tokio::test]
+    async fn a_store_that_cannot_answer_gives_no_signature() {
+        let broken = analyser(
+            "signature-broken",
+            1 << 20,
+            Arc::new(crate::analysis::store::tests::Broken),
+        );
+        let digest = Sri::from_sha256(&Sha256::digest(zip()));
+        assert_eq!(broken.signature(&digest, "fake 1").await, None);
+    }
+
+    /// A spooled file that cannot be opened has no signature to check.
+    #[tokio::test]
+    async fn an_unreadable_file_has_no_signature_checked() {
+        let fake: Arc<dyn Signer> = Arc::new(Fake {
+            material: Ok(Some(material())),
+            before: Ok(None),
+            verdict: Some(Signature::Unsigned),
+        });
+        let gone = Err(std::io::Error::other("gone"));
+        assert_eq!(signed(&fake, Ok(Some(material())), gone).await, None);
+    }
+
+    /// A store that keeps the claim but not the signature's result keeps neither.
+    #[tokio::test]
+    async fn a_signature_not_stored_stores_no_claim() {
+        let analyser = analyser(
+            "claim-signed-broken",
+            1 << 20,
+            Arc::new(crate::analysis::store::tests::Broken),
+        );
+        let addr = scripted(vec![Answer::body(zip())]).await;
+        let fake = Fake {
+            material: Ok(None),
+            before: Ok(None),
+            verdict: None,
+        };
+        let job = ClaimJob {
+            signer: Some(Arc::new(fake)),
+            ..job(QUOTE, format!("http://{addr}/v1.5.2.zip"))
+        };
+        analyser
+            .start_claim(job)
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(analyser.claim_known(QUOTE).await, ClaimKnown::Unknown);
     }
 
     /// A fetch that fails, a body cut short, a store that does not answer and a job past its

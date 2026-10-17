@@ -87,6 +87,7 @@ pub const REGISTRY: Registry = Registry {
     ),
     publishers: Some(trustpub::made),
     decides_head: false,
+    signatures: None,
     sidecar: |_| None,
 };
 

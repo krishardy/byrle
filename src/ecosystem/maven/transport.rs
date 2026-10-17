@@ -12,7 +12,9 @@ use crate::record::{PackageMetadata, PackageRecord};
 use crate::util::lru::Lru;
 
 use super::digest::{CLAIMED, Sidecar};
+use super::keys::KeyServers;
 use super::paths::{METADATA, directory};
+use super::signer::FileSigner;
 use super::wire::{parse, record};
 
 /// Claims kept, one per file: a file published to Central is never replaced.
@@ -42,6 +44,10 @@ pub struct Client {
     claims: Arc<Mutex<Lru<String, Claim>>>,
     /// Each version's publish time, by its `.pom`'s URL.
     times: Arc<Mutex<Lru<String, jiff::Timestamp>>>,
+    /// Where the keys signatures name are asked for.
+    keys: KeyServers,
+    /// Each `.asc` read, `None` for one the repository has not, by its file's URL.
+    signatures: Arc<Mutex<Lru<String, Option<Vec<u8>>>>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -57,12 +63,95 @@ impl Client {
     /// slash is trimmed.
     pub fn new(http: reqwest::Client, repository: &str, max_bytes: usize) -> Self {
         Self {
-            http,
             repository: repository.trim_end_matches('/').to_owned(),
             max_bytes,
             claims: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
             times: Arc::new(Mutex::new(Lru::new(MAX_TIMES))),
+            keys: KeyServers::new(http.clone()),
+            signatures: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
+            http,
         }
+    }
+
+    /// The same, asking `keys` for the keys signatures name.
+    pub fn with_key_servers(mut self, keys: KeyServers) -> Self {
+        self.keys = keys;
+        self
+    }
+
+    /// Where the keys signatures name are asked for.
+    pub fn keys(&self) -> &KeyServers {
+        &self.keys
+    }
+
+    /// The URL of `version`'s `file` on the repository.
+    pub fn file_url(&self, key: &PackageKey, version: &str, file: &str) -> String {
+        format!("{}/{}/{version}/{file}", self.repository, directory(key))
+    }
+
+    /// The `.asc` beside the file at `url`, `None` when the repository has none, kept once
+    /// read: a file published to Central is never replaced. Errors when it cannot be asked,
+    /// or answers other than 200 or 404.
+    pub async fn signature(&self, url: &str) -> Result<Option<Vec<u8>>, String> {
+        let kept = self
+            .signatures
+            .lock()
+            .expect("signatures lock")
+            .get(&url.to_owned())
+            .cloned();
+        if let Some(kept) = kept {
+            return Ok(kept);
+        }
+        let asked = format!("{url}.asc");
+        let response = self
+            .http
+            .get(&asked)
+            .send()
+            .await
+            .map_err(|e| format!(".asc request failed: {e}"))?;
+        let signature = match response.status() {
+            reqwest::StatusCode::NOT_FOUND => None,
+            status if !status.is_success() => return Err(format!(".asc answered {status}")),
+            _ => Some(
+                response
+                    .bytes()
+                    .await
+                    .map_err(|e| format!(".asc request failed: {e}"))?
+                    .to_vec(),
+            ),
+        };
+        self.signatures
+            .lock()
+            .expect("signatures lock")
+            .insert(url.to_owned(), signature.clone());
+        Ok(signature)
+    }
+
+    /// The versions of `key` published before `version`, newest first, at most `limit`, by
+    /// their `.pom`s' times. Errors when the metadata or a time cannot be read.
+    pub async fn earlier(
+        &self,
+        key: &PackageKey,
+        version: &str,
+        limit: usize,
+    ) -> Result<Vec<String>, String> {
+        let metadata = crate::ecosystem::fetched(self.metadata(key).await)?;
+        let times = self.dated(&metadata).await?;
+        let Some(at) = times.get(version).copied() else {
+            return Ok(Vec::new());
+        };
+        let mut before: Vec<(jiff::Timestamp, String)> = times
+            .into_iter()
+            .filter(|(_, t)| *t < at)
+            .map(|(v, t)| (t, v))
+            .collect();
+        before.sort();
+        Ok(before
+            .into_iter()
+            .rev()
+            .take(limit)
+            .map(|(_, v)| v)
+            .collect())
     }
 
     /// Whether `version` of `key` has a `.pom`, and its `Last-Modified` when it does,
@@ -170,6 +259,13 @@ impl Client {
                 artifact_digest: sidecar.file,
                 manifest: digest,
                 manifest_digest: sidecar.bytes,
+                signer: Some(Arc::new(FileSigner {
+                    client: self.clone(),
+                    key: key.clone(),
+                    version: version.to_owned(),
+                    file: file.to_owned(),
+                    history: crate::analysis::attestation::DEFAULT_HISTORY,
+                })),
             };
             self.claims
                 .lock()
@@ -496,6 +592,61 @@ pub(crate) mod tests {
         assert_eq!(error, ".pom answered 500 Internal Server Error");
         let times = Arc::clone(&client.times);
         assert_eq!(times.lock().unwrap().len(), 2, "both times kept");
+    }
+
+    /// A `.asc` is read once, present or not; one that cannot be read is an error.
+    #[tokio::test]
+    async fn a_signature_is_read_once_and_a_failure_says_which() {
+        let (addr, requests) = recorded(vec![Answer::Status(404)]).await;
+        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        let url = client.file_url(&lang3(), "3.17.0", "commons-lang3-3.17.0.jar");
+        for _ in 0..2 {
+            assert_eq!(client.signature(&url).await.unwrap(), None);
+        }
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        for (answer, said) in [
+            (Answer::Status(500), ".asc answered 500"),
+            (Answer::Close, ".asc request failed"),
+            (Answer::cut_short(), ".asc request failed"),
+        ] {
+            let addr = scripted(vec![answer]).await;
+            let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+            let error = client
+                .signature(&format!("http://{addr}/x.jar"))
+                .await
+                .unwrap_err();
+            assert!(error.starts_with(said), "{error}");
+        }
+    }
+
+    /// A version the repository dates nothing for has nothing before it; metadata that
+    /// cannot be read is an error.
+    #[tokio::test]
+    async fn the_versions_before_one_need_its_time_and_the_metadata() {
+        let fixture = String::from_utf8(super::super::fixture("commons-lang3.xml")).unwrap();
+        let addr = scripted(vec![
+            Answer::Typed("text/xml", fixture.into_bytes()),
+            Answer::Status(404),
+        ])
+        .await;
+        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        assert!(
+            client
+                .earlier(&lang3(), "3.17.0", 64)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+        let addr = scripted(vec![Answer::Status(404)]).await;
+        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        assert!(client.earlier(&lang3(), "3.17.0", 64).await.is_err());
+        let addr = scripted(vec![
+            Answer::Typed("text/xml", super::super::fixture("commons-lang3.xml")),
+            Answer::Status(500),
+        ])
+        .await;
+        let client = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        assert!(client.earlier(&lang3(), "3.17.0", 64).await.is_err());
     }
 
     #[tokio::test]

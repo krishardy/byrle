@@ -122,6 +122,7 @@ pub const REGISTRY: Registry = Registry {
     install_scripts_unread: None,
     publishers: None,
     decides_head: false,
+    signatures: None,
     sidecar: |_| None,
 };
 

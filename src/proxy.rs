@@ -1889,6 +1889,7 @@ impl<'a> Deciding<'a> {
                     claim: claim.artifact,
                     url: upstream_url(self.proxy, ecosystem, path, None),
                     digest: claim.artifact_digest,
+                    signer: claim.signer,
                 };
                 (record, Some(Claiming::Pending(job)))
             }
@@ -2501,6 +2502,9 @@ async fn attested(
     times: Option<&facts::PublishTimes>,
 ) -> (Provenance, Vec<Attestation>) {
     let key = record.package.key();
+    if let Some(signature) = signed(analyser, key.ecosystem(), digest).await {
+        return (signature.provenance(), Vec::new());
+    }
     let bundle = ecosystem::of(key.ecosystem()).provenance_bundle;
     let window = proxy.config.policy.as_deref().map_or_else(
         || crate::policy::window_of(crate::policy::DEFAULT_PROVENANCE_WINDOW_DAYS),
@@ -2576,6 +2580,17 @@ async fn attested(
 
 /// What verifying `to_verify` found: the analyser's stored result, or a failure when it
 /// cannot be verified.
+/// What the signature of the bytes with `digest` says, for an ecosystem whose files are
+/// signed, as its claim job checked it. `None` for another, or one not checked yet.
+async fn signed(
+    analyser: Option<&Analyser>,
+    ecosystem: Ecosystem,
+    digest: Option<&Sri>,
+) -> Option<ecosystem::Signature> {
+    let verifier = ecosystem::of(ecosystem).signatures?;
+    analyser?.signature(digest?, verifier).await
+}
+
 async fn result_of(
     analyser: &Analyser,
     to_verify: &Result<(String, Sri), String>,
@@ -6931,6 +6946,55 @@ mod tests {
         .await;
         assert_eq!(status, 403);
         assert!(body.contains("cooldown_days"), "{body}");
+    }
+
+    const JAKARTA_JAR: &str =
+        "/maven/jakarta/annotation/jakarta.annotation-api/2.1.1/jakarta.annotation-api-2.1.1.jar";
+
+    /// What the proxy answers for jakarta.annotation-api 2.1.1's jar once its claim job has
+    /// checked it, from a repository whose 2.1.1 `.asc` is the fixture `asc`, with earlier
+    /// versions 2.0 and 2.1.0 of which 2.0 is signed.
+    async fn signed_jar(asc: Option<&'static str>, label: &str) -> ArtifactStep {
+        let (base, keys) =
+            crate::ecosystem::maven::signer::tests::repository(asc, &["2.0", "2.1.0"], &["2.0"])
+                .await;
+        let client = crate::ecosystem::maven::signer::tests::signer(&base, &keys).client;
+        let analyser = Arc::new(crate::analysis::run::tests::analyser(
+            label,
+            1 << 20,
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+        ));
+        let proxy = offline(None, Some(NO_POLICY))
+            .with_upstream(Ecosystem::Maven, &base)
+            .with_client(Ecosystem::Maven, Arc::new(client))
+            .with_analyser(Some(analyser.clone()));
+        let ArtifactStep::Answer(deferred) = pinned(&proxy, JAKARTA_JAR).await else {
+            panic!("deferred while the claim and signature are checked");
+        };
+        assert_eq!(deferred.status(), 503);
+        analyser.ended(1).await;
+        pinned(&proxy, JAKARTA_JAR).await
+    }
+
+    /// A jar whose signature verifies is served; one signed by a key that did not make it,
+    /// and one with no `.asc` after a version with one, are refused naming `provenance`.
+    #[tokio::test]
+    async fn a_maven_jar_is_decided_on_its_signature() {
+        let good = signed_jar(Some("jakarta.annotation-api-2.1.1.jar.asc"), "sig-good").await;
+        assert!(fetched(&good), "served");
+        for (asc, label, said) in [
+            (
+                Some("json-simple-3.0.2.jar.asc"),
+                "sig-bad",
+                "no key the server holds made it",
+            ),
+            (None, "sig-dropped", "2.0"),
+        ] {
+            let (status, body) = refused(signed_jar(asc, label).await).await;
+            assert_eq!(status, 403, "{label}: {body}");
+            assert!(body.contains("provenance"), "{label}: {body}");
+            assert!(body.contains(said), "{label}: {body}");
+        }
     }
 
     const QUOTE_MOD: &str = "/go/rsc.io/quote/@v/v1.5.2.mod";

@@ -8,6 +8,7 @@ use crate::analysis::detector::Detection;
 use crate::analysis::source::Sourced;
 use crate::analysis::virustotal::Scanned;
 use crate::analysis::{InstallScripts, ReadError};
+use crate::ecosystem::Signature;
 use crate::integrity::Sri;
 use crate::util::lru::Lru;
 use std::future::Future;
@@ -150,6 +151,19 @@ pub trait Analyses: Send + Sync {
 
     /// Record that the bytes with `digest` are what `claim` names.
     fn put_claimed<'a>(&'a self, claim: &'a str, digest: &'a Sri) -> Stored<'a, ()>;
+
+    /// What the signature of the bytes with `digest` says, as `verifier` checked it.
+    /// `Ok(None)` is a signature not checked yet.
+    fn signature<'a>(&'a self, digest: &'a Sri, verifier: &'a str)
+    -> Stored<'a, Option<Signature>>;
+
+    /// Record what `verifier` found of it, replacing what it found before.
+    fn put_signature<'a>(
+        &'a self,
+        digest: &'a Sri,
+        verifier: &'a str,
+        signature: &'a Signature,
+    ) -> Stored<'a, ()>;
 }
 
 /// The decisions this process has recorded, the oldest dropped past its budget.
@@ -170,6 +184,7 @@ pub struct InProcess(
     Mutex<Vec<i64>>,
     Mutex<Decisions>,
     Mutex<Lru<String, Sri>>,
+    Mutex<Lru<(Sri, String), Signature>>,
 );
 
 impl InProcess {
@@ -188,6 +203,7 @@ impl InProcess {
                 held: std::collections::VecDeque::new(),
                 max_entries,
             }),
+            Mutex::new(Lru::new(max_entries)),
             Mutex::new(Lru::new(max_entries)),
         )
     }
@@ -394,6 +410,38 @@ impl Analyses for InProcess {
             Ok(())
         })
     }
+
+    fn signature<'a>(
+        &'a self,
+        digest: &'a Sri,
+        verifier: &'a str,
+    ) -> Stored<'a, Option<Signature>> {
+        Box::pin(async move {
+            let key = (digest.clone(), verifier.to_owned());
+            Ok(self
+                .8
+                .lock()
+                .expect("signature store lock")
+                .get(&key)
+                .cloned())
+        })
+    }
+
+    fn put_signature<'a>(
+        &'a self,
+        digest: &'a Sri,
+        verifier: &'a str,
+        signature: &'a Signature,
+    ) -> Stored<'a, ()> {
+        Box::pin(async move {
+            let key = (digest.clone(), verifier.to_owned());
+            self.8
+                .lock()
+                .expect("signature store lock")
+                .insert(key, signature.clone());
+            Ok(())
+        })
+    }
 }
 
 #[cfg(test)]
@@ -461,6 +509,12 @@ pub(crate) mod tests {
             broken()
         }
         fn put_claimed<'a>(&'a self, _: &'a str, _: &'a Sri) -> Stored<'a, ()> {
+            broken()
+        }
+        fn signature<'a>(&'a self, _: &'a Sri, _: &'a str) -> Stored<'a, Option<Signature>> {
+            broken()
+        }
+        fn put_signature<'a>(&'a self, _: &'a Sri, _: &'a str, _: &'a Signature) -> Stored<'a, ()> {
             broken()
         }
     }

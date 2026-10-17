@@ -169,6 +169,22 @@ impl Analyser {
         }
     }
 
+    /// What `verifier` found of the signature of the bytes with `digest`, `None` when it
+    /// has not checked it or the store cannot answer.
+    pub async fn signature(
+        &self,
+        digest: &Sri,
+        verifier: &str,
+    ) -> Option<crate::ecosystem::Signature> {
+        match self.store.signature(digest, verifier).await {
+            Ok(signature) => signature,
+            Err(e) => {
+                warn!(byrle.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; the signature is not read");
+                None
+            }
+        }
+    }
+
     /// Wait until `count` jobs have ended since this analyser was made.
     pub async fn ended(&self, count: u64) {
         let _ = self
