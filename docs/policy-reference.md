@@ -180,14 +180,16 @@ and tightens nothing.
 | `virustotal_detected` | a VirusTotal engine called the artifact malicious or suspicious | 1 |
 | `trustpub_dropped` | a cargo version was published without trusted publishing after one published with it | 1 |
 | `trustpub_repository_changed` | trusted publishing published a cargo version from another provider or repository than the latest earlier version it published | 1 |
+| `signing_key_new` | a Maven version's `.pom` was signed by a primary key that signed no version published 7 or more days before it | 1 |
+| `signing_key_expired` | the key, or the subkey, that signed a Maven version's `.pom` had expired when it signed | 1 |
 | `advisory_malware` | an advisory reports the version as malware | 8 |
 | `advisory_vulnerability` | an advisory reports a vulnerability in it | 4 |
 | `advisory_unsound` | RustSec reports unsound code in it | 3 |
 | `advisory_unmaintained` | RustSec reports the crate unmaintained | 2 |
 | `advisory_notice` | RustSec published a notice about it, or a kind this build does not know | 1 |
 
-The keys above are the rules of the four detectors built in, `metadata`, `source`,
-`virustotal` and `trustpub`, and of the advisories the intel store holds, which
+The keys above are the rules of the five detectors built in, `metadata`, `source`,
+`virustotal`, `trustpub` and `signing`, and of the advisories the intel store holds, which
 are named without the detector. An unsound, unmaintained or notice advisory refuses
 nothing: it is a signal only. A vulnerability or malware advisory is also refused by
 `max_cvss` or `known_malware`. Another detector's rule is weighed as `detector.rule`, such

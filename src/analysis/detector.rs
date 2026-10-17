@@ -5,6 +5,7 @@
 
 pub mod guarddog;
 pub mod metadata;
+pub mod signing;
 pub mod source;
 pub mod trustpub;
 pub mod virustotal;
@@ -25,32 +26,37 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use crate::identity::Ecosystem;
 
 /// The detectors whose rules a policy may weight, and those rules.
-pub const KNOWN: [(&str, &[&str]); 6] = [
+pub const KNOWN: [(&str, &[&str]); 7] = [
     (metadata::NAME, &metadata::RULES),
     (crate::signal::ADVISORY, &crate::signal::ADVISORY_RULES),
     (source::NAME, &source::RULES),
     (virustotal::NAME, &virustotal::RULES),
     (trustpub::NAME, &trustpub::RULES),
+    (signing::NAME, &signing::RULES),
     ("guarddog", &guarddog::RULES),
 ];
 
 /// The detectors built in, whose rules a policy names without the detector's name.
-pub const BUILT_IN: [&str; 5] = [
+pub const BUILT_IN: [&str; 6] = [
     metadata::NAME,
     source::NAME,
     virustotal::NAME,
     trustpub::NAME,
+    signing::NAME,
     crate::signal::ADVISORY,
 ];
 
 /// The rules of the detectors built in, as a policy names them.
-pub const BUILT_IN_RULES: [&str; 16] = joined(
-    &joined::<11>(
-        &joined::<9>(
-            &joined::<8>(&metadata::RULES, &source::RULES),
-            &virustotal::RULES,
+pub const BUILT_IN_RULES: [&str; 18] = joined(
+    &joined::<13>(
+        &joined::<11>(
+            &joined::<9>(
+                &joined::<8>(&metadata::RULES, &source::RULES),
+                &virustotal::RULES,
+            ),
+            &trustpub::RULES,
         ),
-        &trustpub::RULES,
+        &signing::RULES,
     ),
     &crate::signal::ADVISORY_RULES,
 );
@@ -501,7 +507,9 @@ esac
         assert_eq!(BUILT_IN_RULES[4..8], source::RULES);
         assert_eq!(BUILT_IN_RULES[8..9], virustotal::RULES);
         assert_eq!(BUILT_IN_RULES[9..11], trustpub::RULES);
-        assert_eq!(BUILT_IN_RULES[11..], crate::signal::ADVISORY_RULES);
+        assert_eq!(BUILT_IN_RULES[11..13], signing::RULES);
+        assert_eq!(BUILT_IN_RULES[13..], crate::signal::ADVISORY_RULES);
+        assert!(knows("signing_key_new"));
         assert!(knows("virustotal_detected"));
         assert!(knows("trustpub_dropped"));
         assert_eq!(joined::<3>(&["a"], &["b", "c"]), ["a", "b", "c"]);

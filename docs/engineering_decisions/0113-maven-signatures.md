@@ -16,7 +16,7 @@ the default, refuses a version when:
 |---|---|---|
 | 1 | an attestation that fails verification | a jar's `.asc` that fails verification |
 | 2 | none, after a version with one | no `.asc`, after a version with one |
-| 3 | a repository and workflow file no attested version from `provenance_window_days` before used | not refused: a signal, `signing_key_new`, weight 1, when no version of the artifact signed `provenance_window_days` or more before used the primary key |
+| 3 | a repository and workflow file no attested version from `provenance_window_days` before used | not refused: a signal, `signing_key_new`, weight 1, when no version of the artifact published 7 or more days before was signed by the primary key |
 
 The artifact is `groupId:artifactId`. Its earlier versions are looked through as 0066
 looks, most recent first, up to `BYRLE_PROVENANCE_HISTORY`, and each version's key is kept
@@ -146,4 +146,25 @@ A `.pom` and a `.module` are checked as a jar is, in the claim job, their first 
 `BYRLE_CLAIM_RETRY_AFTER`, 2 by default, for a jar too: mvn 3.10.0 waits it between 4
 tries, and at 1 a cold Spring Boot build failed on `tomcat-embed-core-10.1.46.pom`,
 checked 3.4 s after its first 503.
+
+## Amended 2026-10-17: the `signing` detector
+
+Case 3 and a key expired when it signed are the rules of `signing`, a detector built in
+that reads Maven versions. It is not awaited: a download does not wait for it.
+
+| Rule | Fires when | Detail, for example |
+|---|---|---|
+| `signing_key_new` | no version published 7 or more days before was signed by its `.pom`'s primary key, and one was signed | `signed by <fingerprint>; 1.2 was signed by <fingerprint>` |
+| `signing_key_expired` | its `.pom`'s key, or subkey, had expired when it signed | `the key expired before it signed` |
+
+| Choice | Why |
+|---|---|
+| The `.pom`'s `.asc`, not the jar's | every version has a `.pom`; a BOM has no jar |
+| A signer read from its `.asc` and key copies, unverified | no earlier file is fetched, as above |
+| 7 days, not `provenance_window_days` | a detection is stored once per version and read under every policy; 7 is that key's default |
+| Versions read newest first, until one 7 days older was signed by the same key, or 64 such were read | 64 is `BYRLE_PROVENANCE_HISTORY`'s default |
+| A version with no `.asc`, or whose key no server holds, fires nothing | it has no key to compare |
+
+A repository or key server that cannot be asked stores nothing, and the detector runs
+again on the next request for the version.
 

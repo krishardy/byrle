@@ -32,6 +32,7 @@ result is stored.
 | `source` | `Sourced`: the comparison of one artifact with its source | on each decision with a stored comparison. The comparison runs in the analyser, per artifact digest, with its own slots and deadline | the comparison, by digest and `COMPARER` | `source 1`, `COMPARER` |
 | `virustotal` | `Scanned`: VirusTotal's answer about one artifact | on each decision with a stored answer. The lookup runs in the analyser, per artifact digest, one at a time behind a rate limiter: [virustotal](0104-virustotal.md) | the answer, by digest | `virustotal 1` |
 | `trustpub` | `Target`, cargo versions only: crates.io's API asked who published each version of the crate | in the background, as a command does, one request each `BYRLE_CRATES_API_INTERVAL_MS`. Awaited: the download answers 503 until its result is stored: [cargo-provenance](0110-cargo-provenance.md) | its detection, by detector version | `trustpub 1` |
+| `signing` | `Target`, Maven versions only: each version's `.pom.asc` and the key servers' copies of its key | in the background, not awaited: [maven-signatures](0113-maven-signatures.md) | its detection, by detector version | `signing 1` |
 | a command | `Target`: ecosystem, name and version | in the background, on 2 slots | its detection, by detector version | what `program --version` prints last |
 
 `metadata`, `source` and `virustotal` answer on the first poll of `detect`. `at_once` reads
@@ -40,7 +41,7 @@ it runs in the background, on the commands' slots.
 
 Their rules keep the keys they had before 2026-10-01: `new_package`, not
 `metadata.new_package`. A policy written before then loads unchanged. A command named
-`metadata`, `source`, `virustotal` or `trustpub` is refused at startup.
+`metadata`, `source`, `virustotal`, `trustpub` or `signing` is refused at startup.
 
 A signal prints as `rule in words: detail` for a detector built in, and `detector: rule`
 for a command. The source comparison's text changed with the move:

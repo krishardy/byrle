@@ -471,13 +471,18 @@ fn publishers<L: Fn(&str) -> Option<OsString>>(
         };
         match publishers(client, upstream, &setting, interval) {
             Some(detector) => {
+                let rules = crate::analysis::detector::KNOWN
+                    .iter()
+                    .find(|(name, _)| *name == detector.name())
+                    .map_or_else(String::new, |(_, rules)| rules.join(" and "));
+                let pace = detector.awaited().map_or_else(String::new, |each| {
+                    format!(", one request each {} ms", each.as_millis())
+                });
                 info!(
                     byrle.config.variable = %env::CRATES_API,
                     byrle.detector = detector.name(),
-                    "publisher lookup on: each {ecosystem} version served is looked up on the registry's \
-                     API, one request each {} ms, for the trustpub_dropped and \
-                     trustpub_repository_changed signals",
-                    interval.as_millis()
+                    "publisher lookup on: each {ecosystem} version served is looked up{pace}, \
+                     for the {rules} signals"
                 );
                 made.push(detector);
             }
@@ -965,7 +970,14 @@ mod tests {
     async fn the_publisher_lookup_is_reported_on_or_off_at_startup() {
         let (started, log) = logged("startup-trustpub-on", &[]).await;
         assert!(started && log.contains("publisher lookup on"), "{log}");
-        assert!(log.contains("one request each 1000 ms"), "{log}");
+        assert!(
+            log.contains("cargo version served is looked up, one request each 1000 ms"),
+            "{log}"
+        );
+        assert!(
+            log.contains("maven version served is looked up, for the signing_key_new"),
+            "{log}"
+        );
         let mirror = [(env::UPSTREAM_CARGO, "https://mirror.example/index/")];
         let (started, log) = logged("startup-trustpub-off", &mirror).await;
         assert!(started && log.contains("publisher lookup off"), "{log}");

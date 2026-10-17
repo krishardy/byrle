@@ -363,7 +363,14 @@ Q2, Q7 and Q9 otherwise.
          `make mutants`: 37 mutants, 7 caught, 28 unviable, 2 missed, each the `purl`
          a manifest is fetched with, which tests added after assert.
       3. Case 3 as the signal `signing_key_new`, weight 1, from the earlier versions'
-         `.asc`.
+         `.asc`. Done 2026-10-17: the `signing` detector, also reporting
+         `signing_key_expired` (0113, amended). A cold mvn 3.10.0 build of Spring Boot
+         3.5.6 through the proxy: BUILD SUCCESS in 254 s, the detector run on 94
+         versions, `signing_key_new` on 13, `signing_key_expired` on none, none failed.
+         maven-resources-plugin's last five `.pom`s, 3.2.0 to 3.5.0, were each signed
+         by a different key.
+         `make mutants`: 55 mutants, 40 caught, 13 unviable, 2 missed, both in the
+         window of the versions read, which a test added after kills.
    6. Annotation processors (Q4): a jar holding
       `META-INF/services/javax.annotation.processing.Processor` has install scripts.
       A plugin jar is decided as any other (Q5).

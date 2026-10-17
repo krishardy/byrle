@@ -961,6 +961,8 @@ mod tests {
                     "virustotal_detected",
                     "trustpub_dropped",
                     "trustpub_repository_changed",
+                    "signing_key_new",
+                    "signing_key_expired",
                     "advisory_malware",
                     "advisory_vulnerability",
                     "advisory_unsound",

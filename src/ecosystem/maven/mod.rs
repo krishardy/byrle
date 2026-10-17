@@ -8,6 +8,7 @@ pub mod keys;
 pub mod paths;
 pub mod signature;
 pub mod signer;
+pub mod signing;
 pub mod transport;
 pub mod wire;
 
@@ -76,7 +77,7 @@ pub const REGISTRY: Registry = Registry {
     write: |_| None,
     meaningless: &[Rule::Deprecated, Rule::Yanked],
     install_scripts_unread: None,
-    publishers: None,
+    publishers: Some(signing::made),
     decides_head: true,
     signatures: Some(signature::VERIFIER),
     sidecar: paths::metadata_sidecar,

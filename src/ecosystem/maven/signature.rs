@@ -136,6 +136,34 @@ fn check(
     if made.is_err() {
         return Ok(Err("the signature does not verify".to_owned()));
     }
+    Ok(standing(key, sub, signed_at))
+}
+
+/// The primary key's fingerprint that `signature` names among `keys`, a key server's
+/// answer, and how it had expired when it signed, read without the file it signs: what an
+/// earlier version's `.asc` says. `None` when no key there may have made it.
+pub fn signer(signature: &[u8], keys: &str) -> Option<(String, Option<String>)> {
+    let signature = parse(signature).ok()?;
+    let signed_at = signature.created()?.as_secs();
+    let issuers = issuers(&signature);
+    let (parsed, _) = SignedPublicKey::from_string_many(keys).ok()?;
+    parsed.flatten().find_map(|key| {
+        let sub = key.public_subkeys.iter().find(|s| names(&s.key, &issuers));
+        if sub.is_none() && !names(&key.primary_key, &issuers) {
+            return None;
+        }
+        let expired = standing(&key, sub, signed_at).ok()?;
+        Some((format!("{:X}", key.primary_key.fingerprint()), expired))
+    })
+}
+
+/// How `key`, or its subkey `sub`, stood when it signed at `signed_at`: `Ok` with how it
+/// had expired by then, or why it may not have signed: revoked, or a subkey not bound.
+fn standing(
+    key: &SignedPublicKey,
+    sub: Option<&SignedPublicSubKey>,
+    signed_at: u32,
+) -> Result<Option<String>, String> {
     let primary = &key.primary_key;
     let created = primary.created_at().as_secs();
     let mut lives: Vec<(u32, Option<u32>)> = key
@@ -163,10 +191,10 @@ fn check(
         .map(revocation)
         .collect();
     if let Some(why) = revoked(&revocations, signed_at, "the key") {
-        return Ok(Err(why));
+        return Err(why);
     }
     let Some(sub) = sub else {
-        return Ok(Ok(lapsed));
+        return Ok(lapsed);
     };
     let bound: Vec<&Signature> = sub
         .signatures
@@ -180,7 +208,7 @@ fn check(
         .map(|s| life(s, sub_created))
         .collect();
     if lives.is_empty() {
-        return Ok(Err("its subkey is not bound to the key".to_owned()));
+        return Err("its subkey is not bound to the key".to_owned());
     }
     lapsed = lapsed.or_else(|| expired(&lives, signed_at, "its subkey"));
     let revocations: Vec<(u32, bool)> = bound
@@ -188,7 +216,7 @@ fn check(
         .filter(|s| s.typ() == Some(SignatureType::SubkeyRevocation))
         .map(|s| revocation(s))
         .collect();
-    Ok(revoked(&revocations, signed_at, "its subkey").map_or(Ok(lapsed), Err))
+    revoked(&revocations, signed_at, "its subkey").map_or(Ok(lapsed), Err)
 }
 
 /// A self-signature's time, and when it says its key expires: `created` plus its key
@@ -544,7 +572,36 @@ mod tests {
         )
         .unwrap();
         revoked.details.revocation_signatures.push(revocation);
+        let fingerprint = format!("{:X}", key.primary_key.fingerprint());
+        assert_eq!(
+            signer(&at(200), &armored(expires_copy(&key, base))),
+            Some((
+                fingerprint,
+                Some("the key expired before it signed".to_owned())
+            ))
+        );
+        assert_eq!(signer(&at(20), &armored(revoked.clone())), None);
         assert_eq!(judged(&at(20), revoked, data), failed("the key is revoked"));
+        assert_eq!(signer(b"not armor", &armored(public())), None);
+        assert_eq!(signer(&at(20), "not a key"), None);
+        let other = String::from_utf8(signed("json-simple-3.0.2.jar.ubuntu.key")).unwrap();
+        assert_eq!(signer(&at(20), &other), None, "another key's copy");
+        let undated = signature(&key.primary_key, SignatureType::Binary, None, data);
+        assert_eq!(signer(&undated, &armored(public())), None);
+    }
+
+    /// `key`'s public copy, saying it expired 100 seconds after `base`.
+    fn expires_copy(
+        key: &pgp::composed::SignedSecretKey,
+        base: u32,
+    ) -> pgp::composed::SignedPublicKey {
+        let mut expires = pgp::composed::SignedPublicKey::from(key.clone());
+        expires.details.direct_signatures.push(made::expiring(
+            key,
+            base + 10,
+            base + 100 - made::made(),
+        ));
+        expires
     }
 
     /// A subkey signs only while bound, unexpired and unrevoked.

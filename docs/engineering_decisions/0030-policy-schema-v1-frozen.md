@@ -32,6 +32,10 @@ Amended 2026-10-15, asked for by the user: `trustpub_dropped` and
 [cargo-provenance](0110-cargo-provenance.md). A file setting one of them does not parse under a
 release before it.
 
+Amended 2026-10-17, decided by the user: `signing_key_new` and `signing_key_expired` were
+added to `signal_weights`, for [maven-signatures](0113-maven-signatures.md). A file setting
+one of them does not parse under a release before it.
+
 ## The keys
 
 | Level | Keys |
@@ -41,7 +45,7 @@ release before it.
 | a `packages` entry | `match`, `set`, `reason`, `expires`, `permanent`, `added_by` |
 | an `advisory_scores` entry | `advisory_id`, `cvss`, `reason`, `expires`, `permanent`, `added_by` |
 | `match` | `ecosystem`, `name`, `purl`, `version`, `has_install_scripts` |
-| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `trustpub_dropped`, `trustpub_repository_changed`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
+| `signal_weights` | `new_package`, `new_publisher`, `no_repository`, `near_name`, `source_install_scripts`, `source_dependencies`, `source_install_files`, `source_differing`, `virustotal_detected`, `trustpub_dropped`, `trustpub_repository_changed`, `signing_key_new`, `signing_key_expired`, `advisory_malware`, `advisory_vulnerability`, `advisory_unsound`, `advisory_unmaintained`, `advisory_notice`, and `guarddog.<rule>` for each rule in `detector::guarddog::RULES` |
 | `set` | `cooldown_days`, `kev`, `install_scripts`, `yanked`, `deprecated`, `provenance`, `vuln_advisory_ids` |
 
 | Key | Value | Default |
