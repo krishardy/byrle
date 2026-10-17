@@ -20,7 +20,7 @@ encoded as the client asked, as any rewritten document is (`proxy::finish`):
 | a jar or any other artifact, a `.pom`, a `.module` | the repository's bytes, or a refusal |
 | a `.sha1`, `.md5`, `.sha256`, `.sha512` or `.asc` beside one of those | the repository's bytes |
 | a `maven-metadata.xml` the policy filters | the repository's bytes less each refused version's element, with `<latest>` and `<release>` moved down ([maven-plan](../maven-plan.md) step 4.1) |
-| that file's `.sha1` and `.md5` | written by the proxy from the filtered body (step 4.2) |
+| that file's `.sha1` and `.md5` | written by the proxy from the filtered body (step 4.2). Its `x-checksum-*` headers, which describe Central's body, are removed |
 | a `maven-metadata.xml` nothing is filtered from, and its sidecars | the repository's bytes |
 
 No other Maven file is written or rewritten by the proxy. A change to this list is a

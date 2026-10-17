@@ -103,6 +103,32 @@ fn is_artifact(file: &str) -> bool {
             .any(|descriptor| file.ends_with(descriptor))
 }
 
+/// A `maven-metadata.xml`'s `.sha1` or `.md5`: the document's path, and its digest. `None`
+/// for any other path.
+pub fn metadata_sidecar(path: &str) -> Option<(String, crate::ecosystem::Digest)> {
+    let path = path.split('?').next().unwrap_or(path);
+    let (document, digest): (&str, crate::ecosystem::Digest) = match path.rsplit_once('.') {
+        Some((document, "sha1")) => (document, sha1),
+        Some((document, "md5")) => (document, md5),
+        _ => return None,
+    };
+    let named = document.ends_with(&format!("/{METADATA}"));
+    (named && matches!(classify_path(document), RequestTarget::Metadata(_)))
+        .then(|| (document.to_owned(), digest))
+}
+
+/// `bytes`' SHA-1 as hex, as a `.sha1` holds it.
+pub fn sha1(bytes: &[u8]) -> String {
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY, bytes);
+    crate::util::hex(digest.as_ref())
+}
+
+/// `bytes`' MD5 as hex, as a `.md5` holds it.
+pub fn md5(bytes: &[u8]) -> String {
+    use md5::Digest as _;
+    crate::util::hex(&md5::Md5::digest(bytes))
+}
+
 /// Everything under [`PREFIX`] goes to the repository at `base`, under the same path.
 pub fn upstream_url(base: &str, path_and_query: &str) -> String {
     let rest = crate::ecosystem::within(PREFIX, path_and_query).unwrap_or(path_and_query);
@@ -240,6 +266,33 @@ mod tests {
             Some("https://r.example/a/b/".to_owned())
         );
         assert_eq!(versions_url("https://r.example/a/b/x.pom"), None);
+    }
+
+    /// mvn asks for a `maven-metadata.xml`'s `.sha1`, and for its `.md5` when that is missing.
+    #[test]
+    fn a_metadata_file_s_sha1_and_md5_are_its_sidecars() {
+        let (document, digest) =
+            metadata_sidecar("/maven/org/apache/commons/commons-lang3/maven-metadata.xml.sha1?x=1")
+                .expect("a sidecar");
+        assert_eq!(
+            document,
+            "/maven/org/apache/commons/commons-lang3/maven-metadata.xml"
+        );
+        assert_eq!(digest(b"abc"), "a9993e364706816aba3e25717850c26c9cd0d89d");
+        let (_, digest) =
+            metadata_sidecar("/maven/org/apache/commons/commons-lang3/maven-metadata.xml.md5")
+                .expect("a sidecar");
+        assert_eq!(digest(b"abc"), "900150983cd24fb0d6963f7d28e17f72");
+        for other in [
+            "/maven/org/apache/commons/commons-lang3/maven-metadata.xml.sha256",
+            "/maven/org/apache/commons/commons-lang3/maven-metadata.xml",
+            "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.sha1",
+            "/maven/commons-lang3/maven-metadata.xml.sha1",
+            "/maven/org/x/not-maven-metadata.xml.sha1",
+            "/maven/org/apache/commons/commons-lang3/maven-metadata",
+        ] {
+            assert!(metadata_sidecar(other).is_none(), "{other}");
+        }
     }
 
     #[test]

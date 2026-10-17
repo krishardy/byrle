@@ -141,6 +141,10 @@ pub enum Answer {
     },
     /// 200 with this body in one chunk, and no `Content-Length`.
     Chunked(Vec<u8>),
+    /// 200 with this body, as this `Content-Type`.
+    Typed(&'static str, Vec<u8>),
+    /// 200 as this `Content-Type`, ending one byte into the 64 it declares.
+    CutShortAs(&'static str),
 }
 
 impl Answer {
@@ -209,15 +213,10 @@ pub async fn recorded(answers: Vec<Answer>) -> (std::net::SocketAddr, Requests) 
                     }
                     Answer::Body { bytes, declared } => {
                         let length = declared.unwrap_or(bytes.len());
-                        let mut out = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nETag: \
-                             \"tag\"\r\nLast-Modified: Wed, 17 Sep 2026 00:00:00 \
-                             GMT\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
-                        )
-                        .into_bytes();
-                        out.extend_from_slice(&bytes);
-                        out
+                        ok("application/json", &bytes, length)
                     }
+                    Answer::Typed(content_type, bytes) => ok(content_type, &bytes, bytes.len()),
+                    Answer::CutShortAs(content_type) => ok(content_type, b"<", 64),
                 };
                 let _ = stream.write_all(&response).await;
                 let _ = stream.flush().await;
@@ -225,6 +224,17 @@ pub async fn recorded(answers: Vec<Answer>) -> (std::net::SocketAddr, Requests) 
         }
     });
     (addr, requests)
+}
+
+/// A 200 of `bytes` as `content_type`, declaring `length`.
+fn ok(content_type: &str, bytes: &[u8], length: usize) -> Vec<u8> {
+    let mut out = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nETag: \"tag\"\r\nLast-Modified: \
+         Wed, 17 Sep 2026 00:00:00 GMT\r\nContent-Length: {length}\r\nConnection: close\r\n\r\n"
+    )
+    .into_bytes();
+    out.extend_from_slice(bytes);
+    out
 }
 
 /// One request from `stream`: its head, and as many body bytes as its `Content-Length` says.

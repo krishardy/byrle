@@ -447,7 +447,12 @@ pub struct Registry {
     pub write: fn(&Writing<'_>) -> Option<Result<Written, String>>,
     /// Whether an artifact's `HEAD` is refused as its `GET` is: Gradle reuses a file after one.
     pub decides_head: bool,
+    /// The document a sidecar is the digest of, and that digest, where the proxy writes it.
+    pub sidecar: fn(&str) -> Option<(String, Digest)>,
 }
+
+/// A digest of a document's bytes, as hex: a [`Registry::sidecar`]'s.
+pub type Digest = fn(&[u8]) -> String;
 
 /// Each served ecosystem's upstream base, with no trailing slash, one per [`TABLE`] row.
 #[derive(Debug, Clone, PartialEq, Eq)]

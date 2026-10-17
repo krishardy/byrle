@@ -122,6 +122,7 @@ pub const REGISTRY: Registry = Registry {
     install_scripts_unread: None,
     publishers: None,
     decides_head: false,
+    sidecar: |_| None,
 };
 
 /// What `byrle` sends to ask for JSON rather than HTML. PEP 691.

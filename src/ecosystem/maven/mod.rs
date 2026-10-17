@@ -71,6 +71,7 @@ pub const REGISTRY: Registry = Registry {
     install_scripts_unread: None,
     publishers: None,
     decides_head: true,
+    sidecar: paths::metadata_sidecar,
 };
 
 /// What points mvn at `url`: a mirror of every repository in `~/.m2/settings.xml`.

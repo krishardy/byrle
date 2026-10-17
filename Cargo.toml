@@ -24,6 +24,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 # so it adds no crate. See src/account.rs.
 getrandom = "0.3.4"
 jiff = "0.2.35"
+md-5 = { version = "0.10.6", default-features = false }
 purl = { version = "0.1.6", default-features = false }
 reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "http2", "stream"] }
 serde = { version = "1.0.229", features = ["derive"] }

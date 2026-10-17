@@ -73,6 +73,7 @@ the same name.
 | A file named like a document but not one | none | a group's plugin prefixes and a snapshot's builds are both `maven-metadata.xml`; one whose `<groupId>` and `<artifactId>` are not the path's key is forwarded unread |
 | An artifact's `HEAD` | forwarded undecided | `Registry::decides_head`: Gradle reuses a jar it cached from another repository after a `HEAD` and a `.sha1`, with no `GET`, so Maven's row refuses a `HEAD` as its `GET` |
 | A version order that is not total | every order was | `VersionOrder::Maven`, Maven's `ComparableVersion`. A range's events are sorted by insertion |
+| A file holding the digest of a document the proxy rewrites | forwarded as it came | `Registry::sidecar`: Maven's `maven-metadata.xml.sha1` and `.md5` are the digests of the body the proxy serves. Added 2026-10-17 |
 
 ## Decision
 

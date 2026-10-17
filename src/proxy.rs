@@ -1059,7 +1059,9 @@ enum DocumentStep {
     },
 }
 
-/// Decode, read, filter by policy and rewrite a metadata document.
+/// Decode, read, filter by policy and rewrite a metadata document. Its refusals are
+/// written to the audit log for `account` when `audited`, and not for a sidecar's document.
+#[allow(clippy::too_many_arguments)]
 async fn filtered_document(
     proxy: &Proxy,
     document: DocumentKind,
@@ -1068,6 +1070,7 @@ async fn filtered_document(
     negotiation: &Negotiation,
     path: &str,
     account: Option<&str>,
+    audited: bool,
 ) -> DocumentStep {
     let parse_started = Instant::now();
     let decoded = match decode_for_parsing(body, content_encoding, proxy.config.max_metadata_bytes)
@@ -1119,7 +1122,9 @@ async fn filtered_document(
                 None
             }
             Err(unavailable) => {
-                audit_not_ready(proxy, &metadata.key, None, &unavailable, account);
+                if audited {
+                    audit_not_ready(proxy, &metadata.key, None, &unavailable, account);
+                }
                 return DocumentStep::Answer(unavailable.response());
             }
         },
@@ -1132,7 +1137,12 @@ async fn filtered_document(
             proxy.config.policy.as_deref(),
             intel.as_ref(),
             path,
-            proxy.config.audit.as_deref().map(|log| (log, account)),
+            proxy
+                .config
+                .audit
+                .as_deref()
+                .filter(|_| audited)
+                .map(|log| (log, account)),
             proxy.config.mode,
         ),
         None => Refused::default(),
@@ -2760,6 +2770,9 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     if let Some(response) = written(&proxy, ecosystem, &path, req.headers()) {
         return response;
     }
+    if let Some(response) = sidecar(&proxy, ecosystem, &path, req.headers()).await {
+        return response;
+    }
     #[cfg(debug_assertions)]
     if let Some((deferral, since)) = &proxy.config.defer_test
         && let Some((status, retry_after)) = deferral.applies_to(&target, since.elapsed())
@@ -2818,6 +2831,80 @@ fn written(
         }
         Err(reason) => (StatusCode::BAD_REQUEST, format!("byrle: {reason}\n")).into_response(),
     })
+}
+
+/// A sidecar of a document the proxy rewrites, such as Maven's `maven-metadata.xml.sha1`:
+/// the digest of the document as the proxy serves it, fetched and filtered now. `None` to
+/// forward the sidecar, when the row writes none, or the document is served as it came.
+async fn sidecar(
+    proxy: &Proxy,
+    ecosystem: Ecosystem,
+    path: &str,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    let registry = ecosystem::of(ecosystem);
+    let (document_path, digest) = (registry.sidecar)(path)?;
+    let target = (registry.classify_path)(&document_path);
+    let (body, content_type, content_encoding) =
+        sidecar_document(proxy, ecosystem, &document_path, path).await?;
+    let document = registry.document(content_type.as_deref())?;
+    let negotiation = negotiate(proxy, ecosystem, &target, &Method::GET, headers);
+    match filtered_document(
+        proxy,
+        document,
+        &body,
+        content_encoding.as_deref(),
+        &negotiation,
+        &document_path,
+        None,
+        false,
+    )
+    .await
+    {
+        DocumentStep::Answer(response) => Some(response),
+        DocumentStep::Forward { body: None, .. } => None,
+        DocumentStep::Forward {
+            body: Some(served), ..
+        } => {
+            info!(url.path = %crate::http::url_path(path), "sidecar written by the proxy for the document it rewrote");
+            Some(([(header::CONTENT_TYPE, "text/plain")], digest(&served)).into_response())
+        }
+    }
+}
+
+/// The document at `document_path` from upstream, for the sidecar at `path`: its body,
+/// `Content-Type` and `Content-Encoding`. `None` when it could not be fetched whole.
+async fn sidecar_document(
+    proxy: &Proxy,
+    ecosystem: Ecosystem,
+    document_path: &str,
+    path: &str,
+) -> Option<(Bytes, Option<String>, Option<String>)> {
+    let url = upstream_url(proxy, ecosystem, document_path, None);
+    let fetched = match proxy.config.client.get(&url).send().await {
+        Ok(response) if response.status().is_success() => response,
+        Ok(response) => {
+            warn!(url.path = %crate::http::url_path(path), http.response.status_code = response.status().as_u16(), "the sidecar's document was refused upstream; the sidecar is forwarded");
+            return None;
+        }
+        Err(e) => {
+            warn!(url.path = %crate::http::url_path(path), error.message = %e, "the sidecar's document could not be fetched; the sidecar is forwarded");
+            return None;
+        }
+    };
+    let header_of = |name| {
+        fetched
+            .headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    };
+    let (content_type, content_encoding) = (
+        header_of(header::CONTENT_TYPE),
+        header_of(header::CONTENT_ENCODING),
+    );
+    let body = fetched.bytes().await.ok()?;
+    Some((body, content_type, content_encoding))
 }
 
 /// A request for a path outside the one the proxy answers under: 404, naming that path.
@@ -3254,6 +3341,7 @@ impl Exchange<'_> {
             &self.negotiation,
             &self.path,
             self.account.as_deref(),
+            true,
         )
         .await
         {
@@ -3357,11 +3445,21 @@ fn mark_filtered(headers: &mut HeaderMap, refused: &Refused) {
     );
 }
 
+/// Headers stating a digest of the upstream's body, as Maven Central's `x-checksum-*`.
+const UPSTREAM_DIGESTS: [&str; 6] = [
+    "x-checksum-md5",
+    "x-checksum-sha1",
+    "x-checksum-sha256",
+    "x-checksum-sha512",
+    "content-md5",
+    "x-goog-hash",
+];
+
 /// Send the document on, rewritten or not.
 ///
 /// A rewritten body is this proxy's, so its length, its encoding and its entity tag all
-/// have to describe it rather than the upstream's. `None` forwards the upstream's bytes
-/// untouched, headers included.
+/// have to describe it rather than the upstream's, and the upstream's digests of its own
+/// body are removed. `None` forwards the upstream's bytes untouched, headers included.
 fn finish(
     forwarded: Option<Vec<u8>>,
     body: Bytes,
@@ -3384,6 +3482,9 @@ fn finish(
                 }
             };
             headers.insert(header::CONTENT_LENGTH, HeaderValue::from(encoded.len()));
+            for digest in UPSTREAM_DIGESTS {
+                headers.remove(digest);
+            }
             if let Some(etag) = headers
                 .get(header::ETAG)
                 .and_then(|v| v.to_str().ok())
@@ -5264,7 +5365,7 @@ mod tests {
         let headers = client_headers("gzip");
         let negotiation = negotiate(proxy, ecosystem, &target, &Method::GET, &headers);
         let body = Bytes::copy_from_slice(body);
-        filtered_document(proxy, document, &body, None, &negotiation, path, None).await
+        filtered_document(proxy, document, &body, None, &negotiation, path, None, true).await
     }
 
     async fn resolve_npm(proxy: &Proxy, name: &str, packument: &str) -> DocumentStep {
@@ -5908,6 +6009,7 @@ mod tests {
             &negotiation,
             "/npm/lodash",
             None,
+            true,
         )
         .await;
         assert!(matches!(brotli, DocumentStep::Forward { body: None, .. }));
@@ -5921,6 +6023,9 @@ mod tests {
         upstream.insert(header::CONTENT_LENGTH, HeaderValue::from_static("8"));
         upstream.insert(header::CONTENT_ENCODING, HeaderValue::from_static("br"));
         upstream.insert(header::ETAG, HeaderValue::from_static("\"t\""));
+        for digest in UPSTREAM_DIGESTS {
+            upstream.insert(digest, HeaderValue::from_static("of the original"));
+        }
         let base = "http://proxy.test";
         let finished = |rewritten: Option<&[u8]>, encoding| {
             finish(
@@ -5940,6 +6045,9 @@ mod tests {
         assert_eq!(response.headers()[header::CONTENT_LENGTH], "9");
         assert!(!response.headers().contains_key(header::CONTENT_ENCODING));
         assert_eq!(response.headers()[header::ETAG], mark_etag("\"t\"", base));
+        for digest in UPSTREAM_DIGESTS {
+            assert!(!response.headers().contains_key(digest), "{digest}");
+        }
 
         let gzipped = finished(Some(b"rewritten"), RequestedEncoding::Gzip);
         assert_eq!(gzipped.headers()[header::CONTENT_ENCODING], "gzip");
@@ -6463,6 +6571,152 @@ mod tests {
             ),
             "{asked}"
         );
+    }
+
+    /// A proxy answering Maven from a loopback repository that gives `answers` in order.
+    async fn maven_from(
+        answers: Vec<crate::util::test_support::Answer>,
+        yaml: &str,
+    ) -> (String, crate::util::test_support::Requests) {
+        maven_with(answers, yaml, None).await
+    }
+
+    /// The same, deciding with `intel`.
+    async fn maven_with(
+        answers: Vec<crate::util::test_support::Answer>,
+        yaml: &str,
+        intel: Option<Arc<dyn Intel>>,
+    ) -> (String, crate::util::test_support::Requests) {
+        let (addr, requests) = crate::util::test_support::recorded(answers).await;
+        let proxy = offline(intel, Some(yaml))
+            .with_upstream(Ecosystem::Maven, format!("http://{addr}/maven2"));
+        (serve(proxy.router()).await, requests)
+    }
+
+    /// Each path the repository was asked for, in order.
+    fn asked(requests: &crate::util::test_support::Requests) -> Vec<String> {
+        requests
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| {
+                let line = String::from_utf8_lossy(r)
+                    .lines()
+                    .next()
+                    .unwrap()
+                    .to_owned();
+                line.split(' ').nth(1).unwrap().to_owned()
+            })
+            .collect()
+    }
+
+    /// mvn checks a filtered `maven-metadata.xml` against its `.sha1`, or its `.md5`, so
+    /// each is the digest of the body the proxy serves, not the repository's.
+    #[tokio::test]
+    async fn a_filtered_metadata_file_s_sha1_and_md5_are_of_the_body_served() {
+        use crate::util::test_support::Answer;
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let (base, requests) =
+            maven_from(vec![Answer::Typed("text/xml", fixture.clone())], DENY_LANG3).await;
+        let served = reqwest::get(format!("{base}{LANG3_METADATA}"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_ne!(served.as_ref(), fixture.as_slice(), "3.21.0 is removed");
+        let sha1 = reqwest::get(format!("{base}{LANG3_METADATA}.sha1"))
+            .await
+            .unwrap();
+        assert_eq!(sha1.status(), 200);
+        assert_eq!(
+            sha1.text().await.unwrap(),
+            crate::ecosystem::maven::paths::sha1(&served)
+        );
+        let md5 = reqwest::get(format!("{base}{LANG3_METADATA}.md5"))
+            .await
+            .unwrap();
+        assert_eq!(
+            md5.text().await.unwrap(),
+            crate::ecosystem::maven::paths::md5(&served)
+        );
+        let upstream = "/maven2/org/apache/commons/commons-lang3/maven-metadata.xml";
+        assert_eq!(asked(&requests), [upstream, upstream, upstream]);
+    }
+
+    /// The repository's sidecar is forwarded for a document served as it came, or one that
+    /// could not be fetched or read.
+    #[tokio::test]
+    async fn a_sidecar_is_forwarded_when_its_document_is_not_rewritten() {
+        use crate::util::test_support::Answer;
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let upstream_sha1 = || Answer::Typed("text/plain", b"from the repository".to_vec());
+        for (first, yaml) in [
+            (Answer::Typed("text/xml", fixture.clone()), NO_POLICY),
+            (Answer::Status(404), DENY_LANG3),
+            (Answer::Close, DENY_LANG3),
+            (Answer::Typed("text/plain", fixture.clone()), DENY_LANG3),
+            (Answer::CutShortAs("text/xml"), DENY_LANG3),
+        ] {
+            let said = format!("{first:?}").chars().take(30).collect::<String>();
+            let (base, requests) = maven_from(vec![first, upstream_sha1()], yaml).await;
+            let sha1 = reqwest::get(format!("{base}{LANG3_METADATA}.sha1"))
+                .await
+                .unwrap();
+            assert_eq!(sha1.text().await.unwrap(), "from the repository", "{said}");
+            assert_eq!(
+                asked(&requests).last().unwrap(),
+                "/maven2/org/apache/commons/commons-lang3/maven-metadata.xml.sha1",
+                "{said}"
+            );
+        }
+    }
+
+    /// An intel store that has loaded nothing, so no package can be decided.
+    struct NeverLoaded;
+
+    impl Intel for NeverLoaded {
+        fn lookup<'a>(
+            &'a self,
+            _ecosystem: &'a str,
+            _name: &'a str,
+            _version: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Vec<crate::intel::store::Record>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn snapshot(&self) -> crate::intel::store::Lookup<'_, Option<LoadedSnapshot>> {
+            Box::pin(async move { Ok(None) })
+        }
+
+        fn package<'a>(
+            &'a self,
+            _ecosystem: &'a str,
+            _name: &'a str,
+        ) -> crate::intel::store::Lookup<'a, Option<PackageIntel>> {
+            Box::pin(async move { Ok(None) })
+        }
+    }
+
+    /// A sidecar is answered as its document would be when the intel store cannot decide.
+    #[tokio::test]
+    async fn a_sidecar_of_a_document_that_cannot_be_decided_is_answered_as_it() {
+        use crate::util::test_support::Answer;
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let (base, _) = maven_with(
+            vec![Answer::Typed("text/xml", fixture)],
+            DENY_LANG3,
+            Some(Arc::new(NeverLoaded)),
+        )
+        .await;
+        let document = reqwest::get(format!("{base}{LANG3_METADATA}"))
+            .await
+            .unwrap();
+        let sha1 = reqwest::get(format!("{base}{LANG3_METADATA}.sha1"))
+            .await
+            .unwrap();
+        assert_eq!(document.status(), 503);
+        assert_eq!(sha1.status(), 503);
     }
 
     const QUOTE_MOD: &str = "/go/rsc.io/quote/@v/v1.5.2.mod";

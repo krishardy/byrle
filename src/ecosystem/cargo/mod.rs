@@ -87,6 +87,7 @@ pub const REGISTRY: Registry = Registry {
     ),
     publishers: Some(trustpub::made),
     decides_head: false,
+    sidecar: |_| None,
 };
 
 /// What points cargo at `url`, the proxy's cargo registry, with or without a trailing `/`.

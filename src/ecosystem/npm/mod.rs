@@ -129,6 +129,7 @@ pub const REGISTRY: Registry = Registry {
     install_scripts_unread: None,
     publishers: None,
     decides_head: false,
+    sidecar: |_| None,
 };
 
 /// npm's abbreviated packument media type, which is what `npm install` asks for.

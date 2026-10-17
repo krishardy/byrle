@@ -242,6 +242,7 @@ dependencies = [
  "libc",
  "log",
  "maud",
+ "md-5",
  "mimalloc",
  "purl",
  "quick-xml",

@@ -260,7 +260,19 @@ Q2, Q7 and Q9 otherwise.
       reads `Eof` without end.
    2. The new hook: the `.sha1` and `.md5` of a filtered `maven-metadata.xml`, written by
       the proxy from the filtered body. mvn warned on the unfiltered `.sha1`; Gradle asked
-      none.
+      none. Done 2026-10-17: `Registry::sidecar`, and `proxy::sidecar`, which fetches the
+      document, filters it as its own request would, without writing its refusals to the
+      audit log again, and answers the digest of the body served. A document served as
+      it came, or one that cannot be fetched or read, has the repository's sidecar
+      forwarded. Measured with mvn 3.10.0 through the proxy, `[3.0,3.18)` with 3.17.0
+      denied: the first run warned "Checksum validation failed, expected
+      '6e9bad07...' (REMOTE_INCLUDED)" before mvn asked for any `.sha1`. Central sends
+      `x-checksum-sha1` and `x-checksum-md5` with the file, and mvn checks a body against
+      them first. A rewritten document of any ecosystem now goes without the upstream's
+      digest headers (`proxy::UPSTREAM_DIGESTS`), as its length and entity tag were
+      already its own. The second run resolved 3.16.0 with no warning, its `.sha1`
+      written by the proxy; the 3.16.0 jar was 403, as every jar is until part 3.
+      `make mutants`: 28 mutants, 20 caught, 8 unviable.
    3. The claim (0112). A `.pom` and a `.module` are checked in the request against their
       sidecar and never refused by policy (Q3); a jar's first fetch is 503 while the claim
       job checks it. mvn retried a 503 4 times at `Retry-After`; Gradle 3 times in 3 s,
