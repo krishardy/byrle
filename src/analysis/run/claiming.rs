@@ -29,6 +29,8 @@ pub struct ClaimJob {
     pub digest: fn(std::fs::File) -> Result<String, String>,
     /// What checks the artifact's signature, where its registry signs files.
     pub signer: Option<Arc<dyn Signer>>,
+    /// The repository it is fetched from, which its signature's result is kept by.
+    pub repository: crate::ecosystem::Repository,
     /// What reads it for install scripts, stored under the sha256 found, where one reads it.
     pub reads: Option<Reads>,
 }
@@ -182,7 +184,7 @@ impl Analyser {
         };
         if let Err(e) = self
             .store
-            .put_signature(digest, signer.verifier(), &signature)
+            .put_signature(digest, job.repository.name(), signer.verifier(), &signature)
             .await
         {
             warn!(url.full = %job.url, error.message = %e, "claim check: the signature's result not stored");
@@ -325,6 +327,7 @@ mod tests {
             url,
             digest: crate::ecosystem::go::dirhash::zip_h1::<std::fs::File>,
             signer: None,
+            repository: crate::ecosystem::Repository::of(crate::identity::Ecosystem::Go),
             reads: None,
         }
     }
@@ -500,10 +503,14 @@ mod tests {
                 .await
                 .expect("finishes");
             let digest = Sri::from_sha256(&Sha256::digest(zip()));
-            let found =
-                crate::analysis::store::Analyses::signature(store.as_ref(), &digest, "fake 1")
-                    .await
-                    .unwrap();
+            let found = crate::analysis::store::Analyses::signature(
+                store.as_ref(),
+                &digest,
+                "golang",
+                "fake 1",
+            )
+            .await
+            .unwrap();
             assert_eq!(found, stored);
             let known = analyser.claim_known(QUOTE).await;
             assert_eq!(
@@ -578,7 +585,8 @@ mod tests {
             Arc::new(crate::analysis::store::tests::Broken),
         );
         let digest = Sri::from_sha256(&Sha256::digest(zip()));
-        assert_eq!(broken.signature(&digest, "fake 1").await, None);
+        let at = crate::ecosystem::Repository::of(crate::identity::Ecosystem::Go);
+        assert_eq!(broken.signature(&digest, at, "fake 1").await, None);
     }
 
     /// A spooled file that cannot be opened has no signature to check.

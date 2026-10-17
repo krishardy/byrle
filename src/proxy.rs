@@ -1950,6 +1950,7 @@ impl<'a> Deciding<'a> {
                     url: upstream_url(self.proxy, repository, path, None),
                     digest: claim.artifact_digest,
                     signer: claim.signer,
+                    repository,
                     reads,
                 };
                 (record, Some(Claiming::Pending(job)))
@@ -2564,7 +2565,7 @@ async fn attested(
     times: Option<&facts::PublishTimes>,
 ) -> (Provenance, Vec<Attestation>) {
     let key = record.package.key();
-    if let Some(signature) = signed(analyser, key.ecosystem(), digest).await {
+    if let Some(signature) = signed(analyser, at, digest).await {
         return (signature.provenance(), Vec::new());
     }
     let bundle = ecosystem::of(key.ecosystem()).provenance_bundle;
@@ -2640,15 +2641,15 @@ async fn attested(
     }
 }
 
-/// What the signature of the bytes with `digest` says, for an ecosystem whose files are
-/// signed, as its claim job checked it. `None` for another, or one not checked yet.
+/// What the signature of the bytes with `digest` from `at` says, for an ecosystem whose
+/// files are signed, as its claim job checked it. `None` for another, or one not checked yet.
 async fn signed(
     analyser: Option<&Analyser>,
-    ecosystem: Ecosystem,
+    at: Repository,
     digest: Option<&Sri>,
 ) -> Option<ecosystem::Signature> {
-    let verifier = ecosystem::of(ecosystem).signatures?;
-    analyser?.signature(digest?, verifier).await
+    let verifier = at.registry().signatures?;
+    analyser?.signature(digest?, at, verifier).await
 }
 
 /// What verifying `to_verify` found: the analyser's stored result, or a failure when it
@@ -3244,7 +3245,10 @@ impl Exchange<'_> {
         let path = &self.path;
         match analyser.claim_known(&claim.manifest).await {
             crate::analysis::run::ClaimKnown::Checked(digest) => {
-                match analyser.signature(&digest, signer.verifier()).await {
+                match analyser
+                    .signature(&digest, self.repository, signer.verifier())
+                    .await
+                {
                     Some(ecosystem::Signature::Failed { why }) => {
                         self.bad_manifest(&purl, "with a signature that does not verify", &why)
                     }
@@ -3264,6 +3268,7 @@ impl Exchange<'_> {
                     url: upstream_url(self.proxy, self.repository, path, None),
                     digest: claim.artifact_digest,
                     signer: Some(signer),
+                    repository: self.repository,
                     reads: None,
                 });
                 info!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %purl, byrle.artifact.claim = %claim.manifest, "deferred: the manifest has not been checked");

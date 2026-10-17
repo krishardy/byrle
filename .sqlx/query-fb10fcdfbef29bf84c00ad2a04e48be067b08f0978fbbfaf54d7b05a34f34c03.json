@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO artifact_signature (digest, repository, outcome, detail, verifier)\n            VALUES ($1, $2, $3, $4, $5)\n            ON CONFLICT (digest, repository, verifier) DO UPDATE SET\n                outcome    = EXCLUDED.outcome,\n                detail     = EXCLUDED.detail,\n                checked_at = now()\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Varchar",
+        "Varchar",
+        "Varchar",
+        "Text",
+        "Varchar"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "fb10fcdfbef29bf84c00ad2a04e48be067b08f0978fbbfaf54d7b05a34f34c03"
+}

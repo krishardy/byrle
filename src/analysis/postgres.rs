@@ -384,18 +384,20 @@ impl Analyses for PgAnalyses {
     fn signature<'a>(
         &'a self,
         digest: &'a Sri,
+        repository: &'a str,
         verifier: &'a str,
     ) -> Stored<'a, Option<Signature>> {
-        Box::pin(self.read_signature(digest, verifier))
+        Box::pin(self.read_signature(digest, repository, verifier))
     }
 
     fn put_signature<'a>(
         &'a self,
         digest: &'a Sri,
+        repository: &'a str,
         verifier: &'a str,
         signature: &'a Signature,
     ) -> Stored<'a, ()> {
-        Box::pin(self.write_signature(digest, verifier, signature))
+        Box::pin(self.write_signature(digest, repository, verifier, signature))
     }
 }
 
@@ -418,6 +420,7 @@ impl PgAnalyses {
     async fn write_signature(
         &self,
         digest: &Sri,
+        repository: &str,
         verifier: &str,
         signature: &Signature,
     ) -> Result<(), AnalysisError> {
@@ -429,14 +432,15 @@ impl PgAnalyses {
         };
         sqlx::query!(
             r#"
-            INSERT INTO artifact_signature (digest, outcome, detail, verifier)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (digest, verifier) DO UPDATE SET
+            INSERT INTO artifact_signature (digest, repository, outcome, detail, verifier)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (digest, repository, verifier) DO UPDATE SET
                 outcome    = EXCLUDED.outcome,
                 detail     = EXCLUDED.detail,
                 checked_at = now()
             "#,
             digest.to_string(),
+            repository,
             outcome,
             detail,
             verifier,
@@ -447,16 +451,19 @@ impl PgAnalyses {
         .map_err(AnalysisError::Backend)
     }
 
-    /// What `verifier` found of the bytes with `digest`. A row this build cannot read is
-    /// not checked yet.
+    /// What `verifier` found of the bytes with `digest` from `repository`. A row this build
+    /// cannot read is not checked yet.
     async fn read_signature(
         &self,
         digest: &Sri,
+        repository: &str,
         verifier: &str,
     ) -> Result<Option<Signature>, AnalysisError> {
         let row = sqlx::query!(
-            "SELECT outcome, detail FROM artifact_signature WHERE digest = $1 AND verifier = $2",
+            "SELECT outcome, detail FROM artifact_signature \
+             WHERE digest = $1 AND repository = $2 AND verifier = $3",
             digest.to_string(),
+            repository,
             verifier,
         )
         .fetch_optional(&self.pool)

@@ -169,14 +169,15 @@ impl Analyser {
         }
     }
 
-    /// What `verifier` found of the signature of the bytes with `digest`, `None` when it
-    /// has not checked it or the store cannot answer.
+    /// What `verifier` found of the signature of the bytes with `digest` served from `at`,
+    /// `None` when it has not checked it or the store cannot answer.
     pub async fn signature(
         &self,
         digest: &Sri,
+        at: crate::ecosystem::Repository,
         verifier: &str,
     ) -> Option<crate::ecosystem::Signature> {
-        match self.store.signature(digest, verifier).await {
+        match self.store.signature(digest, at.name(), verifier).await {
             Ok(signature) => signature,
             Err(e) => {
                 warn!(byrle.artifact.digest = %digest, error.message = %e, "analysis store cannot answer; the signature is not read");

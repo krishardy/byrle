@@ -153,15 +153,20 @@ pub trait Analyses: Send + Sync {
     /// Record that the bytes with `digest` are what `claim` names.
     fn put_claimed<'a>(&'a self, claim: &'a str, digest: &'a Sri) -> Stored<'a, ()>;
 
-    /// What the signature of the bytes with `digest` says, as `verifier` checked it.
-    /// `Ok(None)` is a signature not checked yet.
-    fn signature<'a>(&'a self, digest: &'a Sri, verifier: &'a str)
-    -> Stored<'a, Option<Signature>>;
+    /// What the signature of the bytes with `digest` served from `repository` says, as
+    /// `verifier` checked it. `Ok(None)` is a signature not checked yet.
+    fn signature<'a>(
+        &'a self,
+        digest: &'a Sri,
+        repository: &'a str,
+        verifier: &'a str,
+    ) -> Stored<'a, Option<Signature>>;
 
     /// Record what `verifier` found of it, replacing what it found before.
     fn put_signature<'a>(
         &'a self,
         digest: &'a Sri,
+        repository: &'a str,
         verifier: &'a str,
         signature: &'a Signature,
     ) -> Stored<'a, ()>;
@@ -185,7 +190,7 @@ pub struct InProcess(
     Mutex<Vec<i64>>,
     Mutex<Decisions>,
     Mutex<Lru<String, Sri>>,
-    Mutex<Lru<(Sri, String), Signature>>,
+    Mutex<Lru<(Sri, String, String), Signature>>,
 );
 
 impl InProcess {
@@ -415,10 +420,11 @@ impl Analyses for InProcess {
     fn signature<'a>(
         &'a self,
         digest: &'a Sri,
+        repository: &'a str,
         verifier: &'a str,
     ) -> Stored<'a, Option<Signature>> {
         Box::pin(async move {
-            let key = (digest.clone(), verifier.to_owned());
+            let key = (digest.clone(), repository.to_owned(), verifier.to_owned());
             Ok(self
                 .8
                 .lock()
@@ -431,11 +437,12 @@ impl Analyses for InProcess {
     fn put_signature<'a>(
         &'a self,
         digest: &'a Sri,
+        repository: &'a str,
         verifier: &'a str,
         signature: &'a Signature,
     ) -> Stored<'a, ()> {
         Box::pin(async move {
-            let key = (digest.clone(), verifier.to_owned());
+            let key = (digest.clone(), repository.to_owned(), verifier.to_owned());
             self.8
                 .lock()
                 .expect("signature store lock")
@@ -512,10 +519,21 @@ pub(crate) mod tests {
         fn put_claimed<'a>(&'a self, _: &'a str, _: &'a Sri) -> Stored<'a, ()> {
             broken()
         }
-        fn signature<'a>(&'a self, _: &'a Sri, _: &'a str) -> Stored<'a, Option<Signature>> {
+        fn signature<'a>(
+            &'a self,
+            _: &'a Sri,
+            _: &'a str,
+            _: &'a str,
+        ) -> Stored<'a, Option<Signature>> {
             broken()
         }
-        fn put_signature<'a>(&'a self, _: &'a Sri, _: &'a str, _: &'a Signature) -> Stored<'a, ()> {
+        fn put_signature<'a>(
+            &'a self,
+            _: &'a Sri,
+            _: &'a str,
+            _: &'a str,
+            _: &'a Signature,
+        ) -> Stored<'a, ()> {
             broken()
         }
     }

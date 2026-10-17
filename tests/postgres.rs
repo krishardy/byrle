@@ -1967,16 +1967,19 @@ async fn a_sha512_claim_is_kept() {
     assert_eq!(store.claimed(&claim).await.expect("answers"), Some(sri(1)));
 }
 
-/// What a signature says is kept under its bytes' digest and its verifier, each outcome
-/// round-trips, a second check replaces the first, and another verifier reads nothing.
+/// A signature's result is kept by digest, repository and verifier, and each outcome
+/// round-trips; another repository or verifier reads nothing.
 #[tokio::test]
-async fn a_signature_s_result_is_kept_under_its_digest_and_verifier() {
+async fn a_signature_s_result_is_kept_under_its_digest_repository_and_verifier() {
     use byrle::ecosystem::Signature;
     let intel = skip_without_database!("t_signature");
     let store = analyses(&intel);
     let verifier = "pgp 0.21.0; maven-signatures 1";
     assert_eq!(
-        store.signature(&sri(1), verifier).await.expect("answers"),
+        store
+            .signature(&sri(1), "maven", verifier)
+            .await
+            .expect("answers"),
         None
     );
     for signature in [
@@ -1992,21 +1995,27 @@ async fn a_signature_s_result_is_kept_under_its_digest_and_verifier() {
         Signature::Unsigned,
     ] {
         store
-            .put_signature(&sri(1), verifier, &signature)
+            .put_signature(&sri(1), "maven", verifier, &signature)
             .await
             .expect("writes");
         assert_eq!(
-            store.signature(&sri(1), verifier).await.expect("answers"),
+            store
+                .signature(&sri(1), "maven", verifier)
+                .await
+                .expect("answers"),
             Some(signature)
         );
     }
-    assert_eq!(
-        store
-            .signature(&sri(1), "pgp 0.22.0")
-            .await
-            .expect("answers"),
-        None
-    );
+    for (repository, verifier) in [("maven", "pgp 0.22.0"), ("gradle-plugins", verifier)] {
+        assert_eq!(
+            store
+                .signature(&sri(1), repository, verifier)
+                .await
+                .expect("answers"),
+            None,
+            "{repository} {verifier}"
+        );
+    }
 }
 
 /// What VirusTotal said is kept under the artifact's digest, each state round-trips, and a
