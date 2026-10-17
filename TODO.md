@@ -407,6 +407,9 @@ Items that I've added that are not stage-bound.
     separate repository, `byrle-deploy`, not this one.
 40. End-to-end tests run against each environment after a deployment. Raised 2026-10-16.
     Done in `byrle-deploy`, with #39.
+41. A byrle CLI a remote user runs against a deployed byrle, for analysis commands such as
+    `byrle explain`, without the proxy's policy file, environment or intel store on their
+    own machine. Raised 2026-10-17.
 
 ## Architecture Refactor
 
