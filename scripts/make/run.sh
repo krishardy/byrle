@@ -7,6 +7,7 @@
 #   BYRLE_UPSTREAM_PYPI=https://pypi.org/simple
 #   BYRLE_UPSTREAM_CARGO=https://index.crates.io
 #   BYRLE_UPSTREAM_GO=https://proxy.golang.org
+#   BYRLE_UPSTREAM_MAVEN=https://repo1.maven.org/maven2
 #   BYRLE_DATABASE_URL=postgres://...   accounts and tokens; or BYRLE_REQUIRE_TOKEN=0
 #   RUST_LOG=byrle=debug
 set -euo pipefail

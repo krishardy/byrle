@@ -48,3 +48,15 @@ golang
   streams          osv/go
   loaded           none of them
   not covered      match, malware
+
+maven
+  upstream         https://repo1.maven.org/maven2
+  documents        text/xml, application/xml
+  publish times    each file's `Last-Modified`; `maven-metadata.xml` carries none
+  versions         Maven's ComparableVersion
+  checks           no meaning here: yanked, deprecated
+  clients          none checked by doctor
+  client lockfiles none read
+  streams          osv/maven
+  loaded           none of them
+  not covered      match, malware

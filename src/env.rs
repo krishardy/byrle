@@ -173,6 +173,12 @@ pub const UPSTREAM_CARGO: Var = runtime(
 .with_default(Default::Text(crate::ecosystem::cargo::INDEX));
 pub const UPSTREAM_GO: Var = runtime("BYRLE_UPSTREAM_GO", "", &["Go module proxy to forward to"])
     .with_default(Default::Text(crate::ecosystem::go::PROXY));
+pub const UPSTREAM_MAVEN: Var = runtime(
+    "BYRLE_UPSTREAM_MAVEN",
+    "",
+    &["Maven repository to forward to"],
+)
+.with_default(Default::Text(crate::ecosystem::maven::REPOSITORY));
 pub const PROXY_URL: Var = runtime(
     "BYRLE_PROXY_URL",
     "",
@@ -713,12 +719,13 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 85] = [
+pub const ALL: [Var; 86] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
     UPSTREAM_CARGO,
     UPSTREAM_GO,
+    UPSTREAM_MAVEN,
     PROXY_URL,
     CONSOLE_URL,
     CONSOLE_LISTEN,

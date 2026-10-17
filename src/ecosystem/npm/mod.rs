@@ -128,6 +128,7 @@ pub const REGISTRY: Registry = Registry {
     meaningless: &[crate::policy::merge::Rule::Yanked],
     install_scripts_unread: None,
     publishers: None,
+    decides_head: false,
 };
 
 /// npm's abbreviated packument media type, which is what `npm install` asks for.

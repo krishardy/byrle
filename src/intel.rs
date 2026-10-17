@@ -3,10 +3,10 @@
 //! let f: byrle::intel::Finding = byrle::intel::Enrichment::new("CVE-2024-1234").into();
 //! ```
 
+pub mod comparable_version;
 pub mod fetch;
 pub mod history;
 pub mod load;
-pub mod maven;
 pub mod pep440;
 pub mod postgres;
 pub mod providers;
@@ -433,8 +433,9 @@ mod tests {
             recorded("osv/pypi"),
             recorded("osv/cargo"),
             recorded("osv/go"),
+            recorded("osv/maven"),
         ]);
-        assert_eq!(served(), ["npm", "pypi", "cargo", "golang"]);
+        assert_eq!(served(), ["npm", "pypi", "cargo", "golang", "maven"]);
         assert_eq!(
             caps.providers("npm", Capability::Match),
             ["datadog/npm", "osv/npm"]
@@ -462,6 +463,7 @@ mod tests {
         assert_eq!(listing("osv/pypi"), ["pypi"]);
         assert_eq!(listing("osv/cargo"), ["cargo"]);
         assert_eq!(listing("osv/go"), ["golang"]);
+        assert_eq!(listing("osv/maven"), ["maven"]);
     }
 
     /// PyPI is served and the snapshot records none of its streams, so both gaps are reported
@@ -474,6 +476,7 @@ mod tests {
             recorded("datadog/npm"),
             recorded("osv/cargo"),
             recorded("osv/go"),
+            recorded("osv/maven"),
         ]);
         let pypi_without = |capability| Gap {
             ecosystem: "pypi".to_owned(),

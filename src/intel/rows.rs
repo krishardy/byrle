@@ -132,6 +132,7 @@ mod tests {
             (Ecosystem::PyPI, "GitPython"),
             (Ecosystem::Npm, "JSONStream"),
             (Ecosystem::Npm, "@babel/core"),
+            (Ecosystem::Maven, "org.apache.commons:commons-lang3"),
         ] {
             let key = PackageKey::from_registry_name(ecosystem, written).expect("a name");
             let affected = Affected::new(ecosystem.as_str(), written, None);

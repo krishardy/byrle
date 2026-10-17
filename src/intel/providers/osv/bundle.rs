@@ -30,6 +30,12 @@ pub const GO_BUNDLE: &str = "https://osv-vulnerabilities.storage.googleapis.com/
 /// The name a snapshot records the Go bundle under.
 pub const GO_STREAM: &str = "osv/go";
 
+/// 10,406,912 bytes on 2026-10-16: 7,189 `GHSA-` and 2 `MAL-` records.
+pub const MAVEN_BUNDLE: &str = "https://osv-vulnerabilities.storage.googleapis.com/Maven/all.zip";
+
+/// The name a snapshot records the Maven bundle under.
+pub const MAVEN_STREAM: &str = "osv/maven";
+
 /// 2.5 times the bundle on 2026-09-13.
 pub const MAX_BUNDLE_BYTES: usize = 512 << 20;
 

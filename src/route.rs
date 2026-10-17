@@ -36,6 +36,8 @@ pub enum DocumentKind {
     VersionList,
     /// A Go module's `@latest`: one version's JSON.
     Latest,
+    /// A Maven artifact's `maven-metadata.xml`.
+    MavenMetadata,
 }
 
 /// Which of the two simple-index forms a body is.

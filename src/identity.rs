@@ -17,15 +17,18 @@ pub enum Ecosystem {
     Cargo,
     /// The Go module proxy. `crate::ecosystem::go` reads it.
     Go,
+    /// A Maven repository. `crate::ecosystem::maven` reads it.
+    Maven,
 }
 
 impl Ecosystem {
     /// Every ecosystem a package can be named in. `ecosystem::TABLE` has a row for each.
-    pub const EXPRESSIBLE: [Ecosystem; 4] = [
+    pub const EXPRESSIBLE: [Ecosystem; 5] = [
         Ecosystem::Npm,
         Ecosystem::PyPI,
         Ecosystem::Cargo,
         Ecosystem::Go,
+        Ecosystem::Maven,
     ];
 
     /// The purl `type` component, and the string OSV keys on.
@@ -35,6 +38,7 @@ impl Ecosystem {
             Ecosystem::PyPI => "pypi",
             Ecosystem::Cargo => "cargo",
             Ecosystem::Go => "golang",
+            Ecosystem::Maven => "maven",
         }
     }
 }
@@ -54,6 +58,7 @@ impl FromStr for Ecosystem {
             "pypi" => Ok(Ecosystem::PyPI),
             "cargo" => Ok(Ecosystem::Cargo),
             "golang" => Ok(Ecosystem::Go),
+            "maven" => Ok(Ecosystem::Maven),
             other => Err(IdentityError::UnsupportedEcosystem(other.to_string())),
         }
     }

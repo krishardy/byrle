@@ -1,0 +1,144 @@
+//! A Maven repository under [`PREFIX`], as mvn and Gradle read one: `maven-metadata.xml`
+//! filtered by policy, and each version's files fetched at the proxy. See
+//! docs/maven-plan.md.
+
+pub mod inspect;
+pub mod paths;
+pub mod transport;
+pub mod wire;
+
+pub use paths::{classify_path, document_from_content_type, upstream_url};
+pub use transport::Client;
+
+use crate::ecosystem::{PublishTimeSource, Registry, Setup, UncoveredMetadata};
+use crate::identity::Ecosystem;
+use crate::intel::providers::osv::bundle;
+use crate::intel::range::VersionOrder;
+use crate::intel::stream;
+use crate::policy::merge::Rule;
+
+/// OSV's bundle for this ecosystem.
+pub const OSV: stream::Stream = stream::osv(bundle::MAVEN_STREAM, bundle::MAVEN_BUNDLE, |bytes| {
+    stream::osv_bundle(Ecosystem::Maven, bytes)
+});
+
+/// This ecosystem's row of [`crate::ecosystem::TABLE`].
+pub const REGISTRY: Registry = Registry {
+    ecosystem: Ecosystem::Maven,
+    prefix: PREFIX,
+    always_reachable: &[ORIGIN],
+    classify_path,
+    read_media_type: document_from_content_type,
+    documents: &["text/xml", "application/xml"],
+    other_is_probe: false,
+    publish_times: PublishTimeSource {
+        said: "each file's `Last-Modified`; `maven-metadata.xml` carries none",
+        full_accept: None,
+        cost: Some("a `HEAD` of each file for its `Last-Modified`"),
+    },
+    streams: &[&OSV],
+    lockfiles: &[],
+    unread_lockfiles: &[],
+    clients: &[],
+    setup: Setup {
+        client: "mvn",
+        command: setup_line,
+        path: "/maven",
+    },
+    uncovered_metadata: UncoveredMetadata::FilterWithoutIntel,
+    versions: VersionOrder::Maven,
+    split_name: paths::split_name,
+    canonical_name: paths::canonical_name,
+    upstream: crate::env::UPSTREAM_MAVEN,
+    upstream_url,
+    read: inspect::read,
+    reader: |_| None,
+    layout: |_| None,
+    source: |_| None,
+    compare_source: |_, _, _| None,
+    unfound_source: "maven-metadata.xml names no repository",
+    upstream_check: None,
+    keep_for_platforms: |_, _| {},
+    provenance_bundle: |_| {
+        Err("Maven Central serves PGP signatures, not Sigstore attestations".to_owned())
+    },
+    osv_name: "Maven",
+    advisory_package: |name| Some(name.to_owned()),
+    metadata_names_repository: |_| false,
+    client: |http, upstream, max_bytes| std::sync::Arc::new(Client::new(http, upstream, max_bytes)),
+    write: |_| None,
+    meaningless: &[Rule::Deprecated, Rule::Yanked],
+    install_scripts_unread: None,
+    publishers: None,
+    decides_head: true,
+};
+
+/// What points mvn at `url`: a mirror of every repository in `~/.m2/settings.xml`.
+fn setup_line(url: &str) -> String {
+    format!(
+        "in ~/.m2/settings.xml: <mirror><id>byrle</id><mirrorOf>*</mirrorOf><url>{url}</url>\
+         </mirror>, and a <server><id>byrle</id> with the account and token"
+    )
+}
+
+/// The path the proxy serves Maven repositories under.
+pub const PREFIX: &str = "/maven/";
+
+/// Maven Central, the repository this build reads.
+pub const REPOSITORY: &str = "https://repo1.maven.org/maven2";
+
+/// The origin of [`REPOSITORY`].
+pub const ORIGIN: &str = "https://repo1.maven.org";
+
+/// A file from `tests/fixtures/maven/`.
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+pub(crate) fn fixture(name: &str) -> Vec<u8> {
+    let path = format!("{}/tests/fixtures/maven/{name}", env!("CARGO_MANIFEST_DIR"));
+    std::fs::read(path).expect("the fixture is present")
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
+mod tests {
+    use super::*;
+
+    /// Maven Central serves PGP signatures, which step 4.5 reads, and a jar is the same on
+    /// every platform.
+    #[test]
+    fn one_jar_per_version_and_no_attestations() {
+        let key = crate::identity::PackageKey::from_registry_name(
+            Ecosystem::Maven,
+            "org.apache.commons:commons-lang3",
+        )
+        .unwrap();
+        let read = wire::parse(&fixture("commons-lang3.xml")).unwrap();
+        let metadata = read.records(&key, "https://r.example/");
+        let mut files: Vec<_> = metadata.records[0].artifacts.iter().collect();
+        (REGISTRY.keep_for_platforms)(&mut files, &[]);
+        assert_eq!(files.len(), 1);
+        assert!((REGISTRY.provenance_bundle)(b"{}").is_err());
+        assert!((REGISTRY.reader)("x.jar").is_none());
+        assert!((REGISTRY.layout)("x.jar").is_none());
+        assert!((REGISTRY.source)(&metadata.records[0]).is_none());
+        assert!(!(REGISTRY.metadata_names_repository)(&metadata.records[0]));
+        assert!(
+            (REGISTRY.write)(&crate::ecosystem::Writing {
+                path: "/maven/a/b/maven-metadata.xml",
+                base: None,
+                tokens_required: true,
+            })
+            .is_none()
+        );
+        assert_eq!(
+            (REGISTRY.advisory_package)("org.apache.commons:commons-lang3").as_deref(),
+            Some("org.apache.commons:commons-lang3")
+        );
+        assert_eq!(
+            REGISTRY.setup.command_line("https://h"),
+            "in ~/.m2/settings.xml: <mirror><id>byrle</id><mirrorOf>*</mirrorOf>\
+             <url>https://h/maven</url></mirror>, and a <server><id>byrle</id> with the \
+             account and token"
+        );
+    }
+}

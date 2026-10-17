@@ -1035,6 +1035,28 @@ mod tests {
         assert!(!post.matches("pypi", "x", "1.0.post2", false));
     }
 
+    /// A Maven name is written `groupId:artifactId`, and a version compared in Maven's order.
+    #[test]
+    fn a_maven_selector_reads_names_and_versions_as_mvn_does() {
+        let lang3 = canon(
+            "maven",
+            Some("org.apache.commons:commons-lang3"),
+            Some("vers:maven/>=3.0|<3.18"),
+            None,
+        );
+        let named = "org.apache.commons/commons-lang3";
+        assert!(lang3.matches("maven", named, "3.17.0", false));
+        assert!(lang3.matches("maven", named, "3.0", false));
+        assert!(!lang3.matches("maven", named, "3.18.0", false));
+        assert!(
+            lang3.matches("maven", named, "3.18-rc1", false),
+            "below 3.18"
+        );
+        let apache = canon("maven", Some("org.apache.*"), None, None);
+        assert!(apache.matches("maven", named, "1", false));
+        assert!(!apache.matches("maven", "com.google.guava/guava", "1", false));
+    }
+
     #[test]
     fn a_version_that_cannot_be_read_is_refused_by_what_is_wrong_with_it() {
         let refused = |selector: Selector| Canonical::of(&selector).unwrap_err();

@@ -2976,10 +2976,13 @@ impl Exchange<'_> {
         }
     }
 
-    /// [`decide_artifact`] for an artifact GET, and the claim a manifest GET is checked
-    /// against. Any other request is fetched with no digest.
+    /// [`decide_artifact`] for an artifact GET, and for its HEAD where the row decides one,
+    /// and the claim a manifest GET is checked against. Any other request is fetched with
+    /// no digest.
     async fn artifact_fetch(&self) -> ArtifactStep {
-        if self.method != Method::GET {
+        let decided_head =
+            self.method == Method::HEAD && ecosystem::of(self.ecosystem).decides_head;
+        if self.method != Method::GET && !decided_head {
             return ArtifactStep::Fetch(ArtifactFetch::default());
         }
         match &self.target {
@@ -5166,6 +5169,7 @@ mod tests {
             .with_upstream(Ecosystem::PyPI, NO_UPSTREAM)
             .with_upstream(Ecosystem::Cargo, NO_UPSTREAM)
             .with_upstream(Ecosystem::Go, NO_UPSTREAM)
+            .with_upstream(Ecosystem::Maven, NO_UPSTREAM)
             .with_intel(intel)
             .with_refuse_unservable(false)
             .with_policy(yaml.map(policy))
@@ -6349,6 +6353,116 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), 200);
         assert!(response.bytes().await.unwrap().is_empty());
+    }
+
+    const LANG3_METADATA: &str = "/maven/org/apache/commons/commons-lang3/maven-metadata.xml";
+    const LANG3_JAR: &str =
+        "/maven/org/apache/commons/commons-lang3/3.21.0/commons-lang3-3.21.0.jar";
+    const DENY_LANG3: &str = "version: 1\ncooldown_days: 0\n\
+                              denials:\n  - purl: pkg:maven/org.apache.commons/commons-lang3@3.21.0\n    \
+                              reason: test\n";
+
+    /// A refused version leaves `maven-metadata.xml`, and `<release>` names the one below
+    /// it. Its jar is refused, and until step 4.3 so is every jar: none has a strong digest.
+    #[tokio::test]
+    async fn a_maven_version_the_policy_refuses_leaves_the_metadata() {
+        let proxy = offline(None, Some(DENY_LANG3));
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let DocumentStep::Forward {
+            body: Some(body),
+            refused: removed,
+        } = resolve(&proxy, LANG3_METADATA, "text/xml", &fixture).await
+        else {
+            panic!("the metadata is forwarded rewritten");
+        };
+        let body = String::from_utf8(body).unwrap();
+        assert!(!body.contains("<version>3.21.0</version>"), "{body}");
+        assert!(body.contains("<release>3.20.0</release>"), "{body}");
+        assert!(removed.versions.contains("3.21.0"));
+        let (status, body) = refused(pinned(&proxy, LANG3_JAR).await).await;
+        assert_eq!(status, 403);
+        assert!(body.contains("denials"), "{body}");
+        let (status, body) = refused(
+            pinned(
+                &proxy,
+                "/maven/org/apache/commons/commons-lang3/3.20.0/commons-lang3-3.20.0-sources.jar",
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 403);
+        assert!(body.contains("no strong digest"), "{body}");
+    }
+
+    /// Gradle reuses a jar it cached from another repository after a `HEAD` alone, so a
+    /// `HEAD` is refused as a `GET` is, not forwarded.
+    #[tokio::test]
+    async fn a_head_of_a_refused_jar_is_refused_as_its_get_is() {
+        let proxy = offline(None, Some(DENY_LANG3));
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        resolve(&proxy, LANG3_METADATA, "text/xml", &fixture).await;
+        let base = serve(proxy.router()).await;
+        let client = reqwest::Client::new();
+        let get = client
+            .get(format!("{base}{LANG3_JAR}"))
+            .send()
+            .await
+            .unwrap();
+        let head = client
+            .head(format!("{base}{LANG3_JAR}"))
+            .send()
+            .await
+            .unwrap();
+        let (status, said) = (get.status(), get.text().await.unwrap());
+        assert_eq!(status, 403, "{said}");
+        assert_eq!(head.status(), 403);
+        assert!(said.contains("blocked by policy"), "{said}");
+    }
+
+    /// A `HEAD` the policy allows is forwarded to the repository, under the same path.
+    #[tokio::test]
+    async fn a_head_of_an_allowed_jar_is_forwarded() {
+        let (addr, requests) =
+            crate::util::test_support::recorded(vec![crate::util::test_support::Answer::Status(
+                200,
+            )])
+            .await;
+        let proxy = offline(None, Some(NO_POLICY))
+            .with_upstream(Ecosystem::Maven, format!("http://{addr}/maven2"));
+        let key = crate::identity::PackageKey::from_registry_name(
+            Ecosystem::Maven,
+            "org.apache.commons:commons-lang3",
+        )
+        .unwrap();
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let mut held = crate::ecosystem::maven::wire::parse(&fixture)
+            .unwrap()
+            .records(
+                &key,
+                "https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/",
+            );
+        for record in &mut held.records {
+            record.artifacts[0].integrity = Some(format!("sha256-{}", "A".repeat(43) + "="));
+        }
+        proxy.store.lock().unwrap().insert(held);
+        assert!(
+            fetched(&pinned(&proxy, LANG3_JAR).await),
+            "a GET has a digest"
+        );
+        let base = serve(proxy.router()).await;
+        let head = reqwest::Client::new()
+            .head(format!("{base}{LANG3_JAR}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(head.status(), 200);
+        let asked = String::from_utf8(requests.lock().unwrap()[0].clone()).unwrap();
+        assert!(
+            asked.starts_with(
+                "HEAD /maven2/org/apache/commons/commons-lang3/3.21.0/commons-lang3-3.21.0.jar "
+            ),
+            "{asked}"
+        );
     }
 
     const QUOTE_MOD: &str = "/go/rsc.io/quote/@v/v1.5.2.mod";
@@ -8249,7 +8363,8 @@ mod tests {
         assert_eq!(
             proxy.upstreams().to_string(),
             "npm=https://registry.npmjs.org pypi=https://mirror.example/simple \
-             cargo=https://index.crates.io golang=https://proxy.golang.org"
+             cargo=https://index.crates.io golang=https://proxy.golang.org \
+             maven=https://repo1.maven.org/maven2"
         );
         let both = Proxy::new(reqwest::Client::new()).with_upstreams(proxy.upstreams().clone());
         assert_eq!(both.upstreams(), proxy.upstreams());

@@ -510,7 +510,7 @@ mod tests {
     }
 
     /// The set a default deployment fronts: npm's registry, PyPI's index and file host,
-    /// crates.io's index and file host, and Go's module proxy. Every ecosystem's.
+    /// crates.io's index and file host, Go's module proxy and Maven Central. Every one's.
     #[test]
     fn every_expressible_ecosystem_contributes_its_own_origins() {
         let r = ReachableOrigins::new(["https://npm.corp.example"], std::iter::empty()).unwrap();
@@ -524,6 +524,7 @@ mod tests {
                 "https://index.crates.io",
                 "https://static.crates.io",
                 "https://proxy.golang.org",
+                "https://repo1.maven.org",
             ]
         );
     }
@@ -584,6 +585,7 @@ mod tests {
                 "https://index.crates.io",
                 "https://static.crates.io",
                 "https://proxy.golang.org",
+                "https://repo1.maven.org",
             ],
             "the upstream is already the default registry, so it is listed once"
         );
@@ -615,8 +617,8 @@ mod tests {
         assert!(!r.routes_directly("https://npm.corp.example"));
         assert_eq!(
             r.as_slice().len(),
-            7,
-            "the upstream and the six origins an ecosystem always reaches"
+            8,
+            "the upstream and the seven origins an ecosystem always reaches"
         );
     }
 
@@ -651,6 +653,7 @@ mod tests {
                 "https://index.crates.io",
                 "https://static.crates.io",
                 "https://proxy.golang.org",
+                "https://repo1.maven.org",
                 "https://cdn.example",
             ]
         );

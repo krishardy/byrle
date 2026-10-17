@@ -60,6 +60,20 @@ module directory and its `go::` spelling take them from the prefix, not from `as
 | An advisory naming no package, or another's | every name a package | `Registry::advisory_package`: Go's `toolchain` is `golang.org/toolchain`, and `stdlib` none |
 | An artifact digest only its whole file gives | none: every digest was over the bytes as they stream | `Claim::artifact_digest`, computed by a claim job over the spooled file. The sha256 of the bytes that matched is kept, and the artifact is served checked against it |
 
+## Amended 2026-10-16: Maven, the third new row
+
+Maven's purl type, prefix and module are `maven`. A key's registry name is
+`groupId/artifactId`, as `PackageKey::registry_name` joins a namespace and a name; OSV and
+policy selectors write `groupId:artifactId`, which `maven::paths::canonical_name` reads as
+the same name.
+
+| Question | Was | Now |
+|---|---|---|
+| An XML document | no `DocumentKind` was XML | `DocumentKind::MavenMetadata`, read with quick-xml 0.42.0, MIT |
+| A file named like a document but not one | none | a group's plugin prefixes and a snapshot's builds are both `maven-metadata.xml`; one whose `<groupId>` and `<artifactId>` are not the path's key is forwarded unread |
+| An artifact's `HEAD` | forwarded undecided | `Registry::decides_head`: Gradle reuses a jar it cached from another repository after a `HEAD` and a `.sha1`, with no `GET`, so Maven's row refuses a `HEAD` as its `GET` |
+| A version order that is not total | every order was | `VersionOrder::Maven`, Maven's `ComparableVersion`. A range's events are sorted by insertion |
+
 ## Decision
 
 No `trait Adapter`. Four modules hold what both ecosystems answer the same way. Of those,

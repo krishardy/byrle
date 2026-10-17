@@ -216,7 +216,7 @@ Q2, Q7 and Q9 otherwise.
       is read as RFC 9580 reads it; a key no key server holds fails verification.
 3. `VersionOrder::Maven`, Maven's `ComparableVersion` order, checked against Maven
    3.10.0's own comparison over every version in OSV's `Maven` ranges. Done 2026-10-16:
-   `intel::maven`, ported from `maven-artifact` 3.10.0's `ComparableVersion.java`. OSV's
+   `intel::comparable_version`, ported from `maven-artifact` 3.10.0's `ComparableVersion.java`. OSV's
    `Maven/all.zip` names 40,883 distinct versions. Over 1,000,529 pairs of them, each
    with its neighbour by text and the rest drawn at random, byrle and Maven gave the same
    answer for every pair. Maven's order is not total. In Maven 3.10.0 and in byrle,
@@ -233,7 +233,22 @@ Q2, Q7 and Q9 otherwise.
    1. The row, `/maven/` paths, `maven-metadata.xml` filtered (`<version>`s, `<latest>`,
       `<release>`), `osv/maven`, and `BYRLE_UPSTREAM_MAVEN`. A `HEAD` is decided as a
       `GET`, as Gradle reuses a cached jar after a `HEAD` alone. Every jar is refused as
-      publishing no strong digest.
+      publishing no strong digest. Done 2026-10-16: `ecosystem::maven`. A key's name is
+      `groupId/artifactId`, read from `groupId:artifactId` as OSV and a selector write it.
+      `maven-metadata.xml` is read with quick-xml 0.42.0, MIT, and a refused version's
+      line is removed with every other byte kept; `<latest>` and `<release>` naming one
+      name the highest left. A `maven-metadata.xml` whose `<groupId>` and `<artifactId>`
+      are not its path's, as a group's plugin prefixes are not, is forwarded unread. Any
+      file in a version's directory but a sidecar, a `.pom` and a `.module` is decided as
+      that version's: a `.war` or a `-sources.jar` as a jar is. `Registry::decides_head`
+      is true for Maven alone, so npm's `HEAD` stays undecided. Each of the 96 jars mvn
+      and Gradle fetched for the Spring Boot build is listed in its artifact's
+      `maven-metadata.xml`, so a pinned jar's record comes from that document, fetched by
+      the proxy. smoke-cargo 8/8, ready after `osv/maven` loaded live.
+      `make mutants`: 148 mutants, 104 caught, 39 unviable, 1 timed out, 4 missed; the
+      4 were caught by two tests added after, which `wire.rs`'s 68 mutants ran against:
+      54 caught, 13 unviable, 1 timed out. The timeout is the `Eof` arm deleted, which
+      reads `Eof` without end.
    2. The new hook: the `.sha1` and `.md5` of a filtered `maven-metadata.xml`, written by
       the proxy from the filtered body. mvn warned on the unfiltered `.sha1`; Gradle asked
       none.

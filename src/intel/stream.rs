@@ -238,6 +238,7 @@ mod tests {
                 "osv/pypi",
                 "osv/cargo",
                 "osv/go",
+                "osv/maven",
                 "cisa/kev",
                 "datadog/npm",
                 "datadog/pypi",

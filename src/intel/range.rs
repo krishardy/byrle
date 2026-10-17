@@ -6,7 +6,7 @@
 use semver::{BuildMetadata, Version};
 use std::collections::BTreeMap;
 
-use super::maven::Version as Maven;
+use super::comparable_version::Version as Maven;
 use super::pep440::Version as Pep440;
 use crate::identity::Ecosystem;
 

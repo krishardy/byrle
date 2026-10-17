@@ -5,6 +5,7 @@
 
 pub mod cargo;
 pub mod go;
+pub mod maven;
 pub mod npm;
 pub mod pypi;
 
@@ -444,6 +445,8 @@ pub struct Registry {
     pub meaningless: &'static [crate::policy::merge::Rule],
     /// A document the proxy writes for this path rather than fetching; `None` to fetch it.
     pub write: fn(&Writing<'_>) -> Option<Result<Written, String>>,
+    /// Whether an artifact's `HEAD` is refused as its `GET` is: Gradle reuses a file after one.
+    pub decides_head: bool,
 }
 
 /// Each served ecosystem's upstream base, with no trailing slash, one per [`TABLE`] row.
@@ -542,7 +545,13 @@ impl Registry {
 }
 
 /// Every ecosystem the proxy routes, one row each, for which intel coverage is reported.
-pub const TABLE: &[Registry] = &[npm::REGISTRY, pypi::REGISTRY, cargo::REGISTRY, go::REGISTRY];
+pub const TABLE: &[Registry] = &[
+    npm::REGISTRY,
+    pypi::REGISTRY,
+    cargo::REGISTRY,
+    go::REGISTRY,
+    maven::REGISTRY,
+];
 
 /// The row for `ecosystem`.
 ///
@@ -658,6 +667,10 @@ mod table {
             ("/cargo/crates/itoa/1.0.18/download", Ecosystem::Cargo),
             ("/go/golang.org/x/text/@v/list", Ecosystem::Go),
             ("/go/sumdb/sum.golang.org/latest", Ecosystem::Go),
+            (
+                "/maven/org/apache/commons/commons-lang3/maven-metadata.xml",
+                Ecosystem::Maven,
+            ),
         ] {
             assert_eq!(
                 serving(path).map(|r| r.ecosystem),
@@ -681,14 +694,14 @@ mod table {
         }
     }
 
-    /// PyPI's index and cargo's carry each version's time, so only npm's and Go's cooldowns
-    /// cost a fetch.
+    /// PyPI's index and cargo's carry each version's time, so only npm's, Go's and Maven's
+    /// cooldowns cost a fetch.
     #[test]
     fn only_an_ecosystem_that_fetches_publish_times_reports_a_cooldown_cost() {
         let costs = cooldown_costs();
         assert_eq!(
             costs.iter().map(|(e, _)| *e).collect::<Vec<_>>(),
-            [Ecosystem::Npm, Ecosystem::Go]
+            [Ecosystem::Npm, Ecosystem::Go, Ecosystem::Maven]
         );
         assert!(costs[0].1.contains("full-packument fetch"));
         assert_eq!(pypi::REGISTRY.publish_times.cost, None);
@@ -707,6 +720,7 @@ mod table {
                 "pip config set global.index-url http://127.0.0.1:8080/pypi/simple/",
                 &cargo::REGISTRY.setup.command_line("http://127.0.0.1:8080"),
                 &go::REGISTRY.setup.command_line("http://127.0.0.1:8080"),
+                &maven::REGISTRY.setup.command_line("http://127.0.0.1:8080"),
             ]
         );
         assert_eq!(
@@ -1027,9 +1041,9 @@ mod table {
     #[test]
     fn only_the_adapters_name_an_ecosystem() {
         let allowed: std::collections::BTreeMap<String, usize> = [
-            ("src/ecosystem.rs", 1),
-            ("src/env.rs", 6),
-            ("src/identity.rs", 12),
+            ("src/ecosystem.rs", 5),
+            ("src/env.rs", 7),
+            ("src/identity.rs", 15),
         ]
         .into_iter()
         .map(|(file, count): (&str, usize)| (file.to_owned(), count))

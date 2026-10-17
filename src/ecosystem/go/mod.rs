@@ -76,6 +76,7 @@ pub const REGISTRY: Registry = Registry {
     meaningless: &[Rule::Deprecated, Rule::Yanked, Rule::InstallScripts],
     install_scripts_unread: None,
     publishers: None,
+    decides_head: false,
 };
 
 /// What points go at `url`. go sends `GOPROXY`'s userinfo as Basic credentials, and only

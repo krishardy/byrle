@@ -86,6 +86,7 @@ pub const REGISTRY: Registry = Registry {
         "crates.io's index does not say; the .crate is read when it is downloaded",
     ),
     publishers: Some(trustpub::made),
+    decides_head: false,
 };
 
 /// What points cargo at `url`, the proxy's cargo registry, with or without a trailing `/`.
