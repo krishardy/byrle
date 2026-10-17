@@ -1,8 +1,9 @@
 # Maven: the Gradle plugin portal is a second repository of the Maven row
 
 - **Number:** 0115
-- **Status:** Proposed 2026-10-17. The user chooses between the two designs below before
-  step 5 of [maven-plan](../maven-plan.md) is written.
+- **Status:** Decided by the user 2026-10-17: the repository carried through the request,
+  with a `Repository` type in each store's key and a `repository` field in each record.
+  Not yet implemented: step 5 of [maven-plan](../maven-plan.md).
 - **Related:** [ecosystem-path-prefixes](0111-ecosystem-path-prefixes.md),
   [maven-digests](0112-maven-digests.md), [maven-signatures](0113-maven-signatures.md)
 
@@ -54,7 +55,17 @@ A second `TABLE` row for Maven sends `/gradle-plugins/` to Central without an er
 | `identity.rs` | changed, with its kani proofs | unchanged |
 | A store added later | split by repository with no change | keyed by repository, or shared across both by mistake |
 
-The second is recommended: intel and policy stay as they are, and `identity.rs` is unchanged.
+The second is decided: intel and policy stay as they are, and `identity.rs` is unchanged.
+
+Its costs, and what is done for each:
+
+| Cost | Done |
+|---|---|
+| A store keyed by `PackageKey` alone shares the two repositories, and nothing stops one being added | each store on the request path is keyed by a `Repository`, a type of its own, so a store built without one does not compile |
+| The audit log, `Decided` and the console name a purl, the same from either repository | each record gains `repository` |
+| `explain`, `policy check --fetch`, `policy diff` and `warm` start from a `PackageKey` | they ask Central unless told the portal |
+| A `packages:` rule for a name applies to it from either repository | unchanged: a selector names no repository |
+| The analysis store's detections and signatures are keyed without a repository | a migration adds it |
 
 ## Either way
 
