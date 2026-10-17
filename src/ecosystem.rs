@@ -582,6 +582,14 @@ impl Repository {
         }
     }
 
+    /// The `nth` of `ecosystem`'s row's [`Registry::also`], counted from 0.
+    pub const fn also_of(ecosystem: Ecosystem, nth: u8) -> Self {
+        Self {
+            ecosystem,
+            index: nth + 1,
+        }
+    }
+
     /// Every repository, in ecosystem order, each row's own first.
     pub fn all() -> impl Iterator<Item = Self> {
         TABLE.iter().flat_map(|row| {

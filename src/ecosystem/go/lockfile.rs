@@ -21,6 +21,7 @@ const fn sums(name: &'static str) -> Lockfile {
         artifacts: Some(zips),
         urls: Some(zips),
         pins: None,
+        repository: None,
     }
 }
 
@@ -134,9 +135,10 @@ rsc.io/sampler v1.2.0/go.mod h1:T1hPZKmBbMNahiBKFy5HrXp6adAjACjK9JXDnKaTXpA=
     /// Each locked version makes a purl, its module's case and `+incompatible` kept.
     #[test]
     fn each_locked_version_makes_its_purl() {
-        let references = crate::lockfile::references(packages(SUM).expect("reads"));
+        let listed = packages(SUM).expect("reads").into_iter().map(|l| (None, l));
+        let references = crate::lockfile::references(listed);
         assert_eq!(references.len(), 5);
-        let (_, toml, version) = &references[0];
+        let (_, toml, version, _) = &references[0];
         assert_eq!(toml.key().namespace(), Some("github.com/BurntSushi"));
         assert_eq!(version, "v1.4.0");
         assert_eq!(references[1].1.version(), "v3.2.2+incompatible");

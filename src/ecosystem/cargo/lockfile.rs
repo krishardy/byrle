@@ -19,6 +19,7 @@ pub const LOCKFILES: &[Lockfile] = &[Lockfile {
     artifacts: Some(downloads),
     urls: Some(sources),
     pins: None,
+    repository: None,
 }];
 
 /// File names cargo writes that no reader here takes.

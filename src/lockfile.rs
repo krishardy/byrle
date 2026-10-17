@@ -6,26 +6,32 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use crate::ecosystem::TABLE;
+use crate::ecosystem::{Repository, TABLE};
 
 pub mod verify;
 
 /// Ecosystem, name and version, as `audit::packages` gives them.
 pub type Locked = (String, String, String);
 
-/// One locked version: its purl, the package it names, and the version.
-pub type Reference = (String, crate::identity::PackageRef, String);
+/// A locked version and the repository it is read from, `None` for its ecosystem's own.
+pub type Listed = (Option<Repository>, Locked);
 
-/// `listed`, each version once, with its purl. A name that makes no purl is left out.
-pub fn references(listed: impl IntoIterator<Item = Locked>) -> Vec<Reference> {
+/// One locked version: its purl, the package it names, the version, and its repository.
+pub type Reference = (String, crate::identity::PackageRef, String, Repository);
+
+/// `listed`, each version once in each repository, with its purl. A name that makes no
+/// purl is left out.
+pub fn references(listed: impl IntoIterator<Item = Listed>) -> Vec<Reference> {
     let mut seen = std::collections::HashSet::new();
     listed
         .into_iter()
         .filter(|package| seen.insert(package.clone()))
-        .filter_map(|(ecosystem, name, version)| {
+        .filter_map(|(repository, (ecosystem, name, version))| {
             let purl = format!("pkg:{ecosystem}/{name}@{version}");
             let reference = purl.parse::<crate::identity::PackageRef>().ok()?;
-            Some((purl, reference, version))
+            let repository =
+                repository.unwrap_or_else(|| Repository::of(reference.key().ecosystem()));
+            Some((purl, reference, version, repository))
         })
         .collect()
 }
@@ -183,6 +189,8 @@ pub struct Lockfile {
     pub urls: Option<ArtifactReader>,
     /// How the file records artifact URLs, for a file `byrle doctor` checks.
     pub pins: Option<Pins>,
+    /// Where its versions are read from, `None` for its ecosystem's own repository.
+    pub repository: Option<Repository>,
 }
 
 /// How a lockfile records the absolute artifact URLs it pins.
@@ -299,6 +307,15 @@ pub fn read(path: &Path) -> Result<Vec<Locked>, LockfileError> {
             path: path.to_owned(),
             reason,
         })
+}
+
+/// [`read`]'s versions, each with the repository the file's row says it is read from.
+pub fn listed(path: &Path) -> Result<Vec<Listed>, LockfileError> {
+    let repository = lockfile_for(path)?.repository;
+    Ok(read(path)?
+        .into_iter()
+        .map(|locked| (repository, locked))
+        .collect())
 }
 
 #[cfg(test)]
@@ -461,7 +478,8 @@ mod tests {
             format!(
                 "{}: a lockfile is read only under one of these names: package-lock.json, \
                  npm-shrinkwrap.json, yarn.lock, pnpm-lock.yaml, bun.lock, uv.lock, \
-                 poetry.lock, requirements.txt, Pipfile.lock, Cargo.lock, go.sum, go.work.sum",
+                 poetry.lock, requirements.txt, Pipfile.lock, Cargo.lock, go.sum, go.work.sum, \
+                 gradle.lockfile, buildscript-gradle.lockfile, settings-gradle.lockfile",
                 dir.join("deps.txt").display()
             )
         );
@@ -516,7 +534,7 @@ mod tests {
             ("npm".to_owned(), "a".to_owned(), "1.0.0".to_owned()),
             ("gem".to_owned(), "b".to_owned(), "1.0.0".to_owned()),
         ];
-        assert_eq!(references(listed).len(), 1);
+        assert_eq!(references(listed.map(|locked| (None, locked))).len(), 1);
         assert!(unread(Path::new("/")).is_none());
     }
 }

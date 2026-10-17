@@ -726,9 +726,9 @@ fn now() -> String {
 }
 
 /// Every package version the log names, oldest first, without duplicates: the set
-/// `policy diff` decides again. A line of `log` that does not parse is skipped.
-/// Returns each ecosystem, name and version.
-pub fn packages(log: &str) -> Vec<(String, String, String)> {
+/// `policy diff` decides again, each with the repository it was served from. A line of
+/// `log` that does not parse is skipped.
+pub fn packages(log: &str) -> Vec<crate::lockfile::Listed> {
     let mut seen = std::collections::BTreeSet::new();
     let mut out = Vec::new();
     for line in log.lines().filter(|l| !l.trim().is_empty()) {
@@ -743,8 +743,15 @@ pub fn packages(log: &str) -> Vec<(String, String, String)> {
             .into_iter()
             .chain(event.removed)
             .collect::<Vec<_>>();
+        let repository = event
+            .repository
+            .as_deref()
+            .and_then(crate::ecosystem::Repository::named);
         for version in versions {
-            let key = (event.ecosystem.clone(), event.name.clone(), version);
+            let key = (
+                repository,
+                (event.ecosystem.clone(), event.name.clone(), version),
+            );
             if seen.insert(key.clone()) {
                 out.push(key);
             }
@@ -1032,10 +1039,34 @@ mod tests {
         assert_eq!(
             packages(log),
             [
-                ("npm".to_owned(), "a".to_owned(), "1.0.0".to_owned()),
-                ("npm".to_owned(), "b".to_owned(), "2.0.0".to_owned()),
-                ("npm".to_owned(), "b".to_owned(), "2.0.1".to_owned()),
+                (None, ("npm".to_owned(), "a".to_owned(), "1.0.0".to_owned())),
+                (None, ("npm".to_owned(), "b".to_owned(), "2.0.0".to_owned())),
+                (None, ("npm".to_owned(), "b".to_owned(), "2.0.1".to_owned())),
             ]
+        );
+    }
+
+    /// A version served from the plugin portal is decided again as the portal's, and the
+    /// same version from Central is another.
+    #[test]
+    fn a_version_keeps_the_repository_it_was_served_from() {
+        let line = |repository: &str| {
+            format!(
+                "{{\"path\":\"pinned\",\"ecosystem\":\"maven\",\"name\":\"g/a\",\
+                 \"version\":\"1\",\"action\":\"allow\"{repository}}}"
+            )
+        };
+        let log = format!(
+            "{}\n{}\n{}\n",
+            line(r#","repository":"gradle-plugins""#),
+            line(""),
+            line(r#","repository":"retired""#)
+        );
+        let repositories: Vec<_> = packages(&log).into_iter().map(|(at, _)| at).collect();
+        assert_eq!(
+            repositories,
+            [Some(crate::ecosystem::maven::PLUGINS), None],
+            "a repository this build does not serve is read as its ecosystem's own"
         );
     }
 

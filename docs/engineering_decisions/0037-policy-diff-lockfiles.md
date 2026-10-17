@@ -37,6 +37,7 @@ The file name chooses the reader. A lockfile under any other name is refused.
 | `Pipfile.lock` | JSON | each entry of `default` and `develop` whose `version` is an `==` pin |
 | `Cargo.lock` | TOML | each `[[package]]` whose `source` is crates.io's, by either protocol: `name` and `version` |
 | `go.sum`, `go.work.sum` | go's checksum lines, by hand | each `<module> <version> h1:` line of a zip; a `<version>/go.mod` line alone is left out, as go reads the `go.mod` of versions it never builds |
+| `gradle.lockfile`, `buildscript-gradle.lockfile`, `settings-gradle.lockfile` | Gradle's lock lines, by hand | each `<group>:<artifact>:<version>=<configurations>` line; `empty=` and `#` lines are left out. No classifier is recorded, so `warm` asks for the version's plain jar, and a plugin marker, which publishes only a `.pom`, is left out of `warm`. A project's jars are asked for under `/maven/`, a build or settings script's under `/gradle-plugins/` |
 
 In npm, yarn and bun an entry's key can be an alias. The fixtures lock `my-lodash` as
 `npm:lodash@4.17.21`:

@@ -5,6 +5,7 @@
 pub mod digest;
 pub mod inspect;
 pub mod keys;
+pub mod lockfile;
 pub mod paths;
 pub mod signature;
 pub mod signer;
@@ -45,8 +46,8 @@ pub const REGISTRY: Registry = Registry {
         ),
     },
     streams: &[&OSV],
-    lockfiles: &[],
-    unread_lockfiles: &[],
+    lockfiles: lockfile::LOCKFILES,
+    unread_lockfiles: lockfile::UNREAD,
     clients: &[],
     setup: Setup {
         client: "mvn",
@@ -110,6 +111,10 @@ pub const PREFIX: &str = "/maven/";
 
 /// The path the proxy serves the Gradle plugin portal under, a second Maven repository.
 pub const PLUGINS_PREFIX: &str = "/gradle-plugins/";
+
+/// The plugin portal, the Maven row's first [`Also`].
+pub const PLUGINS: crate::ecosystem::Repository =
+    crate::ecosystem::Repository::also_of(Ecosystem::Maven, 0);
 
 /// The Gradle plugin portal's Maven repository.
 pub const PORTAL: &str = "https://plugins.gradle.org/m2";

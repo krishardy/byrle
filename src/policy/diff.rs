@@ -375,8 +375,8 @@ impl Comparison {
             listed: self.versions.len(),
             ..Report::default()
         };
-        for (purl, reference, version) in &self.versions {
-            match self.compare(reference, version).await {
+        for (purl, reference, version, at) in &self.versions {
+            match self.compare(*at, reference, version).await {
                 Ok(Compared::Decided(decided)) => report.push(package(
                     purl,
                     (&decided[0].0, &decided[0].1),
@@ -421,10 +421,10 @@ impl Comparison {
     /// that failed, which stops the run.
     async fn compare(
         &self,
+        at: crate::ecosystem::Repository,
         reference: &crate::identity::PackageRef,
         version: &str,
     ) -> Result<Compared, String> {
-        let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
         let metadata =
             match crate::ecosystem::fetched(self.clients.metadata(at, reference.key()).await) {
                 Ok(metadata) => metadata,
@@ -480,7 +480,7 @@ impl Comparison {
 fn listed<L: Fn(&str) -> Option<OsString>>(
     args: &crate::cli::Diff,
     environment: &Env<L>,
-) -> Result<Vec<crate::lockfile::Locked>, String> {
+) -> Result<Vec<crate::lockfile::Listed>, String> {
     let log_path = environment.audit_log().map_err(|e| e.to_string())?;
     if log_path.is_none() && args.lockfile.is_empty() {
         return Err(format!(
@@ -495,7 +495,7 @@ fn listed<L: Fn(&str) -> Option<OsString>>(
         })?;
     }
     for path in &args.lockfile {
-        listed.extend(crate::lockfile::read(path).map_err(|e| e.to_string())?);
+        listed.extend(crate::lockfile::listed(path).map_err(|e| e.to_string())?);
     }
     Ok(listed)
 }
@@ -515,7 +515,7 @@ async fn open_store<L: Fn(&str) -> Option<OsString>>(
     };
     let packages = versions
         .iter()
-        .map(|(_, reference, _)| snapshot_intel::key_of(reference.key()))
+        .map(|(_, reference, _, _)| snapshot_intel::key_of(reference.key()))
         .collect();
     snapshot_intel::kept(environment, id, packages)
         .map(|kept| Some(Box::new(kept) as Box<dyn Intel>))
@@ -925,9 +925,8 @@ mod run_tests {
             policies: vec![policy(), policy()],
             dates: [today(); 2],
             versions: crate::lockfile::references([(
-                "npm".to_owned(),
-                "lodash".to_owned(),
-                "4.17.21".to_owned(),
+                None,
+                ("npm".to_owned(), "lodash".to_owned(), "4.17.21".to_owned()),
             )]),
             store: Some(Box::new(FixedIntel(Err(())))),
             clients: Clients::from_env(&registry).expect("clients"),
@@ -956,9 +955,8 @@ mod run_tests {
             policies: vec![policy(), policy()],
             dates: [today(); 2],
             versions: crate::lockfile::references([(
-                "pypi".to_owned(),
-                "requests".to_owned(),
-                "0.2.0".to_owned(),
+                None,
+                ("pypi".to_owned(), "requests".to_owned(), "0.2.0".to_owned()),
             )]),
             store: Some(Box::new(crate::intel::store::testing::knowing_nothing())),
             clients: Clients::from_env(&registry).expect("clients"),

@@ -29,6 +29,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         artifacts: Some(npm_artifacts),
         urls: Some(npm_urls),
         pins: Some(RESOLVED),
+        repository: None,
     },
     Lockfile {
         name: "npm-shrinkwrap.json",
@@ -36,6 +37,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         artifacts: Some(npm_artifacts),
         urls: Some(npm_urls),
         pins: Some(RESOLVED),
+        repository: None,
     },
     Lockfile {
         name: "yarn.lock",
@@ -43,6 +45,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         artifacts: Some(yarn_artifacts),
         urls: Some(yarn_urls),
         pins: Some(RESOLVED),
+        repository: None,
     },
     Lockfile {
         name: "pnpm-lock.yaml",
@@ -57,6 +60,7 @@ pub const LOCKFILES: &[Lockfile] = &[
             absent_is_off_proxy: false,
             reinstall: REINSTALL,
         }),
+        repository: None,
     },
     Lockfile {
         name: "bun.lock",
@@ -71,6 +75,7 @@ pub const LOCKFILES: &[Lockfile] = &[
             absent_is_off_proxy: true,
             reinstall: REINSTALL,
         }),
+        repository: None,
     },
 ];
 

@@ -23,6 +23,7 @@ pub const LOCKFILES: &[Lockfile] = &[
             absent_is_off_proxy: false,
             reinstall: "delete uv.lock and the environment, then `uv lock` through the proxy",
         }),
+        repository: None,
     },
     Lockfile {
         name: "poetry.lock",
@@ -30,6 +31,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         artifacts: None,
         urls: None,
         pins: None,
+        repository: None,
     },
     Lockfile {
         name: "requirements.txt",
@@ -37,6 +39,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         artifacts: None,
         urls: None,
         pins: None,
+        repository: None,
     },
     Lockfile {
         name: "Pipfile.lock",
@@ -44,6 +47,7 @@ pub const LOCKFILES: &[Lockfile] = &[
         artifacts: None,
         urls: None,
         pins: None,
+        repository: None,
     },
 ];
 

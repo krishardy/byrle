@@ -37,6 +37,7 @@ that is not an HTTP URL. The exit code follows `warm` and `audit verify`.
 | `uv.lock` | the `url` of each registry package's sdist and every wheel |
 | `Cargo.lock` | none for a crates.io package; a git or other registry's `source` |
 | `go.sum`, `go.work.sum` | none |
+| `gradle.lockfile`, `buildscript-gradle.lockfile`, `settings-gradle.lockfile` | none |
 
 - pnpm records no URL for the registry it was configured with, so a pnpm project that
   installs through the proxy sets bit 2 for every package. The registry is in its `.npmrc`,

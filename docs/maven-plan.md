@@ -423,7 +423,36 @@ Q2, Q7 and Q9 otherwise.
       each later version reads as a signature dropped, as npm's provenance does within
       `BYRLE_PROVENANCE_HISTORY` versions.
 6. `gradle.lockfile` for `warm`, `policy diff` and `lockfile verify`. mvn writes no
-   lockfile.
+   lockfile. Done 2026-10-17: `ecosystem::maven::lockfile` reads the three files Gradle
+   9.8.1's `dependencies --write-locks` wrote. Each line is
+   `<group>:<artifact>:<version>=<configurations>`, with no classifier, packaging,
+   repository, URL or digest.
+
+   | File | Read from | `warm` asks for |
+   |---|---|---|
+   | `gradle.lockfile` | Central | each version's jar under `/maven/` |
+   | `buildscript-gradle.lockfile`, `settings-gradle.lockfile` | the portal | each version's jar under `/gradle-plugins/`, but a plugin marker's |
+
+   A lockfile's rows and the audit log's lines now carry the repository a version is read
+   from into `policy diff` and `warm`. Before, `policy diff` read
+   `gradle-versions-plugin` 0.52.0 from Central as "no longer published". Run through the
+   proxy on the project of step 5.4 with a BOM, a version range, lombok and a classified
+   netty jar:
+
+   ```text
+   pkg:maven/org.projectlombok/lombok@1.18.42 lombok-1.18.42.jar: refused 403
+   pkg:maven/org.springframework.boot/spring-boot-dependencies@3.5.6 spring-boot-dependencies-3.5.6.jar: refused 403
+   pkg:maven/org.jetbrains.kotlin/kotlin-bom@2.0.21 kotlin-bom-2.0.21.jar: refused 403
+   32 warmed, 3 refused, 0 not listed, 0 not ready, 0 still being analysed, 0 failed; 0 skipped for other platforms
+   ```
+
+   `policy diff` over the three files evaluated 36 versions and read all of them. Limits:
+   - A BOM publishes only a `.pom`. Its `.jar`, which Central answers 404, is answered 403
+     "publishes no strong digest". `warm` reports it refused, and sets no exit bit.
+   - The netty jar's classifier, `linux-x86_64`, is not recorded, so `warm` asks for the
+     plain jar.
+   - `lockfile verify` reports every version as not recorded, bit 2, as for `go.sum`.
+   - Gradle's older `gradle/dependency-locks/<configuration>.lockfile` files are not read.
 7. `byrle doctor` for mvn and Gradle:
 
    | Reads | Reports |

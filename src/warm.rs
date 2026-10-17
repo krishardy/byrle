@@ -10,7 +10,7 @@ use futures_util::StreamExt;
 
 use crate::ecosystem::{Clients, Upstreams};
 use crate::env::Env;
-use crate::lockfile::{Locked, LockfileError, Target};
+use crate::lockfile::{Listed, LockfileError, Target};
 
 /// How long one artifact may stay deferred for its analysis before warm stops asking.
 pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(900);
@@ -99,7 +99,7 @@ struct Plan {
     /// Labelled artifact paths, from a lockfile that records them.
     direct: Vec<(String, String)>,
     /// Versions whose artifacts are found through the proxy's metadata.
-    versions: Vec<Locked>,
+    versions: Vec<Listed>,
     /// Artifacts left out because they install on none of the targets.
     skipped: usize,
 }
@@ -111,7 +111,7 @@ fn plan(lockfiles: &[PathBuf], targets: Option<&[Target]>) -> Result<Plan, Lockf
     let mut seen = std::collections::HashSet::new();
     for path in lockfiles {
         let Some(artifacts) = crate::lockfile::artifacts(path)? else {
-            plan.versions.extend(crate::lockfile::read(path)?);
+            plan.versions.extend(crate::lockfile::listed(path)?);
             continue;
         };
         for artifact in artifacts {
@@ -162,11 +162,13 @@ async fn warm(
     (plan, targets): (&Plan, Option<&[Target]>),
     deadline: Duration,
 ) -> (Vec<(String, Outcome)>, usize) {
-    let upstreams = crate::ecosystem::TABLE
-        .iter()
-        .fold(Upstreams::defaults(), |upstreams, row| {
-            let path = row.setup.path.trim_end_matches('/');
-            upstreams.with(row.ecosystem, &format!("{base}{path}"))
+    let upstreams =
+        crate::ecosystem::Repository::all().fold(Upstreams::defaults(), |upstreams, at| {
+            let path = match at.is_own() {
+                true => at.registry().setup.path,
+                false => at.prefix(),
+            };
+            upstreams.with(at, &format!("{base}{}", path.trim_end_matches('/')))
         });
     let clients = Clients::new(
         http.clone(),
@@ -175,11 +177,10 @@ async fn warm(
     );
     let versions = crate::lockfile::references(plan.versions.iter().cloned());
     let found: Vec<(Vec<(String, Ask)>, usize)> = futures_util::stream::iter(&versions)
-        .map(|(purl, reference, version)| {
+        .map(|(purl, reference, version, at)| {
             let clients = &clients;
             async move {
-                let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
-                let record = clients.record(at, reference.key(), version).await;
+                let record = clients.record(*at, reference.key(), version).await;
                 asks_for(base, purl, record, targets)
             }
         })

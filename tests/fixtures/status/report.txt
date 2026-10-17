@@ -57,7 +57,7 @@ maven
   versions         Maven's ComparableVersion
   checks           no meaning here: yanked, deprecated
   clients          none checked by doctor
-  client lockfiles none read
+  client lockfiles gradle.lockfile, buildscript-gradle.lockfile, settings-gradle.lockfile
   streams          osv/maven
   loaded           none of them
   not covered      match, malware
