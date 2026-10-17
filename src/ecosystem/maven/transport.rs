@@ -3,16 +3,34 @@
 
 use std::sync::{Arc, Mutex};
 
+use futures_util::stream::{self, StreamExt};
+
 use crate::ecosystem::{Claim, Claimed, Fetch, Fetched, FullDocument};
 use crate::identity::PackageKey;
+use crate::policy::facts::PublishTimes;
+use crate::record::{PackageMetadata, PackageRecord};
 use crate::util::lru::Lru;
 
 use super::digest::{CLAIMED, Sidecar};
 use super::paths::{METADATA, directory};
-use super::wire::parse;
+use super::wire::{parse, record};
 
 /// Claims kept, one per file: a file published to Central is never replaced.
 pub const MAX_CLAIMS: usize = 8192;
+
+/// Publish times kept, one per version, for the same reason.
+pub const MAX_TIMES: usize = 65_536;
+
+/// The `.pom`s asked for their `Last-Modified` at once, when a document's versions are dated.
+pub const DATING: usize = 16;
+
+/// What a `HEAD` of a version's `.pom` found.
+enum Pom {
+    /// 404: the repository has no such version.
+    Missing,
+    /// The `.pom`, and its `Last-Modified` when it sent one.
+    Published(Option<jiff::Timestamp>),
+}
 
 /// Fetches metadata and sidecars from one Maven repository.
 #[derive(Clone)]
@@ -22,6 +40,8 @@ pub struct Client {
     max_bytes: usize,
     /// Each file's claim, by its URL.
     claims: Arc<Mutex<Lru<String, Claim>>>,
+    /// Each version's publish time, by its `.pom`'s URL.
+    times: Arc<Mutex<Lru<String, jiff::Timestamp>>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -41,7 +61,86 @@ impl Client {
             repository: repository.trim_end_matches('/').to_owned(),
             max_bytes,
             claims: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
+            times: Arc::new(Mutex::new(Lru::new(MAX_TIMES))),
         }
+    }
+
+    /// Whether `version` of `key` has a `.pom`, and its `Last-Modified` when it does,
+    /// kept once read. Errors when it cannot be asked, or answers other than 200 or 404.
+    async fn pom(&self, key: &PackageKey, version: &str) -> Result<Pom, String> {
+        let pom = format!(
+            "{}/{}/{version}/{}-{version}.pom",
+            self.repository,
+            directory(key),
+            key.name()
+        );
+        if let Some(at) = self.times.lock().expect("times lock").get(&pom).copied() {
+            return Ok(Pom::Published(Some(at)));
+        }
+        let response = self
+            .http
+            .head(&pom)
+            .send()
+            .await
+            .map_err(|e| format!(".pom request failed: {e}"))?;
+        match response.status() {
+            reqwest::StatusCode::NOT_FOUND => return Ok(Pom::Missing),
+            status if !status.is_success() => return Err(format!(".pom answered {status}")),
+            _ => {}
+        }
+        let published = response
+            .headers()
+            .get(reqwest::header::LAST_MODIFIED)
+            .and_then(|v| v.to_str().ok())
+            .and_then(crate::http::http_date);
+        if let Some(at) = published {
+            self.times.lock().expect("times lock").insert(pom, at);
+        }
+        Ok(Pom::Published(published))
+    }
+
+    /// The record of `version` read on its own, its time its `.pom`'s `Last-Modified`.
+    /// `None` when the repository has no `.pom` for it. Errors as the `.pom`'s `HEAD` does.
+    pub async fn version(
+        &self,
+        key: &PackageKey,
+        version: &str,
+    ) -> Result<Option<PackageRecord>, String> {
+        let Pom::Published(published_at) = self.pom(key, version).await? else {
+            return Ok(None);
+        };
+        let versions = format!("{}/{}/", self.repository, directory(key));
+        Ok(Some(record(key, version, published_at, &versions)))
+    }
+
+    /// A time for every version of `metadata`, [`DATING`] at a time: Maven picks the highest
+    /// version a range allows, which may be published after a higher one outside it.
+    /// Errors when one cannot be asked.
+    pub async fn dated(&self, metadata: &PackageMetadata) -> Result<PublishTimes, String> {
+        let versions: Vec<String> = metadata
+            .records
+            .iter()
+            .map(|r| r.package.version().to_owned())
+            .collect();
+        let key = &metadata.key;
+        let asked = stream::iter(versions)
+            .map(move |version: String| async move {
+                let at = match self.pom(key, &version).await? {
+                    Pom::Published(at) => at,
+                    Pom::Missing => None,
+                };
+                Ok::<_, String>(at.map(|at| (version, at)))
+            })
+            .buffer_unordered(DATING)
+            .collect::<Vec<_>>()
+            .await;
+        let mut times = PublishTimes::new();
+        for dated in asked {
+            if let Some((version, at)) = dated? {
+                times.insert(version, at);
+            }
+        }
+        Ok(times)
     }
 
     /// The strongest digest the repository publishes beside `version`'s `file`: its
@@ -146,6 +245,23 @@ impl Fetch for Client {
         Box::pin(Client::claim(self, key, version, file))
     }
 
+    fn version<'a>(
+        &'a self,
+        key: &'a PackageKey,
+        version: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<PackageRecord>, String>> {
+        Box::pin(Client::version(self, key, version))
+    }
+
+    /// Every version is dated, whatever `before` is: see [`Client::dated`].
+    fn dated<'a>(
+        &'a self,
+        metadata: &'a PackageMetadata,
+        _before: jiff::Timestamp,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<PublishTimes>, String>> {
+        Box::pin(async move { Client::dated(self, metadata).await.map(Some) })
+    }
+
     /// The metadata carries no times, and is not asked again for them.
     fn full<'a>(
         &'a self,
@@ -157,7 +273,7 @@ impl Fetch for Client {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::identity::Ecosystem;
     use crate::util::test_support::{Answer, recorded, scripted};
@@ -290,6 +406,96 @@ mod tests {
         }
         let client = Client::new(reqwest::Client::new(), "http://r.example", 1);
         assert!(format!("{client:?}").contains("http://r.example"));
+    }
+
+    /// A repository on loopback serving `poms`, each version's `.pom` with its
+    /// `Last-Modified`, and 404 for every other path.
+    pub(crate) async fn poms(poms: &[(&str, &str)]) -> String {
+        let mut router = axum::Router::new();
+        for (version, modified) in poms {
+            let path =
+                format!("/org/apache/commons/commons-lang3/{version}/commons-lang3-{version}.pom");
+            let modified = (*modified).to_owned();
+            router = router.route(
+                &path,
+                axum::routing::get(move || {
+                    let modified = modified.clone();
+                    async move {
+                        (
+                            [(axum::http::header::LAST_MODIFIED, modified)],
+                            "<project/>",
+                        )
+                    }
+                }),
+            );
+        }
+        crate::proxy::testing::serve(router).await
+    }
+
+    /// A version is dated by its `.pom`'s `Last-Modified`, kept once read; one with no
+    /// `.pom` is no version.
+    #[tokio::test]
+    async fn a_version_is_dated_by_its_pom() {
+        let base = poms(&[("3.17.0", "Wed, 21 Aug 2024 14:04:19 GMT")]).await;
+        let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
+        let record = Fetch::version(&client, &lang3(), "3.17.0")
+            .await
+            .unwrap()
+            .expect("published");
+        let at: jiff::Timestamp = "2024-08-21T14:04:19Z".parse().unwrap();
+        assert_eq!(record.published_at, Some(at));
+        assert_eq!(record.artifacts[0].filename, "commons-lang3-3.17.0.jar");
+        assert!(client.version(&lang3(), "9.9.9").await.unwrap().is_none());
+        let undated = Client::new(
+            reqwest::Client::new(),
+            &poms(&[("1", "not a date")]).await,
+            1,
+        );
+        let record = undated.version(&lang3(), "1").await.unwrap().unwrap();
+        assert_eq!(record.published_at, None);
+    }
+
+    /// Every version of a document is dated, whatever the cooldown, and one with no `.pom`
+    /// left undated. A time read once is not asked again.
+    #[tokio::test]
+    async fn every_version_of_a_document_is_dated() {
+        let base = poms(&[
+            ("3.0", "Mon, 18 Jul 2011 00:00:00 GMT"),
+            ("3.1", "Sun, 13 Nov 2011 00:00:00 GMT"),
+        ])
+        .await;
+        let client = Client::new(reqwest::Client::new(), &base, 1 << 20);
+        let read = parse(
+            b"<metadata><groupId>org.apache.commons</groupId><artifactId>commons-lang3</artifactId>\
+              <versioning><versions><version>3.0</version><version>3.1</version>\
+              <version>3.2</version></versions></versioning></metadata>",
+        )
+        .unwrap();
+        let metadata = read.records(&lang3(), "https://r.example/");
+        let before: jiff::Timestamp = "2000-01-01T00:00:00Z".parse().unwrap();
+        let times = Fetch::dated(&client, &metadata, before)
+            .await
+            .unwrap()
+            .expect("dated");
+        assert_eq!(times.len(), 2);
+        assert_eq!(times["3.1"], "2011-11-13T00:00:00Z".parse().unwrap());
+        assert!(!times.contains_key("3.2"));
+        let addr = scripted(vec![Answer::Status(404)]).await;
+        let missing = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1 << 20);
+        assert!(missing.dated(&metadata).await.unwrap().is_empty());
+        let error = Client::new(reqwest::Client::new(), "http://127.0.0.1:9", 1)
+            .dated(&metadata)
+            .await
+            .unwrap_err();
+        assert!(error.starts_with(".pom request failed"), "{error}");
+        let addr = scripted(vec![Answer::Status(500)]).await;
+        let error = Client::new(reqwest::Client::new(), &format!("http://{addr}"), 1)
+            .version(&lang3(), "3.0")
+            .await
+            .unwrap_err();
+        assert_eq!(error, ".pom answered 500 Internal Server Error");
+        let times = Arc::clone(&client.times);
+        assert_eq!(times.lock().unwrap().len(), 2, "both times kept");
     }
 
     #[tokio::test]

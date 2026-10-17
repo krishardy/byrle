@@ -188,7 +188,7 @@ impl Metadata {
                 .versions
                 .iter()
                 .filter(|v| !v.text.is_empty())
-                .map(|v| record(key, &v.text, versions))
+                .map(|v| record(key, &v.text, None, versions))
                 .collect(),
             skipped: Vec::new(),
         }
@@ -271,15 +271,20 @@ fn escaped(text: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// One version as the common record, its one file the jar.
-fn record(key: &PackageKey, version: &str, versions: &str) -> PackageRecord {
+/// One version as the common record, published at `published_at`, its one file the jar.
+pub fn record(
+    key: &PackageKey,
+    version: &str,
+    published_at: Option<jiff::Timestamp>,
+    versions: &str,
+) -> PackageRecord {
     let jar = filename(key, version);
     PackageRecord {
         package: key
             .at_version(version)
             .expect("an empty version is not kept"),
         detail: DocumentDetail::Full,
-        published_at: None,
+        published_at,
         maintainers: None,
         repository: None,
         yanked: None,

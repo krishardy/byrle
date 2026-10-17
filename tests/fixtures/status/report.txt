@@ -52,7 +52,7 @@ golang
 maven
   upstream         https://repo1.maven.org/maven2
   documents        text/xml, application/xml
-  publish times    each file's `Last-Modified`; `maven-metadata.xml` carries none
+  publish times    each version's `.pom` `Last-Modified`; `maven-metadata.xml` carries none
   versions         Maven's ComparableVersion
   checks           no meaning here: yanked, deprecated
   clients          none checked by doctor

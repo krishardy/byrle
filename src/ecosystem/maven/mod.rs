@@ -33,9 +33,12 @@ pub const REGISTRY: Registry = Registry {
     documents: &["text/xml", "application/xml"],
     other_is_probe: false,
     publish_times: PublishTimeSource {
-        said: "each file's `Last-Modified`; `maven-metadata.xml` carries none",
+        said: "each version's `.pom` `Last-Modified`; `maven-metadata.xml` carries none",
         full_accept: None,
-        cost: Some("a `HEAD` of each file for its `Last-Modified`"),
+        cost: Some(
+            "a `HEAD` of each version's `.pom` in a `maven-metadata.xml`, every version, \
+             each time kept",
+        ),
     },
     streams: &[&OSV],
     lockfiles: &[],

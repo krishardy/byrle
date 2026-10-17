@@ -309,6 +309,14 @@ Q2, Q7 and Q9 otherwise.
       Not newest first until one is older, as Go's: "Publish times against version order"
       has 130 of spring-core's 336 versions published after a higher one. A pinned
       version is dated by its own `.pom`.
+      Done 2026-10-17: `maven::Client::dated` asks a `HEAD` of every version's `.pom`, 16
+      at a time, whatever the cooldown, and keeps each time read; a version with no `.pom`
+      is left undated. `Fetch::version` reads a pinned version's record from its own
+      `.pom`, so its jar is decided on that time, and a version whose `.pom` is 404 falls
+      back to the document's record. Measured with mvn 3.10.0 through the proxy,
+      `cooldown_days: 30`: `[3.18,)` resolved 3.20.0, published 2025-11-12, with 3.21.0,
+      published 2026-09-25, removed; all 27 versions dated.
+      `make mutants`: 25 mutants, 5 caught, 20 unviable.
    5. Signatures (0113), and the new policy key.
    6. Annotation processors (Q4): a jar holding
       `META-INF/services/javax.annotation.processing.Processor` has install scripts.

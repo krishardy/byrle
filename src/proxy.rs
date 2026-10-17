@@ -6887,6 +6887,52 @@ mod tests {
         );
     }
 
+    /// `days` ago, as a `Last-Modified` writes it.
+    fn days_ago(days: i64) -> String {
+        let at = jiff::Timestamp::now() - jiff::SignedDuration::from_hours(24 * days);
+        jiff::fmt::rfc2822::to_string(&at.to_zoned(jiff::tz::TimeZone::UTC)).unwrap()
+    }
+
+    /// Under a cooldown every version is dated by its `.pom`: 1.1, published yesterday after
+    /// 2.0, is removed though 2.0 is old enough, and its jar refused on its own `.pom`.
+    #[tokio::test]
+    async fn a_maven_backport_inside_the_cooldown_is_removed_below_an_older_release() {
+        let (old, young) = (days_ago(30), days_ago(1));
+        let poms = crate::ecosystem::maven::transport::tests::poms(&[
+            ("1.0", &old),
+            ("2.0", &old),
+            ("1.1", &young),
+        ])
+        .await;
+        let metadata = b"<metadata><groupId>org.apache.commons</groupId>\
+            <artifactId>commons-lang3</artifactId><versioning><versions>\
+            <version>1.0</version><version>2.0</version><version>1.1</version>\
+            </versions></versioning></metadata>"
+            .to_vec();
+        let proxy = offline(None, Some("version: 1\ncooldown_days: 7\n"))
+            .with_upstream(Ecosystem::Maven, &poms);
+        let DocumentStep::Forward {
+            body: Some(body), ..
+        } = resolve(&proxy, LANG3_METADATA, "text/xml", &metadata).await
+        else {
+            panic!("filtered");
+        };
+        let body = String::from_utf8(body).unwrap();
+        assert!(!body.contains("<version>1.1</version>"), "{body}");
+        assert!(body.contains("<version>2.0</version>"), "{body}");
+        assert!(body.contains("<version>1.0</version>"), "{body}");
+        let (status, body) = refused(
+            pinned(
+                &proxy,
+                "/maven/org/apache/commons/commons-lang3/1.1/commons-lang3-1.1.jar",
+            )
+            .await,
+        )
+        .await;
+        assert_eq!(status, 403);
+        assert!(body.contains("cooldown_days"), "{body}");
+    }
+
     const QUOTE_MOD: &str = "/go/rsc.io/quote/@v/v1.5.2.mod";
     const QUOTE_ZIP: &str = "/go/rsc.io/quote/@v/v1.5.2.zip";
 
