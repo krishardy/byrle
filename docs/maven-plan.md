@@ -380,6 +380,7 @@ Q2, Q7 and Q9 otherwise.
       A cold Spring Boot build: BUILD SUCCESS in 280 s, 94 jars read in their claim
       jobs. `make mutants`: 22 mutants, 14 caught, 7 unviable, 1 missed, the member
       ceiling's boundary, which a test added after kills.
+   `make verify` 2026-10-17, after all six parts: 30 harnesses, 0 failures.
 5. The plugin portal under `/gradle-plugins/` (Q8): a second upstream of the Maven row,
    relaying `plugins.gradle.org/m2` and following its 303s. A 303 to
    `plugins-artifacts.gradle.org` carries the file's sha256 in its path, which is the
