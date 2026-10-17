@@ -74,6 +74,7 @@ Proxy configuration, all through the environment:
   BYRLE_MAX_VERIFIED                verified artifact digests remembered (default 50000)
   BYRLE_PROVENANCE_HISTORY          attested versions older than provenance_window_days
                                     a version's identity is looked for in, most recent first (default 64)
+  BYRLE_CLAIM_RETRY_AFTER           seconds a client is told to wait while a file's claim is checked (default 2)
   BYRLE_DATABASE_URL                Postgres holding intel from `byrle refresh`. With a
                                     policy, known_malware is enforced from it, and a
                                     store that cannot answer is a 503

@@ -341,7 +341,27 @@ Q2, Q7 and Q9 otherwise.
          Postgres store's signature read and write, which only `make test-integration`
          runs; two of them applied by hand failed its round trip.
 
-      2. A `.pom`'s and a `.module`'s signature, the first fetch 503 until checked.
+      2. A `.pom`'s and a `.module`'s signature, the first fetch 503 until checked. Done
+         2026-10-17: a manifest with a signer goes through the claim job as a jar does,
+         then is served against the sha256 of its bytes; a signature that fails is 502.
+         A file checked against a digest is now asked of the upstream as `identity`:
+         Central gzips a `.pom` a client accepts gzipped, and the digest names the
+         uncompressed bytes, which first answered every `.pom`'s retry with a body cut
+         short. A key expired when it signed no longer fails verification (0113,
+         amended): `rsocket-bom-1.1.5.pom`'s did, and with it every Gradle build of a
+         Spring Boot project. `BYRLE_CLAIM_RETRY_AFTER`, 2 by default, is the deferral's
+         `Retry-After`. Measured through the proxy:
+
+         | Build | Result |
+         |---|---|
+         | mvn 3.10.0, Spring Boot 3.5.6, cold | BUILD SUCCESS in 295 s; at `Retry-After: 1` it failed |
+         | mvn, the same proxy, an empty local repository | 16 s |
+         | Gradle 9.8.1, after the mvn runs | succeeded in 130 s, the BOMs it imports new to the proxy; again, 3 s |
+
+         A `.pom` on Central whose signature does not verify, gpg agreeing:
+         `maven-dependency-plugin-2.0-alpha-1.pom`, 2007, is 502.
+         `make mutants`: 37 mutants, 7 caught, 28 unviable, 2 missed, each the `purl`
+         a manifest is fetched with, which tests added after assert.
       3. Case 3 as the signal `signing_key_new`, weight 1, from the earlier versions'
          `.asc`.
    6. Annotation processors (Q4): a jar holding

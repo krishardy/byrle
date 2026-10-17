@@ -15,8 +15,11 @@ pub const VERIFIER: &str = "pgp 0.21.0; maven-signatures 1";
 /// What a signature and the keys a server holds for it found.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signed {
-    /// It verified, made by the primary key with this fingerprint or one of its subkeys.
-    Verified { key: String },
+    /// It verified, by this primary key or its subkey, and how it had expired when it signed.
+    Verified {
+        key: String,
+        expired: Option<String>,
+    },
     /// It did not, and why.
     Failed { why: String },
 }
@@ -72,9 +75,10 @@ pub fn verify(
             continue;
         };
         match found {
-            Ok(()) => {
+            Ok(expired) => {
                 return Ok(Signed::Verified {
                     key: format!("{:X}", key.primary_key.fingerprint()),
+                    expired,
                 });
             }
             Err(failed) => why = failed,
@@ -115,15 +119,15 @@ fn hex_upper(bytes: &[u8]) -> String {
 }
 
 /// Whether `signature`, made at `signed_at`, is a good one of `file` by `key`, or by its
-/// subkey `sub`, unexpired and unrevoked then. `Err` inside says why not; the outer error is
-/// `file` that cannot be read.
+/// subkey `sub`, and unrevoked then. Inside, how the key had expired when it signed, or why
+/// it is not; the outer error is `file` that cannot be read.
 fn check(
     signature: &Signature,
     key: &SignedPublicKey,
     sub: Option<&SignedPublicSubKey>,
     file: &mut dyn crate::ecosystem::Source,
     signed_at: u32,
-) -> std::io::Result<Result<(), String>> {
+) -> std::io::Result<Result<Option<String>, String>> {
     file.seek(SeekFrom::Start(0))?;
     let made = match sub {
         Some(sub) => signature.verify(sub, &mut *file),
@@ -150,9 +154,7 @@ fn check(
             })
             .map(|s| life(s, created))
     }));
-    if let Some(why) = expired(&lives, signed_at, "the key") {
-        return Ok(Err(why));
-    }
+    let mut lapsed = expired(&lives, signed_at, "the key");
     let revocations: Vec<(u32, bool)> = key
         .details
         .revocation_signatures
@@ -164,7 +166,7 @@ fn check(
         return Ok(Err(why));
     }
     let Some(sub) = sub else {
-        return Ok(Ok(()));
+        return Ok(Ok(lapsed));
     };
     let bound: Vec<&Signature> = sub
         .signatures
@@ -180,15 +182,13 @@ fn check(
     if lives.is_empty() {
         return Ok(Err("its subkey is not bound to the key".to_owned()));
     }
-    if let Some(why) = expired(&lives, signed_at, "its subkey") {
-        return Ok(Err(why));
-    }
+    lapsed = lapsed.or_else(|| expired(&lives, signed_at, "its subkey"));
     let revocations: Vec<(u32, bool)> = bound
         .iter()
         .filter(|s| s.typ() == Some(SignatureType::SubkeyRevocation))
         .map(|s| revocation(s))
         .collect();
-    Ok(revoked(&revocations, signed_at, "its subkey").map_or(Ok(()), Err))
+    Ok(revoked(&revocations, signed_at, "its subkey").map_or(Ok(lapsed), Err))
 }
 
 /// A self-signature's time, and when it says its key expires: `created` plus its key
@@ -278,9 +278,22 @@ mod tests {
                 "plexus-component-annotations-2.0.0.jar.ubuntu.key"
             ),
             Signed::Verified {
-                key: "AE9E53FC28FF2AB1012273D0BF1518E0160788A2".to_owned()
+                key: "AE9E53FC28FF2AB1012273D0BF1518E0160788A2".to_owned(),
+                expired: None,
             }
         );
+    }
+
+    /// rsocket-bom 1.1.5's `.pom` was signed after its key expired: it verifies, and says so.
+    #[test]
+    fn a_signature_made_after_its_key_expired_verifies_and_says_so() {
+        let pom = "rsocket-bom-1.1.5.pom";
+        let Signed::Verified { key, expired } = checked(pom, pom, &format!("{pom}.ubuntu.key"))
+        else {
+            panic!("verifies");
+        };
+        assert!(key.ends_with("21871D2A9AB66A31"), "{key}");
+        assert_eq!(expired.as_deref(), Some("the key expired before it signed"));
     }
 
     #[test]
@@ -500,10 +513,10 @@ mod tests {
             .details
             .direct_signatures
             .push(expiring(&key, base + 10, life));
-        assert_eq!(
-            judged(&at(200), expires.clone(), data),
-            failed("the key expired before it signed")
-        );
+        let Signed::Verified { expired, .. } = judged(&at(200), expires.clone(), data) else {
+            panic!("a key expired when it signed still verifies");
+        };
+        assert_eq!(expired.as_deref(), Some("the key expired before it signed"));
         assert!(matches!(
             judged(&at(50), expires, data),
             Signed::Verified { .. }
@@ -557,9 +570,12 @@ mod tests {
             vec![SubpacketData::KeyExpirationTime(life)],
         );
         expires.public_subkeys[0].signatures.push(renewed);
+        let Signed::Verified { expired, .. } = judged(&signed, expires, data) else {
+            panic!("a subkey expired when it signed still verifies");
+        };
         assert_eq!(
-            judged(&signed, expires, data),
-            failed("its subkey expired before it signed")
+            expired.as_deref(),
+            Some("its subkey expired before it signed")
         );
         let mut revoked = public();
         let reason = SubpacketData::RevocationReason(RevocationCode::KeyRetired, "test".into());

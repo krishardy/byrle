@@ -18,7 +18,7 @@ pub struct FileSigner {
     pub version: String,
     /// The file's name, which an earlier version's file is named as with its version.
     pub file: String,
-    /// Earlier versions asked for a signature at most, newest first.
+    /// Earlier versions asked for a signature at most, newest first: none for a `.pom`.
     pub history: usize,
 }
 
@@ -55,6 +55,9 @@ impl Signer for FileSigner {
 
     fn signed_before(&self) -> BoxFuture<'_, Result<Option<String>, String>> {
         Box::pin(async move {
+            if self.history == 0 {
+                return Ok(None);
+            }
             for version in self
                 .client
                 .earlier(&self.key, &self.version, self.history)
@@ -73,7 +76,12 @@ impl Signer for FileSigner {
         let mut why = "no key server holds the key it names".to_owned();
         for copy in &material.keys {
             match verify(&material.signature, copy, file)? {
-                Signed::Verified { key } => return Ok(Signature::Verified { key }),
+                Signed::Verified { key, expired } => {
+                    if let Some(expired) = expired {
+                        tracing::info!(byrle.signature.key = %key, byrle.reason = %expired, "a signature verified whose key had expired when it signed");
+                    }
+                    return Ok(Signature::Verified { key });
+                }
                 Signed::Failed { why: failed } => why = failed,
             }
         }
@@ -331,6 +339,22 @@ pub(crate) mod tests {
             );
         let base = crate::proxy::testing::serve(router).await;
         assert!(signer(&base, &keys).signed_before().await.is_err());
+    }
+
+    /// A signature made after its key expired verifies: the expiry is a signal, not a failure.
+    #[test]
+    fn a_signature_by_a_key_expired_since_verifies() {
+        let pom = "rsocket-bom-1.1.5.pom";
+        let material = Material {
+            signature: signed(&format!("{pom}.asc")),
+            keys: vec![String::from_utf8(signed(&format!("{pom}.ubuntu.key"))).unwrap()],
+        };
+        let jar = signer("http://unused", "http://unused");
+        let mut file = std::io::Cursor::new(signed(pom));
+        assert!(matches!(
+            jar.verify(&material, &mut file).unwrap(),
+            Signature::Verified { .. }
+        ));
     }
 
     /// An unsigned file has no material; the newest version before it that is signed is

@@ -87,10 +87,7 @@ pub fn classify_path(path: &str) -> RequestTarget {
                 return RequestTarget::Other;
             };
             let (filename, version) = ((*file).to_owned(), (*version).to_owned());
-            if DESCRIPTORS
-                .iter()
-                .any(|descriptor| file.ends_with(descriptor))
-            {
+            if is_descriptor(file) {
                 RequestTarget::Manifest {
                     key,
                     version,
@@ -106,6 +103,13 @@ pub fn classify_path(path: &str) -> RequestTarget {
         }
         _ => RequestTarget::Other,
     }
+}
+
+/// Whether `file` is a version's `.pom` or `.module`, which a build reads for its dependencies.
+pub fn is_descriptor(file: &str) -> bool {
+    DESCRIPTORS
+        .iter()
+        .any(|descriptor| file.ends_with(descriptor))
 }
 
 /// Whether `file` is a version's own: not metadata, and not a sidecar.

@@ -264,7 +264,11 @@ impl Client {
                     key: key.clone(),
                     version: version.to_owned(),
                     file: file.to_owned(),
-                    history: crate::analysis::attestation::DEFAULT_HISTORY,
+                    history: if super::paths::is_descriptor(file) {
+                        0
+                    } else {
+                        crate::analysis::attestation::DEFAULT_HISTORY
+                    },
                 })),
             };
             self.claims

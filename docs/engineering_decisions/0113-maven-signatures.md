@@ -28,7 +28,7 @@ A signature verifies when all of these hold:
 |---|---|
 | The key | fetched by fingerprint from keys.openpgp.org, then keyserver.ubuntu.com, and kept per fingerprint. A key neither holds fails verification. A key server that does not answer is 503, as an unreachable sum.golang.org is |
 | The signature | made over the jar's bytes by the key or one of its signing subkeys |
-| Expiry | the key, and the subkey that signed, were unexpired at the signature's creation time |
+| Expiry | not checked since 2026-10-17: a key, or the subkey, that had expired when it signed is a risk signal, as below. The first answer, that it fails verification, refused rsocket-bom 1.1.5's `.pom` |
 | Revocation | as RFC 9580: a revocation with reason `0x01`, superseded, or `0x03`, retired, invalidates only signatures made after it; any other reason, `0x02` compromised included, invalidates every signature by the key |
 
 A `.pom` and a `.module` whose `.asc` fails verification are refused as a file changed
@@ -129,3 +129,21 @@ after it. A compromised key is caught by its revocation, whatever the date.
 `pgp` 0.21.0 is chosen. With it and this decision's rules, 93 of 93 signatures verified;
 byrle is Apache-2.0 and ships one static binary. It builds `rsa`, accepted for verification
 in [sqlx-0-8-and-rsa-advisory](0028-sqlx-0-8-and-rsa-advisory.md).
+
+## Amended 2026-10-17: a key expired when it signed is a signal
+
+`rsocket-bom-1.1.5.pom`, which Spring Boot 3.5.6's BOM imports, was signed 2025-02-03 by
+key `21871D2A9AB66A31`, which keyserver.ubuntu.com's copy says expired 2023-06-09;
+keys.openpgp.org holds no copy. gpg 2.4.8 said "Good signature ... [expired]". Under the
+first answer it failed verification, and every `.pom` refused so is 502: Gradle 9.8.1
+failed every run of a Spring Boot build. Decided by the user 2026-10-17: it is a score
+for the risk vector, [TODO](../../TODO.md) ad-hoc #42. The signature verifies; the
+expiry is the `signing` detector's signal, in step 4.5 part 3 of
+[maven-plan](../maven-plan.md). Revocation is still checked.
+
+A `.pom` and a `.module` are checked as a jar is, in the claim job, their first fetch
+503: decided by the user 2026-10-17. The 503's `Retry-After` is
+`BYRLE_CLAIM_RETRY_AFTER`, 2 by default, for a jar too: mvn 3.10.0 waits it between 4
+tries, and at 1 a cold Spring Boot build failed on `tomcat-embed-core-10.1.46.pom`,
+checked 3.4 s after its first 503.
+

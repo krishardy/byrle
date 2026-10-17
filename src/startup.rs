@@ -113,6 +113,7 @@ pub async fn proxy<L: Fn(&str) -> Option<OsString>>(
         .with_refuse_unservable(refuse_unservable)
         .with_mode(mode)
         .with_provenance_history(environment.provenance_history()?)
+        .with_claim_retry_after(environment.claim_retry_after()?)
         .with_origin_policy(
             served_origins.iter().map(String::as_str),
             allowed_direct.iter().map(String::as_str),
@@ -1288,6 +1289,7 @@ mod tests {
             (vec![], env::FORWARD_HTTPS),
             (vec![], env::MODE),
             (vec![], env::PROVENANCE_HISTORY),
+            (vec![], env::CLAIM_RETRY_AFTER),
             (vec![], env::REFUSE_UNSERVABLE),
             (vec![], env::POLICY),
             (vec![], env::AUDIT_LOG),
@@ -1317,9 +1319,9 @@ mod tests {
             if var != env::REQUIRE_TOKEN {
                 pairs.push((env::REQUIRE_TOKEN, "0"));
             }
-            let Err(StartupError::Env(e)) = proxy(&with_unreadable(&pairs, var)).await.map(drop)
-            else {
-                panic!("{} refuses the start", var.name);
+            let started = proxy(&with_unreadable(&pairs, var)).await.map(drop);
+            let Err(StartupError::Env(e)) = started else {
+                panic!("{} refuses the start: {started:?}", var.name);
             };
             assert_eq!(e.var, var.name);
         }

@@ -194,6 +194,8 @@ struct Config {
     mode: Mode,
     /// Established versions a version's provenance identity is compared with.
     provenance_history: usize,
+    /// Seconds a client is told to wait while a file's claim is checked.
+    claim_retry_after: u64,
     /// Origins the operator added, kept so a later upstream change can rebuild `origins`.
     served_origins: Vec<String>,
     /// Origins a client may fetch from directly, kept for the same reason.
@@ -261,6 +263,7 @@ impl Proxy {
                 refuse_unservable: true,
                 mode: Mode::Enforce,
                 provenance_history: attestation::DEFAULT_HISTORY,
+                claim_retry_after: crate::env::DEFAULT_CLAIM_RETRY_AFTER,
                 #[cfg(debug_assertions)]
                 defer_test: None,
             }),
@@ -334,6 +337,11 @@ impl Proxy {
 
     pub fn with_mode(mut self, mode: Mode) -> Self {
         self.config_mut().mode = mode;
+        self
+    }
+
+    pub fn with_claim_retry_after(mut self, seconds: u64) -> Self {
+        self.config_mut().claim_retry_after = seconds;
         self
     }
 
@@ -1322,6 +1330,18 @@ const FORWARDED: [header::HeaderName; 4] = [
 
 /// The headers sent upstream: the client's in [`FORWARDED`], less those the negotiation
 /// replaces, with the encoding, `Accept` and `If-None-Match` the negotiation needs.
+/// `headers` asking for a file checked against a digest uncompressed: the digest names its
+/// bytes, and a host compresses a text file the client accepts compressed, as Central does.
+fn asked_for(mut headers: HeaderMap, artifact: &ArtifactFetch) -> HeaderMap {
+    if artifact.digest.is_some() {
+        headers.insert(
+            header::ACCEPT_ENCODING,
+            HeaderValue::from_static("identity"),
+        );
+    }
+    headers
+}
+
 fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -> HeaderMap {
     let mut outbound = HeaderMap::new();
     for (name, value) in client {
@@ -2060,7 +2080,11 @@ impl<'a> Deciding<'a> {
                     .as_ref()
                     .expect("a pending claim has an analyser")
                     .start_claim(job);
-                return (audit::Answered::Deferred, self.defer(claim, &held.awaiting));
+                let floor = self.proxy.config.claim_retry_after;
+                return (
+                    audit::Answered::Deferred,
+                    self.defer(claim, &held.awaiting, floor),
+                );
             }
             None => {}
         }
@@ -2088,12 +2112,12 @@ impl<'a> Deciding<'a> {
                     .start(job);
                 (
                     audit::Answered::Deferred,
-                    self.defer(digest.to_string(), &held.awaiting),
+                    self.defer(digest.to_string(), &held.awaiting, 1),
                 )
             }
             AnalysisState::Decided if !held.awaiting.is_empty() => (
                 audit::Answered::Deferred,
-                self.defer(digest.to_string(), &held.awaiting),
+                self.defer(digest.to_string(), &held.awaiting, 1),
             ),
             AnalysisState::Decided => (audit::Answered::Served, ArtifactStep::Fetch(fetch)),
         }
@@ -2206,8 +2230,8 @@ impl<'a> Deciding<'a> {
     }
 
     /// 503 for the artifact with `digest`, an SRI string or a claim, until its analysis, and
-    /// each of `awaiting`, is stored.
-    fn defer(&self, digest: String, awaiting: &[(String, Duration)]) -> ArtifactStep {
+    /// each of `awaiting`, is stored, saying to wait as long as they take, `floor` at least.
+    fn defer(&self, digest: String, awaiting: &[(String, Duration)], floor: u64) -> ArtifactStep {
         let deferrals = self
             .proxy
             .deferred
@@ -2229,7 +2253,8 @@ impl<'a> Deciding<'a> {
             NotReady::Analysing {
                 purl: self.purl.clone(),
                 digest,
-                retry_after: wait.map_or(1, |wait| wait.as_secs_f64().ceil().max(1.0) as u64),
+                retry_after: wait
+                    .map_or(floor, |wait| (wait.as_secs_f64().ceil() as u64).max(floor)),
             }
             .response(),
         )
@@ -3128,11 +3153,18 @@ impl Exchange<'_> {
         let purl = purl_of(key, version);
         let path = &self.path;
         match self.proxy.config.clients.claim(key, version, file).await {
-            Ok(ecosystem::Claimed::Known(claim)) => ArtifactStep::Fetch(ArtifactFetch {
-                purl,
-                manifest: Some(claim),
-                ..ArtifactFetch::default()
-            }),
+            Ok(ecosystem::Claimed::Known(claim)) => {
+                match (claim.signer.clone(), self.proxy.config.analyser.as_deref()) {
+                    (Some(signer), Some(analyser)) => {
+                        self.signed_manifest(analyser, claim, signer, purl).await
+                    }
+                    _ => ArtifactStep::Fetch(ArtifactFetch {
+                        purl,
+                        manifest: Some(claim),
+                        ..ArtifactFetch::default()
+                    }),
+                }
+            }
             Ok(_) => {
                 let status = refusal_status(self.proxy, self.ecosystem, Some(&self.client));
                 warn!(url.path = %crate::http::url_path(path), http.response.status_code = status.as_u16(), byrle.package.claimed_purl = %purl, "not served: no digest of this file is published to check it against");
@@ -3154,6 +3186,65 @@ impl Exchange<'_> {
         }
     }
 
+    /// A signed manifest, checked as an artifact is: its first fetch is 503 while the claim
+    /// job checks its digest and signature, then it is served against the sha256 of the
+    /// bytes that matched. A signature that does not verify is 502, as a changed file is.
+    async fn signed_manifest(
+        &self,
+        analyser: &Analyser,
+        claim: ecosystem::Claim,
+        signer: Arc<dyn ecosystem::Signer>,
+        purl: String,
+    ) -> ArtifactStep {
+        let path = &self.path;
+        match analyser.claim_known(&claim.manifest).await {
+            crate::analysis::run::ClaimKnown::Checked(digest) => {
+                match analyser.signature(&digest, signer.verifier()).await {
+                    Some(ecosystem::Signature::Failed { why }) => {
+                        self.bad_manifest(&purl, "with a signature that does not verify", &why)
+                    }
+                    _ => ArtifactStep::Fetch(ArtifactFetch {
+                        purl,
+                        digest: Some(digest),
+                        ..ArtifactFetch::default()
+                    }),
+                }
+            }
+            crate::analysis::run::ClaimKnown::Failed(why) => {
+                self.bad_manifest(&purl, "as bytes its claim does not describe", &why)
+            }
+            crate::analysis::run::ClaimKnown::Unknown => {
+                analyser.start_claim(crate::analysis::run::ClaimJob {
+                    claim: claim.manifest.clone(),
+                    url: upstream_url(self.proxy, self.ecosystem, path, None),
+                    digest: claim.artifact_digest,
+                    signer: Some(signer),
+                });
+                info!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %purl, byrle.artifact.claim = %claim.manifest, "deferred: the manifest has not been checked");
+                ArtifactStep::Answer(
+                    NotReady::Analysing {
+                        purl,
+                        digest: claim.manifest,
+                        retry_after: self.proxy.config.claim_retry_after,
+                    }
+                    .response(),
+                )
+            }
+        }
+    }
+
+    /// 502 for `purl`'s manifest, served `how`, and `why`.
+    fn bad_manifest(&self, purl: &str, how: &str, why: &str) -> ArtifactStep {
+        warn!(url.path = %crate::http::url_path(&self.path), byrle.package.purl = %purl, byrle.reason = %why, "refused: the upstream's manifest is not the one claimed");
+        ArtifactStep::Answer(
+            (
+                StatusCode::BAD_GATEWAY,
+                format!("byrle: the upstream served {purl}'s manifest {how}: {why}\n"),
+            )
+                .into_response(),
+        )
+    }
+
     /// Send the request upstream with the client's headers, less those that stop here.
     /// Errors with a 502 when no answer arrives.
     async fn send(
@@ -3172,7 +3263,10 @@ impl Exchange<'_> {
             .config
             .client
             .request(self.method.clone(), &url)
-            .headers(upstream_headers(headers, &self.negotiation, &self.path))
+            .headers(asked_for(
+                upstream_headers(headers, &self.negotiation, &self.path),
+                artifact,
+            ))
             .send()
             .await
             .map_err(|e| {
@@ -6824,6 +6918,11 @@ mod tests {
             };
             assert_eq!(deferred.status(), 503);
             assert_eq!(deferred.headers()[DEFERRED_DIGEST], claimed.as_str());
+            assert_eq!(
+                deferred.headers()[header::RETRY_AFTER],
+                "2",
+                "a claim's floor"
+            );
             analyser.ended(1).await;
             let step = pinned(&proxy, LANG3_17_JAR).await;
             if served != jar {
@@ -6858,6 +6957,16 @@ mod tests {
                 .router(),
         )
         .await;
+        let unanalysed = offline(None, Some(deny)).with_upstream(Ecosystem::Maven, &repository);
+        let ArtifactStep::Fetch(checked) =
+            exchange(&unanalysed, LANG3_17_POM).artifact_fetch().await
+        else {
+            panic!("checked in the request, with no analyser");
+        };
+        assert_eq!(
+            checked.purl,
+            "pkg:maven/org.apache.commons/commons-lang3@3.17.0"
+        );
         let served = reqwest::get(format!("{base}{LANG3_17_POM}")).await.unwrap();
         assert_eq!(served.status(), 200);
         assert_eq!(served.bytes().await.unwrap().as_ref(), pom.as_slice());
@@ -6995,6 +7104,191 @@ mod tests {
             assert!(body.contains("provenance"), "{label}: {body}");
             assert!(body.contains(said), "{label}: {body}");
         }
+    }
+
+    /// A GET of `path` as [`handle`] would make it, before it is sent.
+    fn exchange<'a>(proxy: &'a Proxy, path: &str) -> Exchange<'a> {
+        let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
+        let negotiation = negotiate(
+            proxy,
+            ecosystem,
+            &target,
+            &Method::GET,
+            &client_headers("gzip"),
+        );
+        Exchange {
+            proxy,
+            method: Method::GET,
+            path: path.to_owned(),
+            client: "-".to_owned(),
+            account: None,
+            started: Instant::now(),
+            ecosystem,
+            target,
+            negotiation,
+        }
+    }
+
+    const JAKARTA_POM: &str =
+        "/maven/jakarta/annotation/jakarta.annotation-api/2.1.1/jakarta.annotation-api-2.1.1.pom";
+
+    /// What the proxy answers for a `.pom` holding jakarta.annotation-api 2.1.1's jar's
+    /// bytes, its `.sha1` of them when `sha1`, and the fixture `asc` beside it, first and once
+    /// its claim job has run.
+    async fn signed_pom(
+        asc: Option<&'static str>,
+        sha1: bool,
+        label: &str,
+    ) -> (StatusCode, ArtifactStep) {
+        let jar = crate::ecosystem::maven::fixture("signed/jakarta.annotation-api-2.1.1.jar");
+        let dir = "/jakarta/annotation/jakarta.annotation-api/2.1.1";
+        let digest = if sha1 {
+            crate::ecosystem::maven::digest::sha1(&jar)
+        } else {
+            "0".repeat(40)
+        };
+        let served = jar.clone();
+        let mut router = axum::Router::new()
+            .route(
+                &format!("{dir}/jakarta.annotation-api-2.1.1.pom"),
+                axum::routing::get(move || {
+                    let served = served.clone();
+                    async move { served }
+                }),
+            )
+            .route(
+                &format!("{dir}/jakarta.annotation-api-2.1.1.pom.sha1"),
+                axum::routing::get(move || async move { digest }),
+            );
+        if let Some(asc) = asc {
+            router = router.route(
+                &format!("{dir}/jakarta.annotation-api-2.1.1.pom.asc"),
+                axum::routing::get(move || async move {
+                    crate::ecosystem::maven::fixture(&format!("signed/{asc}"))
+                }),
+            );
+        }
+        let base = crate::proxy::testing::serve(router).await;
+        let (_, keys) = crate::ecosystem::maven::signer::tests::repository(None, &[], &[]).await;
+        let client = crate::ecosystem::maven::signer::tests::signer(&base, &keys).client;
+        let analyser = Arc::new(crate::analysis::run::tests::analyser(
+            label,
+            1 << 20,
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+        ));
+        let proxy = offline(None, Some(NO_POLICY))
+            .with_upstream(Ecosystem::Maven, &base)
+            .with_client(Ecosystem::Maven, Arc::new(client))
+            .with_analyser(Some(analyser.clone()));
+        let first = exchange(&proxy, JAKARTA_POM).artifact_fetch().await;
+        let ArtifactStep::Answer(first) = first else {
+            panic!("the first fetch is not served");
+        };
+        analyser.ended(1).await;
+        (
+            first.status(),
+            exchange(&proxy, JAKARTA_POM).artifact_fetch().await,
+        )
+    }
+
+    /// A `.pom` is 503 while its digest and signature are checked, then served against the
+    /// sha256 of its bytes, signed or not. One whose signature or digest fails is 502.
+    #[tokio::test]
+    async fn a_signed_pom_is_checked_before_it_is_served() {
+        for (asc, label) in [
+            (Some("jakarta.annotation-api-2.1.1.jar.asc"), "pom-good"),
+            (None, "pom-unsigned"),
+        ] {
+            let (first, then) = signed_pom(asc, true, label).await;
+            assert_eq!(first, 503, "{label}");
+            assert!(fetched(&then), "{label}: served against its sha256");
+            let ArtifactStep::Fetch(fetch) = then else {
+                unreachable!("fetched");
+            };
+            assert_eq!(
+                fetch.purl,
+                "pkg:maven/jakarta.annotation/jakarta.annotation-api@2.1.1"
+            );
+        }
+        for (asc, sha1, label, said) in [
+            (
+                Some("json-simple-3.0.2.jar.asc"),
+                true,
+                "pom-bad",
+                "signature that does not verify",
+            ),
+            (
+                Some("jakarta.annotation-api-2.1.1.jar.asc"),
+                false,
+                "pom-changed",
+                "its claim does not describe",
+            ),
+        ] {
+            let (first, then) = signed_pom(asc, sha1, label).await;
+            assert_eq!(first, 503, "{label}");
+            let (status, body) = refused(then).await;
+            assert_eq!(status, 502, "{label}: {body}");
+            assert!(body.contains(said), "{label}: {body}");
+        }
+    }
+
+    /// Central gzips a text file when asked. A file checked against a digest is asked of
+    /// the upstream as `identity`, the bytes the digest names, whatever the client accepts.
+    #[tokio::test]
+    async fn a_file_checked_against_a_digest_is_asked_for_uncompressed() {
+        let pom = b"<project>the pom</project>".to_vec();
+        let dir = "/jakarta/annotation/jakarta.annotation-api/2.1.1";
+        let served = pom.clone();
+        let router = axum::Router::new()
+            .route(
+                &format!("{dir}/jakarta.annotation-api-2.1.1.pom"),
+                axum::routing::get(move |headers: HeaderMap| {
+                    let served = served.clone();
+                    async move {
+                        let gzip = headers
+                            .get(header::ACCEPT_ENCODING)
+                            .and_then(|v| v.to_str().ok())
+                            .is_some_and(|v| v.contains("gzip"));
+                        if gzip {
+                            ([(header::CONTENT_ENCODING, "gzip")], super::gzip(&served))
+                                .into_response()
+                        } else {
+                            served.into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                &format!("{dir}/jakarta.annotation-api-2.1.1.pom.sha1"),
+                axum::routing::get(move || async move {
+                    crate::ecosystem::maven::digest::sha1(b"<project>the pom</project>")
+                }),
+            );
+        let base = crate::proxy::testing::serve(router).await;
+        let analyser = Arc::new(crate::analysis::run::tests::analyser(
+            "pom-gzip",
+            1 << 20,
+            Arc::new(crate::analysis::store::InProcess::new(8)),
+        ));
+        let proxy = serve(
+            offline(None, Some(NO_POLICY))
+                .with_upstream(Ecosystem::Maven, &base)
+                .with_analyser(Some(analyser.clone()))
+                .router(),
+        )
+        .await;
+        let client = reqwest::Client::new();
+        let get = || {
+            client
+                .get(format!("{proxy}{JAKARTA_POM}"))
+                .header(header::ACCEPT_ENCODING, "gzip")
+                .send()
+        };
+        assert_eq!(get().await.unwrap().status(), 503);
+        analyser.ended(1).await;
+        let served = get().await.unwrap();
+        assert_eq!(served.status(), 200);
+        assert_eq!(served.bytes().await.unwrap().as_ref(), pom.as_slice());
     }
 
     const QUOTE_MOD: &str = "/go/rsc.io/quote/@v/v1.5.2.mod";

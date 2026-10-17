@@ -101,6 +101,9 @@ pub const DEFAULT_MAX_CONCURRENT_METADATA: usize = 8;
 /// Default ceiling on how many artifacts are analysed, and spool files exist, at once.
 pub const DEFAULT_MAX_CONCURRENT_ANALYSES: usize = 8;
 
+/// The `Retry-After` of a file whose claim is checked, which mvn waits between 4 tries.
+pub const DEFAULT_CLAIM_RETRY_AFTER: u64 = 2;
+
 /// Default ceiling on how many client names a traffic window counts before `other`.
 pub const DEFAULT_MAX_TRAFFIC_CLIENTS: usize = 256;
 
@@ -358,6 +361,12 @@ pub const MAX_VERIFIED: Var = runtime(
     &["verified artifact digests remembered"],
 )
 .with_default(Default::Number(DEFAULT_MAX_VERIFIED as u64));
+pub const CLAIM_RETRY_AFTER: Var = runtime(
+    "BYRLE_CLAIM_RETRY_AFTER",
+    "",
+    &["seconds a client is told to wait while a file's claim is checked"],
+)
+.with_default(Default::Number(DEFAULT_CLAIM_RETRY_AFTER));
 pub const PROVENANCE_HISTORY: Var = runtime(
     "BYRLE_PROVENANCE_HISTORY",
     "",
@@ -719,7 +728,7 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 86] = [
+pub const ALL: [Var; 87] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
@@ -753,6 +762,7 @@ pub const ALL: [Var; 86] = [
     MAX_RECORDS,
     MAX_VERIFIED,
     PROVENANCE_HISTORY,
+    CLAIM_RETRY_AFTER,
     DATABASE_URL,
     STREAM_URLS,
     GITHUB_TOKEN,
@@ -1217,6 +1227,10 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
 
     /// At least one: [`crate::analysis::attestation::from_metadata`] reads the most recent
     /// attested version for dropped provenance.
+    pub fn claim_retry_after(&self) -> Result<u64, EnvError> {
+        Ok(self.above_zero(CLAIM_RETRY_AFTER, DEFAULT_CLAIM_RETRY_AFTER as usize)? as u64)
+    }
+
     pub fn provenance_history(&self) -> Result<usize, EnvError> {
         self.above_zero(
             PROVENANCE_HISTORY,
@@ -1802,6 +1816,7 @@ mod tests {
             (MAX_METADATA_BYTES, "1024"),
             (MAX_RECORDS, "10"),
             (MAX_VERIFIED, "20"),
+            (CLAIM_RETRY_AFTER, "5"),
             (MAX_CONCURRENT_METADATA, "2"),
             (SPOOL_DIR, "/var/spool/byrle"),
             (MAX_ARTIFACT_BYTES, "4096"),
@@ -1855,6 +1870,7 @@ mod tests {
         assert_eq!(env.max_metadata_bytes().unwrap(), 1024);
         assert_eq!(env.max_records().unwrap(), 10);
         assert_eq!(env.max_verified().unwrap(), 20);
+        assert_eq!(env.claim_retry_after().unwrap(), 5);
         assert_eq!(env.max_concurrent_metadata().unwrap(), 2);
         assert_eq!(env.spool_dir().unwrap(), PathBuf::from("/var/spool/byrle"));
         assert_eq!(env.max_artifact_bytes().unwrap(), 4096);
@@ -1938,11 +1954,12 @@ mod tests {
             (MODE, "warn"),
             (LOG_FORMAT, "logfmt"),
             (SNAPSHOT_LIMIT, "0"),
+            (CLAIM_RETRY_AFTER, "0"),
             (MAX_ARTIFACT_BYTES, "0"),
             (MAX_TRAFFIC_CLIENTS, "0"),
             (PROVENANCE_HISTORY, "0"),
         ]);
-        let cases: [(Result<(), EnvError>, &str); 16] = [
+        let cases: [(Result<(), EnvError>, &str); 17] = [
             (
                 env.max_records().map(drop),
                 "BYRLE_MAX_RECORDS: `5O000` is not a whole number",
@@ -1990,6 +2007,10 @@ mod tests {
             (
                 env.max_artifact_bytes().map(drop),
                 "BYRLE_MAX_ARTIFACT_BYTES: `0` is not a whole number above 0",
+            ),
+            (
+                env.claim_retry_after().map(drop),
+                "BYRLE_CLAIM_RETRY_AFTER: `0` is not a whole number above 0",
             ),
             (
                 env.max_traffic_clients().map(drop),
