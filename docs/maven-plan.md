@@ -206,7 +206,8 @@ Q2, Q7 and Q9 otherwise.
    `java.sh`, checked against `services.gradle.org`'s sha256, wired into `dev-setup` and
    watched by `check-deps` (Q10). Done 2026-10-16: `make install-gradle` installs it under
    `~/.local/share/byrle` beside the JDK and links `gradle` in `~/.local/bin`.
-2. Two engineering decisions, written before the code they govern. Done 2026-10-16:
+2. Three engineering decisions, written before the code they govern. The first two done
+   2026-10-16:
    1. [maven-digests](engineering_decisions/0112-maven-digests.md): the strongest of a
       file's `.sha512`, `.sha256` and `.sha1`, a jar checked in the claim job and served
       against its sha256. It supersedes 0017's refusal of SHA-1 for Maven only.
@@ -214,6 +215,13 @@ Q2, Q7 and Q9 otherwise.
       cases, with the signing primary key as the identity, under `provenance`. A
       signature by a key since expired verifies when made before the expiry; a revocation
       is read as RFC 9580 reads it; a key no key server holds fails verification.
+   3. A third, raised 2026-10-17: byrle passes every Maven file and sidecar through
+      byte for byte, except a `maven-metadata.xml` it filters and that file's `.sha1`
+      and `.md5`. A client checking a jar against a digest or a PGP signature from
+      outside byrle then catches byrle itself changing it. mvn and Gradle ask for a
+      sidecar from the repository that served its file, so the outside check is a PGP
+      key fetched from a key server, or a digest recorded before, as Gradle's committed
+      `verification-metadata.xml` records one. Not written yet.
 3. `VersionOrder::Maven`, Maven's `ComparableVersion` order, checked against Maven
    3.10.0's own comparison over every version in OSV's `Maven` ranges. Done 2026-10-16:
    `intel::comparable_version`, ported from `maven-artifact` 3.10.0's `ComparableVersion.java`. OSV's
@@ -280,6 +288,7 @@ Q2, Q7 and Q9 otherwise.
    | `$GRADLE_USER_HOME/init.d/` | no init script sending repositories and `pluginManagement` to the proxy |
    | `gradle-wrapper.properties` and `gradle-wrapper.jar` | Q9's four checks, against `services.gradle.org/versions/all` |
    | `~/.m2/repository` and Gradle's `caches/modules-2` | a cached refused version, as Go's module cache |
+   | `gradle/verification-metadata.xml` | none, or one with `<verify-signatures>` false: no check of byrle from outside it, per step 2.3 |
 
 8. `make smoke-maven`: mvn and Gradle builds of a real project through the proxy over
    https, with a token, a refused version, a cooldown, an advisory, an annotation
@@ -287,7 +296,9 @@ Q2, Q7 and Q9 otherwise.
    init script, a case not measured in this plan. A first fetch answered 503 is run
    again.
 9. Docs: quickstart (Basic first, Bearer second, per Q7), policy-reference,
-   threat-model (the wrapper download as a bypass), request-flow, and the README.
+   threat-model (the wrapper download as a bypass, and byrle checked from outside by
+   PGP signatures whose keys come from key servers, per step 2.3), request-flow, and the
+   README.
 
 ## Exit
 
