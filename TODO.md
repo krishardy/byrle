@@ -410,6 +410,16 @@ Items that I've added that are not stage-bound.
 41. A byrle CLI a remote user runs against a deployed byrle, for analysis commands such as
     `byrle explain`, without the proxy's policy file, environment or intel store on their
     own machine. Raised 2026-10-17.
+42. Next phase, after the Maven adapter: no outright blocks. Every rule a version is refused
+    by today (`denials`, `cooldown_days`, `max_cvss`, `kev`, `install_scripts`, `yanked`,
+    `deprecated`, `provenance`, known malware) becomes a weighted signal in the risk score,
+    and a version is refused when its score reaches a threshold. Today `signal_weights`
+    sums to a `risk_score` that no verdict reads. Raised 2026-10-17. Starts with a plan:
+    one threshold or one per dimension, whether known malware and `denials` reach it
+    alone, whether the proxy's own refusals (no strong digest, a digest mismatch, an
+    origin not served) stay outside the score, a `version: 2` schema past
+    [policy-schema-v1-frozen](docs/engineering_decisions/0030-policy-schema-v1-frozen.md),
+    and what candidate weights refuse over the npm, PyPI, cargo, Go and Maven measurements.
 
 ## Architecture Refactor
 
