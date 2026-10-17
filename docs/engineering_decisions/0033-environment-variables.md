@@ -116,6 +116,7 @@ variable at both is not expressible.
 | `BYRLE_UPSTREAM_CARGO` | `https://index.crates.io` | the proxy. Added 2026-10-14 |
 | `BYRLE_UPSTREAM_GO` | `https://proxy.golang.org` | the proxy. Added 2026-10-15 |
 | `BYRLE_UPSTREAM_MAVEN` | `https://repo1.maven.org/maven2` | the proxy. Added 2026-10-16 |
+| `BYRLE_UPSTREAM_GRADLE_PLUGINS` | `https://plugins.gradle.org/m2` | the proxy, for paths under `/gradle-plugins/`. Added 2026-10-17 |
 
 `BYRLE_UPSTREAM` is gone rather than kept as an alias. Nothing has been released, and a
 variable that silently means one of two ecosystems is the thing the split exists to remove.

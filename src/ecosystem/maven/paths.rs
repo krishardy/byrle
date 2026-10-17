@@ -1,11 +1,14 @@
 //! What a Maven request path refers to, and where it goes upstream. mvn and Gradle ask
-//! under [`PREFIX`] for `<group path>/<artifact>/maven-metadata.xml` and for
+//! under [`PREFIX`], or [`PLUGINS_PREFIX`] for the plugin portal, for `<group path>/<artifact>/maven-metadata.xml` and for
 //! `<group path>/<artifact>/<version>/<file>`, the group's dots written as `/`.
 
 use crate::identity::{Ecosystem, IdentityError, PackageKey};
 use crate::route::{DocumentKind, RequestTarget};
 
-use super::PREFIX;
+use super::{PLUGINS_PREFIX, PREFIX};
+
+/// The prefixes the Maven row serves a repository under.
+const PREFIXES: [&str; 2] = [PREFIX, PLUGINS_PREFIX];
 
 /// The file naming an artifact's versions, and a group's plugin prefixes.
 pub const METADATA: &str = "maven-metadata.xml";
@@ -71,7 +74,7 @@ fn key(group: &[&str], artifact: &str) -> Option<PackageKey> {
 /// its manifests, and any other file in its directory but a sidecar its artifact.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
-    let Some(rest) = path.strip_prefix(PREFIX) else {
+    let Some(rest) = PREFIXES.iter().find_map(|prefix| path.strip_prefix(prefix)) else {
         return RequestTarget::Other;
     };
     let parts: Vec<&str> = rest.split('/').collect();
@@ -131,9 +134,13 @@ pub fn metadata_sidecar(path: &str) -> Option<(String, crate::ecosystem::Digest)
         .then(|| (document.to_owned(), digest))
 }
 
-/// Everything under [`PREFIX`] goes to the repository at `base`, under the same path.
+/// Everything under [`PREFIX`] or [`PLUGINS_PREFIX`] goes to the repository at `base`,
+/// under the same path.
 pub fn upstream_url(base: &str, path_and_query: &str) -> String {
-    let rest = crate::ecosystem::within(PREFIX, path_and_query).unwrap_or(path_and_query);
+    let rest = PREFIXES
+        .iter()
+        .find_map(|prefix| crate::ecosystem::within(prefix, path_and_query))
+        .unwrap_or(path_and_query);
     format!("{base}{rest}")
 }
 
@@ -197,12 +204,17 @@ mod tests {
         );
     }
 
+    /// The plugin portal's paths are read as Central's are.
     #[test]
     fn an_artifact_s_metadata_is_its_metadata() {
-        assert_eq!(
-            classify_path("/maven/org/apache/commons/commons-lang3/maven-metadata.xml"),
-            RequestTarget::Metadata(lang3())
-        );
+        for prefix in ["/maven", "/gradle-plugins"] {
+            assert_eq!(
+                classify_path(&format!(
+                    "{prefix}/org/apache/commons/commons-lang3/maven-metadata.xml"
+                )),
+                RequestTarget::Metadata(lang3())
+            );
+        }
         assert_eq!(
             classify_path("/maven/commons-lang3/maven-metadata.xml"),
             RequestTarget::Other,
@@ -280,6 +292,13 @@ mod tests {
                 "/maven/org/apache/commons/commons-lang3/maven-metadata.xml"
             ),
             "https://repo1.maven.org/maven2/org/apache/commons/commons-lang3/maven-metadata.xml"
+        );
+        assert_eq!(
+            upstream_url(
+                "https://plugins.gradle.org/m2",
+                "/gradle-plugins/org/apache/commons/commons-lang3/maven-metadata.xml"
+            ),
+            "https://plugins.gradle.org/m2/org/apache/commons/commons-lang3/maven-metadata.xml"
         );
         assert_eq!(directory(&lang3()), "org/apache/commons/commons-lang3");
         assert_eq!(filename(&lang3(), "3.17.0"), "commons-lang3-3.17.0.jar");

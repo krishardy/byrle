@@ -15,7 +15,7 @@ pub mod wire;
 pub use paths::{classify_path, document_from_content_type, upstream_url};
 pub use transport::Client;
 
-use crate::ecosystem::{PublishTimeSource, Registry, Setup, UncoveredMetadata};
+use crate::ecosystem::{Also, PublishTimeSource, Registry, Setup, UncoveredMetadata};
 use crate::identity::Ecosystem;
 use crate::intel::providers::osv::bundle;
 use crate::intel::range::VersionOrder;
@@ -87,6 +87,13 @@ pub const REGISTRY: Registry = Registry {
     decides_head: true,
     signatures: Some(signature::VERIFIER),
     sidecar: paths::metadata_sidecar,
+    also: &[Also {
+        prefix: PLUGINS_PREFIX,
+        upstream: crate::env::UPSTREAM_GRADLE_PLUGINS,
+        client: |http, upstream, max_bytes| {
+            std::sync::Arc::new(Client::new(http, upstream, max_bytes))
+        },
+    }],
 };
 
 /// What points mvn at `url`: a mirror of every repository in `~/.m2/settings.xml`.
@@ -99,6 +106,12 @@ fn setup_line(url: &str) -> String {
 
 /// The path the proxy serves Maven repositories under.
 pub const PREFIX: &str = "/maven/";
+
+/// The path the proxy serves the Gradle plugin portal under, a second Maven repository.
+pub const PLUGINS_PREFIX: &str = "/gradle-plugins/";
+
+/// The Gradle plugin portal's Maven repository.
+pub const PORTAL: &str = "https://plugins.gradle.org/m2";
 
 /// Maven Central, the repository this build reads.
 pub const REPOSITORY: &str = "https://repo1.maven.org/maven2";

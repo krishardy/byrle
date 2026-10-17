@@ -1,7 +1,7 @@
 //! What a request path refers to and what a response body is, in terms every ecosystem
 //! answers. Each ecosystem's `classify_path` produces these and `proxy::handle` reads them.
 
-use crate::identity::{Ecosystem, PackageKey};
+use crate::identity::PackageKey;
 use crate::record::DocumentDetail;
 
 /// What a request path refers to.
@@ -69,9 +69,9 @@ pub fn media_type(content_type: Option<&str>) -> Option<String> {
     })
 }
 
-/// Which ecosystem answers this request path, and what the path refers to. `None` for a
-/// path under no ecosystem's prefix.
-pub fn classify(path: &str) -> Option<(Ecosystem, RequestTarget)> {
-    let registry = crate::ecosystem::serving(path)?;
-    Some((registry.ecosystem, registry.classify(path)))
+/// Which repository answers this request path, and what the path refers to. `None` for a
+/// path under no repository's prefix.
+pub fn classify(path: &str) -> Option<(crate::ecosystem::Repository, RequestTarget)> {
+    let repository = crate::ecosystem::serving(path)?;
+    Some((repository, repository.registry().classify(path)))
 }

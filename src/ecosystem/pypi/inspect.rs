@@ -1,11 +1,9 @@
 //! Reading a simple index the proxy forwarded: parse it and keep its records.
 
-use std::sync::Mutex;
-
 use tracing::{info, warn};
 
 use crate::record::PackageMetadata;
-use crate::store::RecordStore;
+use crate::store::Keeping;
 
 use crate::route::IndexFormat;
 
@@ -31,7 +29,7 @@ pub fn read_index(
     decoded: &[u8],
     format: IndexFormat,
     page: &str,
-    store: &Mutex<RecordStore>,
+    store: Keeping<'_>,
     path: &str,
 ) -> Option<Index> {
     let read = match format {
@@ -56,11 +54,7 @@ pub fn read_index(
                 .iter()
                 .filter(|r| r.has_install_scripts)
                 .count();
-            let (held_packages, held_records) = {
-                let mut store = store.lock().expect("record store lock");
-                store.insert(metadata.clone());
-                (store.len(), store.records())
-            };
+            let (held_packages, held_records) = store.keep(metadata.clone());
             info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 byrle.package.files = project.files.len(),
@@ -95,19 +89,22 @@ pub fn read_index(
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    const AT: crate::ecosystem::Repository =
+        crate::ecosystem::Repository::of(crate::identity::Ecosystem::PyPI);
     use crate::identity::{Ecosystem, PackageKey};
     use crate::store::Lookup;
 
-    fn store() -> Mutex<RecordStore> {
-        Mutex::new(RecordStore::new(1000))
+    fn store() -> std::sync::Mutex<crate::store::RecordStore> {
+        std::sync::Mutex::new(crate::store::RecordStore::new(1000))
     }
 
-    fn read(store: &Mutex<RecordStore>, decoded: &[u8]) -> Option<Index> {
+    fn read(store: &std::sync::Mutex<crate::store::RecordStore>, decoded: &[u8]) -> Option<Index> {
         read_index(
             decoded,
             IndexFormat::Json,
             "https://pypi.org/simple/x/",
-            store,
+            Keeping { store, at: AT },
             "/simple/x/",
         )
     }
@@ -128,7 +125,7 @@ mod tests {
         let key = PackageKey::from_registry_name(Ecosystem::PyPI, "x").unwrap();
         let mut store = store.lock().unwrap();
         assert_eq!(store.records(), 1, "one version, two files");
-        let Lookup::Found(record) = store.lookup(&key, "1.0", "x-1.0-py3-none-any.whl") else {
+        let Lookup::Found(record) = store.lookup(AT, &key, "1.0", "x-1.0-py3-none-any.whl") else {
             panic!("the index named 1.0");
         };
         assert_eq!(
@@ -183,7 +180,10 @@ mod tests {
             page,
             IndexFormat::Html,
             "https://pypi.org/simple/x/",
-            &store,
+            Keeping {
+                store: &store,
+                at: AT,
+            },
             "/simple/x/",
         )
         .expect("it parses");

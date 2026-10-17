@@ -42,6 +42,16 @@ fn adapter(registry: &Registry, upstreams: &Upstreams) -> String {
         "upstream",
         crate::origin::without_credentials(upstreams.get(registry.ecosystem)),
     );
+    let also = crate::ecosystem::Repository::all()
+        .filter(|repository| repository.ecosystem() == registry.ecosystem && !repository.is_own());
+    for repository in also {
+        let base = crate::origin::without_credentials(upstreams.get(repository));
+        line(
+            &mut out,
+            "upstream",
+            format!("{base}, under {}", repository.prefix()),
+        );
+    }
     line(
         &mut out,
         "documents",

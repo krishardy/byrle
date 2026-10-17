@@ -79,6 +79,7 @@ pub const REGISTRY: Registry = Registry {
     decides_head: false,
     signatures: None,
     sidecar: |_| None,
+    also: &[],
 };
 
 /// What points go at `url`. go sends `GOPROXY`'s userinfo as Basic credentials, and only

@@ -30,6 +30,7 @@ Proxy configuration, all through the environment:
   BYRLE_UPSTREAM_CARGO              cargo sparse index to forward to (default https://index.crates.io)
   BYRLE_UPSTREAM_GO                 Go module proxy to forward to (default https://proxy.golang.org)
   BYRLE_UPSTREAM_MAVEN              Maven repository to forward to (default https://repo1.maven.org/maven2)
+  BYRLE_UPSTREAM_GRADLE_PLUGINS     Gradle plugin portal to forward to (default https://plugins.gradle.org/m2)
   BYRLE_PROXY_URL                   URL package managers use for the proxy. Its path is
                                     where the proxy answers, and it is written into artifact
                                     URLs, and therefore into lockfiles. Defaults to each

@@ -143,11 +143,12 @@ async fn published(
     clients: &crate::ecosystem::Clients,
     reference: &crate::identity::PackageRef,
 ) -> Result<Option<Date>, String> {
-    let metadata = crate::ecosystem::fetched(clients.metadata(reference.key()).await)?;
+    let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
+    let metadata = crate::ecosystem::fetched(clients.metadata(at, reference.key()).await)?;
     let Some(record) = metadata.version(reference.version()) else {
         return Ok(None);
     };
-    let times = clients.publish_times(reference.key()).await?;
+    let times = clients.publish_times(at, reference.key()).await?;
     Ok(super::decide::Facts::from_record_and_times(record, times.as_ref()).published)
 }
 

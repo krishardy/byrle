@@ -178,7 +178,8 @@ async fn warm(
         .map(|(purl, reference, version)| {
             let clients = &clients;
             async move {
-                let record = clients.record(reference.key(), version).await;
+                let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
+                let record = clients.record(at, reference.key(), version).await;
                 asks_for(base, purl, record, targets)
             }
         })

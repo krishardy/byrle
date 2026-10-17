@@ -424,18 +424,19 @@ impl Comparison {
         reference: &crate::identity::PackageRef,
         version: &str,
     ) -> Result<Compared, String> {
-        let metadata = match crate::ecosystem::fetched(self.clients.metadata(reference.key()).await)
-        {
-            Ok(metadata) => metadata,
-            Err(e) => return Ok(Compared::Unread(e)),
-        };
-        let record = match self.clients.version_of(&metadata, version).await {
+        let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
+        let metadata =
+            match crate::ecosystem::fetched(self.clients.metadata(at, reference.key()).await) {
+                Ok(metadata) => metadata,
+                Err(e) => return Ok(Compared::Unread(e)),
+            };
+        let record = match self.clients.version_of(at, &metadata, version).await {
             Ok(Some(record)) => record,
             Ok(None) => return Ok(Compared::Unpublished),
             Err(e) => return Ok(Compared::Unread(e)),
         };
         let times = if self.needs_times {
-            match self.clients.publish_times(reference.key()).await {
+            match self.clients.publish_times(at, reference.key()).await {
                 Ok(times) => times,
                 Err(e) => return Ok(Compared::Unread(e)),
             }

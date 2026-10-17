@@ -363,10 +363,11 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
         .map_err(|e| stopped(2, format!("`{argument}` is not a package reference: {e}")))?;
 
     let clients = Clients::from_env(environment).map_err(|e| stopped(2, e))?;
-    let metadata = crate::ecosystem::fetched(clients.metadata(reference.key()).await)
+    let at = crate::ecosystem::Repository::of(reference.key().ecosystem());
+    let metadata = crate::ecosystem::fetched(clients.metadata(at, reference.key()).await)
         .map_err(|e| stopped(1, e))?;
     let Some(package) = clients
-        .version_of(&metadata, reference.version())
+        .version_of(at, &metadata, reference.version())
         .await
         .map_err(|e| stopped(1, e))?
     else {
@@ -377,7 +378,7 @@ async fn package_answer<L: Fn(&str) -> Option<OsString>>(
     };
     let package = &package;
 
-    let full = clients.full_document(reference.key()).await;
+    let full = clients.full_document(at, reference.key()).await;
     let times = match (full.as_ref(), policy.needs_publish_times()) {
         (Err(e), true) => return Err(stopped(1, e)),
         (Ok(Some(full)), _) => Some(full.times.clone()),

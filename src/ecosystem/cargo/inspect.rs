@@ -1,13 +1,11 @@
 //! Reading an index file the proxy forwarded, keeping its records, and removing the lines of
 //! the versions the policy refuses.
 
-use std::sync::Mutex;
-
 use tracing::{info, warn};
 
 use crate::ecosystem::{Document, Rewriting};
 use crate::record::PackageMetadata;
-use crate::store::RecordStore;
+use crate::store::Keeping;
 
 use super::wire::{Version, lines, normalize};
 
@@ -16,14 +14,10 @@ pub struct IndexFile(pub Option<Box<PackageMetadata>>);
 
 /// Read a forwarded index file and keep its records. A file that does not normalise is
 /// forwarded as it came, and logged.
-pub fn read_index(decoded: &[u8], store: &Mutex<RecordStore>, path: &str) -> IndexFile {
+pub fn read_index(decoded: &[u8], store: Keeping<'_>, path: &str) -> IndexFile {
     match normalize(decoded) {
         Ok(metadata) => {
-            let (held_packages, held_records) = {
-                let mut store = store.lock().expect("record store lock");
-                store.insert(metadata.clone());
-                (store.len(), store.records())
-            };
+            let (held_packages, held_records) = store.keep(metadata.clone());
             info!(
                 url.path = %crate::http::url_path(path),
                 byrle.package.versions = metadata.records.len(),
@@ -81,29 +75,40 @@ impl Document for IndexFile {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    const AT: crate::ecosystem::Repository =
+        crate::ecosystem::Repository::of(crate::identity::Ecosystem::Cargo);
     use crate::identity::{Ecosystem, PackageKey};
     use std::collections::HashSet;
 
-    fn store() -> Mutex<RecordStore> {
-        Mutex::new(RecordStore::new(1000))
+    fn store() -> std::sync::Mutex<crate::store::RecordStore> {
+        std::sync::Mutex::new(crate::store::RecordStore::new(1000))
+    }
+
+    fn keeping(store: &std::sync::Mutex<crate::store::RecordStore>) -> Keeping<'_> {
+        Keeping { store, at: AT }
     }
 
     /// Reading the file is what gives the download that follows it a digest.
     #[test]
     fn reading_an_index_file_leaves_its_records_for_the_download() {
         let store = store();
-        let read = read_index(&super::super::fixture(), &store, "/cargo/it/oa/itoa");
+        let read = read_index(
+            &super::super::fixture(),
+            keeping(&store),
+            "/cargo/it/oa/itoa",
+        );
         assert_eq!(read.metadata().expect("normalised").records.len(), 37);
         let key = PackageKey::from_registry_name(Ecosystem::Cargo, "itoa").unwrap();
         assert!(matches!(
             store
                 .lock()
                 .unwrap()
-                .lookup(&key, "1.0.18", "itoa-1.0.18.crate"),
+                .lookup(AT, &key, "1.0.18", "itoa-1.0.18.crate"),
             crate::store::Lookup::Found(_)
         ));
         assert!(
-            read_index(b"not json", &store, "/cargo/it/oa/itoa")
+            read_index(b"not json", keeping(&store), "/cargo/it/oa/itoa")
                 .metadata()
                 .is_none()
         );

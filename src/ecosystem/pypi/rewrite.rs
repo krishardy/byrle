@@ -322,9 +322,9 @@ mod tests {
         let url = document["files"][0]["url"].as_str().expect("a url");
         let path = url.strip_prefix("http://127.0.0.1:8080").expect("our base");
 
-        let (ecosystem, target) =
+        let (repository, target) =
             crate::route::classify(&format!("/pypi{path}")).expect("a routed path");
-        assert_eq!(ecosystem, Ecosystem::PyPI);
+        assert_eq!(repository.ecosystem(), Ecosystem::PyPI);
         assert!(
             matches!(target, RequestTarget::Artifact { .. }),
             "{target:?}"

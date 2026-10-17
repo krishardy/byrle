@@ -465,8 +465,9 @@ fn publishers<L: Fn(&str) -> Option<OsString>>(
 ) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
     let (setting, interval) = environment.crates_api()?;
     let mut made = Vec::new();
-    for (ecosystem, upstream) in upstreams.iter() {
-        let Some(publishers) = crate::ecosystem::of(ecosystem).publishers else {
+    for (repository, upstream) in upstreams.iter().filter(|(at, _)| at.is_own()) {
+        let ecosystem = repository.ecosystem();
+        let Some(publishers) = repository.registry().publishers else {
             continue;
         };
         match publishers(client, upstream, &setting, interval) {

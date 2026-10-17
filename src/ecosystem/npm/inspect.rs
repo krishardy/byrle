@@ -1,6 +1,5 @@
 //! Reading a packument body the proxy forwarded: decode it, then normalise it.
 
-use std::sync::Mutex;
 use std::time::Instant;
 
 use tracing::{info, warn};
@@ -8,7 +7,7 @@ use tracing::{info, warn};
 use crate::http::{DecodeError, decode_for_parsing};
 use crate::origin::OriginPolicy;
 use crate::record::{DocumentDetail, PackageMetadata};
-use crate::store::RecordStore;
+use crate::store::Keeping;
 
 use super::error::NormalizeError;
 use super::normalize::normalize_packument;
@@ -47,7 +46,7 @@ pub fn inspect_packument(
 pub fn read_packument(
     decoded: &[u8],
     detail: DocumentDetail,
-    store: &Mutex<RecordStore>,
+    store: Keeping<'_>,
     origins: &OriginPolicy,
     encoded_bytes: usize,
     parse_started: Instant,
@@ -57,11 +56,7 @@ pub fn read_packument(
         Ok(p) => {
             let p = Box::new(p);
             let (allowed_direct, refused) = p.unserved_origins(origins);
-            let (held_packages, held_records) = {
-                let mut store = store.lock().expect("record store lock");
-                store.insert((*p).clone());
-                (store.len(), store.records())
-            };
+            let (held_packages, held_records) = store.keep((*p).clone());
             info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 byrle.package.purl = %p.key,

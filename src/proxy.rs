@@ -15,7 +15,7 @@ use crate::audit::{self, AuditLog};
 #[cfg(debug_assertions)]
 use crate::defer::DeferTest;
 use crate::ecosystem::FullDocument;
-use crate::ecosystem::{self, Clients, UncoveredMetadata, Upstreams};
+use crate::ecosystem::{self, Clients, Repository, UncoveredMetadata, Upstreams};
 use crate::env::{
     DEFAULT_MAX_CONCURRENT_METADATA, DEFAULT_MAX_METADATA_BYTES, DEFAULT_MAX_RECORDS,
     DEFAULT_MAX_TRAFFIC_CLIENTS, DEFAULT_MAX_VERIFIED,
@@ -300,12 +300,16 @@ impl Proxy {
     /// Panics on an address that is not a URL with a host. `env::Env::upstreams` refuses
     /// the same addresses, so only a caller that skips it reaches the panic, and nothing
     /// else would work with that upstream either.
-    pub fn with_upstream(mut self, ecosystem: Ecosystem, upstream: impl AsRef<str>) -> Self {
+    pub fn with_upstream(
+        mut self,
+        repository: impl Into<Repository>,
+        upstream: impl AsRef<str>,
+    ) -> Self {
         let upstreams = self
             .config
             .upstreams
             .clone()
-            .with(ecosystem, upstream.as_ref());
+            .with(repository, upstream.as_ref());
         self.config_mut().upstreams = upstreams;
         self.rebuilt()
     }
@@ -439,7 +443,7 @@ impl Proxy {
                 .config
                 .upstreams
                 .iter()
-                .map(|(ecosystem, base)| (ecosystem.as_str().to_owned(), base.to_owned()))
+                .map(|(repository, base)| (repository.name().to_owned(), base.to_owned()))
                 .collect(),
             public_base: self.config.public_base.clone(),
             rewrite_artifacts: self.config.rewrite_artifacts,
@@ -862,6 +866,7 @@ fn public_base(headers: &HeaderMap, configured: Option<&str>) -> Option<String> 
 /// is forwarded. See docs/engineering_decisions/0017-artifact-digest-verification.md.
 async fn lookup_or_fetch(
     proxy: &Proxy,
+    at: Repository,
     key: &PackageKey,
     version: &str,
     filename: &str,
@@ -871,32 +876,32 @@ async fn lookup_or_fetch(
         .store
         .lock()
         .expect("record store lock")
-        .lookup(key, version, filename);
+        .lookup(at, key, version, filename);
     if first != Lookup::Unknown {
         return first;
     }
 
-    fetch_and_store(proxy, key, path).await;
+    fetch_and_store(proxy, at, key, path).await;
 
     proxy
         .store
         .lock()
         .expect("record store lock")
-        .lookup(key, version, filename)
+        .lookup(at, key, version, filename)
 }
 
-/// Fetch the metadata document the client did not ask for from `key`'s own registry, and
-/// keep its records. A failure is logged, and the artifact request is answered 502.
-async fn fetch_and_store(proxy: &Proxy, key: &PackageKey, path: &str) {
+/// Fetch the metadata document the client did not ask for from `at`, and keep its records.
+/// A failure is logged, and the artifact request is answered 502.
+async fn fetch_and_store(proxy: &Proxy, at: Repository, key: &PackageKey, path: &str) {
     let started = Instant::now();
-    match proxy.config.clients.metadata(key).await {
+    match proxy.config.clients.metadata(at, key).await {
         Ok(Ok(metadata)) => {
             let versions = metadata.records.len();
             proxy
                 .store
                 .lock()
                 .expect("record store lock")
-                .insert(metadata);
+                .insert(at, metadata);
             info!(
                 url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
                 byrle.package.purl = %key,
@@ -969,14 +974,14 @@ fn resolver_probe(ecosystem: Ecosystem, target: &RequestTarget) -> bool {
 /// ecosystem's own rule, its row's `upstream_url`, applied to its configured base.
 fn upstream_url(
     proxy: &Proxy,
-    ecosystem: Ecosystem,
+    repository: Repository,
     path_and_query: &str,
     artifact_origin: Option<&str>,
 ) -> String {
     if let Some(origin) = artifact_origin {
         return format!("{origin}{path_and_query}");
     }
-    (ecosystem::of(ecosystem).upstream_url)(proxy.config.upstreams.get(ecosystem), path_and_query)
+    (repository.registry().upstream_url)(proxy.config.upstreams.get(repository), path_and_query)
 }
 
 /// The upstream response's headers, less the hop-by-hop ones.
@@ -1001,7 +1006,12 @@ async fn revalidated(
     path: &str,
 ) {
     if let RequestTarget::Metadata(key) = target {
-        let held = proxy.store.lock().expect("record store lock").holds(key);
+        let at = negotiation.repository;
+        let held = proxy
+            .store
+            .lock()
+            .expect("record store lock")
+            .holds(at, key);
         info!(
             url.path = %crate::http::url_path(path), url.query = crate::http::url_query(path),
             byrle.package.purl = %key,
@@ -1010,7 +1020,7 @@ async fn revalidated(
             "metadata not modified, nothing to normalize"
         );
         if !held {
-            fetch_and_store(proxy, key, path).await;
+            fetch_and_store(proxy, at, key, path).await;
         }
     }
 
@@ -1094,13 +1104,16 @@ async fn filtered_document(
         }
     };
 
-    let registry = ecosystem::of(negotiation.ecosystem);
-    let page = upstream_url(proxy, registry.ecosystem, path, None);
+    let registry = negotiation.repository.registry();
+    let page = upstream_url(proxy, negotiation.repository, path, None);
     let read = (registry.read)(ecosystem::Reading {
         decoded: &decoded,
         kind: document,
         page: &page,
-        store: &proxy.store,
+        store: crate::store::Keeping {
+            store: &proxy.store,
+            at: negotiation.repository,
+        },
         origins: &proxy.config.origins,
         encoded_bytes: body.len(),
         parse_started,
@@ -1113,7 +1126,7 @@ async fn filtered_document(
         };
     };
     report_undated(proxy, read.as_ref(), path);
-    let dated = dated_versions(proxy, read.metadata(), path).await;
+    let dated = dated_versions(proxy, negotiation.repository, read.metadata(), path).await;
     let normalized = dated.as_ref().or(read.metadata());
 
     let intel = match normalized {
@@ -1186,6 +1199,7 @@ const MAX_COOLDOWN_DAYS: u32 = 36_500;
 /// not enforced on the document, and each artifact is decided on its own time.
 async fn dated_versions(
     proxy: &Proxy,
+    at: Repository,
     metadata: Option<&PackageMetadata>,
     path: &str,
 ) -> Option<PackageMetadata> {
@@ -1193,7 +1207,7 @@ async fn dated_versions(
     let days = Some(proxy.config.policy.as_deref()?.longest_cooldown()).filter(|days| *days > 0)?;
     let wait = jiff::SignedDuration::from_hours(24 * i64::from(days.min(MAX_COOLDOWN_DAYS)));
     let before = jiff::Timestamp::now() - wait;
-    let times = match proxy.config.clients.dated(metadata, before).await {
+    let times = match proxy.config.clients.dated(at, metadata, before).await {
         Ok(times) => times?,
         Err(e) => {
             warn!(url.path = %crate::http::url_path(path), error.message = %e, "publish times could not be read; the document's versions are left undated");
@@ -1231,8 +1245,8 @@ fn names_refused(path: &str, refused: &Refused) -> Response {
 /// How a request's metadata document is asked for and read, decided before going upstream.
 #[derive(Debug, PartialEq, Eq)]
 struct Negotiation {
-    /// The ecosystem whose prefix the path is under.
-    ecosystem: Ecosystem,
+    /// The repository whose prefix the path is under.
+    repository: Repository,
     /// The encoding asked of upstream on a document the proxy reads.
     encoding: RequestedEncoding,
     /// The body is read: a metadata GET, in an encoding this build can decode.
@@ -1247,7 +1261,7 @@ struct Negotiation {
 
 fn negotiate(
     proxy: &Proxy,
-    ecosystem: Ecosystem,
+    repository: Repository,
     target: &RequestTarget,
     method: &Method,
     headers: &HeaderMap,
@@ -1260,19 +1274,16 @@ fn negotiate(
     let read_metadata = method == Method::GET
         && matches!(target, RequestTarget::Metadata(_))
         && encoding != RequestedEncoding::Unreadable;
-    let rewrite_base = public_base(headers, proxy.config.public_base.as_deref()).map(|base| {
-        format!(
-            "{base}{}",
-            ecosystem::of(ecosystem).prefix.trim_end_matches('/')
-        )
-    });
+    let rewrite_base = public_base(headers, proxy.config.public_base.as_deref())
+        .map(|base| format!("{base}{}", repository.prefix().trim_end_matches('/')));
     let rewriting = read_metadata && proxy.config.rewrite_artifacts && rewrite_base.is_some();
-    let full_document = ecosystem::of(ecosystem)
+    let full_document = repository
+        .registry()
         .publish_times
         .full_accept
         .filter(|_| read_metadata);
     Negotiation {
-        ecosystem,
+        repository,
         encoding,
         read_metadata,
         rewrite_base,
@@ -1388,7 +1399,7 @@ fn upstream_headers(client: &HeaderMap, negotiation: &Negotiation, path: &str) -
 
 /// An artifact GET, as `handle` classified it.
 struct ArtifactRequest<'a> {
-    ecosystem: Ecosystem,
+    repository: Repository,
     method: &'a Method,
     key: &'a PackageKey,
     claimed_version: &'a str,
@@ -1598,7 +1609,12 @@ impl<'a> Deciding<'a> {
             .store
             .lock()
             .expect("record store lock")
-            .metadata(record, full, jiff::Timestamp::now());
+            .metadata(
+                self.request.repository,
+                record,
+                full,
+                jiff::Timestamp::now(),
+            );
         let source = beside.sourced.map(|sourced| {
             crate::analysis::detector::built_in(&crate::analysis::detector::source::Source, sourced)
         });
@@ -1707,7 +1723,7 @@ impl<'a> Deciding<'a> {
         };
         let url = upstream_url(
             self.proxy,
-            self.request.ecosystem,
+            self.request.repository,
             self.request.path,
             fetch.origin.as_deref(),
         );
@@ -1747,7 +1763,7 @@ impl<'a> Deciding<'a> {
         };
         let url = upstream_url(
             self.proxy,
-            self.request.ecosystem,
+            self.request.repository,
             self.request.path,
             fetch.origin.as_deref(),
         );
@@ -1797,11 +1813,14 @@ impl<'a> Deciding<'a> {
             .proxy
             .config
             .clients
-            .version(key, claimed_version)
+            .version(self.request.repository, key, claimed_version)
             .await
         {
             Ok(Some(alone)) => Lookup::Found(Box::new(alone)),
-            Ok(None) => lookup_or_fetch(self.proxy, key, claimed_version, filename, path).await,
+            Ok(None) => {
+                let at = self.request.repository;
+                lookup_or_fetch(self.proxy, at, key, claimed_version, filename, path).await
+            }
             Err(e) => {
                 warn!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %self.purl, error.message = %e, "the version could not be read on its own");
                 Lookup::Unknown
@@ -1860,11 +1879,12 @@ impl<'a> Deciding<'a> {
             account,
             ..
         } = self.request;
-        let claimed = self
-            .proxy
-            .config
-            .clients
-            .claim(key, claimed_version, filename);
+        let claimed = self.proxy.config.clients.claim(
+            self.request.repository,
+            key,
+            claimed_version,
+            filename,
+        );
         match claimed.await {
             Ok(ecosystem::Claimed::Known(claim)) => {
                 info!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %self.purl, byrle.artifact.claim = %claim.artifact, "the file's claim is read");
@@ -1903,13 +1923,14 @@ impl<'a> Deciding<'a> {
             crate::analysis::run::ClaimKnown::Failed(why) => (record, Some(Claiming::Failed(why))),
             crate::analysis::run::ClaimKnown::Unknown => {
                 let ArtifactRequest {
-                    ecosystem,
+                    repository,
                     path,
                     filename,
                     key,
                     claimed_version,
                     ..
                 } = self.request;
+                let ecosystem = repository.ecosystem();
                 let reads = crate::analysis::reader(ecosystem, filename).map(|reader| {
                     crate::analysis::run::Reads {
                         reader,
@@ -1920,7 +1941,7 @@ impl<'a> Deciding<'a> {
                 });
                 let job = crate::analysis::run::ClaimJob {
                     claim: claim.artifact,
-                    url: upstream_url(self.proxy, ecosystem, path, None),
+                    url: upstream_url(self.proxy, repository, path, None),
                     digest: claim.artifact_digest,
                     signer: claim.signer,
                     reads,
@@ -2018,7 +2039,8 @@ impl<'a> Deciding<'a> {
         if record.published_at.is_some() {
             return Dated::default();
         }
-        let (times, full) = match full_document(self.proxy, self.request.key).await {
+        let at = self.request.repository;
+        let (times, full) = match full_document(self.proxy, at, self.request.key).await {
             Some(FullDocument { times, metadata }) => (Some(times), metadata.ok()),
             None => (None, None),
         };
@@ -2038,21 +2060,19 @@ impl<'a> Deciding<'a> {
         times: Option<&facts::PublishTimes>,
     ) -> Analysed {
         let ArtifactRequest {
-            ecosystem,
-            filename,
+            repository,
             path,
             client,
             ..
         } = self.request;
-        let upstream = upstream_url(self.proxy, ecosystem, path, fetch.origin.as_deref());
+        let upstream = upstream_url(self.proxy, repository, path, fetch.origin.as_deref());
         let analysed = analysed(
             self.proxy,
+            &self.request,
             record,
-            filename,
             fetch.digest.as_ref(),
             times,
             &upstream,
-            path,
         )
         .await;
         if !matches!(analysed.state, AnalysisState::Pending(_))
@@ -2140,7 +2160,7 @@ impl<'a> Deciding<'a> {
     fn refusal_status(&self) -> StatusCode {
         refusal_status(
             self.proxy,
-            self.request.ecosystem,
+            self.request.repository.ecosystem(),
             Some(self.request.client),
         )
     }
@@ -2430,17 +2450,17 @@ enum AnalysisState {
 /// See docs/engineering_decisions/0064-artifact-spool.md.
 async fn analysed(
     proxy: &Proxy,
+    request: &ArtifactRequest<'_>,
     record: &PackageRecord,
-    filename: &str,
     digest: Option<&Sri>,
     times: Option<&facts::PublishTimes>,
     upstream: &str,
-    path: &str,
 ) -> Analysed {
+    let (at, filename, path) = (request.repository, request.filename, request.path);
     let mut record = record.clone();
     let key = record.package.key();
     let analyser = proxy.config.analyser.as_deref();
-    let (provenance, attestations) = attested(proxy, analyser, &record, digest, times).await;
+    let (provenance, attestations) = attested(proxy, at, analyser, &record, digest, times).await;
     let reader = crate::analysis::reader(key.ecosystem(), filename);
     let decided = |record, provenance| Analysed {
         record,
@@ -2507,11 +2527,7 @@ async fn analysed(
 /// added directly, and any other not at all. `Err` names the origin, and counts as an
 /// attestation that does not verify: a version must not escape the check by pointing its
 /// attestations somewhere the proxy will not go.
-fn attestation_url(
-    proxy: &Proxy,
-    ecosystem: Ecosystem,
-    advertised: &str,
-) -> Result<String, String> {
+fn attestation_url(proxy: &Proxy, at: Repository, advertised: &str) -> Result<String, String> {
     match proxy.config.origins.disposition(advertised) {
         Disposition::Served => {}
         Disposition::AllowedDirect(origin) | Disposition::Refused(origin) => {
@@ -2527,7 +2543,7 @@ fn attestation_url(
     };
     let direct = crate::origin::origin_of_url(advertised)
         .filter(|origin| proxy.config.origins.reachable().routes_directly(origin));
-    Ok(upstream_url(proxy, ecosystem, &path, direct.as_deref()))
+    Ok(upstream_url(proxy, at, &path, direct.as_deref()))
 }
 
 /// What the version's attestations say against the version published before it, and the
@@ -2535,6 +2551,7 @@ fn attestation_url(
 /// `docs/engineering_decisions/0066-provenance-check.md`.
 async fn attested(
     proxy: &Proxy,
+    at: Repository,
     analyser: Option<&Analyser>,
     record: &PackageRecord,
     digest: Option<&Sri>,
@@ -2550,6 +2567,7 @@ async fn attested(
         Policy::provenance_window,
     );
     let previous = proxy.store.lock().expect("record store lock").previous(
+        at,
         key,
         record.package.version(),
         times,
@@ -2558,9 +2576,8 @@ async fn attested(
     let Some(analyser) = analyser else {
         return (attestation::from_metadata(record, &previous), Vec::new());
     };
-    let ecosystem = key.ecosystem();
     let verifiable = |url: &String, digest: Option<Sri>, no_digest: &str| {
-        let url = attestation_url(proxy, ecosystem, url)?;
+        let url = attestation_url(proxy, at, url)?;
         let digest = digest.ok_or_else(|| no_digest.to_owned())?;
         Ok::<_, String>((url, digest))
     };
@@ -2617,8 +2634,6 @@ async fn attested(
     }
 }
 
-/// What verifying `to_verify` found: the analyser's stored result, or a failure when it
-/// cannot be verified.
 /// What the signature of the bytes with `digest` says, for an ecosystem whose files are
 /// signed, as its claim job checked it. `None` for another, or one not checked yet.
 async fn signed(
@@ -2630,6 +2645,8 @@ async fn signed(
     analyser?.signature(digest?, verifier).await
 }
 
+/// What verifying `to_verify` found: the analyser's stored result, or a failure when it
+/// cannot be verified.
 async fn result_of(
     analyser: &Analyser,
     to_verify: &Result<(String, Sri), String>,
@@ -2820,17 +2837,17 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     if let Some(response) = own_endpoint(&proxy, &path).await {
         return response;
     }
-    let Some((ecosystem, target)) = crate::route::classify(&path) else {
+    let Some((repository, target)) = crate::route::classify(&path) else {
         return unrouted(&path);
     };
     let account = match admit(&proxy, req.headers(), &path, &client, &target).await {
         Ok(account) => account,
         Err(refused) => return *refused,
     };
-    if let Some(response) = written(&proxy, ecosystem, &path, req.headers()) {
+    if let Some(response) = written(&proxy, repository, &path, req.headers()) {
         return response;
     }
-    if let Some(response) = sidecar(&proxy, ecosystem, &path, req.headers()).await {
+    if let Some(response) = sidecar(&proxy, repository, &path, req.headers()).await {
         return response;
     }
     #[cfg(debug_assertions)]
@@ -2839,7 +2856,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     {
         return defer_response(status, retry_after, &method, &path, &client, started);
     }
-    let negotiation = negotiate(&proxy, ecosystem, &target, &method, req.headers());
+    let negotiation = negotiate(&proxy, repository, &target, &method, req.headers());
     let exchange = Exchange {
         proxy: &proxy,
         method,
@@ -2847,7 +2864,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         client,
         account,
         started,
-        ecosystem,
+        repository,
         target,
         negotiation,
     };
@@ -2874,7 +2891,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
 /// upstream. `None` for a path it does not write.
 fn written(
     proxy: &Proxy,
-    ecosystem: Ecosystem,
+    repository: Repository,
     path: &str,
     headers: &HeaderMap,
 ) -> Option<Response> {
@@ -2884,7 +2901,7 @@ fn written(
         base: base.as_deref(),
         tokens_required: proxy.config.gate.is_some(),
     };
-    Some(match (ecosystem::of(ecosystem).write)(&writing)? {
+    Some(match (repository.registry().write)(&writing)? {
         Ok(written) => {
             info!(url.path = %crate::http::url_path(path), "written by the proxy");
             ([(header::CONTENT_TYPE, written.content_type)], written.body).into_response()
@@ -2898,17 +2915,17 @@ fn written(
 /// forward the sidecar, when the row writes none, or the document is served as it came.
 async fn sidecar(
     proxy: &Proxy,
-    ecosystem: Ecosystem,
+    repository: Repository,
     path: &str,
     headers: &HeaderMap,
 ) -> Option<Response> {
-    let registry = ecosystem::of(ecosystem);
+    let registry = repository.registry();
     let (document_path, digest) = (registry.sidecar)(path)?;
     let target = (registry.classify_path)(&document_path);
     let (body, content_type, content_encoding) =
-        sidecar_document(proxy, ecosystem, &document_path, path).await?;
+        sidecar_document(proxy, repository, &document_path, path).await?;
     let document = registry.document(content_type.as_deref())?;
-    let negotiation = negotiate(proxy, ecosystem, &target, &Method::GET, headers);
+    let negotiation = negotiate(proxy, repository, &target, &Method::GET, headers);
     match filtered_document(
         proxy,
         document,
@@ -2936,11 +2953,11 @@ async fn sidecar(
 /// `Content-Type` and `Content-Encoding`. `None` when it could not be fetched whole.
 async fn sidecar_document(
     proxy: &Proxy,
-    ecosystem: Ecosystem,
+    repository: Repository,
     document_path: &str,
     path: &str,
 ) -> Option<(Bytes, Option<String>, Option<String>)> {
-    let url = upstream_url(proxy, ecosystem, document_path, None);
+    let url = upstream_url(proxy, repository, document_path, None);
     let fetched = match proxy.config.client.get(&url).send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => {
@@ -3084,7 +3101,7 @@ struct Exchange<'a> {
     /// The account whose token the request carried, `None` when no token is required.
     account: Option<String>,
     started: Instant,
-    ecosystem: Ecosystem,
+    repository: Repository,
     target: RequestTarget,
     negotiation: Negotiation,
 }
@@ -3114,7 +3131,8 @@ impl Exchange<'_> {
             headers,
             &self.path,
         );
-        if self.method == Method::GET && !resolver_probe(self.ecosystem, &self.target) {
+        if self.method == Method::GET && !resolver_probe(self.repository.ecosystem(), &self.target)
+        {
             self.proxy
                 .traffic
                 .lock()
@@ -3127,8 +3145,7 @@ impl Exchange<'_> {
     /// and the claim a manifest GET is checked against. Any other request is fetched with
     /// no digest.
     async fn artifact_fetch(&self) -> ArtifactStep {
-        let decided_head =
-            self.method == Method::HEAD && ecosystem::of(self.ecosystem).decides_head;
+        let decided_head = self.method == Method::HEAD && self.repository.registry().decides_head;
         if self.method != Method::GET && !decided_head {
             return ArtifactStep::Fetch(ArtifactFetch::default());
         }
@@ -3139,7 +3156,7 @@ impl Exchange<'_> {
                 filename,
             } => {
                 let request = ArtifactRequest {
-                    ecosystem: self.ecosystem,
+                    repository: self.repository,
                     method: &self.method,
                     key,
                     claimed_version,
@@ -3166,7 +3183,14 @@ impl Exchange<'_> {
     async fn manifest_claim(&self, key: &PackageKey, version: &str, file: &str) -> ArtifactStep {
         let purl = purl_of(key, version);
         let path = &self.path;
-        match self.proxy.config.clients.claim(key, version, file).await {
+        let at = self.repository;
+        match self
+            .proxy
+            .config
+            .clients
+            .claim(at, key, version, file)
+            .await
+        {
             Ok(ecosystem::Claimed::Known(claim)) => {
                 match (claim.signer.clone(), self.proxy.config.analyser.as_deref()) {
                     (Some(signer), Some(analyser)) => {
@@ -3180,7 +3204,8 @@ impl Exchange<'_> {
                 }
             }
             Ok(_) => {
-                let status = refusal_status(self.proxy, self.ecosystem, Some(&self.client));
+                let ecosystem = self.repository.ecosystem();
+                let status = refusal_status(self.proxy, ecosystem, Some(&self.client));
                 warn!(url.path = %crate::http::url_path(path), http.response.status_code = status.as_u16(), byrle.package.claimed_purl = %purl, "not served: no digest of this file is published to check it against");
                 ArtifactStep::Answer(
                     (
@@ -3230,7 +3255,7 @@ impl Exchange<'_> {
             crate::analysis::run::ClaimKnown::Unknown => {
                 analyser.start_claim(crate::analysis::run::ClaimJob {
                     claim: claim.manifest.clone(),
-                    url: upstream_url(self.proxy, self.ecosystem, path, None),
+                    url: upstream_url(self.proxy, self.repository, path, None),
                     digest: claim.artifact_digest,
                     signer: Some(signer),
                     reads: None,
@@ -3269,7 +3294,7 @@ impl Exchange<'_> {
     ) -> Result<Upstream, Box<Response>> {
         let url = upstream_url(
             self.proxy,
-            self.ecosystem,
+            self.repository,
             &self.path,
             artifact.origin.as_deref(),
         );
@@ -3303,7 +3328,7 @@ impl Exchange<'_> {
         let content_type = headers
             .get(header::CONTENT_TYPE)
             .and_then(|v| v.to_str().ok());
-        let document = crate::ecosystem::of(self.ecosystem).document(content_type);
+        let document = self.repository.registry().document(content_type);
         Ok(Upstream {
             status,
             forward_status: StatusCode::from_u16(status.as_u16())
@@ -3542,7 +3567,7 @@ impl Exchange<'_> {
     /// Log the answer sent, at debug for a resolver's probe and at info otherwise.
     fn log_proxied(&self, status: reqwest::StatusCode, bytes: u64) {
         let elapsed_ms = self.started.elapsed().as_millis() as u64;
-        if resolver_probe(self.ecosystem, &self.target) {
+        if resolver_probe(self.repository.ecosystem(), &self.target) {
             debug!(
                 http.request.method = %self.method,
                 url.path = %crate::http::url_path(&self.path), url.query = crate::http::url_query(&self.path),
@@ -3677,9 +3702,9 @@ fn defer_response(
 /// The full packument for a package whose client asked for less, logged either way.
 /// Fetched now and never kept: see docs/engineering_decisions/0056-no-metadata-cache.md.
 /// `None` for an ecosystem whose records carry publish times, or when it cannot be read.
-async fn full_document(proxy: &Proxy, key: &PackageKey) -> Option<FullDocument> {
+async fn full_document(proxy: &Proxy, at: Repository, key: &PackageKey) -> Option<FullDocument> {
     let started = Instant::now();
-    let full = match proxy.config.clients.full_document(key).await {
+    let full = match proxy.config.clients.full_document(at, key).await {
         Ok(Some(full)) => full,
         Ok(None) => return None,
         Err(e) => {
@@ -3821,10 +3846,10 @@ impl Proxy {
             return watched;
         }
         let keys = self.store.lock().expect("record store lock").packages();
-        for key in keys {
+        for (at, key) in keys {
             let path = format!("/{}", key.registry_name());
             let slot = metadata_slot(self, &path).await;
-            let fetched = crate::ecosystem::fetched(self.config.clients.metadata(&key).await);
+            let fetched = crate::ecosystem::fetched(self.config.clients.metadata(at, &key).await);
             drop(slot);
             let metadata = match fetched {
                 Ok(metadata) => metadata,
@@ -3838,13 +3863,13 @@ impl Proxy {
                 .store
                 .lock()
                 .expect("record store lock")
-                .refresh(metadata);
+                .refresh(at, metadata);
             watched.new_versions += new.len();
             let files = new
                 .iter()
                 .filter_map(|r| r.artifact().map(|file| (r, file)));
             for (record, file) in files {
-                if self.watch_version(record, file).await {
+                if self.watch_version(at, record, file).await {
                     watched.started += 1;
                 }
             }
@@ -3863,6 +3888,7 @@ impl Proxy {
     /// serve, with no strong digest, or already analysed.
     async fn watch_version(
         &self,
+        at: Repository,
         record: &PackageRecord,
         artifact: &crate::record::Artifact,
     ) -> bool {
@@ -3878,7 +3904,7 @@ impl Proxy {
         let deciding = Deciding::new(
             self,
             ArtifactRequest {
-                ecosystem: key.ecosystem(),
+                repository: at,
                 method: &Method::GET,
                 key,
                 claimed_version: record.package.version(),
@@ -4398,7 +4424,7 @@ mod tests {
         assert!(
             matches!(
                 crate::route::classify(path),
-                Some((Ecosystem::PyPI, RequestTarget::Artifact { .. }))
+                Some((at, RequestTarget::Artifact { .. })) if at == Repository::of(Ecosystem::PyPI)
             ),
             "{path}"
         );
@@ -4863,7 +4889,7 @@ mod tests {
         assert_eq!(
             negotiation,
             Negotiation {
-                ecosystem: Ecosystem::Npm,
+                repository: Repository::of(Ecosystem::Npm),
                 encoding: RequestedEncoding::Gzip,
                 read_metadata: true,
                 rewrite_base: Some("http://proxy.test/npm".to_owned()),
@@ -5427,7 +5453,11 @@ mod tests {
 
     fn hold_document(proxy: &Proxy, packument: &[u8], detail: crate::record::DocumentDetail) {
         let metadata = npm::normalize_packument(packument, detail).unwrap();
-        proxy.store.lock().unwrap().insert(metadata);
+        proxy
+            .store
+            .lock()
+            .unwrap()
+            .insert(Repository::of(Ecosystem::Npm), metadata);
     }
 
     /// The proxy's decision on a GET of the artifact at `path`. A decision to serve writes
@@ -5439,7 +5469,7 @@ mod tests {
     /// The same, for a client whose user agent is `client`.
     async fn pinned_by(proxy: &Proxy, path: &str, client: &str) -> ArtifactStep {
         let (
-            ecosystem,
+            repository,
             RequestTarget::Artifact {
                 key,
                 claimed_version,
@@ -5450,7 +5480,7 @@ mod tests {
             panic!("{path} is not an artifact");
         };
         let request = ArtifactRequest {
-            ecosystem,
+            repository,
             method: &Method::GET,
             key: &key,
             claimed_version: &claimed_version,
@@ -5492,12 +5522,13 @@ mod tests {
 
     /// The proxy's handling of a metadata GET of `path` that upstream answers with `body`.
     async fn resolve(proxy: &Proxy, path: &str, content_type: &str, body: &[u8]) -> DocumentStep {
-        let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
-        let document = ecosystem::of(ecosystem)
+        let (repository, target) = crate::route::classify(path).expect("a routed path");
+        let document = repository
+            .registry()
             .document(Some(content_type))
             .expect("a metadata document");
         let headers = client_headers("gzip");
-        let negotiation = negotiate(proxy, ecosystem, &target, &Method::GET, &headers);
+        let negotiation = negotiate(proxy, repository, &target, &Method::GET, &headers);
         let body = Bytes::copy_from_slice(body);
         filtered_document(proxy, document, &body, None, &negotiation, path, None, true).await
     }
@@ -6697,7 +6728,11 @@ mod tests {
         for record in &mut held.records {
             record.artifacts[0].integrity = Some(format!("sha256-{}", "A".repeat(43) + "="));
         }
-        proxy.store.lock().unwrap().insert(held);
+        proxy
+            .store
+            .lock()
+            .unwrap()
+            .insert(Repository::of(Ecosystem::Maven), held);
         assert!(
             fetched(&pinned(&proxy, LANG3_JAR).await),
             "a GET has a digest"
@@ -6780,6 +6815,43 @@ mod tests {
         );
         let upstream = "/maven2/org/apache/commons/commons-lang3/maven-metadata.xml";
         assert_eq!(asked(&requests), [upstream, upstream, upstream]);
+    }
+
+    /// `/gradle-plugins/` is the portal's: its `maven-metadata.xml` is asked of the portal's
+    /// upstream, filtered as Central's is, and its records kept as the portal's alone.
+    #[tokio::test]
+    async fn a_plugin_portal_document_is_the_portal_s() {
+        use crate::util::test_support::{Answer, recorded};
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let (central, from_central) = recorded(vec![]).await;
+        let (portal, from_portal) =
+            recorded(vec![Answer::Typed("text/xml", fixture.clone())]).await;
+        let plugins = Repository::named("gradle-plugins").expect("the portal");
+        let proxy = offline(None, Some(DENY_LANG3))
+            .with_upstream(Ecosystem::Maven, format!("http://{central}/maven2"))
+            .with_upstream(plugins, format!("http://{portal}/m2"));
+        let base = serve(proxy.clone().router()).await;
+        let path = LANG3_METADATA.replacen("/maven/", "/gradle-plugins/", 1);
+        let served = reqwest::get(format!("{base}{path}")).await.unwrap();
+        assert_eq!(served.status(), 200);
+        assert_ne!(
+            served.bytes().await.unwrap().as_ref(),
+            fixture.as_slice(),
+            "3.21.0 is removed"
+        );
+        assert_eq!(
+            asked(&from_portal),
+            ["/m2/org/apache/commons/commons-lang3/maven-metadata.xml"]
+        );
+        assert!(asked(&from_central).is_empty());
+        let key = crate::identity::PackageKey::from_registry_name(
+            Ecosystem::Maven,
+            "org.apache.commons:commons-lang3",
+        )
+        .unwrap();
+        let store = proxy.store.lock().unwrap();
+        assert!(store.holds(plugins, &key));
+        assert!(!store.holds(Repository::of(Ecosystem::Maven), &key));
     }
 
     /// The repository's sidecar is forwarded for a document served as it came, or one that
@@ -7167,10 +7239,10 @@ mod tests {
 
     /// A GET of `path` as [`handle`] would make it, before it is sent.
     fn exchange<'a>(proxy: &'a Proxy, path: &str) -> Exchange<'a> {
-        let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
+        let (repository, target) = crate::route::classify(path).expect("a routed path");
         let negotiation = negotiate(
             proxy,
-            ecosystem,
+            repository,
             &target,
             &Method::GET,
             &client_headers("gzip"),
@@ -7182,7 +7254,7 @@ mod tests {
             client: "-".to_owned(),
             account: None,
             started: Instant::now(),
-            ecosystem,
+            repository,
             target,
             negotiation,
         }
@@ -7736,7 +7808,7 @@ mod tests {
         let proxy = offline(None, None);
         let response = written(
             &proxy,
-            Ecosystem::Cargo,
+            Repository::of(Ecosystem::Cargo),
             "/cargo/config.json",
             &HeaderMap::new(),
         )
@@ -7745,7 +7817,7 @@ mod tests {
         assert!(
             written(
                 &proxy,
-                Ecosystem::Npm,
+                Repository::of(Ecosystem::Npm),
                 "/cargo/config.json",
                 &HeaderMap::new()
             )
@@ -9243,7 +9315,7 @@ mod tests {
             proxy.upstreams().to_string(),
             "npm=https://registry.npmjs.org pypi=https://mirror.example/simple \
              cargo=https://index.crates.io golang=https://proxy.golang.org \
-             maven=https://repo1.maven.org/maven2"
+             maven=https://repo1.maven.org/maven2 gradle-plugins=https://plugins.gradle.org/m2"
         );
         let both = Proxy::new(reqwest::Client::new()).with_upstreams(proxy.upstreams().clone());
         assert_eq!(both.upstreams(), proxy.upstreams());
@@ -9287,7 +9359,7 @@ mod tests {
             ] {
                 assert_eq!(
                     crate::route::classify(path).expect("a routed path").0,
-                    ecosystem,
+                    Repository::of(ecosystem),
                     "{path}"
                 );
             }
@@ -9323,7 +9395,12 @@ mod tests {
             let proxy =
                 proxy().with_upstream(Ecosystem::PyPI, "https://mirror.example/pypi/simple");
             assert_eq!(
-                upstream_url(&proxy, Ecosystem::PyPI, "/pypi/simple/requests/", None),
+                upstream_url(
+                    &proxy,
+                    Repository::of(Ecosystem::PyPI),
+                    "/pypi/simple/requests/",
+                    None
+                ),
                 "https://mirror.example/pypi/simple/requests/"
             );
         }
@@ -9555,8 +9632,8 @@ mod tests {
                 ("/npm/lodash", false),
                 ("/npm/lodash/-/lodash-4.17.21.tgz", false),
             ] {
-                let (ecosystem, target) = crate::route::classify(path).expect("a routed path");
-                assert_eq!(resolver_probe(ecosystem, &target), expected, "{path}");
+                let (at, target) = crate::route::classify(path).expect("a routed path");
+                assert_eq!(resolver_probe(at.ecosystem(), &target), expected, "{path}");
             }
         }
 
@@ -10176,7 +10253,7 @@ mod tests {
         let proxy = offline(None, None)
             .with_origin_policy(["https://cdn.example"], ["https://direct.example"])
             .unwrap();
-        let routed = |url: &str| attestation_url(&proxy, Ecosystem::Npm, url);
+        let routed = |url: &str| attestation_url(&proxy, Repository::of(Ecosystem::Npm), url);
         assert_eq!(
             routed("https://registry.npmjs.org/-/npm/v1/attestations/widget@1.0.0?x=1"),
             Ok(format!(
@@ -10315,7 +10392,7 @@ mod tests {
         assert_eq!(
             attestation_url(
                 &proxy,
-                Ecosystem::PyPI,
+                Repository::of(Ecosystem::PyPI),
                 "https://pypi.org/integrity/x/1.0/x-1.0.tar.gz/provenance"
             ),
             Ok(format!(
@@ -12241,7 +12318,7 @@ mod tests {
         let deciding = Deciding::new(
             &proxy,
             ArtifactRequest {
-                ecosystem: Ecosystem::Npm,
+                repository: Repository::of(Ecosystem::Npm),
                 method: &Method::GET,
                 key: &key,
                 claimed_version: " ",
@@ -12275,7 +12352,8 @@ mod tests {
             .with_policy(Some(policy(ALLOW_ALL)));
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").unwrap();
         let (guard, buf) = capture(tracing::Level::WARN);
-        fetch_and_store(&proxy, &key, "/npm/lodash/-/lodash-4.17.21.tgz").await;
+        let at = Repository::of(Ecosystem::Npm);
+        fetch_and_store(&proxy, at, &key, "/npm/lodash/-/lodash-4.17.21.tgz").await;
         drop(guard);
         let log = text(&buf);
         assert!(

@@ -385,6 +385,17 @@ Q2, Q7 and Q9 otherwise.
    relaying `plugins.gradle.org/m2` and following its 303s. A 303 to
    `plugins-artifacts.gradle.org` carries the file's sha256 in its path, which is the
    claim; one to Central is decided as `/maven/` decides it. `BYRLE_UPSTREAM_GRADLE_PLUGINS`.
+   Central and the portal list different versions under one artifact's coordinates
+   (0115), so each repository's records are its own. In four parts:
+   1. A `Repository` routed by prefix, keying `Upstreams`, `Clients` and the
+      `RecordStore`. Done 2026-10-17: `/gradle-plugins/` is forwarded to
+      `BYRLE_UPSTREAM_GRADLE_PLUGINS`, and its `maven-metadata.xml` filtered and kept as
+      the portal's.
+   2. Detections and signature results keyed by repository, and `repository` in the
+      audit log and `Decided`.
+   3. The portal's claims: a 303 to `plugins-artifacts.gradle.org` is a claim of the
+      sha256 in its path; a 303 to Central is decided as `/maven/` decides it.
+   4. A Gradle build using a plugin only the portal serves, through the proxy.
 6. `gradle.lockfile` for `warm`, `policy diff` and `lockfile verify`. mvn writes no
    lockfile.
 7. `byrle doctor` for mvn and Gradle:

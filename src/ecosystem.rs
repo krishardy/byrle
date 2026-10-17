@@ -188,7 +188,8 @@ pub struct Reading<'a> {
     pub kind: DocumentKind,
     /// The upstream URL of the document, which relative links in it are resolved against.
     pub page: &'a str,
-    pub store: &'a std::sync::Mutex<crate::store::RecordStore>,
+    /// Where its records are kept, by the repository it came from.
+    pub store: crate::store::Keeping<'a>,
     pub origins: &'a crate::origin::OriginPolicy,
     /// The body's size as it arrived, before decoding.
     pub encoded_bytes: usize,
@@ -240,20 +241,18 @@ pub struct FullDocument {
     pub metadata: Result<PackageMetadata, String>,
 }
 
-/// Each ecosystem's registry client, chosen by the package key, for a caller with no document.
+/// Each repository's registry client, for a caller with no document.
 #[derive(Debug, Clone)]
-pub struct Clients(BTreeMap<Ecosystem, std::sync::Arc<dyn Fetch>>);
+pub struct Clients(BTreeMap<Repository, std::sync::Arc<dyn Fetch>>);
 
 impl Clients {
     /// A client for each upstream. `max_bytes` bounds each decoded body.
     pub fn new(http: reqwest::Client, upstreams: &Upstreams, max_bytes: usize) -> Self {
         Self(
-            TABLE
+            upstreams
                 .iter()
-                .map(|row| {
-                    let client =
-                        (row.client)(http.clone(), upstreams.get(row.ecosystem), max_bytes);
-                    (row.ecosystem, client)
+                .map(|(repository, base)| {
+                    (repository, repository.client(http.clone(), base, max_bytes))
                 })
                 .collect(),
         )
@@ -270,46 +269,60 @@ impl Clients {
         ))
     }
 
-    /// These clients with `ecosystem`'s replaced by `client`.
+    /// These clients with `repository`'s replaced by `client`.
     #[cfg(test)]
-    pub fn with(mut self, ecosystem: Ecosystem, client: std::sync::Arc<dyn Fetch>) -> Self {
-        self.0.insert(ecosystem, client);
+    pub fn with(
+        mut self,
+        repository: impl Into<Repository>,
+        client: std::sync::Arc<dyn Fetch>,
+    ) -> Self {
+        self.0.insert(repository.into(), client);
         self
     }
 
-    fn of(&self, key: &PackageKey) -> &dyn Fetch {
-        self.0[&key.ecosystem()].as_ref()
+    /// `at`'s client, for `key`, a package of its ecosystem.
+    fn of(&self, at: Repository, key: &PackageKey) -> &dyn Fetch {
+        debug_assert_eq!(at.ecosystem(), key.ecosystem(), "{key} is not of {at}");
+        self.0[&at].as_ref()
     }
 
-    /// The package's metadata as records.
-    pub async fn metadata(&self, key: &PackageKey) -> Fetched {
-        self.of(key).metadata(key).await
+    /// The package's metadata as records, from `at`.
+    pub async fn metadata(&self, at: Repository, key: &PackageKey) -> Fetched {
+        self.of(at, key).metadata(key).await
     }
 
-    /// The record for `version` of `key`, from its registry's metadata document.
+    /// The record for `version` of `key`, from `at`'s metadata document.
     /// Errors when the document cannot be fetched or read.
     /// Returns `None` when the document does not list the version.
     pub async fn record(
         &self,
+        at: Repository,
         key: &PackageKey,
         version: &str,
     ) -> Result<Option<crate::record::PackageRecord>, String> {
-        Ok(fetched(self.metadata(key).await)?.version(version).cloned())
+        Ok(fetched(self.metadata(at, key).await)?
+            .version(version)
+            .cloned())
     }
 
     /// Publish times fetched separately from the records. `Ok(None)` for an ecosystem
     /// whose records carry `published_at`, which asks nothing.
-    pub async fn publish_times(&self, key: &PackageKey) -> Result<Option<PublishTimes>, String> {
-        Ok(self.full_document(key).await?.map(|full| full.times))
+    pub async fn publish_times(
+        &self,
+        at: Repository,
+        key: &PackageKey,
+    ) -> Result<Option<PublishTimes>, String> {
+        Ok(self.full_document(at, key).await?.map(|full| full.times))
     }
 
     /// The record of `version` read on its own: [`Fetch::version`].
     pub async fn version(
         &self,
+        at: Repository,
         key: &PackageKey,
         version: &str,
     ) -> Result<Option<crate::record::PackageRecord>, String> {
-        self.of(key).version(key, version).await
+        self.of(at, key).version(key, version).await
     }
 
     /// The record of `version` of `metadata`'s package: read on its own where the
@@ -317,10 +330,11 @@ impl Clients {
     /// `Ok(None)` when neither has it.
     pub async fn version_of(
         &self,
+        at: Repository,
         metadata: &PackageMetadata,
         version: &str,
     ) -> Result<Option<crate::record::PackageRecord>, String> {
-        Ok(match self.version(&metadata.key, version).await? {
+        Ok(match self.version(at, &metadata.key, version).await? {
             Some(alone) => Some(alone),
             None => metadata.version(version).cloned(),
         })
@@ -329,25 +343,31 @@ impl Clients {
     /// A time for each of `metadata`'s versions: [`Fetch::dated`].
     pub async fn dated(
         &self,
+        at: Repository,
         metadata: &PackageMetadata,
         before: jiff::Timestamp,
     ) -> Result<Option<PublishTimes>, String> {
-        self.of(&metadata.key).dated(metadata, before).await
+        self.of(at, &metadata.key).dated(metadata, before).await
     }
 
     /// What a database beside the registry says of `version`'s `file`: [`Fetch::claim`].
     pub async fn claim(
         &self,
+        at: Repository,
         key: &PackageKey,
         version: &str,
         file: &str,
     ) -> Result<Claimed, String> {
-        self.of(key).claim(key, version, file).await
+        self.of(at, key).claim(key, version, file).await
     }
 
     /// The full document, for an ecosystem whose client asks for less: [`Fetch::full`].
-    pub async fn full_document(&self, key: &PackageKey) -> Result<Option<FullDocument>, String> {
-        self.of(key).full(key).await
+    pub async fn full_document(
+        &self,
+        at: Repository,
+        key: &PackageKey,
+    ) -> Result<Option<FullDocument>, String> {
+        self.of(at, key).full(key).await
     }
 }
 
@@ -517,53 +537,162 @@ pub struct Registry {
     pub signatures: Option<&'static str>,
     /// The document a sidecar is the digest of, and that digest, where the proxy writes it.
     pub sidecar: fn(&str) -> Option<(String, Digest)>,
+    /// The repositories this row serves besides its own, each under a prefix of its own.
+    pub also: &'static [Also],
+}
+
+/// A repository a row serves besides its own: the Gradle plugin portal beside Central.
+pub struct Also {
+    /// The path prefix it is served under, such as `/gradle-plugins/`.
+    pub prefix: &'static str,
+    /// The variable naming its upstream.
+    pub upstream: Var,
+    /// The registry client for its upstream, with each decoded body bounded.
+    pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
+}
+
+/// A repository the proxy serves, a row's own or an [`Also`], keying what is read from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Repository {
+    ecosystem: Ecosystem,
+    /// 0 for the row's own, else one more than its index in [`Registry::also`].
+    index: u8,
+}
+
+impl Repository {
+    /// `ecosystem`'s own repository.
+    pub const fn of(ecosystem: Ecosystem) -> Self {
+        Self {
+            ecosystem,
+            index: 0,
+        }
+    }
+
+    /// Every repository, in ecosystem order, each row's own first.
+    pub fn all() -> impl Iterator<Item = Self> {
+        TABLE.iter().flat_map(|row| {
+            (0..=row.also.len()).map(move |index| Self {
+                ecosystem: row.ecosystem,
+                index: u8::try_from(index).expect("a row serves few repositories"),
+            })
+        })
+    }
+
+    /// The repository named `name`, as [`Repository::name`] writes it.
+    pub fn named(name: &str) -> Option<Self> {
+        Self::all().find(|repository| repository.name() == name)
+    }
+
+    pub fn ecosystem(self) -> Ecosystem {
+        self.ecosystem
+    }
+
+    /// Whether it is its row's own, not one of its [`Also`].
+    pub fn is_own(self) -> bool {
+        self.index == 0
+    }
+
+    /// The row serving it.
+    pub fn registry(self) -> &'static Registry {
+        of(self.ecosystem)
+    }
+
+    fn also(self) -> Option<&'static Also> {
+        let index = usize::from(self.index).checked_sub(1)?;
+        Some(&self.registry().also[index])
+    }
+
+    /// The path prefix it is served under.
+    pub fn prefix(self) -> &'static str {
+        self.also()
+            .map_or(self.registry().prefix, |also| also.prefix)
+    }
+
+    /// The variable naming its upstream.
+    pub fn upstream(self) -> Var {
+        self.also()
+            .map_or(self.registry().upstream, |also| also.upstream)
+    }
+
+    /// Its ecosystem's purl type for a row's own, `golang` and `maven`, and its prefix
+    /// without slashes for an [`Also`], `gradle-plugins`.
+    pub fn name(self) -> &'static str {
+        self.also().map_or(self.ecosystem.as_str(), |also| {
+            also.prefix.trim_matches('/')
+        })
+    }
+
+    /// The registry client for `upstream`, with each decoded body bounded.
+    fn client(
+        self,
+        http: reqwest::Client,
+        upstream: &str,
+        max_bytes: usize,
+    ) -> std::sync::Arc<dyn Fetch> {
+        let client = self
+            .also()
+            .map_or(self.registry().client, |also| also.client);
+        client(http, upstream, max_bytes)
+    }
+}
+
+/// [`Repository::name`].
+impl std::fmt::Display for Repository {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
+impl From<Ecosystem> for Repository {
+    fn from(ecosystem: Ecosystem) -> Self {
+        Self::of(ecosystem)
+    }
 }
 
 /// A digest of a document's bytes, as hex: a [`Registry::sidecar`]'s.
 pub type Digest = fn(&[u8]) -> String;
 
-/// Each served ecosystem's upstream base, with no trailing slash, one per [`TABLE`] row.
+/// Each served repository's upstream base, with no trailing slash.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Upstreams(BTreeMap<Ecosystem, String>);
+pub struct Upstreams(BTreeMap<Repository, String>);
 
 impl Upstreams {
-    /// Each ecosystem's public registry.
+    /// Each repository's public registry.
     pub fn defaults() -> Self {
         Self(
-            TABLE
-                .iter()
-                .map(|registry| {
-                    let base = registry
-                        .upstream
+            Repository::all()
+                .map(|repository| {
+                    let base = repository
+                        .upstream()
                         .default_text()
                         .expect("an upstream variable names its default");
-                    (registry.ecosystem, trimmed(base))
+                    (repository, trimmed(base))
                 })
                 .collect(),
         )
     }
 
-    /// These upstreams with `ecosystem`'s at `base`. A trailing slash is accepted.
-    pub fn with(mut self, ecosystem: Ecosystem, base: &str) -> Self {
-        self.0.insert(ecosystem, trimmed(base));
+    /// These upstreams with `repository`'s at `base`. A trailing slash is accepted.
+    pub fn with(mut self, repository: impl Into<Repository>, base: &str) -> Self {
+        self.0.insert(repository.into(), trimmed(base));
         self
     }
 
-    /// `ecosystem`'s upstream base.
-    pub fn get(&self, ecosystem: Ecosystem) -> &str {
-        &self.0[&ecosystem]
+    /// `repository`'s upstream base.
+    pub fn get(&self, repository: impl Into<Repository>) -> &str {
+        &self.0[&repository.into()]
     }
 
-    /// Every upstream base, in ecosystem order.
+    /// Every upstream base, in repository order.
     pub fn bases(&self) -> impl Iterator<Item = &str> {
         self.0.values().map(String::as_str)
     }
 
-    /// Each ecosystem and its upstream base, in ecosystem order.
-    pub fn iter(&self) -> impl Iterator<Item = (Ecosystem, &str)> {
+    /// Each repository and its upstream base, in repository order.
+    pub fn iter(&self) -> impl Iterator<Item = (Repository, &str)> {
         self.0
             .iter()
-            .map(|(ecosystem, base)| (*ecosystem, base.as_str()))
+            .map(|(repository, base)| (*repository, base.as_str()))
     }
 }
 
@@ -599,13 +728,6 @@ pub fn canonical_name(ecosystem: &str, name: &str) -> String {
 pub type SplitName = fn(&str) -> Result<(Option<String>, String), IdentityError>;
 
 impl Registry {
-    /// Whether this registry claims `path`, its query dropped. `/simple` and `/packages`
-    /// without the trailing slash are npm packages by those names.
-    pub fn serves(&self, path: &str) -> bool {
-        let path = path.split('?').next().unwrap_or(path);
-        path.starts_with(self.prefix)
-    }
-
     /// What `path` refers to, in this registry's spelling.
     pub fn classify(&self, path: &str) -> RequestTarget {
         (self.classify_path)(path)
@@ -649,9 +771,10 @@ pub fn as_named(name: &str) -> Option<String> {
     Some(name.to_owned())
 }
 
-/// The row whose prefix claims `path`. `None` when no row does.
-pub fn serving(path: &str) -> Option<&'static Registry> {
-    TABLE.iter().find(|registry| registry.serves(path))
+/// The repository whose prefix claims `path`, its query dropped. `None` when none does.
+pub fn serving(path: &str) -> Option<Repository> {
+    let path = path.split('?').next().unwrap_or(path);
+    Repository::all().find(|repository| path.starts_with(repository.prefix()))
 }
 
 #[cfg(test)]
@@ -680,7 +803,7 @@ mod table {
         .expect("builds");
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "lodash").expect("a name");
         let error = clients
-            .record(&key, "4.17.21")
+            .record(Repository::of(Ecosystem::Npm), &key, "4.17.21")
             .await
             .expect_err("unreachable");
         assert!(
@@ -717,11 +840,61 @@ mod table {
             assert_eq!(registry.prefix, format!("/{}/", adapter(registry)));
             assert!(root.join(adapter(registry)).is_dir(), "{}", registry.prefix);
         }
-        let mut claimed: Vec<&str> = TABLE.iter().map(|registry| registry.prefix).collect();
+        let mut claimed: Vec<&str> = Repository::all().map(Repository::prefix).collect();
         let before = claimed.len();
         claimed.sort_unstable();
         claimed.dedup();
-        assert_eq!(claimed.len(), before, "a prefix is claimed by two rows");
+        assert_eq!(
+            claimed.len(),
+            before,
+            "a prefix is claimed by two repositories"
+        );
+    }
+
+    /// Each repository is named by its row's purl type or its own prefix, and found again
+    /// by that name. The portal is Maven's, under a prefix and upstream of its own.
+    #[test]
+    fn a_repository_is_named_and_found_by_its_name() {
+        let names: Vec<String> = Repository::all().map(|r| r.to_string()).collect();
+        assert_eq!(
+            names,
+            ["npm", "pypi", "cargo", "golang", "maven", "gradle-plugins"]
+        );
+        for repository in Repository::all() {
+            assert_eq!(Repository::named(repository.name()), Some(repository));
+        }
+        assert_eq!(Repository::named("central"), None);
+        let portal = Repository::named("gradle-plugins").unwrap();
+        assert_eq!(portal.ecosystem(), Ecosystem::Maven);
+        assert!(!portal.is_own());
+        assert!(Repository::of(Ecosystem::Maven).is_own());
+        assert_eq!(portal.prefix(), "/gradle-plugins/");
+        assert_eq!(portal.upstream(), crate::env::UPSTREAM_GRADLE_PLUGINS);
+        assert_eq!(
+            Upstreams::defaults().get(portal),
+            "https://plugins.gradle.org/m2"
+        );
+        assert_eq!(
+            serving("/gradle-plugins/com/github/ben-manes/versions/x/maven-metadata.xml"),
+            Some(portal)
+        );
+    }
+
+    /// A client is asked of the repository named, not of its ecosystem's own.
+    #[tokio::test]
+    async fn each_repository_has_a_client_of_its_own() {
+        use crate::util::test_support::{Answer, recorded};
+        let (central, from_central) = recorded(vec![]).await;
+        let (portal, from_portal) = recorded(vec![Answer::Status(404)]).await;
+        let plugins = Repository::named("gradle-plugins").unwrap();
+        let upstreams = Upstreams::defaults()
+            .with(Ecosystem::Maven, &format!("http://{central}/maven2"))
+            .with(plugins, &format!("http://{portal}/m2"));
+        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
+        let key = PackageKey::from_registry_name(Ecosystem::Maven, "a.b:c").unwrap();
+        assert!(clients.metadata(plugins, &key).await.is_err());
+        assert_eq!(from_portal.lock().unwrap().len(), 1);
+        assert!(from_central.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -742,6 +915,10 @@ mod table {
             ("/go/sumdb/sum.golang.org/latest", Ecosystem::Go),
             (
                 "/maven/org/apache/commons/commons-lang3/maven-metadata.xml",
+                Ecosystem::Maven,
+            ),
+            (
+                "/gradle-plugins/org/apache/commons/commons-lang3/maven-metadata.xml",
                 Ecosystem::Maven,
             ),
         ] {
@@ -896,11 +1073,15 @@ mod table {
             .with(Ecosystem::PyPI, nowhere);
         let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
         let idna = "pkg:pypi/idna".parse().expect("a purl");
-        assert_eq!(clients.publish_times(&idna).await, Ok(None));
+        let at = |ecosystem| Repository::of(ecosystem);
+        assert_eq!(
+            clients.publish_times(at(Ecosystem::PyPI), &idna).await,
+            Ok(None)
+        );
         let lodash = "pkg:npm/lodash".parse().expect("a purl");
         assert!(
             clients
-                .publish_times(&lodash)
+                .publish_times(at(Ecosystem::Npm), &lodash)
                 .await
                 .is_err_and(|e| e.starts_with("publish times could not be fetched")),
             "npm is asked, and nothing answers"
@@ -1051,7 +1232,10 @@ mod table {
                 decoded: body,
                 kind,
                 page: "https://pypi.org/simple/x/",
-                store: &store,
+                store: crate::store::Keeping {
+                    store: &store,
+                    at: Repository::of(row.ecosystem),
+                },
                 origins: &origins,
                 encoded_bytes: 2,
                 parse_started: std::time::Instant::now(),
@@ -1115,7 +1299,7 @@ mod table {
     fn only_the_adapters_name_an_ecosystem() {
         let allowed: std::collections::BTreeMap<String, usize> = [
             ("src/ecosystem.rs", 5),
-            ("src/env.rs", 7),
+            ("src/env.rs", 8),
             ("src/identity.rs", 15),
         ]
         .into_iter()

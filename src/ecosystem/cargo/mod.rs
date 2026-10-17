@@ -89,6 +89,7 @@ pub const REGISTRY: Registry = Registry {
     decides_head: false,
     signatures: None,
     sidecar: |_| None,
+    also: &[],
 };
 
 /// What points cargo at `url`, the proxy's cargo registry, with or without a trailing `/`.

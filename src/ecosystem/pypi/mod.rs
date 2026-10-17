@@ -125,6 +125,7 @@ pub const REGISTRY: Registry = Registry {
     decides_head: false,
     signatures: None,
     sidecar: |_| None,
+    also: &[],
 };
 
 /// What `byrle` sends to ask for JSON rather than HTML. PEP 691.

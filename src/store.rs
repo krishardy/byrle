@@ -5,6 +5,7 @@
 use crate::analysis::attestation::{Previous, previous};
 use crate::analysis::detector::metadata::{Listing, Metadata};
 use crate::analysis::detector::{Detection, built_in};
+use crate::ecosystem::Repository;
 use crate::identity::PackageKey;
 use crate::policy::facts::PublishTimes;
 use crate::record::{PackageMetadata, PackageRecord};
@@ -15,12 +16,29 @@ struct Entry {
     last_used: u64,
 }
 
-/// Packument records, keyed by package, bounded by total record count.
+/// Packument records, keyed by repository and package, bounded by total record count.
 pub struct RecordStore {
-    entries: HashMap<PackageKey, Entry>,
+    entries: HashMap<(Repository, PackageKey), Entry>,
     records: usize,
     max_records: usize,
     clock: u64,
+}
+
+/// The store, and the repository the document being read came from.
+#[derive(Clone, Copy)]
+pub struct Keeping<'a> {
+    pub store: &'a std::sync::Mutex<RecordStore>,
+    pub at: Repository,
+}
+
+impl Keeping<'_> {
+    /// Store a document's records as [`RecordStore::insert`] does. Returns the packages
+    /// and records then held.
+    pub fn keep(self, metadata: PackageMetadata) -> (usize, usize) {
+        let mut store = self.store.lock().expect("record store lock");
+        store.insert(self.at, metadata);
+        (store.len(), store.records())
+    }
 }
 
 /// What a tarball request found when it asked for its own record.
@@ -58,11 +76,12 @@ impl RecordStore {
         self.records
     }
 
-    /// Store a document's records, replacing any earlier copy of the same package.
-    pub fn insert(&mut self, metadata: PackageMetadata) {
+    /// Store a document's records read from `at`, replacing any earlier copy of the same
+    /// package from it.
+    pub fn insert(&mut self, at: Repository, metadata: PackageMetadata) {
         self.clock += 1;
         let added = metadata.records.len();
-        let key = metadata.key.clone();
+        let key = (at, metadata.key.clone());
 
         if let Some(previous) = self.entries.insert(
             key,
@@ -77,8 +96,9 @@ impl RecordStore {
         self.evict_to_budget();
     }
 
-    /// Every package held, in no order. Does not count as a use of any of them.
-    pub fn packages(&self) -> Vec<PackageKey> {
+    /// Every package held, and the repository it was read from, in no order. Does not count
+    /// as a use of any of them.
+    pub fn packages(&self) -> Vec<(Repository, PackageKey)> {
         self.entries.keys().cloned().collect()
     }
 
@@ -86,8 +106,8 @@ impl RecordStore {
     /// was last used, so the watcher's reads never keep a package held. `metadata` for a
     /// package not held is dropped. Returns the versions the new copy lists and the held
     /// one did not.
-    pub fn refresh(&mut self, metadata: PackageMetadata) -> Vec<PackageRecord> {
-        let Some(entry) = self.entries.get_mut(&metadata.key) else {
+    pub fn refresh(&mut self, at: Repository, metadata: PackageMetadata) -> Vec<PackageRecord> {
+        let Some(entry) = self.entries.get_mut(&(at, metadata.key.clone())) else {
             return Vec::new();
         };
         let new: Vec<PackageRecord> = metadata
@@ -106,8 +126,8 @@ impl RecordStore {
     ///
     /// Does not count as a use: this answers "is there anything to read", and a package
     /// that is only ever asked about should not outlive one that is installed.
-    pub fn holds(&self, key: &PackageKey) -> bool {
-        self.entries.contains_key(key)
+    pub fn holds(&self, at: Repository, key: &PackageKey) -> bool {
+        self.entries.contains_key(&(at, key.clone()))
     }
 
     /// Find the record for one version, marking its package as recently used.
@@ -115,10 +135,16 @@ impl RecordStore {
     /// A version the document does not list is found by `filename` instead, when a record
     /// names that file: 38 of 24,852 npm tarball URLs spell the version differently from
     /// the packument, `express-3.0.0rc1.tgz` for `3.0.0-rc1`.
-    pub fn lookup(&mut self, key: &PackageKey, version: &str, filename: &str) -> Lookup {
+    pub fn lookup(
+        &mut self,
+        at: Repository,
+        key: &PackageKey,
+        version: &str,
+        filename: &str,
+    ) -> Lookup {
         self.clock += 1;
         let clock = self.clock;
-        let Some(entry) = self.entries.get_mut(key) else {
+        let Some(entry) = self.entries.get_mut(&(at, key.clone())) else {
             return Lookup::Unknown;
         };
         entry.last_used = clock;
@@ -138,22 +164,26 @@ impl RecordStore {
     /// lookup for `version` just did.
     pub fn previous(
         &self,
+        at: Repository,
         key: &PackageKey,
         version: &str,
         times: Option<&PublishTimes>,
         compared: (jiff::SignedDuration, usize),
     ) -> Previous {
-        self.entries.get(key).map_or(Previous::Unknown, |entry| {
-            previous(&entry.metadata.records, version, times, compared)
-        })
+        self.entries
+            .get(&(at, key.clone()))
+            .map_or(Previous::Unknown, |entry| {
+                previous(&entry.metadata.records, version, times, compared)
+            })
     }
 
     /// What the metadata heuristics find about `record`, against `full`, the full document,
     /// when it lists the version, else the document held, and the names of the other
-    /// packages held in its ecosystem. `now` is when they are asked for.
+    /// packages held from `at`. `now` is when they are asked for.
     /// Does not count as a use.
     pub fn metadata(
         &self,
+        at: Repository,
         record: &PackageRecord,
         full: Option<&PackageMetadata>,
         now: jiff::Timestamp,
@@ -161,15 +191,15 @@ impl RecordStore {
         let key = record.package.key();
         let records = self
             .entries
-            .get(key)
+            .get(&(at, key.clone()))
             .map_or(std::slice::from_ref(record), |entry| {
                 &entry.metadata.records
             });
         let served: Vec<String> = self
             .entries
             .keys()
-            .filter(|held| held.ecosystem() == key.ecosystem())
-            .map(PackageKey::registry_name)
+            .filter(|(from, _)| *from == at)
+            .map(|(_, held)| held.registry_name())
             .collect();
         let listing = Listing {
             records,
@@ -187,7 +217,7 @@ impl RecordStore {
         if self.records <= self.max_records {
             return;
         }
-        let mut order: Vec<(u64, PackageKey)> = self
+        let mut order: Vec<(u64, (Repository, PackageKey))> = self
             .entries
             .iter()
             .map(|(key, entry)| (entry.last_used, key.clone()))
@@ -214,6 +244,8 @@ mod tests {
     use crate::ecosystem::npm::normalize_packument;
     use crate::record::DocumentDetail;
 
+    const NPM: Repository = Repository::of(crate::identity::Ecosystem::Npm);
+
     fn packument(name: &str, versions: &[&str]) -> PackageMetadata {
         let entries: Vec<String> = versions
             .iter()
@@ -239,11 +271,11 @@ mod tests {
     #[test]
     fn a_refresh_returns_new_versions_without_counting_as_a_use() {
         let mut store = RecordStore::new(5);
-        store.insert(packument("old", &["1.0.0"]));
-        store.insert(packument("recent", &["1.0.0"]));
+        store.insert(NPM, packument("old", &["1.0.0"]));
+        store.insert(NPM, packument("recent", &["1.0.0"]));
         assert_eq!(store.packages().len(), 2);
 
-        let new = store.refresh(packument("old", &["1.0.0", "1.1.0", "2.0.0"]));
+        let new = store.refresh(NPM, packument("old", &["1.0.0", "1.1.0", "2.0.0"]));
         assert_eq!(
             new.iter().map(|r| r.package.version()).collect::<Vec<_>>(),
             ["1.1.0", "2.0.0"]
@@ -251,33 +283,36 @@ mod tests {
         assert_eq!(store.records(), 4);
         assert!(
             store
-                .refresh(packument("old", &["1.0.0", "1.1.0", "2.0.0"]))
+                .refresh(NPM, packument("old", &["1.0.0", "1.1.0", "2.0.0"]))
                 .is_empty(),
             "nothing new the second time"
         );
 
-        store.insert(packument("third", &["1.0.0", "2.0.0"]));
+        store.insert(NPM, packument("third", &["1.0.0", "2.0.0"]));
         assert!(
-            !store.holds(&key("old")),
+            !store.holds(NPM, &key("old")),
             "refreshed, and still the least recently used"
         );
-        assert!(store.holds(&key("recent")));
+        assert!(store.holds(NPM, &key("recent")));
         assert!(
-            store.refresh(packument("unheld", &["1.0.0"])).is_empty(),
+            store
+                .refresh(NPM, packument("unheld", &["1.0.0"]))
+                .is_empty(),
             "a package not held is not added"
         );
-        assert!(!store.holds(&key("unheld")));
+        assert!(!store.holds(NPM, &key("unheld")));
     }
 
     #[test]
     fn a_stored_packument_answers_for_its_versions() {
         let mut store = RecordStore::new(100);
         assert!(store.is_empty());
-        store.insert(packument("lodash", &["4.17.20", "4.17.21"]));
+        store.insert(NPM, packument("lodash", &["4.17.20", "4.17.21"]));
 
         assert_eq!(store.len(), 1);
         assert_eq!(store.records(), 2);
-        let Lookup::Found(record) = store.lookup(&key("lodash"), "4.17.21", "lodash-4.17.21.tgz")
+        let Lookup::Found(record) =
+            store.lookup(NPM, &key("lodash"), "4.17.21", "lodash-4.17.21.tgz")
         else {
             panic!("the packument names this version");
         };
@@ -294,10 +329,13 @@ mod tests {
         let mut store = RecordStore::new(100);
         let body = r#"{"name":"express","versions":{"3.0.0-rc1":{"version":"3.0.0-rc1",
             "dist":{"tarball":"https://r/express/-/express-3.0.0rc1.tgz","integrity":"sha512-x"}}}}"#;
-        store.insert(normalize_packument(body.as_bytes(), DocumentDetail::Abbreviated).unwrap());
+        store.insert(
+            NPM,
+            normalize_packument(body.as_bytes(), DocumentDetail::Abbreviated).unwrap(),
+        );
 
         let Lookup::Found(record) =
-            store.lookup(&key("express"), "3.0.0rc1", "express-3.0.0rc1.tgz")
+            store.lookup(NPM, &key("express"), "3.0.0rc1", "express-3.0.0rc1.tgz")
         else {
             panic!("found by its file");
         };
@@ -309,15 +347,15 @@ mod tests {
     #[test]
     fn a_missing_version_and_a_missing_package_are_different_answers() {
         let mut store = RecordStore::new(100);
-        store.insert(packument("express", &["3.0.0-rc1"]));
+        store.insert(NPM, packument("express", &["3.0.0-rc1"]));
 
         assert_eq!(
-            store.lookup(&key("express"), "3.0.0rc2", "express-3.0.0rc2.tgz"),
+            store.lookup(NPM, &key("express"), "3.0.0rc2", "express-3.0.0rc2.tgz"),
             Lookup::NoSuchVersion,
             "neither the version nor the file is in the document"
         );
         assert_eq!(
-            store.lookup(&key("lodash"), "4.17.21", "lodash-4.17.21.tgz"),
+            store.lookup(NPM, &key("lodash"), "4.17.21", "lodash-4.17.21.tgz"),
             Lookup::Unknown
         );
     }
@@ -325,8 +363,8 @@ mod tests {
     #[test]
     fn re_inserting_a_package_replaces_it_rather_than_accumulating() {
         let mut store = RecordStore::new(100);
-        store.insert(packument("lodash", &["1.0.0"]));
-        store.insert(packument("lodash", &["1.0.0", "1.0.1", "1.0.2"]));
+        store.insert(NPM, packument("lodash", &["1.0.0"]));
+        store.insert(NPM, packument("lodash", &["1.0.0", "1.0.1", "1.0.2"]));
 
         assert_eq!(store.len(), 1);
         assert_eq!(
@@ -339,18 +377,18 @@ mod tests {
     #[test]
     fn the_budget_evicts_least_recently_used_packages() {
         let mut store = RecordStore::new(5);
-        store.insert(packument("a", &["1.0.0", "1.0.1"]));
-        store.insert(packument("b", &["1.0.0", "1.0.1"]));
-        store.insert(packument("c", &["1.0.0", "1.0.1"]));
+        store.insert(NPM, packument("a", &["1.0.0", "1.0.1"]));
+        store.insert(NPM, packument("b", &["1.0.0", "1.0.1"]));
+        store.insert(NPM, packument("c", &["1.0.0", "1.0.1"]));
 
         assert!(store.records() <= 5, "budget exceeded: {}", store.records());
         assert_eq!(
-            store.lookup(&key("a"), "1.0.0", "a-1.0.0.tgz"),
+            store.lookup(NPM, &key("a"), "1.0.0", "a-1.0.0.tgz"),
             Lookup::Unknown,
             "`a` was least recently used"
         );
         assert!(matches!(
-            store.lookup(&key("c"), "1.0.0", "c-1.0.0.tgz"),
+            store.lookup(NPM, &key("c"), "1.0.0", "c-1.0.0.tgz"),
             Lookup::Found(_)
         ));
     }
@@ -360,36 +398,39 @@ mod tests {
     #[test]
     fn holds_reports_presence_without_counting_as_use() {
         let mut store = RecordStore::new(4);
-        store.insert(packument("a", &["1.0.0", "1.0.1"]));
-        store.insert(packument("b", &["1.0.0", "1.0.1"]));
+        store.insert(NPM, packument("a", &["1.0.0", "1.0.1"]));
+        store.insert(NPM, packument("b", &["1.0.0", "1.0.1"]));
 
-        assert!(store.holds(&key("a")));
-        assert!(!store.holds(&key("c")));
+        assert!(store.holds(NPM, &key("a")));
+        assert!(!store.holds(NPM, &key("c")));
 
-        store.insert(packument("c", &["1.0.0", "1.0.1"]));
-        assert!(!store.holds(&key("a")), "asking about `a` did not keep it");
+        store.insert(NPM, packument("c", &["1.0.0", "1.0.1"]));
+        assert!(
+            !store.holds(NPM, &key("a")),
+            "asking about `a` did not keep it"
+        );
     }
 
     #[test]
     fn a_lookup_counts_as_use() {
         let mut store = RecordStore::new(4);
-        store.insert(packument("a", &["1.0.0", "1.0.1"]));
-        store.insert(packument("b", &["1.0.0", "1.0.1"]));
+        store.insert(NPM, packument("a", &["1.0.0", "1.0.1"]));
+        store.insert(NPM, packument("b", &["1.0.0", "1.0.1"]));
         assert!(matches!(
-            store.lookup(&key("a"), "1.0.0", "a-1.0.0.tgz"),
+            store.lookup(NPM, &key("a"), "1.0.0", "a-1.0.0.tgz"),
             Lookup::Found(_)
         ));
 
-        store.insert(packument("c", &["1.0.0", "1.0.1"]));
+        store.insert(NPM, packument("c", &["1.0.0", "1.0.1"]));
         assert!(
             matches!(
-                store.lookup(&key("a"), "1.0.0", "a-1.0.0.tgz"),
+                store.lookup(NPM, &key("a"), "1.0.0", "a-1.0.0.tgz"),
                 Lookup::Found(_)
             ),
             "`a` was used more recently than `b`"
         );
         assert_eq!(
-            store.lookup(&key("b"), "1.0.0", "b-1.0.0.tgz"),
+            store.lookup(NPM, &key("b"), "1.0.0", "b-1.0.0.tgz"),
             Lookup::Unknown
         );
     }
@@ -399,11 +440,11 @@ mod tests {
     #[test]
     fn a_packument_larger_than_the_budget_is_still_available() {
         let mut store = RecordStore::new(2);
-        store.insert(packument("big", &["1.0.0", "1.0.1", "1.0.2", "1.0.3"]));
+        store.insert(NPM, packument("big", &["1.0.0", "1.0.1", "1.0.2", "1.0.3"]));
 
         assert_eq!(store.len(), 1);
         assert!(matches!(
-            store.lookup(&key("big"), "1.0.3", "big-1.0.3.tgz"),
+            store.lookup(NPM, &key("big"), "1.0.3", "big-1.0.3.tgz"),
             Lookup::Found(_)
         ));
         assert!(
@@ -412,10 +453,10 @@ mod tests {
         );
     }
 
-    /// Near names come from the other packages held in the same ecosystem. A record whose
-    /// package is not held is judged on itself.
+    /// Near names come from the other packages held from the same repository. A record
+    /// whose package is not held is judged on itself.
     #[test]
-    fn signals_compare_names_held_in_the_same_ecosystem() {
+    fn signals_compare_names_held_from_the_same_repository() {
         let fired = |(_, detection): (String, Detection)| -> Vec<String> {
             detection
                 .findings
@@ -424,24 +465,27 @@ mod tests {
                 .collect()
         };
         let mut store = RecordStore::new(100);
-        store.insert(packument("express", &["1.0.0"]));
-        store.insert(packument("expres", &["1.0.0"]));
-        store.insert(PackageMetadata {
-            key: PackageKey::from_registry_name(crate::identity::Ecosystem::PyPI, "expresz")
-                .unwrap(),
-            latest: None,
-            records: Vec::new(),
-            skipped: Vec::new(),
-        });
+        store.insert(NPM, packument("express", &["1.0.0"]));
+        store.insert(NPM, packument("expres", &["1.0.0"]));
+        store.insert(
+            Repository::of(crate::identity::Ecosystem::PyPI),
+            PackageMetadata {
+                key: PackageKey::from_registry_name(crate::identity::Ecosystem::PyPI, "expresz")
+                    .unwrap(),
+                latest: None,
+                records: Vec::new(),
+                skipped: Vec::new(),
+            },
+        );
         let now = jiff::Timestamp::now();
         let expres = packument("expres", &["1.0.0"]).records.remove(0);
         assert_eq!(
-            fired(store.metadata(&expres, None, now)),
+            fired(store.metadata(NPM, &expres, None, now)),
             ["near_name: one edit from `express`, served here"]
         );
         let unheld = packument("lodash", &["1.0.0"]).records.remove(0);
         assert_eq!(
-            fired(store.metadata(&unheld, None, now)),
+            fired(store.metadata(NPM, &unheld, None, now)),
             Vec::<String>::new()
         );
 
@@ -452,9 +496,9 @@ mod tests {
             record.provenance.publisher = Some(publisher.to_owned());
         }
         let latest = taken.records[1].clone();
-        store.insert(taken);
+        store.insert(NPM, taken);
         assert_eq!(
-            fired(store.metadata(&latest, None, now)),
+            fired(store.metadata(NPM, &latest, None, now)),
             ["new_publisher: eve published no earlier version"],
             "the held document names the earlier publisher"
         );

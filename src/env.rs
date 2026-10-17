@@ -182,6 +182,12 @@ pub const UPSTREAM_MAVEN: Var = runtime(
     &["Maven repository to forward to"],
 )
 .with_default(Default::Text(crate::ecosystem::maven::REPOSITORY));
+pub const UPSTREAM_GRADLE_PLUGINS: Var = runtime(
+    "BYRLE_UPSTREAM_GRADLE_PLUGINS",
+    "",
+    &["Gradle plugin portal to forward to"],
+)
+.with_default(Default::Text(crate::ecosystem::maven::PORTAL));
 pub const PROXY_URL: Var = runtime(
     "BYRLE_PROXY_URL",
     "",
@@ -728,13 +734,14 @@ pub const UV_FILE: Var = other(
 );
 
 /// Every variable, in the order `--help` lists them.
-pub const ALL: [Var; 87] = [
+pub const ALL: [Var; 88] = [
     LISTEN,
     UPSTREAM_NPM,
     UPSTREAM_PYPI,
     UPSTREAM_CARGO,
     UPSTREAM_GO,
     UPSTREAM_MAVEN,
+    UPSTREAM_GRADLE_PLUGINS,
     PROXY_URL,
     CONSOLE_URL,
     CONSOLE_LISTEN,
@@ -1044,10 +1051,9 @@ impl<L: Fn(&str) -> Option<OsString>> Env<L> {
     /// default. Each is an http or https URL with a host, kept with its path.
     pub fn upstreams(&self) -> Result<crate::ecosystem::Upstreams, EnvError> {
         let mut upstreams = crate::ecosystem::Upstreams::defaults();
-        for registry in crate::ecosystem::TABLE {
-            if let Some(value) = self.text(registry.upstream)? {
-                upstreams =
-                    upstreams.with(registry.ecosystem, &upstream(registry.upstream, value)?);
+        for repository in crate::ecosystem::Repository::all() {
+            if let Some(value) = self.text(repository.upstream())? {
+                upstreams = upstreams.with(repository, &upstream(repository.upstream(), value)?);
             }
         }
         Ok(upstreams)

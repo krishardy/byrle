@@ -29,11 +29,7 @@ pub fn read(reading: Reading<'_>) -> Option<Box<dyn Document>> {
     match reading.kind {
         DocumentKind::VersionList if path.ends_with(LIST) => {
             let metadata = list(&key, reading.decoded, &files);
-            reading
-                .store
-                .lock()
-                .expect("record store lock")
-                .insert(metadata.clone());
+            reading.store.keep(metadata.clone());
             info!(
                 url.path = %crate::http::url_path(reading.path),
                 byrle.package.versions = metadata.records.len(),
@@ -103,6 +99,9 @@ impl Document for Latest {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    const AT: crate::ecosystem::Repository =
+        crate::ecosystem::Repository::of(crate::identity::Ecosystem::Go);
     use crate::identity::{Ecosystem, PackageKey};
     use crate::store::{Lookup, RecordStore};
     use std::sync::Mutex;
@@ -129,7 +128,7 @@ mod tests {
             decoded: body,
             kind,
             page,
-            store,
+            store: crate::store::Keeping { store, at: AT },
             origins,
             encoded_bytes: body.len(),
             parse_started: std::time::Instant::now(),
@@ -169,7 +168,10 @@ mod tests {
         assert_eq!(read.metadata().expect("records").records.len(), 51);
         let key = PackageKey::from_registry_name(Ecosystem::Go, "golang.org/x/text").unwrap();
         assert!(matches!(
-            store.lock().unwrap().lookup(&key, "v0.20.0", "v0.20.0.zip"),
+            store
+                .lock()
+                .unwrap()
+                .lookup(AT, &key, "v0.20.0", "v0.20.0.zip"),
             Lookup::Found(_)
         ));
         let none = HashSet::new();

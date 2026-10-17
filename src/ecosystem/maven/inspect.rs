@@ -38,11 +38,7 @@ pub fn read(reading: Reading<'_>) -> Option<Box<dyn Document>> {
         }
     };
     let records = read.records(&key, &versions);
-    reading
-        .store
-        .lock()
-        .expect("record store lock")
-        .insert(records.clone());
+    reading.store.keep(records.clone());
     info!(
         url.path = %crate::http::url_path(reading.path),
         byrle.package.versions = records.records.len(),
@@ -75,6 +71,9 @@ impl Document for ArtifactMetadata {
 #[cfg_attr(coverage_nightly, coverage(off))]
 mod tests {
     use super::*;
+
+    const AT: crate::ecosystem::Repository =
+        crate::ecosystem::Repository::of(crate::identity::Ecosystem::Maven);
     use crate::identity::{Ecosystem, PackageKey};
     use crate::store::{Lookup, RecordStore};
     use std::collections::HashSet;
@@ -105,7 +104,7 @@ mod tests {
             decoded: body,
             kind,
             page,
-            store,
+            store: crate::store::Keeping { store, at: AT },
             origins: &origins,
             encoded_bytes: body.len(),
             parse_started: std::time::Instant::now(),
@@ -130,7 +129,7 @@ mod tests {
             store
                 .lock()
                 .unwrap()
-                .lookup(&lang3(), "3.17.0", "commons-lang3-3.17.0.jar"),
+                .lookup(AT, &lang3(), "3.17.0", "commons-lang3-3.17.0.jar"),
             Lookup::Found(_)
         ));
         let origins = origins();
@@ -186,7 +185,7 @@ mod tests {
             store
                 .lock()
                 .unwrap()
-                .lookup(&lang3(), "3.0", "commons-lang3-3.0.jar"),
+                .lookup(AT, &lang3(), "3.0", "commons-lang3-3.0.jar"),
             Lookup::Unknown
         ));
     }
