@@ -453,15 +453,40 @@ Q2, Q7 and Q9 otherwise.
      plain jar.
    - `lockfile verify` reports every version as not recorded, bit 2, as for `go.sum`.
    - Gradle's older `gradle/dependency-locks/<configuration>.lockfile` files are not read.
+   - `policy diff` does not check signatures, so a `provenance: allow` exception for a
+     Maven version reads as "nothing moved".
 7. `byrle doctor` for mvn and Gradle:
 
    | Reads | Reports |
    |---|---|
-   | `settings.xml` | a `<mirror>` not `mirrorOf` `*` or not the proxy, and no `<server>` with the mirror's id when tokens are required |
-   | `$GRADLE_USER_HOME/init.d/` | no init script sending repositories and `pluginManagement` to the proxy |
+   | `settings.xml` | which mirror `central` and any other repository id are sent to, and whether it is the proxy; no `<server>` with the mirror's id when tokens are required |
+   | `$GRADLE_USER_HOME/init.d/` | no init script naming the proxy's `/maven/` and `/gradle-plugins/` |
    | `gradle-wrapper.properties` and `gradle-wrapper.jar` | Q9's four checks, against `services.gradle.org/versions/all` |
-   | `~/.m2/repository` and Gradle's `caches/modules-2` | a cached refused version, as Go's module cache |
+   | `~/.m2/repository` and Gradle's `caches/modules-2` | a warm cache, as for Go's module cache |
    | `gradle/verification-metadata.xml` | none, or one with `<verify-signatures>` false: no check of byrle from outside it, per step 2.3 |
+
+   Measured 2026-10-17 with mvn 3.10.0 and the stub, `dependency:resolve` of
+   `commons-lang3` 3.17.0 with one local repository kept across runs:
+
+   | Run | Requests |
+   |---|---|
+   | mirror id `byrle`, cold | 20 |
+   | the same, again | 0 |
+   | mirror id `other`, the same URL | 498 |
+   | mirror id `byrle`, another URL | 0 |
+
+   mvn keys what it caches by the mirror's id, in each version's `_remote.repositories`,
+   not by its URL. A mirror repointed at the proxy under the id it had serves everything
+   cached before from the cache. Of two mirrors, one `mirrorOf` `*` listed first and one
+   `mirrorOf` `central`, Central's requests went to the `central` one. With `*,!central`
+   they went to `repo.maven.apache.org`.
+
+   `services.gradle.org/versions/all` lists 532 versions on 2026-10-17. Each has a
+   `checksum`, the `-bin` zip's sha256, a `wrapperChecksum` and a `buildTime`. An `-all`
+   zip's sha256 is only at its `.sha256` URL. Gradle 9.8.1's `wrapper --gradle-version
+   8.14.3` wrote 9.8.1's `gradle-wrapper.jar`, sha256 `3b8a2577...`, which is 9.8.1's
+   `wrapperChecksum` and not 8.14.3's. So a jar is checked against every version's
+   `wrapperChecksum`, not the one of the version it downloads.
 
 8. `make smoke-maven`: mvn and Gradle builds of a real project through the proxy over
    https, with a token, a refused version, a cooldown, an advisory, an annotation
