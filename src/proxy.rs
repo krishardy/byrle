@@ -1548,11 +1548,11 @@ fn blocks(refusal: Option<&enforce::Refusal>) -> bool {
     refusal.is_some_and(|refusal| refusal.action == crate::policy::Action::Block)
 }
 
-/// The version a detector is asked about.
-fn target(record: &PackageRecord) -> crate::analysis::detector::Target {
+/// The version a detector is asked about, served from `at`.
+fn target(at: Repository, record: &PackageRecord) -> crate::analysis::detector::Target {
     let key = record.package.key();
     crate::analysis::detector::Target {
-        ecosystem: key.ecosystem(),
+        repository: at,
         name: key.registry_name(),
         version: record.package.version().to_owned(),
     }
@@ -1667,7 +1667,11 @@ impl<'a> Deciding<'a> {
         record: &PackageRecord,
     ) -> Vec<(String, crate::analysis::detector::Detection)> {
         match self.proxy.config.analyser.as_deref() {
-            Some(analyser) => analyser.detected(&target(record)).await,
+            Some(analyser) => {
+                analyser
+                    .detected(&target(self.request.repository, record))
+                    .await
+            }
             None => Vec::new(),
         }
     }
@@ -1681,7 +1685,7 @@ impl<'a> Deciding<'a> {
         refusal: Option<&enforce::Refusal>,
     ) {
         if let (false, Some(analyser)) = (blocks(refusal), self.proxy.config.analyser.as_deref()) {
-            analyser.start_detecting(&target(record), detected);
+            analyser.start_detecting(&target(self.request.repository, record), detected);
         }
     }
 
@@ -1693,7 +1697,9 @@ impl<'a> Deciding<'a> {
         refusal: Option<&enforce::Refusal>,
     ) -> Vec<(String, Duration)> {
         match (blocks(refusal), self.proxy.config.analyser.as_deref()) {
-            (false, Some(analyser)) => analyser.awaiting(&target(record), detected),
+            (false, Some(analyser)) => {
+                analyser.awaiting(&target(self.request.repository, record), detected)
+            }
             _ => Vec::new(),
         }
     }
@@ -3926,7 +3932,7 @@ impl Proxy {
             .config
             .analyser
             .as_deref()
-            .is_some_and(|analyser| detected.len() < analyser.detector_count(key.ecosystem()));
+            .is_some_and(|analyser| detected.len() < analyser.detector_count(at));
         let unscanned = self.config.analyser.as_deref().is_some_and(|analyser| {
             analyser.scanning()
                 && scanned

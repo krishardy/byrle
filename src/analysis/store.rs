@@ -59,7 +59,8 @@ pub struct DetectionKey {
     pub detector: String,
     /// The detector's version. A result another version wrote is not read back.
     pub detector_version: String,
-    pub ecosystem: String,
+    /// The repository the version was served from, as `Repository::name` gives it.
+    pub repository: String,
     /// The registry name, as `PackageKey::registry_name` gives it.
     pub name: String,
     pub version: String,
@@ -570,7 +571,7 @@ pub(crate) mod tests {
         let key = DetectionKey {
             detector: "guarddog".to_owned(),
             detector_version: "3.2.0".to_owned(),
-            ecosystem: "npm".to_owned(),
+            repository: "npm".to_owned(),
             name: "widget".to_owned(),
             version: "1.0.0".to_owned(),
         };
@@ -578,6 +579,11 @@ pub(crate) mod tests {
         let found = Detection::default();
         store.put_detected(&key, &found).await.expect("writes");
         assert_eq!(store.detected(&key).await.expect("answers"), Some(found));
+        let elsewhere = DetectionKey {
+            repository: "gradle-plugins".to_owned(),
+            ..key.clone()
+        };
+        assert_eq!(store.detected(&elsewhere).await.expect("answers"), None);
         let newer = DetectionKey {
             detector_version: "3.3.0".to_owned(),
             ..key

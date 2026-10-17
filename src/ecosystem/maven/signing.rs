@@ -6,15 +6,17 @@ use std::sync::Arc;
 
 use crate::analysis::detector::signing::{NAME, Signed, VERSION, detection};
 use crate::analysis::detector::{Detecting, Detector, Target};
+use crate::ecosystem::Repository;
 use crate::identity::{Ecosystem, PackageKey};
 
 use super::signature::{issuer, signer};
 use super::transport::Client;
 
-/// The detector for the repository at `upstream`. Always made: its signatures are on the
+/// The detector for `repository`, at `upstream`. Always made: its signatures are on the
 /// repository itself, and each is read once.
 pub fn made(
     http: &reqwest::Client,
+    repository: Repository,
     upstream: &str,
     _: &crate::env::ApiSetting,
     _: std::time::Duration,
@@ -24,12 +26,14 @@ pub fn made(
         upstream,
         crate::env::DEFAULT_MAX_METADATA_BYTES,
     );
-    Some(Arc::new(Signing { client }))
+    Some(Arc::new(Signing { client, repository }))
 }
 
 /// Reads each version's signer from the repository and key servers `client` asks.
 pub struct Signing {
     pub client: Client,
+    /// The repository whose versions it reads.
+    pub repository: Repository,
 }
 
 impl Signing {
@@ -118,8 +122,8 @@ impl Detector for Signing {
         VERSION
     }
 
-    fn reads(&self, ecosystem: Ecosystem) -> bool {
-        ecosystem == Ecosystem::Maven
+    fn reads(&self, at: Repository) -> bool {
+        at == self.repository
     }
 
     fn detect<'a>(&'a self, target: &'a Target) -> Detecting<'a> {
@@ -262,12 +266,15 @@ mod tests {
         let client = Client::new(reqwest::Client::new(), base, 1 << 20).with_key_servers(
             super::super::keys::KeyServers::at(reqwest::Client::new(), &[keys]),
         );
-        Signing { client }
+        Signing {
+            client,
+            repository: Repository::of(Ecosystem::Maven),
+        }
     }
 
     fn target(version: &str) -> Target {
         Target {
-            ecosystem: Ecosystem::Maven,
+            repository: crate::ecosystem::Repository::of(crate::identity::Ecosystem::Maven),
             name: "org.example:lib".to_owned(),
             version: version.to_owned(),
         }
@@ -327,7 +334,13 @@ mod tests {
         let missing = signing.detect(&target("9.9")).await.unwrap_err();
         assert_eq!(missing, "pkg:maven/org.example/lib lists no version 9.9");
         assert_eq!((signing.name(), signing.version()), (NAME, VERSION));
-        assert!(signing.reads(Ecosystem::Maven) && !signing.reads(Ecosystem::Cargo));
+        assert!(signing.reads(Repository::of(Ecosystem::Maven)));
+        assert!(!signing.reads(Repository::of(Ecosystem::Cargo)));
+        let portal = Repository::named("gradle-plugins").unwrap();
+        assert!(
+            !signing.reads(portal),
+            "the portal's versions are read by its own"
+        );
     }
 
     /// A version inside the window signed with the same key establishes nothing: the
@@ -405,6 +418,7 @@ mod tests {
         assert!(detector(&base, &down).detect(&unnamed).await.is_err());
         let made = made(
             &reqwest::Client::new(),
+            Repository::of(Ecosystem::Maven),
             &base,
             &crate::env::ApiSetting::Unset,
             std::time::Duration::ZERO,

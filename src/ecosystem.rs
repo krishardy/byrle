@@ -426,9 +426,10 @@ impl Setup {
     }
 }
 
-/// Makes a [`Registry::publishers`] detector, `None` when its API is not asked.
+/// Makes a [`Registry::publishers`] detector for a repository, `None` when its API is not asked.
 pub type Publishers = fn(
     &reqwest::Client,
+    Repository,
     &str,
     &crate::env::ApiSetting,
     std::time::Duration,

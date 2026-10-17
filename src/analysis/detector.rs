@@ -23,8 +23,6 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
-use crate::identity::Ecosystem;
-
 /// The detectors whose rules a policy may weight, and those rules.
 pub const KNOWN: [(&str, &[&str]); 7] = [
     (metadata::NAME, &metadata::RULES),
@@ -115,10 +113,10 @@ pub struct Finding {
     pub detail: String,
 }
 
-/// The version a detector is asked about.
+/// The version a detector is asked about, and the repository it was served from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Target {
-    pub ecosystem: Ecosystem,
+    pub repository: crate::ecosystem::Repository,
     pub name: String,
     pub version: String,
 }
@@ -134,8 +132,8 @@ pub trait Detector<S: ?Sized = Target>: Send + Sync {
     /// Its version. A result another version wrote is not read back.
     fn version(&self) -> &str;
 
-    /// Whether it is run on versions of `ecosystem`.
-    fn reads(&self, _ecosystem: Ecosystem) -> bool {
+    /// Whether it is run on versions served from `at`.
+    fn reads(&self, _at: crate::ecosystem::Repository) -> bool {
         true
     }
 
@@ -338,7 +336,7 @@ impl Detector for Command {
                 .args
                 .iter()
                 .map(|arg| {
-                    arg.replace("{ecosystem}", target.ecosystem.as_str())
+                    arg.replace("{ecosystem}", target.repository.ecosystem().as_str())
                         .replace("{name}", &target.name)
                         .replace("{version}", &target.version)
                 })
@@ -481,7 +479,7 @@ esac
 
     fn target(name: &str) -> Target {
         Target {
-            ecosystem: Ecosystem::Npm,
+            repository: crate::ecosystem::Repository::of(crate::identity::Ecosystem::Npm),
             name: name.to_owned(),
             version: "1.0.0".to_owned(),
         }
@@ -530,10 +528,16 @@ esac
                 Box::pin(std::future::ready(Ok(Detection::default())))
             }
         }
-        assert!(Plain.reads(Ecosystem::Npm) && Plain.reads(Ecosystem::Cargo));
+        assert!(
+            Plain.reads(crate::ecosystem::Repository::of(
+                crate::identity::Ecosystem::Npm
+            )) && Plain.reads(crate::ecosystem::Repository::of(
+                crate::identity::Ecosystem::Cargo
+            ))
+        );
         assert_eq!(Plain.awaited(), None);
         let target = Target {
-            ecosystem: Ecosystem::Npm,
+            repository: crate::ecosystem::Repository::of(crate::identity::Ecosystem::Npm),
             name: "x".to_owned(),
             version: "1".to_owned(),
         };

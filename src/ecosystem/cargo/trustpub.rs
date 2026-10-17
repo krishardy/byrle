@@ -30,6 +30,7 @@ const USER_AGENT: &str = concat!(
 /// crates.io's index, which crates.io's API describes. Requests are `interval` apart.
 pub fn made(
     http: &reqwest::Client,
+    _: crate::ecosystem::Repository,
     upstream: &str,
     setting: &ApiSetting,
     interval: Duration,
@@ -163,8 +164,8 @@ impl Detector for TrustPub {
         VERSION
     }
 
-    fn reads(&self, ecosystem: Ecosystem) -> bool {
-        ecosystem == Ecosystem::Cargo
+    fn reads(&self, at: crate::ecosystem::Repository) -> bool {
+        at.ecosystem() == Ecosystem::Cargo
     }
 
     /// One interval: most crates need one page.
@@ -225,7 +226,8 @@ mod tests {
     fn crates_io_s_api_is_asked_only_for_crates_io_s_index() {
         let http = reqwest::Client::new();
         let made = |upstream: &str, setting: &ApiSetting| {
-            made(&http, upstream, setting, Duration::ZERO).is_some()
+            let at = crate::ecosystem::Repository::of(Ecosystem::Cargo);
+            made(&http, at, upstream, setting, Duration::ZERO).is_some()
         };
         let mirror = "https://mirror.example/index/";
         assert!(made("https://index.crates.io/", &ApiSetting::Unset));
@@ -264,7 +266,7 @@ mod tests {
 
     fn target(ecosystem: Ecosystem, version: &str) -> Target {
         Target {
-            ecosystem,
+            repository: crate::ecosystem::Repository::of(ecosystem),
             name: "rand_core".to_owned(),
             version: version.to_owned(),
         }
@@ -405,9 +407,15 @@ mod tests {
     fn it_reads_cargo_only_and_names_itself() {
         let detector = TrustPub::new(reqwest::Client::new(), API, Duration::ZERO);
         assert_eq!((detector.name(), detector.version()), (NAME, VERSION));
-        assert!(detector.reads(Ecosystem::Cargo));
-        assert!(!detector.reads(Ecosystem::Npm));
-        assert!(!detector.reads(Ecosystem::PyPI));
+        assert!(detector.reads(crate::ecosystem::Repository::of(
+            crate::identity::Ecosystem::Cargo
+        )));
+        assert!(!detector.reads(crate::ecosystem::Repository::of(
+            crate::identity::Ecosystem::Npm
+        )));
+        assert!(!detector.reads(crate::ecosystem::Repository::of(
+            crate::identity::Ecosystem::PyPI
+        )));
         assert_eq!(detector.awaited(), Some(Duration::ZERO));
     }
 }

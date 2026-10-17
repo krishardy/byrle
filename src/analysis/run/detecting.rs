@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use super::{Analyser, InFlight};
 use crate::analysis::detector::{Detection, Detector, Target};
 use crate::analysis::store::DetectionKey;
-use crate::identity::Ecosystem;
+use crate::ecosystem::Repository;
 
 /// How many detector runs go at once, apart from the analyses a client waits on.
 pub const DETECTOR_SLOTS: usize = 2;
@@ -29,11 +29,11 @@ pub(super) struct Detectors {
 }
 
 impl Detectors {
-    /// The detectors run on versions of `ecosystem`.
-    fn reading(&self, ecosystem: Ecosystem) -> impl Iterator<Item = &Arc<dyn Detector>> {
+    /// The detectors run on versions served from `at`.
+    fn reading(&self, at: Repository) -> impl Iterator<Item = &Arc<dyn Detector>> {
         self.detectors
             .iter()
-            .filter(move |detector| detector.reads(ecosystem))
+            .filter(move |detector| detector.reads(at))
     }
 }
 
@@ -42,7 +42,7 @@ fn key(detector: &dyn Detector, target: &Target) -> DetectionKey {
     DetectionKey {
         detector: detector.name().to_owned(),
         detector_version: detector.version().to_owned(),
-        ecosystem: target.ecosystem.as_str().to_owned(),
+        repository: target.repository.name().to_owned(),
         name: target.name.clone(),
         version: target.version.clone(),
     }
@@ -68,7 +68,7 @@ impl Analyser {
             return Vec::new();
         };
         let mut found = Vec::new();
-        for detector in detectors.reading(target.ecosystem) {
+        for detector in detectors.reading(target.repository) {
             let key = key(detector.as_ref(), target);
             match self.store.detected(&key).await {
                 Ok(Some(detection)) => found.push((key.detector, detection)),
@@ -93,7 +93,7 @@ impl Analyser {
             return Vec::new();
         };
         let mut started = Vec::new();
-        for detector in detectors.reading(target.ecosystem) {
+        for detector in detectors.reading(target.repository) {
             if done.iter().any(|(name, _)| name == detector.name()) {
                 continue;
             }
@@ -176,7 +176,7 @@ impl Analyser {
         };
         let in_flight = detectors.in_flight.lock().expect("detector in-flight lock");
         detectors
-            .reading(target.ecosystem)
+            .reading(target.repository)
             .filter(|detector| !done.iter().any(|(name, _)| name == detector.name()))
             .filter_map(|detector| {
                 let per_run = detector.awaited()?;
@@ -193,11 +193,11 @@ impl Analyser {
             .collect()
     }
 
-    /// How many detectors are set that read versions of `ecosystem`.
-    pub fn detector_count(&self, ecosystem: Ecosystem) -> usize {
+    /// How many detectors are set that read versions served from `at`.
+    pub fn detector_count(&self, at: Repository) -> usize {
         self.detectors
             .as_ref()
-            .map_or(0, |detectors| detectors.reading(ecosystem).count())
+            .map_or(0, |detectors| detectors.reading(at).count())
     }
 
     /// How many detector runs have started since this analyser was made. 0 when none is set.
@@ -287,7 +287,7 @@ pub(crate) mod tests {
 
     fn target() -> Target {
         Target {
-            ecosystem: Ecosystem::Npm,
+            repository: crate::ecosystem::Repository::of(crate::identity::Ecosystem::Npm),
             name: "widget".to_owned(),
             version: "1.0.0".to_owned(),
         }
@@ -306,7 +306,12 @@ pub(crate) mod tests {
         let fake = Fake::firing(&["threat-process-hooks"]);
         let analyser = made("detect-once", 1 << 20, Arc::new(InProcess::new(8)))
             .with_detectors(vec![fake.clone()]);
-        assert_eq!(analyser.detector_count(Ecosystem::Npm), 1);
+        assert_eq!(
+            analyser.detector_count(crate::ecosystem::Repository::of(
+                crate::identity::Ecosystem::Npm
+            )),
+            1
+        );
         assert_eq!(analyser.detected(&target()).await, []);
         run_all(&analyser, &[]).await;
         let detected = analyser.detected(&target()).await;
@@ -347,8 +352,18 @@ pub(crate) mod tests {
         let trustpub = TrustPub::new(reqwest::Client::new(), "http://127.0.0.1:9", Duration::ZERO);
         let analyser = made("detect-reads", 1 << 20, Arc::new(InProcess::new(8)))
             .with_detectors(vec![Arc::new(trustpub)]);
-        assert_eq!(analyser.detector_count(Ecosystem::Npm), 0);
-        assert_eq!(analyser.detector_count(Ecosystem::Cargo), 1);
+        assert_eq!(
+            analyser.detector_count(crate::ecosystem::Repository::of(
+                crate::identity::Ecosystem::Npm
+            )),
+            0
+        );
+        assert_eq!(
+            analyser.detector_count(crate::ecosystem::Repository::of(
+                crate::identity::Ecosystem::Cargo
+            )),
+            1
+        );
         assert!(analyser.start_detecting(&target(), &[]).is_empty());
         assert_eq!(analyser.detected(&target()).await, []);
         assert_eq!(analyser.detections_started(), 0);
@@ -363,7 +378,7 @@ pub(crate) mod tests {
         let analyser = made("detect-awaited", 1 << 20, Arc::new(InProcess::new(8)))
             .with_detectors(vec![Arc::new(trustpub), Fake::firing(&[])]);
         let cargo = Target {
-            ecosystem: Ecosystem::Cargo,
+            repository: crate::ecosystem::Repository::of(crate::identity::Ecosystem::Cargo),
             ..target()
         };
         assert_eq!(
@@ -407,7 +422,12 @@ pub(crate) mod tests {
         let off = off.with_detectors(Vec::new());
         assert!(off.start_detecting(&target(), &[]).is_empty());
         assert_eq!(
-            (off.detector_count(Ecosystem::Npm), off.detections_started()),
+            (
+                off.detector_count(crate::ecosystem::Repository::of(
+                    crate::identity::Ecosystem::Npm
+                )),
+                off.detections_started()
+            ),
             (0, 0)
         );
         assert_eq!(off.detected(&target()).await, []);

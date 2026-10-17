@@ -465,12 +465,11 @@ fn publishers<L: Fn(&str) -> Option<OsString>>(
 ) -> Result<Vec<Arc<dyn Detector>>, StartupError> {
     let (setting, interval) = environment.crates_api()?;
     let mut made = Vec::new();
-    for (repository, upstream) in upstreams.iter().filter(|(at, _)| at.is_own()) {
-        let ecosystem = repository.ecosystem();
+    for (repository, upstream) in upstreams.iter() {
         let Some(publishers) = repository.registry().publishers else {
             continue;
         };
-        match publishers(client, upstream, &setting, interval) {
+        match publishers(client, repository, upstream, &setting, interval) {
             Some(detector) => {
                 let rules = crate::analysis::detector::KNOWN
                     .iter()
@@ -482,14 +481,14 @@ fn publishers<L: Fn(&str) -> Option<OsString>>(
                 info!(
                     byrle.config.variable = %env::CRATES_API,
                     byrle.detector = detector.name(),
-                    "publisher lookup on: each {ecosystem} version served is looked up{pace}, \
+                    "publisher lookup on: each {repository} version served is looked up{pace}, \
                      for the {rules} signals"
                 );
                 made.push(detector);
             }
             None => info!(
                 byrle.config.variable = %env::CRATES_API,
-                "publisher lookup off: no API is asked who published each {ecosystem} version"
+                "publisher lookup off: no API is asked who published each {repository} version"
             ),
         }
     }

@@ -1852,7 +1852,7 @@ async fn a_detection_is_kept_under_its_version() {
     let key = DetectionKey {
         detector: "guarddog".to_owned(),
         detector_version: "3.2.0".to_owned(),
-        ecosystem: "npm".to_owned(),
+        repository: "npm".to_owned(),
         name: "widget".to_owned(),
         version: "1.0.0".to_owned(),
     };
@@ -1866,6 +1866,11 @@ async fn a_detection_is_kept_under_its_version() {
     assert_eq!(store.detected(&key).await.expect("answers"), None);
     store.put_detected(&key, &fired).await.expect("writes");
     assert_eq!(store.detected(&key).await.expect("answers"), Some(fired));
+    let elsewhere = DetectionKey {
+        repository: "gradle-plugins".to_owned(),
+        ..key.clone()
+    };
+    assert_eq!(store.detected(&elsewhere).await.expect("answers"), None);
     let newer = DetectionKey {
         detector_version: "3.3.0".to_owned(),
         ..key.clone()

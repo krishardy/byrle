@@ -266,16 +266,16 @@ impl PgAnalyses {
         let result = serde_json::to_string(detection).expect("a detection serializes");
         sqlx::query!(
             r#"
-            INSERT INTO version_detection (detector, detector_version, ecosystem, name, version, result)
+            INSERT INTO version_detection (detector, detector_version, repository, name, version, result)
             VALUES ($1, $2, $3, $4, $5, $6)
-            ON CONFLICT (detector, ecosystem, name, version) DO UPDATE SET
+            ON CONFLICT (detector, repository, name, version) DO UPDATE SET
                 detector_version = EXCLUDED.detector_version,
                 result           = EXCLUDED.result,
                 detected_at      = now()
             "#,
             key.detector,
             key.detector_version,
-            key.ecosystem,
+            key.repository,
             key.name,
             key.version,
             result,
@@ -290,10 +290,10 @@ impl PgAnalyses {
     async fn read_detected(&self, key: &DetectionKey) -> Result<Option<Detection>, AnalysisError> {
         let row = sqlx::query_scalar!(
             "SELECT result FROM version_detection \
-             WHERE detector = $1 AND detector_version = $2 AND ecosystem = $3 AND name = $4 AND version = $5",
+             WHERE detector = $1 AND detector_version = $2 AND repository = $3 AND name = $4 AND version = $5",
             key.detector,
             key.detector_version,
-            key.ecosystem,
+            key.repository,
             key.name,
             key.version,
         )

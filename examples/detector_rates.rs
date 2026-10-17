@@ -46,7 +46,7 @@ async fn main() {
                 )
                 .expect("a lockfile name");
                 let target = Target {
-                    ecosystem: key.ecosystem(),
+                    repository: byrle::ecosystem::Repository::of(key.ecosystem()),
                     name: key.registry_name(),
                     version: version.clone(),
                 };
