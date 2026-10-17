@@ -91,8 +91,9 @@ pub const REGISTRY: Registry = Registry {
         prefix: PLUGINS_PREFIX,
         upstream: crate::env::UPSTREAM_GRADLE_PLUGINS,
         client: |http, upstream, max_bytes| {
-            std::sync::Arc::new(Client::new(http, upstream, max_bytes))
+            std::sync::Arc::new(Client::new(http, upstream, max_bytes).claiming_from_redirects())
         },
+        own_at: &CENTRAL,
     }],
 };
 
@@ -115,6 +116,9 @@ pub const PORTAL: &str = "https://plugins.gradle.org/m2";
 
 /// Maven Central, the repository this build reads.
 pub const REPOSITORY: &str = "https://repo1.maven.org/maven2";
+
+/// Central as the portal redirects to it. The configured upstream is Central too.
+pub const CENTRAL: [&str; 1] = ["https://repo.maven.apache.org/maven2/"];
 
 /// The origin of [`REPOSITORY`].
 pub const ORIGIN: &str = "https://repo1.maven.org";

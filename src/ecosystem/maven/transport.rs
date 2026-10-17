@@ -48,6 +48,10 @@ pub struct Client {
     keys: KeyServers,
     /// Each `.asc` read, `None` for one the repository has not, by its file's URL.
     signatures: Arc<Mutex<Lru<String, Option<Vec<u8>>>>>,
+    /// Whether a redirect to a path naming a file's sha256 is its claim, as the portal's are.
+    hashed_redirects: bool,
+    /// Where each file is served from after the repository's redirects, by its URL.
+    located: Arc<Mutex<Lru<String, String>>>,
 }
 
 impl std::fmt::Debug for Client {
@@ -69,8 +73,43 @@ impl Client {
             times: Arc::new(Mutex::new(Lru::new(MAX_TIMES))),
             keys: KeyServers::new(http.clone()),
             signatures: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
+            hashed_redirects: false,
+            located: Arc::new(Mutex::new(Lru::new(MAX_CLAIMS))),
             http,
         }
+    }
+
+    /// The same, reading a file's claim from a redirect to a path naming its sha256, as the
+    /// Gradle plugin portal redirects to `plugins-artifacts.gradle.org`.
+    pub fn claiming_from_redirects(mut self) -> Self {
+        self.hashed_redirects = true;
+        self
+    }
+
+    /// Where the file at `url` is served from after the repository's redirects, kept once
+    /// read. Errors when it cannot be asked.
+    pub async fn located(&self, url: &str) -> Result<String, String> {
+        let kept = self
+            .located
+            .lock()
+            .expect("located lock")
+            .get(&url.to_owned())
+            .cloned();
+        if let Some(kept) = kept {
+            return Ok(kept);
+        }
+        let response = self
+            .http
+            .head(url)
+            .send()
+            .await
+            .map_err(|e| format!("HEAD request failed: {e}"))?;
+        let at = response.url().to_string();
+        self.located
+            .lock()
+            .expect("located lock")
+            .insert(url.to_owned(), at.clone());
+        Ok(at)
     }
 
     /// The same, asking `keys` for the keys signatures name.
@@ -232,9 +271,10 @@ impl Client {
         Ok(times)
     }
 
-    /// The strongest digest the repository publishes beside `version`'s `file`: its
-    /// `.sha512`, else its `.sha256`, else its `.sha1`. [`Claimed::Unknown`] when it publishes
-    /// none. Errors when a sidecar cannot be fetched, or answers other than 200 or 404.
+    /// The strongest digest the repository publishes beside `version`'s `file`: the sha256
+    /// a redirect names, where those are claims, else its `.sha512`, `.sha256` or `.sha1`.
+    /// [`Claimed::Unknown`] when it publishes none. Errors when a sidecar cannot be fetched,
+    /// or answers other than 200 or 404.
     pub async fn claim(
         &self,
         key: &PackageKey,
@@ -246,6 +286,13 @@ impl Client {
         if let Some(claim) = kept {
             return Ok(Claimed::Known(claim));
         }
+        if self.hashed_redirects
+            && let Some(sha256) = hashed(&self.located(&url).await?, key, version, file)
+        {
+            let sha256_sidecar = &CLAIMED[1];
+            let claim = format!("{}:{sha256}", sha256_sidecar.name);
+            return Ok(self.keep(url, claim, sha256_sidecar, key, version, file));
+        }
         for sidecar in &CLAIMED {
             let Some(text) = self.sidecar(&url, sidecar).await? else {
                 continue;
@@ -254,30 +301,43 @@ impl Client {
                 tracing::warn!(url.full = %format!("{url}{}", sidecar.suffix), "the sidecar holds no digest; asking the next");
                 continue;
             };
-            let claim = Claim {
-                artifact: digest.clone(),
-                artifact_digest: sidecar.file,
-                manifest: digest,
-                manifest_digest: sidecar.bytes,
-                signer: Some(Arc::new(FileSigner {
-                    client: self.clone(),
-                    key: key.clone(),
-                    version: version.to_owned(),
-                    file: file.to_owned(),
-                    history: if super::paths::is_descriptor(file) {
-                        0
-                    } else {
-                        crate::analysis::attestation::DEFAULT_HISTORY
-                    },
-                })),
-            };
-            self.claims
-                .lock()
-                .expect("claims lock")
-                .insert(url, claim.clone());
-            return Ok(Claimed::Known(claim));
+            return Ok(self.keep(url, digest, sidecar, key, version, file));
         }
         Ok(Claimed::Unknown)
+    }
+
+    /// `digest`, in `sidecar`'s form, as the claim of `version`'s `file` at `url`, kept.
+    fn keep(
+        &self,
+        url: String,
+        digest: String,
+        sidecar: &Sidecar,
+        key: &PackageKey,
+        version: &str,
+        file: &str,
+    ) -> Claimed {
+        let claim = Claim {
+            artifact: digest.clone(),
+            artifact_digest: sidecar.file,
+            manifest: digest,
+            manifest_digest: sidecar.bytes,
+            signer: Some(Arc::new(FileSigner {
+                client: self.clone(),
+                key: key.clone(),
+                version: version.to_owned(),
+                file: file.to_owned(),
+                history: if super::paths::is_descriptor(file) {
+                    0
+                } else {
+                    crate::analysis::attestation::DEFAULT_HISTORY
+                },
+            })),
+        };
+        self.claims
+            .lock()
+            .expect("claims lock")
+            .insert(url, claim.clone());
+        Claimed::Known(claim)
     }
 
     /// The text of `sidecar` beside the file at `url`, `None` when the repository has none.
@@ -331,7 +391,30 @@ impl Client {
     }
 }
 
+/// The sha256 a redirect's path names for `version`'s `file` of `key`, as the portal's do:
+/// `<group>/<artifact>/<version>/<sha256>/<file>`. `None` for any other URL.
+fn hashed(located: &str, key: &PackageKey, version: &str, file: &str) -> Option<String> {
+    let url = reqwest::Url::parse(located).ok()?;
+    let parts: Vec<&str> = url.path().split('/').collect();
+    let [.., group, artifact, at, sha256, named] = parts.as_slice() else {
+        return None;
+    };
+    let hex = sha256.len() == 64
+        && sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let same = *named == file && *at == version && *artifact == key.name();
+    (hex && same && key.namespace() == Some(*group)).then(|| (*sha256).to_owned())
+}
+
 impl Fetch for Client {
+    fn located<'a>(
+        &'a self,
+        url: &'a str,
+    ) -> futures_util::future::BoxFuture<'a, Result<Option<String>, String>> {
+        Box::pin(async move { Client::located(self, url).await.map(Some) })
+    }
+
     fn metadata<'a>(&'a self, key: &'a PackageKey) -> futures_util::future::BoxFuture<'a, Fetched> {
         Box::pin(Client::metadata(self, key))
     }
@@ -381,6 +464,126 @@ pub(crate) mod tests {
     fn lang3() -> PackageKey {
         PackageKey::from_registry_name(Ecosystem::Maven, "org.apache.commons:commons-lang3")
             .unwrap()
+    }
+
+    const PORTAL_SHA256: &str = "cee8a151d2e0be9f3a85ca2e5d87a0da5c91a481edf1bc7f7b57b56308fd3c0d";
+
+    /// A redirect to `<group>/<artifact>/<version>/<sha256>/<file>` names that file's sha256.
+    #[test]
+    fn a_redirect_names_a_sha256_only_in_the_portal_s_shape() {
+        let key = PackageKey::from_registry_name(
+            Ecosystem::Maven,
+            "com.github.ben-manes:gradle-versions-plugin",
+        )
+        .unwrap();
+        let file = "gradle-versions-plugin-0.52.0.jar";
+        let at = |group: &str, version: &str, hex: &str, named: &str| {
+            format!(
+                "https://plugins-artifacts.gradle.org/{group}/gradle-versions-plugin/{version}/{hex}/{named}"
+            )
+        };
+        let found = hashed(
+            &at("com.github.ben-manes", "0.52.0", PORTAL_SHA256, file),
+            &key,
+            "0.52.0",
+            file,
+        );
+        assert_eq!(found.as_deref(), Some(PORTAL_SHA256));
+        for other in [
+            at(
+                "com.github.ben-manes",
+                "0.52.0",
+                &PORTAL_SHA256.to_uppercase(),
+                file,
+            ),
+            at("com.github.ben-manes", "0.52.0", &PORTAL_SHA256[1..], file),
+            at(
+                "com.github.ben-manes",
+                "0.52.0",
+                &format!("{}g", &PORTAL_SHA256[1..]),
+                file,
+            ),
+            at("com.github", "0.52.0", PORTAL_SHA256, file),
+            at("com.github.ben-manes", "0.51.0", PORTAL_SHA256, file),
+            at("com.github.ben-manes", "0.52.0", PORTAL_SHA256, "other.jar"),
+            format!("https://h/other/0.52.0/{PORTAL_SHA256}/{file}"),
+            format!("https://h/{PORTAL_SHA256}/{file}"),
+            "not a url".to_owned(),
+        ] {
+            assert_eq!(hashed(&other, &key, "0.52.0", file), None, "{other}");
+        }
+    }
+
+    /// A portal client claims a file from the sha256 its redirect names, and one redirected
+    /// anywhere else from its sidecars. Where a file is is asked once.
+    #[tokio::test]
+    async fn a_portal_file_is_claimed_from_its_redirect() {
+        use axum::http::{StatusCode, header::LOCATION};
+        use axum::routing::get;
+        let dir = "/m2/org/example/lib/1.0";
+        let hashed = format!("/files/org.example/lib/1.0/{PORTAL_SHA256}/lib-1.0.jar");
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        let to = hashed.clone();
+        let router = axum::Router::new()
+            .route(
+                &format!("{dir}/lib-1.0.jar"),
+                get(move || {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    let to = to.clone();
+                    async move { (StatusCode::SEE_OTHER, [(LOCATION, to)]) }
+                }),
+            )
+            .route(&hashed, get(|| async { "jar" }))
+            .route(
+                &format!("{dir}/lib-1.0.pom"),
+                get(|| async {
+                    (
+                        StatusCode::SEE_OTHER,
+                        [(
+                            LOCATION,
+                            format!("/files/org.example/other/1.0/{PORTAL_SHA256}/lib-1.0.pom"),
+                        )],
+                    )
+                }),
+            )
+            .route(&format!("{dir}/lib-1.0.pom.sha1"), get(|| async { SHA1 }));
+        let base = crate::proxy::testing::serve(router).await;
+        let client = Client::new(reqwest::Client::new(), &format!("{base}/m2"), 1 << 20)
+            .claiming_from_redirects();
+        let key = PackageKey::from_registry_name(Ecosystem::Maven, "org.example:lib").unwrap();
+        for _ in 0..2 {
+            let Claimed::Known(claim) = client.claim(&key, "1.0", "lib-1.0.jar").await.unwrap()
+            else {
+                panic!("claimed");
+            };
+            assert_eq!(claim.artifact, format!("sha256:{PORTAL_SHA256}"));
+            assert_eq!((claim.manifest_digest)(b"abc"), format!("sha256:{SHA256}"));
+        }
+        assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+        let Claimed::Known(pom) = client.claim(&key, "1.0", "lib-1.0.pom").await.unwrap() else {
+            panic!("claimed");
+        };
+        assert_eq!(pom.artifact, format!("sha1:{SHA1}"));
+        let url = format!("{base}/m2/org/example/lib/1.0/lib-1.0.jar");
+        assert_eq!(
+            Fetch::located(&client, &url).await.unwrap(),
+            Some(format!("{base}{hashed}"))
+        );
+        let closed = crate::util::test_support::closing_server().await;
+        let unasked = Client::new(
+            reqwest::Client::new(),
+            &format!("http://{closed}/m2"),
+            1 << 20,
+        )
+        .claiming_from_redirects();
+        assert!(
+            unasked
+                .claim(&key, "1.0", "lib-1.0.jar")
+                .await
+                .unwrap_err()
+                .starts_with("HEAD request failed")
+        );
     }
 
     /// The metadata is asked for at the group's dots written as `/`.

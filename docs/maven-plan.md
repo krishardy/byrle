@@ -396,7 +396,12 @@ Q2, Q7 and Q9 otherwise.
       detector is made for each repository; a line names `gradle-plugins`, and none for
       an ecosystem's own repository. The console's usage tables do not name it yet.
    3. The portal's claims: a 303 to `plugins-artifacts.gradle.org` is a claim of the
-      sha256 in its path; a 303 to Central is decided as `/maven/` decides it.
+      sha256 in its path; a 303 to Central is decided as `/maven/` decides it. Done
+      2026-10-17: the proxy asks the portal where each file is with a `HEAD`, kept once
+      read. A file it redirects to `repo.maven.apache.org`, or to
+      `BYRLE_UPSTREAM_MAVEN`, is Central's request: fetched from `BYRLE_UPSTREAM_MAVEN`,
+      kept and audited as Central's. The portal answers so for a Central artifact's
+      `maven-metadata.xml` too.
    4. A Gradle build using a plugin only the portal serves, through the proxy.
 6. `gradle.lockfile` for `warm`, `policy diff` and `lockfile verify`. mvn writes no
    lockfile.

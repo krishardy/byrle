@@ -56,6 +56,12 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
         Box::pin(async { Ok(None) })
     }
 
+    /// Where the file at `url` is served from after the repository's redirects, for one whose
+    /// redirects say whose a file is. `Ok(None)` for others. Errors when it cannot be asked.
+    fn located<'a>(&'a self, _url: &'a str) -> BoxFuture<'a, Result<Option<String>, String>> {
+        Box::pin(async { Ok(None) })
+    }
+
     /// What a database beside the registry, or a file beside `file`, says of `version`'s
     /// files, for an ecosystem whose documents publish no digest. Errors when it cannot be
     /// asked or does not prove itself.
@@ -361,6 +367,11 @@ impl Clients {
         self.of(at, key).claim(key, version, file).await
     }
 
+    /// Where the file at `url` on `at` is served from: [`Fetch::located`].
+    pub async fn located(&self, at: Repository, url: &str) -> Result<Option<String>, String> {
+        self.0[&at].located(url).await
+    }
+
     /// The full document, for an ecosystem whose client asks for less: [`Fetch::full`].
     pub async fn full_document(
         &self,
@@ -550,6 +561,8 @@ pub struct Also {
     pub upstream: Var,
     /// The registry client for its upstream, with each decoded body bounded.
     pub client: fn(reqwest::Client, &str, usize) -> std::sync::Arc<dyn Fetch>,
+    /// Where a redirect to says a file is the row's own repository's: the portal's to Central.
+    pub own_at: &'static [&'static str],
 }
 
 /// A repository the proxy serves, a row's own or an [`Also`], keying what is read from it.
@@ -598,7 +611,8 @@ impl Repository {
         of(self.ecosystem)
     }
 
-    fn also(self) -> Option<&'static Also> {
+    /// The [`Also`] it is, `None` for a row's own.
+    pub fn also(self) -> Option<&'static Also> {
         let index = usize::from(self.index).checked_sub(1)?;
         Some(&self.registry().also[index])
     }
@@ -878,6 +892,19 @@ mod table {
         assert_eq!(
             serving("/gradle-plugins/com/github/ben-manes/versions/x/maven-metadata.xml"),
             Some(portal)
+        );
+    }
+
+    /// A registry whose redirects say nothing of whose a file is is not asked where it is.
+    #[tokio::test]
+    async fn only_a_repository_whose_redirects_say_whose_a_file_is_is_asked_where_it_is() {
+        let nowhere = crate::util::test_support::NO_UPSTREAM;
+        let upstreams = Upstreams::defaults().with(Ecosystem::Npm, nowhere);
+        let clients = Clients::new(reqwest::Client::new(), &upstreams, 1024);
+        let npm = Repository::of(Ecosystem::Npm);
+        assert_eq!(
+            clients.located(npm, &format!("{nowhere}/x")).await,
+            Ok(None)
         );
     }
 

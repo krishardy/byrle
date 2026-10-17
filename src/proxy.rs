@@ -985,6 +985,30 @@ fn upstream_url(
     (repository.registry().upstream_url)(proxy.config.upstreams.get(repository), path_and_query)
 }
 
+/// The repository a request for `path` on `at` is decided as: the row's own when `at`'s
+/// upstream redirects it there, or to the own's upstream, as the portal does a file Central
+/// serves, else `at`.
+async fn relocated(proxy: &Proxy, at: Repository, path: &str) -> Repository {
+    let Some(also) = at.also().filter(|also| !also.own_at.is_empty()) else {
+        return at;
+    };
+    let own = Repository::of(at.ecosystem());
+    let configured = format!("{}/", proxy.config.upstreams.get(own));
+    let mut owns = also.own_at.iter().copied().chain([configured.as_str()]);
+    let url = upstream_url(proxy, at, path, None);
+    match proxy.config.clients.located(at, &url).await {
+        Ok(Some(located)) if owns.any(|base| located.starts_with(base)) => {
+            info!(url.path = %crate::http::url_path(path), url.full = %located, "{at} redirects to {own}: decided as {own}'s");
+            own
+        }
+        Ok(_) => at,
+        Err(e) => {
+            warn!(url.path = %crate::http::url_path(path), error.message = %e, "{at} could not be asked where the file is; decided as {at}'s");
+            at
+        }
+    }
+}
+
 /// The upstream response's headers, less the hop-by-hop ones.
 fn upstream_response_headers(upstream: &HeaderMap) -> HeaderMap {
     let mut headers = HeaderMap::new();
@@ -2871,6 +2895,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
         Ok(account) => account,
         Err(refused) => return *refused,
     };
+    let repository = relocated(&proxy, repository, &path).await;
     if let Some(response) = written(&proxy, repository, &path, req.headers()) {
         return response;
     }
@@ -6890,9 +6915,11 @@ mod tests {
             fixture.as_slice(),
             "3.21.0 is removed"
         );
+        let portal_s = "/m2/org/apache/commons/commons-lang3/maven-metadata.xml";
         assert_eq!(
             asked(&from_portal),
-            ["/m2/org/apache/commons/commons-lang3/maven-metadata.xml"]
+            [portal_s, portal_s],
+            "where it is, then it"
         );
         assert!(asked(&from_central).is_empty());
         let key = crate::identity::PackageKey::from_registry_name(
@@ -6907,6 +6934,89 @@ mod tests {
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert_eq!(lines[0].repository.as_deref(), Some("gradle-plugins"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A portal path the portal redirects to Central is Central's: fetched from
+    /// Central's upstream, its records kept and its line written as Central's.
+    #[tokio::test]
+    async fn a_portal_file_central_serves_is_decided_as_central_s() {
+        use axum::http::{StatusCode, header::LOCATION};
+        use axum::routing::get;
+        let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let upstream = "/org/apache/commons/commons-lang3/maven-metadata.xml";
+        let central = crate::proxy::testing::serve(axum::Router::new().route(
+            &format!("/maven2{upstream}"),
+            get(move || {
+                let body = fixture.clone();
+                async move { ([(axum::http::header::CONTENT_TYPE, "text/xml")], body) }
+            }),
+        ))
+        .await;
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        let to = format!("{central}/maven2{upstream}");
+        let portal = crate::proxy::testing::serve(axum::Router::new().route(
+            &format!("/m2{upstream}"),
+            get(move || {
+                counted.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let to = to.clone();
+                async move { (StatusCode::SEE_OTHER, [(LOCATION, to)]) }
+            }),
+        ))
+        .await;
+        let plugins = Repository::named("gradle-plugins").unwrap();
+        let (dir, audit, log) = audit_log("audit-portal-central");
+        let proxy = offline(None, Some(DENY_LANG3))
+            .with_upstream(Ecosystem::Maven, format!("{central}/maven2"))
+            .with_upstream(plugins, format!("{portal}/m2"))
+            .with_audit_log(Some(log));
+        let base = serve(proxy.clone().router()).await;
+        let served = reqwest::get(format!("{base}/gradle-plugins{upstream}"))
+            .await
+            .unwrap();
+        assert_eq!(served.status(), 200);
+        assert!(!served.text().await.unwrap().contains("3.21.0"));
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "asked where it is"
+        );
+        let key = crate::identity::PackageKey::from_registry_name(
+            Ecosystem::Maven,
+            "org.apache.commons:commons-lang3",
+        )
+        .unwrap();
+        let store = proxy.store.lock().unwrap();
+        assert!(store.holds(Repository::of(Ecosystem::Maven), &key));
+        assert!(!store.holds(plugins, &key));
+        let lines = audited(&audit);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].repository, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A portal that cannot be asked where a file is leaves the request the portal's.
+    #[tokio::test]
+    async fn a_portal_that_cannot_be_asked_keeps_the_request() {
+        let closed = crate::util::test_support::closing_server().await;
+        let plugins = Repository::named("gradle-plugins").unwrap();
+        let proxy =
+            offline(None, Some(NO_POLICY)).with_upstream(plugins, format!("http://{closed}/m2"));
+        let (guard, buf) = capture(tracing::Level::WARN);
+        let path = "/gradle-plugins/org/apache/commons/commons-lang3/maven-metadata.xml";
+        assert_eq!(relocated(&proxy, plugins, path).await, plugins);
+        drop(guard);
+        let said = crate::util::test_support::text(&buf);
+        assert!(
+            said.contains("could not be asked where the file is"),
+            "{said}"
+        );
+        let own = Repository::of(Ecosystem::Maven);
+        assert_eq!(
+            relocated(&proxy, own, path).await,
+            own,
+            "Central is not asked"
+        );
     }
 
     /// The repository's sidecar is forwarded for a document served as it came, or one that
