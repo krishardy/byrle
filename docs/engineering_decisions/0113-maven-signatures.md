@@ -168,3 +168,13 @@ that reads Maven versions. It is not awaited: a download does not wait for it.
 A repository or key server that cannot be asked stores nothing, and the detector runs
 again on the next request for the version.
 
+## Amended 2026-10-17: a signature in a compressed packet
+
+`mapstruct-processor-1.6.3.pom.asc`, written by BouncyCastle 1.77, is armored as
+`PGP MESSAGE`: one stored compressed packet holding one signature packet. gpg 2.4.8
+cannot read it ("indeterminate length packet of type 8 in detached signature"); Central,
+which checks signatures on upload, published it. byrle refused the `.pom` 502 until this
+change. An `.asc` of exactly that form is now read as the signature it holds; any other
+`PGP MESSAGE` is still no signature. Through the proxy, its `.pom`, `mapstruct-parent`'s
+and the jar verify, by key `97CB58ABBA8F94D9358E5968F0B5C3E6BE36BC75`.
+

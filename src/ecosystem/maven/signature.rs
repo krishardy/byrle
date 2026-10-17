@@ -89,9 +89,36 @@ pub fn verify(
 
 /// The detached signature `bytes` armor. Errors when they are not one.
 fn parse(bytes: &[u8]) -> Result<Signature, String> {
-    DetachedSignature::from_armor_single(bytes)
-        .map(|(detached, _)| detached.signature)
-        .map_err(|e| format!("it is no signature: {e}"))
+    match DetachedSignature::from_armor_single(bytes) {
+        Ok((detached, _)) => Ok(detached.signature),
+        Err(e) => compressed(bytes).ok_or_else(|| format!("it is no signature: {e}")),
+    }
+}
+
+/// The signature in `bytes` armored as a `PGP MESSAGE` that is one compressed packet holding
+/// one signature packet, as BouncyCastle 1.77 writes for mapstruct-processor 1.6.3's `.pom`.
+fn compressed(bytes: &[u8]) -> Option<Signature> {
+    use std::io::Read;
+    let mut armor = pgp::armor::Dearmor::new(bytes);
+    let mut raw = Vec::new();
+    armor.read_to_end(&mut raw).ok()?;
+    if armor.typ != Some(pgp::armor::BlockType::Message) {
+        return None;
+    }
+    let mut outer = pgp::packet::PacketParser::new(&raw[..]);
+    let Some(Ok(pgp::packet::Packet::CompressedData(packet))) = outer.next() else {
+        return None;
+    };
+    if outer.next().is_some() {
+        return None;
+    }
+    let mut inner = Vec::new();
+    packet.decompress().ok()?.read_to_end(&mut inner).ok()?;
+    let mut packets = pgp::packet::PacketParser::new(&inner[..]);
+    let Some(Ok(pgp::packet::Packet::Signature(signature))) = packets.next() else {
+        return None;
+    };
+    packets.next().is_none().then_some(signature)
 }
 
 /// The fingerprints and key ids a signature names its signer by, in upper-case hex.
@@ -310,6 +337,80 @@ mod tests {
                 expired: None,
             }
         );
+    }
+
+    /// mapstruct-processor 1.6.3's `.pom.asc` is a `PGP MESSAGE`: its signature packet in a
+    /// compressed packet. gpg 2.4.8 cannot read it; Central published it, and it verifies.
+    #[test]
+    fn a_signature_in_a_compressed_packet_verifies() {
+        let pom = "mapstruct-processor-1.6.3.pom";
+        let Signed::Verified { key, expired } = checked(pom, pom, &format!("{pom}.ubuntu.key"))
+        else {
+            panic!("verifies");
+        };
+        assert_eq!(key, "97CB58ABBA8F94D9358E5968F0B5C3E6BE36BC75");
+        assert_eq!(
+            expired, None,
+            "signed 2024-11-09; the key expired 2025-01-04"
+        );
+    }
+
+    /// `body` armored as `typ`.
+    fn armored_as(typ: &str, body: &[u8]) -> Vec<u8> {
+        use base64::Engine;
+        let text = base64::engine::general_purpose::STANDARD.encode(body);
+        format!("-----BEGIN {typ}-----\n\n{text}\n-----END {typ}-----\n").into_bytes()
+    }
+
+    /// Only one compressed packet holding one signature packet, armored as a message, is
+    /// read as a signature.
+    #[test]
+    fn a_compressed_packet_holding_anything_else_is_no_signature() {
+        let asc = signed("mapstruct-processor-1.6.3.pom.asc");
+        let mut armor = pgp::armor::Dearmor::new(&asc[..]);
+        let mut raw = Vec::new();
+        std::io::Read::read_to_end(&mut armor, &mut raw).unwrap();
+        assert_eq!(
+            &raw[..2],
+            [0xa3, 0x00],
+            "an old-format compressed packet, stored"
+        );
+        let lone = raw[2..].to_vec();
+        let wrapped = |inner: &[u8]| [&[0xa3, 0x00][..], inner].concat();
+        assert!(compressed(&armored_as("PGP MESSAGE", &raw)).is_some());
+        let twice = [lone.clone(), lone.clone()].concat();
+        let marker = [0xa8, 0x03, b'P', b'G', b'P'];
+        let length = u16::try_from(1 + lone.len()).unwrap().to_be_bytes();
+        let fixed = [&[0xa1][..], &length, &[0x00], &lone].concat();
+        assert!(
+            compressed(&armored_as("PGP MESSAGE", &fixed)).is_some(),
+            "a fixed length"
+        );
+        for (label, bytes) in [
+            (
+                "two signatures",
+                armored_as("PGP MESSAGE", &wrapped(&twice)),
+            ),
+            ("a marker", armored_as("PGP MESSAGE", &wrapped(&marker))),
+            ("nothing", armored_as("PGP MESSAGE", &wrapped(&[]))),
+            ("the signature bare", armored_as("PGP MESSAGE", &lone)),
+            (
+                "a packet after",
+                armored_as("PGP MESSAGE", &[fixed.clone(), marker.to_vec()].concat()),
+            ),
+            (
+                "zlib that does not inflate",
+                armored_as("PGP MESSAGE", &[&[0xa3, 0x02][..], b"not zlib"].concat()),
+            ),
+            ("not a message", armored_as("PGP PUBLIC KEY BLOCK", &raw)),
+            ("not armor", b"not armor".to_vec()),
+            (
+                "an unknown compression",
+                armored_as("PGP MESSAGE", &[&[0xa3, 0x63][..], &lone].concat()),
+            ),
+        ] {
+            assert!(compressed(&bytes).is_none(), "{label}");
+        }
     }
 
     /// rsocket-bom 1.1.5's `.pom` was signed after its key expired: it verifies, and says so.
