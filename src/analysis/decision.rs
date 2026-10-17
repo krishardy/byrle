@@ -19,6 +19,9 @@ pub struct Decided {
     /// The SRI string the metadata published. `None` without a strong digest: see the doc.
     pub digest: Option<String>,
     pub ecosystem: String,
+    /// The repository served from, absent for its ecosystem's own: the audit line's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     pub name: String,
     pub version: String,
     /// The account whose token the request carried.
@@ -147,6 +150,7 @@ impl Decided {
             at: line.at.clone(),
             digest: basis.digest.clone(),
             ecosystem: line.ecosystem.clone(),
+            repository: line.repository.clone(),
             name: line.name.clone(),
             version: line.version.clone()?,
             account: line.account.clone(),
@@ -392,6 +396,27 @@ pub(crate) mod tests {
         assert_eq!(disposition.not_analyzed, ["install_scripts"]);
         assert_eq!(disposition.exceptions_used, [2]);
         assert_eq!(disposition.risk_score, Some(3));
+    }
+
+    /// A line names the repository it was served from when it is not its ecosystem's own,
+    /// and the decision names it as the line did. A line naming none reads as the own.
+    #[test]
+    fn a_repository_besides_the_ecosystem_s_own_is_named() {
+        use crate::ecosystem::Repository;
+        let own =
+            served_line("ms").with_repository(Repository::of(crate::identity::Ecosystem::Npm));
+        assert_eq!(own.repository, None);
+        assert!(!serde_json::to_string(&own).unwrap().contains("repository"));
+        let portal =
+            served_line("ms").with_repository(Repository::named("gradle-plugins").unwrap());
+        assert_eq!(portal.repository.as_deref(), Some("gradle-plugins"));
+        let decided = Decided::of(&portal, &basis("sha512-x")).unwrap();
+        assert_eq!(decided.repository.as_deref(), Some("gradle-plugins"));
+        let read: Decided = serde_json::from_str(&decided.to_json()).unwrap();
+        assert_eq!(read, decided);
+        let earlier = Decided::of(&own, &basis("sha512-x")).unwrap().to_json();
+        let read: Decided = serde_json::from_str(&earlier).unwrap();
+        assert_eq!(read.repository, None);
     }
 
     #[test]

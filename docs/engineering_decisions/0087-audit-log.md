@@ -32,6 +32,7 @@ reasoning per version. A version offered and not removed is not in the log.
 | `inputs` | pinned only: what the engine read, for [reproducible-verdicts](0070-reproducible-verdicts.md). `as_of` is the date decided on, not read from `at`. `build` is `0.1.0` until releases are versioned, so a replay reports a difference rather than failing |
 | `account` | the account whose token the request carried. Absent when tokens are not required |
 | `upstream_status` | with `upstream-status`: the status the upstream answered |
+| `repository` | the repository the package was served from, when it is not its ecosystem's own: `gradle-plugins` for the Gradle plugin portal ([gradle-plugin-portal](0115-gradle-plugin-portal.md)). Absent for Central and every other ecosystem's registry. `byrle artifact` prints it in each decision's JSON. Added 2026-10-17 |
 
 | `answered` | The request got | Decided |
 |---|---|---|

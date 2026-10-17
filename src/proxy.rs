@@ -733,7 +733,8 @@ impl VerifyingStream {
                 line.version.as_deref(),
                 audit::Answered::CutShort,
             )
-            .with_account(line.account.as_deref()),
+            .with_account(line.account.as_deref())
+            .with_repository_named(line.repository.clone()),
         );
         sinks.record(&Written {
             line: served.line.answered(audit::Answered::CutShort),
@@ -1104,15 +1105,16 @@ async fn filtered_document(
         }
     };
 
-    let registry = negotiation.repository.registry();
-    let page = upstream_url(proxy, negotiation.repository, path, None);
+    let at = negotiation.repository;
+    let registry = at.registry();
+    let page = upstream_url(proxy, at, path, None);
     let read = (registry.read)(ecosystem::Reading {
         decoded: &decoded,
         kind: document,
         page: &page,
         store: crate::store::Keeping {
             store: &proxy.store,
-            at: negotiation.repository,
+            at,
         },
         origins: &proxy.config.origins,
         encoded_bytes: body.len(),
@@ -1126,7 +1128,7 @@ async fn filtered_document(
         };
     };
     report_undated(proxy, read.as_ref(), path);
-    let dated = dated_versions(proxy, negotiation.repository, read.metadata(), path).await;
+    let dated = dated_versions(proxy, at, read.metadata(), path).await;
     let normalized = dated.as_ref().or(read.metadata());
 
     let intel = match normalized {
@@ -1144,7 +1146,7 @@ async fn filtered_document(
             }
             Err(unavailable) => {
                 if audited {
-                    audit_not_ready(proxy, &metadata.key, None, &unavailable, account);
+                    audit_not_ready(proxy, at, &metadata.key, None, &unavailable, account);
                 }
                 return DocumentStep::Answer(unavailable.response());
             }
@@ -1163,7 +1165,7 @@ async fn filtered_document(
                 .audit
                 .as_deref()
                 .filter(|_| audited)
-                .map(|log| (log, account)),
+                .map(|log| Auditing { log, account, at }),
             proxy.config.mode,
         ),
         None => Refused::default(),
@@ -1484,7 +1486,8 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
         Err(unavailable) => {
             let request = &deciding.request;
             let version = Some(request.claimed_version);
-            audit_not_ready(proxy, request.key, version, &unavailable, request.account);
+            let (at, key, account) = (request.repository, request.key, request.account);
+            audit_not_ready(proxy, at, key, version, &unavailable, account);
             return ArtifactStep::Answer(unavailable.response());
         }
     };
@@ -1514,6 +1517,7 @@ async fn decide_artifact(proxy: &Proxy, request: ArtifactRequest<'_>) -> Artifac
             provenance: &provenance,
             today,
             account: deciding.request.account,
+            at: deciding.request.repository,
         },
         answered,
         &signals,
@@ -1903,7 +1907,15 @@ impl<'a> Deciding<'a> {
                     purl: self.purl.clone(),
                     why,
                 };
-                audit_not_ready(self.proxy, key, Some(claimed_version), &unanswered, account);
+                let at = self.request.repository;
+                audit_not_ready(
+                    self.proxy,
+                    at,
+                    key,
+                    Some(claimed_version),
+                    &unanswered,
+                    account,
+                );
                 Err(Box::new(ArtifactStep::Answer(unanswered.response())))
             }
         }
@@ -1963,6 +1975,7 @@ impl<'a> Deciding<'a> {
     fn audit_undecided(&self, answered: audit::Answered) {
         if let Some(line) = undecided_line(
             self.proxy,
+            self.request.repository,
             self.request.key,
             Some(self.request.claimed_version),
             answered,
@@ -2698,6 +2711,7 @@ fn pinned_line(
         provenance,
         today,
         account,
+        at,
     } = *pinned;
     let policy = proxy.config.policy.as_deref()?;
     if proxy.config.audit.is_none()
@@ -2723,13 +2737,15 @@ fn pinned_line(
         .answered(answered)
         .with_inputs(audit::Inputs::of(policy, &facts, today))
         .with_signals(signals, &policy.signal_weights)
-        .with_account(account),
+        .with_account(account)
+        .with_repository(at),
     )
 }
 
 /// Audit a request about `key` answered `unavailable`, for a case the log records.
 fn audit_not_ready(
     proxy: &Proxy,
+    at: Repository,
     key: &PackageKey,
     version: Option<&str>,
     unavailable: &NotReady,
@@ -2737,7 +2753,7 @@ fn audit_not_ready(
 ) {
     if let Some(line) = unavailable
         .answered()
-        .and_then(|answered| undecided_line(proxy, key, version, answered, account))
+        .and_then(|answered| undecided_line(proxy, at, key, version, answered, account))
     {
         write_audit(proxy, &line);
     }
@@ -2794,6 +2810,7 @@ impl Sinks {
 /// every audit line needs; [`write_audit`] needs the log.
 fn undecided_line(
     proxy: &Proxy,
+    at: Repository,
     key: &PackageKey,
     version: Option<&str>,
     answered: audit::Answered,
@@ -2807,7 +2824,8 @@ fn undecided_line(
             version,
             answered,
         )
-        .with_account(account),
+        .with_account(account)
+        .with_repository(at),
     )
 }
 
@@ -2819,6 +2837,8 @@ struct Pinned<'a> {
     provenance: &'a Provenance,
     today: jiff::civil::Date,
     account: Option<&'a str>,
+    /// The repository it was served from.
+    at: Repository,
 }
 
 /// Answer one request: the proxy's own endpoints, or the upstream's answer once an
@@ -2847,7 +2867,7 @@ async fn handle(State(proxy): State<Proxy>, req: Request) -> Response {
     let Some((repository, target)) = crate::route::classify(&path) else {
         return unrouted(&path);
     };
-    let account = match admit(&proxy, req.headers(), &path, &client, &target).await {
+    let account = match admit(&proxy, repository, req.headers(), &path, &client, &target).await {
         Ok(account) => account,
         Err(refused) => return *refused,
     };
@@ -3010,7 +3030,7 @@ fn outside_mount(mount: &Mount, requested: &str) -> Response {
 
 /// 404 for a path under no ecosystem's prefix, naming each prefix.
 fn unrouted(path: &str) -> Response {
-    let prefixes: Vec<&str> = ecosystem::TABLE.iter().map(|row| row.prefix).collect();
+    let prefixes: Vec<&str> = Repository::all().map(Repository::prefix).collect();
     info!(url.path = %crate::http::url_path(path), "under no ecosystem's prefix: 404");
     (
         StatusCode::NOT_FOUND,
@@ -3028,6 +3048,7 @@ fn unrouted(path: &str) -> Response {
 /// answer, which is audited when the request is for `target`.
 async fn admit(
     proxy: &Proxy,
+    at: Repository,
     headers: &HeaderMap,
     path: &str,
     client: &str,
@@ -3052,11 +3073,11 @@ async fn admit(
                 user_agent.original = %client,
                 "no valid token: 401"
             );
-            audit_refused(proxy, target, audit::Answered::Unauthorized);
+            audit_refused(proxy, at, target, audit::Answered::Unauthorized);
             Err(Box::new(gate::unauthorized()))
         }
         Err(gate::Refused::Unanswered) => {
-            audit_refused(proxy, target, audit::Answered::AccountStore);
+            audit_refused(proxy, at, target, audit::Answered::AccountStore);
             Err(Box::new(NotReady::AccountStore.response()))
         }
     }
@@ -3064,7 +3085,7 @@ async fn admit(
 
 /// Audit a request for `target` refused before anything was decided, with no account: its
 /// token was not accepted. A request for neither metadata nor an artifact gets no line.
-fn audit_refused(proxy: &Proxy, target: &RequestTarget, answered: audit::Answered) {
+fn audit_refused(proxy: &Proxy, at: Repository, target: &RequestTarget, answered: audit::Answered) {
     let (key, version) = match target {
         RequestTarget::Metadata(key) => (key, None),
         RequestTarget::Artifact {
@@ -3074,7 +3095,7 @@ fn audit_refused(proxy: &Proxy, target: &RequestTarget, answered: audit::Answere
         } => (key, Some(claimed_version.as_str())),
         RequestTarget::Manifest { .. } | RequestTarget::Other => return,
     };
-    if let Some(line) = undecided_line(proxy, key, version, answered, None) {
+    if let Some(line) = undecided_line(proxy, at, key, version, answered, None) {
         write_audit(proxy, &line);
     }
 }
@@ -3564,9 +3585,14 @@ impl Exchange<'_> {
                 },
             ),
             (None, RequestTarget::Metadata(key)) => {
-                if let Some(line) =
-                    undecided_line(self.proxy, key, None, failed, self.account.as_deref())
-                {
+                if let Some(line) = undecided_line(
+                    self.proxy,
+                    self.repository,
+                    key,
+                    None,
+                    failed,
+                    self.account.as_deref(),
+                ) {
                     write_audit(self.proxy, &failure(line));
                 }
             }
@@ -4160,6 +4186,13 @@ async fn intel_for(
     Err(NotReady::Unanswered)
 }
 
+/// Where a resolution line is written, the account it names and the repository it was read from.
+struct Auditing<'a> {
+    log: &'a AuditLog,
+    account: Option<&'a str>,
+    at: Repository,
+}
+
 /// The versions in this metadata document the policy refuses, every one asked, with
 /// checks the record cannot answer dropped. Publish times come from the records alone.
 fn policy_refused_versions(
@@ -4167,7 +4200,7 @@ fn policy_refused_versions(
     policy: Option<&Policy>,
     intel: Option<&PackageIntel>,
     path: &str,
-    audit: Option<(&AuditLog, Option<&str>)>,
+    audit: Option<Auditing<'_>>,
     mode: Mode,
 ) -> Refused {
     let Some(policy) = policy else {
@@ -4201,7 +4234,7 @@ fn policy_refused_versions(
         refused.insert(record.package.version().to_owned());
     }
 
-    if let Some((audit, account)) = audit
+    if let Some(Auditing { log, account, at }) = audit
         && !order.is_empty()
     {
         let unenforceable = metadata
@@ -4226,8 +4259,9 @@ fn policy_refused_versions(
             &unenforceable,
         )
         .with_intel_snapshot(intel.map(|i| i.snapshot.as_str()))
-        .with_account(account);
-        audit.write(&match mode {
+        .with_account(account)
+        .with_repository(at);
+        log.write(&match mode {
             Mode::Enforce => event,
             Mode::Observe => event.answered(audit::Answered::Served),
         });
@@ -6031,7 +6065,11 @@ mod tests {
             Some(&policy),
             None,
             "/npm/pkg",
-            Some((&log, Some("ci"))),
+            Some(Auditing {
+                log: &log,
+                account: Some("ci"),
+                at: Repository::of(Ecosystem::Npm),
+            }),
             Mode::Enforce,
         );
         assert_eq!(refused.versions.len(), 2);
@@ -6838,9 +6876,11 @@ mod tests {
         let (portal, from_portal) =
             recorded(vec![Answer::Typed("text/xml", fixture.clone())]).await;
         let plugins = Repository::named("gradle-plugins").expect("the portal");
+        let (dir, audit, log) = audit_log("audit-portal");
         let proxy = offline(None, Some(DENY_LANG3))
             .with_upstream(Ecosystem::Maven, format!("http://{central}/maven2"))
-            .with_upstream(plugins, format!("http://{portal}/m2"));
+            .with_upstream(plugins, format!("http://{portal}/m2"))
+            .with_audit_log(Some(log));
         let base = serve(proxy.clone().router()).await;
         let path = LANG3_METADATA.replacen("/maven/", "/gradle-plugins/", 1);
         let served = reqwest::get(format!("{base}{path}")).await.unwrap();
@@ -6863,6 +6903,10 @@ mod tests {
         let store = proxy.store.lock().unwrap();
         assert!(store.holds(plugins, &key));
         assert!(!store.holds(Repository::of(Ecosystem::Maven), &key));
+        let lines = audited(&audit);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].repository.as_deref(), Some("gradle-plugins"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The repository's sidecar is forwarded for a document served as it came, or one that
@@ -8682,8 +8726,10 @@ mod tests {
         let (dir, path, log) = audit_log("audit-gate-none");
         let key = PackageKey::from_registry_name(Ecosystem::Npm, "widget").unwrap();
         let unpoliced = offline(None, None).with_audit_log(Some(log.clone()));
+        let at = Repository::of(Ecosystem::Npm);
         audit_refused(
             &unpoliced,
+            at,
             &RequestTarget::Metadata(key.clone()),
             audit::Answered::Unauthorized,
         );
@@ -8693,7 +8739,7 @@ mod tests {
             retry_after: 1,
         };
         let policed = offline(None, Some(ALLOW_ALL)).with_audit_log(Some(log));
-        audit_not_ready(&policed, &key, Some("1.0.0"), &analysing, None);
+        audit_not_ready(&policed, at, &key, Some("1.0.0"), &analysing, None);
         assert!(audited(&path).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

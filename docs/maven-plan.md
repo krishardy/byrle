@@ -392,7 +392,9 @@ Q2, Q7 and Q9 otherwise.
       `BYRLE_UPSTREAM_GRADLE_PLUGINS`, and its `maven-metadata.xml` filtered and kept as
       the portal's.
    2. Detections and signature results keyed by repository, and `repository` in the
-      audit log and `Decided`.
+      audit log and `Decided`. Done 2026-10-17: migrations 0027 and 0028; the signing
+      detector is made for each repository; a line names `gradle-plugins`, and none for
+      an ecosystem's own repository. The console's usage tables do not name it yet.
    3. The portal's claims: a 303 to `plugins-artifacts.gradle.org` is a claim of the
       sha256 in its path; a 303 to Central is decided as `/maven/` decides it.
    4. A Gradle build using a plugin only the portal serves, through the proxy.

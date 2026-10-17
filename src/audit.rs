@@ -74,6 +74,9 @@ pub struct Event {
     pub at: String,
     pub path: DecisionPath,
     pub ecosystem: String,
+    /// The repository served from, absent for its ecosystem's own: `gradle-plugins`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<String>,
     pub name: String,
     /// The version decided on. Absent on a resolution event, which decides many.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -321,6 +324,7 @@ impl Default for Event {
             at: String::new(),
             path: DecisionPath::Pinned,
             ecosystem: String::new(),
+            repository: None,
             name: String::new(),
             version: None,
             action: String::new(),
@@ -363,6 +367,7 @@ impl Event {
             at: now(),
             path: DecisionPath::Pinned,
             ecosystem: ecosystem.to_owned(),
+            repository: None,
             name: name.to_owned(),
             version: Some(version.to_owned()),
             action: decision.action().as_str().to_owned(),
@@ -431,6 +436,17 @@ impl Event {
         self
     }
 
+    /// The same, served from `at`, which is written when it is not its ecosystem's own.
+    pub fn with_repository(self, at: crate::ecosystem::Repository) -> Self {
+        self.with_repository_named((!at.is_own()).then(|| at.name().to_owned()))
+    }
+
+    /// The same, naming `repository` as another line did.
+    pub fn with_repository_named(mut self, repository: Option<String>) -> Self {
+        self.repository = repository;
+        self
+    }
+
     /// Record the status the upstream answered.
     pub fn with_upstream_status(mut self, status: u16) -> Self {
         self.upstream_status = Some(status);
@@ -479,6 +495,7 @@ impl Event {
             at: now(),
             path: DecisionPath::Resolution,
             ecosystem: ecosystem.to_owned(),
+            repository: None,
             name: name.to_owned(),
             version: None,
             action: action.to_owned(),
