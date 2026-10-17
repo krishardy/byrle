@@ -402,7 +402,26 @@ Q2, Q7 and Q9 otherwise.
       `BYRLE_UPSTREAM_MAVEN`, is Central's request: fetched from `BYRLE_UPSTREAM_MAVEN`,
       kept and audited as Central's. The portal answers so for a Central artifact's
       `maven-metadata.xml` too.
-   4. A Gradle build using a plugin only the portal serves, through the proxy.
+   4. A Gradle build using a plugin only the portal serves, through the proxy. Run
+      2026-10-17: Gradle 9.8.1, a fresh Gradle home, an init script pointing
+      `pluginManagement` at `/gradle-plugins/` and every project repository at `/maven/`,
+      plugins `com.github.ben-manes.versions` 0.52.0 and `org.springframework.boot`
+      3.5.6, and `commons-lang3` 3.17.0:
+
+      | Run | Result |
+      |---|---|
+      | cold, `provenance: block` | 11 tries failed on 503s while claims were checked, then the 12th on 403: `gradle-versions-plugin-0.52.0.jar` "publishes no attestation, and 0.11.1, published before it, did" |
+      | with `provenance: allow` for that artifact | failed once on a 503, then succeeded |
+
+      107 paths under `/gradle-plugins/` the portal redirected to Central were decided as
+      Central's. 3 jars were claimed from the sha256 in their redirect:
+      `gradle-versions-plugin-0.52.0`, `spring-boot-gradle-plugin-3.5.6` and
+      `dependency-management-plugin-1.1.7`. Each marker's `.jar`, which the portal
+      answers 404, was answered 403 for no claim; Gradle went on without it.
+      gradle-versions-plugin was published to Central signed up to 0.11.1 in 2015, and
+      to the portal unsigned since. The portal redirects 0.11.1's `.asc` to Central, so
+      each later version reads as a signature dropped, as npm's provenance does within
+      `BYRLE_PROVENANCE_HISTORY` versions.
 6. `gradle.lockfile` for `warm`, `policy diff` and `lockfile verify`. mvn writes no
    lockfile.
 7. `byrle doctor` for mvn and Gradle:

@@ -3,7 +3,8 @@
 - **Number:** 0115
 - **Status:** Decided by the user 2026-10-17: the repository carried through the request,
   with a `Repository` type in each store's key and a `repository` field in each record.
-  Not yet implemented: step 5 of [maven-plan](../maven-plan.md).
+  Implemented 2026-10-17, step 5 of [maven-plan](../maven-plan.md), but for the console's
+  usage tables.
 - **Related:** [ecosystem-path-prefixes](0111-ecosystem-path-prefixes.md),
   [maven-digests](0112-maven-digests.md), [maven-signatures](0113-maven-signatures.md)
 
@@ -76,6 +77,8 @@ Its costs, and what is done for each:
   first, as 0112 claims one from Central's.
 - A 303 to `repo.maven.apache.org` is fetched from `BYRLE_UPSTREAM_MAVEN` at the same path
   and decided as `/maven/` decides it, so an operator's mirror of Central is not bypassed.
+  The portal answers so for a Central artifact's `maven-metadata.xml` too, so where each
+  path is is asked with a `HEAD` before it is decided, and kept once read.
 - A signature's result is stored by repository and sha256. `spring-boot-gradle-plugin-3.5.6.jar`
   is the same bytes on both, and each repository's history of `.asc`s is its own.
 - `BYRLE_UPSTREAM_GRADLE_PLUGINS`, default `https://plugins.gradle.org/m2`.
