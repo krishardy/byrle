@@ -15,8 +15,8 @@ the default, refuses a version when:
 | Case | 0066's | Maven's |
 |---|---|---|
 | 1 | an attestation that fails verification | a jar's `.asc` that fails verification |
-| 2 | none, after a version with one | no `.asc`, after a version with a verified one |
-| 3 | a repository and workflow file no attested version from `provenance_window_days` before used | a primary key no version of the artifact signed `provenance_window_days` or more before used |
+| 2 | none, after a version with one | no `.asc`, after a version with one |
+| 3 | a repository and workflow file no attested version from `provenance_window_days` before used | not refused: a signal, `signing_key_new`, weight 1, when no version of the artifact signed `provenance_window_days` or more before used the primary key |
 
 The artifact is `groupId:artifactId`. Its earlier versions are looked through as 0066
 looks, most recent first, up to `BYRLE_PROVENANCE_HISTORY`, and each version's key is kept
@@ -33,7 +33,32 @@ A signature verifies when all of these hold:
 
 A `.pom` and a `.module` whose `.asc` fails verification are refused as a file changed
 on the way, 502, as one whose digest differs is ([maven-digests](0112-maven-digests.md)).
-They are not decided by cases 2 and 3, as a `.pom` is never refused by policy.
+They are not decided by cases 2 and 3, as a `.pom` is never refused by policy. Its first
+fetch is 503 while a job reads its `.asc` and key, as a jar's is, so no key server is
+asked while a client waits; decided by the user 2026-10-17.
+
+## Amended 2026-10-17: case 3 a signal, and earlier versions read unverified
+
+Measured over the 92 artifacts of mvn's Spring Boot 3.5.6 build, 9,773 versions, each
+version's signer read from its `.asc` and its time from its `.pom`, window 7 days:
+
+| Case 3 as | Versions the build fetched refused | All versions refused |
+|---|---|---|
+| per artifact, by key id as the signature writes it | 14 of 92 | 480 of 9,773 |
+| per artifact, by primary key | 13 of 92 | |
+| pooled by `groupId`, by key id, this build's artifacts only | 8 of 92 | 366 of 9,773 |
+
+Of the 13, 11 are Apache Maven's own plugins and libraries, each release signed by its
+release manager's key: `maven-jar-plugin` had 11 primary keys before 3.5.1. Case 2 refused
+0 of the 92 fetched, and 21 of the 9,773 versions in 9 artifacts, 13 of them `asm`'s.
+
+Decided by the user 2026-10-17: case 3 is a signal, `signing_key_new`, weight 1, as
+cargo's `trustpub_repository_changed` is; cases 1 and 2 refuse under `provenance: block`.
+
+An earlier version's `.asc` is read for whether it is there and which key it names, not
+verified against its jar, which would mean fetching every earlier jar. Central does not
+replace a published file, so an attacker publishing a new version cannot change an earlier
+one's `.asc`.
 
 ## Measured 2026-10-16, over the 94 jars of mvn's Spring Boot 3.5.6 build
 
@@ -101,5 +126,6 @@ after it. A compromised key is caught by its revocation, whatever the date.
 | `pgp` (rPGP) | 0.21.0 | MIT OR Apache-2.0 |
 | `sequoia-openpgp` | 2.4.2 | LGPL-2.0-or-later |
 
-Chosen in step 4.5, against the 93 signatures above. byrle is Apache-2.0 and ships one
-static binary.
+`pgp` 0.21.0 is chosen. With it and this decision's rules, 93 of 93 signatures verified;
+byrle is Apache-2.0 and ships one static binary. It builds `rsa`, accepted for verification
+in [sqlx-0-8-and-rsa-advisory](0028-sqlx-0-8-and-rsa-advisory.md).

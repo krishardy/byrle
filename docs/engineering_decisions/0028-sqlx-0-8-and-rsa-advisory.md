@@ -1,7 +1,7 @@
 # sqlx held at 0.8, and RUSTSEC-2023-0071 accepted while `rsa` is not built
 
 - **Number:** 0028
-- **Status:** Implemented
+- **Status:** Implemented. Amended 2026-10-17: `rsa` is built for `pgp`
 - **Where:** `Cargo.toml` (sqlx `0.8`), `scripts/make/dev-setup.sh` (sqlx-cli `0.8`),
   `scripts/make/check-deps.sh` (the ignore and its premise check)
 - **Related:** [storage-sqlx-postgres](0025-storage-sqlx-postgres.md)
@@ -78,6 +78,23 @@ Evidence, 2026-09-13:
 The premise check was mutation-tested. With its pattern changed from `rsa v` to `sqlx v`, a
 crate that is built, `make check-deps` printed `rsa IS in the build. The RUSTSEC-2023-0071
 exception no longer holds.` and exited 2.
+
+### Amended 2026-10-17: `rsa` is built, for `pgp` alone
+
+`pgp` 0.21.0, which verifies Maven's PGP signatures
+([maven-signatures](0113-maven-signatures.md)), depends on `rsa` 0.9.10, and RSA cannot be
+left out of it: most signatures on Central are RSA. Decided by the user 2026-10-17: the
+advisory is accepted while `rsa` is built only for `pgp`. The advisory's leak is in RSA's
+private-key operations, decryption and signing; byrle holds no private key and calls `pgp`
+only to verify a signature with a public key.
+
+`make check-deps` passes the ignore while `cargo tree -e normal --target all -i rsa
+--depth 1` names `pgp` as `rsa`'s only dependent, and fails when anything else depends on
+it. With the check changed to expect a dependent named `pgpx`, `make check-deps` printed
+`rsa is built for pgp, not pgp alone.` and exited 2.
+
+`pgp` adds 87 crates to the build. With `pgp`, their 88 licences are 63 MIT and Apache-2.0,
+either, 17 MIT, 4 BSD-3-Clause, 3 MIT or Apache-2.0 or a BSD, and 1 Zlib.
 
 ## Alternatives considered
 

@@ -75,20 +75,22 @@ if ! cargo audit --version >/dev/null 2>&1; then
     exit 1
 fi
 
-# RUSTSEC-2023-0071 is against `rsa`, which reaches Cargo.lock through `sqlx-mysql`.
-# We build Postgres only, so `rsa` is never compiled: `cargo tree -e normal --target all`
-# finds no `rsa`. cargo-audit reads the lockfile rather than the build, so it reports a
-# crate that is not shipped.
+# RUSTSEC-2023-0071 is against `rsa`: its private-key operations leak timing (Marvin). It is
+# compiled for `pgp`, which byrle calls only to verify Maven signatures with public keys,
+# and is in Cargo.lock through `sqlx-mysql` as well, which is not built
+# (docs/engineering_decisions/0028-sqlx-0-8-and-rsa-advisory.md).
 #
-# The premise is asserted rather than trusted. Enabling a MySQL feature would put `rsa` in
-# the build and this check fails loudly instead of the ignore quietly covering it.
-note "RUSTSEC-2023-0071 premise: rsa is not compiled"
-if grep -q 'rsa v' < <(cargo tree -e normal --target all 2>/dev/null); then
-    echo "    rsa IS in the build. The RUSTSEC-2023-0071 exception no longer holds."
-    echo "    Remove the --ignore below and deal with the advisory."
+# The premise is asserted rather than trusted: anything but `pgp` depending on `rsa` in the
+# build fails this check instead of the ignore quietly covering it.
+note "RUSTSEC-2023-0071 premise: rsa is built only for pgp"
+dependents="$(cargo tree -e normal --target all -i rsa --depth 1 --prefix none 2>/dev/null \
+    | awk '$1 != "rsa" {print $1}' | sort -u || true)"
+if [[ -n "$dependents" && "$dependents" != "pgp" ]]; then
+    echo "    rsa is built for $(echo "$dependents" | paste -sd, -), not pgp alone."
+    echo "    The RUSTSEC-2023-0071 exception no longer holds; deal with the advisory."
     failed=1
 else
-    echo "    ok: rsa is in Cargo.lock via sqlx-mysql and is not built"
+    echo "    ok: rsa is built for ${dependents:-nothing}, which only verifies"
     audit_args+=(--ignore RUSTSEC-2023-0071)
 fi
 
