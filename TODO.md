@@ -420,6 +420,14 @@ Items that I've added that are not stage-bound.
     origin not served) stay outside the score, a `version: 2` schema past
     [policy-schema-v1-frozen](docs/engineering_decisions/0030-policy-schema-v1-frozen.md),
     and what candidate weights refuse over the npm, PyPI, cargo, Go and Maven measurements.
+    First item: replace the "dropped" rule for Maven signatures and npm provenance (any
+    attested version among the 64 before it) with a surprise score. P(unsigned) =
+    (weighted unsigned + 1) / (weighted total + 2) over earlier versions, newest weighted
+    most; the signal is -log2 P. Half-life and weight are measured on Central and npm
+    histories first. `gradle-versions-plugin` 0.52.0 is the case: signed 0.1 to 0.4, 0.11
+    and 0.11.1, unsigned for the 44 versions since, and refused today as
+    `Dropped { previous: 0.11.1 }`.
+    Decided 2026-10-17.
 
 ## Architecture Refactor
 
