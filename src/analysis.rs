@@ -20,9 +20,9 @@ use crate::record::DocumentDetail;
 /// The lifecycle scripts an artifact declares, read from the artifact.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct InstallScripts {
-    /// The script names that run on install, in npm's order, or `setup.py` for an sdist.
+    /// What runs on install: npm's scripts, an sdist's `setup.py`, a jar's processor file.
     pub names: Vec<String>,
-    /// Each name's command, for an operator to read. Empty for an sdist.
+    /// Each name's command, or a jar's processor classes. Empty for an sdist.
     pub bodies: Vec<(String, String)>,
 }
 
@@ -59,10 +59,59 @@ impl std::fmt::Display for ReadError {
 pub const MAX_MEMBER_BYTES: usize = 4 * 1024 * 1024;
 
 /// The readers' version, stored with each analysis; bumped whenever a reader's answer changes.
-pub const READER: &str = "install-scripts 3";
+pub const READER: &str = "install-scripts 4";
 
 /// What reads an artifact for the code it runs on install, such as [`npm_install_scripts`].
-pub type Reader = fn(&mut dyn Read) -> Result<InstallScripts, ReadError>;
+pub type Reader = fn(&mut dyn crate::ecosystem::Source) -> Result<InstallScripts, ReadError>;
+
+/// The services file naming the annotation processors javac runs from a jar it is given.
+pub const PROCESSOR_SERVICES: &str = "META-INF/services/javax.annotation.processing.Processor";
+
+/// The annotation processors a jar declares: javac runs each one it finds on the class or
+/// processor path while it compiles. Read from the central directory, which javac's
+/// `ZipFile` reads, so an entry a stream reader would not see is found. The services file at
+/// the root, or a multi-release jar's under `META-INF/versions/`, is read.
+pub fn jar_annotation_processors(
+    jar: &mut dyn crate::ecosystem::Source,
+) -> Result<InstallScripts, ReadError> {
+    let mut archive =
+        zip::ZipArchive::new(jar).map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+    let mut found = InstallScripts::default();
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+        let path = crate::util::zip_name(&entry);
+        let versioned = path
+            .strip_prefix("META-INF/versions/")
+            .and_then(|rest| rest.split_once('/'))
+            .is_some_and(|(_, rest)| rest == PROCESSOR_SERVICES);
+        if path != PROCESSOR_SERVICES && !versioned {
+            continue;
+        }
+        if entry.size() as usize > MAX_MEMBER_BYTES {
+            return Err(ReadError::TooLarge {
+                member: path,
+                limit: MAX_MEMBER_BYTES,
+            });
+        }
+        let mut text = Vec::new();
+        entry
+            .read_to_end(&mut text)
+            .map_err(|e| ReadError::NotAnArchive(e.to_string()))?;
+        let classes: Vec<&str> = std::str::from_utf8(&text)
+            .map_err(|e| ReadError::NotAnArchive(e.to_string()))?
+            .lines()
+            .map(|line| line.split('#').next().unwrap_or_default().trim())
+            .filter(|class| !class.is_empty())
+            .collect();
+        if !classes.is_empty() {
+            found.bodies.push((path.clone(), classes.join(" ")));
+            found.names.push(path);
+        }
+    }
+    Ok(found)
+}
 
 /// The reader for `filename` in `ecosystem`, from its row's [`crate::ecosystem::Registry::reader`].
 pub fn reader(ecosystem: Ecosystem, filename: &str) -> Option<Reader> {
@@ -408,20 +457,163 @@ mod tests {
             br#"{"scripts":{"postinstall":"x"}}"#,
         )]);
         assert_eq!(
-            npm(&mut &package[..]).expect("reads").names,
+            npm(&mut std::io::Cursor::new(&package[..]))
+                .expect("reads")
+                .names,
             ["postinstall"]
         );
         let sdist = reader(Ecosystem::PyPI, "six-1.17.0.tar.gz").expect("an sdist is read");
         let built = tarball(&[("six-1.17.0/setup.py", b"")]);
-        assert_eq!(sdist(&mut &built[..]).expect("reads").names, ["setup.py"]);
+        assert_eq!(
+            sdist(&mut std::io::Cursor::new(&built[..]))
+                .expect("reads")
+                .names,
+            ["setup.py"]
+        );
         assert!(reader(Ecosystem::PyPI, "six-1.17.0-py2.py3-none-any.whl").is_none());
         let krate = reader(Ecosystem::Cargo, "serde-1.0.229.crate").expect("a .crate is read");
         let built = tarball(&[(
             "serde-1.0.229/Cargo.toml",
             b"[package]\nbuild = \"build.rs\"\n",
         )]);
-        assert_eq!(krate(&mut &built[..]).expect("reads").names, ["build.rs"]);
+        assert_eq!(
+            krate(&mut std::io::Cursor::new(&built[..]))
+                .expect("reads")
+                .names,
+            ["build.rs"]
+        );
         assert!(reader(Ecosystem::Cargo, "serde-1.0.229.tar.gz").is_none());
+        let jar = reader(Ecosystem::Maven, "lombok-1.18.42.jar").expect("a jar is read");
+        let built =
+            crate::util::test_support::zip_of(&[(PROCESSOR_SERVICES, b"lombok.Processor\n")]);
+        assert_eq!(
+            jar(&mut std::io::Cursor::new(&built[..]))
+                .expect("reads")
+                .names,
+            [PROCESSOR_SERVICES]
+        );
+        assert!(reader(Ecosystem::Maven, "lombok-1.18.42.pom").is_none());
+    }
+
+    fn processors(jar: &[u8]) -> Result<InstallScripts, ReadError> {
+        jar_annotation_processors(&mut std::io::Cursor::new(jar))
+    }
+
+    /// Each class the services file names, comments and blank lines dropped, at the root
+    /// or under a multi-release version; a file naming none, or elsewhere, runs nothing.
+    #[test]
+    fn a_jar_declaring_an_annotation_processor_has_install_scripts() {
+        let found = processors(&crate::util::test_support::zip_of(&[
+            ("lombok/Lombok.class", b"\xca\xfe"),
+            (
+                PROCESSOR_SERVICES,
+                b"# processors\nlombok.launch.AnnotationProcessorHider$AnnotationProcessor\n\n\
+                  lombok.launch.AnnotationProcessorHider$ClaimingProcessor # claims\n",
+            ),
+        ]))
+        .unwrap();
+        assert!(found.runs_on_install());
+        assert_eq!(
+            found.bodies,
+            [(
+                PROCESSOR_SERVICES.to_owned(),
+                "lombok.launch.AnnotationProcessorHider$AnnotationProcessor \
+                 lombok.launch.AnnotationProcessorHider$ClaimingProcessor"
+                    .to_owned()
+            )]
+        );
+        let versioned = format!("META-INF/versions/11/{PROCESSOR_SERVICES}");
+        let found =
+            processors(&crate::util::test_support::zip_of(&[(&versioned, b"a.B")])).unwrap();
+        assert_eq!(found.names, [versioned]);
+        for quiet in [
+            crate::util::test_support::zip_of(&[(PROCESSOR_SERVICES, b"# none\n\n")]),
+            crate::util::test_support::zip_of(&[(
+                &format!("BOOT-INF/classes/{PROCESSOR_SERVICES}"),
+                b"a.B",
+            )]),
+            crate::util::test_support::zip_of(&[("META-INF/versions/11", b"")]),
+            crate::util::test_support::zip_of(&[("META-INF/services/java.sql.Driver", b"a.B")]),
+            crate::util::test_support::zip_of(&[]),
+        ] {
+            assert_eq!(processors(&quiet).unwrap(), InstallScripts::default());
+        }
+    }
+
+    /// Bytes before the first local header stop a reader walking local headers from the
+    /// start; the central directory, which javac's `ZipFile` reads, still lists the entry.
+    #[test]
+    fn a_jar_is_read_from_its_central_directory() {
+        let mut prefixed = b"#!/bin/sh\nexec java -jar \"$0\"\n".to_vec();
+        prefixed.extend(crate::util::test_support::zip_of(&[(
+            PROCESSOR_SERVICES,
+            b"evil.Processor",
+        )]));
+        let mut stream = std::io::Cursor::new(&prefixed[..]);
+        assert!(!matches!(
+            zip::read::read_zipfile_from_stream(&mut stream),
+            Ok(Some(_))
+        ));
+        assert_eq!(processors(&prefixed).unwrap().names, [PROCESSOR_SERVICES]);
+    }
+
+    /// An entry in a compression this build cannot read, or whose bytes do not match its
+    /// CRC, is an error, as an archive that does not read is.
+    #[test]
+    fn a_jar_entry_that_cannot_be_read_is_an_error() {
+        let built = crate::util::test_support::zip_of(&[(PROCESSOR_SERVICES, b"evil.Processor")]);
+        let central = built
+            .windows(4)
+            .position(|w| w == b"PK\x01\x02")
+            .expect("a central directory");
+        let mut unsupported = built.clone();
+        unsupported[central + 10..central + 12].copy_from_slice(&12u16.to_le_bytes());
+        assert!(matches!(
+            processors(&unsupported),
+            Err(ReadError::NotAnArchive(_))
+        ));
+        let mut corrupt = built.clone();
+        let at = corrupt
+            .windows(4)
+            .position(|w| w == b"evil")
+            .expect("the entry's bytes");
+        corrupt[at] = b'E';
+        assert!(matches!(
+            processors(&corrupt),
+            Err(ReadError::NotAnArchive(_))
+        ));
+    }
+
+    /// Bytes that are not a zip, a services file over the ceiling or not UTF-8, are errors.
+    #[test]
+    fn a_jar_that_cannot_be_read_is_an_error() {
+        assert!(matches!(
+            processors(b"not a zip"),
+            Err(ReadError::NotAnArchive(_))
+        ));
+        let at_ceiling = vec![b'a'; MAX_MEMBER_BYTES];
+        assert!(
+            processors(&crate::util::test_support::zip_of(&[(
+                PROCESSOR_SERVICES,
+                &at_ceiling
+            )]))
+            .is_ok()
+        );
+        let over = vec![b'a'; MAX_MEMBER_BYTES + 1];
+        assert!(matches!(
+            processors(&crate::util::test_support::zip_of(&[(
+                PROCESSOR_SERVICES,
+                &over
+            )])),
+            Err(ReadError::TooLarge { .. })
+        ));
+        assert!(matches!(
+            processors(&crate::util::test_support::zip_of(&[(
+                PROCESSOR_SERVICES,
+                b"\xff\xfe"
+            )])),
+            Err(ReadError::NotAnArchive(_))
+        ));
     }
 
     /// Read from the published `.crate` files on 2026-10-14. libc 0.2.0's manifest names no

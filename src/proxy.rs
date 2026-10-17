@@ -1903,13 +1903,27 @@ impl<'a> Deciding<'a> {
             crate::analysis::run::ClaimKnown::Failed(why) => (record, Some(Claiming::Failed(why))),
             crate::analysis::run::ClaimKnown::Unknown => {
                 let ArtifactRequest {
-                    ecosystem, path, ..
+                    ecosystem,
+                    path,
+                    filename,
+                    key,
+                    claimed_version,
+                    ..
                 } = self.request;
+                let reads = crate::analysis::reader(ecosystem, filename).map(|reader| {
+                    crate::analysis::run::Reads {
+                        reader,
+                        ecosystem: ecosystem.as_str().to_owned(),
+                        name: key.registry_name(),
+                        version: claimed_version.to_owned(),
+                    }
+                });
                 let job = crate::analysis::run::ClaimJob {
                     claim: claim.artifact,
                     url: upstream_url(self.proxy, ecosystem, path, None),
                     digest: claim.artifact_digest,
                     signer: claim.signer,
+                    reads,
                 };
                 (record, Some(Claiming::Pending(job)))
             }
@@ -3219,6 +3233,7 @@ impl Exchange<'_> {
                     url: upstream_url(self.proxy, self.ecosystem, path, None),
                     digest: claim.artifact_digest,
                     signer: Some(signer),
+                    reads: None,
                 });
                 info!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %purl, byrle.artifact.claim = %claim.manifest, "deferred: the manifest has not been checked");
                 ArtifactStep::Answer(
@@ -6894,7 +6909,7 @@ mod tests {
     /// their sha256. A jar whose bytes differ from its sidecar's, as served below, is 502.
     #[tokio::test]
     async fn a_maven_jar_is_served_against_the_sha256_of_the_bytes_its_sidecar_names() {
-        let jar = b"the jar's bytes".to_vec();
+        let jar = crate::util::test_support::zip_of(&[("org/apache/A.class", b"\xca\xfe")]);
         let claimed = format!("sha1:{}", crate::ecosystem::maven::digest::sha1(&jar));
         for (served, label) in [
             (jar.clone(), "maven-jar"),
@@ -6938,6 +6953,50 @@ mod tests {
                         &jar
                     )))
                 );
+            }
+        }
+    }
+
+    /// A jar declaring an annotation processor is read in its claim job, with no second
+    /// deferral: refused by `install_scripts: block`, the default, served under `allow`.
+    #[tokio::test]
+    async fn a_maven_jar_declaring_an_annotation_processor_has_install_scripts() {
+        let jar = crate::util::test_support::zip_of(&[(
+            crate::analysis::PROCESSOR_SERVICES,
+            b"lombok.launch.AnnotationProcessorHider$AnnotationProcessor\n",
+        )]);
+        for (policy, label) in [
+            (NO_POLICY, "maven-processor"),
+            (
+                "version: 1\ncooldown_days: 0\ninstall_scripts: allow\n",
+                "maven-processor-allowed",
+            ),
+        ] {
+            let sidecars = maven_repository(jar.clone(), b"<project/>".to_vec(), true).await;
+            let files = maven_repository(jar.clone(), b"<project/>".to_vec(), false).await;
+            let client =
+                crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+            let analyser = Arc::new(crate::analysis::run::tests::analyser(
+                label,
+                1 << 20,
+                Arc::new(crate::analysis::store::InProcess::new(8)),
+            ));
+            let proxy = offline(None, Some(policy))
+                .with_upstream(Ecosystem::Maven, &files)
+                .with_client(Ecosystem::Maven, Arc::new(client))
+                .with_analyser(Some(analyser.clone()));
+            assert!(matches!(
+                pinned(&proxy, LANG3_17_JAR).await,
+                ArtifactStep::Answer(_)
+            ));
+            analyser.ended(1).await;
+            let step = pinned(&proxy, LANG3_17_JAR).await;
+            if policy == NO_POLICY {
+                let (status, body) = refused(step).await;
+                assert_eq!(status, 403, "{body}");
+                assert!(body.contains("install_scripts"), "{body}");
+            } else {
+                assert!(fetched(&step), "{label}");
             }
         }
     }

@@ -265,7 +265,6 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> Vec<u8> {
     }
 }
 
-/// A gzipped tar holding `files`, as an npm tarball or an sdist is.
 /// A stored (uncompressed) zip, so a test can place exact bytes in it.
 pub fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
     use std::io::Write as _;
@@ -279,6 +278,7 @@ pub fn zip_of(entries: &[(&str, &[u8])]) -> Vec<u8> {
     writer.finish().expect("finish archive").into_inner()
 }
 
+/// A gzipped tar holding `files`, as an npm tarball or an sdist is.
 pub fn tarball(files: &[(&str, &[u8])]) -> Vec<u8> {
     let mut builder = tar::Builder::new(Vec::new());
     for (path, bytes) in files {

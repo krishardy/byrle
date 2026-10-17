@@ -100,7 +100,7 @@ pub const REGISTRY: Registry = Registry {
         )?;
         Some(Box::new(Packument(packument)))
     },
-    reader: |_| Some(crate::analysis::npm_install_scripts),
+    reader: |_| Some(|file| crate::analysis::npm_install_scripts(file)),
     layout: |_| Some(crate::analysis::source::Layout::Tar),
     source: |record| {
         let repository = record.repository.as_ref()?;

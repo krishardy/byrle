@@ -1,4 +1,4 @@
-reader: install-scripts 3
+reader: install-scripts 4
 
 npm, every install lifecycle script and two others: runs ["preinstall", "install", "postinstall"], bodies [("preinstall", "a"), ("install", "b"), ("postinstall", "c")]
 npm, only scripts that do not run on install: runs [], bodies []

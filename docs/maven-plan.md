@@ -373,7 +373,13 @@ Q2, Q7 and Q9 otherwise.
          window of the versions read, which a test added after kills.
    6. Annotation processors (Q4): a jar holding
       `META-INF/services/javax.annotation.processing.Processor` has install scripts.
-      A plugin jar is decided as any other (Q5).
+      A plugin jar is decided as any other (Q5). Done 2026-10-17: read in the claim
+      job, so the jar is decided with no second 503 (0062, amended). lombok,
+      log4j-core, auto-value and hibernate-jpamodelgen were refused through the proxy
+      under `install_scripts: block`.
+      A cold Spring Boot build: BUILD SUCCESS in 280 s, 94 jars read in their claim
+      jobs. `make mutants`: 22 mutants, 14 caught, 7 unviable, 1 missed, the member
+      ceiling's boundary, which a test added after kills.
 5. The plugin portal under `/gradle-plugins/` (Q8): a second upstream of the Maven row,
    relaying `plugins.gradle.org/m2` and following its 303s. A 303 to
    `plugins-artifacts.gradle.org` carries the file's sha256 in its path, which is the

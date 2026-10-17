@@ -11,6 +11,8 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
 use super::{Analyser, InFlight, ms};
+use crate::analysis::Reader;
+use crate::analysis::store::Analysis;
 use crate::ecosystem::{Material, Signature, Signer};
 use crate::integrity::Sri;
 use crate::spool::{Spooled, WriteError};
@@ -27,6 +29,17 @@ pub struct ClaimJob {
     pub digest: fn(std::fs::File) -> Result<String, String>,
     /// What checks the artifact's signature, where its registry signs files.
     pub signer: Option<Arc<dyn Signer>>,
+    /// What reads it for install scripts, stored under the sha256 found, where one reads it.
+    pub reads: Option<Reads>,
+}
+
+/// A reader for a claimed artifact, and the version it is read as.
+#[derive(Debug, Clone)]
+pub struct Reads {
+    pub reader: Reader,
+    pub ecosystem: String,
+    pub name: String,
+    pub version: String,
 }
 
 /// What is known about a claim.
@@ -131,10 +144,13 @@ impl Analyser {
             Some(Err(why)) => return self.claim_failed(job, why),
             None => return,
         };
-        let file = spooled.reader();
+        let (file, read_file) = (spooled.reader(), spooled.reader());
         match digest_of(spooled, job.digest).await {
             Ok(found) if found == job.claim => {
                 if !self.store_signature(job, &digest, material, file).await {
+                    return;
+                }
+                if !self.store_read(job, &digest, read_file).await {
                     return;
                 }
                 if let Err(e) = self.store.put_claimed(&job.claim, &digest).await {
@@ -173,6 +189,34 @@ impl Analyser {
             return false;
         }
         info!(url.full = %job.url, byrle.artifact.signature = ?signature, "signature checked against the artifact's bytes");
+        true
+    }
+
+    /// Store what `job`'s reader finds in `file`, the bytes with `digest`, so the request after
+    /// the claim reads nothing. Whether the claim may be stored after it.
+    async fn store_read(
+        &self,
+        job: &ClaimJob,
+        digest: &Sri,
+        file: std::io::Result<std::fs::File>,
+    ) -> bool {
+        let Some(reads) = &job.reads else {
+            return true;
+        };
+        let Some(scripts) = super::read(&job.url, file, reads.reader).await else {
+            return false;
+        };
+        let analysis = Analysis {
+            ecosystem: reads.ecosystem.clone(),
+            name: reads.name.clone(),
+            version: reads.version.clone(),
+            scripts,
+        };
+        if let Err(e) = self.store.put(digest, &analysis).await {
+            warn!(url.full = %job.url, error.message = %e, "claim check: the artifact's analysis not stored");
+            return false;
+        }
+        info!(url.full = %job.url, byrle.artifact.digest = %digest, byrle.artifact.scripts = ?analysis.scripts.names(), "artifact analysed");
         true
     }
 
@@ -281,6 +325,7 @@ mod tests {
             url,
             digest: crate::ecosystem::go::dirhash::zip_h1::<std::fs::File>,
             signer: None,
+            reads: None,
         }
     }
 
@@ -446,6 +491,7 @@ mod tests {
             let addr = scripted(vec![Answer::body(zip())]).await;
             let job = ClaimJob {
                 signer: Some(Arc::new(fake)),
+                reads: None,
                 ..job(QUOTE, format!("http://{addr}/v1.5.2.zip"))
             };
             analyser
@@ -466,6 +512,61 @@ mod tests {
                 "{known:?}"
             );
         }
+    }
+
+    /// What the claim job reads is stored under the bytes' sha256 before the claim; a store
+    /// that cannot keep it keeps no claim, and a file that cannot be opened stores nothing.
+    #[tokio::test]
+    async fn a_claimed_artifact_is_read_before_its_claim_is_stored() {
+        let reads = || {
+            Some(Reads {
+                reader: crate::analysis::jar_annotation_processors,
+                ecosystem: "golang".to_owned(),
+                name: "rsc.io/quote".to_owned(),
+                version: "v1.5.2".to_owned(),
+            })
+        };
+        let store = Arc::new(InProcess::new(8));
+        let analyser = analyser("claim-read", 1 << 20, store.clone());
+        let addr = scripted(vec![Answer::body(zip())]).await;
+        let read = ClaimJob {
+            reads: reads(),
+            ..job(QUOTE, format!("http://{addr}/v1.5.2.zip"))
+        };
+        analyser
+            .start_claim(read.clone())
+            .expect("starts")
+            .await
+            .expect("finishes");
+        let digest = Sri::from_sha256(&Sha256::digest(zip()));
+        let super::super::Known::Analysed(analysis) = analyser.known(&digest).await else {
+            panic!("analysed");
+        };
+        assert_eq!(analysis.scripts.names(), Some(&[][..]));
+        assert_eq!(analysis.version, "v1.5.2");
+        assert_eq!(
+            analyser.claim_known(QUOTE).await,
+            ClaimKnown::Checked(digest.clone())
+        );
+        let gone = Err(std::io::Error::other("gone"));
+        assert!(!analyser.store_read(&read, &digest, gone).await);
+
+        let broken = super::super::tests::analyser(
+            "claim-read-broken",
+            1 << 20,
+            Arc::new(crate::analysis::store::tests::Broken),
+        );
+        let addr = scripted(vec![Answer::body(zip())]).await;
+        let unkept = ClaimJob {
+            reads: reads(),
+            ..job(QUOTE, format!("http://{addr}/v1.5.2.zip"))
+        };
+        broken
+            .start_claim(unkept)
+            .expect("starts")
+            .await
+            .expect("finishes");
+        assert_eq!(broken.claim_known(QUOTE).await, ClaimKnown::Unknown);
     }
 
     /// A store that cannot answer has no signature to give.
@@ -508,6 +609,7 @@ mod tests {
         };
         let job = ClaimJob {
             signer: Some(Arc::new(fake)),
+            reads: None,
             ..job(QUOTE, format!("http://{addr}/v1.5.2.zip"))
         };
         analyser

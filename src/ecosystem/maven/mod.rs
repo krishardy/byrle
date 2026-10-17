@@ -60,7 +60,11 @@ pub const REGISTRY: Registry = Registry {
     upstream: crate::env::UPSTREAM_MAVEN,
     upstream_url,
     read: inspect::read,
-    reader: |_| None,
+    reader: |filename| {
+        filename
+            .ends_with(".jar")
+            .then_some(crate::analysis::jar_annotation_processors as crate::analysis::Reader)
+    },
     layout: |_| None,
     source: |_| None,
     compare_source: |_, _, _| None,
@@ -76,7 +80,9 @@ pub const REGISTRY: Registry = Registry {
     client: |http, upstream, max_bytes| std::sync::Arc::new(Client::new(http, upstream, max_bytes)),
     write: |_| None,
     meaningless: &[Rule::Deprecated, Rule::Yanked],
-    install_scripts_unread: None,
+    install_scripts_unread: Some(
+        "maven-metadata.xml does not say; the .jar is read for annotation processors when it is downloaded",
+    ),
     publishers: Some(signing::made),
     decides_head: true,
     signatures: Some(signature::VERIFIER),
@@ -128,7 +134,8 @@ mod tests {
         (REGISTRY.keep_for_platforms)(&mut files, &[]);
         assert_eq!(files.len(), 1);
         assert!((REGISTRY.provenance_bundle)(b"{}").is_err());
-        assert!((REGISTRY.reader)("x.jar").is_none());
+        assert!((REGISTRY.reader)("x.jar").is_some());
+        assert!((REGISTRY.reader)("x.pom").is_none());
         assert!((REGISTRY.layout)("x.jar").is_none());
         assert!((REGISTRY.source)(&metadata.records[0]).is_none());
         assert!(!(REGISTRY.metadata_names_repository)(&metadata.records[0]));

@@ -89,8 +89,9 @@ pub const REGISTRY: Registry = Registry {
         Some(Box::new(index))
     },
     reader: |filename| {
-        (!filename.ends_with(".whl"))
-            .then_some(crate::analysis::sdist_install_scripts as crate::analysis::Reader)
+        (!filename.ends_with(".whl")).then_some(
+            (|file| crate::analysis::sdist_install_scripts(file)) as crate::analysis::Reader,
+        )
     },
     layout: |filename| {
         use crate::analysis::source::Layout;

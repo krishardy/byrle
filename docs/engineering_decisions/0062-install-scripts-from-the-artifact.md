@@ -33,6 +33,7 @@ claiming `false`.
 | npm | `<top>/package.json`, the manifest directly under the tarball's top directory, as npm unpacks it | `preinstall`, `install`, `postinstall`, in the order npm runs them |
 | PyPI | the sdist | a `setup.py` at the root of its directory, which pip runs to build it |
 | cargo | `<top>/Cargo.toml` in the `.crate` | the build script `package.build` names, or `<top>/build.rs` when it names none, and `[lib] proc-macro = true`. `build = false` is none |
+| Maven | a `.jar`'s central directory | `META-INF/services/javax.annotation.processing.Processor`, or one under `META-INF/versions/<n>/`, naming a class: javac runs each annotation processor it finds on the class path. Comments and blank lines are not classes |
 
 Until 2026-09-27 the npm reader took the first member whose path ended in `package.json`.
 `package/node_modules/x/package.json`, a bundled dependency's manifest listed before the
@@ -105,3 +106,25 @@ reports no vulnerable dependency after it.
 Writing a tar reader by hand was the alternative. npm tarballs use GNU long-name and pax
 headers for long paths, and a reader that missed one of those would report "runs nothing"
 for a package that runs something, which is a false negative on a security check.
+
+## Amended 2026-10-17: a Maven jar's annotation processors
+
+Decided by the user 2026-10-17 (maven-plan Q4): a jar declaring an annotation processor
+has install scripts. The jar is read in its claim job, which already spools it, and the
+analysis is stored under the sha256 of its bytes before the claim, so the request after
+the claim is decided with no second 503. A `Reader` takes a seekable file: the central
+directory is what javac's `ZipFile` reads, and a stream reader walking local headers can
+be shown a different file list.
+
+Fetched through the proxy 2026-10-17, `install_scripts: block`:
+
+| Jar | Processors | Answer |
+|---|---|---|
+| `lombok` 1.18.42 | 2, `lombok.launch.AnnotationProcessorHider$AnnotationProcessor` and `$ClaimingProcessor` | 403 |
+| `log4j-core` 2.25.2 | 2, `GraalVmProcessor` and `PluginProcessor` in `org.apache.logging.log4j.core.config.plugins.processor` | 403 |
+| `auto-value` 1.11.0 | 7, `com.google.auto.value.processor.AutoValueProcessor` among them | 403 |
+| `hibernate-jpamodelgen` 6.6.29.Final | 1, `org.hibernate.processor.HibernateProcessor` | 403 |
+
+None of the 94 jars mvn fetched for a Spring Boot 3.5.6 web project declares one, nor
+any of the 34 Gradle fetched.
+

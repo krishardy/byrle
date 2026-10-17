@@ -25,7 +25,7 @@ mod recording;
 mod sourcing;
 mod virustotal;
 
-pub use claiming::{ClaimJob, ClaimKnown};
+pub use claiming::{ClaimJob, ClaimKnown, Reads};
 pub use virustotal::ScanJob;
 
 pub use crate::util::batched::{BATCH, QUEUE};
@@ -365,7 +365,7 @@ impl Analyser {
             Ok(spooled) => {
                 timings.bytes = spooled.len();
                 let phase = Instant::now();
-                let read = read(job, spooled, reader).await;
+                let read = read(&job.url, spooled.reader(), reader).await;
                 timings.read_ms = ms(phase);
                 read
             }
@@ -466,11 +466,11 @@ fn log_attested(attestation: &Attestation, attested: &Attested, fetch_ms: u64, v
     }
 }
 
-/// What `reader` reads from the spooled artifact. `None` when the file cannot be read.
-async fn read(job: &Job, spooled: Spooled, reader: Reader) -> Option<Scripts> {
+/// What `reader` reads from `file`, the artifact fetched from `url`. `None` when it cannot
+/// be read.
+async fn read(url: &str, file: std::io::Result<std::fs::File>, reader: Reader) -> Option<Scripts> {
     let read = tokio::task::spawn_blocking(move || {
-        let file = spooled.reader()?;
-        Ok(Scripts::of(reader(&mut std::io::BufReader::new(file))))
+        Ok(Scripts::of(reader(&mut std::io::BufReader::new(file?))))
     })
     .await
     .map_err(std::io::Error::other)
@@ -478,7 +478,7 @@ async fn read(job: &Job, spooled: Spooled, reader: Reader) -> Option<Scripts> {
     match read {
         Ok(scripts) => Some(scripts),
         Err(e) => {
-            warn!(url.full = %job.url, error.message = %e, "artifact analysis: the spool file could not be read, nothing stored");
+            warn!(url.full = %url, error.message = %e, "artifact analysis: the spool file could not be read, nothing stored");
             None
         }
     }
@@ -600,7 +600,7 @@ pub(crate) mod tests {
         Job {
             digest: digest.clone(),
             url: url.to_owned(),
-            reader: Some(crate::analysis::npm_install_scripts),
+            reader: Some(|file| crate::analysis::npm_install_scripts(file)),
             ecosystem: "npm".to_owned(),
             name: "widget".to_owned(),
             version: "1.0.0".to_owned(),
@@ -1051,9 +1051,9 @@ pub(crate) mod tests {
             }
         }
         let unread = read(
-            &job(&digest, crate::util::test_support::NO_UPSTREAM),
-            spooled,
-            crate::analysis::npm_install_scripts,
+            crate::util::test_support::NO_UPSTREAM,
+            spooled.reader(),
+            |file| crate::analysis::npm_install_scripts(file),
         )
         .await;
         assert!(unread.is_none());

@@ -65,9 +65,9 @@ pub const REGISTRY: Registry = Registry {
         )))
     },
     reader: |filename| {
-        filename
-            .ends_with(".crate")
-            .then_some(crate::analysis::crate_build_scripts as crate::analysis::Reader)
+        filename.ends_with(".crate").then_some(
+            (|file| crate::analysis::crate_build_scripts(file)) as crate::analysis::Reader,
+        )
     },
     layout: |_| None,
     source: |_| None,
