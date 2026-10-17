@@ -1835,13 +1835,19 @@ impl<'a> Deciding<'a> {
         let ArtifactRequest {
             key,
             claimed_version,
+            filename,
             path,
             account,
             ..
         } = self.request;
-        match self.proxy.config.clients.claim(key, claimed_version).await {
+        let claimed = self
+            .proxy
+            .config
+            .clients
+            .claim(key, claimed_version, filename);
+        match claimed.await {
             Ok(ecosystem::Claimed::Known(claim)) => {
-                info!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %self.purl, byrle.artifact.claim = %claim.artifact, "claimed by the checksum database");
+                info!(url.path = %crate::http::url_path(path), byrle.package.claimed_purl = %self.purl, byrle.artifact.claim = %claim.artifact, "the file's claim is read");
                 Ok(Some(claim))
             }
             Ok(ecosystem::Claimed::NotAsked | ecosystem::Claimed::Unknown) => Ok(None),
@@ -2161,15 +2167,15 @@ impl<'a> Deciding<'a> {
             url.path = %crate::http::url_path(self.request.path), url.query = crate::http::url_query(self.request.path),
             byrle.package.claimed_purl = %self.purl,
             byrle.reason = %why,
-            "refused: the upstream serves bytes the checksum database does not describe"
+            "refused: the upstream serves bytes the claim does not describe"
         );
         let purl = &self.purl;
         ArtifactStep::Answer(
             (
                 StatusCode::BAD_GATEWAY,
                 format!(
-                    "byrle: the upstream served {purl} as bytes the checksum database does \
-                     not describe: {why}\n"
+                    "byrle: the upstream served {purl} as bytes its claim does not \
+                     describe: {why}\n"
                 ),
             )
                 .into_response(),
@@ -3090,8 +3096,12 @@ impl Exchange<'_> {
                 };
                 decide_artifact(self.proxy, request).await
             }
-            RequestTarget::Manifest { key, version } => self.manifest_claim(key, version).await,
-            RequestTarget::Metadata(_) | RequestTarget::Other => {
+            RequestTarget::Manifest {
+                key,
+                version,
+                filename,
+            } if self.method == Method::GET => self.manifest_claim(key, version, filename).await,
+            RequestTarget::Manifest { .. } | RequestTarget::Metadata(_) | RequestTarget::Other => {
                 ArtifactStep::Fetch(ArtifactFetch::default())
             }
         }
@@ -3099,10 +3109,10 @@ impl Exchange<'_> {
 
     /// The claim a manifest's body is checked against. Answers 503 when the database does
     /// not answer, and the refusal status when it holds no record of the version.
-    async fn manifest_claim(&self, key: &PackageKey, version: &str) -> ArtifactStep {
+    async fn manifest_claim(&self, key: &PackageKey, version: &str, file: &str) -> ArtifactStep {
         let purl = purl_of(key, version);
         let path = &self.path;
-        match self.proxy.config.clients.claim(key, version).await {
+        match self.proxy.config.clients.claim(key, version, file).await {
             Ok(ecosystem::Claimed::Known(claim)) => ArtifactStep::Fetch(ArtifactFetch {
                 purl,
                 manifest: Some(claim),
@@ -3110,13 +3120,13 @@ impl Exchange<'_> {
             }),
             Ok(_) => {
                 let status = refusal_status(self.proxy, self.ecosystem, Some(&self.client));
-                warn!(url.path = %crate::http::url_path(path), http.response.status_code = status.as_u16(), byrle.package.claimed_purl = %purl, "not served: the checksum database holds no record of this version");
+                warn!(url.path = %crate::http::url_path(path), http.response.status_code = status.as_u16(), byrle.package.claimed_purl = %purl, "not served: no digest of this file is published to check it against");
                 ArtifactStep::Answer(
                     (
                         status,
                         format!(
-                            "byrle: {purl} cannot be assessed: the checksum database holds no \
-                             record of it\n"
+                            "byrle: {purl} cannot be assessed: no digest of {file} is \
+                             published to check it against\n"
                         ),
                     )
                         .into_response(),
@@ -3248,8 +3258,8 @@ impl Exchange<'_> {
                 (
                     StatusCode::BAD_GATEWAY,
                     format!(
-                        "byrle: the upstream served {purl}'s manifest as bytes the checksum \
-                         database does not describe: {why}\n"
+                        "byrle: the upstream served {purl}'s manifest as bytes its claim does \
+                         not describe: {why}\n"
                     ),
                 )
                     .into_response()
@@ -3890,8 +3900,8 @@ impl NotReady {
                  {ecosystem} package is served unchecked\n"
             ),
             Self::Claim { purl, why } => format!(
-                "byrle: the checksum database gave no proved answer for {purl}, so its \
-                 bytes cannot be checked: {why}\n"
+                "byrle: the claim of {purl}'s files gave no proved answer, so its bytes \
+                 cannot be checked: {why}\n"
             ),
             Self::Analysing { purl, digest, .. } => format!(
                 "byrle: {purl}, {digest}, has not been analysed yet; the analysis has \
@@ -6470,11 +6480,22 @@ mod tests {
                               denials:\n  - purl: pkg:maven/org.apache.commons/commons-lang3@3.21.0\n    \
                               reason: test\n";
 
+    /// A repository on loopback answering 404 to everything: it publishes no sidecar.
+    async fn no_sidecars() -> String {
+        let addr =
+            crate::util::test_support::scripted(vec![crate::util::test_support::Answer::Status(
+                404,
+            )])
+            .await;
+        format!("http://{addr}/maven2")
+    }
+
     /// A refused version leaves `maven-metadata.xml`, and `<release>` names the one below
-    /// it. Its jar is refused, and until step 4.3 so is every jar: none has a strong digest.
+    /// it. Its jar is refused, and so is a jar with no sidecar: it has no strong digest.
     #[tokio::test]
     async fn a_maven_version_the_policy_refuses_leaves_the_metadata() {
-        let proxy = offline(None, Some(DENY_LANG3));
+        let proxy =
+            offline(None, Some(DENY_LANG3)).with_upstream(Ecosystem::Maven, no_sidecars().await);
         let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
         let DocumentStep::Forward {
             body: Some(body),
@@ -6506,7 +6527,8 @@ mod tests {
     /// `HEAD` is refused as a `GET` is, not forwarded.
     #[tokio::test]
     async fn a_head_of_a_refused_jar_is_refused_as_its_get_is() {
-        let proxy = offline(None, Some(DENY_LANG3));
+        let proxy =
+            offline(None, Some(DENY_LANG3)).with_upstream(Ecosystem::Maven, no_sidecars().await);
         let fixture = crate::ecosystem::maven::fixture("commons-lang3.xml");
         resolve(&proxy, LANG3_METADATA, "text/xml", &fixture).await;
         let base = serve(proxy.router()).await;
@@ -6527,16 +6549,15 @@ mod tests {
         assert!(said.contains("blocked by policy"), "{said}");
     }
 
-    /// A `HEAD` the policy allows is forwarded to the repository, under the same path.
+    /// A `HEAD` the policy allows is forwarded to the repository, under the same path, which
+    /// alone answers 200 there.
     #[tokio::test]
     async fn a_head_of_an_allowed_jar_is_forwarded() {
-        let (addr, requests) =
-            crate::util::test_support::recorded(vec![crate::util::test_support::Answer::Status(
-                200,
-            )])
-            .await;
+        let jar = "/maven2/org/apache/commons/commons-lang3/3.21.0/commons-lang3-3.21.0.jar";
+        let router = axum::Router::new().route(jar, axum::routing::get(|| async { "jar" }));
+        let repository = crate::proxy::testing::serve(router).await;
         let proxy = offline(None, Some(NO_POLICY))
-            .with_upstream(Ecosystem::Maven, format!("http://{addr}/maven2"));
+            .with_upstream(Ecosystem::Maven, format!("{repository}/maven2"));
         let key = crate::identity::PackageKey::from_registry_name(
             Ecosystem::Maven,
             "org.apache.commons:commons-lang3",
@@ -6564,13 +6585,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(head.status(), 200);
-        let asked = String::from_utf8(requests.lock().unwrap()[0].clone()).unwrap();
-        assert!(
-            asked.starts_with(
-                "HEAD /maven2/org/apache/commons/commons-lang3/3.21.0/commons-lang3-3.21.0.jar "
-            ),
-            "{asked}"
-        );
     }
 
     /// A proxy answering Maven from a loopback repository that gives `answers` in order.
@@ -6631,14 +6645,14 @@ mod tests {
         assert_eq!(sha1.status(), 200);
         assert_eq!(
             sha1.text().await.unwrap(),
-            crate::ecosystem::maven::paths::sha1(&served)
+            crate::ecosystem::maven::digest::sha1(&served)
         );
         let md5 = reqwest::get(format!("{base}{LANG3_METADATA}.md5"))
             .await
             .unwrap();
         assert_eq!(
             md5.text().await.unwrap(),
-            crate::ecosystem::maven::paths::md5(&served)
+            crate::ecosystem::maven::digest::md5(&served)
         );
         let upstream = "/maven2/org/apache/commons/commons-lang3/maven-metadata.xml";
         assert_eq!(asked(&requests), [upstream, upstream, upstream]);
@@ -6717,6 +6731,160 @@ mod tests {
             .unwrap();
         assert_eq!(document.status(), 503);
         assert_eq!(sha1.status(), 503);
+    }
+
+    /// A Maven repository on loopback serving commons-lang3's metadata, `jar` and `pom` for
+    /// 3.17.0, and `sha1` beside each, and nothing else: no `.sha512` or `.sha256`.
+    async fn maven_repository(jar: Vec<u8>, pom: Vec<u8>, sha1: bool) -> String {
+        let dir = "/maven2/org/apache/commons/commons-lang3";
+        let metadata = crate::ecosystem::maven::fixture("commons-lang3.xml");
+        let digest = |bytes: &[u8]| crate::ecosystem::maven::digest::sha1(bytes);
+        let (jar_sha1, pom_sha1) = (digest(&jar), digest(&pom));
+        let mut router = axum::Router::new()
+            .route(
+                &format!("{dir}/maven-metadata.xml"),
+                axum::routing::get(move || {
+                    let metadata = metadata.clone();
+                    async move { ([(header::CONTENT_TYPE, "text/xml")], metadata) }
+                }),
+            )
+            .route(
+                &format!("{dir}/3.17.0/commons-lang3-3.17.0.jar"),
+                axum::routing::get(move || {
+                    let jar = jar.clone();
+                    async move { jar }
+                }),
+            )
+            .route(
+                &format!("{dir}/3.17.0/commons-lang3-3.17.0.pom"),
+                axum::routing::get(move || {
+                    let pom = pom.clone();
+                    async move { pom }
+                }),
+            );
+        if sha1 {
+            router = router
+                .route(
+                    &format!("{dir}/3.17.0/commons-lang3-3.17.0.jar.sha1"),
+                    axum::routing::get(move || async move { jar_sha1 }),
+                )
+                .route(
+                    &format!("{dir}/3.17.0/commons-lang3-3.17.0.pom.sha1"),
+                    axum::routing::get(move || async move { pom_sha1 }),
+                );
+        }
+        format!("{}/maven2", crate::proxy::testing::serve(router).await)
+    }
+
+    const LANG3_17_JAR: &str =
+        "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar";
+    const LANG3_17_POM: &str =
+        "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.pom";
+
+    /// A jar is deferred while its `.sha1` is checked against its bytes, then served against
+    /// their sha256. A jar whose bytes differ from its sidecar's, as served below, is 502.
+    #[tokio::test]
+    async fn a_maven_jar_is_served_against_the_sha256_of_the_bytes_its_sidecar_names() {
+        let jar = b"the jar's bytes".to_vec();
+        let claimed = format!("sha1:{}", crate::ecosystem::maven::digest::sha1(&jar));
+        for (served, label) in [
+            (jar.clone(), "maven-jar"),
+            (b"other bytes".to_vec(), "maven-jar-bad"),
+        ] {
+            let sidecars = maven_repository(jar.clone(), b"<project/>".to_vec(), true).await;
+            let files = maven_repository(served.clone(), b"<project/>".to_vec(), false).await;
+            let client =
+                crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+            let analyser = Arc::new(crate::analysis::run::tests::analyser(
+                label,
+                1 << 20,
+                Arc::new(crate::analysis::store::InProcess::new(8)),
+            ));
+            let proxy = offline(None, Some(NO_POLICY))
+                .with_upstream(Ecosystem::Maven, &files)
+                .with_client(Ecosystem::Maven, Arc::new(client))
+                .with_analyser(Some(analyser.clone()));
+            let ArtifactStep::Answer(deferred) = pinned(&proxy, LANG3_17_JAR).await else {
+                panic!("deferred while the claim is checked");
+            };
+            assert_eq!(deferred.status(), 503);
+            assert_eq!(deferred.headers()[DEFERRED_DIGEST], claimed.as_str());
+            analyser.ended(1).await;
+            let step = pinned(&proxy, LANG3_17_JAR).await;
+            if served != jar {
+                let (status, _) = refused(step).await;
+                assert_eq!(status, 502);
+            } else {
+                let ArtifactStep::Fetch(fetch) = step else {
+                    panic!("served once checked");
+                };
+                assert_eq!(
+                    fetch.digest,
+                    Some(Sri::from_sha256(&<sha2::Sha256 as sha2::Digest>::digest(
+                        &jar
+                    )))
+                );
+            }
+        }
+    }
+
+    /// A `.pom` is served once checked against its sidecar, and is never refused by policy.
+    /// One its sidecar does not describe is 502, and one with no sidecar is not served.
+    #[tokio::test]
+    async fn a_pom_is_served_once_its_sidecar_describes_it() {
+        let pom = b"<project><artifactId>commons-lang3</artifactId></project>".to_vec();
+        let deny = "version: 1\ncooldown_days: 0\n\
+                    denials:\n  - purl: pkg:maven/org.apache.commons/commons-lang3@3.17.0\n    \
+                    reason: test\n";
+        let repository = maven_repository(b"jar".to_vec(), pom.clone(), true).await;
+        let base = serve(
+            offline(None, Some(deny))
+                .with_upstream(Ecosystem::Maven, &repository)
+                .router(),
+        )
+        .await;
+        let served = reqwest::get(format!("{base}{LANG3_17_POM}")).await.unwrap();
+        assert_eq!(served.status(), 200);
+        assert_eq!(served.bytes().await.unwrap().as_ref(), pom.as_slice());
+        let head = reqwest::Client::new()
+            .head(format!("{base}{LANG3_17_POM}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(head.status(), 200, "a HEAD has no body to check");
+
+        let sidecars = maven_repository(b"jar".to_vec(), pom.clone(), true).await;
+        let other = maven_repository(b"jar".to_vec(), b"<project/>".to_vec(), false).await;
+        let client =
+            crate::ecosystem::maven::Client::new(reqwest::Client::new(), &sidecars, 1 << 20);
+        let changed = serve(
+            offline(None, Some(NO_POLICY))
+                .with_upstream(Ecosystem::Maven, &other)
+                .with_client(Ecosystem::Maven, Arc::new(client))
+                .router(),
+        )
+        .await;
+        let response = reqwest::get(format!("{changed}{LANG3_17_POM}"))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 502);
+
+        let unsigned = maven_repository(b"jar".to_vec(), pom, false).await;
+        let none = serve(
+            offline(None, Some(NO_POLICY))
+                .with_upstream(Ecosystem::Maven, &unsigned)
+                .router(),
+        )
+        .await;
+        let response = reqwest::get(format!("{none}{LANG3_17_POM}")).await.unwrap();
+        assert_eq!(response.status(), 403);
+        assert!(
+            response
+                .text()
+                .await
+                .unwrap()
+                .contains("no digest of commons-lang3-3.17.0.pom is published")
+        );
     }
 
     const QUOTE_MOD: &str = "/go/rsc.io/quote/@v/v1.5.2.mod";
@@ -6832,10 +7000,7 @@ mod tests {
             let response = reqwest::get(format!("{base}{QUOTE_MOD}")).await.unwrap();
             assert_eq!(response.status(), 502);
             let text = response.text().await.unwrap();
-            assert!(
-                text.contains("checksum database does not describe"),
-                "{text}"
-            );
+            assert!(text.contains("its claim does not describe"), "{text}");
             assert!(text.contains(why), "{text}");
         }
         let upstream = module_proxy(go_mod.clone(), None).await;
@@ -6872,7 +7037,7 @@ mod tests {
                 .text()
                 .await
                 .unwrap()
-                .contains("holds no record of it")
+                .contains("no digest of v9.0.0.mod is published")
         );
 
         let base = serve(go_proxy(&upstream, unreachable_sumdb().await).router()).await;
@@ -6978,10 +7143,7 @@ mod tests {
             } else {
                 let (status, body) = refused(step).await;
                 assert_eq!(status, 502);
-                assert!(
-                    body.contains("checksum database does not describe"),
-                    "{body}"
-                );
+                assert!(body.contains("its claim does not describe"), "{body}");
             }
         }
     }

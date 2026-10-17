@@ -2,6 +2,7 @@
 //! filtered by policy, and each version's files fetched at the proxy. See
 //! docs/maven-plan.md.
 
+pub mod digest;
 pub mod inspect;
 pub mod paths;
 pub mod transport;

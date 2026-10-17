@@ -126,7 +126,11 @@ pub fn classify_path(path: &str) -> RequestTarget {
             claimed_version: version,
             key,
         },
-        (Some(version), "mod") if is_version(&version) => RequestTarget::Manifest { key, version },
+        (Some(version), "mod") if is_version(&version) => RequestTarget::Manifest {
+            filename: format!("{version}.mod"),
+            key,
+            version,
+        },
         _ => RequestTarget::Other,
     }
 }
@@ -239,6 +243,7 @@ mod tests {
             RequestTarget::Manifest {
                 key: key("golang.org/x/text"),
                 version: "v0.20.0".into(),
+                filename: "v0.20.0.mod".into(),
             }
         );
         for other in [

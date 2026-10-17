@@ -18,7 +18,12 @@ pub enum RequestTarget {
         filename: String,
     },
     /// A version's manifest, served once checked against its claim, never refused: `go.mod`.
-    Manifest { key: PackageKey, version: String },
+    Manifest {
+        key: PackageKey,
+        version: String,
+        /// The file the path names, which a claim may be asked of.
+        filename: String,
+    },
     /// Anything else the registry serves: npm's `/-/v1/search`, PyPI's `/simple/`.
     Other,
 }

@@ -56,12 +56,14 @@ pub trait Fetch: Send + Sync + std::fmt::Debug {
         Box::pin(async { Ok(None) })
     }
 
-    /// What a database beside the registry says of `version`'s files, for an ecosystem whose
-    /// documents publish no digest. Errors when it cannot be asked or does not prove itself.
+    /// What a database beside the registry, or a file beside `file`, says of `version`'s
+    /// files, for an ecosystem whose documents publish no digest. Errors when it cannot be
+    /// asked or does not prove itself.
     fn claim<'a>(
         &'a self,
         _key: &'a PackageKey,
         _version: &'a str,
+        _file: &'a str,
     ) -> BoxFuture<'a, Result<Claimed, String>> {
         Box::pin(async { Ok(Claimed::NotAsked) })
     }
@@ -274,9 +276,14 @@ impl Clients {
         self.of(&metadata.key).dated(metadata, before).await
     }
 
-    /// What a database beside the registry says of `version`'s files: [`Fetch::claim`].
-    pub async fn claim(&self, key: &PackageKey, version: &str) -> Result<Claimed, String> {
-        self.of(key).claim(key, version).await
+    /// What a database beside the registry says of `version`'s `file`: [`Fetch::claim`].
+    pub async fn claim(
+        &self,
+        key: &PackageKey,
+        version: &str,
+        file: &str,
+    ) -> Result<Claimed, String> {
+        self.of(key).claim(key, version, file).await
     }
 
     /// The full document, for an ecosystem whose client asks for less: [`Fetch::full`].

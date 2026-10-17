@@ -13,7 +13,7 @@ pub const METADATA: &str = "maven-metadata.xml";
 /// Files beside another that hold its digest or signature, never decided on their own.
 const SIDECARS: [&str; 5] = [".sha1", ".md5", ".sha256", ".sha512", ".asc"];
 
-/// Files of a version a build reads for its dependencies, decided with its jar in step 4.3.
+/// Files of a version a build reads for its dependencies: checked, never refused by policy.
 const DESCRIPTORS: [&str; 2] = [".pom", ".module"];
 
 /// Split `group:artifact`, or `group/artifact` as a purl's namespace and name join, into
@@ -67,8 +67,8 @@ fn key(group: &[&str], artifact: &str) -> Option<PackageKey> {
     PackageKey::from_registry_name(Ecosystem::Maven, &name).ok()
 }
 
-/// An artifact's `maven-metadata.xml` is its metadata, and any file in a version's
-/// directory but a sidecar, a `.pom` and a `.module` is an artifact of that version.
+/// An artifact's `maven-metadata.xml` is its metadata, a version's `.pom` and `.module`
+/// its manifests, and any other file in its directory but a sidecar its artifact.
 pub fn classify_path(path: &str) -> RequestTarget {
     let path = path.split('?').next().unwrap_or(path);
     let Some(rest) = path.strip_prefix(PREFIX) else {
@@ -82,25 +82,35 @@ pub fn classify_path(path: &str) -> RequestTarget {
         [group @ .., artifact, file] if *file == METADATA => {
             key(group, artifact).map_or(RequestTarget::Other, RequestTarget::Metadata)
         }
-        [group @ .., artifact, version, file] if is_artifact(file) => match key(group, artifact) {
-            Some(key) => RequestTarget::Artifact {
-                filename: (*file).to_owned(),
-                claimed_version: (*version).to_owned(),
-                key,
-            },
-            None => RequestTarget::Other,
-        },
+        [group @ .., artifact, version, file] if is_versioned(file) => {
+            let Some(key) = key(group, artifact) else {
+                return RequestTarget::Other;
+            };
+            let (filename, version) = ((*file).to_owned(), (*version).to_owned());
+            if DESCRIPTORS
+                .iter()
+                .any(|descriptor| file.ends_with(descriptor))
+            {
+                RequestTarget::Manifest {
+                    key,
+                    version,
+                    filename,
+                }
+            } else {
+                RequestTarget::Artifact {
+                    filename,
+                    claimed_version: version,
+                    key,
+                }
+            }
+        }
         _ => RequestTarget::Other,
     }
 }
 
-/// Whether `file` is decided as an artifact: not metadata, a sidecar or a descriptor.
-fn is_artifact(file: &str) -> bool {
-    !file.starts_with(METADATA)
-        && !SIDECARS.iter().any(|sidecar| file.ends_with(sidecar))
-        && !DESCRIPTORS
-            .iter()
-            .any(|descriptor| file.ends_with(descriptor))
+/// Whether `file` is a version's own: not metadata, and not a sidecar.
+fn is_versioned(file: &str) -> bool {
+    !file.starts_with(METADATA) && !SIDECARS.iter().any(|sidecar| file.ends_with(sidecar))
 }
 
 /// A `maven-metadata.xml`'s `.sha1` or `.md5`: the document's path, and its digest. `None`
@@ -108,25 +118,13 @@ fn is_artifact(file: &str) -> bool {
 pub fn metadata_sidecar(path: &str) -> Option<(String, crate::ecosystem::Digest)> {
     let path = path.split('?').next().unwrap_or(path);
     let (document, digest): (&str, crate::ecosystem::Digest) = match path.rsplit_once('.') {
-        Some((document, "sha1")) => (document, sha1),
-        Some((document, "md5")) => (document, md5),
+        Some((document, "sha1")) => (document, super::digest::sha1),
+        Some((document, "md5")) => (document, super::digest::md5),
         _ => return None,
     };
     let named = document.ends_with(&format!("/{METADATA}"));
     (named && matches!(classify_path(document), RequestTarget::Metadata(_)))
         .then(|| (document.to_owned(), digest))
-}
-
-/// `bytes`' SHA-1 as hex, as a `.sha1` holds it.
-pub fn sha1(bytes: &[u8]) -> String {
-    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA1_FOR_LEGACY_USE_ONLY, bytes);
-    crate::util::hex(digest.as_ref())
-}
-
-/// `bytes`' MD5 as hex, as a `.md5` holds it.
-pub fn md5(bytes: &[u8]) -> String {
-    use md5::Digest as _;
-    crate::util::hex(&md5::Md5::digest(bytes))
 }
 
 /// Everything under [`PREFIX`] goes to the repository at `base`, under the same path.
@@ -210,8 +208,6 @@ mod tests {
             "/maven/org/apache/commons/commons-lang3/maven-metadata.xml.sha1",
             "/maven/org/apache/commons/commons-lang3/",
             "/maven/org//commons-lang3/maven-metadata.xml",
-            "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.pom",
-            "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.module",
             "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.sha1",
             "/maven/org/apache/commons/commons-lang3/3.17.0/commons-lang3-3.17.0.jar.asc",
             "/maven/org/apache/commons/commons-lang3/3.17.0/maven-metadata.xml.md5",
@@ -224,6 +220,28 @@ mod tests {
         ] {
             assert_eq!(classify_path(other), RequestTarget::Other, "{other}");
         }
+    }
+
+    /// mvn and Gradle read a version's `.pom` and `.module` for versions they build none of.
+    #[test]
+    fn a_version_s_pom_and_module_are_its_manifests() {
+        for file in ["commons-lang3-3.17.0.pom", "commons-lang3-3.17.0.module"] {
+            let path = format!("/maven/org/apache/commons/commons-lang3/3.17.0/{file}");
+            assert_eq!(
+                classify_path(&path),
+                RequestTarget::Manifest {
+                    key: lang3(),
+                    version: "3.17.0".to_owned(),
+                    filename: file.to_owned(),
+                },
+                "{file}"
+            );
+        }
+        assert_eq!(
+            classify_path("/maven/x/3.17.0/a.pom"),
+            RequestTarget::Other,
+            "an artifact is in a group"
+        );
     }
 
     /// A version's directory can hold a `.war`, an `.aar`, a distribution or a file named

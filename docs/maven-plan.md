@@ -278,6 +278,32 @@ Q2, Q7 and Q9 otherwise.
       job checks it. mvn retried a 503 4 times at `Retry-After`; Gradle 3 times in 3 s,
       ignoring it, so a claim job longer than that fails a Gradle build until it is run
       again.
+      Done 2026-10-17. `Fetch::claim` is asked of a file, and `RequestTarget::Manifest`
+      names one: a version's jar, `-sources.jar`, `.pom` and `.module` each have their own
+      sidecar. `maven::digest` reads the first of `.sha512`, `.sha256` and `.sha1` beside
+      the file as `<algorithm>:<hex>`, its first word of hex the algorithm's length; a
+      404 asks the next, one holding no such word is passed over, and none is
+      `Claimed::Unknown`, refused as no strong digest. A claim is kept per file. A `HEAD`
+      of a `.pom` is forwarded unchecked: it has no body. Measured 2026-10-17 through the
+      proxy, an in-process claim store:
+
+      | Build | Result |
+      |---|---|
+      | mvn 3.10.0, `commons-lang3` 3.17.0 | BUILD SUCCESS. The `.pom` verified in the request; the jar 503, its `sha1:b17d2136...` checked against its bytes, the retry served verified |
+      | mvn 3.10.0, Spring Boot 3.5.6 starter-web, cold | BUILD SUCCESS in 93 s, 22 s straight from Central. 94 jars checked, 247 poms verified; claims 419 `sha1` and 114 `sha512` |
+      | Gradle 9.8.1, the same build, cold | failed: `spring-web-6.2.11.jar` was still being checked after Gradle's third try |
+      | Gradle 9.8.1, run again | succeeded in 4 s, 34 jars |
+
+      From each jar's first 503 to its claim checked, cold: 3 of 34 over 3 s,
+      `spring-boot-3.5.6.jar` 3.1 s, `spring-web-6.2.11.jar` and
+      `spring-boot-autoconfigure-3.5.6.jar` 3.3 s. Gradle's tries came at +0, +1 and +3 s.
+      Holding the download open while its claim is checked, which a 2 s hold would have
+      covered for all 34, was asked of the user 2026-10-17 and declined, as for Go: each
+      request held open keeps a connection and a task on the proxy for as long as its
+      claim job runs, so a client asking many unchecked files at once could exhaust them.
+      A 503 releases both at once. A cold Gradle build can fail and pass when run again,
+      which step 9's quickstart says.
+      `make mutants`: 65 mutants, 49 caught, 16 unviable.
    4. Cooldown from the `.pom`'s `Last-Modified` (Q6): every version in the list dated,
       by a `HEAD` per version, and each time kept, as a file on Central is never replaced.
       Not newest first until one is older, as Go's: "Publish times against version order"

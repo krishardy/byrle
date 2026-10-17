@@ -187,10 +187,12 @@ impl Fetch for Client {
         Box::pin(async { Ok(None) })
     }
 
+    /// One lookup holds a version's zip and `go.mod`, so `file` is not asked.
     fn claim<'a>(
         &'a self,
         key: &'a PackageKey,
         version: &'a str,
+        _file: &'a str,
     ) -> futures_util::future::BoxFuture<'a, Result<Claimed, String>> {
         Box::pin(Client::claim(self, key, version))
     }
@@ -261,7 +263,10 @@ pub(crate) mod tests {
         let go = Client::new(reqwest::Client::new(), "http://127.0.0.1:9", 1 << 20)
             .with_sumdb(client(db.clone()).await);
         let quote = PackageKey::from_registry_name(Ecosystem::Go, "rsc.io/quote").unwrap();
-        let Claimed::Known(claim) = Fetch::claim(&go, &quote, "v1.5.2").await.unwrap() else {
+        let Claimed::Known(claim) = Fetch::claim(&go, &quote, "v1.5.2", "v1.5.2.zip")
+            .await
+            .unwrap()
+        else {
             panic!("sum.golang.org knows it");
         };
         assert_eq!(
