@@ -125,3 +125,4 @@ Implemented means it is in the code, and the file names where.
 | 0111 | [Each ecosystem is served under a prefix of its own](0111-ecosystem-path-prefixes.md) | Decided by the user 2026-10-15 |  |
 | 0112 | [Maven: a jar's digest is its strongest sidecar, SHA-1 included](0112-maven-digests.md) | Decided by the user 2026-10-16 |  |
 | 0113 | [Maven: PGP signatures are decided by `provenance`, a key as the identity](0113-maven-signatures.md) | Decided by the user 2026-10-16 |  |
+| 0114 | [Maven: byrle passes every file through unchanged, so a client can check byrle](0114-maven-files-unchanged.md) | Decided by the user 2026-10-17 |  |
