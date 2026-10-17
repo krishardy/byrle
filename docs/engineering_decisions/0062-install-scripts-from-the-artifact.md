@@ -128,3 +128,7 @@ Fetched through the proxy 2026-10-17, `install_scripts: block`:
 None of the 94 jars mvn fetched for a Spring Boot 3.5.6 web project declares one, nor
 any of the 34 Gradle fetched.
 
+Decided by the user 2026-10-17: `log4j-core` stays refused by default. A project using
+Log4j 2 adds a `packages:` rule setting `install_scripts: allow` for
+`org.apache.logging.log4j:log4j-core`, shown in policy-reference.md.
+

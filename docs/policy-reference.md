@@ -44,6 +44,11 @@ packages:
     permanent: true
     added_by: "platform team"
 
+  - match: { ecosystem: maven, name: "org.apache.logging.log4j:log4j-core" }
+    set: { install_scripts: allow }
+    reason: "declares GraalVmProcessor and PluginProcessor, run by javac"
+    permanent: true
+
   - match: { ecosystem: pypi, name: Django, version: "vers:pypi/>=4.2|<5" }
     set: { vuln_advisory_ids: ["CVE-2024-0000"] }
     reason: "the affected view is not routed"
