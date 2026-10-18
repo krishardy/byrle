@@ -3082,7 +3082,10 @@ Plan for cargo and the adapter interface before it: [cargo-plan](docs/cargo-plan
 - [x] Go adapter (`GOPROXY`). Moved from Deferred / post-v1 on 2026-09-27. The checksum DB
       already covers tamper-evidence. Done 2026-10-16, [go-plan](docs/go-plan.md) steps 1
       to 7: `make smoke-go` 6/6, and smoke-npm, smoke-python and smoke-cargo pass.
-- [ ] Maven adapter (`settings.xml` mirror). Moved from Deferred / post-v1 on 2026-09-27.
+- [x] Maven adapter (`settings.xml` mirror). Moved from Deferred / post-v1 on 2026-09-27.
+      Done 2026-10-18, [maven-plan](docs/maven-plan.md) steps 1 to 9, the Gradle plugin
+      portal and Gradle's lockfiles included: `make smoke-maven` 7/7, and smoke-npm,
+      smoke-python, smoke-cargo and smoke-go pass.
 - [ ] Declare the adapter interface stable and document it for contributors
 
 **Exit:** five protocols on one unchanged interface.
