@@ -553,6 +553,23 @@ Q2, Q7 and Q9 otherwise.
    processor, a portal plugin, and the wrapper checks. Gradle run as `./gradlew` with the
    init script, a case not measured in this plan. A first fetch answered 503 is run
    again.
+   Done 2026-10-18: `scripts/make/smoke-maven.sh`, 7 of 7, behind nginx on TLS with
+   Java trusting the JDK's CAs and the test CA:
+
+   | Step | Result |
+   |---|---|
+   | 1. mvn `dependency:resolve` of commons-lang3 3.17.0 | 246 files verified, in 1 run: mvn retried each 503 itself |
+   | 2. a denial of commons-lang3 3.21.0, its newest | `[3.0,)` resolved 3.20.0; 3.21.0 left out of `maven-metadata.xml`, its jar 403 |
+   | 3. `cooldown_days: 24`, covering 3.21.0 | `[3.0,)` resolved 3.20.0 |
+   | 4. `./gradlew` with the init script, gradle-versions-plugin 0.52.0 from the portal | the plugin's jar 403 naming `provenance`: 0.52.0 is unsigned after a signed 0.11.1. Resolved under a `provenance: allow` exception; doctor read the init script, the wrapper's jar as 9.8.1's and its pinned sha256 |
+   | 5. lombok 1.18.42 as an annotation processor | 403 naming `install_scripts`; compiled under `install_scripts: allow` |
+   | 6. after a refresh, commons-text 1.9 | 403 naming `max_cvss`; 1.10.0 served |
+   | 7. tokens required | 401 without one; mvn sent one from `<server>`, Gradle from `credentials { }`, `./mvnw` from `MVNW_USERNAME` and `MVNW_PASSWORD` |
+
+   With advisories loaded, maven-dependency-plugin 3.11.0's dependency commons-beanutils
+   1.9.4 is refused by the default `max_cvss`, so step 7 sets `max_cvss: 10`. A mirror
+   `<url>` ending in `/` made `wrapper:wrapper` write `/maven//org/...`, which the proxy
+   answers 404.
 9. Docs: quickstart (Basic first, Bearer second, per Q7), policy-reference,
    threat-model (the wrapper download as a bypass, and byrle checked from outside by
    PGP signatures whose keys come from key servers, per step 2.3), request-flow, and the
